@@ -37,10 +37,10 @@ add_label() {
 mark_commit() {
   local state="$1" description="$2"
   [ -n "${HEAD_SHA:-}" ] || return 0
-  jq -n --arg state "$state" --arg context "social-mcp/pi-review" \\
-    --arg description "$description" \\
+  jq -n --arg state "$state" --arg context "social-mcp/pi-review" \
+    --arg description "$description" \
     '{state:$state,context:$context,description:$description}' |
-    curl --fail-with-body -sS -X POST "${AUTH[@]}" -H "Content-Type: application/json" \\
+    curl --fail-with-body -sS -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
       --data-binary @- "${API}/statuses/${HEAD_SHA}" >/dev/null
 }
 

@@ -18,9 +18,10 @@ const C = {
   gray: tty ? "\x1b[90m" : "",
 };
 
-let turn = 0;
-let turnStartedAt = null;
 let lastUsage = null;
+let streamedText = "";
+let outputNeedsNewline = false;
+const activeTools = new Map();
 
 const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie)$/i;
 
@@ -76,8 +77,47 @@ function finalAssistantText(messages) {
     .join("");
 }
 
+function ensureNewline() {
+  if (outputNeedsNewline) {
+    process.stdout.write("\n");
+    outputNeedsNewline = false;
+  }
+}
+
 function heading(icon, text, color = C.cyan) {
+  ensureNewline();
   console.log(color + C.bold + icon + " " + text + C.reset);
+}
+
+function oneLine(value, limit = 110) {
+  const line = String(redact(value ?? "")).replace(/\s+/g, " ").trim();
+  return line.length > limit ? line.slice(0, limit - 1) + "…" : line;
+}
+
+function detailLines(text) {
+  // Prefix untrusted tool output so it cannot become a GitHub workflow command.
+  for (const line of String(text).split("\n")) console.log("  " + line);
+}
+
+function printToolDetails(name, args, result, isError) {
+  if (args == null && result == null) return;
+  const grouped = Boolean(process.env.GITHUB_ACTIONS);
+  if (grouped) console.log("::group::" + oneLine(name, 60) + " " + (isError ? "error" : "details"));
+  try {
+    if (args != null) {
+      console.log(C.dim + "Arguments:" + C.reset);
+      detailLines(stringify(args, 5000));
+    }
+    if (result != null) {
+      const output = truncate(String(extractResultText(result)), 8000);
+      if (output.trim()) {
+        console.log(C.dim + "Result:" + C.reset);
+        detailLines(output);
+      }
+    }
+  } finally {
+    if (grouped) console.log("::endgroup::");
+  }
 }
 
 function divider() {
@@ -93,21 +133,11 @@ function toolSummary(name, args) {
   return "";
 }
 
-function usageLine(usage) {
-  if (!usage || typeof usage !== "object") return "";
-  const pieces = [];
-  if (usage.input != null) pieces.push("in " + usage.input);
-  if (usage.output != null) pieces.push("out " + usage.output);
-  if (usage.reasoning != null) pieces.push("reasoning " + usage.reasoning);
-  if (usage.cacheRead != null) pieces.push("cache " + usage.cacheRead);
-  if (usage.totalTokens != null) pieces.push("total " + usage.totalTokens);
-  return pieces.join(" · ");
-}
 
 for await (const line of rl) {
   if (!line.trim()) continue;
   let event;
-  try { event = JSON.parse(line); } catch { console.log(C.gray + "[raw]" + C.reset + " " + line); continue; }
+  try { event = JSON.parse(line); } catch { heading("!", "Unparsed Pi event: " + oneLine(line)); continue; }
   if (event.usage) lastUsage = event.usage;
 
   switch (event.type) {
@@ -120,46 +150,37 @@ for await (const line of rl) {
       heading("▶", "Agent started", C.green);
       break;
     case "turn_start":
-      turn += 1;
-      turnStartedAt = Date.now();
-      console.log();
-      heading("●", "Turn " + turn, C.blue);
+      // Avoid a header and token counts for every model turn.
       break;
     case "message_update": {
       const update = event.assistantMessageEvent ?? {};
-      if (update.type === "text_delta") process.stdout.write(update.delta ?? "");
+      if (update.type === "text_delta") {
+        const delta = update.delta ?? "";
+        process.stdout.write(delta);
+        streamedText = (streamedText + delta).slice(-24000);
+        outputNeedsNewline = !delta.endsWith("\n");
+      }
       break;
     }
     case "tool_execution_start": {
       const name = event.toolName ?? "unknown";
       const summary = toolSummary(name, event.args);
-      console.log();
-      heading("🔧", "Tool · " + name, C.magenta);
-      if (summary) console.log(C.bold + summary + C.reset);
-      else if (event.args != null) console.log(C.dim + stringify(event.args, 5000) + C.reset);
+      activeTools.set(event.toolCallId, { name, args: event.args });
+      const hint = summary ? " · " + oneLine(summary) : "";
+      heading("🔧", name + hint, C.magenta);
       break;
     }
     case "tool_execution_end": {
-      const name = event.toolName ?? "unknown";
-      const ok = !event.isError;
-      const color = ok ? C.green : C.red;
-      const icon = ok ? "✓" : "✗";
-      console.log(color + C.bold + icon + " " + name + " " + (ok ? "completed" : "failed") + C.reset);
-      if (event.result != null) {
-        const output = truncate(String(extractResultText(event.result)), 8000);
-        if (output.trim()) console.log(C.dim + output + C.reset);
-      }
+      const started = activeTools.get(event.toolCallId);
+      activeTools.delete(event.toolCallId);
+      const name = event.toolName ?? started?.name ?? "unknown";
+      const isError = Boolean(event.isError);
+      heading(isError ? "✗" : "✓", name + (isError ? " failed" : " completed"), isError ? C.red : C.green);
+      printToolDetails(name, started?.args, event.result, isError);
       break;
     }
-    case "turn_end": {
-      const duration = turnStartedAt ? ((Date.now() - turnStartedAt) / 1000).toFixed(1) + "s" : "?";
-      const usage = usageLine(lastUsage);
-      const suffix = usage ? " · " + usage : "";
-      console.log();
-      console.log(C.yellow + C.bold + "⏱ Turn " + turn + " finished" + C.reset + " " + C.gray + duration + suffix + C.reset);
-      turnStartedAt = null;
+    case "turn_end":
       break;
-    }
     case "compaction_start": heading("↻", "Context compaction started", C.yellow); break;
     case "compaction_end": heading("✓", "Context compaction finished", C.green); break;
     case "auto_retry_start": heading("↻", "Automatic retry", C.yellow); break;
@@ -173,15 +194,12 @@ for await (const line of rl) {
       divider();
       heading("■", "Agent finished", C.green);
       const finalText = finalAssistantText(event.messages);
-      if (finalText.trim()) {
+      if (finalText.trim() && !streamedText.trimEnd().endsWith(finalText.trimEnd())) {
         console.log();
         console.log(C.bold + "Final response" + C.reset);
         console.log(truncate(redact(finalText), 12000));
       }
-      if (lastUsage) {
-        const usage = usageLine(lastUsage);
-        if (usage) { console.log(); console.log(C.yellow + "Usage · " + usage + C.reset); }
-      }
+      if (lastUsage?.totalTokens != null) console.log(C.gray + "Total tokens: " + lastUsage.totalTokens + C.reset);
       divider();
       break;
     }
