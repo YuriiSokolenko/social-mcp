@@ -1,0 +1,187 @@
+name: Pi PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pi-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'pi/issue-')
+    runs-on: [self-hosted, linux, x64, n150, pi-agent]
+    timeout-minutes: 120
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Ensure review labels
+        run: bash scripts/pi-pr-review-status.sh ensure
+
+      - name: Mark review running
+        run: |
+          bash scripts/pi-pr-review-status.sh running             "Automated Pi review started for \`${HEAD_SHA:0:12}\`."
+
+      - name: Fetch base branch
+        run: git fetch origin main
+
+      - name: Prepare Python environment
+        run: |
+          python --version
+          sqlite3 --version
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest pytest-asyncio ruff
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Run deterministic checks
+        id: checks
+        run: |
+          set +e
+          pytest > "$RUNNER_TEMP/pytest.log" 2>&1
+          PYTEST_EXIT=$?
+          ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
+          RUFF_EXIT=$?
+          set -e
+
+          echo "pytest_exit=$PYTEST_EXIT" >> "$GITHUB_OUTPUT"
+          echo "ruff_exit=$RUFF_EXIT" >> "$GITHUB_OUTPUT"
+
+          echo "=== pytest ==="
+          cat "$RUNNER_TEMP/pytest.log"
+          echo
+          echo "=== ruff ==="
+          cat "$RUNNER_TEMP/ruff.log"
+
+      - name: Build review context
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PYTEST_EXIT: ${{ steps.checks.outputs.pytest_exit }}
+          RUFF_EXIT: ${{ steps.checks.outputs.ruff_exit }}
+        run: |
+          ISSUE="${HEAD_REF#pi/issue-}"
+          echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
+
+          API="https://api.github.com/repos/${REPO}"
+          ISSUE_JSON="$(curl -fsS             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "${API}/issues/${ISSUE}")"
+
+          ISSUE_TITLE="$(jq -r '.title // ""' <<<"$ISSUE_JSON")"
+          ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
+
+          TASK_FILE="$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          {
+            cat <<EOF
+You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
+
+Do not modify files.
+Do not commit or push.
+Do not create or edit GitHub comments, reviews, labels, issues, or pull requests.
+Review only the checked-out code and local repository history/diff.
+
+Issue title:
+${ISSUE_TITLE}
+
+Issue body:
+${ISSUE_BODY}
+
+Pull request title:
+${PR_TITLE}
+
+Pull request body:
+${PR_BODY}
+
+Deterministic check exit codes:
+- pytest: ${PYTEST_EXIT}
+- ruff check .: ${RUFF_EXIT}
+
+The detailed pytest and Ruff logs are available at:
+- $RUNNER_TEMP/pytest.log
+- $RUNNER_TEMP/ruff.log
+
+Inspect the diff against origin/main and relevant surrounding code.
+
+Check:
+- whether the implementation satisfies the linked issue and acceptance criteria
+- correctness and realistic edge cases
+- regressions or unintended behavior
+- unnecessary or unrelated changes
+- test quality and missing tests
+- lint/style problems
+- security or credential-handling regressions
+- suspicious generated/local artifacts
+
+A failing deterministic check must not receive PASS.
+
+Your final response MUST start with exactly one of:
+REVIEW_RESULT: PASS
+REVIEW_RESULT: CHANGES_REQUESTED
+
+After that, give a concise review summary. For CHANGES_REQUESTED, include concrete actionable findings with file/path references when possible.
+EOF
+          } > "$TASK_FILE"
+
+          echo "TASK_FILE=$TASK_FILE" >> "$GITHUB_ENV"
+
+      - name: Run Pi reviewer with live progress
+        run: |
+          set -o pipefail
+          RAW="$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
+          echo "REVIEW_RAW=$RAW" >> "$GITHUB_ENV"
+
+          pi             --provider hp-laguna             --model qwen3.8-flash-next             --mode json             --no-session             "$(cat "$TASK_FILE")"           | tee "$RAW"           | node scripts/pi-log-filter.mjs
+
+          printf '\n'
+
+      - name: Parse review result
+        id: result
+        run: |
+          RESULT_JSON="$(node scripts/pi-review-result.mjs "$REVIEW_RAW")"
+          VERDICT="$(jq -r '.verdict' <<<"$RESULT_JSON")"
+          jq -r '.text' <<<"$RESULT_JSON" > "$RUNNER_TEMP/pi-review-comment.txt"
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+
+      - name: Mark review passed
+        if: steps.result.outputs.verdict == 'PASS'
+        run: |
+          COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
+          bash scripts/pi-pr-review-status.sh passed "$COMMENT"
+
+      - name: Mark changes requested
+        if: steps.result.outputs.verdict == 'CHANGES_REQUESTED'
+        run: |
+          COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
+          bash scripts/pi-pr-review-status.sh changes-requested "$COMMENT"
+
+      - name: Mark review failed
+        if: failure()
+        run: |
+          bash scripts/pi-pr-review-status.sh failed             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Clean temporary review files
+        if: always()
+        run: |
+          rm -f             "$RUNNER_TEMP/pytest.log"             "$RUNNER_TEMP/ruff.log"             "$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"             "$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"             "$RUNNER_TEMP/pi-review-comment.txt"
