@@ -31,6 +31,20 @@ async function pages(endpoint) {
     if (batch.length < 100) return items;
   }
 }
+async function ensureReadyLabel() {
+  const response = await fetch(`${base}/labels`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: "dispatcher:ready",
+      color: "d4c5f9",
+      description: "Eligible for Pi dispatcher selection",
+    }),
+  });
+  if (![201, 422].includes(response.status)) {
+    throw new Error(`Cannot ensure dispatcher:ready label: ${response.status} ${await response.text()}`);
+  }
+}
 const labels = issue => new Set(issue.labels.map(label => label.name));
 const activeLabels = ["pi:ready", "pi:running", "pi:mr-created"];
 const blockedLabels = ["pi:failed", "pi:needs-human", "pi:cancelled"];
@@ -113,6 +127,7 @@ function finalText(jsonl) {
 }
 async function main() {
   if (mode === "prepare") {
+    await ensureReadyLabel();
     const data = await snapshot();
     fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
     console.log(`Dispatcher: ${data.active.length} active, ${data.slots} free slots, ${data.candidates.length} candidates`);
