@@ -142,6 +142,10 @@ async function main() {
   }
   const selected = result.issues;
   if (new Set(selected).size !== selected.length) throw new Error("duplicate issue");
+
+  // The concurrency group serializes dispatcher jobs, but queued jobs can start
+  // with stale trigger events. Always rebuild state after acquiring the runner
+  // and treat GitHub state, not the triggering event, as the source of truth.
   const initial = await snapshot();
   if (selected.length !== initial.candidates.length ||
       selected.some((number, index) => number !== initial.candidates[index]?.issue)) {
@@ -149,7 +153,20 @@ async function main() {
   }
   for (const number of selected) {
     const state = await snapshot();
-    if (number !== state.candidates[0]?.issue) throw new Error(`#${number} is not the next eligible issue`);
+
+    // A previous serialized dispatcher may already have assigned this issue.
+    // That is a successful no-op, not an error and must never emit a duplicate
+    // repository_dispatch event.
+    if (state.active.includes(number)) {
+      console.log(`Skipped #${number}: already assigned by an earlier dispatcher`);
+      continue;
+    }
+
+    if (number !== state.candidates[0]?.issue) {
+      console.log(`Skipped #${number}: no longer the next eligible issue`);
+      continue;
+    }
+
     await api(`/issues/${number}/labels`, {
       method: "POST",
       body: JSON.stringify({ labels: ["pi:ready"] }),
