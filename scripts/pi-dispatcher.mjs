@@ -143,6 +143,11 @@ async function main() {
   }
   const selected = result.issues;
   if (new Set(selected).size !== selected.length) throw new Error("duplicate issue");
+  const initial = await snapshot();
+  if (selected.length > initial.slots ||
+      selected.some((number, index) => number !== initial.candidates[index]?.issue)) {
+    throw new Error("dispatcher result exceeds capacity or violates priority order");
+  }
   for (const number of selected) {
     const state = await snapshot();
     if (state.active.length >= 2) throw new Error("no remaining issue slots");
@@ -152,10 +157,19 @@ async function main() {
       method: "POST",
       body: JSON.stringify({ labels: ["pi:ready"] }),
     });
-    await api("/dispatches", {
-      method: "POST",
-      body: JSON.stringify({ event_type: "pi_dispatch_issue", client_payload: { issue_number: number } }),
-    });
+    try {
+      await api("/dispatches", {
+        method: "POST",
+        body: JSON.stringify({ event_type: "pi_dispatch_issue", client_payload: { issue_number: number } }),
+      });
+    } catch (error) {
+      try {
+        await api(`/issues/${number}/labels/pi%3Aready`, { method: "DELETE" });
+      } catch (rollbackError) {
+        console.error(`Could not roll back pi:ready on #${number}: ${rollbackError}`);
+      }
+      throw error;
+    }
     await api(`/issues/${number}/labels/dispatcher%3Aready`, { method: "DELETE" });
     console.log(`Dispatched #${number}`);
   }
