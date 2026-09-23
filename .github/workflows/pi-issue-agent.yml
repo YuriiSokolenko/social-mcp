@@ -3,6 +3,8 @@ name: Pi Issue Agent
 on:
   issues:
     types: [labeled]
+  repository_dispatch:
+    types: [pi_dispatch_issue]
 
 permissions:
   actions: write
@@ -11,16 +13,16 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-issue-${{ github.event.issue.number }}
+  group: pi-issue-${{ github.event.issue.number || github.event.client_payload.issue_number }}
   cancel-in-progress: true
 
 jobs:
   pi:
-    if: github.event.label.name == 'pi:ready'
+    if: (github.event_name == 'issues' && github.event.label.name == 'pi:ready') || github.event_name == 'repository_dispatch'
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
-      ISSUE: ${{ github.event.issue.number }}
+      ISSUE: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
 
@@ -30,6 +32,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
+
+      - name: Validate dispatched issue
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]]
+          issue_json="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/issues/${ISSUE}")"
+          jq -e '.state == "open" and (([.labels[].name] | index("pi:ready")) != null)' <<<"$issue_json" >/dev/null
 
       - name: Ensure workflow labels
         run: bash scripts/pi-issue-status.sh ensure
@@ -63,12 +75,16 @@ jobs:
 
       - name: Run Pi with live progress
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
         run: |
           set -o pipefail
           cd "$JOB_DIR"
+          ISSUE_JSON="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}")"
+          ISSUE_TITLE="$(jq -r '.title' <<<"$ISSUE_JSON")"
+          ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
 
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
