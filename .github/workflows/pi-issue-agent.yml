@@ -5,6 +5,7 @@ on:
     types: [labeled]
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: write
@@ -154,6 +155,13 @@ jobs:
 
           echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Pi PR review
+        if: steps.changes.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        run: |
+          API="https://api.github.com/repos/${REPO}"
+          jq -n             --arg ref "main"             --arg pr_number "${{ steps.pr.outputs.number }}"             '{ref:$ref,inputs:{pr_number:$pr_number}}' |
+          curl -fsS -X POST             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             -H "Content-Type: application/json"             --data-binary @-             "${API}/actions/workflows/pi-pr-review.yml/dispatches"
 
       - name: Mark pull request created
         if: steps.changes.outputs.changed == 'true' && steps.pr.outputs.number != ''
