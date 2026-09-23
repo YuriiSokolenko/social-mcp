@@ -49,6 +49,18 @@ jobs:
         run: |
           git checkout -B "pi/issue-${ISSUE}" origin/main
 
+      - name: Prepare Python environment
+        run: |
+          python --version
+          sqlite3 --version
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest pytest-asyncio ruff
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          pytest --version
+          ruff --version
       - name: Run Pi with live progress
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
