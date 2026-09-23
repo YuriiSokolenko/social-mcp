@@ -1,12 +1,10 @@
 name: Pi PR Review
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Pull request number to review
+        description: "Pull request number to review"
         required: true
         type: string
 
@@ -16,22 +14,15 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  group: pi-pr-review-${{ inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   review:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event.pull_request.draft == false &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        startsWith(github.event.pull_request.head.ref, 'pi/issue-')
-      )
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
-      PR: ${{ github.event.pull_request.number || inputs.pr_number }}
+      PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
 
