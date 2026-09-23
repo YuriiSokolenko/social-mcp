@@ -1,0 +1,207 @@
+name: Pi Issue Agent
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pi-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  pi:
+    if: github.event.label.name == 'pi:ready'
+    runs-on: [self-hosted, linux, x64, n150, pi-agent]
+    timeout-minutes: 120
+
+    steps:
+      - name: Mark issue running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+
+          repo = os.environ["REPO"]
+          issue = os.environ["ISSUE"]
+          token = os.environ["GH_TOKEN"]
+
+          def request(method, path, data=None):
+              body = None if data is None else json.dumps(data).encode()
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}{path}",
+                  data=body,
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(req) as response:
+                  return response.read()
+
+          try:
+              request("DELETE", f"/issues/{issue}/labels/pi%3Aready")
+          except Exception:
+              pass
+          request("POST", f"/issues/{issue}/labels", {"labels": ["pi:running"]})
+          PY
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Create issue branch
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          git checkout -b "pi/issue-${ISSUE}"
+
+      - name: Run Pi
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          cat > /tmp/pi-task.txt <<EOF
+          You are implementing GitHub issue #${ISSUE_NUMBER} in the current repository.
+
+          Issue title:
+          ${ISSUE_TITLE}
+
+          Issue body:
+          ${ISSUE_BODY}
+
+          Work directly in the checked-out repository.
+          Implement the issue completely, keeping the change focused.
+          Inspect existing code and tests before editing.
+          Add or update tests where appropriate.
+          Do not commit, push, create a pull request, or modify GitHub issue labels.
+          Do not access production credentials or external social APIs.
+          Finish only after the repository is in a state ready for CI.
+          EOF
+
+          pi             --provider hp-laguna             --model qwen3.8-flash-next             --print             "$(cat /tmp/pi-task.txt)"
+
+      - name: Commit and push changes
+        id: changes
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "social-mcp-pi"
+          git config user.email "social-mcp-pi@users.noreply.github.com"
+
+          git add -A
+          git commit -m "feat: implement issue #${ISSUE}"
+          git push --set-upstream origin "pi/issue-${ISSUE}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+
+          repo = os.environ["REPO"]
+          issue = os.environ["ISSUE"]
+          title = os.environ["ISSUE_TITLE"]
+          token = os.environ["GH_TOKEN"]
+
+          data = {
+              "title": f"Pi: #{issue} {title}",
+              "head": f"pi/issue-{issue}",
+              "base": "main",
+              "body": f"Closes #{issue}\n\nImplemented automatically by the N150 Pi runner.",
+          }
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/pulls",
+              data=json.dumps(data).encode(),
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(req) as response:
+              pr = json.load(response)
+
+          def request(method, path, data=None):
+              body = None if data is None else json.dumps(data).encode()
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}{path}",
+                  data=body,
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(request) as response:
+                  return response.read()
+
+          try:
+              request("DELETE", f"/issues/{issue}/labels/pi%3Arunning")
+          except Exception:
+              pass
+          request("POST", f"/issues/{issue}/labels", {"labels": ["pi:mr-created"]})
+          request(
+              "POST",
+              f"/issues/{issue}/comments",
+              {"body": f"Pi finished the implementation and opened PR #{pr['number']}: {pr['html_url']}"},
+          )
+          PY
+
+      - name: Mark no-change result
+        if: steps.changes.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+
+          repo = os.environ["REPO"]
+          issue = os.environ["ISSUE"]
+          token = os.environ["GH_TOKEN"]
+
+          data = {"body": "Pi completed the task but produced no repository changes. Human review is required."}
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/issues/{issue}/comments",
+              data=json.dumps(data).encode(),
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json",
+              },
+          )
+          urllib.request.urlopen(req).read()
+          PY
