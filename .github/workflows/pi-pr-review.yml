@@ -3,6 +3,12 @@ name: Pi PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -10,31 +16,61 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number }}
+  group: pi-pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   review:
     if: >-
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'pi/issue-')
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        startsWith(github.event.pull_request.head.ref, 'pi/issue-')
+      )
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ github.event.pull_request.number || inputs.pr_number }}
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
     steps:
-      - name: Checkout pull request
+      - name: Checkout control repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: main
+
+      - name: Load pull request metadata
+        run: |
+          API="https://api.github.com/repos/${REPO}"
+          PR_JSON="$(curl -fsS             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "${API}/pulls/${PR}")"
+
+          DRAFT="$(jq -r '.draft' <<<"$PR_JSON")"
+          HEAD_REPO="$(jq -r '.head.repo.full_name' <<<"$PR_JSON")"
+          HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
+          HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
+
+          if [ "$DRAFT" = "true" ]; then
+            echo "Pull request #${PR} is draft; skipping review." >&2
+            exit 1
+          fi
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "Pull request #${PR} comes from another repository; refusing self-hosted review." >&2
+            exit 1
+          fi
+          case "$HEAD_REF" in
+            pi/issue-*) ;;
+            *)
+              echo "Pull request #${PR} head '$HEAD_REF' is not a pi/issue-* branch." >&2
+              exit 1
+              ;;
+          esac
+
+          echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
 
       - name: Ensure review labels
         run: bash scripts/pi-pr-review-status.sh ensure
@@ -43,11 +79,19 @@ jobs:
         run: |
           bash scripts/pi-pr-review-status.sh running             "Automated Pi review started for \`${HEAD_SHA:0:12}\`."
 
-      - name: Fetch base branch
-        run: git fetch origin main
+      - name: Create temporary PR worktree
+        run: |
+          JOB_DIR="$RUNNER_TEMP/social-mcp-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
+          rm -rf "$JOB_DIR"
+          git fetch origin "$HEAD_REF"
+          git worktree prune
+          git worktree add --detach "$JOB_DIR" "$HEAD_SHA"
+          echo "Temporary review worktree: $JOB_DIR"
 
       - name: Prepare Python environment
         run: |
+          cd "$JOB_DIR"
           python --version
           sqlite3 --version
           python -m venv .venv
@@ -55,11 +99,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install pytest pytest-asyncio ruff
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run deterministic checks
         id: checks
         run: |
+          cd "$JOB_DIR"
           set +e
           pytest > "$RUNNER_TEMP/pytest.log" 2>&1
           PYTEST_EXIT=$?
@@ -78,8 +123,6 @@ jobs:
 
       - name: Build review context
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
           PYTEST_EXIT: ${{ steps.checks.outputs.pytest_exit }}
           RUFF_EXIT: ${{ steps.checks.outputs.ruff_exit }}
         run: |
@@ -88,13 +131,15 @@ jobs:
 
           API="https://api.github.com/repos/${REPO}"
           ISSUE_JSON="$(curl -fsS             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "${API}/issues/${ISSUE}")"
+          PR_JSON="$(curl -fsS             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "${API}/pulls/${PR}")"
 
           ISSUE_TITLE="$(jq -r '.title // ""' <<<"$ISSUE_JSON")"
           ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
+          PR_TITLE="$(jq -r '.title // ""' <<<"$PR_JSON")"
+          PR_BODY="$(jq -r '.body // ""' <<<"$PR_JSON")"
 
           TASK_FILE="$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
-          {
-            cat <<EOF
+          cat > "$TASK_FILE" <<EOF
 You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
 
 Do not modify files.
@@ -142,17 +187,17 @@ REVIEW_RESULT: CHANGES_REQUESTED
 
 After that, give a concise review summary. For CHANGES_REQUESTED, include concrete actionable findings with file/path references when possible.
 EOF
-          } > "$TASK_FILE"
 
           echo "TASK_FILE=$TASK_FILE" >> "$GITHUB_ENV"
 
       - name: Run Pi reviewer with live progress
         run: |
           set -o pipefail
+          cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
           echo "REVIEW_RAW=$RAW" >> "$GITHUB_ENV"
 
-          pi             --provider hp-laguna             --model qwen3.8-flash-next             --mode json             --no-session             "$(cat "$TASK_FILE")"           | tee "$RAW"           | node scripts/pi-log-filter.mjs
+          pi             --provider hp-laguna             --model qwen3.8-flash-next             --mode json             --no-session             "$(cat "$TASK_FILE")"           | tee "$RAW"           | node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
           printf '\n'
 
@@ -181,7 +226,14 @@ EOF
         run: |
           bash scripts/pi-pr-review-status.sh failed             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
-      - name: Clean temporary review files
+      - name: Clean temporary review worktree
         if: always()
         run: |
+          set +e
+          JOB_DIR="${JOB_DIR:-$RUNNER_TEMP/social-mcp-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT}"
+          if [ -d "$JOB_DIR" ]; then
+            git worktree remove --force "$JOB_DIR"
+          fi
+          rm -rf "$JOB_DIR"
           rm -f             "$RUNNER_TEMP/pytest.log"             "$RUNNER_TEMP/ruff.log"             "$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"             "$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"             "$RUNNER_TEMP/pi-review-comment.txt"
+          git worktree prune
