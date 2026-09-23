@@ -1,10 +1,8 @@
 # Social MCP
 
-Open-source MCP server for connecting AI agents directly to social-network APIs without a paid analytics middleware.
+Open-source MCP server connecting AI agents directly to official social-network APIs without a paid analytics middleware.
 
 ## Goal
-
-Provide a small self-hosted bridge:
 
 ```text
 ChatGPT / Pi / Codex
@@ -24,56 +22,69 @@ The first version targets **Threads** and **TikTok**. Instagram can be added lat
 - Keep the MCP server self-hostable.
 - Never store OAuth secrets or access tokens in Git.
 - Separate read/analytics tools from write/publishing tools.
-- Require explicit confirmation before publishing, replying, deleting, or otherwise changing external state.
-- Keep platform adapters independent so additional social networks can be added later.
+- Require explicit user intent before publishing, replying, deleting, reposting, or otherwise changing external state.
+- Keep platform adapters independent.
 
-## MVP
+## Confirmed API scope (September 2026)
 
 ### Threads
 
-Initial target capabilities:
+Target the official Threads API and Meta OAuth.
 
-- authenticate with Meta OAuth;
-- read the connected profile;
-- read posts;
-- read replies where permitted;
-- read available insights;
-- create text posts;
-- create media posts where supported;
-- reply to posts;
-- expose these operations as MCP tools.
+Planned capabilities:
+
+- connected profile;
+- posts and replies;
+- account/content insights;
+- keyword search where permitted;
+- mentions where permitted;
+- text publishing;
+- image/video/carousel publishing;
+- replies;
+- quote/repost operations where supported;
+- reply management;
+- deletion where permitted.
+
+Expected permissions include the relevant Threads scopes such as basic access, content publishing, replies and insights. Exact scopes must be requested only as needed and verified against current Meta requirements during implementation.
 
 ### TikTok
 
-Initial target capabilities:
+Use TikTok Login Kit/API for OAuth and the official Display and Content Posting APIs.
 
-- authenticate with TikTok OAuth;
-- read profile information;
-- list accessible videos;
-- read available video/profile metrics;
-- investigate Content Posting API permissions and expose publishing only when the application/account is eligible;
-- expose supported operations as MCP tools.
+Read-side targets:
 
-TikTok publishing must not be assumed to be available until the application's API access and permissions are verified.
+- profile;
+- profile statistics;
+- accessible/public videos;
+- available video metadata and metrics.
+
+Publishing targets:
+
+- draft upload when permitted;
+- Direct Post when the app/account is eligible.
+
+Public Direct Post must **not** be assumed. TikTok application review/audit and the required publishing scope may be necessary. An unaudited client may have visibility and usage restrictions. The adapter must expose only capabilities actually granted to the connected application.
 
 ## Proposed architecture
 
 ```text
 src/
-  server
+  server/
   auth/
   platforms/
     threads/
     tiktok/
   tools/
+    read/
+    write/
   storage/
 ```
 
-The MCP layer should expose a stable interface while each platform adapter handles its own API, permissions, pagination, rate limits and token refresh.
+The MCP layer exposes a stable tool interface. Platform adapters own API-specific OAuth, permissions, pagination, rate limits, token refresh and error mapping.
 
 ## Authentication and secrets
 
-Local/runtime configuration will contain values such as:
+Runtime configuration will eventually include values such as:
 
 ```text
 META_APP_ID
@@ -82,34 +93,38 @@ TIKTOK_CLIENT_KEY
 TIKTOK_CLIENT_SECRET
 ```
 
-Real credentials and OAuth tokens must be excluded from the repository. A later `.env.example` will contain names/placeholders only.
-
-For deployment, secrets should come from environment variables or a secrets mechanism rather than source control.
+Real credentials and OAuth tokens must never be committed. A later `.env.example` will contain names/placeholders only. Deployment secrets should come from environment variables or an appropriate secrets mechanism.
 
 ## Deployment target
 
-The server should run comfortably as a small Docker service on a local Linux machine such as the existing N150 host.
+The service should run as a small Docker workload on Linux, with the N150 host as the initial deployment target.
 
-Remote access, if needed, should be added separately from the MCP implementation and protected with authentication.
+Remote exposure is separate from the MCP implementation and must be authenticated.
 
 ## Development phases
 
-1. Verify current official Threads and TikTok API requirements and permissions.
-2. Choose the MCP runtime/language and define the tool contract.
-3. Implement Threads OAuth and read-only tools.
-4. Implement Threads publishing tools.
-5. Implement TikTok OAuth and read-only tools.
-6. Add TikTok publishing only if approved API capabilities allow it.
-7. Add token persistence/refresh and Docker deployment.
-8. Connect ChatGPT/Pi/Codex and run end-to-end tests.
-9. Add Instagram as a separate adapter if useful.
+1. Define MCP runtime/language and stable tool contract.
+2. Threads OAuth and token lifecycle.
+3. Threads read-only profile/content tools.
+4. Threads insights/search/replies tools.
+5. Threads publishing and reply-management tools.
+6. TikTok OAuth and token lifecycle.
+7. TikTok profile/video read tools.
+8. TikTok draft upload.
+9. TikTok Direct Post after required API access/audit is available.
+10. Persistent token storage, Docker deployment and end-to-end ChatGPT/Pi/Codex tests.
+11. Add Instagram adapter if useful.
 
 ## Safety model
 
 Read operations can run directly.
 
-External write operations such as publishing a post, replying, deleting content, or changing account state should require explicit user intent before execution.
+External writes—publishing, replying, reposting, deleting content or changing account state—must require explicit user intent before execution.
+
+## Phase 1
+
+The first implementation milestone is **Threads**: OAuth → read profile/posts → insights/replies/search → publishing.
 
 ## Status
 
-Initial architecture defined. No application credentials or platform secrets are stored in this repository.
+API capabilities reviewed for the initial design. No application credentials or platform secrets are stored in this repository.
