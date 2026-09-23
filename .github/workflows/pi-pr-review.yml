@@ -21,6 +21,11 @@ jobs:
     if: github.event_name == 'repository_dispatch' || github.event.action == 'reopened'
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      statuses: write
     env:
       PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
       REPO: ${{ github.repository }}
@@ -209,15 +214,18 @@ jobs:
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
 
       - name: Mark review passed
-        if: steps.result.outputs.verdict == 'PASS'
+        if: steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.pytest_exit == '0' && steps.checks.outputs.ruff_exit == '0'
         run: |
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
           bash scripts/pi-pr-review-status.sh passed "$COMMENT"
 
       - name: Mark changes requested
-        if: steps.result.outputs.verdict == 'CHANGES_REQUESTED'
+        if: steps.result.outputs.verdict == 'CHANGES_REQUESTED' || (steps.result.outputs.verdict == 'PASS' && (steps.checks.outputs.pytest_exit != '0' || steps.checks.outputs.ruff_exit != '0'))
         run: |
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
+          if [ "${{ steps.checks.outputs.pytest_exit }}" != '0' ] || [ "${{ steps.checks.outputs.ruff_exit }}" != '0' ]; then
+            COMMENT="Deterministic checks failed (pytest=${{ steps.checks.outputs.pytest_exit }}, Ruff=${{ steps.checks.outputs.ruff_exit }}).\n\n${COMMENT}"
+          fi
           bash scripts/pi-pr-review-status.sh changes-requested "$COMMENT"
 
       - name: Mark review failed

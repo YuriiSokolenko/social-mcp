@@ -1,0 +1,42 @@
+name: Pi Auto Merge
+
+on:
+  workflow_run:
+    workflows: [CI, Pi PR Review]
+    types: [completed]
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  issues: read
+  pull-requests: write
+  statuses: read
+
+concurrency:
+  group: pi-auto-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: write
+      issues: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Evaluate Pi pull requests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pi-auto-merge.mjs
