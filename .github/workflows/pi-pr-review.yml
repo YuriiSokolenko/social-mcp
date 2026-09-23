@@ -1,12 +1,10 @@
 name: Pi PR Review
 
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: "Pull request number to review"
-        required: true
-        type: string
+  repository_dispatch:
+    types: [pi_pr_review]
+  pull_request:
+    types: [reopened]
 
 permissions:
   contents: read
@@ -14,7 +12,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ inputs.pr_number }}
+  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -22,7 +20,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
-      PR: ${{ inputs.pr_number }}
+      PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
 
@@ -37,7 +35,11 @@ jobs:
       - name: Load pull request metadata
         run: |
           API="https://api.github.com/repos/${REPO}"
-          PR_JSON="$(curl -fsS             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "${API}/pulls/${PR}")"
+          PR_JSON="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${API}/pulls/${PR}")"
 
           DRAFT="$(jq -r '.draft' <<<"$PR_JSON")"
           HEAD_REPO="$(jq -r '.head.repo.full_name' <<<"$PR_JSON")"
@@ -68,7 +70,8 @@ jobs:
 
       - name: Mark review running
         run: |
-          bash scripts/pi-pr-review-status.sh running             "Automated Pi review started for \`${HEAD_SHA:0:12}\`."
+          bash scripts/pi-pr-review-status.sh running \
+            "Automated Pi review started for \`${HEAD_SHA:0:12}\`."
 
       - name: Create temporary PR worktree
         run: |
@@ -121,8 +124,16 @@ jobs:
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
           API="https://api.github.com/repos/${REPO}"
-          ISSUE_JSON="$(curl -fsS             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "${API}/issues/${ISSUE}")"
-          PR_JSON="$(curl -fsS             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "${API}/pulls/${PR}")"
+          ISSUE_JSON="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${API}/issues/${ISSUE}")"
+          PR_JSON="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${API}/pulls/${PR}")"
 
           ISSUE_TITLE="$(jq -r '.title // ""' <<<"$ISSUE_JSON")"
           ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
@@ -162,23 +173,9 @@ The detailed pytest and Ruff logs are available at:
 
 Inspect the diff against origin/main and relevant surrounding code.
 
-Check:
-- whether the implementation satisfies the linked issue and acceptance criteria
-- correctness and realistic edge cases
-- regressions or unintended behavior
-- unnecessary or unrelated changes
-- test quality and missing tests
-- lint/style problems
-- security or credential-handling regressions
-- suspicious generated/local artifacts
-
-A failing deterministic check must not receive PASS.
-
 Your final response MUST start with exactly one of:
 REVIEW_RESULT: PASS
 REVIEW_RESULT: CHANGES_REQUESTED
-
-After that, give a concise review summary. For CHANGES_REQUESTED, include concrete actionable findings with file/path references when possible.
 EOF
 
           echo "TASK_FILE=$TASK_FILE" >> "$GITHUB_ENV"
@@ -190,7 +187,14 @@ EOF
           RAW="$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
           echo "REVIEW_RAW=$RAW" >> "$GITHUB_ENV"
 
-          pi             --provider hp-laguna             --model qwen3.8-flash-next             --mode json             --no-session             "$(cat "$TASK_FILE")"           | tee "$RAW"           | node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+          pi \
+            --provider hp-laguna \
+            --model qwen3.8-flash-next \
+            --mode json \
+            --no-session \
+            "$(cat "$TASK_FILE")" \
+          | tee "$RAW" \
+          | node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
           printf '\n'
 
@@ -217,7 +221,8 @@ EOF
       - name: Mark review failed
         if: failure()
         run: |
-          bash scripts/pi-pr-review-status.sh failed             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          bash scripts/pi-pr-review-status.sh failed \
+            "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Clean temporary review worktree
         if: always()
@@ -228,5 +233,10 @@ EOF
             git worktree remove --force "$JOB_DIR"
           fi
           rm -rf "$JOB_DIR"
-          rm -f             "$RUNNER_TEMP/pytest.log"             "$RUNNER_TEMP/ruff.log"             "$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"             "$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"             "$RUNNER_TEMP/pi-review-comment.txt"
+          rm -f \
+            "$RUNNER_TEMP/pytest.log" \
+            "$RUNNER_TEMP/ruff.log" \
+            "$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" \
+            "$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" \
+            "$RUNNER_TEMP/pi-review-comment.txt"
           git worktree prune
