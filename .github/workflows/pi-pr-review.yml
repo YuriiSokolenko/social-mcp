@@ -144,41 +144,41 @@ jobs:
 
           TASK_FILE="$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
-Read and follow agents/reviewer/AGENTS.md before reviewing.
-
-You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
-
-Do not modify files.
-Do not commit or push.
-Do not create or edit GitHub comments, reviews, labels, issues, or pull requests.
-Review only the checked-out code and local repository history/diff.
-
-Issue title:
-${ISSUE_TITLE}
-
-Issue body:
-${ISSUE_BODY}
-
-Pull request title:
-${PR_TITLE}
-
-Pull request body:
-${PR_BODY}
-
-Deterministic check exit codes:
-- pytest: ${PYTEST_EXIT}
-- ruff check .: ${RUFF_EXIT}
-
-The detailed pytest and Ruff logs are available at:
-- $RUNNER_TEMP/pytest.log
-- $RUNNER_TEMP/ruff.log
-
-Inspect the diff against origin/main and relevant surrounding code.
-
-Your final response MUST start with exactly one of:
-REVIEW_RESULT: PASS
-REVIEW_RESULT: CHANGES_REQUESTED
-EOF
+          Read and follow agents/reviewer/AGENTS.md before reviewing.
+          
+          You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
+          
+          Do not modify files.
+          Do not commit or push.
+          Do not create or edit GitHub comments, reviews, labels, issues, or pull requests.
+          Review only the checked-out code and local repository history/diff.
+          
+          Issue title:
+          ${ISSUE_TITLE}
+          
+          Issue body:
+          ${ISSUE_BODY}
+          
+          Pull request title:
+          ${PR_TITLE}
+          
+          Pull request body:
+          ${PR_BODY}
+          
+          Deterministic check exit codes:
+          - pytest: ${PYTEST_EXIT}
+          - ruff check .: ${RUFF_EXIT}
+          
+          The detailed pytest and Ruff logs are available at:
+          - $RUNNER_TEMP/pytest.log
+          - $RUNNER_TEMP/ruff.log
+          
+          Inspect the diff against origin/main and relevant surrounding code.
+          
+          Your final response MUST start with exactly one of:
+          REVIEW_RESULT: PASS
+          REVIEW_RESULT: CHANGES_REQUESTED
+          EOF
 
           echo "TASK_FILE=$TASK_FILE" >> "$GITHUB_ENV"
 
