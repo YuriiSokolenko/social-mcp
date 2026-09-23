@@ -45,6 +45,6 @@ The `issues` array contains only issue numbers that should be moved from `dispat
 
 You only recommend issue numbers. Do not edit repository files, commit, push, create or merge pull requests, add or remove labels, close issues, post comments, or start other agents.
 
-Before changing any labels, the workflow must validate the result and re-read current GitHub state: issue openness, `dispatcher:ready`, dependencies, open PRs, active-slot count, and absence of execution labels. For each accepted issue the workflow removes `dispatcher:ready` and adds `pi:ready`. It must tolerate retries without dispatching the same issue twice. If validation fails, the workflow skips the issue and reports the reason.
+Before changing any labels, the workflow must validate the result and re-read current GitHub state: issue openness, `dispatcher:ready`, dependencies, open PRs, active-slot count, and absence of execution labels. Dispatch runs must be serialized so two merge events cannot fill the same slot concurrently. For each accepted issue the workflow adds `pi:ready`, then removes `dispatcher:ready`; on retry it repairs a partial label transition without starting the issue twice. If validation fails, the workflow skips the issue and reports the reason.
 
 The dispatcher can run after a merge into `main` or through an explicit manual bootstrap. It must never issue tasks solely because a PR was closed without being merged.
