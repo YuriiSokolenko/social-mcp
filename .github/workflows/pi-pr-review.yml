@@ -4,7 +4,8 @@ on:
   repository_dispatch:
     types: [pi_pr_review]
   pull_request:
-    types: [reopened]
+    types: [reopened, closed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,11 +13,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
+  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
+    if: github.event_name == 'repository_dispatch' || github.event.action == 'reopened'
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
@@ -142,41 +144,41 @@ jobs:
 
           TASK_FILE="$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
-Read and follow agents/reviewer/AGENTS.md before reviewing.
-
-You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
-
-Do not modify files.
-Do not commit or push.
-Do not create or edit GitHub comments, reviews, labels, issues, or pull requests.
-Review only the checked-out code and local repository history/diff.
-
-Issue title:
-${ISSUE_TITLE}
-
-Issue body:
-${ISSUE_BODY}
-
-Pull request title:
-${PR_TITLE}
-
-Pull request body:
-${PR_BODY}
-
-Deterministic check exit codes:
-- pytest: ${PYTEST_EXIT}
-- ruff check .: ${RUFF_EXIT}
-
-The detailed pytest and Ruff logs are available at:
-- $RUNNER_TEMP/pytest.log
-- $RUNNER_TEMP/ruff.log
-
-Inspect the diff against origin/main and relevant surrounding code.
-
-Your final response MUST start with exactly one of:
-REVIEW_RESULT: PASS
-REVIEW_RESULT: CHANGES_REQUESTED
-EOF
+          Read and follow agents/reviewer/AGENTS.md before reviewing.
+          
+          You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
+          
+          Do not modify files.
+          Do not commit or push.
+          Do not create or edit GitHub comments, reviews, labels, issues, or pull requests.
+          Review only the checked-out code and local repository history/diff.
+          
+          Issue title:
+          ${ISSUE_TITLE}
+          
+          Issue body:
+          ${ISSUE_BODY}
+          
+          Pull request title:
+          ${PR_TITLE}
+          
+          Pull request body:
+          ${PR_BODY}
+          
+          Deterministic check exit codes:
+          - pytest: ${PYTEST_EXIT}
+          - ruff check .: ${RUFF_EXIT}
+          
+          The detailed pytest and Ruff logs are available at:
+          - $RUNNER_TEMP/pytest.log
+          - $RUNNER_TEMP/ruff.log
+          
+          Inspect the diff against origin/main and relevant surrounding code.
+          
+          Your final response MUST start with exactly one of:
+          REVIEW_RESULT: PASS
+          REVIEW_RESULT: CHANGES_REQUESTED
+          EOF
 
           echo "TASK_FILE=$TASK_FILE" >> "$GITHUB_ENV"
 
@@ -240,3 +242,64 @@ EOF
             "$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" \
             "$RUNNER_TEMP/pi-review-comment.txt"
           git worktree prune
+
+  dispatcher:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
+    runs-on: [self-hosted, linux, x64, n150, pi-agent]
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: read
+    concurrency:
+      group: pi-dispatcher
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Prepare dispatcher context
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/pi-dispatcher.mjs prepare "$RUNNER_TEMP/pi-dispatcher-context.json"
+          if jq -e '.slots > 0 and (.candidates | length > 0)' "$RUNNER_TEMP/pi-dispatcher-context.json" >/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ask Pi dispatcher
+        if: steps.prepare.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          TASK_FILE="$RUNNER_TEMP/pi-dispatcher-task.txt"
+          cat > "$TASK_FILE" <<EOF
+          Read and follow agents/dispatcher/AGENTS.md and docs/PROJECT_CONTEXT.md.
+          The current GitHub issue and PR snapshot is at $RUNNER_TEMP/pi-dispatcher-context.json.
+          Read the snapshot and relevant tasks/<issue-number>.md files.
+          Select eligible candidates in priority order, up to the available slots.
+          Return the exact DISPATCH_RESULT line specified by your role rules.
+          Do not modify the repository or GitHub state.
+          EOF
+          pi \
+            --provider hp-laguna \
+            --model qwen3.8-flash-next \
+            --mode json \
+            --no-session \
+            "$(cat "$TASK_FILE")" \
+          | tee "$RUNNER_TEMP/pi-dispatcher-result.jsonl" \
+          | node scripts/pi-log-filter.mjs
+
+      - name: Validate and start selected issues
+        if: steps.prepare.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/pi-dispatcher.mjs apply "$RUNNER_TEMP/pi-dispatcher-result.jsonl"
