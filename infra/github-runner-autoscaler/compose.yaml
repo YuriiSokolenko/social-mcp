@@ -17,4 +17,4 @@ services:
       PI_CONFIG_DIR: /host/pi-home/.pi/agent
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./pi-home:/host/pi-home:ro
+      - ${PI_HOME_HOST}:/host/pi-home:ro
