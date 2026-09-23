@@ -88,7 +88,6 @@ jobs:
           EOF
 
           pi \
-
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \
