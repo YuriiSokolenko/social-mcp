@@ -17,7 +17,7 @@ For a fine-grained personal access token, grant this repository:
 - Administration: Read and write
 - Actions: Read
 
-The Pi configuration is mounted read-only into workers.
+The Pi configuration is mounted read-only into workers directly from the N150 host path configured by `PI_HOME_HOST`. Because the manager controls the host Docker daemon through `/var/run/docker.sock`, worker bind-mount source paths must be host paths, not paths that exist only inside the manager container.
 
 ## N150 setup
 
