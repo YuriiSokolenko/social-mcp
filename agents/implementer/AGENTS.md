@@ -10,6 +10,8 @@ The repository is a self-hosted Python 3.12+ MCP service using FastAPI, the offi
 
 ## Required workflow
 
+Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundaries. Read `docs/CI_RULES.md` for workflow responsibilities.
+
 1. Read the issue title, body, acceptance criteria, existing code, and relevant tests before editing.
 2. Inspect the surrounding architecture before introducing new abstractions.
 3. Implement the smallest complete change that satisfies the issue.
