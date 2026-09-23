@@ -4,7 +4,7 @@ on:
   repository_dispatch:
     types: [pi_pr_review]
   pull_request:
-    types: [reopened, closed]
+    types: [opened, reopened, synchronize, ready_for_review, closed]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   review:
-    if: github.event_name == 'repository_dispatch' || github.event.action == 'reopened'
+    if: github.event_name == 'repository_dispatch' || (github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.draft == false)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     permissions:
@@ -61,14 +61,6 @@ jobs:
             echo "Pull request #${PR} comes from another repository; refusing self-hosted review." >&2
             exit 1
           fi
-          case "$HEAD_REF" in
-            pi/issue-*) ;;
-            *)
-              echo "Pull request #${PR} head '$HEAD_REF' is not a pi/issue-* branch." >&2
-              exit 1
-              ;;
-          esac
-
           echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
 
@@ -127,15 +119,21 @@ jobs:
           PYTEST_EXIT: ${{ steps.checks.outputs.pytest_exit }}
           RUFF_EXIT: ${{ steps.checks.outputs.ruff_exit }}
         run: |
-          ISSUE="${HEAD_REF#pi/issue-}"
+          API="https://api.github.com/repos/${REPO}"
+          ISSUE=""
+          ISSUE_JSON='{"title":"","body":""}'
+          case "$HEAD_REF" in
+            pi/issue-*)
+              ISSUE="${HEAD_REF#pi/issue-}"
+              ISSUE_JSON="$(curl --fail-with-body -sS \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "${API}/issues/${ISSUE}")"
+              ;;
+          esac
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
-          API="https://api.github.com/repos/${REPO}"
-          ISSUE_JSON="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${API}/issues/${ISSUE}")"
           PR_JSON="$(curl --fail-with-body -sS \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
@@ -151,7 +149,7 @@ jobs:
           cat > "$TASK_FILE" <<EOF
           Read and follow agents/reviewer/AGENTS.md before reviewing.
           
-          You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
+          You are reviewing pull request #${PR}. If ISSUE is non-empty, review it against linked GitHub issue #${ISSUE}; otherwise review the PR against its title, body, diff, repository rules, and project context.
           
           Do not modify files.
           Do not commit or push.
