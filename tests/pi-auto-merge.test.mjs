@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { allowedFiles, issueNumber, latestCI, latestStatus } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, issueNumber, latestCI, latestStatus, needsCIDispatch } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 const pr = {
@@ -26,6 +26,15 @@ test('CI must match current SHA and branch and latest run must pass', () => {
   assert.equal(latestCI(runs, 'new', 'pi/issue-42').conclusion, 'failure');
   assert.equal(latestCI(runs, 'missing', 'pi/issue-42'), null);
   assert.equal(latestCI(runs, 'new', 'pi/issue-43'), null);
+});
+
+test('a bot PR CI run needing approval must not count as a passing run', () => {
+  const runs = [{ id: 7, head_sha: 'new', head_branch: 'pi/issue-42',
+    event: 'pull_request', status: 'completed', conclusion: 'action_required' }];
+  assert.equal(latestCI(runs, 'new', 'pi/issue-42').conclusion, 'action_required');
+  assert.equal(needsCIDispatch(runs[0], null), true);
+  assert.equal(needsCIDispatch(runs[0], 'pending'), false);
+  assert.equal(needsCIDispatch({ conclusion: 'failure' }, null), false);
 });
 
 test('latest review status must refer to exact SHA fetched by caller', () => {
