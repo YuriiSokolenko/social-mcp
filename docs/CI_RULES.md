@@ -273,6 +273,15 @@ P2 and then by ascending issue number. Dispatcher readiness is independent of
 runner capacity: GitHub Actions may queue any excess Pi jobs, while the N150
 autoscaler limits actual concurrent execution.
 
+Dispatcher jobs use one repository-wide GitHub Actions concurrency group,
+`pi-dispatcher`, with `cancel-in-progress: false`. Therefore only one
+dispatcher job may execute at a time; additional merge/manual triggers wait
+instead of interrupting the current dispatcher. Every queued dispatcher rebuilds
+a fresh GitHub snapshot after it starts. Trigger payloads are wake-up signals,
+not selection state. Apply is idempotent: an issue already made active by an
+earlier dispatcher is a no-op and must never receive a duplicate
+`pi_dispatch_issue` event.
+
 The dispatcher job runs after a PR is merged into `main`, or from a manual run
 of `.github/workflows/pi-pr-review.yml` for initial queue filling. This
 existing workflow file also contains the independent review job and is already
