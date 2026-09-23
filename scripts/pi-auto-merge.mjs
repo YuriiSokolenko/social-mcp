@@ -46,6 +46,10 @@ export function allowedFiles(files, changedCount) {
     files.every(file => !file.filename.startsWith('.github/workflows/'));
 }
 
+export function needsCIDispatch(ci, marker) {
+  return (!ci || ci.conclusion === 'action_required') && !marker;
+}
+
 async function mark(sha, context, state, description) {
   return api(`/statuses/${sha}`, 'POST', { context, state, description: description.slice(0, 140) });
 }
@@ -56,7 +60,8 @@ async function trigger(pr, sha, statuses, runs) {
     await api('/dispatches', 'POST', { event_type: 'pi_pr_review', client_payload: { pr_number: pr.number } });
     await mark(sha, reviewMarker, 'pending', `Review requested for PR #${pr.number}`);
   }
-  if (!latestCI(runs, sha, pr.head.ref) && !latestStatus(statuses, ciMarker)) {
+  const ci = latestCI(runs, sha, pr.head.ref);
+  if (needsCIDispatch(ci, latestStatus(statuses, ciMarker))) {
     await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: pr.head.ref });
     await mark(sha, ciMarker, 'pending', `CI requested for PR #${pr.number}`);
   }
