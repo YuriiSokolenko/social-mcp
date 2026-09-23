@@ -278,7 +278,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node scripts/pi-dispatcher.mjs prepare "$RUNNER_TEMP/pi-dispatcher-context.json"
-          if jq -e '.slots > 0 and (.candidates | length > 0)' "$RUNNER_TEMP/pi-dispatcher-context.json" >/dev/null; then
+          if jq -e '(.candidates | length > 0)' "$RUNNER_TEMP/pi-dispatcher-context.json" >/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -293,7 +293,7 @@ jobs:
           Read and follow agents/dispatcher/AGENTS.md and docs/PROJECT_CONTEXT.md.
           The current GitHub issue and PR snapshot is at $RUNNER_TEMP/pi-dispatcher-context.json.
           Read the snapshot and relevant tasks/<issue-number>.md files.
-          Select eligible candidates in priority order, up to the available slots.
+          Select all eligible candidates in priority order. Execution concurrency is controlled by the GitHub Actions queue and the N150 autoscaler, not by the dispatcher.
           Return the exact DISPATCH_RESULT line specified by your role rules.
           Do not modify the repository or GitHub state.
           EOF
