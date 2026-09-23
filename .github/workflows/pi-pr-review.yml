@@ -13,7 +13,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
+  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -256,7 +256,6 @@ EOF
       cancel-in-progress: false
     env:
       REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout trusted main
@@ -267,6 +266,8 @@ EOF
 
       - name: Prepare dispatcher context
         id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           node scripts/pi-dispatcher.mjs prepare "$RUNNER_TEMP/pi-dispatcher-context.json"
           if jq -e '.slots > 0 and (.candidates | length > 0)' "$RUNNER_TEMP/pi-dispatcher-context.json" >/dev/null; then
@@ -299,4 +300,6 @@ EOF
 
       - name: Validate and start selected issues
         if: steps.prepare.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/pi-dispatcher.mjs apply "$RUNNER_TEMP/pi-dispatcher-result.jsonl"
