@@ -18,39 +18,36 @@ jobs:
     if: github.event.label.name == 'pi:ready'
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
+    env:
+      JOB_DIR: ${{ runner.temp }}/social-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+      ISSUE: ${{ github.event.issue.number }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Mark issue running
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          ISSUE: ${{ github.event.issue.number }}
-        run: |
-          API="https://api.github.com/repos/${REPO}"
-          AUTH=(
-            -H "Authorization: Bearer ${GH_TOKEN}"
-            -H "Accept: application/vnd.github+json"
-            -H "X-GitHub-Api-Version: 2022-11-28"
-          )
-
-          curl -fsS -X DELETE "${AUTH[@]}"             "${API}/issues/${ISSUE}/labels/pi%3Aready" >/dev/null || true
-
-          jq -n '{labels:["pi:running"]}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/issues/${ISSUE}/labels" >/dev/null
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout control repository
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Create issue branch
-        env:
-          ISSUE: ${{ github.event.issue.number }}
+      - name: Ensure workflow labels
+        run: bash scripts/pi-issue-status.sh ensure
+
+      - name: Mark issue running
+        run: bash scripts/pi-issue-status.sh running
+
+      - name: Create temporary issue worktree
         run: |
-          git checkout -B "pi/issue-${ISSUE}" origin/main
+          rm -rf "$JOB_DIR"
+          git fetch origin main
+          git worktree prune
+          git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" origin/main
+          echo "Temporary worktree: $JOB_DIR"
 
       - name: Prepare Python environment
         run: |
+          cd "$JOB_DIR"
           python --version
           sqlite3 --version
           python -m venv .venv
@@ -58,9 +55,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install pytest pytest-asyncio ruff
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
           pytest --version
           ruff --version
+
       - name: Run Pi with live progress
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -68,8 +66,10 @@ jobs:
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
           set -o pipefail
+          cd "$JOB_DIR"
 
-          cat > /tmp/pi-task.txt <<EOF
+          TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          cat > "$TASK_FILE" <<EOF
           You are implementing GitHub issue #${ISSUE_NUMBER} in the current repository.
 
           Issue title:
@@ -82,6 +82,7 @@ jobs:
           Implement the issue completely, keeping the change focused.
           Inspect existing code and tests before editing.
           Add or update tests where appropriate.
+          Run relevant tests and Ruff before finishing.
           Do not commit, push, create a pull request, or modify GitHub issue labels.
           Do not access production credentials or external social APIs.
           Finish only after the repository is in a state ready for CI.
@@ -92,15 +93,16 @@ jobs:
             --model qwen3.8-flash-next \
             --mode json \
             --no-session \
-            "$(cat /tmp/pi-task.txt)" \
+            "$(cat "$TASK_FILE")" \
           | node scripts/pi-log-filter.mjs
 
           printf '\n'
+
       - name: Commit and push changes
         id: changes
-        env:
-          ISSUE: ${{ github.event.issue.number }}
         run: |
+          cd "$JOB_DIR"
+
           if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -111,16 +113,15 @@ jobs:
 
           git add -A
           git commit -m "feat: implement issue #${ISSUE}"
-          git push --set-upstream origin "pi/issue-${ISSUE}"
+          git push --force-with-lease --set-upstream origin "pi/issue-${ISSUE}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Create pull request
+      - name: Create or update pull request
+        id: pr
         if: steps.changes.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          ISSUE: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           API="https://api.github.com/repos/${REPO}"
           AUTH=(
@@ -129,31 +130,53 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28"
           )
 
-          PR_JSON="$(
-            jq -n               --arg title "Pi: #${ISSUE} ${ISSUE_TITLE}"               --arg head "pi/issue-${ISSUE}"               --arg base "main"               --arg body "Closes #${ISSUE}\n\nImplemented automatically by the N150 Pi runner."               '{title:$title,head:$head,base:$base,body:$body}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/pulls"
+          EXISTING="$(
+            curl -fsS "${AUTH[@]}"               "${API}/pulls?state=open&head=${OWNER}%3Api%2Fissue-${ISSUE}&base=main"
           )"
 
-          PR_NUMBER="$(jq -r '.number' <<<"$PR_JSON")"
-          PR_URL="$(jq -r '.html_url' <<<"$PR_JSON")"
+          PR_NUMBER="$(jq -r '.[0].number // empty' <<<"$EXISTING")"
+          PR_URL="$(jq -r '.[0].html_url // empty' <<<"$EXISTING")"
 
-          curl -fsS -X DELETE "${AUTH[@]}"             "${API}/issues/${ISSUE}/labels/pi%3Arunning" >/dev/null || true
+          if [ -z "$PR_NUMBER" ]; then
+            PR_JSON="$(
+              jq -n                 --arg title "Pi: #${ISSUE} ${ISSUE_TITLE}"                 --arg head "pi/issue-${ISSUE}"                 --arg base "main"                 --arg body "Closes #${ISSUE}\n\nImplemented automatically by the N150 Pi runner."                 '{title:$title,head:$head,base:$base,body:$body}' |               curl -fsS -X POST "${AUTH[@]}"                 -H "Content-Type: application/json"                 --data-binary @-                 "${API}/pulls"
+            )"
 
-          jq -n '{labels:["pi:mr-created"]}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/issues/${ISSUE}/labels" >/dev/null
+            PR_NUMBER="$(jq -r '.number' <<<"$PR_JSON")"
+            PR_URL="$(jq -r '.html_url' <<<"$PR_JSON")"
+          fi
 
-          jq -n --arg body "Pi finished the implementation and opened PR #${PR_NUMBER}: ${PR_URL}"             '{body:$body}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/issues/${ISSUE}/comments" >/dev/null
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Mark pull request created
+        if: steps.changes.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        run: |
+          bash scripts/pi-issue-status.sh mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
 
       - name: Mark no-change result
         if: steps.changes.outputs.changed == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          ISSUE: ${{ github.event.issue.number }}
         run: |
-          API="https://api.github.com/repos/${REPO}"
-          AUTH=(
-            -H "Authorization: Bearer ${GH_TOKEN}"
-            -H "Accept: application/vnd.github+json"
-            -H "X-GitHub-Api-Version: 2022-11-28"
-          )
+          bash scripts/pi-issue-status.sh needs-human             "Pi completed the task but produced no repository changes. Human review is required."
 
-          jq -n --arg body "Pi completed the task but produced no repository changes. Human review is required."             '{body:$body}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/issues/${ISSUE}/comments" >/dev/null
+      - name: Mark failed result
+        if: failure()
+        run: |
+          bash scripts/pi-issue-status.sh failed             "Pi workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Mark cancelled result
+        if: cancelled()
+        run: |
+          bash scripts/pi-issue-status.sh cancelled             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Clean temporary worktree
+        if: always()
+        run: |
+          set +e
+          if [ -d "$JOB_DIR" ]; then
+            git worktree remove --force "$JOB_DIR"
+          fi
+          rm -rf "$JOB_DIR"
+          rm -f "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          git worktree prune
+          echo "Temporary worktree removed: $JOB_DIR"
