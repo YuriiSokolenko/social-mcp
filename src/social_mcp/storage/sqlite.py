@@ -31,6 +31,16 @@ class SQLiteAccountStore:
                 """
             )
 
+    def check(self) -> None:
+        """Confirm the database file exists and is readable.
+
+        Raises:
+            sqlite3.Error: when the database cannot be opened or queried.
+        """
+
+        with self._connect() as connection:
+            connection.execute("SELECT 1").fetchone()
+
     def save(self, account: ConnectedAccount) -> ConnectedAccount:
         with self._connect() as connection:
             connection.execute(

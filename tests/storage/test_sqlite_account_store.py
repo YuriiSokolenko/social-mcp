@@ -265,3 +265,20 @@ def test_list_accounts_orders_by_platform_then_username(
         (SocialPlatform.THREADS, "bob"),
         (SocialPlatform.TIKTOK, "zoe"),
     ]
+
+
+def test_check_passes_for_an_initialized_store(store: SQLiteAccountStore) -> None:
+    store.check()
+
+    store.save(build_account())
+    store.check()
+
+
+def test_check_raises_when_the_database_is_unreachable(
+    store: SQLiteAccountStore,
+    tmp_path,
+) -> None:
+    store.database_path = tmp_path / "removed" / "social-mcp.db"
+
+    with pytest.raises(sqlite3.Error):
+        store.check()
