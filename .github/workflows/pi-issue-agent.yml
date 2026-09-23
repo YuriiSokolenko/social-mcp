@@ -104,6 +104,11 @@ jobs:
         run: |
           cd "$JOB_DIR"
 
+          # Never let local execution artifacts become part of the agent commit.
+          rm -rf             .venv             .pytest_cache             .ruff_cache             htmlcov             build             dist
+          rm -f .coverage coverage.xml
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+
           if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
