@@ -8,7 +8,7 @@ MAX_RUNNERS="${MAX_RUNNERS:-2}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
-WORKFLOW_FILE="${WORKFLOW_FILE:-pi-issue-agent.yml}"
+WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
@@ -31,7 +31,15 @@ registration_token() {
 }
 
 queued_jobs() {
-  api_get "${API}/actions/workflows/${WORKFLOW_FILE}/runs?status=queued&per_page=100"     | jq '.total_count'
+  local total=0 workflow count
+  IFS=',' read -ra workflows <<< "${WORKFLOW_FILES}"
+  for workflow in "${workflows[@]}"; do
+    workflow="$(printf '%s' "$workflow" | xargs)"
+    [ -z "$workflow" ] && continue
+    count="$(api_get "${API}/actions/workflows/${workflow}/runs?status=queued&per_page=100" | jq '.total_count')"
+    total=$((total + count))
+  done
+  printf '%s\n' "$total"
 }
 
 busy_ephemeral_runners() {
@@ -67,7 +75,7 @@ spawn_runner() {
   docker run -d --rm     --name "$name"     --label social-mcp.pi-runner=ephemeral     --network host     -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"     -e "RUNNER_TOKEN=$token"     -e "RUNNER_NAME=$name"     -v "${PI_CONFIG_DIR}:/pi-config-ro:ro"     "${RUNNER_IMAGE}" >/dev/null
 }
 
-log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s"
+log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s workflows=${WORKFLOW_FILES}"
 
 while true; do
   cleanup_stale_registrations || log "warning: stale-runner cleanup failed"
