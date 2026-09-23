@@ -41,6 +41,11 @@ export function latestCI(runs, sha, branch) {
     .sort((a, b) => b.id - a.id)[0] ?? null;
 }
 
+export function allowedFiles(files, changedCount) {
+  return changedCount <= 100 && files.length === changedCount &&
+    files.every(file => !file.filename.startsWith('.github/workflows/'));
+}
+
 async function mark(sha, context, state, description) {
   return api(`/statuses/${sha}`, 'POST', { context, state, description: description.slice(0, 140) });
 }
@@ -65,6 +70,15 @@ async function processPR(prSummary) {
   const labels = new Set(issueData.labels.map(label => label.name));
   if (issueData.state !== 'open' || !labels.has('pi:mr-created') || labels.has('pi:needs-human') || labels.has('pi:failed')) {
     console.log(`#${pr.number}: issue #${issue} is not ready for merge`);
+    return;
+  }
+  if (pr.changed_files > 100) {
+    console.log(`#${pr.number}: too many changed files for a complete safety check`);
+    return;
+  }
+  const files = await api(`/pulls/${pr.number}/files?per_page=100`);
+  if (!allowedFiles(files, pr.changed_files)) {
+    console.log(`#${pr.number}: changed workflow definitions or incomplete file list; human review required`);
     return;
   }
 
