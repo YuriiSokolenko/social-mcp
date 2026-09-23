@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
@@ -36,6 +37,9 @@ jobs:
 
       - name: Pytest
         run: pytest
+
+      - name: Merge agent gates
+        run: node --test tests/pi-auto-merge.test.mjs
 
   docker:
     runs-on: ubuntu-latest

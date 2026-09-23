@@ -34,6 +34,16 @@ add_label() {
     curl -fsS -X POST "${AUTH[@]}" -H "Content-Type: application/json"       --data-binary @- "${API}/issues/${PR}/labels" >/dev/null
 }
 
+mark_commit() {
+  local state="$1" description="$2"
+  [ -n "${HEAD_SHA:-}" ] || return 0
+  jq -n --arg state "$state" --arg context "social-mcp/pi-review" \\
+    --arg description "$description" \\
+    '{state:$state,context:$context,description:$description}' |
+    curl --fail-with-body -sS -X POST "${AUTH[@]}" -H "Content-Type: application/json" \\
+      --data-binary @- "${API}/statuses/${HEAD_SHA}" >/dev/null
+}
+
 comment() {
   [ -z "$COMMENT" ] && return 0
   jq -n --arg body "$COMMENT" '{body:$body}' |
@@ -64,23 +74,27 @@ case "$ACTION" in
     ensure_all
     clear_review_status
     add_label "review:running"
+    mark_commit pending "Automated review is running"
     comment
     ;;
   passed)
     ensure_all
     clear_review_status
+    mark_commit success "Automated review and deterministic checks passed"
     add_label "review:passed"
     comment
     ;;
   changes-requested)
     ensure_all
     clear_review_status
+    mark_commit failure "Automated review requested changes or checks failed"
     add_label "review:changes-requested"
     comment
     ;;
   failed)
     ensure_all
     clear_review_status
+    mark_commit error "Automated review workflow failed"
     add_label "review:failed"
     comment
     ;;
