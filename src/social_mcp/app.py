@@ -9,3 +9,8 @@ app = FastAPI(
 @app.get("/health", tags=["system"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ping", tags=["system"])
+async def ping() -> dict[str, str]:
+    return {"message": "pong"}
