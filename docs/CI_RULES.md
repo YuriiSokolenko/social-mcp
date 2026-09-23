@@ -268,9 +268,10 @@ task file is the source of truth for priority. A file alone never starts work.
 The dispatcher agent reads `agents/dispatcher/AGENTS.md` and
 `docs/PROJECT_CONTEXT.md`. It recommends issue numbers but cannot mutate GitHub.
 The workflow independently checks its output and the current GitHub state.
-It counts at most two active issue slots, including an open implementation PR
-awaiting review or merge. Eligible candidates are ordered P0, P1, P2 and then
-by ascending issue number.
+All currently eligible candidates are dispatched in one run, ordered P0, P1,
+P2 and then by ascending issue number. Dispatcher readiness is independent of
+runner capacity: GitHub Actions may queue any excess Pi jobs, while the N150
+autoscaler limits actual concurrent execution.
 
 The dispatcher job runs after a PR is merged into `main`, or from a manual run
 of `.github/workflows/pi-pr-review.yml` for initial queue filling. This
@@ -308,8 +309,7 @@ To approve a specific issue for automatic implementation:
    changing its metadata or labels. Do not add `pi:ready` merely to bypass
    validation.
 
-The dispatcher job skips Pi entirely when no eligible candidates or free
-slots exist. The first run also ensures the `dispatcher:ready` label exists.
+The dispatcher job skips Pi entirely when no eligible candidates exist. The first run also ensures the `dispatcher:ready` label exists.
 A real dispatch depends on the N150 self-hosted runner and its configured
 Pi/model endpoint being available.
 
