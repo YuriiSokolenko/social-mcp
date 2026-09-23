@@ -26,35 +26,12 @@ jobs:
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
-          python - <<'PY'
-          import json, os, urllib.request
+          API="https://api.github.com/repos/${REPO}"
+          AUTH=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
 
-          repo = os.environ["REPO"]
-          issue = os.environ["ISSUE"]
-          token = os.environ["GH_TOKEN"]
+          curl -fsS -X DELETE "${AUTH[@]}"             "${API}/issues/${ISSUE}/labels/pi%3Aready" >/dev/null || true
 
-          def request(method, path, data=None):
-              body = None if data is None else json.dumps(data).encode()
-              req = urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}{path}",
-                  data=body,
-                  method=method,
-                  headers={
-                      "Authorization": f"Bearer {token}",
-                      "Accept": "application/vnd.github+json",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                      "Content-Type": "application/json",
-                  },
-              )
-              with urllib.request.urlopen(req) as response:
-                  return response.read()
-
-          try:
-              request("DELETE", f"/issues/{issue}/labels/pi%3Aready")
-          except Exception:
-              pass
-          request("POST", f"/issues/{issue}/labels", {"labels": ["pi:running"]})
-          PY
+          jq -n '{labels:["pi:running"]}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/issues/${ISSUE}/labels" >/dev/null
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -120,62 +97,21 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
-          python - <<'PY'
-          import json, os, urllib.request
+          API="https://api.github.com/repos/${REPO}"
+          AUTH=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
 
-          repo = os.environ["REPO"]
-          issue = os.environ["ISSUE"]
-          title = os.environ["ISSUE_TITLE"]
-          token = os.environ["GH_TOKEN"]
+          PR_JSON="$(
+            jq -n               --arg title "Pi: #${ISSUE} ${ISSUE_TITLE}"               --arg head "pi/issue-${ISSUE}"               --arg base "main"               --arg body "Closes #${ISSUE}\n\nImplemented automatically by the N150 Pi runner."               '{title:$title,head:$head,base:$base,body:$body}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/pulls"
+          )"
 
-          data = {
-              "title": f"Pi: #{issue} {title}",
-              "head": f"pi/issue-{issue}",
-              "base": "main",
-              "body": f"Closes #{issue}\n\nImplemented automatically by the N150 Pi runner.",
-          }
+          PR_NUMBER="$(jq -r '.number' <<<"$PR_JSON")"
+          PR_URL="$(jq -r '.html_url' <<<"$PR_JSON")"
 
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/pulls",
-              data=json.dumps(data).encode(),
-              method="POST",
-              headers={
-                  "Authorization": f"Bearer {token}",
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-                  "Content-Type": "application/json",
-              },
-          )
-          with urllib.request.urlopen(req) as response:
-              pr = json.load(response)
+          curl -fsS -X DELETE "${AUTH[@]}"             "${API}/issues/${ISSUE}/labels/pi%3Arunning" >/dev/null || true
 
-          def request(method, path, data=None):
-              body = None if data is None else json.dumps(data).encode()
-              request = urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}{path}",
-                  data=body,
-                  method=method,
-                  headers={
-                      "Authorization": f"Bearer {token}",
-                      "Accept": "application/vnd.github+json",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                      "Content-Type": "application/json",
-                  },
-              )
-              with urllib.request.urlopen(request) as response:
-                  return response.read()
+          jq -n '{labels:["pi:mr-created"]}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/issues/${ISSUE}/labels" >/dev/null
 
-          try:
-              request("DELETE", f"/issues/{issue}/labels/pi%3Arunning")
-          except Exception:
-              pass
-          request("POST", f"/issues/{issue}/labels", {"labels": ["pi:mr-created"]})
-          request(
-              "POST",
-              f"/issues/{issue}/comments",
-              {"body": f"Pi finished the implementation and opened PR #{pr['number']}: {pr['html_url']}"},
-          )
-          PY
+          jq -n --arg body "Pi finished the implementation and opened PR #${PR_NUMBER}: ${PR_URL}"             '{body:$body}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/issues/${ISSUE}/comments" >/dev/null
 
       - name: Mark no-change result
         if: steps.changes.outputs.changed == 'false'
@@ -184,24 +120,7 @@ jobs:
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
-          python - <<'PY'
-          import json, os, urllib.request
+          API="https://api.github.com/repos/${REPO}"
+          AUTH=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
 
-          repo = os.environ["REPO"]
-          issue = os.environ["ISSUE"]
-          token = os.environ["GH_TOKEN"]
-
-          data = {"body": "Pi completed the task but produced no repository changes. Human review is required."}
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/issues/{issue}/comments",
-              data=json.dumps(data).encode(),
-              method="POST",
-              headers={
-                  "Authorization": f"Bearer {token}",
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-                  "Content-Type": "application/json",
-              },
-          )
-          urllib.request.urlopen(req).read()
-          PY
+          jq -n --arg body "Pi completed the task but produced no repository changes. Human review is required."             '{body:$body}' |             curl -fsS -X POST "${AUTH[@]}"               -H "Content-Type: application/json"               --data-binary @-               "${API}/issues/${ISSUE}/comments" >/dev/null
