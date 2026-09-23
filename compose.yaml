@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+    environment:
+      APP_NAME: Social MCP
+      ENVIRONMENT: test
+      DATABASE_URL: sqlite:////data/social-mcp.db
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY is required}
+    ports:
+      - "127.0.0.1::8000"
+    volumes:
+      - social-mcp-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+volumes:
+  social-mcp-data:
