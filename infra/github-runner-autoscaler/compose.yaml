@@ -1,0 +1,20 @@
+services:
+  pi-runner-manager:
+    build:
+      context: ../..
+      dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
+    image: n150/pi-runner-manager:latest
+    container_name: pi-runner-manager
+    restart: unless-stopped
+    environment:
+      GH_ADMIN_TOKEN: ${GH_ADMIN_TOKEN}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}
+      MAX_RUNNERS: ${MAX_RUNNERS:-2}
+      POLL_SECONDS: ${POLL_SECONDS:-10}
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}
+      RUNNER_PREFIX: ${RUNNER_PREFIX:-n150-pi-eph}
+      WORKFLOW_FILE: ${WORKFLOW_FILE:-pi-issue-agent.yml}
+      PI_CONFIG_DIR: /host/pi-home/.pi/agent
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./pi-home:/host/pi-home:ro
