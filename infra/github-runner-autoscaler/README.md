@@ -17,7 +17,7 @@ For a fine-grained personal access token, grant this repository:
 - Administration: Read and write
 - Actions: Read
 
-The Pi configuration is mounted read-only into workers directly from the N150 host path configured by `PI_HOME_HOST`. Because the manager controls the host Docker daemon through `/var/run/docker.sock`, worker bind-mount source paths must be host paths, not paths that exist only inside the manager container.
+The N150 Pi configuration is mounted read-only at `/pi-config-ro` and copied into each ephemeral worker's private writable `/home/runner/.pi/agent` directory at startup. This avoids Pi lock-file errors and prevents parallel workers from sharing mutable Pi state. Because the manager controls the host Docker daemon through `/var/run/docker.sock`, the source configured by `PI_HOME_HOST` must be a real host path.
 
 ## N150 setup
 
