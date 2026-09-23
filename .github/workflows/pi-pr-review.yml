@@ -5,6 +5,7 @@ on:
     types: [pi_pr_review]
   pull_request:
     types: [reopened, closed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -243,7 +244,7 @@ EOF
           git worktree prune
 
   dispatcher:
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 30
     permissions:
