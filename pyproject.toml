@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "social-mcp"
+version = "0.1.0"
+description = "Self-hosted MCP server for official social-network APIs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "mcp[cli]>=2,<3",
+  "fastapi>=0.116,<1",
+  "uvicorn[standard]>=0.35,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.12,<3",
+  "pydantic-settings>=2.10,<3",
+  "cryptography>=45,<47",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<10",
+  "pytest-asyncio>=1.1,<2",
+  "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/social_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
