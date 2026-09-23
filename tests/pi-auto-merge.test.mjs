@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { issueNumber, latestCI, latestStatus } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, issueNumber, latestCI, latestStatus } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 const pr = {
@@ -32,4 +32,10 @@ test('latest review status must refer to exact SHA fetched by caller', () => {
   assert.equal(latestStatus([{ context: 'social-mcp/pi-review', state: 'failure' },
     { context: 'social-mcp/pi-review', state: 'success' }], 'social-mcp/pi-review'), 'failure');
   assert.equal(latestStatus([], 'social-mcp/pi-review'), null);
+});
+
+test('Pi cannot change the workflow definitions used for its own checks', () => {
+  assert.equal(allowedFiles([{ filename: 'app/server.py' }], 1), true);
+  assert.equal(allowedFiles([{ filename: '.github/workflows/ci.yml' }], 1), false);
+  assert.equal(allowedFiles([{ filename: 'app/server.py' }], 2), false);
 });
