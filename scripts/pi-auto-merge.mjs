@@ -1,0 +1,127 @@
+import { pathToFileURL } from 'node:url';
+
+const repo = process.env.GITHUB_REPOSITORY;
+const token = process.env.GITHUB_TOKEN;
+const apiRoot = `https://api.github.com/repos/${repo}`;
+const reviewContext = 'social-mcp/pi-review';
+const ciMarker = 'social-mcp/merge-ci-dispatched';
+const reviewMarker = 'social-mcp/merge-review-dispatched';
+
+async function api(path, method = 'GET', body) {
+  const response = await fetch(`${apiRoot}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${await response.text()}`);
+  return response.status === 204 ? null : response.json();
+}
+
+export function issueNumber(pr, repository) {
+  const match = /^pi\/issue-([1-9]\d*)$/.exec(pr.head?.ref ?? '');
+  if (pr.state !== 'open' || pr.draft || pr.base?.ref !== 'main' ||
+      pr.base?.repo?.full_name !== repository || pr.head?.repo?.full_name !== repository || !match) return null;
+  const number = Number(match[1]);
+  if (!Number.isSafeInteger(number) || !new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${number}\\b`, 'i').test(pr.body ?? '')) return null;
+  return number;
+}
+
+export function latestStatus(statuses, context) {
+  return statuses.find(status => status.context === context)?.state ?? null;
+}
+
+export function latestCI(runs, sha, branch) {
+  return runs.filter(run => run.head_sha === sha && run.head_branch === branch &&
+    ['pull_request', 'workflow_dispatch'].includes(run.event))
+    .sort((a, b) => b.id - a.id)[0] ?? null;
+}
+
+async function mark(sha, context, state, description) {
+  return api(`/statuses/${sha}`, 'POST', { context, state, description: description.slice(0, 140) });
+}
+
+async function trigger(pr, sha, statuses, runs) {
+  const currentReview = latestStatus(statuses, reviewContext);
+  if (!currentReview && !latestStatus(statuses, reviewMarker)) {
+    await api('/dispatches', 'POST', { event_type: 'pi_pr_review', client_payload: { pr_number: pr.number } });
+    await mark(sha, reviewMarker, 'pending', `Review requested for PR #${pr.number}`);
+  }
+  if (!latestCI(runs, sha, pr.head.ref) && !latestStatus(statuses, ciMarker)) {
+    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: pr.head.ref });
+    await mark(sha, ciMarker, 'pending', `CI requested for PR #${pr.number}`);
+  }
+}
+
+async function processPR(prSummary) {
+  const pr = await api(`/pulls/${prSummary.number}`);
+  const issue = issueNumber(pr, repo);
+  if (!issue) return;
+  const issueData = await api(`/issues/${issue}`);
+  const labels = new Set(issueData.labels.map(label => label.name));
+  if (issueData.state !== 'open' || !labels.has('pi:mr-created') || labels.has('pi:needs-human') || labels.has('pi:failed')) {
+    console.log(`#${pr.number}: issue #${issue} is not ready for merge`);
+    return;
+  }
+
+  const sha = pr.head.sha;
+  const [main, comparison, statusData, ciData] = await Promise.all([
+    api('/git/ref/heads/main'),
+    api(`/compare/main...${sha}`),
+    api(`/commits/${sha}/statuses?per_page=100`),
+    api(`/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`),
+  ]);
+  if (comparison.behind_by > 0) {
+    if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
+      console.log(`#${pr.number}: merge conflict; needs a person`);
+      return;
+    }
+    await api(`/pulls/${pr.number}/update-branch`, 'PUT', { expected_head_sha: sha });
+    console.log(`#${pr.number}: updated branch; awaiting checks on new SHA`);
+    return;
+  }
+  if (comparison.status !== 'ahead' || comparison.behind_by !== 0) {
+    console.log(`#${pr.number}: head is not ahead of current main`);
+    return;
+  }
+
+  const statuses = statusData;
+  const runs = ciData.workflow_runs ?? [];
+  await trigger(pr, sha, statuses, runs);
+  const ci = latestCI(runs, sha, pr.head.ref);
+  const review = latestStatus(statuses, reviewContext);
+  if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success' ||
+      !pr.labels.some(label => label.name === 'review:passed')) {
+    console.log(`#${pr.number}: waiting for CI and SHA-bound review (${sha.slice(0, 12)})`);
+    return;
+  }
+  // Re-read mutable state immediately before the merge; the merge API also rejects a moved head.
+  const fresh = await api(`/pulls/${pr.number}`);
+  const freshMain = await api('/git/ref/heads/main');
+  if (fresh.head.sha !== sha || freshMain.object.sha !== main.object.sha ||
+      fresh.mergeable !== true || !fresh.labels.some(label => label.name === 'review:passed')) {
+    console.log(`#${pr.number}: head, main, review label or mergeability changed`);
+    return;
+  }
+  const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
+  if (!merged.merged) throw new Error(`#${pr.number}: merge API did not confirm merge`);
+  console.log(`#${pr.number}: merged ${sha}`);
+  await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'main' });
+  console.log(`#${pr.number}: dispatcher started`);
+}
+
+export async function main() {
+  if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
+  // Global concurrency prevents two runs from merging against the same base in parallel.
+  const prs = await api('/pulls?state=open&base=main&per_page=100');
+  for (const pr of prs) {
+    try { await processPR(pr); }
+    catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
