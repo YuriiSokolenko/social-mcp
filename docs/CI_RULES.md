@@ -59,6 +59,8 @@ Implementation starts when an issue receives:
 pi:ready
 ```
 
+The dispatcher can set that label via its workflow. Because labels added with `GITHUB_TOKEN` do not themselves start another workflow, the dispatcher also sends `repository_dispatch` event `pi_dispatch_issue` to the issue workflow. A person can still start the existing path by applying `pi:ready` directly.
+
 Workflow:
 
 ```text
@@ -256,11 +258,45 @@ review:changes-requested
 review:failed
 ```
 
+## Dispatcher queue
+
+Only an open issue with `dispatcher:ready` is a dispatcher candidate. Its
+`tasks/<issue-number>.md` file must exist on `main`, declare the matching issue
+number, a priority `P0`, `P1`, or `P2`, and completed dependencies. The
+task file is the source of truth for priority. A file alone never starts work.
+
+The dispatcher agent reads `agents/dispatcher/AGENTS.md` and
+`docs/PROJECT_CONTEXT.md`. It recommends issue numbers but cannot mutate GitHub.
+The workflow independently checks its output and the current GitHub state.
+It counts at most two active issue slots, including an open implementation PR
+awaiting review or merge. Eligible candidates are ordered P0, P1, P2 and then
+by ascending issue number.
+
+The dispatcher job runs after a PR is merged into `main`, or from a manual run
+of `.github/workflows/pi-pr-review.yml` for initial queue filling. This
+existing workflow file also contains the independent review job and is already
+watched by the N150 autoscaler. The dispatcher checks out trusted `main`,
+not the merged PR head. The write-capable workflow token is limited to
+validation and label steps; it is not passed to the Pi dispatcher process.
+
+For each accepted issue the workflow adds `pi:ready`, sends
+`pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs
+**when work is assigned**, not when its PR merges. A merged implementation PR
+closes its linked issue through `Closes #<issue-number>` and prompts the
+dispatcher to fill a free slot. Closing a PR without merging does not refill
+the queue. If no task is eligible, the dispatcher job succeeds without calling Pi.
+
+Failures, missing task metadata, and stale states must be reported rather than
+silently assigning a different issue. `pi:failed`, `pi:needs-human`, and
+`pi:cancelled` require human attention before the issue may be made eligible
+again. Task-file structure and label lifecycle are specified in `tasks/README.md`.
+
 ## Issue status labels
 
 The implementation workflow uses labels including:
 
 ```text
+dispatcher:ready
 pi:ready
 pi:running
 pi:mr-created
