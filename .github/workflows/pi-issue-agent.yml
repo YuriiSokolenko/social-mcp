@@ -83,8 +83,10 @@ jobs:
           Work directly in the checked-out repository.
           Implement the issue completely, keeping the change focused.
           Inspect existing code and tests before editing.
-          Add or update tests where appropriate.
-          Run relevant tests and Ruff before finishing.
+          Add or update unit tests for every behavior changed by this issue.
+          Cover the acceptance criteria and important edge cases.
+          Do not consider the implementation complete without appropriate automated tests.
+          Run the relevant test suite and Ruff before finishing.
           Do not commit, push, create a pull request, or modify GitHub issue labels.
           Do not access production credentials or external social APIs.
           Finish only after the repository is in a state ready for CI.
@@ -99,6 +101,12 @@ jobs:
           | node scripts/pi-log-filter.mjs
 
           printf '\n'
+
+      - name: Verify implementation before PR
+        run: |
+          cd "$JOB_DIR"
+          pytest
+          ruff check .
 
       - name: Commit and push changes
         id: changes
