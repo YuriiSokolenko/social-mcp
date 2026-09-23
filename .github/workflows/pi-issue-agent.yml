@@ -72,6 +72,8 @@ jobs:
 
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
+          Read and follow agents/implementer/AGENTS.md before doing any work.
+
           You are implementing GitHub issue #${ISSUE_NUMBER} in the current repository.
 
           Issue title:
