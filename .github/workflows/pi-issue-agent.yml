@@ -75,30 +75,121 @@ jobs:
           Finish only after the repository is in a state ready for CI.
           EOF
 
-          pi             --provider hp-laguna             --model qwen3.8-flash-next             --mode json             --no-session             "$(cat /tmp/pi-task.txt)"           | jq -jr --unbuffered '
-              if .type == "session" then
-                "[pi] session started\n"
-              elif .type == "agent_start" then
-                "[pi] agent started\n"
-              elif .type == "turn_start" then
-                "[pi] turn started\n"
-              elif .type == "message_update"
-                and .assistantMessageEvent.type == "toolcall_start" then
-                "\n[pi] tool: " + .assistantMessageEvent.toolName + "\n"
-              elif .type == "message_update"
-                and .assistantMessageEvent.type == "text_delta" then
-                .assistantMessageEvent.delta
-              elif .type == "turn_end" then
-                "\n[pi] turn finished\n"
-              elif .type == "agent_end" then
-                "\n[pi] agent finished\n"
-              else
-                empty
-              end
-            '
+          cat > /tmp/pi-log-filter.mjs <<'NODE'
+          import readline from "node:readline";
+
+          const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+          let turnStartedAt = null;
+          let lastUsage = null;
+
+          const secretKey = /token|secret|authorization|api[_-]?key|password|credential|cookie/i;
+
+          function redact(value, key = "") {
+            if (secretKey.test(key)) return "[REDACTED]";
+            if (Array.isArray(value)) return value.map((v) => redact(v));
+            if (value && typeof value === "object") {
+              return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redact(v, k)]));
+            }
+            if (typeof value === "string") {
+              return value
+                .replace(/Bearer\s+[^\s"']+/gi, "Bearer [REDACTED]")
+                .replace(/(access_token|refresh_token|client_secret|api_key)=([^&\s]+)/gi, "$1=[REDACTED]");
+            }
+            return value;
+          }
+
+          function compact(value, limit = 6000) {
+            let text;
+            try {
+              text = typeof value === "string" ? value : JSON.stringify(redact(value), null, 2);
+            } catch {
+              text = String(value);
+            }
+            if (text.length > limit) text = text.slice(0, limit) + `\n...[truncated ${text.length - limit} chars]`;
+            return text;
+          }
+
+          function finalAssistantText(messages) {
+            if (!Array.isArray(messages)) return "";
+            const msg = [...messages].reverse().find((m) => m?.role === "assistant");
+            if (!msg || !Array.isArray(msg.content)) return "";
+            return msg.content.filter((c) => c?.type === "text").map((c) => c.text ?? "").join("");
+          }
+
+          for await (const line of rl) {
+            if (!line.trim()) continue;
+            let e;
+            try { e = JSON.parse(line); } catch { console.log(`[pi] raw: ${line}`); continue; }
+
+            if (e.usage) lastUsage = e.usage;
+
+            switch (e.type) {
+              case "session":
+                console.log(`[pi] session started id=${e.id ?? "unknown"}`);
+                break;
+              case "agent_start":
+                console.log("[pi] agent started");
+                break;
+              case "turn_start":
+                turnStartedAt = Date.now();
+                console.log("[pi] turn started");
+                break;
+              case "message_update": {
+                const a = e.assistantMessageEvent ?? {};
+                if (a.type === "text_delta") process.stdout.write(a.delta ?? "");
+                else if (a.type === "toolcall_start") console.log(`\n[pi] preparing tool: ${a.toolName ?? "unknown"}`);
+                break;
+              }
+              case "tool_execution_start":
+                console.log(`\n[pi] tool start: ${e.toolName ?? "unknown"}`);
+                console.log(`[pi] args:\n${compact(e.args)}`);
+                break;
+              case "tool_execution_end":
+                console.log(`[pi] tool end: ${e.toolName ?? "unknown"} status=${e.isError ? "error" : "ok"}`);
+                console.log(`[pi] result:\n${compact(e.result)}`);
+                break;
+              case "turn_end": {
+                const seconds = turnStartedAt ? ((Date.now() - turnStartedAt) / 1000).toFixed(1) : "?";
+                console.log(`\n[pi] turn finished duration=${seconds}s`);
+                if (lastUsage) console.log(`[pi] usage: ${compact(lastUsage, 2000)}`);
+                turnStartedAt = null;
+                break;
+              }
+              case "compaction_start":
+                console.log("[pi] compaction started");
+                break;
+              case "compaction_end":
+                console.log("[pi] compaction finished");
+                break;
+              case "auto_retry_start":
+                console.log(`[pi] retry started: ${compact(e, 2000)}`);
+                break;
+              case "auto_retry_end":
+                console.log(`[pi] retry finished: ${compact(e, 2000)}`);
+                break;
+              case "extension_error":
+                console.log(`[pi] extension error: ${compact(e, 3000)}`);
+                break;
+              case "agent_end": {
+                console.log("[pi] agent finished");
+                const final = finalAssistantText(e.messages);
+                if (final) console.log(`[pi] final response:\n${compact(final, 12000)}`);
+                if (lastUsage) console.log(`[pi] final usage: ${compact(lastUsage, 2000)}`);
+                break;
+              }
+            }
+          }
+          NODE
+
+          pi \
+            --provider hp-laguna \
+            --model qwen3.8-flash-next \
+            --mode json \
+            --no-session \
+            "$(cat /tmp/pi-task.txt)" \
+          | node /tmp/pi-log-filter.mjs
 
           printf '\n'
-
       - name: Commit and push changes
         id: changes
         env:
