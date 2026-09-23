@@ -131,6 +131,8 @@ jobs:
 
           TASK_FILE="$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
+Read and follow agents/reviewer/AGENTS.md before reviewing.
+
 You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
 
 Do not modify files.
