@@ -19,7 +19,6 @@ jobs:
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
-      JOB_DIR: ${{ runner.temp }}/social-mcp-${{ github.run_id }}-${{ github.run_attempt }}
       ISSUE: ${{ github.event.issue.number }}
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
@@ -39,6 +38,8 @@ jobs:
 
       - name: Create temporary issue worktree
         run: |
+          JOB_DIR="$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
           rm -rf "$JOB_DIR"
           git fetch origin main
           git worktree prune
@@ -173,6 +174,7 @@ jobs:
         if: always()
         run: |
           set +e
+          JOB_DIR="${JOB_DIR:-$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT}"
           if [ -d "$JOB_DIR" ]; then
             git worktree remove --force "$JOB_DIR"
           fi
