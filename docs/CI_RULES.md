@@ -291,6 +291,28 @@ silently assigning a different issue. `pi:failed`, `pi:needs-human`, and
 `pi:cancelled` require human attention before the issue may be made eligible
 again. Task-file structure and label lifecycle are specified in `tasks/README.md`.
 
+## First dispatcher run
+
+To approve a specific issue for automatic implementation:
+
+1. Merge its `tasks/<issue-number>.md` file into `main` and check its
+   priority and dependencies.
+2. Add `dispatcher:ready` to the open issue. This label alone does not
+   launch Pi.
+3. In GitHub Actions, open **Pi PR Review** and use **Run workflow** on
+   `main`, or let the next PR merge into `main` start the dispatcher.
+4. Check the dispatcher job log for the selected issue and the separate
+   **Pi Issue Agent** run. On assignment, `pi:ready` appears and
+   `dispatcher:ready` is removed.
+5. If the issue is skipped, read the reason in the dispatcher job before
+   changing its metadata or labels. Do not add `pi:ready` merely to bypass
+   validation.
+
+The dispatcher job skips Pi entirely when no eligible candidates or free
+slots exist. The first run also ensures the `dispatcher:ready` label exists.
+A real dispatch depends on the N150 self-hosted runner and its configured
+Pi/model endpoint being available.
+
 ## Issue status labels
 
 The implementation workflow uses labels including:
