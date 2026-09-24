@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
-
-const path = process.argv[2];
-if (!path) {
-  console.error("usage: pi-review-result.mjs <pi-json-log>");
-  process.exit(2);
-}
+import { pathToFileURL } from "node:url";
 
 function finalAssistantText(messages) {
   if (!Array.isArray(messages)) return "";
@@ -18,33 +13,41 @@ function finalAssistantText(messages) {
     .join("");
 }
 
-let finalText = "";
-for (const line of fs.readFileSync(path, "utf8").split(/\r?\n/)) {
-  if (!line.trim()) continue;
-  let event;
+export function parseReviewResult(jsonl) {
+  let finalText = "";
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event.type === "message_end" && event.message?.role === "assistant") {
+      finalText = finalAssistantText([event.message]).trim();
+    }
+    if (event.type === "agent_end" && Array.isArray(event.messages)) {
+      const assistant = [...event.messages].reverse().find((message) => message?.role === "assistant");
+      if (assistant) finalText = finalAssistantText([assistant]).trim();
+    }
+  }
+
+  if (!finalText) throw new Error("Pi review did not produce a final assistant response");
+  const match = /^REVIEW_RESULT:[ \t]*(PASS|CHANGES_REQUESTED)[ \t]*(?:\r?\n|$)/.exec(finalText);
+  if (!match) throw new Error("Pi review final response must start with REVIEW_RESULT: PASS|CHANGES_REQUESTED");
+  return { verdict: match[1], text: finalText };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const path = process.argv[2];
+  if (!path) {
+    console.error("usage: pi-review-result.mjs <pi-json-log>");
+    process.exit(2);
+  }
   try {
-    event = JSON.parse(line);
-  } catch {
-    continue;
-  }
-  if (event.type === "agent_end") {
-    const text = finalAssistantText(event.messages);
-    if (text.trim()) finalText = text.trim();
+    process.stdout.write(JSON.stringify(parseReviewResult(fs.readFileSync(path, "utf8"))));
+  } catch (error) {
+    console.error(error.message);
+    process.exit(error.message.includes("did not produce") ? 3 : 4);
   }
 }
-
-if (!finalText) {
-  console.error("Pi review did not produce a final assistant response");
-  process.exit(3);
-}
-
-const match = finalText.match(/^REVIEW_RESULT:\s*(PASS|CHANGES_REQUESTED)\s*$/im);
-if (!match) {
-  console.error("Pi review final response is missing REVIEW_RESULT: PASS|CHANGES_REQUESTED");
-  process.exit(4);
-}
-
-process.stdout.write(JSON.stringify({
-  verdict: match[1],
-  text: finalText,
-}));

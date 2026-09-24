@@ -91,6 +91,12 @@ case "$ACTION" in
     add_label "review:changes-requested"
     comment
     ;;
+  stale)
+    ensure_all
+    clear_review_status
+    mark_commit pending "Review base changed; waiting for refreshed branch"
+    add_label "review:ready"
+    ;;
   failed)
     ensure_all
     clear_review_status
@@ -99,7 +105,7 @@ case "$ACTION" in
     comment
     ;;
   *)
-    echo "usage: $0 {ensure|running|passed|changes-requested|failed} [comment]" >&2
+    echo "usage: $0 {ensure|running|passed|changes-requested|stale|failed} [comment]" >&2
     exit 2
     ;;
 esac
