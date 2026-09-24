@@ -49,6 +49,19 @@ These skills provide options, not a request to redesign the repository. Match th
 
 Apply only guidance relevant to the issue. The existing `pyproject.toml`, Ruff configuration (100-character line length), installed dependencies, and required CI checks take precedence over example tool settings in skills. Do not add mypy, pyright, formatters, or other dependencies solely because a skill mentions them.
 
+## JavaScript, Bash, and infrastructure guidance
+
+Read the applicable skill when changing the corresponding files:
+
+- Node.js `.mjs` scripts or tests: `.agents/skills/modern-javascript-patterns/SKILL.md`. Preserve ES modules, the built-in `node:test` runner, and the current zero-package JavaScript setup. Test relevant changes with `node --test tests/*.test.mjs` when available.
+- Bash `.sh` scripts: `.agents/skills/bash-defensive-patterns/SKILL.md`. Preserve existing Bash entry points and error behavior; apply defensive patterns where they fit and verify relevant success and error paths.
+- `.github/workflows/*.yml` or `.yaml`: `.agents/skills/github-actions-hardening/SKILL.md`. Follow `docs/CI_RULES.md`, especially the current trust boundary for self-hosted runners and pull requests. The Pi auto-merge gate does not accept workflow changes from issue-agent PRs; report changes needing a trusted manual path instead of silently editing workflows.
+- Dockerfiles: `.agents/skills/multi-stage-dockerfile/SKILL.md` for builds where stage separation helps. Keep the current image behavior unless the issue requires a change.
+- Compose YAML: `.agents/skills/docker-compose/SKILL.md`. Preserve service lifecycle, persistent data, and environment handling; use read-only validation such as `docker compose config` when available.
+- Packaging sections of `pyproject.toml`: `.agents/skills/python-packaging/SKILL.md`. Preserve Hatchling and the current dependency installation approach unless an issue explicitly asks for a migration. For Ruff or pytest sections, use the relevant existing Python skills.
+
+These skills provide guidance for the repository's existing tools. Do not install npm/Jest, migrate to uv, restructure images, or alter CI privileges solely to follow an example. Never run destructive Compose cleanup commands on existing data.
+
 ## Security rules
 
 - Never expose or log OAuth access tokens, refresh tokens, client secrets, encryption keys, cookies, Authorization headers, or other credentials.
