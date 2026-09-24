@@ -9,6 +9,8 @@ assert_failure() { if "$@" >/dev/null 2>&1; then fail "expected failure: $*"; fi
 
 api_get() {
   case "$1" in
+    *first.yml*status=pending*) if [[ "${FIRST_PENDING_RESPONSE+x}" ]]; then printf '%s' "$FIRST_PENDING_RESPONSE"; else printf '%s' '{"total_count":1}'; fi ;;
+    *second.yml*status=pending*) if [[ "${SECOND_PENDING_RESPONSE+x}" ]]; then printf '%s' "$SECOND_PENDING_RESPONSE"; else printf '%s' '{"total_count":0}'; fi ;;
     *first.yml*) if [[ "${FIRST_RESPONSE+x}" ]]; then printf '%s' "$FIRST_RESPONSE"; else printf '%s' '{"total_count":2}'; fi ;;
     *second.yml*)
       if [[ "${SECOND_FAIL:-0}" == 1 ]]; then return 22; fi
@@ -30,7 +32,7 @@ curl() {
 }
 
 WORKFLOW_FILES=first.yml,second.yml
-[[ "$(queued_jobs)" == 3 ]] || fail 'normal queue count'
+[[ "$(queued_jobs)" == 4 ]] || fail 'queued and pending run counts'
 
 SECOND_FAIL=1
 assert_failure queued_jobs
@@ -42,6 +44,10 @@ for invalid in 'null' '"abc"' '-1' '1.5' '"3"'; do
 done
 SECOND_RESPONSE=''
 unset SECOND_RESPONSE
+
+SECOND_PENDING_RESPONSE='{"total_count":"1"}'
+assert_failure queued_jobs
+unset SECOND_PENDING_RESPONSE
 
 FIRST_RESPONSE=''
 assert_failure queued_jobs
