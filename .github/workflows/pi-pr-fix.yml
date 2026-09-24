@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   fix:
+    if: vars.PI_AUTOMATION_MODE != 'PAUSED'
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
