@@ -8,7 +8,7 @@ MAX_RUNNERS="${MAX_RUNNERS:-2}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
-WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml}}"
+WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
