@@ -42,6 +42,9 @@ jobs:
       - name: Agent workflow checks
         run: node --test tests/*.test.mjs
 
+      - name: Runner autoscaler checks
+        run: bash tests/test_runner_autoscaler.sh
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15

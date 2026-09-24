@@ -19,6 +19,8 @@ The pipeline is designed to:
 
 `dev` is the development integration branch. Pi issue branches start at `dev`; issue PRs, independent review, the auto-merge gate, and dispatcher task metadata target `dev`. The dispatcher triggered by a merged PR inspects `dev` even when its workflow starts from `main`. CI runs on PRs and pushes to both branches.
 
+For manual maintenance and agent-assisted changes, treat `dev` as the primary development branch. Apply changes there by default. When a control workflow also needs a copy on `main` to run, synchronize the same change to both branches and verify both; do not leave the development copy behind. Change `main` alone only when the user explicitly requests that scope.
+
 Promote tested changes from `dev` to `main` with a separate reviewed PR. Automatic issue merges must never target `main`. Keep the control workflow files in `main` aligned with their copies in `dev` when intentionally changing automation.
 
 ## Trust boundaries
