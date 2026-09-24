@@ -19,7 +19,7 @@ An issue is eligible only when all of these are true:
 1. It is open and has the exact label `dispatcher:ready`.
 2. A matching `tasks/<issue-number>.md` exists on `main`. Its declared issue number matches the GitHub issue.
 3. Its priority is one of `P0`, `P1`, or `P2`, and all declared dependent issues are closed as completed.
-4. It does not have `pi:ready`, `pi:running`, `pi:mr-created`, `pi:failed`, `pi:needs-human`, or `pi:cancelled`.
+4. It does not have `pi:ready`, `pi:running`, `pi:mr-created`, `pi:blocked`, `pi:failed`, `pi:needs-human`, or `pi:cancelled`.
 5. It has no open implementation pull request, including one still awaiting review or merge.
 6. Its issue and task data are consistent enough to identify the intended work unambiguously.
 

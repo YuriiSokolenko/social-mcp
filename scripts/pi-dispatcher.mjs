@@ -47,7 +47,7 @@ async function ensureReadyLabel() {
 }
 const labels = issue => new Set(issue.labels.map(label => label.name));
 const activeLabels = ["pi:ready", "pi:running", "pi:mr-created"];
-const blockedLabels = ["pi:failed", "pi:needs-human", "pi:cancelled"];
+const blockedLabels = ["pi:blocked", "pi:failed", "pi:needs-human", "pi:cancelled"];
 
 function task(number) {
   const filename = path.join("tasks", `${number}.md`);
