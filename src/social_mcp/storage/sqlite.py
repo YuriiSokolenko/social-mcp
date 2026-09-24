@@ -1,6 +1,15 @@
+"""SQLite storage for the connected-account table.
+
+Each method owns one short-lived connection through :meth:`SQLiteAccountStore._connection`:
+successful writes are committed, failed writes are rolled back, and the connection is
+closed whether or not the operation succeeded. The ``with sqlite3.connect(...)`` form
+alone would leave the open file handle to the garbage collector.
+"""
+
 import json
 import sqlite3
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -8,12 +17,14 @@ from social_mcp.storage.models import ConnectedAccount, SocialPlatform
 
 
 class SQLiteAccountStore:
+    """Connected-account store backed by a single SQLite database file."""
+
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = Path(database_path)
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS connected_accounts (
@@ -44,7 +55,7 @@ class SQLiteAccountStore:
             connection.execute("SELECT 1 FROM connected_accounts LIMIT 1").fetchone()
 
     def save(self, account: ConnectedAccount) -> ConnectedAccount:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO connected_accounts (
@@ -90,7 +101,7 @@ class SQLiteAccountStore:
         platform: SocialPlatform,
         external_account_id: str,
     ) -> ConnectedAccount | None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT *
@@ -103,7 +114,7 @@ class SQLiteAccountStore:
         return self._to_model(row) if row is not None else None
 
     def list_accounts(self) -> list[ConnectedAccount]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT *
@@ -114,10 +125,35 @@ class SQLiteAccountStore:
 
         return [self._to_model(row) for row in rows]
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Own one connection for a single store operation.
+
+        Yielded statement are committed on success and rolled back when the
+        body raises; the connection is then closed whichever way the operation
+        ended. Closing matters because the ``with sqlite3.connect(...)`` form
+        commits or rolls back but leaves the open file handle to the garbage
+        collector.
+
+        Raises:
+            sqlite3.Error: when the database cannot be opened or written. The
+                transaction is rolled back and the connection closed first.
+        """
+
+        connection = self._connect()
+        try:
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        """Open a connection to the account database for one operation."""
+
+        return sqlite3.connect(self.database_path, factory=sqlite3.Connection)
 
     @staticmethod
     def _serialize_datetime(value: datetime | None) -> str | None:
