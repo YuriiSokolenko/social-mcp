@@ -372,9 +372,10 @@ run refreshes the branch and requests review of the new head.
 
 For each accepted issue the workflow adds `pi:ready`, sends
 `pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs
-**when work is assigned**, not when its PR merges. A merged implementation PR
-closes its linked issue through `Closes #<issue-number>` and prompts the
-dispatcher to fill a free slot. Closing a PR without merging does not refill
+**when work is assigned**, not when its PR merges. After an implementation PR merges into `dev`, Pi Auto Merge explicitly closes
+its linked issue as completed and then prompts the dispatcher to fill a free
+slot. The `Closes #<issue-number>` text identifies the issue; GitHub does not
+auto-close it because `dev` is not the default branch. Closing a PR without merging does not refill
 the queue. If no task is eligible, the dispatcher job succeeds without calling Pi.
 
 Failures, missing task metadata, and stale states must be reported rather than
