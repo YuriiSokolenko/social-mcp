@@ -11,7 +11,7 @@ test("aggregates a cancelled attempt once and preserves it on reprocessing", () 
   const csvFile = join(dir, "usage.csv");
   const eventFile = join(dir, "event.json");
   const mockFile = join(dir, "mock.mjs");
-  writeFileSync(csvFile, readFileSync("reports/pi-usage.csv"));
+  writeFileSync(csvFile, readFileSync("reports/pi-usage.csv", "utf8").split("\n")[0] + "\n");
   writeFileSync(eventFile, JSON.stringify({ workflow_run: {
     id: 123, run_attempt: 2, status: "completed", name: "Pi Issue Agent",
     head_repository: { full_name: "test/repo" },
