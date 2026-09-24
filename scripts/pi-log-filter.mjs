@@ -21,6 +21,17 @@ const C = {
 let lastUsage = null;
 let streamedText = "";
 let outputNeedsNewline = false;
+let streamAtLineStart = true;
+let streamKind = null;
+let responseStarted = null;
+let firstTokenAt = null;
+let responseNumber = 0;
+let thinkingStreamed = false;
+let textStreamed = false;
+let reasoningAvailable = false;
+const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+let measuredResponses = 0;
+let totalResponseMs = 0;
 const activeTools = new Map();
 
 const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie)$/i;
@@ -81,7 +92,42 @@ function ensureNewline() {
   if (outputNeedsNewline) {
     process.stdout.write("\n");
     outputNeedsNewline = false;
+    streamAtLineStart = true;
   }
+}
+
+function streamContent(kind, content) {
+  if (!content) return;
+  if (streamKind !== kind) {
+    ensureNewline();
+    heading(kind === "thinking" ? "💭" : "📝", kind === "thinking" ? "Thinking" : "Response", C.blue);
+    streamKind = kind;
+  }
+  // Keep every model-authored line indented: GitHub Actions must not interpret it as a command.
+  for (const fragment of String(redact(content)).split(/(\n)/)) {
+    if (fragment === "\n") {
+      process.stdout.write("\n");
+      streamAtLineStart = true;
+    } else if (fragment) {
+      if (streamAtLineStart) process.stdout.write("  ");
+      process.stdout.write(fragment);
+      streamAtLineStart = false;
+    }
+  }
+  outputNeedsNewline = !streamAtLineStart;
+}
+
+function duration(ms) {
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+function usageSummary(usage) {
+  if (!usage || !["input", "output", "cacheRead", "cacheWrite", "totalTokens"].some((key) => Number.isFinite(usage[key]))) {
+    return "tokens unavailable";
+  }
+  const fields = [["input", "in"], ["output", "out"], ["cacheRead", "cache read"], ["cacheWrite", "cache write"], ["totalTokens", "total"]];
+  return fields.filter(([key]) => Number.isFinite(usage[key]))
+    .map(([key, label]) => `${label} ${usage[key].toLocaleString("en-US")}`).join(" · ");
 }
 
 function heading(icon, text, color = C.cyan) {
@@ -150,16 +196,69 @@ for await (const line of rl) {
       heading("▶", "Agent started", C.green);
       break;
     case "turn_start":
-      // Avoid a header and token counts for every model turn.
+      responseStarted = Date.now();
+      firstTokenAt = null;
+      thinkingStreamed = false;
+      textStreamed = false;
+      streamKind = null;
+      lastUsage = null;
+      responseNumber += 1;
+      heading("◉", `Model request #${responseNumber} started`, C.blue);
+      break;
+    case "message_start":
+      if (event.message?.role === "assistant" && responseStarted == null) responseStarted = Date.now();
       break;
     case "message_update": {
       const update = event.assistantMessageEvent ?? {};
-      if (update.type === "text_delta") {
-        const delta = update.delta ?? "";
-        process.stdout.write(delta);
-        streamedText = (streamedText + delta).slice(-24000);
-        outputNeedsNewline = !delta.endsWith("\n");
+      if (update.type === "text_delta" || update.type === "thinking_delta") {
+        const delta = typeof update.delta === "string" ? update.delta : "";
+        if (delta) {
+          firstTokenAt ??= Date.now();
+          streamContent(update.type === "thinking_delta" ? "thinking" : "text", delta);
+          if (update.type === "thinking_delta") {
+            thinkingStreamed = true;
+            reasoningAvailable = true;
+          } else {
+            textStreamed = true;
+            streamedText = (streamedText + delta).slice(-24000);
+          }
+        }
       }
+      break;
+    }
+    case "message_end": {
+      const message = event.message;
+      if (message?.role !== "assistant") break;
+      if (!thinkingStreamed) {
+        const thought = message.content?.filter((part) => part.type === "thinking")
+          .map((part) => part.thinking ?? part.text ?? "").join("\n");
+        if (thought) {
+          streamContent("thinking", thought);
+          reasoningAvailable = true;
+        }
+      }
+      if (!textStreamed) {
+        const response = message.content?.filter((part) => part.type === "text")
+          .map((part) => part.text ?? "").join("");
+        if (response) {
+          streamContent("text", response);
+          streamedText = (streamedText + response).slice(-24000);
+        }
+      }
+      const usage = message.usage ?? lastUsage;
+      if (message.usage) {
+        for (const key of Object.keys(totals)) {
+          if (Number.isFinite(message.usage[key])) totals[key] += message.usage[key];
+        }
+        measuredResponses += 1;
+      }
+      const elapsed = responseStarted == null ? null : Date.now() - responseStarted;
+      if (elapsed != null) totalResponseMs += elapsed;
+      const timing = elapsed == null ? "time unavailable" : `response ${duration(elapsed)}`;
+      const first = firstTokenAt == null || responseStarted == null ? "" : ` · first token ${duration(firstTokenAt - responseStarted)}`;
+      heading("◷", `Model #${responseNumber}: ${timing}${first} · ${usageSummary(usage)}`, C.yellow);
+      responseStarted = null;
+      streamKind = null;
       break;
     }
     case "tool_execution_start": {
@@ -199,7 +298,10 @@ for await (const line of rl) {
         console.log(C.bold + "Final response" + C.reset);
         console.log(truncate(redact(finalText), 12000));
       }
-      if (lastUsage?.totalTokens != null) console.log(C.gray + "Total tokens: " + lastUsage.totalTokens + C.reset);
+      if (measuredResponses) {
+        console.log(C.gray + `Model totals (${measuredResponses} responses): ${usageSummary(totals)} · response time ${duration(totalResponseMs)}` + C.reset);
+      }
+      if (!reasoningAvailable) console.log(C.gray + "Thinking text: not provided by the model" + C.reset);
       divider();
       break;
     }
