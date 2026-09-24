@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import readline from "node:readline";
+import { appendFileSync } from "node:fs";
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const tty = process.stdout.isTTY || Boolean(process.env.GITHUB_ACTIONS);
@@ -23,7 +24,9 @@ let streamedText = "";
 let outputNeedsNewline = false;
 let streamAtLineStart = true;
 let streamKind = null;
+let openGroup = false;
 let pendingStream = "";
+const sessionStarted = Date.now();
 let responseStarted = null;
 let firstTokenAt = null;
 let responseNumber = 0;
@@ -34,6 +37,19 @@ const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 
 let measuredResponses = 0;
 let totalResponseMs = 0;
 const activeTools = new Map();
+let toolCount = 0;
+let reportedFinal = false;
+const issue = /^\d+$/.test(process.env.PI_ISSUE ?? "") ? Number(process.env.PI_ISSUE) : null;
+const phase = process.env.PI_PHASE ?? "agent";
+const call = process.env.PI_CALL ?? "main";
+
+if (issue != null) console.log(`PI_TASK ${JSON.stringify({ issue, phase, call })}`);
+
+function recordMetric(metric) {
+  const line = JSON.stringify(metric);
+  console.log(`PI_METRIC ${line}`);
+  if (process.env.PI_METRICS_FILE) appendFileSync(process.env.PI_METRICS_FILE, line + "\n");
+}
 
 const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie|gh_token|github_token)$/i;
 
@@ -99,6 +115,23 @@ function ensureNewline() {
   }
 }
 
+function closeGroup() {
+  if (!openGroup) return;
+  ensureNewline();
+  if (process.env.GITHUB_ACTIONS) console.log("::endgroup::");
+  openGroup = false;
+}
+
+function startGroup(title, color = C.blue) {
+  closeGroup();
+  if (process.env.GITHUB_ACTIONS) {
+    console.log("::group::" + oneLine(title, 130));
+    openGroup = true;
+  } else {
+    console.log(color + C.bold + title + C.reset);
+  }
+}
+
 function emitStream(content) {
   for (const fragment of String(redact(content)).split(/(\r\n|\r|\n)/)) {
     if (fragment === "\n" || fragment === "\r" || fragment === "\r\n") {
@@ -106,7 +139,8 @@ function emitStream(content) {
       streamAtLineStart = true;
     } else if (fragment) {
       if (streamAtLineStart) process.stdout.write("  ");
-      process.stdout.write(fragment);
+      const color = streamKind === "thinking" ? C.blue : C.green;
+      process.stdout.write(color + fragment + C.reset);
       streamAtLineStart = false;
     }
   }
@@ -136,7 +170,7 @@ function streamContent(kind, content) {
   if (!content) return;
   if (streamKind !== kind) {
     ensureNewline();
-    heading(kind === "thinking" ? "💭" : "📝", kind === "thinking" ? "Thinking" : "Response", C.blue);
+    startGroup(kind === "thinking" ? "💭 Thinking" : "📝 Response", kind === "thinking" ? C.blue : C.green);
     streamKind = kind;
   }
   pendingStream += String(content);
@@ -157,6 +191,7 @@ function usageSummary(usage) {
 }
 
 function heading(icon, text, color = C.cyan) {
+  closeGroup();
   ensureNewline();
   console.log(color + C.bold + icon + " " + text + C.reset);
 }
@@ -166,30 +201,39 @@ function oneLine(value, limit = 110) {
   return line.length > limit ? line.slice(0, limit - 1) + "…" : line;
 }
 
-function detailLines(text) {
+function detailLines(text, color = C.dim) {
   // Prefix untrusted tool output so it cannot become a GitHub workflow command.
-  for (const line of String(text).split(/\r\n|\r|\n/)) console.log("  " + line);
+  for (const line of String(text).split(/\r\n|\r|\n/)) console.log("  " + color + line + C.reset);
 }
 
 function printToolDetails(name, args, result, isError) {
   if (args == null && result == null) return;
-  const grouped = Boolean(process.env.GITHUB_ACTIONS);
-  if (grouped) console.log("::group::" + oneLine(name, 60) + " " + (isError ? "error" : "details"));
+  startGroup((isError ? "✗ " : "🔧 ") + name + " · " + (isError ? "failed" : "details"), isError ? C.red : C.magenta);
   try {
     if (args != null) {
       console.log(C.dim + "Arguments:" + C.reset);
-      detailLines(stringify(args, 5000));
+      detailLines(stringify(args, 16000), C.magenta);
     }
     if (result != null) {
-      const output = truncate(String(extractResultText(result)), 8000);
+      const output = truncate(String(extractResultText(result)), 32000);
       if (output.trim()) {
         console.log(C.dim + "Result:" + C.reset);
-        detailLines(output);
+        detailLines(output, isError ? C.red : C.dim);
       }
     }
   } finally {
-    if (grouped) console.log("::endgroup::");
+    closeGroup();
   }
+}
+
+function reportFinal(status) {
+  if (reportedFinal) return;
+  reportedFinal = true;
+  closeGroup();
+  const elapsed = Date.now() - sessionStarted;
+  heading(status === "completed" ? "■" : "◼", `Agent ${status} · ${duration(elapsed)}`, status === "completed" ? C.green : C.yellow);
+  console.log(C.gray + `Model totals (${measuredResponses} responses): ${measuredResponses ? usageSummary(totals) : "tokens unavailable"} · response time ${duration(totalResponseMs)} · tools ${toolCount}` + C.reset);
+  if (status !== "completed") console.log(C.yellow + "Only completed model responses are counted." + C.reset);
 }
 
 function divider() {
@@ -229,7 +273,7 @@ for await (const line of rl) {
       streamKind = null;
       lastUsage = null;
       responseNumber += 1;
-      heading("◉", `Model request #${responseNumber} started`, C.blue);
+      heading("◉", `Model #${responseNumber} · ${new Date().toISOString().slice(11, 19)} UTC`, C.blue);
       break;
     case "message_start":
       if (event.message?.role === "assistant" && responseStarted == null) responseStarted = Date.now();
@@ -272,9 +316,9 @@ for await (const line of rl) {
         }
       }
       const usage = message.usage ?? lastUsage;
-      if (message.usage) {
+      if (usage && Object.values(usage).some(Number.isFinite)) {
         for (const key of Object.keys(totals)) {
-          if (Number.isFinite(message.usage[key])) totals[key] += message.usage[key];
+          if (Number.isFinite(usage[key])) totals[key] += usage[key];
         }
         measuredResponses += 1;
       }
@@ -282,7 +326,12 @@ for await (const line of rl) {
       if (elapsed != null) totalResponseMs += elapsed;
       const timing = elapsed == null ? "time unavailable" : `response ${duration(elapsed)}`;
       const first = firstTokenAt == null || responseStarted == null ? "" : ` · first token ${duration(firstTokenAt - responseStarted)}`;
-      heading("◷", `Model #${responseNumber}: ${timing}${first} · ${usageSummary(usage)}`, C.yellow);
+      const speed = elapsed && Number.isFinite(usage?.output) ? ` · ${(usage.output / (elapsed / 1000)).toFixed(1)} out tok/s` : "";
+      heading("✓", `Model #${responseNumber} · ${timing}${first} · ${usageSummary(usage)}${speed}`, C.yellow);
+      if (issue != null && usage && Object.values(usage).some(Number.isFinite)) {
+        const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
+        recordMetric({ issue, phase, call, response: responseNumber, usage: fields, responseMs: elapsed });
+      }
       responseStarted = null;
       streamKind = null;
       break;
@@ -290,7 +339,8 @@ for await (const line of rl) {
     case "tool_execution_start": {
       const name = event.toolName ?? "unknown";
       const summary = toolSummary(name, event.args);
-      activeTools.set(event.toolCallId, { name, args: event.args });
+      activeTools.set(event.toolCallId, { name, args: event.args, at: Date.now() });
+      toolCount += 1;
       const hint = summary ? " · " + oneLine(summary) : "";
       heading("🔧", name + hint, C.magenta);
       break;
@@ -300,7 +350,8 @@ for await (const line of rl) {
       activeTools.delete(event.toolCallId);
       const name = event.toolName ?? started?.name ?? "unknown";
       const isError = Boolean(event.isError);
-      heading(isError ? "✗" : "✓", name + (isError ? " failed" : " completed"), isError ? C.red : C.green);
+      const took = started?.at == null ? "" : ` · ${duration(Date.now() - started.at)}`;
+      heading(isError ? "✗" : "✓", name + (isError ? " failed" : " completed") + took, isError ? C.red : C.green);
       printToolDetails(name, started?.args, event.result, isError);
       break;
     }
@@ -315,18 +366,14 @@ for await (const line of rl) {
       console.log(C.red + stringify(event, 4000) + C.reset);
       break;
     case "agent_end": {
-      console.log();
-      divider();
-      heading("■", "Agent finished", C.green);
+      closeGroup();
       const finalText = finalAssistantText(event.messages);
       if (finalText.trim() && !streamedText.trimEnd().endsWith(finalText.trimEnd())) {
         console.log();
         console.log(C.bold + "Final response" + C.reset);
         detailLines(truncate(redact(finalText), 12000));
       }
-      if (measuredResponses) {
-        console.log(C.gray + `Model totals (${measuredResponses} responses): ${usageSummary(totals)} · response time ${duration(totalResponseMs)}` + C.reset);
-      }
+      reportFinal("completed");
       if (!reasoningAvailable) console.log(C.gray + "Thinking text: not provided by the model" + C.reset);
       divider();
       break;
@@ -334,3 +381,4 @@ for await (const line of rl) {
   }
 }
 flushStream(true);
+reportFinal("interrupted");
