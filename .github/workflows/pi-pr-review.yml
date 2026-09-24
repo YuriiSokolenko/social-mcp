@@ -213,20 +213,45 @@ jobs:
           jq -r '.text' <<<"$RESULT_JSON" > "$RUNNER_TEMP/pi-review-comment.txt"
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
 
+      - name: Verify reviewed head is still current
+        id: freshness
+        run: |
+          CURRENT_HEAD="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls/${PR}" | jq -r '.head.sha')"
+          if [ "$CURRENT_HEAD" = "$HEAD_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Reviewed head $HEAD_SHA is stale; current head is $CURRENT_HEAD. Verdict will not mutate PR state."
+          fi
+
       - name: Mark review passed
-        if: steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.pytest_exit == '0' && steps.checks.outputs.ruff_exit == '0'
+        if: steps.freshness.outputs.current == 'true' && steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.pytest_exit == '0' && steps.checks.outputs.ruff_exit == '0'
         run: |
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
           bash scripts/pi-pr-review-status.sh passed "$COMMENT"
 
       - name: Mark changes requested
-        if: steps.result.outputs.verdict == 'CHANGES_REQUESTED' || (steps.result.outputs.verdict == 'PASS' && (steps.checks.outputs.pytest_exit != '0' || steps.checks.outputs.ruff_exit != '0'))
+        if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || (steps.result.outputs.verdict == 'PASS' && (steps.checks.outputs.pytest_exit != '0' || steps.checks.outputs.ruff_exit != '0')))
         run: |
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
           if [ "${{ steps.checks.outputs.pytest_exit }}" != '0' ] || [ "${{ steps.checks.outputs.ruff_exit }}" != '0' ]; then
             COMMENT="Deterministic checks failed (pytest=${{ steps.checks.outputs.pytest_exit }}, Ruff=${{ steps.checks.outputs.ruff_exit }}).\n\n${COMMENT}"
           fi
           bash scripts/pi-pr-review-status.sh changes-requested "$COMMENT"
+
+      - name: Dispatch Pi repair
+        if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || (steps.result.outputs.verdict == 'PASS' && (steps.checks.outputs.pytest_exit != '0' || steps.checks.outputs.ruff_exit != '0')))
+        run: |
+          jq -n --arg event_type "pi_pr_fix" --arg pr_number "$PR" \
+            '{event_type:$event_type,client_payload:{pr_number:$pr_number}}' |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data-binary @- "https://api.github.com/repos/${REPO}/dispatches"
 
       - name: Mark review failed
         if: failure()
