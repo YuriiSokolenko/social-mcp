@@ -63,11 +63,12 @@ For a PR that changes an MCP tool, resource, prompt, transport, or installation 
 
 ### Architecture
 
-- FastAPI/MCP transport remains thin.
-- Business logic stays in the appropriate core/service layer.
-- Platform-specific behavior stays in platform adapters.
+For changes to Python module responsibilities, dependencies, composition, or abstractions, read `.agents/skills/python-design-patterns/SKILL.md`. For changes to boundaries between domain/application logic and FastAPI, MCP, storage, or platform adapters, also read `.agents/skills/architecture-patterns/SKILL.md`. Apply only relevant guidance and check the existing project structure before recommending a new layer or interface.
+
+- FastAPI/MCP transport remains thin and platform-specific behavior stays in platform adapters.
 - OAuth/token persistence stays in auth/storage layers.
-- The PR does not introduce unnecessary abstractions or dependencies.
+- Added abstractions or dependencies solve a concrete issue requirement.
+- Report a structural concern only when it creates a concrete maintenance, correctness, security, or testability problem.
 
 ### Security
 
