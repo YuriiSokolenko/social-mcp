@@ -131,10 +131,10 @@ const rejection = (issue, code, reason) => ({ issue, code, reason });
 /**
  * Re-check a dispatcher result against a freshly rebuilt snapshot.
  *
- * A queued dispatcher must never trust its trigger event, so only issues that
- * are still eligible candidates, selected in priority order and covering the
- * whole candidate list, may be applied. An issue an earlier dispatcher already
- * labelled is a successful no-op, not a failure.
+ * A queued dispatcher must never trust its trigger event, so the result must
+ * name every still-eligible candidate, in priority order, to be applied. An
+ * issue an earlier dispatcher already labelled is a successful no-op, not a
+ * failure, but it never substitutes for a candidate the result left out.
  *
  * @param {number[]} selected issue numbers from DISPATCH_RESULT, in dispatcher order.
  * @param {{active: number[], candidates: {issue:number}[]}} snapshot a freshly read queue snapshot.
@@ -162,9 +162,11 @@ export function validateSelection(selected, snapshot) {
     else rejected.push(rejection(number, "not-eligible", "no longer an eligible candidate"));
   }
 
-  // The dispatcher must select every currently eligible issue in priority order.
+  // The dispatcher must select every currently eligible issue, in priority
+  // order. A partial selection is reported, never applied: dropping a candidate
+  // and labelling the rest would silently decide queue policy for it.
   const misplaced = chosen.filter((number, index) => number !== eligible[index]);
-  if (misplaced.length) {
+  if (misplaced.length || eligible.some(number => !seen.has(number))) {
     for (const number of misplaced) {
       rejected.push(rejection(number, "out-of-order", "out of priority order for the current candidate list"));
     }
@@ -238,9 +240,9 @@ export function finalText(jsonl) {
  * snapshot data and applies the labels the pure layer asks for.
  */
 export class GitHub {
-  constructor({ repo, token, fetchImpl = globalThis.fetch }) {
+  constructor({ repo, token, fetchImpl = globalThis.fetch, taskDir = "tasks" }) {
     if (!repo || !token) throw new Error("repo and token are required");
-    Object.assign(this, { repo, token, fetchImpl, base: `https://api.github.com/repos/${repo}` });
+    Object.assign(this, { repo, token, fetchImpl, taskDir, base: `https://api.github.com/repos/${repo}` });
   }
 
   async request(endpoint, options = {}) {
@@ -292,7 +294,7 @@ export class GitHub {
       }
       return completed;
     };
-    return selectCandidates(openIssues, prs, { repo: this.repo, completedDependencies });
+    return selectCandidates(openIssues, prs, { repo: this.repo, taskDir: this.taskDir, completedDependencies });
   }
 
   async addLabel(number, label) {
