@@ -79,9 +79,9 @@ jobs:
           pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
             "Read and follow agents/implementer/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. Work on the existing PR branch; do not discard existing implementation. Address every blocking item in this reviewer feedback, add/update tests, run relevant tests and Ruff, and keep changes focused. Do not commit, push, or modify GitHub state yourself.
 
-Reviewer feedback:
+          Reviewer feedback:
 
-$(cat "$RUNNER_TEMP/review-feedback.txt")" \
+          $(cat "$RUNNER_TEMP/review-feedback.txt")" \
           | node scripts/pi-log-filter.mjs
           printf '\n'
 
