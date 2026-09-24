@@ -6,7 +6,6 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-
 BASE_URL = os.environ.get("CI_BASE_URL")
 
 
