@@ -182,7 +182,19 @@ pi/issue-<issue-number>
 
 Temporary worktrees and task files must be removed in an `always()` cleanup step.
 
-Local execution artifacts must never be committed. The workflow removes common artifacts before committing, including:
+After Pi finishes, the workflow commits its changes to `pi/issue-<number>-checkpoint`
+before running independent checks. A retry resumes that branch (or an existing PR
+branch if no checkpoint exists) instead of resetting to `dev`. The checkpoint is
+never a merge candidate. The workflow fetches current `dev`, integrates it, and
+runs pytest and Ruff on the integrated tree. A conflict or failing check gets one
+focused Pi repair attempt and another independent verification. On failure,
+`pi:failed` includes a checkpoint link; the checkpoint remains available for
+recovery. On success, the verified issue branch is pushed and the checkpoint is
+removed only after a PR exists. Never delete a failed run's only checkpoint.
+
+Local execution artifacts must never be committed. The workflow removes caches
+before saving code; `.venv/` remains ignored while integrated tests run and is
+removed before the verified branch is pushed. Excluded artifacts include:
 
 ```text
 .venv/
@@ -200,12 +212,13 @@ The repository `.gitignore` must also exclude local Python, test, build, environ
 
 ## Commit and PR creation
 
-If repository changes exist after verification:
+If repository changes exist:
 
-1. the workflow commits them as the automation identity;
-2. pushes the issue branch;
-3. creates or updates a pull request targeting `dev`;
-4. triggers an independent Pi PR review.
+1. the workflow saves a recoverable checkpoint;
+2. integrates `dev` and independently verifies the result;
+3. pushes the verified issue branch;
+4. creates or updates a pull request targeting `dev`;
+5. triggers an independent Pi PR review.
 
 The implementer itself never performs these GitHub operations.
 
@@ -285,6 +298,10 @@ ruff check .
 The exit codes and logs are supplied to the reviewer.
 
 A failing deterministic check can never receive a PASS verdict.
+If the reviewer omits the required final verdict, the review workflow retries
+the review once without rerunning the issue implementation. A second failure
+sets `review:failed` for manual investigation. Review results are valid only
+for the exact PR head and `dev` base recorded at review start.
 
 ## Reviewer verdict contract
 
@@ -343,6 +360,11 @@ The dispatcher workflow is:
 ```
 
 It runs after a PR is merged into `dev`, or from a manual workflow run on the default branch for initial queue filling. Dispatcher jobs use one repository-wide concurrency group, `pi-dispatcher`, with `cancel-in-progress: false`. The dispatcher checks out `dev`, not the merged PR head. The write-capable workflow token is limited to validation and label steps; it is not passed to the Pi dispatcher process.
+
+The auto-merge gate waits for an active `review:running` job to finish before
+updating a PR branch that fell behind `dev`. A review made stale by a changed
+base releases its running label without approving the old result; the next gate
+run refreshes the branch and requests review of the new head.
 
 For each accepted issue the workflow adds `pi:ready`, sends
 `pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs

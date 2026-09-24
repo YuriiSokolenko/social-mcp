@@ -50,6 +50,10 @@ export function needsCIDispatch(ci, marker) {
   return !ci;
 }
 
+export function shouldDeferBranchUpdate(pr) {
+  return pr.labels?.some(label => label.name === 'review:running') ?? false;
+}
+
 async function mark(sha, context, state, description) {
   return api(`/statuses/${sha}`, 'POST', { context, state, description: description.slice(0, 140) });
 }
@@ -95,6 +99,10 @@ async function processPR(prSummary) {
     api(`/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`),
   ]);
   if (comparison.behind_by > 0) {
+    if (shouldDeferBranchUpdate(pr)) {
+      console.log(`#${pr.number}: dev moved during review; waiting for the review to finish before updating the branch`);
+      return;
+    }
     if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
       console.log(`#${pr.number}: merge conflict; needs a person`);
       return;

@@ -50,13 +50,25 @@ jobs:
         run: bash scripts/pi-issue-status.sh running
 
       - name: Create temporary issue worktree
+        id: worktree
         run: |
           JOB_DIR="$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
           rm -rf "$JOB_DIR"
           git fetch origin dev
+          START_REF=origin/dev
+          CHECKPOINT="pi/issue-${ISSUE}-checkpoint"
+          if git ls-remote --exit-code origin "refs/heads/${CHECKPOINT}" >/dev/null; then
+            git fetch origin "${CHECKPOINT}:refs/remotes/origin/${CHECKPOINT}"
+            START_REF="refs/remotes/origin/${CHECKPOINT}"
+            echo "Resuming issue #${ISSUE} from its checkpoint"
+          elif git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}" >/dev/null; then
+            git fetch origin "pi/issue-${ISSUE}:refs/remotes/origin/pi/issue-${ISSUE}"
+            START_REF="refs/remotes/origin/pi/issue-${ISSUE}"
+            echo "Resuming issue #${ISSUE} from its PR branch"
+          fi
           git worktree prune
-          git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" origin/dev
+          git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" "$START_REF"
           echo "Temporary worktree: $JOB_DIR"
 
       - name: Prepare Python environment
@@ -120,56 +132,112 @@ jobs:
 
           printf '\n'
 
-      - name: Verify implementation before PR
+      - name: Save implementation checkpoint
+        id: checkpoint
+        if: always() && steps.worktree.outcome == 'success'
         run: |
           cd "$JOB_DIR"
-          pytest
-          ruff check .
-
-      - name: Commit implementation
-        id: changes
-        run: |
-          cd "$JOB_DIR"
-
-          # Never let local execution artifacts become part of the agent commit.
           rm -rf .pytest_cache .ruff_cache htmlcov build dist
           rm -f .coverage coverage.xml
           find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-
-          if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+          git config user.name "social-mcp-pi"
+          git config user.email "social-mcp-pi@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
+            echo "Refusing to checkpoint a credential or runtime file" >&2
+            exit 1
+          fi
+          if ! git diff --cached --quiet; then
+            git commit -m "feat: implement issue #${ISSUE}"
+          fi
+          if git diff --quiet origin/dev...HEAD; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-
-          git add -A
-          git commit -m "feat: implement issue #${ISSUE}"
+          git push origin "HEAD:refs/heads/pi/issue-${ISSUE}-checkpoint"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh from dev and verify integrated code
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.checkpoint.outputs.changed == 'true'
         run: |
           cd "$JOB_DIR"
           git fetch origin dev
-          git merge --no-edit origin/dev
+          if ! git merge --no-edit origin/dev; then
+            echo "Merge with dev needs repair" >&2
+            NEED_REPAIR=true
+          else
+            NEED_REPAIR=false
+          fi
+          if [ "$NEED_REPAIR" = false ]; then
+            python -m pip install -e .
+            if ! pytest > "$RUNNER_TEMP/pi-issue-pytest.log" 2>&1; then NEED_REPAIR=true; fi
+            if ! ruff check . > "$RUNNER_TEMP/pi-issue-ruff.log" 2>&1; then NEED_REPAIR=true; fi
+            cat "$RUNNER_TEMP/pi-issue-pytest.log" "$RUNNER_TEMP/pi-issue-ruff.log"
+          fi
+          if [ "$NEED_REPAIR" = false ]; then exit 0; fi
+          if [ "$NEED_REPAIR" = true ]; then
+            echo "One Pi repair attempt for integration or test failures"
+            set -o pipefail
+            pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+              "Read agents/implementer/AGENTS.md. Resolve the current merge conflict or failing tests in this worktree for issue #${ISSUE}. Do not commit, push or change GitHub state. Fix only integration problems, then run pytest and ruff check . before finishing. Existing test logs: $RUNNER_TEMP/pi-issue-pytest.log and $RUNNER_TEMP/pi-issue-ruff.log (read them if present)." \
+              | node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "Unresolved merge conflicts remain" >&2
+              exit 1
+            fi
+            git add -A
+            git diff --cached --check
+            if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
+              echo "Refusing to commit a credential or runtime file" >&2
+              exit 1
+            fi
+            if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+              git commit --no-edit
+            elif ! git diff --cached --quiet; then
+              git commit -m "fix: resolve integration for issue #${ISSUE}"
+            fi
+          fi
           python -m pip install -e .
           pytest
           ruff check .
 
+      - name: Save verified or failed integration checkpoint
+        if: always() && steps.checkpoint.outputs.changed == 'true'
+        run: |
+          cd "$JOB_DIR"
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "Keeping the previous checkpoint; unresolved conflict cannot be committed" >&2
+            exit 0
+          fi
+          git add -A
+          git diff --cached --check
+          if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
+            echo "Refusing to checkpoint a credential or runtime file" >&2
+            exit 1
+          fi
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: preserve integration for issue #${ISSUE}"
+          fi
+          git push origin "HEAD:refs/heads/pi/issue-${ISSUE}-checkpoint"
+
       - name: Push verified issue branch
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.checkpoint.outputs.changed == 'true'
         run: |
           cd "$JOB_DIR"
           rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
           rm -f .coverage coverage.xml
           find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-          git push --force-with-lease --set-upstream origin "pi/issue-${ISSUE}"
+          git fetch origin dev
+          git merge-base --is-ancestor origin/dev HEAD || {
+            echo "dev moved during verification; checkpoint preserved for retry" >&2
+            exit 1
+          }
+          git push --set-upstream origin "HEAD:refs/heads/pi/issue-${ISSUE}"
 
       - name: Create or update pull request
         id: pr
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.checkpoint.outputs.changed == 'true'
         env:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           OWNER: ${{ github.repository_owner }}
@@ -201,7 +269,7 @@ jobs:
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Trigger Pi PR review
-        if: steps.changes.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
         run: |
           API="https://api.github.com/repos/${REPO}"
           jq -n \
@@ -217,19 +285,27 @@ jobs:
             "${API}/dispatches"
 
       - name: Mark pull request created
-        if: steps.changes.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
         run: |
           bash scripts/pi-issue-status.sh mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
 
+      - name: Remove published checkpoint
+        if: steps.pr.outputs.number != ''
+        run: git push origin --delete "pi/issue-${ISSUE}-checkpoint"
+
       - name: Mark no-change result
-        if: steps.changes.outputs.changed == 'false'
+        if: steps.checkpoint.outputs.changed == 'false'
         run: |
           bash scripts/pi-issue-status.sh needs-human             "Pi completed the task but produced no repository changes. Human review is required."
 
       - name: Mark failed result
         if: failure()
         run: |
-          bash scripts/pi-issue-status.sh failed             "Pi workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          MESSAGE="Pi workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          if git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}-checkpoint" >/dev/null; then
+            MESSAGE="$MESSAGE Saved work: https://github.com/${REPO}/tree/pi/issue-${ISSUE}-checkpoint"
+          fi
+          bash scripts/pi-issue-status.sh failed "$MESSAGE"
 
       - name: Mark cancelled result
         if: cancelled()

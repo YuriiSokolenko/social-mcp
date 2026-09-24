@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { allowedFiles, issueNumber, latestCI, latestStatus, needsCIDispatch } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, issueNumber, latestCI, latestStatus, needsCIDispatch, shouldDeferBranchUpdate } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 const pr = {
@@ -49,4 +49,9 @@ test('Pi cannot change the workflow definitions used for its own checks', () => 
   assert.equal(allowedFiles([{ filename: 'app/server.py' }], 1), true);
   assert.equal(allowedFiles([{ filename: '.github/workflows/ci.yml' }], 1), false);
   assert.equal(allowedFiles([{ filename: 'app/server.py' }], 2), false);
+});
+
+test('do not move a PR head while its reviewer is running', () => {
+  assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:running' }] }), true);
+  assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:ready' }] }), false);
 });

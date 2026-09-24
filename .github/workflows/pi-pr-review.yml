@@ -53,6 +53,7 @@ jobs:
           BASE_REF="$(jq -r '.base.ref' <<<"$PR_JSON")"
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
           HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
+          BASE_SHA="$(jq -r '.base.sha' <<<"$PR_JSON")"
 
           if [ "$BASE_REF" != "dev" ]; then
             echo "Pull request #${PR} does not target dev; refusing self-hosted review." >&2
@@ -76,6 +77,7 @@ jobs:
 
           echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
 
       - name: Ensure review labels
         run: bash scripts/pi-pr-review-status.sh ensure
@@ -213,7 +215,20 @@ jobs:
       - name: Parse review result
         id: result
         run: |
-          RESULT_JSON="$(node scripts/pi-review-result.mjs "$REVIEW_RAW")"
+          if RESULT_JSON="$(node scripts/pi-review-result.mjs "$REVIEW_RAW")"; then
+            echo "Pi supplied a valid review result"
+          else
+            result_exit=$?
+            if [ "$result_exit" -ne 3 ] && [ "$result_exit" -ne 4 ]; then exit "$result_exit"; fi
+            echo "Pi did not supply a valid verdict; retrying this review once"
+            cd "$JOB_DIR"
+            set -o pipefail
+            RETRY_RAW="$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
+            pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. The test logs are $RUNNER_TEMP/pytest.log and $RUNNER_TEMP/ruff.log. Your final response MUST begin with REVIEW_RESULT: PASS or REVIEW_RESULT: CHANGES_REQUESTED, followed by evidence." \
+              | tee "$RETRY_RAW" | node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+            RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RETRY_RAW")"
+          fi
           VERDICT="$(jq -r '.verdict' <<<"$RESULT_JSON")"
           jq -r '.text' <<<"$RESULT_JSON" > "$RUNNER_TEMP/pi-review-comment.txt"
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
@@ -221,16 +236,27 @@ jobs:
       - name: Verify reviewed head is still current
         id: freshness
         run: |
-          CURRENT_HEAD="$(curl --fail-with-body -sS \
+          CURRENT_PR="$(curl --fail-with-body -sS \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/pulls/${PR}" | jq -r '.head.sha')"
+            "https://api.github.com/repos/${REPO}/pulls/${PR}")"
+          CURRENT_HEAD="$(jq -r '.head.sha' <<<"$CURRENT_PR")"
+          CURRENT_BASE="$(jq -r '.base.sha' <<<"$CURRENT_PR")"
           if [ "$CURRENT_HEAD" = "$HEAD_SHA" ]; then
+            echo "head_same=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "head_same=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$CURRENT_HEAD" = "$HEAD_SHA" ] && [ "$CURRENT_BASE" = "$BASE_SHA" ]; then
             echo "current=true" >> "$GITHUB_OUTPUT"
           else
             echo "current=false" >> "$GITHUB_OUTPUT"
-            echo "Reviewed head $HEAD_SHA is stale; current head is $CURRENT_HEAD. Verdict will not mutate PR state."
+            echo "Reviewed head/base $HEAD_SHA/$BASE_SHA is stale; current pair is $CURRENT_HEAD/$CURRENT_BASE. Verdict will not mutate PR state."
           fi
+
+      - name: Release stale review
+        if: steps.freshness.outputs.current == 'false' && steps.freshness.outputs.head_same == 'true'
+        run: bash scripts/pi-pr-review-status.sh stale
 
       - name: Mark review passed
         if: steps.freshness.outputs.current == 'true' && steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.pytest_exit == '0' && steps.checks.outputs.ruff_exit == '0'
@@ -261,6 +287,14 @@ jobs:
       - name: Mark review failed
         if: failure()
         run: |
+          CURRENT_HEAD="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls/${PR}" | jq -r '.head.sha')"
+          if [ "${HEAD_SHA:-}" != "$CURRENT_HEAD" ]; then
+            echo "Review is stale; not marking the current PR as failed"
+            exit 0
+          fi
           bash scripts/pi-pr-review-status.sh failed \
             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
@@ -278,5 +312,6 @@ jobs:
             "$RUNNER_TEMP/ruff.log" \
             "$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" \
             "$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" \
+            "$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" \
             "$RUNNER_TEMP/pi-review-comment.txt"
           git worktree prune
