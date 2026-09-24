@@ -1,0 +1,121 @@
+name: Pi PR Fix
+
+on:
+  repository_dispatch:
+    types: [pi_pr_fix]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pi-pr-fix-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  fix:
+    runs-on: [self-hosted, linux, x64, n150, pi-agent]
+    timeout-minutes: 120
+    env:
+      PR: ${{ github.event.client_payload.pr_number }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout control repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: main
+
+      - name: Load PR and review feedback
+        run: |
+          API="https://api.github.com/repos/${REPO}"
+          PR_JSON="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/pulls/${PR}")"
+          HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
+          HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
+          [[ "$HEAD_REF" == pi/issue-* ]]
+          ISSUE="${HEAD_REF#pi/issue-}"
+          COMMENTS="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/comments?per_page=100")"
+          FEEDBACK="$(jq -r '[.[] | select(.body | startswith("REVIEW_RESULT: CHANGES_REQUESTED"))] | last | .body // empty' <<<"$COMMENTS")"
+          [ -n "$FEEDBACK" ]
+          echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
+          printf '%s\n' "$FEEDBACK" > "$RUNNER_TEMP/review-feedback.txt"
+
+      - name: Create PR worktree
+        run: |
+          JOB_DIR="$RUNNER_TEMP/social-mcp-fix-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
+          git fetch origin "$HEAD_REF"
+          git worktree prune
+          git worktree add -B "$HEAD_REF" "$JOB_DIR" "$HEAD_SHA"
+
+      - name: Prepare Python environment
+        run: |
+          cd "$JOB_DIR"
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest pytest-asyncio ruff
+          echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Run Pi repair with live progress
+        run: |
+          set -o pipefail
+          cd "$JOB_DIR"
+          pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+            "Read and follow agents/implementer/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. Work on the existing PR branch; do not discard existing implementation. Address every blocking item in this reviewer feedback, add/update tests, run relevant tests and Ruff, and keep changes focused. Do not commit, push, or modify GitHub state yourself.
+
+Reviewer feedback:
+
+$(cat "$RUNNER_TEMP/review-feedback.txt")" \
+          | node scripts/pi-log-filter.mjs
+          printf '\n'
+
+      - name: Verify repair
+        run: |
+          cd "$JOB_DIR"
+          pytest
+          ruff check .
+
+      - name: Commit and push repair
+        id: changes
+        run: |
+          cd "$JOB_DIR"
+          rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
+          rm -f .coverage coverage.xml
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+          if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
+          [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
+          git config user.name "social-mcp-pi"
+          git config user.email "social-mcp-pi@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: address review for issue #${ISSUE}"
+          git push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "$HEAD_REF"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger fresh review
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          jq -n --arg event_type "pi_pr_review" --arg pr_number "$PR" \
+            '{event_type:$event_type,client_payload:{pr_number:$pr_number}}' |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" --data-binary @- \
+            "https://api.github.com/repos/${REPO}/dispatches"
+
+      - name: Clean worktree
+        if: always()
+        run: |
+          set +e
+          [ -n "${JOB_DIR:-}" ] && [ -d "$JOB_DIR" ] && git worktree remove --force "$JOB_DIR"
+          rm -f "$RUNNER_TEMP/review-feedback.txt"
+          git worktree prune
