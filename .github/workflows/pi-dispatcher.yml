@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   dispatcher:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
+    if: vars.PI_AUTOMATION_MODE != 'PAUSED' && vars.PI_AUTOMATION_MODE != 'DRAINING' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'))
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 30
     env:
