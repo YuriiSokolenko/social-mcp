@@ -47,7 +47,8 @@ export function latestCI(runs, sha, branch) {
 
 export function allowedFiles(files, changedCount) {
   return changedCount <= 100 && files.length === changedCount &&
-    files.every(file => !file.filename.startsWith('.github/workflows/'));
+    files.every(file => !file.filename.startsWith('.github/workflows/') &&
+      !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(file.filename));
 }
 
 export function needsCIDispatch(ci, marker) {
@@ -87,7 +88,7 @@ async function finalizeMergedPR(pr, issue) {
   } else if (current.state_reason !== 'completed') {
     return;
   }
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'main' });
+  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
   await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
   console.log(`#${pr.number}: dispatcher started`);
 }
@@ -108,7 +109,7 @@ async function processPR(prSummary) {
   }
   const files = await api(`/pulls/${pr.number}/files?per_page=100`);
   if (!allowedFiles(files, pr.changed_files)) {
-    console.log(`#${pr.number}: changed workflow definitions or incomplete file list; human review required`);
+    console.log(`#${pr.number}: changed control files or incomplete file list; human review required`);
     return;
   }
 
