@@ -31,10 +31,11 @@ test('CI must match current SHA and branch and latest run must pass', () => {
 test('a bot PR CI run needing approval must not count as a passing run', () => {
   const runs = [{ id: 7, head_sha: 'new', head_branch: 'pi/issue-42',
     event: 'pull_request', status: 'completed', conclusion: 'action_required' }];
-  assert.equal(latestCI(runs, 'new', 'pi/issue-42').conclusion, 'action_required');
-  assert.equal(needsCIDispatch(runs[0], null), true);
-  assert.equal(needsCIDispatch(runs[0], 'pending'), false);
-  assert.equal(needsCIDispatch({ conclusion: 'failure' }, null), false);
+  // PR-triggered runs may require approval; only a workflow_dispatch run can satisfy the merge gate.
+  assert.equal(latestCI(runs, 'new', 'pi/issue-42'), null);
+  assert.equal(needsCIDispatch(latestCI(runs, 'new', 'pi/issue-42'), null), true);
+  assert.equal(needsCIDispatch({ event: 'workflow_dispatch', status: 'queued' }, null), false);
+  assert.equal(needsCIDispatch({ event: 'workflow_dispatch', conclusion: 'failure' }, null), false);
 });
 
 test('latest review status must refer to exact SHA fetched by caller', () => {
