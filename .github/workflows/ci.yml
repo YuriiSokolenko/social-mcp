@@ -60,11 +60,19 @@ jobs:
       - name: Build and start isolated Compose environment
         run: docker compose up --build --wait
 
-      - name: Verify health endpoint
+      - name: Smoke test built image
         shell: bash
         run: |
+          image_id="$(docker compose images -q app)"
+          test -n "$image_id"
+          docker image inspect "$image_id" > /dev/null
+
           port="$(docker compose port app 8000 | awk -F: '{print $NF}')"
-          curl --fail --retry 5 --retry-delay 1 "http://127.0.0.1:${port}/health"
+          base_url="http://127.0.0.1:${port}"
+          curl --fail --silent --show-error --retry 5 --retry-delay 1 "$base_url/health" |
+            python -c 'import json, sys; assert json.load(sys.stdin) == {"status": "ok"}'
+          curl --fail --silent --show-error "$base_url/openapi.json" |
+            python -c 'import json, sys; spec = json.load(sys.stdin); assert spec["info"]["title"] == "Social MCP"; assert "/health" in spec["paths"]'
 
       - name: Show Compose logs on failure
         if: failure()
