@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
-import { linkedIssueNumber } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, linkedIssueNumber } from '../scripts/pi-auto-merge.mjs';
 
 test('a merged Pi PR into dev still identifies its linked issue', () => {
   const repo = 'test/repo';
@@ -77,4 +77,10 @@ test('recovers a merged dev PR by closing its issue before dispatch', () => {
     { path: '/actions/workflows/pi-dispatcher.yml/dispatches', method: 'POST' },
     { path: '/issues/42/labels/pi%3Amr-created', method: 'DELETE' },
   ]);
+});
+
+test('Pi PRs cannot auto-merge changes to control scripts', () => {
+  assert.equal(allowedFiles([{ filename: 'scripts/pi-auto-merge.mjs' }], 1), false);
+  assert.equal(allowedFiles([{ filename: 'scripts/pi-issue-status.sh' }], 1), false);
+  assert.equal(allowedFiles([{ filename: 'src/application.py' }], 1), true);
 });
