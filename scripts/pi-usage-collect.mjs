@@ -69,6 +69,10 @@ if (!jobsResponse.ok) throw new Error(`Failed to list jobs: ${jobsResponse.statu
 const jobs = (await jobsResponse.json()).jobs.filter((job) => ["pi", "review", "fix"].includes(job.name));
 const newRows = [];
 for (const job of jobs) {
+  if (job.conclusion === "skipped") {
+    console.log(`Job ${job.id} was skipped; no log to collect`);
+    continue;
+  }
   let log;
   for (let retry = 0; retry < 5; retry++) {
     const response = await request(`${api}/actions/jobs/${job.id}/logs`);
