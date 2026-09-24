@@ -20,10 +20,12 @@ jobs:
   pi:
     if: vars.PI_AUTOMATION_MODE == 'RUNNING' && ((github.event_name == 'issues' && github.event.label.name == 'pi:ready') || github.event_name == 'repository_dispatch')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
-    timeout-minutes: 120
+    timeout-minutes: 1200
     env:
       ISSUE: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
       REPO: ${{ github.repository }}
+      PI_ISSUE: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
+      PI_PHASE: implementation
 
     steps:
       - name: Checkout control repository
@@ -31,6 +33,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Initialize Pi usage
+        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
 
       - name: Validate dispatched issue
         if: github.event_name == 'repository_dispatch'
@@ -137,7 +142,7 @@ jobs:
             --mode json \
             --no-session \
             "$(cat "$TASK_FILE")" \
-          | node scripts/pi-log-filter.mjs
+          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
           printf '\n'
 
@@ -192,7 +197,7 @@ jobs:
             set -o pipefail
             pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
               "Read agents/implementer/AGENTS.md. Resolve the current merge conflict or failing tests in this worktree for issue #${ISSUE}. Do not commit, push or change GitHub state. Fix only integration problems, then run pytest and ruff check . before finishing. Existing test logs: $RUNNER_TEMP/pi-issue-pytest.log and $RUNNER_TEMP/pi-issue-ruff.log (read them if present)." \
-              | node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+              | PI_CALL=integration node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
               echo "Unresolved merge conflicts remain" >&2
               exit 1
@@ -339,6 +344,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/pi-issue-status.sh cancelled             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Summarize Pi usage
+        if: always()
+        run: node scripts/pi-usage-summary.mjs
 
       - name: Clean temporary worktree
         if: always()

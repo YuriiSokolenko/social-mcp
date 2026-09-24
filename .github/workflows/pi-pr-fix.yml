@@ -23,10 +23,11 @@ jobs:
   fix:
     if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
-    timeout-minutes: 120
+    timeout-minutes: 1200
     env:
       PR: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
       REPO: ${{ github.repository }}
+      PI_PHASE: repair
     steps:
       - name: Checkout control repository
         uses: actions/checkout@v5
@@ -34,6 +35,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: main
+
+      - name: Initialize Pi usage
+        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
 
       - name: Load PR and review feedback
         env:
@@ -47,6 +51,7 @@ jobs:
           [[ "$BASE_REF" == "dev" ]]
           [[ "$HEAD_REF" == pi/issue-* ]]
           ISSUE="${HEAD_REF#pi/issue-}"
+          echo "PI_ISSUE=$ISSUE" >> "$GITHUB_ENV"
           COMMENTS="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/comments?per_page=100")"
           FEEDBACK="$(jq -r '[.[] | select(.body | startswith("REVIEW_RESULT: CHANGES_REQUESTED"))] | last | .body // empty' <<<"$COMMENTS")"
           [ -n "$FEEDBACK" ]
@@ -83,7 +88,7 @@ jobs:
           Reviewer feedback:
 
           $(cat "$RUNNER_TEMP/review-feedback.txt")" \
-          | node scripts/pi-log-filter.mjs
+          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
           printf '\n'
 
       - name: Verify repair
@@ -125,6 +130,10 @@ jobs:
             -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" --data-binary @- \
             "https://api.github.com/repos/${REPO}/dispatches"
+
+      - name: Summarize Pi usage
+        if: always()
+        run: node scripts/pi-usage-summary.mjs
 
       - name: Clean worktree
         if: always()
