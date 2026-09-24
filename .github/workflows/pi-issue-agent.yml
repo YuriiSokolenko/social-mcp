@@ -18,23 +18,24 @@ concurrency:
 
 jobs:
   pi:
-    if: vars.PI_AUTOMATION_MODE != 'PAUSED' && vars.PI_AUTOMATION_MODE != 'DRAINING' && ((github.event_name == 'issues' && github.event.label.name == 'pi:ready') || github.event_name == 'repository_dispatch')
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && ((github.event_name == 'issues' && github.event.label.name == 'pi:ready') || github.event_name == 'repository_dispatch')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
       ISSUE: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
       REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout control repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Validate dispatched issue
         if: github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]]
           issue_json="$(curl --fail-with-body -sS \
@@ -44,9 +45,13 @@ jobs:
           jq -e '.state == "open" and (([.labels[].name] | index("pi:ready")) != null)' <<<"$issue_json" >/dev/null
 
       - name: Ensure workflow labels
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/pi-issue-status.sh ensure
 
       - name: Mark issue running
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/pi-issue-status.sh running
 
       - name: Create temporary issue worktree
@@ -85,12 +90,11 @@ jobs:
           pytest --version
           ruff --version
 
-      - name: Run Pi with live progress
+      - name: Prepare issue task
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -o pipefail
-          cd "$JOB_DIR"
           ISSUE_JSON="$(curl --fail-with-body -sS \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
@@ -122,6 +126,11 @@ jobs:
           Finish only after the repository is in a state ready for CI.
           EOF
 
+      - name: Run Pi with live progress
+        run: |
+          set -o pipefail
+          cd "$JOB_DIR"
+          TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           pi \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
@@ -135,6 +144,8 @@ jobs:
       - name: Save implementation checkpoint
         id: checkpoint
         if: always() && steps.worktree.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           cd "$JOB_DIR"
           rm -rf .pytest_cache .ruff_cache htmlcov build dist
@@ -155,7 +166,7 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git push origin "HEAD:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "HEAD:refs/heads/pi/issue-${ISSUE}-checkpoint"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh from dev and verify integrated code
@@ -204,6 +215,8 @@ jobs:
 
       - name: Save verified or failed integration checkpoint
         if: always() && steps.checkpoint.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           cd "$JOB_DIR"
           if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
@@ -219,10 +232,12 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "fix: preserve integration for issue #${ISSUE}"
           fi
-          git push origin "HEAD:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "HEAD:refs/heads/pi/issue-${ISSUE}-checkpoint"
 
       - name: Push verified issue branch
         if: steps.checkpoint.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           cd "$JOB_DIR"
           rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
@@ -233,7 +248,7 @@ jobs:
             echo "dev moved during verification; checkpoint preserved for retry" >&2
             exit 1
           }
-          git push --set-upstream origin "HEAD:refs/heads/pi/issue-${ISSUE}"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --set-upstream origin "HEAD:refs/heads/pi/issue-${ISSUE}"
 
       - name: Create or update pull request
         id: pr
@@ -241,6 +256,7 @@ jobs:
         env:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           API="https://api.github.com/repos/${REPO}"
           AUTH=(
@@ -270,6 +286,8 @@ jobs:
 
       - name: Trigger Pi PR review
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           API="https://api.github.com/repos/${REPO}"
           jq -n \
@@ -286,20 +304,28 @@ jobs:
 
       - name: Mark pull request created
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/pi-issue-status.sh mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
 
       - name: Remove published checkpoint
         if: steps.pr.outputs.number != ''
-        run: git push origin --delete "pi/issue-${ISSUE}-checkpoint"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin --delete "pi/issue-${ISSUE}-checkpoint"
 
       - name: Mark no-change result
         if: steps.checkpoint.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/pi-issue-status.sh needs-human             "Pi completed the task but produced no repository changes. Human review is required."
 
       - name: Mark failed result
         if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           MESSAGE="Pi workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
           if git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}-checkpoint" >/dev/null; then
@@ -309,6 +335,8 @@ jobs:
 
       - name: Mark cancelled result
         if: cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/pi-issue-status.sh cancelled             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 

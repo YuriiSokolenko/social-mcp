@@ -39,8 +39,8 @@ jobs:
       - name: Pytest
         run: pytest
 
-      - name: Merge agent gates
-        run: node --test tests/pi-auto-merge.test.mjs
+      - name: Agent workflow checks
+        run: node --test tests/*.test.mjs
 
   docker:
     runs-on: ubuntu-latest
