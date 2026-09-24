@@ -85,7 +85,6 @@ async function snapshot() {
   for (const issue of openIssues) {
     if (activeLabels.some(label => labels(issue).has(label))) active.add(issue.number);
   }
-  const slots = Math.max(0, 2 - active.size);
   const skipped = [];
   const candidates = [];
   for (const issue of openIssues.filter(item => labels(item).has("dispatcher:ready"))) {
@@ -110,7 +109,7 @@ async function snapshot() {
     else candidates.push({ issue: issue.number, priority: metadata.priority, title: issue.title });
   }
   candidates.sort((a, b) => a.priority.localeCompare(b.priority) || a.issue - b.issue);
-  return { active: [...active].sort((a, b) => a - b), slots, candidates, skipped };
+  return { active: [...active].sort((a, b) => a - b), candidates, skipped };
 }
 function finalText(jsonl) {
   let result = "";
@@ -130,7 +129,7 @@ async function main() {
     await ensureReadyLabel();
     const data = await snapshot();
     fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
-    console.log(`Dispatcher: ${data.active.length} active, ${data.slots} free slots, ${data.candidates.length} candidates`);
+    console.log(`Dispatcher: ${data.active.length} active, ${data.candidates.length} ready candidates`);
     for (const item of data.skipped) console.log(`Skipped #${item.issue}: ${item.reason}`);
     return;
   }
@@ -143,16 +142,31 @@ async function main() {
   }
   const selected = result.issues;
   if (new Set(selected).size !== selected.length) throw new Error("duplicate issue");
+
+  // The concurrency group serializes dispatcher jobs, but queued jobs can start
+  // with stale trigger events. Always rebuild state after acquiring the runner
+  // and treat GitHub state, not the triggering event, as the source of truth.
   const initial = await snapshot();
-  if (selected.length > initial.slots ||
+  if (selected.length !== initial.candidates.length ||
       selected.some((number, index) => number !== initial.candidates[index]?.issue)) {
-    throw new Error("dispatcher result exceeds capacity or violates priority order");
+    throw new Error("dispatcher result must contain all eligible issues in priority order");
   }
   for (const number of selected) {
     const state = await snapshot();
-    if (state.active.length >= 2) throw new Error("no remaining issue slots");
-    const expected = state.candidates.slice(0, state.slots).map(item => item.issue);
-    if (number !== expected[0]) throw new Error(`#${number} is not the next eligible issue`);
+
+    // A previous serialized dispatcher may already have assigned this issue.
+    // That is a successful no-op, not an error and must never emit a duplicate
+    // repository_dispatch event.
+    if (state.active.includes(number)) {
+      console.log(`Skipped #${number}: already assigned by an earlier dispatcher`);
+      continue;
+    }
+
+    if (number !== state.candidates[0]?.issue) {
+      console.log(`Skipped #${number}: no longer the next eligible issue`);
+      continue;
+    }
+
     await api(`/issues/${number}/labels`, {
       method: "POST",
       body: JSON.stringify({ labels: ["pi:ready"] }),
