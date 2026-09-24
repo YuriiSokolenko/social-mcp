@@ -6,6 +6,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 SQLITE_URL_PREFIXES = ("sqlite:///", "sqlite:")
 
 
+class ConfigurationError(ValueError):
+    """Raised when a setting cannot produce a usable dependency.
+
+    Derived from :class:`ValueError` so that a bad setting keeps failing as the
+    value error it always was, while giving startup one type to catch.
+    """
+
+
 class Settings(BaseSettings):
     app_name: str = "Social MCP"
     environment: str = "development"
@@ -28,6 +36,11 @@ class Settings(BaseSettings):
         the storage or transport layers. A fourth slash denotes an absolute
         path (``sqlite:////data/db``), which is how the container mounts its
         volume, and a bare path is accepted as-is.
+
+        Raises:
+            ConfigurationError: when the URL points at something other than a
+                local SQLite file. The check lives here so that neither the
+                storage nor the transport layer has to interpret configuration.
         """
 
         url = self.database_url.strip()
@@ -37,11 +50,11 @@ class Settings(BaseSettings):
                 break
         else:
             if "://" in url:
-                raise ValueError("DATABASE_URL must be a local sqlite URL.")
+                raise ConfigurationError("DATABASE_URL must be a local sqlite URL.")
             path = url
 
         if not path:
-            raise ValueError("DATABASE_URL must point to a SQLite file.")
+            raise ConfigurationError("DATABASE_URL must point to a SQLite file.")
 
         return Path(path)
 
