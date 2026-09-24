@@ -103,7 +103,7 @@ Settings -> Secrets and variables -> Actions -> Variables
 
 The expected normal value is `RUNNING`.
 
-The workflow guards intentionally treat an absent or unknown value as enabled (fail-open) for backward compatibility. Therefore deleting the variable is **not** a supported way to pause automation. Always use `PAUSED` for a full stop or `DRAINING` to stop admitting new issue work while allowing active PRs to finish.
+The workflow guards treat an absent or unknown value as disabled (fail-closed). Set `RUNNING` explicitly to start new issue work, `DRAINING` to let active PRs finish, or `PAUSED` for a full stop. Deleting the variable does not resume automation.
 
 ## Issue implementation flow
 
@@ -156,6 +156,8 @@ The implementer must not:
 - expose credentials or production secrets.
 
 GitHub operations are owned by the workflow, not by the model.
+The agent steps do not receive `GH_TOKEN`, and checkout does not persist GitHub credentials.
+Only the workflow's dedicated API and push steps receive the token.
 
 ## Mandatory verification before PR
 

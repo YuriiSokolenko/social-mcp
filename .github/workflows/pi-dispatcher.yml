@@ -16,12 +16,11 @@ concurrency:
 
 jobs:
   dispatcher:
-    if: vars.PI_AUTOMATION_MODE != 'PAUSED' && vars.PI_AUTOMATION_MODE != 'DRAINING' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'dev'))
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'dev'))
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 30
     env:
       REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout trusted dev
@@ -32,6 +31,8 @@ jobs:
 
       - name: Prepare dispatcher context
         id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           node scripts/pi-dispatcher.mjs prepare "$RUNNER_TEMP/pi-dispatcher-context.json"
           if jq -e '(.candidates | length > 0)' "$RUNNER_TEMP/pi-dispatcher-context.json" >/dev/null; then
@@ -64,4 +65,6 @@ jobs:
 
       - name: Validate and start selected issues
         if: steps.prepare.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/pi-dispatcher.mjs apply "$RUNNER_TEMP/pi-dispatcher-result.jsonl"
