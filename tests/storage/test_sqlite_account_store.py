@@ -265,3 +265,45 @@ def test_list_accounts_orders_by_platform_then_username(
         (SocialPlatform.THREADS, "bob"),
         (SocialPlatform.TIKTOK, "zoe"),
     ]
+
+
+def test_check_passes_for_an_initialized_store(store: SQLiteAccountStore) -> None:
+    store.check()
+
+    store.save(build_account())
+    store.check()
+
+
+def test_check_raises_when_the_database_is_unreachable(
+    store: SQLiteAccountStore,
+    tmp_path,
+) -> None:
+    store.database_path = tmp_path / "removed" / "social-mcp.db"
+
+    with pytest.raises(sqlite3.Error):
+        store.check()
+
+
+def test_check_does_not_recreate_a_deleted_database(store: SQLiteAccountStore) -> None:
+    store.database_path.unlink()
+
+    with pytest.raises(sqlite3.OperationalError):
+        store.check()
+
+    assert not store.database_path.exists()
+
+
+def test_check_rejects_corrupted_database_header(store: SQLiteAccountStore) -> None:
+    with store.database_path.open("r+b") as database:
+        database.write(b"not a sqlite db!")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        store.check()
+
+
+def test_check_rejects_database_without_account_table(store: SQLiteAccountStore) -> None:
+    store.database_path.unlink()
+    sqlite3.connect(store.database_path).close()
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        store.check()

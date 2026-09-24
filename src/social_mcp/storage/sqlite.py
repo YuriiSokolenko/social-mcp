@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +31,17 @@ class SQLiteAccountStore:
                 )
                 """
             )
+
+    def check(self) -> None:
+        """Read the existing account table without creating a new database.
+
+        Raises:
+            sqlite3.Error: when the database cannot be opened or queried.
+        """
+
+        uri = f"{self.database_path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            connection.execute("SELECT 1 FROM connected_accounts LIMIT 1").fetchone()
 
     def save(self, account: ConnectedAccount) -> ConnectedAccount:
         with self._connect() as connection:
