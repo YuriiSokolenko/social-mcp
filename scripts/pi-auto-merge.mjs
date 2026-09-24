@@ -47,7 +47,7 @@ export function allowedFiles(files, changedCount) {
 }
 
 export function needsCIDispatch(ci, marker) {
-  return (!ci || ci.conclusion === 'action_required') && !marker;
+  return !ci || ci.conclusion === 'action_required';
 }
 
 async function mark(sha, context, state, description) {
@@ -58,12 +58,12 @@ async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   if (!currentReview && !latestStatus(statuses, reviewMarker)) {
     await api('/dispatches', 'POST', { event_type: 'pi_pr_review', client_payload: { pr_number: pr.number } });
-    await mark(sha, reviewMarker, 'pending', `Review requested for PR #${pr.number}`);
+    await mark(sha, reviewMarker, 'success', `Review dispatch requested for PR #${pr.number}`);
   }
   const ci = latestCI(runs, sha, pr.head.ref);
   if (needsCIDispatch(ci, latestStatus(statuses, ciMarker))) {
     await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: pr.head.ref });
-    await mark(sha, ciMarker, 'pending', `CI requested for PR #${pr.number}`);
+    await mark(sha, ciMarker, 'success', `CI dispatch requested for PR #${pr.number}`);
   }
 }
 
@@ -129,7 +129,7 @@ async function processPR(prSummary) {
   const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
   if (!merged.merged) throw new Error(`#${pr.number}: merge API did not confirm merge`);
   console.log(`#${pr.number}: merged ${sha}`);
-  await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'main' });
+  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'main' });
   console.log(`#${pr.number}: dispatcher started`);
 }
 
