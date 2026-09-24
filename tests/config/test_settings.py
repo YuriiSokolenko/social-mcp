@@ -41,7 +41,7 @@ def test_database_path_rejects_non_sqlite_or_empty_urls(database_url: str) -> No
         resolved_path(database_url)
 
 
-def test_settings_read_environment_values(monkeypatch) -> None:
+def test_settings_read_environment_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "sqlite:////tmp/social-mcp.db")
     monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "key-from-environment")
 
@@ -49,3 +49,50 @@ def test_settings_read_environment_values(monkeypatch) -> None:
 
     assert str(settings.database_path) == "/tmp/social-mcp.db"
     assert settings.token_encryption_key == "key-from-environment"
+
+
+def test_token_encryption_key_resolved_from_secret_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_file = tmp_path / "token_encryption_key"
+    key_file.write_text("file-key-value  \n", encoding="utf-8")
+
+    monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY_FILE", str(key_file))
+
+    settings = Settings(_env_file=None)
+
+    assert settings.token_encryption_key == "file-key-value"
+
+
+def test_explicit_key_takes_precedence_over_secret_file(tmp_path: Path) -> None:
+    key_file = tmp_path / "token_encryption_key"
+    key_file.write_text("file-key-value", encoding="utf-8")
+
+    settings = Settings(
+        _env_file=None,
+        token_encryption_key="explicit-key",
+        token_encryption_key_file=key_file,
+    )
+
+    assert settings.token_encryption_key == "explicit-key"
+
+
+def test_no_key_or_file_leaves_key_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("TOKEN_ENCRYPTION_KEY_FILE", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.token_encryption_key is None
+
+
+def test_secret_file_missing_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing = tmp_path / "missing"
+    monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY_FILE", str(missing))
+
+    with pytest.raises((FileNotFoundError, OSError)):
+        Settings(_env_file=None)
