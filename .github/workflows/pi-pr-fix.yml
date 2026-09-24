@@ -21,22 +21,23 @@ concurrency:
 
 jobs:
   fix:
-    if: vars.PI_AUTOMATION_MODE != 'PAUSED'
+    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
       PR: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
       REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout control repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
           ref: main
 
       - name: Load PR and review feedback
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           API="https://api.github.com/repos/${REPO}"
           PR_JSON="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/pulls/${PR}")"
@@ -93,6 +94,8 @@ jobs:
 
       - name: Commit and push repair
         id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           cd "$JOB_DIR"
           rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
@@ -108,11 +111,13 @@ jobs:
           git config user.email "social-mcp-pi@users.noreply.github.com"
           git add -A
           git commit -m "fix: address review for issue #${ISSUE}"
-          git push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "$HEAD_REF"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "$HEAD_REF"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Trigger fresh review
         if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           jq -n --arg event_type "pi_pr_review" --arg pr_number "$PR" \
             '{event_type:$event_type,client_payload:{pr_number:$pr_number}}' |

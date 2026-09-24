@@ -23,6 +23,7 @@ let streamedText = "";
 let outputNeedsNewline = false;
 let streamAtLineStart = true;
 let streamKind = null;
+let pendingStream = "";
 let responseStarted = null;
 let firstTokenAt = null;
 let responseNumber = 0;
@@ -34,7 +35,7 @@ let measuredResponses = 0;
 let totalResponseMs = 0;
 const activeTools = new Map();
 
-const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie)$/i;
+const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie|gh_token|github_token)$/i;
 
 function redact(value, key = "") {
   if (sensitiveKey.test(key)) return "[REDACTED]";
@@ -45,7 +46,8 @@ function redact(value, key = "") {
   if (typeof value === "string") {
     return value
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-      .replace(/\b(access_token|refresh_token|client_secret|api_key)=([^&\s]+)/gi, "$1=[REDACTED]");
+      .replace(/\b(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|gh_token|github_token|cookie|set-cookie)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/gi, "$1$2$3[REDACTED]")
+      .replace(/\b(gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g, "[REDACTED]");
   }
   return value;
 }
@@ -60,7 +62,7 @@ function stringify(value, limit = 7000) {
   try {
     out = typeof value === "string" ? redact(value) : JSON.stringify(redact(value), null, 2);
   } catch {
-    out = String(value);
+    out = "[Unserializable value]";
   }
   return truncate(String(out), limit);
 }
@@ -89,10 +91,44 @@ function finalAssistantText(messages) {
 }
 
 function ensureNewline() {
+  flushStream(true);
   if (outputNeedsNewline) {
     process.stdout.write("\n");
     outputNeedsNewline = false;
     streamAtLineStart = true;
+  }
+}
+
+function emitStream(content) {
+  for (const fragment of String(redact(content)).split(/(\r\n|\r|\n)/)) {
+    if (fragment === "\n" || fragment === "\r" || fragment === "\r\n") {
+      process.stdout.write("\n");
+      streamAtLineStart = true;
+    } else if (fragment) {
+      if (streamAtLineStart) process.stdout.write("  ");
+      process.stdout.write(fragment);
+      streamAtLineStart = false;
+    }
+  }
+  outputNeedsNewline = !streamAtLineStart;
+}
+
+function flushStream(final = false) {
+  // Keep incomplete lines together so a token split between Pi deltas is redacted.
+  // For long ordinary lines, release a safe prefix to retain live progress.
+  while (/[\r\n]/.test(pendingStream)) {
+    const end = pendingStream.search(/[\r\n]/) + 1;
+    emitStream(pendingStream.slice(0, end));
+    pendingStream = pendingStream.slice(end);
+  }
+  if (final) {
+    if (pendingStream) emitStream(pendingStream);
+    pendingStream = "";
+  } else if (pendingStream.length > 1024 &&
+    !/\b(?:Bearer\s+|(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|gh_token|github_token|cookie|set-cookie)["']?\s*[=:]|gh[pousr]_|github_pat_)/i.test(pendingStream)) {
+    const safe = pendingStream.length - 512;
+    emitStream(pendingStream.slice(0, safe));
+    pendingStream = pendingStream.slice(safe);
   }
 }
 
@@ -103,18 +139,8 @@ function streamContent(kind, content) {
     heading(kind === "thinking" ? "💭" : "📝", kind === "thinking" ? "Thinking" : "Response", C.blue);
     streamKind = kind;
   }
-  // Keep every model-authored line indented: GitHub Actions must not interpret it as a command.
-  for (const fragment of String(redact(content)).split(/(\n)/)) {
-    if (fragment === "\n") {
-      process.stdout.write("\n");
-      streamAtLineStart = true;
-    } else if (fragment) {
-      if (streamAtLineStart) process.stdout.write("  ");
-      process.stdout.write(fragment);
-      streamAtLineStart = false;
-    }
-  }
-  outputNeedsNewline = !streamAtLineStart;
+  pendingStream += String(content);
+  flushStream();
 }
 
 function duration(ms) {
@@ -142,7 +168,7 @@ function oneLine(value, limit = 110) {
 
 function detailLines(text) {
   // Prefix untrusted tool output so it cannot become a GitHub workflow command.
-  for (const line of String(text).split("\n")) console.log("  " + line);
+  for (const line of String(text).split(/\r\n|\r|\n/)) console.log("  " + line);
 }
 
 function printToolDetails(name, args, result, isError) {
@@ -296,7 +322,7 @@ for await (const line of rl) {
       if (finalText.trim() && !streamedText.trimEnd().endsWith(finalText.trimEnd())) {
         console.log();
         console.log(C.bold + "Final response" + C.reset);
-        console.log(truncate(redact(finalText), 12000));
+        detailLines(truncate(redact(finalText), 12000));
       }
       if (measuredResponses) {
         console.log(C.gray + `Model totals (${measuredResponses} responses): ${usageSummary(totals)} · response time ${duration(totalResponseMs)}` + C.reset);
@@ -307,3 +333,4 @@ for await (const line of rl) {
     }
   }
 }
+flushStream(true);
