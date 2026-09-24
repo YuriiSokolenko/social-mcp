@@ -23,7 +23,7 @@ jobs:
   fix:
     if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
-    timeout-minutes: 120
+    timeout-minutes: 1200
     env:
       PR: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
       REPO: ${{ github.repository }}
