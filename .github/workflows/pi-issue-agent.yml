@@ -28,9 +28,10 @@ jobs:
       PI_PHASE: implementation
 
     steps:
-      - name: Checkout control repository
+      - name: Checkout dev control repository
         uses: actions/checkout@v5
         with:
+          ref: dev
           fetch-depth: 0
           persist-credentials: false
 
