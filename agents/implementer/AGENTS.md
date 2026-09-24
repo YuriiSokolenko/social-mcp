@@ -37,7 +37,17 @@ Do not consider an implementation complete without appropriate automated tests.
 
 For a new component, a change to module responsibilities, or a decision about abstractions, read `.agents/skills/python-design-patterns/SKILL.md`. When the issue introduces or changes boundaries among the domain, application, HTTP/MCP, storage, or platform adapters, also read `.agents/skills/architecture-patterns/SKILL.md`. Load their references only for a specific design question.
 
+When introducing or reorganizing Python packages and module APIs, also read `.agents/skills/python-project-structure/SKILL.md`. Keep the existing `src/social_mcp` package and `tests/` layout unless the issue specifically requires a change; examples such as adding `__all__` to every module are optional design choices, not a repository mandate.
+
 These skills provide options, not a request to redesign the repository. Match the current architecture and the issue's acceptance criteria. Use the smallest useful boundary, and avoid adding interfaces, layers, services, or new dependencies without a concrete need.
+
+## Python practice guidance
+
+- For naming, documentation, or lint/formatting decisions, read `.agents/skills/python-code-style/SKILL.md`.
+- For new public APIs, type annotations, and protocol/interface decisions, read `.agents/skills/python-type-safety/SKILL.md`.
+- For validation, OAuth, external API failures, or exception mapping, read `.agents/skills/python-error-handling/SKILL.md`.
+
+Apply only guidance relevant to the issue. The existing `pyproject.toml`, Ruff configuration (100-character line length), installed dependencies, and required CI checks take precedence over example tool settings in skills. Do not add mypy, pyright, formatters, or other dependencies solely because a skill mentions them.
 
 ## Security rules
 
