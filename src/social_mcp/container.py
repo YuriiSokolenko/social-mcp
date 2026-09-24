@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from social_mcp.auth.token_cipher import TokenCipher
-from social_mcp.config import ConfigurationError, Settings
+from social_mcp.config import Settings
 from social_mcp.storage.sqlite import SQLiteAccountStore
 
 logger = logging.getLogger(__name__)
@@ -115,9 +115,10 @@ def token_cipher_factory(settings: Settings) -> TokenCipher | None:
         return None
     try:
         return TokenCipher(key)
-    except ConfigurationError:
-        # A malformed key is a configuration problem and behaves like an
-        # absent one: encrypted token operations stay disabled and are
+    except ValueError:
+        # The auth layer reports an unusable key as a value error, and
+        # ConfigurationError is one too. Either way a malformed key behaves
+        # like an absent one: encrypted token operations stay disabled and are
         # enforced per operation by require_token_cipher().
         return None
 
