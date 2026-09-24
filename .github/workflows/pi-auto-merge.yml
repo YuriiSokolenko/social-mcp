@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   merge:
+    if: vars.PI_AUTOMATION_MODE != 'PAUSED'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
