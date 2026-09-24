@@ -30,6 +30,14 @@ The first version targets **Threads** and **TikTok**. Instagram can be added lat
 - Keep platform adapters independent.
 - Manage social-account connections through the Web Admin rather than manual token copying.
 
+## Development and releases
+
+`dev` is the GitHub default branch and the integration branch for daily work. Start task branches from `dev`, open implementation pull requests into `dev`, and merge them only after CI and an independent review. Pull requests with `Closes #<issue-number>` close their linked issues when merged into the default branch.
+
+`main` is reserved for future releases. Do not merge Pi task branches into `main` or copy routine development changes there. When releases begin, promote a verified `dev` state through a separate human-reviewed `dev` → `main` pull request, using a merge commit to preserve branch ancestry. Tag the release on `main` after its checks pass. Protect both branches from force pushes and deletion; require the applicable checks and review for merges.
+
+Workflow details and branch protection requirements: [CI and agent workflow rules](docs/CI_RULES.md).
+
 ## Confirmed API scope (September 2026)
 
 ### Threads
