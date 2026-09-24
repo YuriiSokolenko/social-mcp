@@ -33,6 +33,12 @@ Do not consider an implementation complete without appropriate automated tests.
 - Do not weaken type validation, authentication, authorization, or security checks to make tests pass.
 - Never commit runtime databases, virtual environments, caches, credentials, tokens, keys, or local environment files.
 
+## Architecture guidance
+
+For a new component, a change to module responsibilities, or a decision about abstractions, read `.agents/skills/python-design-patterns/SKILL.md`. When the issue introduces or changes boundaries among the domain, application, HTTP/MCP, storage, or platform adapters, also read `.agents/skills/architecture-patterns/SKILL.md`. Load their references only for a specific design question.
+
+These skills provide options, not a request to redesign the repository. Match the current architecture and the issue's acceptance criteria. Use the smallest useful boundary, and avoid adding interfaces, layers, services, or new dependencies without a concrete need.
+
 ## Security rules
 
 - Never expose or log OAuth access tokens, refresh tokens, client secrets, encryption keys, cookies, Authorization headers, or other credentials.
