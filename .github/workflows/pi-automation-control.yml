@@ -23,10 +23,16 @@ jobs:
     steps:
       - name: Set automation mode
         env:
-          GH_TOKEN: ${{ github.token }}
+          # GITHUB_TOKEN cannot update repository variables. This secret needs
+          # repository Variables: write permission (and no other write scope).
+          GH_TOKEN: ${{ secrets.PI_CONTROL_TOKEN }}
           REPO: ${{ github.repository }}
           MODE: ${{ inputs.mode }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Missing Actions secret PI_CONTROL_TOKEN (repository Variables: write)." >&2
+            exit 1
+          fi
           curl --fail-with-body -sS -X PATCH \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
@@ -34,6 +40,16 @@ jobs:
             -H "Content-Type: application/json" \
             --data "$(jq -nc --arg value "$MODE" '{value:$value}')" \
             "https://api.github.com/repos/${REPO}/actions/variables/PI_AUTOMATION_MODE"
+          actual="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/actions/variables/PI_AUTOMATION_MODE" \
+            | jq -r '.value')"
+          if [ "$actual" != "$MODE" ]; then
+            echo "Automation mode verification failed: expected $MODE, got $actual" >&2
+            exit 1
+          fi
           echo "PI automation mode: $MODE"
 
       - name: Resume dispatcher
