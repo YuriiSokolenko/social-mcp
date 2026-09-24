@@ -1,0 +1,1 @@
+scope,issue,phase,run_id,attempt,status,responses,input,output,cache_read,cache_write,total_tokens,model_seconds,runner_seconds,url

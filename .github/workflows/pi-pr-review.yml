@@ -29,6 +29,7 @@ jobs:
     env:
       PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
       REPO: ${{ github.repository }}
+      PI_PHASE: review
 
     steps:
       - name: Checkout control repository
@@ -37,6 +38,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: main
+
+      - name: Initialize Pi usage
+        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
 
       - name: Load pull request metadata
         env:
@@ -142,6 +146,7 @@ jobs:
         run: |
           ISSUE="${HEAD_REF#pi/issue-}"
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
+          echo "PI_ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
           API="https://api.github.com/repos/${REPO}"
           ISSUE_JSON="$(curl --fail-with-body -sS \
@@ -214,7 +219,7 @@ jobs:
             --no-session \
             "$(cat "$TASK_FILE")" \
           | tee "$RAW" \
-          | node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
           printf '\n'
 
@@ -232,7 +237,7 @@ jobs:
             RETRY_RAW="$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
             pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
               "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. The test logs are $RUNNER_TEMP/pytest.log and $RUNNER_TEMP/ruff.log. Your final response MUST begin with REVIEW_RESULT: PASS or REVIEW_RESULT: CHANGES_REQUESTED, followed by evidence." \
-              | tee "$RETRY_RAW" | node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+              | tee "$RETRY_RAW" | PI_CALL=retry node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RETRY_RAW")"
           fi
           VERDICT="$(jq -r '.verdict' <<<"$RESULT_JSON")"
@@ -315,6 +320,10 @@ jobs:
           fi
           bash scripts/pi-pr-review-status.sh failed \
             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Summarize Pi usage
+        if: always()
+        run: node scripts/pi-usage-summary.mjs
 
       - name: Clean temporary review worktree
         if: always()
