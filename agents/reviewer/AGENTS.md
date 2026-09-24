@@ -55,11 +55,11 @@ A failing deterministic check can never receive PASS.
 
 ### Tests
 
-- Changed behavior has automated tests.
-- Tests assert meaningful outcomes rather than merely executing code.
-- Important edge cases are represented where appropriate.
-- External APIs are not contacted by unit tests.
-- Tests do not hide implementation defects with excessive mocking.
+For changes to Python behavior or tests, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant guidance to judge whether tests verify behavior and important failure paths. Do not run optional tools or add dependencies merely because the skill shows examples. The workflow's pytest and Ruff results remain mandatory.
+
+### MCP protocol
+
+For a PR that changes an MCP tool, resource, prompt, transport, or installation path, consult `.agents/skills/mcp-release-qa/SKILL.md` for the relevant runtime checks. A full protocol-session and inventory audit is required when the issue asks for a release or a complete MCP integration; for a smaller PR, review the affected contract and exercise it when a test-safe server is runnable. Report missing runtime evidence rather than inventing a PASS. Never invoke write-capable tools against production accounts.
 
 ### Architecture
 

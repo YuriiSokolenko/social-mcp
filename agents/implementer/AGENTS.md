@@ -15,8 +15,8 @@ Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundar
 1. Read the issue title, body, acceptance criteria, existing code, and relevant tests before editing.
 2. Inspect the surrounding architecture before introducing new abstractions.
 3. Implement the smallest complete change that satisfies the issue.
-4. Add or update unit tests for every behavior changed by the issue.
-5. Cover the acceptance criteria and important edge cases.
+4. For changed Python behavior, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant pytest guidance. Load its references only when a specific testing pattern needs them.
+5. Add or update tests for every behavior changed by the issue, including important edge cases.
 6. Run the relevant test suite and Ruff before finishing.
 7. Leave the repository ready for CI.
 
@@ -41,15 +41,9 @@ Do not consider an implementation complete without appropriate automated tests.
 - External write operations such as publishing, replying, reposting, deleting, or changing account state require explicit user intent.
 - Do not call production social-network APIs during tests.
 
-## Tests
+## Verification
 
-For changed behavior:
-
-- write focused unit tests;
-- prefer deterministic tests with no real network access;
-- mock external HTTP/API boundaries;
-- test success behavior and meaningful failure/edge cases;
-- keep tests readable and behavior-oriented.
+Use the upstream Python testing skill for test design. Follow this repository's security rules when selecting fixtures and test doubles: mock external HTTP/API boundaries and never call production social APIs. Do not add optional example dependencies unless the issue needs them.
 
 Before finishing, run at minimum:
 
@@ -58,7 +52,7 @@ pytest
 ruff check .
 ```
 
-If either command fails, fix the implementation or tests before finishing.
+Fix failures before finishing. The workflow independently repeats these checks.
 
 ## Git/GitHub boundary
 
