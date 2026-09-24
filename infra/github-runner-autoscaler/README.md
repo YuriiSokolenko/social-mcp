@@ -2,8 +2,9 @@
 
 This directory runs a small Docker-based autoscaler for the N150 host.
 
-It watches queued runs of `.github/workflows/pi-issue-agent.yml` and keeps up to
-`MAX_RUNNERS` ephemeral self-hosted runner containers alive. Each worker registers
+It watches queued runs of `.github/workflows/pi-issue-agent.yml`,
+`.github/workflows/pi-pr-review.yml`, and `.github/workflows/pi-dispatcher.yml`,
+and keeps up to `MAX_RUNNERS` ephemeral self-hosted runner containers alive. Each worker registers
 with GitHub using `--ephemeral`, accepts one job, and is removed after the job.
 
 ## Security model
