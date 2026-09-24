@@ -77,7 +77,7 @@ async function snapshot() {
   const openIssues = issues.filter(issue => !issue.pull_request);
   const openPrIssues = new Set();
   for (const pr of prs) {
-    if (pr.head.repo?.full_name !== repo || pr.base.ref !== "main") continue;
+    if (pr.head.repo?.full_name !== repo || pr.base.ref !== "dev") continue;
     const match = pr.head.ref.match(/^pi\/issue-(\d+)$/);
     if (match) openPrIssues.add(Number(match[1]));
   }

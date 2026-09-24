@@ -54,9 +54,9 @@ jobs:
           JOB_DIR="$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
           rm -rf "$JOB_DIR"
-          git fetch origin main
+          git fetch origin dev
           git worktree prune
-          git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" origin/main
+          git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" origin/dev
           echo "Temporary worktree: $JOB_DIR"
 
       - name: Prepare Python environment
@@ -164,7 +164,7 @@ jobs:
           )
 
           EXISTING="$(
-            curl -fsS "${AUTH[@]}"               "${API}/pulls?state=open&head=${OWNER}%3Api%2Fissue-${ISSUE}&base=main"
+            curl -fsS "${AUTH[@]}"               "${API}/pulls?state=open&head=${OWNER}%3Api%2Fissue-${ISSUE}&base=dev"
           )"
 
           PR_NUMBER="$(jq -r '.[0].number // empty' <<<"$EXISTING")"
@@ -172,7 +172,7 @@ jobs:
 
           if [ -z "$PR_NUMBER" ]; then
             PR_JSON="$(
-              jq -n                 --arg title "Pi: #${ISSUE} ${ISSUE_TITLE}"                 --arg head "pi/issue-${ISSUE}"                 --arg base "main"                 --arg body "Closes #${ISSUE}\n\nImplemented automatically by the N150 Pi runner."                 '{title:$title,head:$head,base:$base,body:$body}' |               curl -fsS -X POST "${AUTH[@]}"                 -H "Content-Type: application/json"                 --data-binary @-                 "${API}/pulls"
+              jq -n                 --arg title "Pi: #${ISSUE} ${ISSUE_TITLE}"                 --arg head "pi/issue-${ISSUE}"                 --arg base "dev"                 --arg body "Closes #${ISSUE}\n\nImplemented automatically by the N150 Pi runner."                 '{title:$title,head:$head,base:$base,body:$body}' |               curl -fsS -X POST "${AUTH[@]}"                 -H "Content-Type: application/json"                 --data-binary @-                 "${API}/pulls"
             )"
 
             PR_NUMBER="$(jq -r '.number' <<<"$PR_JSON")"

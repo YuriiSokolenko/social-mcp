@@ -2,7 +2,7 @@
 
 A task file gives the Pi dispatcher the priority, dependencies, and product context for a GitHub issue. It supplements the issue; the issue remains the source of acceptance criteria and implementation discussion.
 
-Create one file named `tasks/<issue-number>.md` for each issue that may enter the dispatcher queue. Commit the file to `main` before adding `dispatcher:ready` to the issue. The dispatcher reads task files from `main` and considers **only** open issues bearing the exact `dispatcher:ready` label. A file alone never starts work.
+Create one file named `tasks/<issue-number>.md` for each issue that may enter the dispatcher queue. Commit the file to `dev` before adding `dispatcher:ready` to the issue. The dispatcher reads task files from `dev` and considers **only** open issues bearing the exact `dispatcher:ready` label. A file alone never starts work.
 
 ## Format
 
