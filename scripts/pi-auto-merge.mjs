@@ -37,7 +37,7 @@ export function latestStatus(statuses, context) {
 
 export function latestCI(runs, sha, branch) {
   return runs.filter(run => run.head_sha === sha && run.head_branch === branch &&
-    ['pull_request', 'workflow_dispatch'].includes(run.event))
+    run.event === 'workflow_dispatch')
     .sort((a, b) => b.id - a.id)[0] ?? null;
 }
 
@@ -47,7 +47,7 @@ export function allowedFiles(files, changedCount) {
 }
 
 export function needsCIDispatch(ci, marker) {
-  return !ci || ci.conclusion === 'action_required';
+  return !ci;
 }
 
 async function mark(sha, context, state, description) {
