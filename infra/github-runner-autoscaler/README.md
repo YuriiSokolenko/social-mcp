@@ -49,8 +49,9 @@ it cannot consume jobs in parallel with the ephemeral pool.
 Set `MAX_RUNNERS` in the N150 host's local `.env` to the desired pool capacity.
 The example defaults to two; a local value such as three takes precedence.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
-When GitHub or Docker state cannot be read, the manager skips that poll instead
-of treating the failed request as an empty queue or an empty runner pool.
+The manager counts both `queued` and `pending` GitHub workflow runs. When GitHub
+or Docker state cannot be read, it skips that poll instead of treating the failed
+request as an empty queue or an empty runner pool.
 
 Run the focused manager checks without contacting GitHub or Docker:
 

@@ -31,17 +31,19 @@ registration_token() {
 }
 
 queued_jobs() {
-  local total=0 workflow count
+  local total=0 workflow status count
   IFS=',' read -ra workflows <<< "${WORKFLOW_FILES}"
   for workflow in "${workflows[@]}"; do
     workflow="$(printf '%s' "$workflow" | xargs)"
     [ -z "$workflow" ] && continue
-    count="$(api_get "${API}/actions/workflows/${workflow}/runs?status=queued&per_page=100" | jq -er '.total_count | if type == "number" and . >= 0 and floor == . then . else error("invalid count") end')" || return 1
-    if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
-      log "warning: invalid queued run count for workflow=$workflow"
-      return 1
-    fi
-    total=$((total + count))
+    for status in queued pending; do
+      count="$(api_get "${API}/actions/workflows/${workflow}/runs?status=${status}&per_page=100" | jq -er '.total_count | if type == "number" and . >= 0 and floor == . then . else error("invalid count") end')" || return 1
+      if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        log "warning: invalid run count for workflow=$workflow status=$status"
+        return 1
+      fi
+      total=$((total + count))
+    done
   done
   printf '%s\n' "$total"
 }
