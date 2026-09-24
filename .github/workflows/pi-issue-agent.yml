@@ -126,13 +126,13 @@ jobs:
           pytest
           ruff check .
 
-      - name: Commit and push changes
+      - name: Commit implementation
         id: changes
         run: |
           cd "$JOB_DIR"
 
           # Never let local execution artifacts become part of the agent commit.
-          rm -rf             .venv             .pytest_cache             .ruff_cache             htmlcov             build             dist
+          rm -rf .pytest_cache .ruff_cache htmlcov build dist
           rm -f .coverage coverage.xml
           find . -type d -name '__pycache__' -prune -exec rm -rf {} +
 
@@ -146,8 +146,26 @@ jobs:
 
           git add -A
           git commit -m "feat: implement issue #${ISSUE}"
-          git push --force-with-lease --set-upstream origin "pi/issue-${ISSUE}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh from dev and verify integrated code
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          cd "$JOB_DIR"
+          git fetch origin dev
+          git merge --no-edit origin/dev
+          python -m pip install -e .
+          pytest
+          ruff check .
+
+      - name: Push verified issue branch
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          cd "$JOB_DIR"
+          rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
+          rm -f .coverage coverage.xml
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+          git push --force-with-lease --set-upstream origin "pi/issue-${ISSUE}"
 
       - name: Create or update pull request
         id: pr
