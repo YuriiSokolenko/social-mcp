@@ -15,13 +15,13 @@ The pipeline is designed to:
 
 ## Branch roles
 
-`main` is the default control and stable branch. GitHub's scheduled and repository-dispatch workflows load their definitions from `main`. The automation control workflow still runs on `main` and dispatches the dispatcher from that ref.
+`main` remains the GitHub default branch, so GitHub loads definitions for default-branch events such as `repository_dispatch` and `workflow_run` from `main`. These workflow files are synchronized with `dev`. Pi workflows explicitly check out `dev` for their executable scripts, and the automation control workflow dispatches the dispatcher with ref `dev`.
 
-`dev` is the development integration branch. Pi issue branches start at `dev`; issue PRs, independent review, the auto-merge gate, and dispatcher task metadata target `dev`. The dispatcher triggered by a merged PR inspects `dev` even when its workflow starts from `main`. CI runs on PRs and pushes to both branches.
+`dev` is the development integration branch. Pi issue branches start at `dev`; issue PRs, independent review, the auto-merge gate, and dispatcher task metadata target `dev`. The dispatcher triggered by a merged PR checks out `dev`. CI runs on PRs and pushes to both branches.
 
-For manual maintenance and agent-assisted changes, treat `dev` as the primary development branch. Apply changes there by default. When a control workflow also needs a copy on `main` to run, synchronize the same change to both branches and verify both; do not leave the development copy behind. Change `main` alone only when the user explicitly requests that scope.
+For manual maintenance and agent-assisted changes, treat `dev` as the primary development branch. Apply changes there by default. When a control workflow also needs a definition on `main` to trigger, synchronize the same change to both branches and verify both; executable Pi control scripts run from `dev`. Change `main` alone only when the user explicitly requests that scope.
 
-Promote tested changes from `dev` to `main` with a separate reviewed PR. Automatic issue merges must never target `main`. Keep the control workflow files in `main` aligned with their copies in `dev` when intentionally changing automation.
+Promote tested changes from `dev` to `main` with a separate reviewed PR. Automatic issue merges must never target `main`. Keep the control workflow files in `main` aligned with their copies in `dev` when intentionally changing automation. Ordinary Pi issue PRs cannot auto-merge changes to workflow definitions or `scripts/pi-*.mjs` and `scripts/pi-*.sh`; those changes require a separate human-reviewed update.
 
 ## Trust boundaries
 
@@ -363,7 +363,7 @@ The dispatcher workflow is:
 .github/workflows/pi-dispatcher.yml
 ```
 
-It runs after a PR is merged into `dev`, or from a manual workflow run on the default branch for initial queue filling. Dispatcher jobs use one repository-wide concurrency group, `pi-dispatcher`, with `cancel-in-progress: false`. The dispatcher checks out `dev`, not the merged PR head. The write-capable workflow token is limited to validation and label steps; it is not passed to the Pi dispatcher process.
+It runs after a PR is merged into `dev`, or from a manual workflow run on `dev` for initial queue filling. Dispatcher jobs use one repository-wide concurrency group, `pi-dispatcher`, with `cancel-in-progress: false`. The dispatcher checks out `dev`, not the merged PR head. The write-capable workflow token is limited to validation and label steps; it is not passed to the Pi dispatcher process.
 
 The auto-merge gate waits for an active `review:running` job to finish before
 updating a PR branch that fell behind `dev`. A review made stale by a changed
@@ -392,7 +392,7 @@ To approve a specific issue for automatic implementation:
 2. Add `dispatcher:ready` to the open issue. This label alone does not
    launch Pi.
 3. In GitHub Actions, open **Pi Dispatcher** and use **Run workflow** on
-   `main` (the control workflow ref), or let the next PR merge into `dev` start the dispatcher.
+   `dev`, or let the next PR merge into `dev` start the dispatcher.
 4. Check the dispatcher job log for the selected issue and the separate
    **Pi Issue Agent** run. On assignment, `pi:ready` appears and
    `dispatcher:ready` is removed.
