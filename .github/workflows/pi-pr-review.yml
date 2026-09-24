@@ -20,7 +20,7 @@ jobs:
   review:
     if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'repository_dispatch' || github.event.action == 'reopened')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
-    timeout-minutes: 120
+    timeout-minutes: 480
     permissions:
       contents: read
       issues: write
