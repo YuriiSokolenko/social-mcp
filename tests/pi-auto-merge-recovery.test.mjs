@@ -82,5 +82,6 @@ test('recovers a merged dev PR by closing its issue before dispatch', () => {
 test('Pi PRs cannot auto-merge changes to control scripts', () => {
   assert.equal(allowedFiles([{ filename: 'scripts/pi-auto-merge.mjs' }], 1), false);
   assert.equal(allowedFiles([{ filename: 'scripts/pi-issue-status.sh' }], 1), false);
+  assert.equal(allowedFiles([{ filename: 'src/new.mjs', previous_filename: 'scripts/pi-auto-merge.mjs' }], 1), false);
   assert.equal(allowedFiles([{ filename: 'src/application.py' }], 1), true);
 });
