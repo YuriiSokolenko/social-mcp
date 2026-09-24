@@ -156,6 +156,34 @@ Initial deployment is a **single Docker workload on the N150 Linux host** contai
 
 Splitting components into separate services can be done later if needed.
 
+
+## CI and local checks
+
+CI runs for every push and pull request on a fresh GitHub-hosted runner. It runs
+Ruff, pytest, Node workflow checks, and the runner autoscaler checks. A separate
+Docker job builds the image, starts Compose with a unique project name and a
+temporary encryption key, tests the running HTTP service, and removes its volume
+and containers even when a check fails. No Meta or TikTok credentials are needed.
+
+To run the same checks locally with Python 3.12, Node.js and Docker Compose:
+
+```bash
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e . pytest pytest-asyncio ruff
+ruff check .
+pytest
+node --test tests/*.test.mjs
+bash tests/test_runner_autoscaler.sh
+
+export TOKEN_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+docker compose up --build --wait
+port="$(docker compose port app 8000 | awk -F: '{print $NF}')"
+CI_BASE_URL="http://127.0.0.1:${port}" python tests/test_ci_container.py
+docker compose down --volumes --remove-orphans
+```
+
+
 ## Development phases
 
 1. Define MCP runtime/language and stable Threads tool contract. **Done.**
