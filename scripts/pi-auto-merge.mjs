@@ -47,8 +47,8 @@ export function latestCI(runs, sha, branch) {
 
 export function allowedFiles(files, changedCount) {
   return changedCount <= 100 && files.length === changedCount &&
-    files.every(file => !file.filename.startsWith('.github/workflows/') &&
-      !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(file.filename));
+    files.every(file => [file.filename, file.previous_filename].filter(Boolean).every(name =>
+      !name.startsWith('.github/workflows/') && !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(name)));
 }
 
 export function needsCIDispatch(ci, marker) {
