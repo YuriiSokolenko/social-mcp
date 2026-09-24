@@ -15,13 +15,13 @@ The pipeline is designed to:
 
 ## Branch roles
 
-`main` remains the GitHub default branch, so GitHub loads definitions for default-branch events such as `repository_dispatch` and `workflow_run` from `main`. These workflow files are synchronized with `dev`. Pi workflows explicitly check out `dev` for their executable scripts, and the automation control workflow dispatches the dispatcher with ref `dev`.
+`dev` is the GitHub default branch. GitHub loads default-branch events such as `repository_dispatch` and `workflow_run` from `dev`. Pi workflows check out `dev` for their executable scripts, and the automation control workflow dispatches the dispatcher with ref `dev`. `main` is reserved for future releases.
 
 `dev` is the development integration branch. Pi issue branches start at `dev`; issue PRs, independent review, the auto-merge gate, and dispatcher task metadata target `dev`. The dispatcher triggered by a merged PR checks out `dev`. CI runs on PRs and pushes to both branches.
 
-For manual maintenance and agent-assisted changes, treat `dev` as the primary development branch. Apply changes there by default. When a control workflow also needs a definition on `main` to trigger, synchronize the same change to both branches and verify both; executable Pi control scripts run from `dev`. Change `main` alone only when the user explicitly requests that scope.
+For manual maintenance and agent-assisted changes, apply changes to `dev`. Control workflow definitions and executable Pi scripts run from `dev`. Do not modify `main` as part of routine development.
 
-Promote tested changes from `dev` to `main` with a separate reviewed PR. Automatic issue merges must never target `main`. Keep the control workflow files in `main` aligned with their copies in `dev` when intentionally changing automation. Ordinary Pi issue PRs cannot auto-merge changes to workflow definitions or `scripts/pi-*.mjs` and `scripts/pi-*.sh`; those changes require a separate human-reviewed update.
+Release promotions from `dev` to `main` will use separate reviewed PRs when releases begin. Automatic issue merges must never target `main`. Ordinary Pi issue PRs cannot auto-merge changes to workflow definitions or `scripts/pi-*.mjs` and `scripts/pi-*.sh`; those changes require a separate human-reviewed update.
 
 ## Trust boundaries
 
@@ -372,11 +372,7 @@ run refreshes the branch and requests review of the new head.
 
 For each accepted issue the workflow adds `pi:ready`, sends
 `pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs
-**when work is assigned**, not when its PR merges. After an implementation PR merges into `dev`, Pi Auto Merge explicitly closes
-its linked issue as completed and then prompts the dispatcher to fill a free
-slot. The `Closes #<issue-number>` text identifies the issue; GitHub does not
-auto-close it because `dev` is not the default branch. Closing a PR without merging does not refill
-the queue. If no task is eligible, the dispatcher job succeeds without calling Pi.
+**when work is assigned**, not when its PR merges. After an implementation PR merges into `dev`, GitHub closes the linked issue through `Closes #<issue-number>`. Pi Auto Merge also checks that the issue is completed, recovers interrupted finalization, and prompts the dispatcher to fill a free slot. Closing a PR without merging does not refill the queue. If no task is eligible, the dispatcher job succeeds without calling Pi.
 
 Failures, missing task metadata, and stale states must be reported rather than
 silently assigning a different issue. `pi:failed`, `pi:needs-human`, and
