@@ -4,9 +4,6 @@ on:
   workflow_dispatch:
   pull_request:
   push:
-    branches:
-      - main
-      - dev
 
 permissions:
   contents: read
@@ -48,6 +45,8 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: social-mcp-ci-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout
@@ -72,11 +71,10 @@ jobs:
           docker image inspect "$image_id" > /dev/null
 
           port="$(docker compose port app 8000 | awk -F: '{print $NF}')"
-          base_url="http://127.0.0.1:${port}"
-          curl --fail --silent --show-error --retry 5 --retry-delay 1 "$base_url/health" |
-            python -c 'import json, sys; assert json.load(sys.stdin) == {"status": "ok"}'
-          curl --fail --silent --show-error "$base_url/openapi.json" |
-            python -c 'import json, sys; spec = json.load(sys.stdin); assert spec["info"]["title"] == "Social MCP"; assert "/health" in spec["paths"]'
+          echo "CI_BASE_URL=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
+
+      - name: Integration tests against the running container
+        run: python tests/test_ci_container.py
 
       - name: Show Compose logs on failure
         if: failure()
