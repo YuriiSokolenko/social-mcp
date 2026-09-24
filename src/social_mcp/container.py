@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from social_mcp.auth.token_cipher import TokenCipher
-from social_mcp.config import Settings
+from social_mcp.config import ConfigurationError, Settings
 from social_mcp.storage.sqlite import SQLiteAccountStore
 
 logger = logging.getLogger(__name__)
@@ -68,17 +68,15 @@ class ApplicationContainer:
             raise DatabaseUnavailableError(self.account_store.database_path) from exc
 
     def token_cipher_or_none(self) -> TokenCipher | None:
-        """Build the token cipher from configuration, without raising."""
+        """Return the token cipher built from this container's configuration.
 
-        key = self.settings.token_encryption_key
-        if not key:
-            return None
-        try:
-            return TokenCipher(key)
-        except ValueError:
-            # A malformed key behaves like an absent one; the configured value
-            # is never surfaced.
-            return None
+        Construction lives in :func:`token_cipher_factory`, the application
+        boundary, so the auth layer never parses configuration itself. A
+        missing or malformed key behaves like an absent one and the
+        configured value is never surfaced.
+        """
+
+        return token_cipher_factory(self.settings)
 
     def require_token_cipher(self) -> TokenCipher:
         """Return the cipher for an encrypted token operation.
@@ -103,8 +101,37 @@ class ApplicationContainer:
         self.account_store.check()
 
 
-def build_container(settings: Settings) -> ApplicationContainer:
+def token_cipher_factory(settings: Settings) -> TokenCipher | None:
+    """Build the token cipher from configuration without raising.
+
+    The cipher is a boundary dependency: parsing the configured key happens
+    here, once per call, rather than inside the auth layer, and a missing or
+    malformed key is reported as ``None``. The configured value is never
+    surfaced.
+    """
+
+    key = settings.token_encryption_key
+    if not key:
+        return None
+    try:
+        return TokenCipher(key)
+    except ConfigurationError:
+        # A malformed key is a configuration problem and behaves like an
+        # absent one: encrypted token operations stay disabled and are
+        # enforced per operation by require_token_cipher().
+        return None
+
+
+def build_container(
+    settings: Settings,
+    *,
+    account_store: SQLiteAccountStore | None = None,
+) -> ApplicationContainer:
     """Create the container from configuration without side effects.
+
+    The store resolves from ``settings.database_path`` unless one is injected,
+    so that storage can be supplied at the application boundary instead of
+    being rebuilt per caller.
 
     Startup goes through :func:`create_container` and
     :meth:`ApplicationContainer.start`; this exists for tests and callers that
@@ -113,7 +140,7 @@ def build_container(settings: Settings) -> ApplicationContainer:
 
     return ApplicationContainer(
         settings=settings,
-        account_store=SQLiteAccountStore(settings.database_path),
+        account_store=account_store or SQLiteAccountStore(settings.database_path),
     )
 
 
@@ -130,7 +157,7 @@ def create_container(settings: Settings) -> ApplicationContainer:
     """
 
     container = build_container(settings)
-    if container.token_cipher_or_none() is None:
+    if token_cipher_factory(settings) is None:
         logger.warning(
             "TOKEN_ENCRYPTION_KEY is missing or invalid; encrypted token operations are disabled."
         )
