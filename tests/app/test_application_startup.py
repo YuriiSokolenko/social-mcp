@@ -111,7 +111,7 @@ def test_health_reports_unhealthy_when_the_store_is_unreachable(
         with caplog.at_level("ERROR"):
             response = client.get("/health")
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert response.json() == {"status": "unhealthy"}
     assert "Account storage is unavailable" in caplog.text
 
@@ -124,7 +124,7 @@ def test_health_reports_unhealthy_before_startup(
     # No context manager: the lifespan never ran, so no container was wired.
     response = TestClient(app).get("/health")
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert response.json() == {"status": "unhealthy"}
 
 
@@ -138,8 +138,24 @@ def test_health_reports_unhealthy_when_the_store_query_fails(
 
         response = client.get("/health")
 
+    assert response.status_code == 503
     assert response.json() == {"status": "unhealthy"}
     assert "Account storage is unavailable" in caplog.text
+
+
+def test_health_reports_unhealthy_if_database_is_deleted_after_startup(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    app = create_app(make_settings(tmp_path))
+
+    with TestClient(app) as client:
+        database_path = app.state.container.account_store.database_path
+        database_path.unlink()
+        response = client.get("/health")
+
+        assert response.status_code == 503
+        assert response.json() == {"status": "unhealthy"}
+        assert not database_path.exists()
 
 
 def test_get_container_fails_before_startup(

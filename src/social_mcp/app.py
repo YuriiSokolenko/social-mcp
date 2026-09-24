@@ -11,7 +11,7 @@ import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request, Response
 
 from social_mcp.config import Settings, get_settings
 from social_mcp.container import (
@@ -71,16 +71,18 @@ def get_container(request: Request) -> ApplicationContainer:
 
 
 @system_router.get("/health")
-async def health(request: Request) -> dict[str, str]:
+async def health(request: Request, response: Response) -> dict[str, str]:
     """Report application status: the account store must be reachable."""
 
     try:
         get_container(request).check()
     except ContainerUnavailableError:
         logger.error("Application startup did not complete")
+        response.status_code = 503
         return {"status": "unhealthy"}
     except (sqlite3.Error, OSError):
         logger.exception("Account storage is unavailable")
+        response.status_code = 503
         return {"status": "unhealthy"}
 
     return {"status": "ok"}
