@@ -116,7 +116,7 @@ if (!newRows.length) {
 }
 
 for (let retry = 0; retry < 8; retry++) {
-  const current = await request(`${api}/contents/${path}?ref=main`);
+  const current = await request(`${api}/contents/${path}?ref=dev`);
   if (!current.ok && current.status !== 404) throw new Error(`Failed to read usage CSV: ${current.status}`);
   const body = current.ok ? await current.json() : null;
   const oldRows = body ? parseCsv(Buffer.from(body.content, "base64").toString("utf8")) : [];
@@ -140,7 +140,7 @@ for (let retry = 0; retry < 8; retry++) {
   const payload = {
     message: `chore: update Pi usage for run ${run.id} attempt ${run.run_attempt}`,
     content: Buffer.from(csv([...sortedIssues, ...sortedAttempts])).toString("base64"),
-    branch: "main",
+    branch: "dev",
     ...(body ? { sha: body.sha } : {}),
   };
   const update = await request(`${api}/contents/${path}`, {
