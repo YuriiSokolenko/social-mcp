@@ -268,16 +268,27 @@ task file is the source of truth for priority. A file alone never starts work.
 The dispatcher agent reads `agents/dispatcher/AGENTS.md` and
 `docs/PROJECT_CONTEXT.md`. It recommends issue numbers but cannot mutate GitHub.
 The workflow independently checks its output and the current GitHub state.
-It counts at most two active issue slots, including an open implementation PR
-awaiting review or merge. Eligible candidates are ordered P0, P1, P2 and then
-by ascending issue number.
+All currently eligible candidates are dispatched in one run, ordered P0, P1,
+P2 and then by ascending issue number. Dispatcher readiness is independent of
+runner capacity: GitHub Actions may queue any excess Pi jobs, while the N150
+autoscaler limits actual concurrent execution.
 
-The dispatcher job runs after a PR is merged into `main`, or from a manual run
-of `.github/workflows/pi-pr-review.yml` for initial queue filling. This
-existing workflow file also contains the independent review job and is already
-watched by the N150 autoscaler. The dispatcher checks out trusted `main`,
-not the merged PR head. The write-capable workflow token is limited to
-validation and label steps; it is not passed to the Pi dispatcher process.
+Dispatcher jobs use one repository-wide GitHub Actions concurrency group,
+`pi-dispatcher`, with `cancel-in-progress: false`. Therefore only one
+dispatcher job may execute at a time; additional merge/manual triggers wait
+instead of interrupting the current dispatcher. Every queued dispatcher rebuilds
+a fresh GitHub snapshot after it starts. Trigger payloads are wake-up signals,
+not selection state. Apply is idempotent: an issue already made active by an
+earlier dispatcher is a no-op and must never receive a duplicate
+`pi_dispatch_issue` event.
+
+The dispatcher workflow is:
+
+```text
+.github/workflows/pi-dispatcher.yml
+```
+
+It runs after a PR is merged into `main`, or from a manual workflow run for initial queue filling. Dispatcher jobs use one repository-wide concurrency group, `pi-dispatcher`, with `cancel-in-progress: false`. The dispatcher checks out trusted `main`, not the merged PR head. The write-capable workflow token is limited to validation and label steps; it is not passed to the Pi dispatcher process.
 
 For each accepted issue the workflow adds `pi:ready`, sends
 `pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs
@@ -299,7 +310,7 @@ To approve a specific issue for automatic implementation:
    priority and dependencies.
 2. Add `dispatcher:ready` to the open issue. This label alone does not
    launch Pi.
-3. In GitHub Actions, open **Pi PR Review** and use **Run workflow** on
+3. In GitHub Actions, open **Pi Dispatcher** and use **Run workflow** on
    `main`, or let the next PR merge into `main` start the dispatcher.
 4. Check the dispatcher job log for the selected issue and the separate
    **Pi Issue Agent** run. On assignment, `pi:ready` appears and
@@ -308,8 +319,7 @@ To approve a specific issue for automatic implementation:
    changing its metadata or labels. Do not add `pi:ready` merely to bypass
    validation.
 
-The dispatcher job skips Pi entirely when no eligible candidates or free
-slots exist. The first run also ensures the `dispatcher:ready` label exists.
+The dispatcher job skips Pi entirely when no eligible candidates exist. The first run also ensures the `dispatcher:ready` label exists.
 A real dispatch depends on the N150 self-hosted runner and its configured
 Pi/model endpoint being available.
 
@@ -337,11 +347,12 @@ The N150 runner autoscaler is managed by:
 infra/github-runner-autoscaler/
 ```
 
-The manager watches both workflows:
+The manager must watch these trusted workflows:
 
 ```text
 pi-issue-agent.yml
 pi-pr-review.yml
+pi-dispatcher.yml
 ```
 
 The configured maximum is currently two concurrent ephemeral workers.
