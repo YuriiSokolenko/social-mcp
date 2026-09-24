@@ -9,7 +9,7 @@ on:
 permissions:
   actions: write
   contents: write
-  issues: read
+  issues: write
   pull-requests: write
   statuses: read
 
@@ -25,7 +25,7 @@ jobs:
     permissions:
       actions: write
       contents: write
-      issues: read
+      issues: write
       pull-requests: write
       statuses: write
     steps:
