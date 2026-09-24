@@ -22,13 +22,17 @@ async function api(path, method = 'GET', body) {
   return response.status === 204 ? null : response.json();
 }
 
-export function issueNumber(pr, repository) {
+export function linkedIssueNumber(pr, repository) {
   const match = /^pi\/issue-([1-9]\d*)$/.exec(pr.head?.ref ?? '');
-  if (pr.state !== 'open' || pr.draft || pr.base?.ref !== 'dev' ||
+  if (pr.draft || pr.base?.ref !== 'dev' ||
       pr.base?.repo?.full_name !== repository || pr.head?.repo?.full_name !== repository || !match) return null;
   const number = Number(match[1]);
   if (!Number.isSafeInteger(number) || !new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${number}\\b`, 'i').test(pr.body ?? '')) return null;
   return number;
+}
+
+export function issueNumber(pr, repository) {
+  return pr.state === 'open' ? linkedIssueNumber(pr, repository) : null;
 }
 
 export function latestStatus(statuses, context) {
@@ -69,6 +73,23 @@ async function trigger(pr, sha, statuses, runs) {
     await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: pr.head.ref });
     await mark(sha, ciMarker, 'success', `CI dispatch requested for PR #${pr.number}`);
   }
+}
+
+async function finalizeMergedPR(pr, issue) {
+  const current = await api(`/issues/${issue}`);
+  const labels = new Set(current.labels.map(label => label.name));
+  // Keep this label until both closure and dispatch succeed, so a later run
+  // can finish an interrupted merge without dispatching unfinished work.
+  if (!labels.has('pi:mr-created')) return;
+  if (current.state === 'open') {
+    await api(`/issues/${issue}`, 'PATCH', { state: 'closed', state_reason: 'completed' });
+    console.log(`#${pr.number}: completed issue #${issue} after merge into dev`);
+  } else if (current.state_reason !== 'completed') {
+    return;
+  }
+  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'main' });
+  await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
+  console.log(`#${pr.number}: dispatcher started`);
 }
 
 async function processPR(prSummary) {
@@ -137,12 +158,21 @@ async function processPR(prSummary) {
   const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
   if (!merged.merged) throw new Error(`#${pr.number}: merge API did not confirm merge`);
   console.log(`#${pr.number}: merged ${sha}`);
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'main' });
-  console.log(`#${pr.number}: dispatcher started`);
+  await finalizeMergedPR(pr, issue);
 }
 
 export async function main() {
   if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
+  // Recover a merge interrupted after GitHub accepted it but before the
+  // linked issue was completed or the dispatcher was started.
+  const mergedPRs = await api('/pulls?state=closed&base=dev&per_page=100');
+  for (const pr of mergedPRs) {
+    if (!pr.merged_at || !pr.labels?.some(label => label.name === 'review:passed')) continue;
+    const issue = linkedIssueNumber(pr, repo);
+    if (!issue) continue;
+    try { await finalizeMergedPR(pr, issue); }
+    catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }
+  }
   // Global concurrency prevents two runs from merging against the same base in parallel.
   const prs = await api('/pulls?state=open&base=dev&per_page=100');
   for (const pr of prs) {
