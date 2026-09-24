@@ -24,7 +24,7 @@ async function api(path, method = 'GET', body) {
 
 export function issueNumber(pr, repository) {
   const match = /^pi\/issue-([1-9]\d*)$/.exec(pr.head?.ref ?? '');
-  if (pr.state !== 'open' || pr.draft || pr.base?.ref !== 'main' ||
+  if (pr.state !== 'open' || pr.draft || pr.base?.ref !== 'dev' ||
       pr.base?.repo?.full_name !== repository || pr.head?.repo?.full_name !== repository || !match) return null;
   const number = Number(match[1]);
   if (!Number.isSafeInteger(number) || !new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${number}\\b`, 'i').test(pr.body ?? '')) return null;
@@ -88,9 +88,9 @@ async function processPR(prSummary) {
   }
 
   const sha = pr.head.sha;
-  const [main, comparison, statusData, ciData] = await Promise.all([
-    api('/git/ref/heads/main'),
-    api(`/compare/main...${sha}`),
+  const [base, comparison, statusData, ciData] = await Promise.all([
+    api('/git/ref/heads/dev'),
+    api(`/compare/dev...${sha}`),
     api(`/commits/${sha}/statuses?per_page=100`),
     api(`/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`),
   ]);
@@ -104,7 +104,7 @@ async function processPR(prSummary) {
     return;
   }
   if (comparison.status !== 'ahead' || comparison.behind_by !== 0) {
-    console.log(`#${pr.number}: head is not ahead of current main`);
+    console.log(`#${pr.number}: head is not ahead of current dev`);
     return;
   }
 
@@ -120,10 +120,10 @@ async function processPR(prSummary) {
   }
   // Re-read mutable state immediately before the merge; the merge API also rejects a moved head.
   const fresh = await api(`/pulls/${pr.number}`);
-  const freshMain = await api('/git/ref/heads/main');
-  if (fresh.head.sha !== sha || freshMain.object.sha !== main.object.sha ||
+  const freshBase = await api('/git/ref/heads/dev');
+  if (fresh.head.sha !== sha || freshBase.object.sha !== base.object.sha ||
       fresh.mergeable !== true || !fresh.labels.some(label => label.name === 'review:passed')) {
-    console.log(`#${pr.number}: head, main, review label or mergeability changed`);
+    console.log(`#${pr.number}: head, dev, review label or mergeability changed`);
     return;
   }
   const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
@@ -136,7 +136,7 @@ async function processPR(prSummary) {
 export async function main() {
   if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
   // Global concurrency prevents two runs from merging against the same base in parallel.
-  const prs = await api('/pulls?state=open&base=main&per_page=100');
+  const prs = await api('/pulls?state=open&base=dev&per_page=100');
   for (const pr of prs) {
     try { await processPR(pr); }
     catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }

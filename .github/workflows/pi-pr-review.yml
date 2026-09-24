@@ -50,9 +50,14 @@ jobs:
 
           DRAFT="$(jq -r '.draft' <<<"$PR_JSON")"
           HEAD_REPO="$(jq -r '.head.repo.full_name' <<<"$PR_JSON")"
+          BASE_REF="$(jq -r '.base.ref' <<<"$PR_JSON")"
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
           HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
 
+          if [ "$BASE_REF" != "dev" ]; then
+            echo "Pull request #${PR} does not target dev; refusing self-hosted review." >&2
+            exit 1
+          fi
           if [ "$DRAFT" = "true" ]; then
             echo "Pull request #${PR} is draft; skipping review." >&2
             exit 1
@@ -178,7 +183,7 @@ jobs:
           - $RUNNER_TEMP/pytest.log
           - $RUNNER_TEMP/ruff.log
           
-          Inspect the diff against origin/main and relevant surrounding code.
+          Inspect the diff against origin/dev and relevant surrounding code.
           
           Your final response MUST start with exactly one of:
           REVIEW_RESULT: PASS

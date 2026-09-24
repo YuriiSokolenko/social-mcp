@@ -5,12 +5,13 @@ import { allowedFiles, issueNumber, latestCI, latestStatus, needsCIDispatch } fr
 const repo = 'owner/social-mcp';
 const pr = {
   state: 'open', draft: false, body: 'Closes #42',
-  base: { ref: 'main', repo: { full_name: repo } },
+  base: { ref: 'dev', repo: { full_name: repo } },
   head: { ref: 'pi/issue-42', repo: { full_name: repo } },
 };
 
 test('only a same-repository Pi PR closing its own issue is eligible', () => {
   assert.equal(issueNumber(pr, repo), 42);
+  assert.equal(issueNumber({ ...pr, base: { ...pr.base, ref: 'main' } }, repo), null);
   assert.equal(issueNumber({ ...pr, body: 'Closes #43' }, repo), null);
   assert.equal(issueNumber({ ...pr, head: { ...pr.head, repo: { full_name: 'attacker/fork' } } }, repo), null);
   assert.equal(issueNumber({ ...pr, draft: true }, repo), null);

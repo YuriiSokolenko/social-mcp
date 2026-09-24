@@ -6,12 +6,20 @@ This document defines the repository's CI/CD and AI-agent workflow conventions.
 
 The pipeline is designed to:
 
-- keep `main` protected and review-driven;
+- keep `main` stable and put reviewed implementation changes into `dev`;
 - isolate untrusted public CI from trusted local AI execution;
 - ensure every implementation includes tests;
 - require deterministic verification before creating a pull request;
 - review AI-generated pull requests independently before merge;
 - keep self-hosted runners ephemeral and disposable.
+
+## Branch roles
+
+`main` is the default control and stable branch. GitHub's scheduled and repository-dispatch workflows load their definitions from `main`. The automation control workflow still runs on `main` and dispatches the dispatcher from that ref.
+
+`dev` is the development integration branch. Pi issue branches start at `dev`; issue PRs, independent review, the auto-merge gate, and dispatcher task metadata target `dev`. The dispatcher triggered by a merged PR inspects `dev` even when its workflow starts from `main`. CI runs on PRs and pushes to both branches.
+
+Promote tested changes from `dev` to `main` with a separate reviewed PR. Automatic issue merges must never target `main`. Keep the control workflow files in `main` aligned with their copies in `dev` when intentionally changing automation.
 
 ## Trust boundaries
 
@@ -196,7 +204,7 @@ If repository changes exist after verification:
 
 1. the workflow commits them as the automation identity;
 2. pushes the issue branch;
-3. creates or updates a pull request targeting `main`;
+3. creates or updates a pull request targeting `dev`;
 4. triggers an independent Pi PR review.
 
 The implementer itself never performs these GitHub operations.
@@ -307,7 +315,7 @@ review:failed
 ## Dispatcher queue
 
 Only an open issue with `dispatcher:ready` is a dispatcher candidate. Its
-`tasks/<issue-number>.md` file must exist on `main`, declare the matching issue
+`tasks/<issue-number>.md` file must exist on `dev`, declare the matching issue
 number, a priority `P0`, `P1`, or `P2`, and completed dependencies. The
 task file is the source of truth for priority. A file alone never starts work.
 
@@ -334,7 +342,7 @@ The dispatcher workflow is:
 .github/workflows/pi-dispatcher.yml
 ```
 
-It runs after a PR is merged into `main`, or from a manual workflow run for initial queue filling. Dispatcher jobs use one repository-wide concurrency group, `pi-dispatcher`, with `cancel-in-progress: false`. The dispatcher checks out trusted `main`, not the merged PR head. The write-capable workflow token is limited to validation and label steps; it is not passed to the Pi dispatcher process.
+It runs after a PR is merged into `dev`, or from a manual workflow run on the default branch for initial queue filling. Dispatcher jobs use one repository-wide concurrency group, `pi-dispatcher`, with `cancel-in-progress: false`. The dispatcher checks out `dev`, not the merged PR head. The write-capable workflow token is limited to validation and label steps; it is not passed to the Pi dispatcher process.
 
 For each accepted issue the workflow adds `pi:ready`, sends
 `pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs
@@ -352,12 +360,12 @@ again. Task-file structure and label lifecycle are specified in `tasks/README.md
 
 To approve a specific issue for automatic implementation:
 
-1. Merge its `tasks/<issue-number>.md` file into `main` and check its
+1. Merge its `tasks/<issue-number>.md` file into `dev` and check its
    priority and dependencies.
 2. Add `dispatcher:ready` to the open issue. This label alone does not
    launch Pi.
 3. In GitHub Actions, open **Pi Dispatcher** and use **Run workflow** on
-   `main`, or let the next PR merge into `main` start the dispatcher.
+   `main` (the control workflow ref), or let the next PR merge into `dev` start the dispatcher.
 4. Check the dispatcher job log for the selected issue and the separate
    **Pi Issue Agent** run. On assignment, `pi:ready` appears and
    `dispatcher:ready` is removed.
@@ -449,10 +457,10 @@ The autoscaler applies a shared overall worker limit.
 
 The intended repository policy is:
 
-- no direct changes to `main`;
-- changes reach `main` through pull requests;
-- no force pushes to `main`;
-- no deletion of `main`;
+- production code changes reach `dev` through reviewed pull requests;
+- promotions from `dev` reach `main` through reviewed pull requests;
+- no force pushes to `dev` or `main`;
+- no deletion of `dev` or `main`;
 - automation may push only issue branches such as `pi/issue-*`;
 - PRs should pass CI and automated review before merge.
 

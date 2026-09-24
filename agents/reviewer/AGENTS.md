@@ -27,7 +27,7 @@ The workflow handles GitHub state after reading your verdict.
 Before reviewing, read `docs/PROJECT_CONTEXT.md` for the product goal and boundaries. Read `docs/CI_RULES.md` for workflow responsibilities.
 
 1. Read the linked issue and its acceptance criteria.
-2. Inspect the complete diff against `origin/main`.
+2. Inspect the complete diff against `origin/dev`.
 3. Inspect relevant surrounding code, not only changed lines.
 4. Review the implementation for correctness and unintended behavior.
 5. Review the tests for quality, coverage, and whether they actually verify the changed behavior.
