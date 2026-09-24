@@ -51,6 +51,52 @@ These runners are for trusted repository workflows only.
 
 Do not route arbitrary public pull-request code directly to the N150 runner.
 
+## Global automation control
+
+The repository-wide automation state is stored in the GitHub Actions repository variable:
+
+```text
+PI_AUTOMATION_MODE
+```
+
+Supported values are:
+
+```text
+RUNNING
+DRAINING
+PAUSED
+```
+
+Semantics:
+
+- `RUNNING`: the complete automation flow is enabled. The dispatcher may assign new issues and existing PRs may continue through review, repair, CI, and auto-merge.
+- `DRAINING`: no new issues are assigned or started. Work already represented by PRs may continue through review, repair, CI, and auto-merge until the active queue drains.
+- `PAUSED`: no new automated pipeline stage should start. Dispatcher, issue implementation, PR review, PR repair, and auto-merge jobs are gated off. Jobs that were already running when the mode changed are not forcibly terminated.
+
+The normal Web UI control is:
+
+```text
+GitHub -> Actions -> Pi Automation Control -> Run workflow
+```
+
+Workflow:
+
+```text
+.github/workflows/pi-automation-control.yml
+```
+
+Choose `RUNNING`, `DRAINING`, or `PAUSED`. Selecting `RUNNING` also wakes the Pi Dispatcher so eligible work can resume without another manual action.
+
+The repository variable can also be edited directly under:
+
+```text
+Settings -> Secrets and variables -> Actions -> Variables
+```
+
+The expected normal value is `RUNNING`.
+
+The workflow guards intentionally treat an absent or unknown value as enabled (fail-open) for backward compatibility. Therefore deleting the variable is **not** a supported way to pause automation. Always use `PAUSED` for a full stop or `DRAINING` to stop admitting new issue work while allowing active PRs to finish.
+
 ## Issue implementation flow
 
 Implementation starts when an issue receives:
