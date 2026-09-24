@@ -22,6 +22,8 @@ The service uses Python, FastAPI for the HTTP/admin surface, an MCP interface fo
 
 The repository also contains a GitHub Actions workflow for implementation and an independent PR review. The Pi implementer changes code and writes tests; the workflow runs deterministic checks and owns commits, branches, PRs, and labels. The Pi reviewer evaluates the PR without editing code. Runner capacity and issue state are described in `docs/CI_RULES.md`; do not infer product capability from a passing CI job.
 
+`dev` is the GitHub default and day-to-day integration branch: Pi issue branches start there and reviewed implementation PRs merge there. `main` is held for future releases; a release promotion is a separate CI-checked, human-reviewed PR from `dev` to `main` merged with a merge commit. Do not send routine task PRs to `main`.
+
 ## Non-negotiable product rules
 
 1. Use official platform APIs and expose only operations authorized for the connected account and application.
