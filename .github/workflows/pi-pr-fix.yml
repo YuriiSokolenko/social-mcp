@@ -3,6 +3,12 @@ name: Pi PR Fix
 on:
   repository_dispatch:
     types: [pi_pr_fix]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to repair
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -10,7 +16,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-fix-${{ github.event.client_payload.pr_number }}
+  group: pi-pr-fix-${{ github.event.client_payload.pr_number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -18,7 +24,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
-      PR: ${{ github.event.client_payload.pr_number }}
+      PR: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
