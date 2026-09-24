@@ -1,9 +1,10 @@
 """SQLite storage for the connected-account table.
 
-Each method owns one short-lived connection through :meth:`SQLiteAccountStore._connection`:
-successful writes are committed, failed writes are rolled back, and the connection is
-closed whether or not the operation succeeded. The ``with sqlite3.connect(...)`` form
-alone would leave the open file handle to the garbage collector.
+Every public method owns one short-lived connection through
+:meth:`SQLiteAccountStore._connection`: successful writes are committed, failed
+writes are rolled back, and the connection is closed whether the operation
+succeeded or not. The ``with sqlite3.connect(...)`` form alone would only
+commit or roll back and leave the open file handle to the garbage collector.
 """
 
 import json
@@ -23,6 +24,8 @@ class SQLiteAccountStore:
         self.database_path = Path(database_path)
 
     def initialize(self) -> None:
+        """Create the database file and account table, if either is missing."""
+
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             connection.execute(
@@ -55,6 +58,14 @@ class SQLiteAccountStore:
             connection.execute("SELECT 1 FROM connected_accounts LIMIT 1").fetchone()
 
     def save(self, account: ConnectedAccount) -> ConnectedAccount:
+        """Insert or update an account and return the stored row.
+
+        Raises:
+            sqlite3.Error: when the account cannot be written. The failed
+                transaction is rolled back before the error reaches the caller.
+            RuntimeError: when the account cannot be read back after the write.
+        """
+
         with self._connection() as connection:
             connection.execute(
                 """
@@ -129,15 +140,15 @@ class SQLiteAccountStore:
     def _connection(self) -> Iterator[sqlite3.Connection]:
         """Own one connection for a single store operation.
 
-        Yielded statement are committed on success and rolled back when the
-        body raises; the connection is then closed whichever way the operation
-        ended. Closing matters because the ``with sqlite3.connect(...)`` form
-        commits or rolls back but leaves the open file handle to the garbage
-        collector.
+        Statements run on the yielded connection are committed when the body
+        finishes and rolled back when it raises, so a failed write never leaves
+        a partial transaction pending. The connection is then closed whichever
+        way the operation ended, which the ``with sqlite3.connect(...)`` form
+        never does: it only commits or rolls back and leaves the open file
+        handle to the garbage collector.
 
         Raises:
-            sqlite3.Error: when the database cannot be opened or written. The
-                transaction is rolled back and the connection closed first.
+            sqlite3.Error: when the database cannot be opened or written.
         """
 
         connection = self._connect()
@@ -151,9 +162,16 @@ class SQLiteAccountStore:
             connection.close()
 
     def _connect(self) -> sqlite3.Connection:
-        """Open a connection to the account database for one operation."""
+        """Open one connection to the account database.
 
-        return sqlite3.connect(self.database_path, factory=sqlite3.Connection)
+        The connection is handed over unowned so that :meth:`_connection`
+        manages its whole lifecycle. Rows are read by column name and closing
+        is an explicit act rather than the interpreter's.
+        """
+
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        return connection
 
     @staticmethod
     def _serialize_datetime(value: datetime | None) -> str | None:

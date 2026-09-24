@@ -59,8 +59,38 @@ def build_account(
     )
 
 
+# The real connector, so the helpers below keep working while the connection
+# audit fixture patches sqlite3.connect.
+_CONNECT = sqlite3.connect
+
+# Every store method the issue holds responsible for one connection.
+_PUBLIC_OPS = {
+    "initialize": lambda store: store.initialize(),
+    "save": lambda store: store.save(build_account()),
+    "get": lambda store: store.get(SocialPlatform.THREADS, "10001"),
+    "list_accounts": lambda store: store.list_accounts(),
+}
+
+# One account row written straight to SQL, with fake encrypted token material.
+INSERTED_ACCOUNT_ROW = """
+    INSERT INTO connected_accounts (
+        platform,
+        external_account_id,
+        username,
+        scopes,
+        access_token_encrypted,
+        created_at,
+        updated_at
+    )
+    VALUES ('threads', '10001', 'tester', '[]',
+            X'66616B652D746F6B656E',
+            '2030-01-01T12:00:30+00:00',
+            '2030-01-01T12:00:30+00:00')
+    """
+
+
 def raw_rows(database_path) -> list[tuple]:
-    with sqlite3.connect(database_path) as connection:
+    with _CONNECT(database_path) as connection:
         return connection.execute(
             """
             SELECT platform, external_account_id, access_token_encrypted,
@@ -69,6 +99,99 @@ def raw_rows(database_path) -> list[tuple]:
             ORDER BY id
             """
         ).fetchall()
+
+
+class ConnectionSpy(sqlite3.Connection):
+    """Connection recording the lifecycle calls the store makes on it.
+
+    ``events`` shows the order in which the connection was committed, rolled
+    back, and closed, so a test can tell a commit apart from a rollback and
+    both apart from a plain read. ``closed`` reports whether the file handle
+    was released.
+    """
+
+    closed: bool = False
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.events: list[str] = []
+
+    def commit(self) -> None:
+        self.events.append("commit")
+        super().commit()
+
+    def rollback(self) -> None:
+        self.events.append("rollback")
+        super().rollback()
+
+    def close(self) -> None:
+        self.events.append("close")
+        self.closed = True
+        super().close()
+
+
+class ConnectionAudit:
+    """The connections a store opens, in order, for one test."""
+
+    def __init__(self) -> None:
+        self.connections: list[ConnectionSpy] = []
+
+    def reset(self) -> None:
+        """Forget the connections opened before the operation under test."""
+
+        self.connections.clear()
+
+    def assert_all_closed(self) -> None:
+        """Fail when any recorded connection still holds its file handle."""
+
+        still_open = [
+            index for index, connection in enumerate(self.connections) if not connection.closed
+        ]
+        assert not still_open, f"connections left open: {still_open}"
+
+    def assert_events(self, index: int, *expected: str) -> None:
+        """Fail when the recorded connection at ``index`` did something else."""
+
+        assert self.connections[index].events == list(expected)
+
+
+@pytest.fixture()
+def connection_audit(monkeypatch: pytest.MonkeyPatch) -> ConnectionAudit:
+    """Record every connection the store opens, closed or not."""
+
+    audit = ConnectionAudit()
+
+    def recording_connect(database, *args, **kwargs):
+        kwargs["factory"] = ConnectionSpy
+        connection = _CONNECT(database, *args, **kwargs)
+        audit.connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", recording_connect)
+    return audit
+
+
+@pytest.fixture(params=list(_PUBLIC_OPS))
+def connection_operation(request: pytest.FixtureRequest):
+    """One store method that owns a connection, one test at a time."""
+
+    return _PUBLIC_OPS[request.param]
+
+
+@pytest.fixture()
+def failing_account_writes(store: SQLiteAccountStore) -> None:
+    """Fail every account write after the statement has run, deterministically."""
+
+    with _CONNECT(store.database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS fails_account_writes
+            BEFORE INSERT ON connected_accounts
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated storage failure');
+            END
+            """
+        )
 
 
 def test_initialize_creates_the_database_and_is_idempotent(tmp_path) -> None:
@@ -307,3 +430,140 @@ def test_check_rejects_database_without_account_table(store: SQLiteAccountStore)
 
     with pytest.raises(sqlite3.OperationalError, match="no such table"):
         store.check()
+
+
+def test_every_operation_closes_the_connection_it_opened(
+    store: SQLiteAccountStore,
+    connection_audit: ConnectionAudit,
+    connection_operation,
+) -> None:
+    """No store method may hand an open file handle back to its caller."""
+
+    connection_audit.reset()
+    connection_operation(store)
+
+    assert connection_audit.connections, "the store opened no connection at all"
+    connection_audit.assert_all_closed()
+
+
+def test_every_operation_closes_its_connection_when_the_database_is_unusable(
+    store: SQLiteAccountStore,
+    connection_audit: ConnectionAudit,
+    connection_operation,
+) -> None:
+    """A failed operation closes the connection it opened just as firmly."""
+
+    store.database_path.unlink()
+    store.database_path.write_bytes(b"not a sqlite database file")
+    connection_audit.reset()
+
+    with pytest.raises(sqlite3.Error):
+        connection_operation(store)
+
+    assert connection_audit.connections, "the store opened no connection at all"
+    connection_audit.assert_all_closed()
+
+
+def test_successful_save_commits_then_closes(
+    store: SQLiteAccountStore,
+    connection_audit: ConnectionAudit,
+) -> None:
+    connection_audit.reset()
+
+    store.save(build_account())
+
+    # The read-back in save() opens a second connection.
+    assert len(connection_audit.connections) == 2
+    connection_audit.assert_events(0, "commit", "close")
+    connection_audit.assert_all_closed()
+    assert store.get(SocialPlatform.THREADS, "10001") is not None
+
+
+def test_reads_close_their_connection(
+    store: SQLiteAccountStore,
+    connection_audit: ConnectionAudit,
+) -> None:
+    store.save(build_account())
+    connection_audit.reset()
+
+    store.get(SocialPlatform.THREADS, "10001")
+    store.list_accounts()
+
+    connection_audit.assert_events(0, "commit", "close")
+    connection_audit.assert_events(1, "commit", "close")
+    connection_audit.assert_all_closed()
+
+
+def test_check_closes_its_read_only_connection(
+    store: SQLiteAccountStore,
+    connection_audit: ConnectionAudit,
+) -> None:
+    connection_audit.reset()
+
+    store.check()
+
+    connection_audit.assert_events(0, "close")
+    connection_audit.assert_all_closed()
+
+
+def test_failed_write_rolls_back_and_closes(
+    store: SQLiteAccountStore,
+    connection_audit: ConnectionAudit,
+    failing_account_writes: None,
+) -> None:
+    connection_audit.reset()
+
+    with pytest.raises(sqlite3.Error, match="simulated storage failure"):
+        store.save(build_account())
+
+    connection_audit.assert_events(0, "rollback", "close")
+    connection_audit.assert_all_closed()
+    assert store.list_accounts() == []
+
+
+def test_connection_rolls_back_a_write_that_fails_mid_transaction(
+    store: SQLiteAccountStore,
+) -> None:
+    """A statement that succeeded must not survive a later failure."""
+
+    with (
+        pytest.raises(RuntimeError, match="storage failed mid-write"),
+        store._connection() as connection,
+    ):
+        connection.execute(INSERTED_ACCOUNT_ROW)
+        raise RuntimeError("storage failed mid-write")
+
+    assert store.list_accounts() == []
+
+
+def test_connection_still_closes_when_the_rollback_itself_fails(
+    store: SQLiteAccountStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closing must not be skipped even when the rollback itself fails."""
+
+    audit = ConnectionAudit()
+
+    class Unrollbackable(ConnectionSpy):
+        def rollback(self) -> None:
+            self.events.append("rollback")
+            raise sqlite3.OperationalError("rollback failed")
+
+    def connect(database, *args, **kwargs):
+        kwargs["factory"] = Unrollbackable
+        connection = _CONNECT(database, *args, **kwargs)
+        audit.connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+    # The failed rollback surfaces instead of the original error, but the
+    # connection is closed all the same.
+    with (
+        pytest.raises(sqlite3.OperationalError, match="rollback failed"),
+        store._connection() as connection,
+    ):
+        connection.execute("SELECT 1")
+        raise RuntimeError("storage failed mid-write")
+
+    audit.assert_events(0, "rollback", "close")
