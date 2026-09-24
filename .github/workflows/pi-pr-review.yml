@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   review:
-    if: vars.PI_AUTOMATION_MODE != 'PAUSED' && (github.event_name == 'repository_dispatch' || github.event.action == 'reopened')
+    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'repository_dispatch' || github.event.action == 'reopened')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     permissions:
@@ -29,7 +29,6 @@ jobs:
     env:
       PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
       REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout control repository
@@ -40,6 +39,8 @@ jobs:
           ref: main
 
       - name: Load pull request metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           API="https://api.github.com/repos/${REPO}"
           PR_JSON="$(curl --fail-with-body -sS \
@@ -80,9 +81,13 @@ jobs:
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
 
       - name: Ensure review labels
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/pi-pr-review-status.sh ensure
 
       - name: Mark review running
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/pi-pr-review-status.sh running \
             "Automated Pi review started for \`${HEAD_SHA:0:12}\`."
@@ -133,6 +138,7 @@ jobs:
         env:
           PYTEST_EXIT: ${{ steps.checks.outputs.pytest_exit }}
           RUFF_EXIT: ${{ steps.checks.outputs.ruff_exit }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ISSUE="${HEAD_REF#pi/issue-}"
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
@@ -235,6 +241,8 @@ jobs:
 
       - name: Verify reviewed head is still current
         id: freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           CURRENT_PR="$(curl --fail-with-body -sS \
             -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -256,16 +264,22 @@ jobs:
 
       - name: Release stale review
         if: steps.freshness.outputs.current == 'false' && steps.freshness.outputs.head_same == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/pi-pr-review-status.sh stale
 
       - name: Mark review passed
         if: steps.freshness.outputs.current == 'true' && steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.pytest_exit == '0' && steps.checks.outputs.ruff_exit == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
           bash scripts/pi-pr-review-status.sh passed "$COMMENT"
 
       - name: Mark changes requested
         if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || (steps.result.outputs.verdict == 'PASS' && (steps.checks.outputs.pytest_exit != '0' || steps.checks.outputs.ruff_exit != '0')))
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
           if [ "${{ steps.checks.outputs.pytest_exit }}" != '0' ] || [ "${{ steps.checks.outputs.ruff_exit }}" != '0' ]; then
@@ -275,6 +289,8 @@ jobs:
 
       - name: Dispatch Pi repair
         if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || (steps.result.outputs.verdict == 'PASS' && (steps.checks.outputs.pytest_exit != '0' || steps.checks.outputs.ruff_exit != '0')))
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           jq -n --arg event_type "pi_pr_fix" --arg pr_number "$PR" \
             '{event_type:$event_type,client_payload:{pr_number:$pr_number}}' |
@@ -286,6 +302,8 @@ jobs:
 
       - name: Mark review failed
         if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           CURRENT_HEAD="$(curl --fail-with-body -sS \
             -H "Authorization: Bearer ${GH_TOKEN}" \

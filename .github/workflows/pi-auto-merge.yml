@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   merge:
-    if: vars.PI_AUTOMATION_MODE != 'PAUSED'
+    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -32,7 +32,7 @@ jobs:
       statuses: write
     steps:
       - name: Checkout trusted main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: main
           persist-credentials: false
