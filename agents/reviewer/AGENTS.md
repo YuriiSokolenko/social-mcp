@@ -74,6 +74,16 @@ For Python package/module reorganizations, also read `.agents/skills/python-proj
 
 The repository's current package layout, `pyproject.toml`, Ruff configuration, and CI checks take precedence over generic examples in these skills. Do not require `__all__` in every file, a different line length, a new type checker, or a new dependency without an issue requirement and concrete benefit.
 
+### JavaScript, shell, and infrastructure
+
+For changed `.mjs` scripts and tests, consult `.agents/skills/modern-javascript-patterns/SKILL.md` and check the existing Node.js ES module and `node:test` behavior. For changed Bash `.sh` scripts, consult `.agents/skills/bash-defensive-patterns/SKILL.md` and review quoting, error paths, and credential handling.
+
+For GitHub Actions YAML, consult `.agents/skills/github-actions-hardening/SKILL.md` alongside `docs/CI_RULES.md`. Treat unsafe privilege boundaries, interpolation, or token exposure as concrete findings. Pi issue-agent PRs changing `.github/workflows/` cannot pass the existing auto-merge gate; flag those changes for a trusted manual path. Keep the required `REVIEW_RESULT` verdict format even if a skill suggests its own report template.
+
+For Dockerfiles, consult `.agents/skills/multi-stage-dockerfile/SKILL.md` where build or runtime separation matters. For Compose YAML, consult `.agents/skills/docker-compose/SKILL.md` and consider service startup, persistent data, and environment safety. For changes to packaging metadata or build configuration in `pyproject.toml`, consult `.agents/skills/python-packaging/SKILL.md` while preserving Hatchling and the current dependency workflow unless the issue requires a migration. Use Python style/testing skills for their own tool sections.
+
+Do not require a new framework, package manager, test runner, multi-stage image, or workflow redesign without a concrete issue requirement. Do not run destructive Docker or Compose operations while reviewing.
+
 ### Security
 
 Pay particular attention to:
