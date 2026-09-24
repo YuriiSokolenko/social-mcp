@@ -280,5 +280,5 @@ For advanced patterns (async testing, monkeypatching, property-based testing, da
 
 ---
 
-Source: https://github.com/wshobson/agents/blob/4fe8a4245c55e9e79e70b5f75ab387e2349f91dc/plugins/python-development/skills/python-testing-patterns/SKILL.md
+Source: https://github.com/wshobson/agents/blob/4236bb91f8395b0435f1d8b8baf9e8e4c69a8620/plugins/python-development/skills/python-testing-patterns/SKILL.md
 License: MIT; see LICENSE.txt in this skill directory.
