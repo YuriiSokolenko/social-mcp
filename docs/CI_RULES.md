@@ -21,7 +21,7 @@ The pipeline is designed to:
 
 For manual maintenance and agent-assisted changes, apply changes to `dev`. Control workflow definitions and executable Pi scripts run from `dev`. Do not modify `main` as part of routine development.
 
-Release promotions from `dev` to `main` will use separate reviewed PRs when releases begin. Automatic issue merges must never target `main`. Ordinary Pi issue PRs cannot auto-merge changes to workflow definitions or `scripts/pi-*.mjs` and `scripts/pi-*.sh`; those changes require a separate human-reviewed update.
+Automatic issue merges target only `dev`. When releases begin, promote a verified `dev` state to `main` with a separate human-reviewed PR. Use a merge commit for the release promotion so subsequent promotions preserve branch ancestry; tag the release on `main` after its checks pass. Do not squash or rebase the `dev` → `main` promotion. Ordinary Pi issue PRs cannot auto-merge changes to workflow definitions or `scripts/pi-*.mjs` and `scripts/pi-*.sh`; those changes require a separate human-reviewed update.
 
 ## Trust boundaries
 
@@ -480,12 +480,11 @@ The autoscaler applies a shared overall worker limit.
 
 The intended repository policy is:
 
-- production code changes reach `dev` through reviewed pull requests;
-- promotions from `dev` reach `main` through reviewed pull requests;
-- no force pushes to `dev` or `main`;
-- no deletion of `dev` or `main`;
-- automation may push only issue branches such as `pi/issue-*`;
-- PRs should pass CI and automated review before merge.
+- `dev` is the default branch; Pi issue branches start from it and target it through pull requests;
+- implementation PRs pass CI and independent Pi review before the auto-merge gate merges them into `dev`;
+- release promotions from `dev` to `main` require CI and human review, and use merge commits;
+- protect both `dev` and `main` against force pushes, deletion, and merges that bypass their required checks or reviews;
+- automation may push only issue branches such as `pi/issue-*`; release PRs must not use the Pi issue auto-merge path.
 
 Repository rulesets/branch protection must enforce these rules independently of agent prompts.
 
