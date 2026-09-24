@@ -70,6 +70,10 @@ For changes to Python module responsibilities, dependencies, composition, or abs
 - Added abstractions or dependencies solve a concrete issue requirement.
 - Report a structural concern only when it creates a concrete maintenance, correctness, security, or testability problem.
 
+For Python package/module reorganizations, also read `.agents/skills/python-project-structure/SKILL.md`. For changed public APIs or typing, use `.agents/skills/python-type-safety/SKILL.md`. For changed validation, OAuth, external API failures, or exception mapping, use `.agents/skills/python-error-handling/SKILL.md`. Consult `.agents/skills/python-code-style/SKILL.md` only when a style or documentation concern materially affects maintainability or violates the repository's configured Ruff rules.
+
+The repository's current package layout, `pyproject.toml`, Ruff configuration, and CI checks take precedence over generic examples in these skills. Do not require `__all__` in every file, a different line length, a new type checker, or a new dependency without an issue requirement and concrete benefit.
+
 ### Security
 
 Pay particular attention to:
