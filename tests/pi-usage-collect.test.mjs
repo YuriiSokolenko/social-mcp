@@ -55,3 +55,31 @@ test("aggregates a cancelled attempt once and preserves it on reprocessing", () 
   assert.match(rows[1], /,2,50,12,0,0,62,5\.0,300,/);
   assert.match(rows[2], /^attempt,51,implementation,123,2,cancelled,/);
 });
+
+
+test("ignores a skipped Pi job without requesting its nonexistent log", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-usage-skipped-"));
+  const eventFile = join(dir, "event.json");
+  const mockFile = join(dir, "mock.mjs");
+  writeFileSync(eventFile, JSON.stringify({ workflow_run: {
+    id: 456, run_attempt: 1, status: "completed", name: "Pi Issue Agent",
+    head_repository: { full_name: "test/repo" },
+  } }));
+  writeFileSync(mockFile, `
+    globalThis.fetch = async (url) => {
+      if (url.includes("/attempts/1/jobs")) return Response.json({ jobs: [{
+        id: 999, name: "pi", conclusion: "skipped",
+      }] });
+      throw new Error("Skipped job must not request a log: " + url);
+    };
+  `);
+  const result = spawnSync(process.execPath, ["--import", pathToFileURL(mockFile).href, "scripts/pi-usage-collect.mjs"], {
+    encoding: "utf8", env: {
+      ...process.env, GITHUB_EVENT_PATH: eventFile, GITHUB_REPOSITORY: "test/repo",
+      GITHUB_TOKEN: "synthetic-token",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Job 999 was skipped; no log to collect/);
+  assert.match(result.stdout, /No Pi issue sessions found in completed run/);
+});
