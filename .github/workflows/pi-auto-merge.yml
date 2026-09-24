@@ -1,11 +1,6 @@
 name: Pi Auto Merge
 
 on:
-  workflow_run:
-    workflows: [CI, Pi PR Review]
-    types: [completed]
-  schedule:
-    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
