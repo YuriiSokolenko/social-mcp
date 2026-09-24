@@ -32,12 +32,12 @@ jobs:
       PI_PHASE: review
 
     steps:
-      - name: Checkout control repository
+      - name: Checkout dev control repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: main
+          ref: dev
 
       - name: Initialize Pi usage
         run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
