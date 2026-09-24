@@ -1,0 +1,27 @@
+name: Pi Usage
+
+on:
+  workflow_run:
+    workflows: [Pi Issue Agent, Pi PR Review, Pi PR Fix]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Completed Pi workflow run ID to reprocess
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Collect usage
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MANUAL_RUN_ID: ${{ inputs.run_id }}
+        run: node scripts/pi-usage-collect.mjs
