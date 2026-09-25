@@ -31,23 +31,21 @@ async function pages(endpoint) {
     if (batch.length < 100) return items;
   }
 }
-async function ensureReadyLabel() {
+async function ensureLabel(name, color, description) {
   const response = await fetch(`${base}/labels`, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({
-      name: "dispatcher:ready",
-      color: "d4c5f9",
-      description: "Eligible for Pi dispatcher selection",
+      name, color, description,
     }),
   });
   if (![201, 422].includes(response.status)) {
-    throw new Error(`Cannot ensure dispatcher:ready label: ${response.status} ${await response.text()}`);
+    throw new Error(`Cannot ensure ${name} label: ${response.status} ${await response.text()}`);
   }
 }
 const labels = issue => new Set(issue.labels.map(label => label.name));
 const activeLabels = ["pi:ready", "pi:running", "pi:mr-created"];
-const blockedLabels = ["pi:blocked", "pi:failed", "pi:needs-human", "pi:cancelled"];
+const blockedLabels = ["pi:blocked", "pi:failed", "pi:needs-human", "pi:cancelled", "architect:ready", "architect:epic"];
 
 function task(number) {
   const filename = path.join("tasks", `${number}.md`);
@@ -106,7 +104,8 @@ async function snapshot() {
       }
     }
     if (reason) skipped.push({ issue: issue.number, reason });
-    else candidates.push({ issue: issue.number, priority: metadata.priority, title: issue.title });
+    else candidates.push({ issue: issue.number, priority: metadata.priority, title: issue.title,
+      body: issue.body ?? "", architect_child: /<!-- architect-parent:\d+; architect-key:[a-z][a-z0-9-]* -->/.test(issue.body ?? "") });
   }
   candidates.sort((a, b) => a.priority.localeCompare(b.priority) || a.issue - b.issue);
   return { active: [...active].sort((a, b) => a - b), candidates, skipped };
@@ -126,7 +125,8 @@ function finalText(jsonl) {
 }
 async function main() {
   if (mode === "prepare") {
-    await ensureReadyLabel();
+    await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
+    await ensureLabel("architect:ready", "c5def5", "Needs Pi Architect to split the issue");
     const data = await snapshot();
     fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
     console.log(`Dispatcher: ${data.active.length} active, ${data.candidates.length} ready candidates`);
@@ -137,10 +137,11 @@ async function main() {
   const lines = text.split(/\r?\n/).filter(line => line.startsWith("DISPATCH_RESULT: "));
   if (lines.length !== 1) throw new Error("expected exactly one DISPATCH_RESULT line");
   const result = JSON.parse(lines[0].slice("DISPATCH_RESULT: ".length));
-  if (!Array.isArray(result.issues) || !result.issues.every(Number.isSafeInteger)) {
-    throw new Error("invalid dispatcher issue list");
+  if (!Array.isArray(result.issues) || !result.issues.every(Number.isSafeInteger) ||
+      !Array.isArray(result.architect) || !result.architect.every(Number.isSafeInteger)) {
+    throw new Error("invalid dispatcher classification lists");
   }
-  const selected = result.issues;
+  const selected = [...result.issues, ...result.architect];
   if (new Set(selected).size !== selected.length) throw new Error("duplicate issue");
 
   // The concurrency group serializes dispatcher jobs, but queued jobs can start
@@ -148,10 +149,11 @@ async function main() {
   // and treat GitHub state, not the triggering event, as the source of truth.
   const initial = await snapshot();
   if (selected.length !== initial.candidates.length ||
-      selected.some((number, index) => number !== initial.candidates[index]?.issue)) {
-    throw new Error("dispatcher result must contain all eligible issues in priority order");
+      initial.candidates.some(candidate => !selected.includes(candidate.issue)) ||
+      result.architect.some(number => initial.candidates.find(candidate => candidate.issue === number)?.architect_child)) {
+    throw new Error("classify every eligible issue exactly once; never re-split an architect child");
   }
-  for (const number of selected) {
+  for (const { issue: number } of initial.candidates) {
     const state = await snapshot();
 
     // A previous serialized dispatcher may already have assigned this issue.
@@ -164,6 +166,20 @@ async function main() {
 
     if (number !== state.candidates[0]?.issue) {
       console.log(`Skipped #${number}: no longer the next eligible issue`);
+      continue;
+    }
+
+    if (result.architect.includes(number)) {
+      await api(`/issues/${number}/labels`, {
+        method: "POST", body: JSON.stringify({ labels: ["architect:ready"] }),
+      });
+      // GITHUB_TOKEN label events cannot trigger another Actions workflow.
+      // Dispatch explicitly, and keep the new label if dispatch fails for a manual retry.
+      await api("/actions/workflows/pi-architect.yml/dispatches", {
+        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
+      });
+      await api(`/issues/${number}/labels/dispatcher%3Aready`, { method: "DELETE" });
+      console.log(`Sent #${number} to Architect`);
       continue;
     }
 
