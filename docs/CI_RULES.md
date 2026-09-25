@@ -408,6 +408,19 @@ duplicate reviewer run against the newly merged head. A review made stale by
 a changed base releases its running label without approving the old result;
 the next gate run refreshes the branch and requests review of the new head.
 
+When a PR has fallen behind `dev` with a real merge conflict (`mergeable_state`
+`dirty`), the gate does not update the branch itself, since GitHub's
+update-branch API would fail. Instead it dispatches `pi_pr_fix` with
+`reason: conflict` and marks the head SHA so a repeat gate run does not
+dispatch a duplicate repair for the same conflict. Pi PR Fix then merges
+`dev` into the PR branch inside its worktree; a clean merge skips the model
+entirely and goes straight to verification, while an actual conflict is
+handed to Pi to resolve before the usual pytest/Ruff verification, commit,
+push, and fresh review. This runs fully automated, with no human paged; a
+repair that still fails verification posts `review:failed` with a comment
+explaining why, the same terminal state used for any other repair-workflow
+failure.
+
 For each accepted issue the workflow adds `pi:ready`, sends
 `pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs
 **when work is assigned**, not when its PR merges. After an implementation PR merges into `dev`, GitHub closes the linked issue through `Closes #<issue-number>`. Pi Auto Merge also checks that the issue is completed, recovers interrupted finalization, and prompts the dispatcher to fill a free slot. Closing a PR without merging does not refill the queue. If no task is eligible, the dispatcher job succeeds without calling Pi.
