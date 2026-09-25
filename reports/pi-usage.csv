@@ -1,3 +1,5 @@
 scope,issue,phase,run_id,attempt,status,responses,input,output,cache_read,cache_write,total_tokens,model_seconds,runner_seconds,url
+issue,18,all,,,,78,61865,30747,2878475,0,2971087,3027.9,3130,https://github.com/YuriiSokolenko/social-mcp/issues/18
 issue,25,all,,,,10,19537,2657,89273,0,111467,165.6,266,https://github.com/YuriiSokolenko/social-mcp/issues/25
 attempt,25,implementation,36039015936,1,cancelled,10,19537,2657,89273,0,111467,165.6,266,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36039015936/attempts/1
+attempt,18,implementation,36093256959,1,success,78,61865,30747,2878475,0,2971087,3027.9,3130,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093256959/attempts/1
