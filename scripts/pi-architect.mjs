@@ -36,17 +36,26 @@ export function childNumbers(body) {
 
 export function planFromJsonl(jsonl, parent) {
   let final = '';
+  let toolResult = null;
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let event;
     try { event = JSON.parse(line); } catch { continue; }
+    if (event.type === 'entry_appended' && event.entry?.type === 'custom' &&
+        event.entry?.customType === 'architect-result') {
+      toolResult = event.entry.data;
+    }
     if (event.type !== 'agent_end' || !Array.isArray(event.messages)) continue;
     const assistant = [...event.messages].reverse().find(message => message?.role === 'assistant');
     final = assistant?.content?.filter(part => part?.type === 'text').map(part => part.text).join('') ?? final;
   }
+  // Prefer the structured result from the submit_result tool (pi-result-tool.mjs).
+  // The ARCHITECT_RESULT text line is kept only as a fallback while that tool
+  // is still a prototype.
+  if (toolResult) return validatePlan(toolResult, parent);
   const lines = final.split(/\r?\n/).filter(line => line.startsWith('ARCHITECT_RESULT: '));
-  if (lines.length !== 1) throw new Error('Expected exactly one ARCHITECT_RESULT line');
-  return validatePlan(JSON.parse(lines[0].slice('ARCHITECT_RESULT: '.length)), parent);
+  if (!lines.length) throw new Error('Expected an ARCHITECT_RESULT line');
+  return validatePlan(JSON.parse(lines.at(-1).slice('ARCHITECT_RESULT: '.length)), parent);
 }
 
 export function validatePlan(plan, parent) {
@@ -227,14 +236,13 @@ async function publish(issue, jsonl, contextFile) {
     await api(`/issues/${issue}/comments`, 'POST', {
       body: `Pi Architect review: **${plan.action}**. ${plan.reason}`,
     });
-    if (context.was_dispatcher_ready) {
-      await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
-      await api(`/issues/${issue}/labels`, 'POST', { labels: ['dispatcher:ready'] });
-    }
+    // A successful Architect keep/revise decision makes the issue executable.
+    // This also covers manual workflow_dispatch reviews, where dispatcher:ready
+    // may not have existed before Architect temporarily claimed the issue.
+    await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
+    await api(`/issues/${issue}/labels`, 'POST', { labels: ['dispatcher:ready'] });
     await api(`/issues/${issue}/labels/architect%3Aready`, 'DELETE');
-    if (context.was_dispatcher_ready) {
-      await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
-    }
+    await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
     console.log(`Reviewed #${issue}: ${plan.action}`);
     return;
   }
