@@ -36,6 +36,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import SecretStr
 
 from social_mcp.container import ApplicationContainer
+from social_mcp.diagnostics import DiagnosticLevel
 from social_mcp.storage.models import ConnectedAccount
 
 basic_auth = HTTPBasic(auto_error=False)
@@ -286,6 +287,38 @@ def accounts(request: Request) -> HTMLResponse:
     return _page("Accounts", main)
 
 
+@admin_router.get("/logs", response_class=HTMLResponse, dependencies=[Depends(admin_only)])
+def logs(request: Request) -> HTMLResponse:
+    """Render the recent operational diagnostics, with sensitive data redacted."""
+
+    container = get_admin_container(request)
+    events = container.diagnostics.recent(limit=200)
+
+    main = "<section><h2>Operational logs</h2>"
+    if not events:
+        main += "<p>No recent diagnostic events.</p>"
+    else:
+        rows = [_render_log_row(event) for event in events]
+        main += (
+            "<table><thead><tr>"
+            "<th>Time (UTC)</th><th>Level</th><th>Source</th><th>Correlation</th>"
+            "<th>Platform</th><th>Endpoint</th><th>Status</th><th>Message</th><th>Detail</th>"
+            "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        )
+    main += "<form method='post' action='/admin/logs/clear'>"
+    main += "<button type='submit'>Clear logs</button></form></section>"
+    return _page("Logs", main)
+
+
+@admin_router.post("/logs/clear", response_class=HTMLResponse, dependencies=[Depends(admin_only)])
+def clear_logs(request: Request) -> HTMLResponse:
+    """Clear the bounded diagnostic store (gated by CSRF via ``admin_only``)."""
+
+    container = get_admin_container(request)
+    container.diagnostics.clear()
+    return _page("Logs", "<section><h2>Operational logs</h2><p>Logs cleared.</p></section>")
+
+
 @admin_router.post("/accounts/disconnect", response_class=HTMLResponse, dependencies=[Depends(admin_only)])
 def disconnect_account(request: Request) -> HTMLResponse:
     """Placeholder for account disconnection (gated by CSRF via ``admin_only``)."""
@@ -297,7 +330,10 @@ def disconnect_account(request: Request) -> HTMLResponse:
     return _page("Disconnect", body)
 
 
-_NAV = "<nav><a href='/admin/dashboard'>Dashboard</a> " "<a href='/admin/accounts'>Accounts</a> " "<a href='/admin/logout'>Log out</a></nav>"
+_NAV = ("<nav><a href='/admin/dashboard'>Dashboard</a> "
+         "<a href='/admin/accounts'>Accounts</a> "
+         "<a href='/admin/logs'>Logs</a> "
+         "<a href='/admin/logout'>Log out</a></nav>")
 
 
 def _page(title: str, main: str) -> HTMLResponse:
@@ -365,3 +401,47 @@ def _render_accounts(accounts: Sequence[ConnectedAccount]) -> str:
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
     )
+
+
+_LEVELS = {DiagnosticLevel.ERROR, DiagnosticLevel.CRITICAL}
+
+
+def _render_log_row(event: object) -> str:
+    """Render one diagnostic event as a table row, escaping all string fields.
+
+    The fields rendered here are already redacted by the :class:`Redactor`
+    before they reach the log; this function only escapes for safe HTML and
+    classifies the severity for a ``class`` attribute. No token, header or
+    secret value is ever rendered.
+    """
+
+    # DiagnosticEvent is a dataclass; read attributes defensively to keep this
+    # rendering logic decoupled from the model's exact field order.
+    timestamp = getattr(event, "timestamp", None)
+    level = getattr(event, "level", DiagnosticLevel.INFO)
+    source = getattr(event, "source", "")
+    correlation_id = getattr(event, "correlation_id", None)
+    platform = getattr(event, "platform", None)
+    endpoint = getattr(event, "endpoint", None)
+    status_code = getattr(event, "status_code", None)
+    message = getattr(event, "message", "")
+    detail = getattr(event, "detail", None)
+
+    def _esc(value: object) -> str:
+        if value is None:
+            return ""
+        return html.escape(str(value))
+
+    cells = (
+        _esc(timestamp.isoformat() if hasattr(timestamp, "isoformat") else timestamp),
+        _esc(level),
+        _esc(source),
+        _esc(correlation_id),
+        _esc(platform),
+        _esc(endpoint),
+        _esc(status_code),
+        _esc(message),
+        _esc(detail),
+    )
+    row_class = " class='error'" if level in _LEVELS else ""
+    return "<tr" + row_class + ">" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
