@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     tiktok_client_key: str | None = None
     tiktok_client_secret: str | None = None
 
+    # Secret used to sign OAuth ``state`` values issued during the Threads
+    # authorization-code flow (issue #15). It must be supplied at runtime from
+    # the environment (or a secret file) and is never committed. A file-based
+    # form is supported via ``OAUTH_STATE_SECRET_FILE``. It is independent of
+    # ``ADMIN_SESSION_SECRET`` (which signs session cookies) and of
+    # ``TOKEN_ENCRYPTION_KEY`` (which encrypts stored tokens); each secret has
+    # a distinct purpose and must stay outside the database and Git.
+    oauth_state_secret: str | None = None
+    oauth_state_secret_file: Path | None = None
+
     admin_username: str | None = None
     admin_password: SecretStr | None = None
 
@@ -74,6 +84,23 @@ class Settings(BaseSettings):
                 value = ""
             if value:
                 self.admin_session_secret = SecretStr(value)
+        if (
+            self.oauth_state_secret is None
+            and self.oauth_state_secret_file is not None
+        ):
+            # A missing or unreadable OAuth-state-secret file fails closed:
+            # treat it as unset so OAuth state minting/acceptance stays disabled
+            # rather than crashing startup. The OAuth callback layer fails
+            # closed when the secret is unavailable, mirroring the admin
+            # session behaviour above.
+            try:
+                value = self.oauth_state_secret_file.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError:
+                value = ""
+            if value:
+                self.oauth_state_secret = value
         return self
 
     @property

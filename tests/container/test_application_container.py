@@ -16,6 +16,7 @@ from social_mcp.config import Settings
 from social_mcp.container import (
     ApplicationContainer,
     DatabaseUnavailableError,
+    OAuthStateUnavailableError,
     TokenCipherUnavailableError,
     build_container,
     create_container,
@@ -24,6 +25,7 @@ from social_mcp.storage.models import ConnectedAccount, SocialPlatform
 from social_mcp.storage.sqlite import SQLiteAccountStore
 
 VALID_KEY = Fernet.generate_key().decode("utf-8")
+STATE_SECRET = "test-oauth-state-secret-not-for-production-use"
 
 
 def test_build_container_exposes_settings_and_account_store(
@@ -107,6 +109,25 @@ def test_start_failure_never_mentions_the_encryption_key(
     assert VALID_KEY not in str(excinfo.value)
 
 
+def test_start_failure_does_not_leak_the_oauth_state_secret(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory")
+    container = build_container(
+        make_settings(
+            tmp_path,
+            database_url=f"sqlite:///{blocker / 'accounts.db'}",
+            oauth_state_secret=STATE_SECRET,
+        )
+    )
+
+    with pytest.raises(DatabaseUnavailableError) as excinfo:
+        container.start()
+
+    assert STATE_SECRET not in str(excinfo.value)
+
+
 def test_check_reports_an_unreachable_database(
     tmp_path: Path, make_settings: Callable[..., Settings]
 ) -> None:
@@ -182,6 +203,61 @@ def test_container_cipher_and_store_round_trip_an_encrypted_token(
     assert stored is not None
     assert stored.access_token_encrypted != b"fake-access-token"
     assert cipher.decrypt(stored.access_token_encrypted) == "fake-access-token"
+
+
+# --- OAuth state manager wiring ----------------------------------------------
+
+
+def test_oauth_state_manager_is_none_without_a_secret(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    container = create_container(make_settings(tmp_path, oauth_state_secret=None))
+
+    assert container.oauth_state_manager_or_none() is None
+    with pytest.raises(OAuthStateUnavailableError, match="OAUTH_STATE_SECRET"):
+        container.require_oauth_state_manager()
+
+
+def test_oauth_state_manager_mint_and_consume_round_trip(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    container = create_container(make_settings(tmp_path, oauth_state_secret=STATE_SECRET))
+    manager = container.require_oauth_state_manager()
+
+    state = manager.create("admin-session")
+    data = manager.consume(state, session_id="admin-session")
+
+    assert data.session_id == "admin-session"
+    assert data.platform == "threads"
+
+
+def test_oauth_state_secret_is_independent_of_token_encryption(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    """OAuth state signing must work even when token encryption is absent."""
+
+    container = create_container(
+        make_settings(tmp_path, oauth_state_secret=STATE_SECRET, token_encryption_key=None)
+    )
+
+    assert container.token_cipher_or_none() is None
+    manager = container.require_oauth_state_manager()
+    state = manager.create("admin-session")
+    assert manager.consume(state, session_id="admin-session").session_id == "admin-session"
+
+
+def test_missing_oauth_state_secret_warns_without_preventing_startup(
+    tmp_path: Path,
+    make_settings: Callable[..., Settings],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING"):
+        container = create_container(make_settings(tmp_path, oauth_state_secret=None))
+
+    container.start()
+
+    assert "OAUTH_STATE_SECRET" in caplog.text
+    assert container.account_store.list_accounts() == []
 
 
 def _account(access_token_encrypted: bytes = b"fake-encrypted-token") -> ConnectedAccount:
