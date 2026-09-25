@@ -13,6 +13,8 @@ from cryptography.fernet import Fernet
 from social_mcp.config import Settings
 
 VALID_TOKEN_ENCRYPTION_KEY = Fernet.generate_key().decode("utf-8")
+# A throwaway session-signing secret for tests only; never a real credential.
+VALID_SESSION_SECRET = "test-session-secret-not-for-production-use"
 
 
 @pytest.fixture()
@@ -23,6 +25,7 @@ def make_settings() -> Callable[..., Settings]:
         values: dict[str, object] = {
             "database_url": f"sqlite:///{tmp_path / 'data' / 'social-mcp.db'}",
             "token_encryption_key": VALID_TOKEN_ENCRYPTION_KEY,
+            "admin_session_secret": VALID_SESSION_SECRET,
             **overrides,
         }
         return Settings(_env_file=None, **values)

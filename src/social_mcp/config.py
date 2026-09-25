@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     admin_username: str | None = None
     admin_password: SecretStr | None = None
 
+    # Secret used to sign Web Admin session cookies. It must be supplied at
+    # runtime from the environment (or a secret file) and is never committed.
+    # When omitted, the admin UI refuses logins and every /admin request is
+    # rejected, so a deployment cannot accidentally expose an unprotected admin.
+    # A file-based form is supported via ADMIN_SESSION_SECRET_FILE.
+    admin_session_secret: SecretStr | None = None
+    admin_session_secret_file: Path | None = None
+
     # The key is supplied at runtime from the host environment. An alternative
     # ``TOKEN_ENCRYPTION_KEY_FILE`` form reads the key from a file (for example
     # a mounted Compose secret), which keeps it out of environment variables
@@ -50,6 +58,22 @@ class Settings(BaseSettings):
             self.token_encryption_key = self.token_encryption_key_file.read_text(
                 encoding="utf-8"
             ).strip()
+        if (
+            self.admin_session_secret is None
+            and self.admin_session_secret_file is not None
+        ):
+            # A missing or unreadable session-secret file fails closed:
+            # treat it as unset so the admin surface stays protected (503)
+            # rather than crashing startup. The token-encryption key above
+            # remains a hard failure because it is required at startup.
+            try:
+                value = self.admin_session_secret_file.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError:
+                value = ""
+            if value:
+                self.admin_session_secret = SecretStr(value)
         return self
 
     @property
