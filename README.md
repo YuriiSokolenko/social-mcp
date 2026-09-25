@@ -191,6 +191,8 @@ CI_BASE_URL="http://127.0.0.1:${port}" python tests/test_ci_container.py
 docker compose down --volumes --remove-orphans
 ```
 
+See [Docker deployment on N150](docs/deploy.md) for production deployment, the persistent token storage strategy, and how secrets are kept out of the image and repository.
+
 
 ## Development phases
 
