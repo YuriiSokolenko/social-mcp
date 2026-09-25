@@ -26,6 +26,7 @@ jobs:
       REPO: ${{ github.repository }}
       PI_ISSUE: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
       PI_PHASE: implementation
+      PI_BASH_TIMEOUT_SECONDS: '1800'
 
     steps:
       - name: Checkout dev control repository
@@ -138,6 +139,7 @@ jobs:
           cd "$JOB_DIR"
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           pi \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \
@@ -196,7 +198,7 @@ jobs:
           if [ "$NEED_REPAIR" = true ]; then
             echo "One Pi repair attempt for integration, whitespace or test failures"
             set -o pipefail
-            pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+            pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
               "Read agents/implementer/AGENTS.md. Resolve the current merge conflict, whitespace errors or failing tests in this worktree for issue #${ISSUE}. Do not commit, push or change GitHub state. Fix only these problems, then run git diff --check origin/dev...HEAD, pytest and ruff check . before finishing. Existing logs: $RUNNER_TEMP/pi-issue-whitespace.log, $RUNNER_TEMP/pi-issue-pytest.log and $RUNNER_TEMP/pi-issue-ruff.log (read them if present)." \
               | PI_CALL=integration node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
