@@ -56,11 +56,12 @@ jobs:
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \
             --no-session \
-            "Read and follow agents/architect/AGENTS.md and docs/PROJECT_CONTEXT.md. The source issue and current queue are in $RUNNER_TEMP/pi-architect-context.json. Read that file and only the relevant existing code and tasks needed to decide. Do not keep re-checking evidence once the decision is clear. Your final assistant response must contain exactly one standalone ARCHITECT_RESULT line and nothing else; put the complete decision and concise rationale inside that JSON. Do not edit files or change GitHub state." \
+            "Read and follow agents/architect/AGENTS.md and docs/PROJECT_CONTEXT.md. The source issue and current queue are in $RUNNER_TEMP/pi-architect-context.json. Read that file and only the relevant existing code and tasks needed to decide. Do not keep re-checking evidence once the decision is clear. Call submit_result exactly once, as your last action, with the complete decision and concise rationale. Do not edit files or change GitHub state." \
             | tee "$RUNNER_TEMP/pi-architect-result.jsonl" \
             | PI_CALL=main node scripts/pi-log-filter.mjs
 
