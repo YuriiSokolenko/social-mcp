@@ -227,14 +227,13 @@ async function publish(issue, jsonl, contextFile) {
     await api(`/issues/${issue}/comments`, 'POST', {
       body: `Pi Architect review: **${plan.action}**. ${plan.reason}`,
     });
-    if (context.was_dispatcher_ready) {
-      await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
-      await api(`/issues/${issue}/labels`, 'POST', { labels: ['dispatcher:ready'] });
-    }
+    // A successful Architect keep/revise decision makes the issue executable.
+    // This also covers manual workflow_dispatch reviews, where dispatcher:ready
+    // may not have existed before Architect temporarily claimed the issue.
+    await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
+    await api(`/issues/${issue}/labels`, 'POST', { labels: ['dispatcher:ready'] });
     await api(`/issues/${issue}/labels/architect%3Aready`, 'DELETE');
-    if (context.was_dispatcher_ready) {
-      await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
-    }
+    await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
     console.log(`Reviewed #${issue}: ${plan.action}`);
     return;
   }
