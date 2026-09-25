@@ -6,6 +6,11 @@ on:
   pull_request:
     types: [reopened, closed]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: number
 
 permissions:
   contents: write
@@ -13,12 +18,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number || github.run_id }}
+  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
-    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'repository_dispatch' || github.event.action == 'reopened')
+    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch' || github.event.action == 'reopened')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
     permissions:
@@ -28,7 +33,7 @@ jobs:
       statuses: write
       actions: write
     env:
-      PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
+      PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
       PI_BASH_TIMEOUT_SECONDS: '600'
