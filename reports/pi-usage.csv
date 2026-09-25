@@ -1,5 +1,6 @@
 scope,issue,phase,run_id,attempt,status,responses,input,output,cache_read,cache_write,total_tokens,model_seconds,runner_seconds,url
 issue,2,all,,,,9,22430,9379,159205,0,191014,882.9,902,https://github.com/YuriiSokolenko/social-mcp/issues/2
+issue,2,all,,,,7,28825,8048,137294,0,174167,733.3,753,https://github.com/YuriiSokolenko/social-mcp/issues/2
 issue,10,all,,,,14,32423,59901,296631,0,388955,7281.5,7339,https://github.com/YuriiSokolenko/social-mcp/issues/10
 issue,16,all,,,,28,58595,13150,1386987,0,1458732,2213.5,2235,https://github.com/YuriiSokolenko/social-mcp/issues/16
 issue,17,all,,,,11,25892,4498,233580,0,263970,484.6,503,https://github.com/YuriiSokolenko/social-mcp/issues/17
@@ -25,3 +26,4 @@ attempt,20,architect,36160509033,1,failure,23,54873,6241,893623,0,954737,891.5,9
 attempt,20,architect,36167247944,1,success,34,33407,13415,987760,0,1034582,1855.4,1883,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36167247944/attempts/1
 attempt,78,implementation,36188358891,1,success,82,75440,50504,6522208,0,6648152,3507.5,3619,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36188358891/attempts/1
 attempt,2,architect,36190818216,1,failure,9,22430,9379,159205,0,191014,882.9,902,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36190818216/attempts/1
+attempt,2,architect,36193816095,1,success,7,28825,8048,137294,0,174167,733.3,753,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36193816095/attempts/1
