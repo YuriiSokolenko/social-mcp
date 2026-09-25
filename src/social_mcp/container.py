@@ -12,6 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from social_mcp.auth.oauth_state import OAuthStateManager
 from social_mcp.auth.token_cipher import TokenCipher
 from social_mcp.config import Settings
 from social_mcp.storage.sqlite import SQLiteAccountStore
@@ -36,6 +37,13 @@ class TokenCipherUnavailableError(StartupError):
 
     def __init__(self) -> None:
         super().__init__("TOKEN_ENCRYPTION_KEY must be configured for token operations.")
+
+
+class OAuthStateUnavailableError(StartupError):
+    """Raised when an OAuth state operation has no usable signing secret."""
+
+    def __init__(self) -> None:
+        super().__init__("OAUTH_STATE_SECRET must be configured for OAuth state operations.")
 
 
 class ContainerUnavailableError(StartupError):
@@ -93,6 +101,39 @@ class ApplicationContainer:
             raise TokenCipherUnavailableError()
         return cipher
 
+    def oauth_state_manager_or_none(self) -> OAuthStateManager | None:
+        """Build the OAuth state manager from configuration, without raising.
+
+        OAuth state signing (``OAUTH_STATE_SECRET``) is intentionally NOT
+        required at startup: a missing secret disables OAuth state without
+        aborting the whole app, mirroring token encryption above. It is
+        independent of the token cipher: OAuth state signing does not require
+        token encryption.
+        """
+
+        secret = self.settings.oauth_state_secret
+        if not secret:
+            return None
+        try:
+            return OAuthStateManager(secret)
+        except ValueError:
+            # A malformed secret is treated as absent; the configured value is
+            # never surfaced.
+            return None
+
+    def require_oauth_state_manager(self) -> OAuthStateManager:
+        """Return the manager for an OAuth state operation.
+
+        Only the auth/callback layers that mint or consume OAuth state may call
+        this, so a missing or malformed secret fails loudly (fail closed) rather
+        than degrading to unsigned state values.
+        """
+
+        manager = self.oauth_state_manager_or_none()
+        if manager is None:
+            raise OAuthStateUnavailableError()
+        return manager
+
     def check(self) -> None:
         """Confirm the storage dependency this container owns is usable.
 
@@ -133,5 +174,10 @@ def create_container(settings: Settings) -> ApplicationContainer:
     if container.token_cipher_or_none() is None:
         logger.warning(
             "TOKEN_ENCRYPTION_KEY is missing or invalid; encrypted token operations are disabled."
+        )
+    if container.oauth_state_manager_or_none() is None:
+        logger.warning(
+            "OAUTH_STATE_SECRET is missing or invalid; OAuth state minting and "
+            "callback validation are disabled."
         )
     return container

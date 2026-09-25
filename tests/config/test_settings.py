@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 
 from social_mcp.config import Settings
 
@@ -147,7 +148,7 @@ def test_no_session_secret_leaves_it_unset(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_missing_session_secret_file_is_ignored(tmp_path: Path) -> None:
-    """A missing session-secret file is tolerated at construction time."
+    """A missing session-secret file is tolerated at construction time.
 
     A missing file leaves the secret unset rather than raising, so startup
     proceeds and the admin surface fails closed (503) instead of crashing.
@@ -169,3 +170,84 @@ def test_empty_session_secret_is_treated_as_unset() -> None:
     assert settings.admin_session_secret is None or (
         settings.admin_session_secret.get_secret_value() == ""
     )
+
+
+# --- OAuth state secret resolution ------------------------------------------
+
+
+def test_oauth_state_secret_read_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OAUTH_STATE_SECRET", "env-oauth-state-secret")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.oauth_state_secret == "env-oauth-state-secret"
+
+
+def test_oauth_state_secret_resolved_from_secret_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret_file = tmp_path / "oauth_state_secret"
+    secret_file.write_text("file-oauth-state-secret  \n", encoding="utf-8")
+
+    monkeypatch.delenv("OAUTH_STATE_SECRET", raising=False)
+    monkeypatch.setenv("OAUTH_STATE_SECRET_FILE", str(secret_file))
+
+    settings = Settings(_env_file=None)
+
+    assert settings.oauth_state_secret == "file-oauth-state-secret"
+
+
+def test_explicit_oauth_state_secret_takes_precedence_over_file(tmp_path: Path) -> None:
+    secret_file = tmp_path / "oauth_state_secret"
+    secret_file.write_text("file-oauth-state-secret", encoding="utf-8")
+
+    settings = Settings(
+        _env_file=None,
+        oauth_state_secret="explicit-oauth-state-secret",
+        oauth_state_secret_file=secret_file,
+    )
+
+    assert settings.oauth_state_secret == "explicit-oauth-state-secret"
+
+
+def test_no_oauth_state_secret_leaves_it_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OAUTH_STATE_SECRET", raising=False)
+    monkeypatch.delenv("OAUTH_STATE_SECRET_FILE", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.oauth_state_secret is None
+
+
+def test_missing_oauth_state_secret_file_is_ignored(tmp_path: Path) -> None:
+    """A missing OAuth-state-secret file is tolerated at construction time.
+
+    A missing file leaves the secret unset rather than raising, so startup
+    proceeds and OAuth state signing stays disabled (fail closed) instead of
+    crashing the application.
+    """
+
+    settings = Settings(
+        _env_file=None,
+        oauth_state_secret_file=tmp_path / "missing-oauth-state-secret",
+    )
+
+    assert settings.oauth_state_secret is None
+
+
+def test_oauth_state_secret_is_distinct_from_session_and_token_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each secret has a distinct purpose and must not be interchangeable."""
+
+    monkeypatch.setenv("ADMIN_SESSION_SECRET", "session-secret")
+    monkeypatch.setenv("OAUTH_STATE_SECRET", "oauth-state-secret")
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    settings = Settings(_env_file=None)
+
+    assert settings.oauth_state_secret == "oauth-state-secret"
+    assert settings.oauth_state_secret != settings.admin_session_secret.get_secret_value()
+    assert settings.oauth_state_secret != settings.token_encryption_key
