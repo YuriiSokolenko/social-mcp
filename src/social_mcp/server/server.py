@@ -20,12 +20,10 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import TypeAdapter
 
 from social_mcp.server.capabilities import (
-    PLATFORM_THREADS,
     ThreadsCapabilities,
     resolve_threads_capabilities,
 )
 from social_mcp.server.errors import (
-    McpError,
     authentication_required,
 )
 from social_mcp.storage.models import ConnectedAccount, SocialPlatform

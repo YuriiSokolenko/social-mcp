@@ -25,7 +25,7 @@ from social_mcp.container import (
     ContainerUnavailableError,
     create_container,
 )
-from social_mcp.server.errors import McpError, authentication_required
+from social_mcp.server.errors import McpError
 from social_mcp.server.server import ThreadsAccountProvider, create_mcp_server
 from social_mcp.storage.models import ConnectedAccount
 
