@@ -88,7 +88,7 @@ tests, and security boundaries in a revised body; do not include workflow-owned
 the issue is architecturally ready for Dispatcher, including when Architect was
 started manually.
 
-For `split`, the workflow validates `ARCHITECT_RESULT`, creates one GitHub issue per step,
+For `split`, the workflow validates your `submit_result` call, creates one GitHub issue per step,
 and writes `tasks/<new-issue-number>.md` to `dev` with that step's `priority`
 and `depends_on` fields. Choose `P0`, `P1`, or `P2` for each step's actual
 urgency; the dispatcher uses this task-file priority to order eligible work.
@@ -104,23 +104,25 @@ runs yourself.
 
 ## Output
 
-Return one standalone final `ARCHITECT_RESULT` line with compact JSON and no
-Markdown fence. Use one of these shapes:
+Call the `submit_result` tool exactly once, as your last action, with your
+final decision. Do not include `parent_issue`; the workflow already knows
+which issue this run is for. Use one of these shapes:
 
-`ARCHITECT_RESULT: {"parent_issue":42,"action":"keep","reason":"The issue is already scoped for one implementer and its dependencies remain accurate."}`
+`submit_result({"action":"keep","reason":"The issue is already scoped for one implementer and its dependencies remain accurate."})`
 
-`ARCHITECT_RESULT: {"parent_issue":42,"action":"revise","reason":"The existing scope includes a completed part.","title":"Implement remaining profile read tool","body":"## Goal\nImplement the remaining profile read behavior for a connected account.\n\n## Acceptance criteria\nReturn the available profile fields and normalized errors when access is unavailable. Preserve existing capability checks.\n\n## Tests\nCover authorized and denied responses with mocked HTTP calls.","priority":"P1","depends_on":[14,18]}`
+`submit_result({"action":"revise","reason":"The existing scope includes a completed part.","title":"Implement remaining profile read tool","body":"## Goal\nImplement the remaining profile read behavior for a connected account.\n\n## Acceptance criteria\nReturn the available profile fields and normalized errors when access is unavailable. Preserve existing capability checks.\n\n## Tests\nCover authorized and denied responses with mocked HTTP calls.","priority":"P1","depends_on":[14,18]}})`
 
-Only use `split` when the remaining issue is too broad. Then return:
+Only use `split` when the remaining issue is too broad. Then call:
 
-`ARCHITECT_RESULT: {"parent_issue":42,"action":"split","steps":[{"key":"contract","kind":"contract","priority":"P1","title":"Define a reusable account capability contract","body":"## Goal\nDefine the account capability interface shared by the Web Admin and MCP transports.\n\n## Acceptance criteria\nDocument the fields, stable error types, and compatibility checks; run the relevant tests and Ruff.\n\n## Out of scope\nNo platform API calls or end-user feature implementation.","depends_on":[]},{"key":"implement","kind":"implementation","priority":"P1","title":"Use the account capability contract in both transports","body":"## Goal\nUse the reviewed interface for both transports.\n\n## Acceptance criteria\nImplement the account capability behavior and tests for allowed and denied scopes; run pytest and Ruff.\n\n## Out of scope\nNo new OAuth flow or credentials.","depends_on":["contract"]}]}`
+`submit_result({"action":"split","steps":[{"key":"contract","kind":"contract","priority":"P1","title":"Define a reusable account capability contract","body":"## Goal\nDefine the account capability interface shared by the Web Admin and MCP transports.\n\n## Acceptance criteria\nDocument the fields, stable error types, and compatibility checks; run the relevant tests and Ruff.\n\n## Out of scope\nNo platform API calls or end-user feature implementation.","depends_on":[]},{"key":"implement","kind":"implementation","priority":"P1","title":"Use the account capability contract in both transports","body":"## Goal\nUse the reviewed interface for both transports.\n\n## Acceptance criteria\nImplement the account capability behavior and tests for allowed and denied scopes; run pytest and Ruff.\n\n## Out of scope\nNo new OAuth flow or credentials.","depends_on":["contract"]}]}})`
 
 For `split`, `key` is a unique lowercase slug. `kind` is `contract`, `test`, or
 `implementation`; `priority` is `P0`, `P1`, or `P2`. `depends_on` lists only
-keys of preceding steps. Include exactly one `ARCHITECT_RESULT` line in the
-last assistant response. Explain uncertainty inside the step's body when it
+keys of preceding steps. Explain uncertainty inside the step's body when it
 can be resolved by implementation; if the request cannot be split faithfully,
 explain why instead of inventing tasks (the workflow will reject the result).
+If `submit_result` is ever unavailable, fall back to a single standalone final
+line `ARCHITECT_RESULT: <the same JSON, plus "parent_issue":42>` instead.
 
 ## Boundaries
 

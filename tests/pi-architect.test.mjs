@@ -25,6 +25,17 @@ test('can split a contract-only child without inventing an implementation', () =
   assert.equal(validatePlan(plan, 42), plan);
 });
 
+test('prefers a submit_result tool entry over any ARCHITECT_RESULT text line', () => {
+  const keep = { parent_issue: 42, action: 'keep', reason: 'The task is already bounded and its dependencies are correct.' };
+  const stale = { parent_issue: 42, action: 'keep', reason: 'A stale text line that should be ignored once a tool result exists.' };
+  const jsonl = [
+    JSON.stringify({ type: 'entry_appended', entry: { type: 'custom', customType: 'architect-result', data: keep } }),
+    JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
+      content: [{ type: 'text', text: `ARCHITECT_RESULT: ${JSON.stringify(stale)}` }] }] }),
+  ].join('\n');
+  assert.deepEqual(planFromJsonl(jsonl, 42), keep);
+});
+
 test('uses the last ARCHITECT_RESULT line when the model second-guesses itself mid-response', () => {
   const draft = { parent_issue: 42, action: 'keep', reason: 'Draft reasoning that gets revised before the final answer.' };
   const final = { parent_issue: 42, action: 'keep', reason: 'The task is already bounded and its dependencies are correct.' };

@@ -36,14 +36,23 @@ export function childNumbers(body) {
 
 export function planFromJsonl(jsonl, parent) {
   let final = '';
+  let toolResult = null;
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let event;
     try { event = JSON.parse(line); } catch { continue; }
+    if (event.type === 'entry_appended' && event.entry?.type === 'custom' &&
+        event.entry?.customType === 'architect-result') {
+      toolResult = event.entry.data;
+    }
     if (event.type !== 'agent_end' || !Array.isArray(event.messages)) continue;
     const assistant = [...event.messages].reverse().find(message => message?.role === 'assistant');
     final = assistant?.content?.filter(part => part?.type === 'text').map(part => part.text).join('') ?? final;
   }
+  // Prefer the structured result from the submit_result tool (pi-result-tool.mjs).
+  // The ARCHITECT_RESULT text line is kept only as a fallback while that tool
+  // is still a prototype.
+  if (toolResult) return validatePlan(toolResult, parent);
   const lines = final.split(/\r?\n/).filter(line => line.startsWith('ARCHITECT_RESULT: '));
   if (!lines.length) throw new Error('Expected an ARCHITECT_RESULT line');
   return validatePlan(JSON.parse(lines.at(-1).slice('ARCHITECT_RESULT: '.length)), parent);

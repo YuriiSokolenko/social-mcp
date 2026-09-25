@@ -42,7 +42,7 @@ export class LoopGuard {
       return {
         block: true,
         reason: `Turn budget exceeded (${this.turnLimit} turns). Stop exploring `
-          + 'and return your final ARCHITECT_RESULT now, using what you already found.',
+          + 'and call submit_result now, using what you already found.',
       };
     }
     const signature = toolCallSignature(toolName, input);
@@ -53,7 +53,7 @@ export class LoopGuard {
         block: true,
         reason: `You already ran this exact ${toolName} call ${count - 1} times with the `
           + 'same arguments; the result will not change. Reuse the earlier result, try a '
-          + 'genuinely different check, or finalize your ARCHITECT_RESULT now.',
+          + 'genuinely different check, or call submit_result now.',
       };
     }
     return undefined;
