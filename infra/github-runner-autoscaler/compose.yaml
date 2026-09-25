@@ -13,7 +13,7 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-10}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}
       RUNNER_PREFIX: ${RUNNER_PREFIX:-n150-pi-eph}
-      WORKFLOW_FILES: ${WORKFLOW_FILES:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml}
+      WORKFLOW_FILES: ${WORKFLOW_FILES:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml,pi-architect.yml}
       PI_CONFIG_DIR: ${PI_HOME_HOST}/.pi/agent
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

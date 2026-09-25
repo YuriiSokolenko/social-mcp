@@ -346,6 +346,8 @@ task file is the source of truth for priority. A file alone never starts work.
 The dispatcher agent reads `agents/dispatcher/AGENTS.md` and
 `docs/PROJECT_CONTEXT.md`. It recommends issue numbers but cannot mutate GitHub.
 The workflow independently checks its output and the current GitHub state.
+It classifies each candidate for direct implementation or Pi Architect. A
+decomposed child issue is always sent to implementation and cannot be split again.
 All currently eligible candidates are dispatched in one run, ordered P0, P1,
 P2 and then by ascending issue number. Dispatcher readiness is independent of
 runner capacity: GitHub Actions may queue any excess Pi jobs, while the N150
@@ -381,6 +383,20 @@ Failures, missing task metadata, and stale states must be reported rather than
 silently assigning a different issue. `pi:failed`, `pi:needs-human`, and
 `pi:cancelled` require human attention before the issue may be made eligible
 again. Task-file structure and label lifecycle are specified in `tasks/README.md`.
+
+For a broad candidate, the dispatcher adds `architect:ready`, explicitly
+dispatches `.github/workflows/pi-architect.yml` on `dev`, and then removes
+`dispatcher:ready`. GitHub Actions does not run a new workflow on label events
+made with `GITHUB_TOKEN`; the explicit dispatch is required. Pi Architect
+reads the issue and downloaded planning skills, proposes two to six small tasks,
+and makes no GitHub changes itself. The workflow validates the plan, creates
+child issues and their task files on `dev`, gives children `dispatcher:ready`,
+then explicitly dispatches Pi Dispatcher again. The parent gets
+`architect:epic` and closes as completed when every child is completed after
+merge into `dev`. Separate contract tasks come first only for shared stable
+interfaces; separate test tasks precede implementation only when they can
+merge with passing CI. Otherwise each implementation issue includes its tests.
+The skills and pinned upstream versions are recorded in `docs/skills-sources.md`.
 
 ## First dispatcher run
 
@@ -433,16 +449,18 @@ The manager must watch these trusted workflows:
 pi-issue-agent.yml
 pi-pr-review.yml
 pi-dispatcher.yml
+pi-architect.yml
 ```
 
-The configured maximum is currently two concurrent ephemeral workers.
+The N150 host's local `MAX_RUNNERS` sets the concurrent worker limit; the
+tracked example defaults to two and does not override that local value.
 
 Expected behavior:
 
 ```text
 0 queued/busy jobs -> 0 workers
 1 job              -> 1 worker
-2+ jobs            -> up to 2 workers
+2+ jobs            -> up to MAX_RUNNERS workers
 ```
 
 Additional jobs wait in the GitHub Actions queue.

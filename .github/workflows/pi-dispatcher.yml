@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: read
@@ -50,7 +51,7 @@ jobs:
           Read and follow agents/dispatcher/AGENTS.md and docs/PROJECT_CONTEXT.md.
           The current GitHub issue and PR snapshot is at $RUNNER_TEMP/pi-dispatcher-context.json.
           Read the snapshot and relevant tasks/<issue-number>.md files.
-          Select all eligible candidates in priority order. Execution concurrency is controlled by the GitHub Actions queue and the N150 autoscaler, not by the dispatcher.
+          Classify every eligible candidate: issues for direct implementation, architect for decomposition before implementation. Never send an architect child back to Architect. Execution concurrency is controlled by the GitHub Actions queue and the N150 autoscaler.
           Return the exact DISPATCH_RESULT line specified by your role rules.
           Do not modify the repository or GitHub state.
           EOF
