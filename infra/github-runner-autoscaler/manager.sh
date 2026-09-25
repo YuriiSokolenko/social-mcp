@@ -115,7 +115,7 @@ model_start_capacity() {
   # A Pi job makes many model calls. Reserve runner slots for the entire job;
   # an idle inference slot does not imply an existing Pi job is finished.
   if [ -z "$MODEL_STATUS_URL" ]; then
-    printf '%s\n' "$MAX_RUNNERS"
+    printf 'unknown unknown %s\n' "$MAX_RUNNERS"
     return 0
   fi
   status="$(curl -fsS --max-time 5 "$MODEL_STATUS_URL")" || return 1
@@ -125,9 +125,10 @@ model_start_capacity() {
       printf '%s\n' "$status" | jq -er --argjson active "$active" '
         if type != "array" or length == 0 or any(.[]; (.is_processing | type) != "boolean")
         then error("invalid llama.cpp slots")
-        else ([.[] | select(.is_processing)] | length) as $busy
-          | (length - (if $active > $busy then $active else $busy end))
-          | if . > 0 then . else 0 end
+        else length as $total
+          | ([.[] | select(.is_processing)] | length) as $busy
+          | ($total - (if $active > $busy then $active else $busy end)) as $capacity
+          | [$total, $busy, (if $capacity > 0 then $capacity else 0 end)] | @tsv
         end
       '
       ;;
@@ -142,9 +143,9 @@ model_start_capacity() {
     END { if (!found) exit 2; print total + 0 }
       ')" || return 1
       if awk -v waiting="$waiting" 'BEGIN { exit !(waiting > 0) }'; then
-        printf '0\n'
+        printf 'unknown unknown 0\n'
       else
-        printf '%s\n' "$MAX_RUNNERS"
+        printf 'unknown unknown %s\n' "$MAX_RUNNERS"
       fi
       ;;
   esac
@@ -185,27 +186,27 @@ main() {
       desired="$MAX_RUNNERS"
     fi
 
+    if snapshot="$(model_start_capacity "$active")"; then
+      read -r model_total model_busy available <<< "$snapshot"
+    else
+      model_total=unknown
+      model_busy=unknown
+      available=0
+      log "warning: model status unavailable or invalid; delaying new runners"
+    fi
+
+    to_start=0
     if [ "$active" -lt "$desired" ]; then
-      if ! available="$(model_start_capacity "$active")"; then
-        log "warning: model status unavailable or invalid; delaying new runners"
-        sleep "$POLL_SECONDS"
-        continue
-      fi
       to_start=$((desired - active))
       if [ "$to_start" -gt "$available" ]; then
         to_start="$available"
       fi
-      if [ "$to_start" -eq 0 ]; then
-        log "queued=$queued busy=$busy active=$active model_capacity=$available; delaying new runners"
-        sleep "$POLL_SECONDS"
-        continue
-      fi
-      log "queued=$queued busy=$busy active=$active desired=$desired model_capacity=$available spawning=$to_start"
+    fi
+    log "queued=$queued busy=$busy active=$active desired=$desired model_slots_total=$model_total model_slots_busy=$model_busy model_capacity=$available spawning=$to_start"
+    if [ "$to_start" -gt 0 ]; then
       for _ in $(seq 1 "$to_start"); do
         spawn_runner || log "warning: failed to start runner"
       done
-    else
-      log "queued=$queued busy=$busy active=$active desired=$desired"
     fi
 
     sleep "$POLL_SECONDS"

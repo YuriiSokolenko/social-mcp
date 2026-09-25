@@ -60,6 +60,10 @@ returns the total slots and whether each is processing a request. The manager
 reserves one slot per active runner, including pauses between Pi's model calls.
 It also counts any occupied slots beyond those reservations as other load.
 The server does not identify which client owns a slot, so this is an estimate.
+Each manager poll logs `model_slots_total`, `model_slots_busy`, and
+`model_capacity` (new runner places after reserving active runners), including
+when no GitHub work is queued. The vLLM `/metrics` endpoint does not expose a
+fixed slot total, so those first two fields are `unknown` for vLLM.
 The local `MAX_RUNNERS` still limits the number of workers. For vLLM, point
 to `/metrics`; a waiting-request backlog defers new runners. An unavailable
 endpoint or invalid status defers new runners and logs a warning. An unset URL

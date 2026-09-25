@@ -81,11 +81,11 @@ unset DOCKER_FAIL
 
 MODEL_STATUS_URL='http://model:3009/slots'
 STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"id":2,"is_processing":false},{"id":3,"is_processing":false}]'
-[[ "$(model_start_capacity 2)" == 2 ]] || fail 'two Pi jobs leave two slots available'
-[[ "$(model_start_capacity 3)" == 1 ]] || fail 'reserve a slot for Pi between requests'
-[[ "$(model_start_capacity 0)" == 2 ]] || fail 'account for requests from other clients'
+[[ "$(model_start_capacity 2)" == $'4\t2\t2' ]] || fail 'two Pi jobs leave two slots available'
+[[ "$(model_start_capacity 3)" == $'4\t2\t1' ]] || fail 'reserve a slot for Pi between requests'
+[[ "$(model_start_capacity 0)" == $'4\t2\t2' ]] || fail 'account for requests from other clients'
 STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"id":2,"is_processing":true},{"id":3,"is_processing":true}]'
-[[ "$(model_start_capacity 2)" == 0 ]] || fail 'a full model must defer more runners'
+[[ "$(model_start_capacity 2)" == $'4\t4\t0' ]] || fail 'a full model must defer more runners'
 STATUS_RESPONSE='[]'
 assert_failure model_start_capacity 0
 STATUS_RESPONSE='[{"id":0}]'
@@ -95,7 +95,9 @@ assert_failure model_start_capacity 0
 unset STATUS_FAIL
 
 STOPPED_NAMES="$(mktemp)"
-trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES"' EXIT
+STATUS_LOG="$(mktemp)"
+trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG"' EXIT
+STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":false},{"id":2,"is_processing":true},{"id":3,"is_processing":true}]'
 (
   queued_jobs() { printf '0\n'; }
   busy_ephemeral_runners() { printf '3\n'; }
@@ -112,9 +114,10 @@ trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES"' EXIT
     esac
   }
   sleep() { exit 0; }
-  main >/dev/null
+  main > "$STATUS_LOG"
 )
 [[ "$(cat "$STOPPED_NAMES")" == 'n150-pi-eph-idle' ]] || fail 'only the surplus idle runner may be stopped'
+grep -q 'model_slots_total=4 model_slots_busy=3 model_capacity=0' "$STATUS_LOG" || fail 'log must report total and busy slots even without queued jobs'
 
 STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"id":2,"is_processing":true},{"id":3,"is_processing":true}]'
 (
@@ -155,9 +158,9 @@ STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"
 
 MODEL_STATUS_URL='http://model:3009/metrics'
 STATUS_RESPONSE=$'vllm:num_requests_running{model_name="test"} 4\nvllm:num_requests_waiting{model_name="test"} 0\n'
-[[ "$(model_start_capacity 0)" == "$MAX_RUNNERS" ]] || fail 'vLLM without a backlog admits runners'
+[[ "$(model_start_capacity 0)" == "unknown unknown $MAX_RUNNERS" ]] || fail 'vLLM without a backlog admits runners'
 STATUS_RESPONSE=$'vllm:num_requests_waiting{model_name="a"} 0\nvllm:num_requests_waiting{model_name="b"} 2\n'
-[[ "$(model_start_capacity 0)" == 0 ]] || fail 'vLLM backlog defers runners'
+[[ "$(model_start_capacity 0)" == 'unknown unknown 0' ]] || fail 'vLLM backlog defers runners'
 STATUS_RESPONSE='vllm:num_requests_running 0'
 assert_failure model_start_capacity 0
 
