@@ -54,6 +54,22 @@ Python service.
 - Do not invent external API grants, credentials, production writes, or new
   requirements. Preserve the product and security boundaries.
 
+## What the workflow does with your plan
+
+The workflow validates `ARCHITECT_RESULT`, creates one GitHub issue per step,
+and writes `tasks/<new-issue-number>.md` to `dev` with that step's `priority`
+and `depends_on` fields. Choose `P0`, `P1`, or `P2` for each step's actual
+urgency; the dispatcher uses this task-file priority to order eligible work.
+Write dependencies as keys of earlier steps. The workflow resolves those keys
+to the newly created issue numbers and also carries over the source issue's
+existing dependencies. Do not include the open source issue as a dependency.
+
+The workflow labels each child `dispatcher:ready` and starts the dispatcher.
+The dispatcher may send a child back to Architect if it is still too broad.
+The source issue stays open as an epic until all its children are completed.
+You return only the plan: do not create issues, task files, labels, or workflow
+runs yourself.
+
 ## Output
 
 Return one standalone final line with compact JSON, no Markdown fence:
