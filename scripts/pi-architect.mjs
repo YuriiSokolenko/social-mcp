@@ -55,7 +55,6 @@ export function validatePlan(plan, parent) {
   }
   const seen = new Map();
   let stage = 0;
-  let implementations = 0;
   for (const step of plan.steps) {
     if (!step || !/^[a-z][a-z0-9-]{0,31}$/.test(step.key ?? '') || seen.has(step.key) ||
         !['contract', 'test', 'implementation'].includes(step.kind) ||
@@ -69,7 +68,6 @@ export function validatePlan(plan, parent) {
     const nextStage = { contract: 0, test: 1, implementation: 2 }[step.kind];
     if (nextStage < stage) throw new Error('Contract, test and implementation stages must be ordered');
     stage = nextStage;
-    if (step.kind === 'implementation') implementations++;
     if (step.kind === 'test' && seen.size && [...seen.values()].some(x => x.kind === 'contract') &&
         !step.depends_on.some(key => seen.get(key).kind === 'contract')) {
       throw new Error('A separate test task must depend on the contract task');
@@ -80,7 +78,6 @@ export function validatePlan(plan, parent) {
     }
     seen.set(step.key, step);
   }
-  if (!implementations) throw new Error('Plan needs an implementation step');
   return plan;
 }
 

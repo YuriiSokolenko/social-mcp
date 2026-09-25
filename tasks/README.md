@@ -56,6 +56,6 @@ Clarify ambiguous ownership in the parent issue before adding the ready label.
 2. On a merged PR or a manual bootstrap run, the dispatcher classifies every eligible issue for implementation or decomposition, regardless of runner capacity.
 3. For a small issue, the workflow adds `pi:ready`, starts the implementer, then removes `dispatcher:ready`.
 4. For a broad issue, the workflow adds `architect:ready`, explicitly starts Pi Architect, then removes `dispatcher:ready`. Architect creates child issues and `tasks/<number>.md` on `dev`, adds `dispatcher:ready` to the children, and explicitly starts the dispatcher. The parent receives `architect:epic` and closes only after all children complete.
-5. Each child goes through the normal implementer, CI, review and merge path. An architect child cannot be sent back to Architect.
+5. Each child returns to the dispatcher. If it remains broad, the dispatcher may send it to Architect again; otherwise it follows the implementer, CI, review and merge path. Completed child epics close their parents when every sibling is completed.
 
 If the label transition is interrupted, the workflow should repair an issue carrying both labels on retry. Never remove `dispatcher:ready` before `pi:ready` is successfully added. If validation fails, leave `dispatcher:ready` in place and report the reason. A failed or blocked issue needs human attention before it can be made eligible again.

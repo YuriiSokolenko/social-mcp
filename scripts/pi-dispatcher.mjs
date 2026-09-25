@@ -149,9 +149,8 @@ async function main() {
   // and treat GitHub state, not the triggering event, as the source of truth.
   const initial = await snapshot();
   if (selected.length !== initial.candidates.length ||
-      initial.candidates.some(candidate => !selected.includes(candidate.issue)) ||
-      result.architect.some(number => initial.candidates.find(candidate => candidate.issue === number)?.architect_child)) {
-    throw new Error("classify every eligible issue exactly once; never re-split an architect child");
+      initial.candidates.some(candidate => !selected.includes(candidate.issue))) {
+    throw new Error("classify every eligible issue exactly once");
   }
   for (const { issue: number } of initial.candidates) {
     const state = await snapshot();

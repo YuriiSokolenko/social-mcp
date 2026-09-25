@@ -347,7 +347,8 @@ The dispatcher agent reads `agents/dispatcher/AGENTS.md` and
 `docs/PROJECT_CONTEXT.md`. It recommends issue numbers but cannot mutate GitHub.
 The workflow independently checks its output and the current GitHub state.
 It classifies each candidate for direct implementation or Pi Architect. A
-decomposed child issue is always sent to implementation and cannot be split again.
+decomposed child may also go to Architect if its remaining scope is still too
+large; its descendants form another level in the issue tree.
 All currently eligible candidates are dispatched in one run, ordered P0, P1,
 P2 and then by ascending issue number. Dispatcher readiness is independent of
 runner capacity: GitHub Actions may queue any excess Pi jobs, while the N150
@@ -393,7 +394,9 @@ and makes no GitHub changes itself. The workflow validates the plan, creates
 child issues and their task files on `dev`, gives children `dispatcher:ready`,
 then explicitly dispatches Pi Dispatcher again. The parent gets
 `architect:epic` and closes as completed when every child is completed after
-merge into `dev`. Separate contract tasks come first only for shared stable
+merge into `dev`. If a child is also decomposed, it closes after its own
+children complete; completion then propagates upward through all ancestors.
+Separate contract tasks come first only for shared stable
 interfaces; separate test tasks precede implementation only when they can
 merge with passing CI. Otherwise each implementation issue includes its tests.
 The skills and pinned upstream versions are recorded in `docs/skills-sources.md`.
