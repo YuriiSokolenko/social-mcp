@@ -389,10 +389,13 @@ The dispatcher workflow is:
 
 It runs after a PR is merged into `dev`, or from a manual workflow run on `dev` for initial queue filling. Dispatcher jobs use one repository-wide concurrency group, `pi-dispatcher`, with `cancel-in-progress: false`. The dispatcher checks out `dev`, not the merged PR head. The write-capable workflow token is limited to validation and label steps; it is not passed to the Pi dispatcher process.
 
-The auto-merge gate waits for an active `review:running` job to finish before
-updating a PR branch that fell behind `dev`. A review made stale by a changed
-base releases its running label without approving the old result; the next gate
-run refreshes the branch and requests review of the new head.
+The auto-merge gate waits for an active `review:running` job, or a
+`review:changes-requested` PR whose Pi PR Fix repair may still be starting, to
+finish before updating a PR branch that fell behind `dev`. Moving the branch
+underneath an in-flight repair previously raced with it and wasted a
+duplicate reviewer run against the newly merged head. A review made stale by
+a changed base releases its running label without approving the old result;
+the next gate run refreshes the branch and requests review of the new head.
 
 For each accepted issue the workflow adds `pi:ready`, sends
 `pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs

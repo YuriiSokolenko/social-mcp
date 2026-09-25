@@ -57,7 +57,13 @@ export function needsCIDispatch(ci, marker) {
 }
 
 export function shouldDeferBranchUpdate(pr) {
-  return pr.labels?.some(label => label.name === 'review:running') ?? false;
+  // review:running: a reviewer is actively reading this exact head; don't move it under them.
+  // review:changes-requested: Pi PR Fix was just dispatched for this exact head and may still be
+  // starting up. Updating the branch here raced Pi PR Fix in practice: auto-merge dispatched a
+  // second, duplicate review for the merged head while the fix job kept working, wasting a full
+  // reviewer run. Wait for the fix cycle to either push a new head (which re-triggers review) or
+  // finish with no changes (leaving review:changes-requested for a person to look at).
+  return pr.labels?.some(label => ['review:running', 'review:changes-requested'].includes(label.name)) ?? false;
 }
 
 async function mark(sha, context, state, description) {
