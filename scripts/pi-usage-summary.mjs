@@ -4,10 +4,13 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 // A run this large or slow almost always means the model got stuck repeating
 // itself rather than doing proportionally more useful work: normal Architect
-// keep/revise decisions take 10-16 responses and a few hundred seconds.
+// keep/revise decisions take 10-16 responses and a few hundred seconds, and
+// even a thorough split should have room under the loop guard's own turn
+// budget (PI_MAX_TURNS) and the job's timeout-minutes. These defaults sit
+// above both, so this only fires once a run is clearly past legitimate use.
 export function usageWarning(responses, modelSeconds, {
-  maxResponses = Number(process.env.PI_USAGE_WARN_RESPONSES ?? 60),
-  maxSeconds = Number(process.env.PI_USAGE_WARN_SECONDS ?? 1800),
+  maxResponses = Number(process.env.PI_USAGE_WARN_RESPONSES ?? 120),
+  maxSeconds = Number(process.env.PI_USAGE_WARN_SECONDS ?? 5400),
 } = {}) {
   if (responses > maxResponses) {
     return `Pi usage: ${responses} responses exceeds the ${maxResponses}-response guard threshold; `

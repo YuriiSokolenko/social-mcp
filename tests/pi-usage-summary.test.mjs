@@ -11,6 +11,14 @@ test("usageWarning is silent for a normal-sized run", () => {
   assert.equal(usageWarning(14, 1207.5), null);
 });
 
+test("default thresholds sit above the loop guard's own turn/timeout budget", () => {
+  // Defaults must not fire on legitimate long split runs: they should clear
+  // PI_MAX_TURNS (100) and stay well under timeout-minutes (120) for Architect.
+  assert.equal(usageWarning(100, 5000), null);
+  assert.ok(usageWarning(121, 100));
+  assert.ok(usageWarning(10, 5401));
+});
+
 test("usageWarning flags a run stuck far past the response threshold", () => {
   // Real observed stuck Architect "keep" run: 217 responses, 4375.7s model time.
   const message = usageWarning(217, 4375.7, { maxResponses: 60, maxSeconds: 1800 });

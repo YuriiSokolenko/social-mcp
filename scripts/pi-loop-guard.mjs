@@ -6,7 +6,7 @@ import { LoopGuard } from './pi-loop-guard-policy.mjs';
 // model calls tools in one run.
 export default function (pi) {
   const guard = new LoopGuard({
-    turnLimit: Number(process.env.PI_MAX_TURNS ?? 40),
+    turnLimit: Number(process.env.PI_MAX_TURNS ?? 100),
     repeatThreshold: Number(process.env.PI_MAX_REPEAT_CALLS ?? 3),
   });
   pi.on('turn_start', (event) => {
