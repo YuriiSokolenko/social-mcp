@@ -246,6 +246,10 @@ It is triggered by the repository event:
 pi_pr_review
 ```
 
+For a hung or interrupted review, use **Pi PR Review → Run workflow** on
+`dev` and enter its PR number. Review runs for the same PR share a concurrency
+group with `cancel-in-progress: true`; the new run replaces the old one.
+
 and may also be manually retriggered by reopening a PR.
 
 Only same-repository branches matching:
