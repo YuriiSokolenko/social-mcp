@@ -1,10 +1,10 @@
 scope,issue,phase,run_id,attempt,status,responses,input,output,cache_read,cache_write,total_tokens,model_seconds,runner_seconds,url
+issue,2,all,,,,9,22430,9379,159205,0,191014,882.9,902,https://github.com/YuriiSokolenko/social-mcp/issues/2
 issue,10,all,,,,14,32423,59901,296631,0,388955,7281.5,7339,https://github.com/YuriiSokolenko/social-mcp/issues/10
 issue,16,all,,,,28,58595,13150,1386987,0,1458732,2213.5,2235,https://github.com/YuriiSokolenko/social-mcp/issues/16
 issue,17,all,,,,11,25892,4498,233580,0,263970,484.6,503,https://github.com/YuriiSokolenko/social-mcp/issues/17
 issue,18,all,,,,238,207781,72161,12606845,0,12886787,9458.2,9751,https://github.com/YuriiSokolenko/social-mcp/issues/18
-issue,20,all,,,,43,85417,13118,1384588,0,1483123,1586.7,1634,https://github.com/YuriiSokolenko/social-mcp/issues/20
-issue,20,all,,,,34,33407,13415,987760,0,1034582,1855.4,1883,https://github.com/YuriiSokolenko/social-mcp/issues/20
+issue,20,all,,,,77,118824,26533,2372348,0,2517705,3442.1,3517,https://github.com/YuriiSokolenko/social-mcp/issues/20
 issue,21,all,,,,12,33102,7740,281553,0,322395,787.3,808,https://github.com/YuriiSokolenko/social-mcp/issues/21
 issue,22,all,,,,14,23010,6366,241121,0,270497,584.9,605,https://github.com/YuriiSokolenko/social-mcp/issues/22
 issue,24,all,,,,17,37653,2814,523942,0,564409,339.7,359,https://github.com/YuriiSokolenko/social-mcp/issues/24
@@ -22,3 +22,4 @@ attempt,18,review,36138327125,1,success,31,71188,16259,1437921,0,1525368,1850.9,
 attempt,24,architect,36158903378,1,success,17,37653,2814,523942,0,564409,339.7,359,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36158903378/attempts/1
 attempt,20,architect,36160509033,1,failure,23,54873,6241,893623,0,954737,891.5,919,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36160509033/attempts/1
 attempt,20,architect,36167247944,1,success,34,33407,13415,987760,0,1034582,1855.4,1883,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36167247944/attempts/1
+attempt,2,architect,36190818216,1,failure,9,22430,9379,159205,0,191014,882.9,902,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36190818216/attempts/1
