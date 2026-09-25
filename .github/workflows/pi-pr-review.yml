@@ -1,4 +1,5 @@
 name: Pi PR Review
+run-name: 'Pi review PR #${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}'
 
 on:
   repository_dispatch:

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { readQueueContext } from "./pi-queue-context.mjs";
 
 const [mode, file] = process.argv.slice(2);
 const repo = process.env.REPO;
@@ -67,7 +68,7 @@ function task(number) {
   if (dependencies.includes(number)) throw new Error("task depends on itself");
   return { priority, dependencies };
 }
-async function snapshot() {
+async function snapshot(includeQueue = false) {
   const [issues, prs] = await Promise.all([
     pages("/issues?state=open"),
     pages("/pulls?state=open"),
@@ -108,7 +109,9 @@ async function snapshot() {
       body: issue.body ?? "", architect_child: /<!-- architect-parent:\d+; architect-key:[a-z][a-z0-9-]* -->/.test(issue.body ?? "") });
   }
   candidates.sort((a, b) => a.priority.localeCompare(b.priority) || a.issue - b.issue);
-  return { active: [...active].sort((a, b) => a - b), candidates, skipped };
+  const result = { active: [...active].sort((a, b) => a - b), candidates, skipped };
+  if (includeQueue) result.queue = await readQueueContext(endpoint => api(endpoint), repo, openIssues, prs);
+  return result;
 }
 function finalText(jsonl) {
   let result = "";
@@ -127,7 +130,7 @@ async function main() {
   if (mode === "prepare") {
     await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
     await ensureLabel("architect:ready", "c5def5", "Needs Pi Architect to split the issue");
-    const data = await snapshot();
+    const data = await snapshot(true);
     fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
     console.log(`Dispatcher: ${data.active.length} active, ${data.candidates.length} ready candidates`);
     for (const item of data.skipped) console.log(`Skipped #${item.issue}: ${item.reason}`);

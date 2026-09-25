@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { readQueueContext } from './pi-queue-context.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN;
@@ -143,11 +144,19 @@ async function prepare(issue, filename) {
   if (labels.has('dispatcher:ready')) {
     await api(`/issues/${issue}/labels/dispatcher%3Aready`, 'DELETE');
   }
-  const known = (await allIssues()).filter(x => x.state === 'open')
+  const openIssues = (await allIssues()).filter(x => x.state === 'open');
+  const known = openIssues
     .map(x => ({ number: x.number, title: x.title, labels: x.labels.map(y => y.name) }));
+  const prs = [];
+  for (let page = 1; ; page++) {
+    const batch = await api(`/pulls?state=open&base=dev&per_page=100&page=${page}`);
+    prs.push(...batch);
+    if (batch.length < 100) break;
+  }
+  const queue = await readQueueContext(endpoint => api(endpoint), repo, openIssues, prs);
   fs.writeFileSync(filename, JSON.stringify({
     number: issue, title: parent.title, body: parent.body,
-    metadata: taskMetadata(issue), open_issues: known,
+    metadata: taskMetadata(issue), open_issues: known, queue,
   }, null, 2));
 }
 

@@ -1,4 +1,5 @@
 name: Pi PR Fix
+run-name: 'Pi repair PR #${{ github.event.client_payload.pr_number || inputs.pr_number }}'
 
 on:
   repository_dispatch:

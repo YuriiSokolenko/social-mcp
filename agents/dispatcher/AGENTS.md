@@ -27,6 +27,15 @@ Do not infer readiness from the issue title, its age, a product roadmap, or a tr
 
 ## Readiness and order
 
+The prepared context contains `queue`: `active_issues` with current Pi labels,
+`open_prs` targeting `dev` (including review labels and their linked issue when
+known), and `active_runs` with `queued`, `in_progress`, `waiting`, or `pending`
+GitHub Actions jobs. A run may have `issue: null` if GitHub cannot associate
+its title with an issue. `runs_incomplete` means the Actions snapshot may omit
+jobs. Use this context to avoid overlapping work and explain skipped tasks;
+job status is a snapshot, not proof that an issue is completed or eligible.
+The workflow rechecks issue labels, dependencies, and PRs before assignment.
+
 Readiness is independent from execution capacity. Recommend **all currently eligible issues** in one dispatcher run. The N150 autoscaler and GitHub Actions queue limit how many Pi jobs execute concurrently; the dispatcher must not reserve or count runner slots.
 
 Order eligible issues by task-file priority `P0` before `P1` before `P2`, then by ascending issue number. The task file is the source of truth for priority. If its metadata is missing, malformed, or contradictory, skip that issue and report the reason; never guess a priority.

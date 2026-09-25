@@ -23,6 +23,15 @@ Python service.
 
 ## Decomposition rules
 
+Your issue context includes `open_issues` and a `queue` snapshot. Inspect
+`queue.active_issues`, `queue.open_prs`, and `queue.active_runs` before making
+new steps: identify work already assigned, waiting for a runner, being
+reviewed, or already proposed in an open PR. PR entries include issue links
+and review labels when GitHub can identify them. An Actions run may have an
+unknown issue; `runs_incomplete` means the run list is partial. Treat these
+as current context, not as proof of completion. Avoid duplicate or overlapping
+child issues, while preserving the source issue's actual acceptance criteria.
+
 - Compare the request with current `dev`: name already implemented parts and
   split only the remaining work. Check nearby issues for duplicate scope.
 - A source issue may itself be a child of another Architect issue. Split it
