@@ -76,6 +76,15 @@ The manager counts both `queued` and `pending` GitHub workflow runs. When GitHub
 or Docker state cannot be read, it skips that poll instead of treating the failed
 request as an empty queue or an empty runner pool.
 
+The manager loop has no external supervisor for a hang: `restart: unless-stopped`
+only restarts a crashed process, never one that is alive but stuck waiting on a
+network call. Every GitHub API request and Docker command therefore runs under a
+bounded deadline -- `CURL_CONNECT_TIMEOUT_SECONDS` (default 5) and
+`CURL_MAX_TIME_SECONDS` (default 15) for `curl`, `DOCKER_TIMEOUT_SECONDS`
+(default 30) for `docker ps`/`stop`/`run`. A call that exceeds its deadline is
+killed and that poll logs a warning and retries on the next cycle, instead of
+freezing runner scaling for the whole host.
+
 Run the focused manager checks without contacting GitHub or Docker:
 
 ```bash

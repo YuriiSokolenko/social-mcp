@@ -16,5 +16,8 @@ services:
       WORKFLOW_FILES: ${WORKFLOW_FILES:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml,pi-architect.yml}
       MODEL_STATUS_URL: ${MODEL_STATUS_URL:-}
       PI_CONFIG_DIR: ${PI_HOME_HOST}/.pi/agent
+      CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
+      CURL_MAX_TIME_SECONDS: ${CURL_MAX_TIME_SECONDS:-15}
+      DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
