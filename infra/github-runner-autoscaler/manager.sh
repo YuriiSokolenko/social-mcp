@@ -83,6 +83,33 @@ active_containers() {
   printf '%s\n' "$names" | awk -v prefix="${RUNNER_PREFIX}-" 'index($0, prefix) == 1 { count++ } END { print count+0 }'
 }
 
+retire_idle_runners() {
+  local names containers name still_idle current_queue
+  # An already registered idle runner can accept a job without consulting the
+  # model gate. Remove surplus idle runners when no workflows are queued.
+  names="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" '
+    .runners | if type != "array" then error("missing runners") else
+      map(select((.name | type) == "string" and (.name | startswith($prefix))
+        and .status == "online" and .busy == false)) | map(.name) | join("\n")
+    end')" || return 1
+  [ -n "$names" ] || return 0
+  containers="$(docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$containers" | grep -Fxq -- "$name" || continue
+    current_queue="$(queued_jobs)" || return 1
+    [ "$current_queue" -eq 0 ] || return 0
+    # Check once more immediately before stopping; never stop a known busy runner.
+    still_idle="$(api_get "${API}/actions/runners?per_page=100" | jq -r --arg name "$name" '
+      .runners | if type != "array" then error("missing runners") else
+        any(.[]; .name == $name and .status == "online" and .busy == false)
+      end')" || return 1
+    [ "$still_idle" == true ] || continue
+    log "stopping surplus idle runner $name"
+    docker stop "$name" >/dev/null || return 1
+  done <<< "$names"
+}
+
 model_start_capacity() {
   local active="$1" status waiting
   # A Pi job makes many model calls. Reserve runner slots for the entire job;
@@ -147,6 +174,10 @@ main() {
       log "warning: invalid runner state; skipping this poll"
       sleep "$POLL_SECONDS"
       continue
+    fi
+
+    if [ "$queued" -eq 0 ] && [ "$active" -gt "$busy" ]; then
+      retire_idle_runners || log "warning: idle-runner cleanup failed"
     fi
 
     desired=$((queued + busy))

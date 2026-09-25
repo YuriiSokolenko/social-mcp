@@ -492,6 +492,9 @@ between model requests. A vLLM `/metrics` endpoint instead defers new runners
 while requests wait. Unreadable status also delays new runners. Active jobs
 continue; the local `MAX_RUNNERS` remains the upper bound, and an unset URL
 keeps the previous queue-only behavior.
+When the queue is empty, the manager retires any surplus idle online runners
+while leaving GitHub-busy workers alone. Otherwise an idle runner could take a
+new job without going through the model admission check.
 
 Each worker:
 

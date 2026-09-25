@@ -65,6 +65,9 @@ to `/metrics`; a waiting-request backlog defers new runners. An unavailable
 endpoint or invalid status defers new runners and logs a warning. An unset URL
 preserves the previous queue-only behavior. Recreate the manager after changing
 the URL or switching model servers.
+When no Pi workflows are queued, the manager stops surplus online idle runners
+after checking that GitHub still marks each one as not busy. This prevents an
+already registered spare runner from taking a later job before the model check.
 The manager counts both `queued` and `pending` GitHub workflow runs. When GitHub
 or Docker state cannot be read, it skips that poll instead of treating the failed
 request as an empty queue or an empty runner pool.

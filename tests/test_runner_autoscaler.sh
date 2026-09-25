@@ -94,6 +94,28 @@ STATUS_FAIL=1
 assert_failure model_start_capacity 0
 unset STATUS_FAIL
 
+STOPPED_NAMES="$(mktemp)"
+trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES"' EXIT
+(
+  queued_jobs() { printf '0\n'; }
+  busy_ephemeral_runners() { printf '3\n'; }
+  active_containers() { printf '4\n'; }
+  cleanup_stale_registrations() { :; }
+  api_get() {
+    printf '%s' '{"runners":[{"name":"n150-pi-eph-busy","status":"online","busy":true},{"name":"n150-pi-eph-idle","status":"online","busy":false},{"name":"other-manager","status":"online","busy":false}]}'
+  }
+  docker() {
+    case "$1" in
+      ps) printf '%s\n' 'n150-pi-eph-busy' 'n150-pi-eph-idle' ;;
+      stop) printf '%s\n' "$2" >> "$STOPPED_NAMES" ;;
+      *) fail "unexpected Docker command: $1" ;;
+    esac
+  }
+  sleep() { exit 0; }
+  main >/dev/null
+)
+[[ "$(cat "$STOPPED_NAMES")" == 'n150-pi-eph-idle' ]] || fail 'only the surplus idle runner may be stopped'
+
 STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"id":2,"is_processing":true},{"id":3,"is_processing":true}]'
 (
   queued_jobs() { printf '1\n'; }
