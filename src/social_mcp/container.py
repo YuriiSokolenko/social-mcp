@@ -9,11 +9,12 @@ TOKEN_ENCRYPTION_KEY is usable.
 
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from social_mcp.auth.token_cipher import TokenCipher
 from social_mcp.config import Settings
+from social_mcp.diagnostics import DiagnosticLog
 from social_mcp.storage.sqlite import SQLiteAccountStore
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class ApplicationContainer:
 
     settings: Settings
     account_store: SQLiteAccountStore
+    diagnostics: DiagnosticLog = field(default_factory=DiagnosticLog)
 
     def start(self) -> None:
         """Create the account database and confirm the store is reachable.
@@ -114,6 +116,7 @@ def build_container(settings: Settings) -> ApplicationContainer:
     return ApplicationContainer(
         settings=settings,
         account_store=SQLiteAccountStore(settings.database_path),
+        diagnostics=DiagnosticLog(),
     )
 
 
