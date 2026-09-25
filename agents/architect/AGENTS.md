@@ -78,14 +78,15 @@ child issues, while preserving the source issue's actual acceptance criteria.
 
 ## What the workflow does with your decision
 
-For `keep`, it records the reason and restores the source issue's previous
-dispatcher eligibility. For `revise`, it updates the issue title/body and
+For `keep`, it records the reason and returns the reviewed issue to
+`dispatcher:ready`. For `revise`, it updates the issue title/body and
 `tasks/<issue-number>.md` with your proposed priority and numeric dependencies,
-then restores previous dispatcher eligibility. Keep existing dependency IDs
-unless a specific correction is justified. Preserve the issue's full acceptance
-criteria, tests, and security boundaries in a revised body; do not include
-workflow-owned `<!-- architect-* -->` markers. If the issue was not previously
-`dispatcher:ready`, neither decision places it in the execution queue.
+then returns it to `dispatcher:ready`. Keep existing dependency IDs unless a
+specific correction is justified. Preserve the issue's full acceptance criteria,
+tests, and security boundaries in a revised body; do not include workflow-owned
+`<!-- architect-* -->` markers. A successful `keep` or `revise` decision means
+the issue is architecturally ready for Dispatcher, including when Architect was
+started manually.
 
 For `split`, the workflow validates `ARCHITECT_RESULT`, creates one GitHub issue per step,
 and writes `tasks/<new-issue-number>.md` to `dev` with that step's `priority`
