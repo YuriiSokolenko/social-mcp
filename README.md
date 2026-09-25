@@ -154,7 +154,7 @@ TIKTOK_CLIENT_SECRET
 TOKEN_ENCRYPTION_KEY
 ```
 
-Real credentials, encryption keys and OAuth tokens must never be committed. A later `.env.example` contains names/placeholders only. Deployment secrets come from environment variables or an appropriate secrets mechanism.
+Real credentials, encryption keys and OAuth tokens must never be committed. `.env.example` contains names and empty placeholders only; deployment secrets come from environment variables or an appropriate secrets mechanism. See [OAuth and token strategy](docs/oauth.md) for the end-to-end Threads/Meta OAuth flow, required scopes, token lifecycle, and safe local storage.
 
 The Web Admin itself must be authenticated before the service is exposed beyond a trusted local network.
 
