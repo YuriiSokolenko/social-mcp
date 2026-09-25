@@ -40,5 +40,6 @@ The repository also contains a GitHub Actions workflow for implementation and an
 - **Reviewer:** read it before reviewing the issue and diff; use it to identify product, architecture, and security regressions.
 - **Dispatcher:** read it before classifying eligible issues for implementation or decomposition; use task descriptions and issue state for priority and eligibility, and do not reinterpret the roadmap as permission to launch unrequested work.
 - **Architect:** read it before breaking an explicitly queued broad issue into independently reviewable tasks, then return them to the dispatcher with dependencies.
+- **Triage:** read it before deciding whether an open issue is complete and clear enough to enter the dispatcher queue; when it is not, explain the gap in a comment rather than guessing at the missing scope.
 
 If this document disagrees with current executable code or a platform's granted capabilities, investigate and report the discrepancy. If a product decision changes, update this document and the more detailed source documents together.
