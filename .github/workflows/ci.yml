@@ -14,6 +14,10 @@ concurrency:
 
 jobs:
   test:
+    # pi-auto-merge.mjs always dispatches a workflow_dispatch CI run for pi/issue-*
+    # branches, so skip the redundant pull_request-triggered run for those branches
+    # instead of letting the concurrency group cancel it (which shows as a failure).
+    if: github.event_name != 'pull_request' || !startsWith(github.event.pull_request.head.ref, 'pi/issue-')
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -43,6 +47,7 @@ jobs:
         run: bash tests/test_runner_autoscaler.sh
 
   docker:
+    if: github.event_name != 'pull_request' || !startsWith(github.event.pull_request.head.ref, 'pi/issue-')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
