@@ -25,6 +25,21 @@ test('can split a contract-only child without inventing an implementation', () =
   assert.equal(validatePlan(plan, 42), plan);
 });
 
+test('accepts review decisions without forcing unnecessary child issues', () => {
+  const keep = { parent_issue: 42, action: 'keep', reason: 'The task is already bounded and its dependencies are correct.' };
+  const revise = { parent_issue: 42, action: 'revise',
+    reason: 'The original issue still includes work that was already completed.',
+    title: 'Implement the remaining account profile read behavior', body,
+    priority: 'P1', depends_on: [14, 18] };
+  assert.equal(validatePlan(keep, 42), keep);
+  assert.equal(validatePlan(revise, 42), revise);
+  assert.throws(() => validatePlan({ ...revise, depends_on: [42] }, 42));
+  assert.throws(() => validatePlan({ ...revise, body: `${body}\n<!-- architect-parent:1; architect-key:x -->` }, 42));
+  const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
+    content: [{ type: 'text', text: `ARCHITECT_RESULT: ${JSON.stringify(keep)}` }] }] });
+  assert.deepEqual(planFromJsonl(jsonl, 42), keep);
+});
+
 test('rejects forward dependencies, duplicate keys and missing test dependency', () => {
   assert.throws(() => validatePlan({ parent_issue: 42, steps: [step('feature', 'implementation', ['later']), step('later', 'implementation')] }, 42));
   assert.throws(() => validatePlan({ parent_issue: 42, steps: [step('feature', 'implementation'), step('feature', 'implementation')] }, 42));

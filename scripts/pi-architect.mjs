@@ -50,6 +50,23 @@ export function planFromJsonl(jsonl, parent) {
 }
 
 export function validatePlan(plan, parent) {
+  if (plan?.parent_issue !== parent) throw new Error('Plan targets another issue');
+  if (plan.action === 'keep' || plan.action === 'revise') {
+    if (typeof plan.reason !== 'string' || plan.reason.trim().length < 20 ||
+        plan.reason.length > 2000) throw new Error('Review decision needs a concrete reason');
+    if (plan.action === 'keep') return plan;
+    if (typeof plan.title !== 'string' || plan.title.length < 12 || plan.title.length > 110 ||
+        typeof plan.body !== 'string' || plan.body.length < 120 || plan.body.length > 5000 ||
+        /<!--\s*architect-/.test(plan.body) || !['P0', 'P1', 'P2'].includes(plan.priority) ||
+        !Array.isArray(plan.depends_on) || new Set(plan.depends_on).size !== plan.depends_on.length ||
+        !plan.depends_on.every(n => Number.isSafeInteger(n) && n > 0 && n !== parent)) {
+      throw new Error('Invalid revised issue or task metadata');
+    }
+    return plan;
+  }
+  if (plan.action !== undefined && plan.action !== 'split') {
+    throw new Error('Unknown Architect action');
+  }
   if (plan?.parent_issue !== parent || !Array.isArray(plan.steps) ||
       plan.steps.length < 2 || plan.steps.length > 6) {
     throw new Error('Plan must split the selected issue into 2-6 steps');
@@ -128,9 +145,23 @@ async function ensureTask(number, title, priority, dependencies, body) {
   });
 }
 
+async function reviseTask(number, plan) {
+  const filename = `tasks/${number}.md`;
+  const content = `---\nissue: ${number}\npriority: ${plan.priority}\ndepends_on: [${plan.depends_on.join(', ')}]\n---\n\n# ${plan.title}\n\n## Scope and acceptance\n${plan.body}\n`;
+  const existing = await api(`/contents/${filename}?ref=dev`);
+  if (existing && Buffer.from(existing.content.replace(/\s/g, ''), 'base64').toString('utf8') === content) return;
+  await api(`/contents/${filename}`, 'PUT', {
+    message: `Refine architect-reviewed task for issue #${number}`,
+    content: Buffer.from(content).toString('base64'),
+    ...(existing ? { sha: existing.sha } : {}),
+    branch: 'dev',
+  });
+}
+
 async function prepare(issue, filename) {
   const parent = await api(`/issues/${issue}`);
   const labels = new Set(parent?.labels?.map(label => label.name));
+  const wasDispatcherReady = labels.has('dispatcher:ready');
   if (parent?.state === 'open' && !labels.has('architect:ready') &&
       process.env.GITHUB_EVENT_NAME === 'workflow_dispatch') {
     await ensureLabel('architect:ready', 'c5def5', 'Large issue approved for Pi Architect');
@@ -138,7 +169,8 @@ async function prepare(issue, filename) {
     labels.add('architect:ready');
   }
   if (!parent || parent.state !== 'open' || !labels.has('architect:ready') ||
-      ['pi:running', 'pi:ready', 'pi:mr-created', 'pi:failed', 'pi:needs-human'].some(x => labels.has(x))) {
+      ['pi:running', 'pi:ready', 'pi:mr-created', 'pi:failed', 'pi:needs-human',
+        'pi:blocked', 'pi:cancelled', 'architect:epic'].some(x => labels.has(x))) {
     throw new Error('Parent must be an open, inactive issue labeled architect:ready');
   }
   if (labels.has('dispatcher:ready')) {
@@ -156,16 +188,56 @@ async function prepare(issue, filename) {
   const queue = await readQueueContext(endpoint => api(endpoint), repo, openIssues, prs);
   fs.writeFileSync(filename, JSON.stringify({
     number: issue, title: parent.title, body: parent.body,
+    was_dispatcher_ready: wasDispatcherReady,
     metadata: taskMetadata(issue), open_issues: known, queue,
   }, null, 2));
 }
 
-async function publish(issue, jsonl) {
+async function publish(issue, jsonl, contextFile) {
   const parent = await api(`/issues/${issue}`);
-  if (parent?.state !== 'open' || !parent.labels.some(label => label.name === 'architect:ready')) {
+  const labels = new Set(parent?.labels?.map(label => label.name));
+  if (parent?.state !== 'open' || !labels.has('architect:ready') ||
+      ['pi:running', 'pi:ready', 'pi:mr-created', 'pi:failed', 'pi:needs-human',
+        'pi:blocked', 'pi:cancelled'].some(x => labels.has(x))) {
     throw new Error('Parent changed while Architect was planning');
   }
+  const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
+  if (context.number !== issue || context.title !== parent.title || context.body !== parent.body ||
+      typeof context.was_dispatcher_ready !== 'boolean' ||
+      JSON.stringify(context.metadata) !== JSON.stringify(taskMetadata(issue))) {
+    throw new Error('Source issue changed while Architect was planning');
+  }
   const plan = planFromJsonl(fs.readFileSync(jsonl, 'utf8'), issue);
+  if (plan.action === 'keep' || plan.action === 'revise') {
+    if (childNumbers(parent.body).length) throw new Error('Cannot revise an already split issue');
+    if (plan.action === 'revise') {
+      const existing = await allIssues();
+      for (const dependency of plan.depends_on) {
+        if (!existing.some(item => item.number === dependency)) {
+          throw new Error(`Dependency #${dependency} does not exist`);
+        }
+      }
+      await reviseTask(issue, plan);
+      const marker = /<!-- architect-parent:\d+; architect-key:[a-z][a-z0-9-]* -->/.exec(parent.body ?? '')?.[0];
+      const body = marker ? `${plan.body}\n\n${marker}` : plan.body;
+      if (parent.title !== plan.title || parent.body !== body) {
+        await api(`/issues/${issue}`, 'PATCH', { title: plan.title, body });
+      }
+    }
+    await api(`/issues/${issue}/comments`, 'POST', {
+      body: `Pi Architect review: **${plan.action}**. ${plan.reason}`,
+    });
+    if (context.was_dispatcher_ready) {
+      await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
+      await api(`/issues/${issue}/labels`, 'POST', { labels: ['dispatcher:ready'] });
+    }
+    await api(`/issues/${issue}/labels/architect%3Aready`, 'DELETE');
+    if (context.was_dispatcher_ready) {
+      await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
+    }
+    console.log(`Reviewed #${issue}: ${plan.action}`);
+    return;
+  }
   const inherited = taskMetadata(issue).dependencies;
   const existing = await allIssues();
   const created = new Map();
@@ -206,14 +278,15 @@ async function publish(issue, jsonl) {
 }
 
 async function main() {
-  const [mode, rawIssue, filename] = process.argv.slice(2);
+  const [mode, rawIssue, filename, contextFile] = process.argv.slice(2);
   const issue = Number(rawIssue);
   if (!repo || !token || !['prepare', 'publish'].includes(mode) ||
-      !Number.isSafeInteger(issue) || issue < 1 || !filename) {
-    throw new Error('usage: pi-architect.mjs {prepare|publish} <issue> <file>');
+      !Number.isSafeInteger(issue) || issue < 1 || !filename ||
+      (mode === 'publish' && !contextFile)) {
+    throw new Error('usage: pi-architect.mjs {prepare|publish} <issue> <file> [context]');
   }
   if (mode === 'prepare') await prepare(issue, filename);
-  else await publish(issue, filename);
+  else await publish(issue, filename, contextFile);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

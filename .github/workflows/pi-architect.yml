@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: Large issue to split into dependency-linked tasks
+        description: Issue to review, refine, or split into dependency-linked tasks
         required: true
         type: number
 
@@ -18,6 +18,7 @@ permissions:
 
 concurrency:
   group: pi-architect
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -63,7 +64,7 @@ jobs:
       - name: Validate and publish child tasks
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/pi-architect.mjs publish "$ISSUE" "$RUNNER_TEMP/pi-architect-result.jsonl"
+        run: node scripts/pi-architect.mjs publish "$ISSUE" "$RUNNER_TEMP/pi-architect-result.jsonl" "$RUNNER_TEMP/pi-architect-context.json"
 
       - name: Summarize Pi usage
         if: always()

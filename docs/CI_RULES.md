@@ -408,12 +408,18 @@ dispatches `.github/workflows/pi-architect.yml` on `dev`, and then removes
 `dispatcher:ready`. GitHub Actions does not run a new workflow on label events
 made with `GITHUB_TOKEN`; the explicit dispatch is required. Pi Architect
 reads the issue and downloaded planning skills, proposes two to six small tasks,
-and makes no GitHub changes itself. The workflow validates the plan, creates
+and makes no GitHub changes itself. Architect may also review an inactive
+issue already awaiting the dispatcher: keep it, revise its issue and task
+metadata, or split it. A kept or revised issue returns to its previous
+dispatcher eligibility; a deferred issue stays deferred. The workflow
+validates a split plan, creates
 child issues and their task files on `dev`, gives children `dispatcher:ready`,
 then explicitly dispatches Pi Dispatcher again. The parent gets
 `architect:epic` and closes as completed when every child is completed after
 merge into `dev`. If a child is also decomposed, it closes after its own
 children complete; completion then propagates upward through all ancestors.
+Architect runs share a repository-wide concurrency group with `queue: max`,
+so a batch of review requests waits in order without replacing pending runs.
 Separate contract tasks come first only for shared stable
 interfaces; separate test tasks precede implementation only when they can
 merge with passing CI. Otherwise each implementation issue includes its tests.
