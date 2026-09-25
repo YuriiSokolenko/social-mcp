@@ -34,11 +34,14 @@ export function parseReviewResult(jsonl) {
 
   if (!finalText) throw new Error("Pi review did not produce a final assistant response");
   // A completed review can include its verdict after the evidence or as a
-  // Markdown heading. Only read the last assistant message and reject an
-  // ambiguous response containing more than one verdict line.
+  // Markdown heading. Only read the last assistant message. The model can
+  // restate the same verdict more than once (e.g. a draft then a final
+  // line); that is fine as long as every line agrees. Genuinely conflicting
+  // verdicts (PASS and CHANGES_REQUESTED both present) stay rejected.
   const verdicts = [...finalText.matchAll(/^[ \t]*(?:#{1,6}[ \t]+)?REVIEW_RESULT:[ \t]*(PASS|CHANGES_REQUESTED)[ \t]*$/gm)];
-  if (verdicts.length !== 1) throw new Error("Pi review final response must contain exactly one REVIEW_RESULT: PASS|CHANGES_REQUESTED line");
-  return { verdict: verdicts[0][1], text: finalText };
+  const distinct = new Set(verdicts.map((verdict) => verdict[1]));
+  if (distinct.size !== 1) throw new Error("Pi review final response must contain exactly one REVIEW_RESULT: PASS|CHANGES_REQUESTED line");
+  return { verdict: verdicts.at(-1)[1], text: finalText };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
