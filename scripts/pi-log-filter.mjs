@@ -42,6 +42,12 @@ let reportedFinal = false;
 const issue = /^\d+$/.test(process.env.PI_ISSUE ?? "") ? Number(process.env.PI_ISSUE) : null;
 const phase = process.env.PI_PHASE ?? "agent";
 const call = process.env.PI_CALL ?? "main";
+const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+
+// Job Summary mirror: unlike ::group::, HTML <details> in $GITHUB_STEP_SUMMARY nests,
+// so the full run tree (turn > thinking/response/tool > args/result) is browsable there.
+const turns = [];
+let currentTurn = null;
 
 if (issue != null) console.log(`PI_TASK ${JSON.stringify({ issue, phase, call })}`);
 
@@ -206,9 +212,15 @@ function detailLines(text, color = C.dim) {
   for (const line of String(text).split(/\r\n|\r|\n/)) console.log("  " + color + line + C.reset);
 }
 
-function printToolDetails(name, args, result, isError) {
-  if (args == null && result == null) return;
-  startGroup((isError ? "✗ " : "🔧 ") + name + " · " + (isError ? "failed" : "details"), isError ? C.red : C.magenta);
+function printToolDetails(title, args, result, isError) {
+  // GitHub's raw log only folds one level deep, so a tool call gets a single
+  // group (or, with nothing to show, a single plain line) titled with
+  // everything useful for scanning without expanding it.
+  if (args == null && result == null) {
+    heading(isError ? "✗" : "✓", title, isError ? C.red : C.green);
+    return;
+  }
+  startGroup((isError ? "✗ " : "✓ ") + title, isError ? C.red : C.green);
   try {
     if (args != null) {
       console.log(C.dim + "Arguments:" + C.reset);
@@ -234,6 +246,7 @@ function reportFinal(status) {
   heading(status === "completed" ? "■" : "◼", `Agent ${status} · ${duration(elapsed)}`, status === "completed" ? C.green : C.yellow);
   console.log(C.gray + `Model totals (${measuredResponses} responses): ${measuredResponses ? usageSummary(totals) : "tokens unavailable"} · response time ${duration(totalResponseMs)} · tools ${toolCount}` + C.reset);
   if (status !== "completed") console.log(C.yellow + "Only completed model responses are counted." + C.reset);
+  buildJobSummary(status);
 }
 
 function divider() {
@@ -249,6 +262,62 @@ function toolSummary(name, args) {
   return "";
 }
 
+function appendCapped(base, addition, limit = 20000) {
+  if (base.length >= limit) return base;
+  return (base + addition).slice(0, limit);
+}
+
+function getCurrentTurn() {
+  if (!currentTurn) {
+    currentTurn = { number: responseNumber || turns.length + 1, metaLine: null, thinking: "", response: "", tools: [] };
+    turns.push(currentTurn);
+  }
+  return currentTurn;
+}
+
+function escHtml(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function mdCodeBlock(text, lang = "") {
+  let fence = "```";
+  while (text.includes(fence)) fence += "`";
+  return fence + lang + "\n" + text + "\n" + fence;
+}
+
+function buildJobSummary(status) {
+  if (!summaryFile) return;
+  const elapsed = Date.now() - sessionStarted;
+  const lines = [];
+  lines.push(`## Pi agent run${issue != null ? ` · issue #${issue}` : ""} · ${phase}/${call}`, "");
+  lines.push(`**Status:** ${status} · **Duration:** ${duration(elapsed)} · **Responses:** ${measuredResponses} · **Tools:** ${toolCount}`);
+  lines.push(`**Tokens:** ${measuredResponses ? usageSummary(totals) : "tokens unavailable"}`, "");
+  for (const turn of turns) {
+    lines.push("<details>", `<summary>◉ Model #${turn.number}${turn.metaLine ? " · " + escHtml(turn.metaLine) : ""}</summary>`, "");
+    const thinking = redact(turn.thinking).trim();
+    if (thinking) {
+      lines.push("<details><summary>💭 Thinking</summary>", "", mdCodeBlock(truncate(thinking, 6000)), "", "</details>", "");
+    }
+    const response = redact(turn.response).trim();
+    if (response) {
+      lines.push("<details><summary>📝 Response</summary>", "", truncate(response, 6000), "", "</details>", "");
+    }
+    for (const tool of turn.tools) {
+      const icon = tool.isError ? "✗" : tool.ms == null ? "…" : "✓";
+      const took = tool.ms == null ? "" : ` · ${duration(tool.ms)}`;
+      const hint = tool.hint ? " · " + escHtml(oneLine(tool.hint, 90)) : "";
+      lines.push(`<details><summary>${icon} ${escHtml(tool.name)}${hint}${tool.isError ? " · failed" : ""}${took}</summary>`, "");
+      if (tool.args != null) lines.push("**Arguments**", "", mdCodeBlock(stringify(tool.args, 8000), "json"), "");
+      if (tool.result != null) {
+        const output = truncate(String(extractResultText(tool.result)), 8000);
+        if (output.trim()) lines.push("**Result**", "", mdCodeBlock(output), "");
+      }
+      lines.push("</details>", "");
+    }
+    lines.push("</details>", "");
+  }
+  appendFileSync(summaryFile, lines.join("\n") + "\n");
+}
 
 for await (const line of rl) {
   if (!line.trim()) continue;
@@ -273,6 +342,8 @@ for await (const line of rl) {
       streamKind = null;
       lastUsage = null;
       responseNumber += 1;
+      currentTurn = { number: responseNumber, metaLine: null, thinking: "", response: "", tools: [] };
+      turns.push(currentTurn);
       heading("◉", `Model #${responseNumber} · ${new Date().toISOString().slice(11, 19)} UTC`, C.blue);
       break;
     case "message_start":
@@ -285,12 +356,15 @@ for await (const line of rl) {
         if (delta) {
           firstTokenAt ??= Date.now();
           streamContent(update.type === "thinking_delta" ? "thinking" : "text", delta);
+          const turn = getCurrentTurn();
           if (update.type === "thinking_delta") {
             thinkingStreamed = true;
             reasoningAvailable = true;
+            turn.thinking = appendCapped(turn.thinking, delta);
           } else {
             textStreamed = true;
             streamedText = (streamedText + delta).slice(-24000);
+            turn.response = appendCapped(turn.response, delta);
           }
         }
       }
@@ -299,12 +373,14 @@ for await (const line of rl) {
     case "message_end": {
       const message = event.message;
       if (message?.role !== "assistant") break;
+      const turn = getCurrentTurn();
       if (!thinkingStreamed) {
         const thought = message.content?.filter((part) => part.type === "thinking")
           .map((part) => part.thinking ?? part.text ?? "").join("\n");
         if (thought) {
           streamContent("thinking", thought);
           reasoningAvailable = true;
+          turn.thinking = appendCapped(turn.thinking, thought);
         }
       }
       if (!textStreamed) {
@@ -313,6 +389,7 @@ for await (const line of rl) {
         if (response) {
           streamContent("text", response);
           streamedText = (streamedText + response).slice(-24000);
+          turn.response = appendCapped(turn.response, response);
         }
       }
       const usage = message.usage ?? lastUsage;
@@ -327,7 +404,9 @@ for await (const line of rl) {
       const timing = elapsed == null ? "time unavailable" : `response ${duration(elapsed)}`;
       const first = firstTokenAt == null || responseStarted == null ? "" : ` · first token ${duration(firstTokenAt - responseStarted)}`;
       const speed = elapsed && Number.isFinite(usage?.output) ? ` · ${(usage.output / (elapsed / 1000)).toFixed(1)} out tok/s` : "";
-      heading("✓", `Model #${responseNumber} · ${timing}${first} · ${usageSummary(usage)}${speed}`, C.yellow);
+      const metaLine = `${timing}${first} · ${usageSummary(usage)}${speed}`;
+      turn.metaLine = metaLine;
+      heading("✓", `Model #${responseNumber} · ${metaLine}`, C.yellow);
       if (issue != null && usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
         recordMetric({ issue, phase, call, response: responseNumber, usage: fields, responseMs: elapsed });
@@ -338,11 +417,12 @@ for await (const line of rl) {
     }
     case "tool_execution_start": {
       const name = event.toolName ?? "unknown";
-      const summary = toolSummary(name, event.args);
-      activeTools.set(event.toolCallId, { name, args: event.args, at: Date.now() });
+      const hint = toolSummary(name, event.args);
+      const summaryRecord = { name, hint, args: event.args, isError: false, result: undefined, ms: null };
+      getCurrentTurn().tools.push(summaryRecord);
+      activeTools.set(event.toolCallId, { name, args: event.args, at: Date.now(), summaryRecord });
       toolCount += 1;
-      const hint = summary ? " · " + oneLine(summary) : "";
-      heading("🔧", name + hint, C.magenta);
+      heading("🔧", name + (hint ? " · " + oneLine(hint) : ""), C.magenta);
       break;
     }
     case "tool_execution_end": {
@@ -350,9 +430,16 @@ for await (const line of rl) {
       activeTools.delete(event.toolCallId);
       const name = event.toolName ?? started?.name ?? "unknown";
       const isError = Boolean(event.isError);
-      const took = started?.at == null ? "" : ` · ${duration(Date.now() - started.at)}`;
-      heading(isError ? "✗" : "✓", name + (isError ? " failed" : " completed") + took, isError ? C.red : C.green);
-      printToolDetails(name, started?.args, event.result, isError);
+      const ms = started?.at == null ? null : Date.now() - started.at;
+      const took = ms == null ? "" : ` · ${duration(ms)}`;
+      const hint = toolSummary(name, started?.args);
+      const title = name + (hint ? " · " + oneLine(hint, 80) : "") + (isError ? " · failed" : "") + took;
+      printToolDetails(title, started?.args, event.result, isError);
+      if (started?.summaryRecord) {
+        started.summaryRecord.isError = isError;
+        started.summaryRecord.result = event.result;
+        started.summaryRecord.ms = ms;
+      }
       break;
     }
     case "turn_end":

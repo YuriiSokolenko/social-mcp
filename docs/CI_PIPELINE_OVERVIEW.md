@@ -253,7 +253,7 @@ checkout only), capping or overriding any model-requested timeout. Independent o
 | `scripts/pi-pr-review-status.sh` | PR review label/comment/commit-status transitions |
 | `scripts/pi-bash-timeout.mjs`, `scripts/pi-bash-timeout-policy.mjs` | per-command Pi bash timeout cap |
 | `scripts/pi-loop-guard.mjs`, `scripts/pi-loop-guard-policy.mjs` | Architect-only: block tool calls past a turn/repeat-call budget |
-| `scripts/pi-log-filter.mjs` | streams/filters Pi's JSON event log into the Action log |
+| `scripts/pi-log-filter.mjs` | streams/filters Pi's JSON event log into the Action log (`::group::` per turn/tool) and mirrors a fully nested turn → tool → args/result tree to the Job Summary tab |
 | `scripts/pi-review-result.mjs` | parses the mandatory `REVIEW_RESULT:` line from Pi's output |
 | `scripts/pi-queue-context.mjs` | builds the live issues/PRs/Actions-queue snapshot fed to dispatcher and architect prompts |
 | `scripts/pi-usage-collect.mjs`, `scripts/pi-usage-summary.mjs` | harvest token/cost usage from Pi run logs |

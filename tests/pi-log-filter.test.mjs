@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function render(events, env = {}) {
   const input = events.map((event) => typeof event === "string" ? event : JSON.stringify(event)).join("\n") + "\n";
@@ -11,6 +14,14 @@ function render(events, env = {}) {
   });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;
+}
+
+function renderWithSummary(events, env = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "pi-log-filter-"));
+  const summaryPath = join(dir, "summary.md");
+  const stdout = render(events, { ...env, GITHUB_STEP_SUMMARY: summaryPath });
+  const summary = existsSync(summaryPath) ? readFileSync(summaryPath, "utf8") : "";
+  return { stdout, summary };
 }
 
 test("redacts a bearer token and key split across text deltas", () => {
@@ -38,7 +49,7 @@ test("keeps thinking, response and tool details in separate groups with visible 
   ], { PI_ISSUE: "51", PI_PHASE: "implementation" });
   assert.match(output, /::group::💭 Thinking[\s\S]*Checking tests[\s\S]*::endgroup::/);
   assert.match(output, /::group::📝 Response[\s\S]*Found a fix[\s\S]*::endgroup::/);
-  assert.match(output, /::group::🔧 bash · details[\s\S]*2 passed[\s\S]*::endgroup::/);
+  assert.match(output, /::group::✓ bash · \$ pytest tests\/ · [\d.]+ (ms|s)[\s\S]*2 passed[\s\S]*::endgroup::/);
   assert.equal((output.match(/::group::/g) ?? []).length, 3);
   assert.match(output, /Model #1 · .*UTC/);
   assert.match(output, /Model totals \(1 responses\): .*total 15/);
@@ -87,4 +98,41 @@ test("redacts tool summaries, details, malformed input and indents final lines",
   assert.doesNotMatch(output, /syntheticPassword123|syntheticToken123|syntheticFallback123/);
   assert.match(output.replace(/\x1b\[[\d;]*m/g, ""), /  ::warning::injected/);
   assert.doesNotMatch(output, /^::warning::/m);
+});
+
+test("writes a nested Job Summary with a details block per turn and per tool call", () => {
+  const { summary } = renderWithSummary([
+    { type: "turn_start" },
+    { type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "Checking tests\n" } },
+    { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Found a fix\n" } },
+    { type: "message_end", message: { role: "assistant", content: [], usage: { input: 10, output: 5, totalTokens: 15 } } },
+    { type: "tool_execution_start", toolName: "bash", toolCallId: "test", args: { command: "pytest tests/" } },
+    { type: "tool_execution_end", toolName: "bash", toolCallId: "test", result: { content: [{ type: "text", text: "2 passed" }] } },
+    { type: "agent_end", messages: [] },
+  ], { PI_ISSUE: "51", PI_PHASE: "implementation" });
+
+  // Turn > tool is two levels of <details> nesting, which GitHub's raw log
+  // ::group:: cannot express but the Job Summary (rendered as markdown/HTML) can.
+  assert.match(summary, /<details>\s*<summary>◉ Model #1 ·/);
+  assert.match(summary, /<details><summary>💭 Thinking<\/summary>[\s\S]*Checking tests[\s\S]*<\/details>/);
+  assert.match(summary, /<details><summary>📝 Response<\/summary>[\s\S]*Found a fix[\s\S]*<\/details>/);
+  assert.match(summary, /<details><summary>✓ bash · \$ pytest tests\/ · [\d.]+ (ms|s)<\/summary>/);
+  assert.match(summary, /\*\*Result\*\*[\s\S]*2 passed/);
+  assert.match(summary, /## Pi agent run · issue #51 · implementation\/main/);
+  const opens = (summary.match(/<details>/g) ?? []).length;
+  const closes = (summary.match(/<\/details>/g) ?? []).length;
+  assert.equal(opens, closes);
+  assert.ok(opens >= 4, `expected turn + thinking + response + tool nesting, got ${opens} <details> blocks`);
+});
+
+test("redacts secrets in the Job Summary and skips it when GITHUB_STEP_SUMMARY is unset", () => {
+  const { summary } = renderWithSummary([
+    { type: "tool_execution_start", toolName: "bash", toolCallId: "x", args: { command: "echo password=syntheticPassword123" } },
+    { type: "tool_execution_end", toolName: "bash", toolCallId: "x", result: { content: [{ type: "text", text: "gh_token=syntheticToken123" }] } },
+    { type: "agent_end", messages: [] },
+  ]);
+  assert.doesNotMatch(summary, /syntheticPassword123|syntheticToken123/);
+
+  const output = render([{ type: "agent_end", messages: [] }]);
+  assert.ok(output.length > 0);
 });
