@@ -18,8 +18,14 @@ test('accepts ordered, independently mergeable contract, test and implementation
   assert.deepEqual(planFromJsonl(jsonl, 42), plan);
 });
 
-test('rejects missing implementation, forward dependencies, duplicate keys and missing test dependency', () => {
-  assert.throws(() => validatePlan({ parent_issue: 42, steps: [step('contract', 'contract'), step('tests', 'test', ['contract'])] }, 42));
+test('can split a contract-only child without inventing an implementation', () => {
+  const plan = { parent_issue: 42, steps: [
+    step('schema', 'contract'), step('compatibility', 'contract', ['schema']),
+  ] };
+  assert.equal(validatePlan(plan, 42), plan);
+});
+
+test('rejects forward dependencies, duplicate keys and missing test dependency', () => {
   assert.throws(() => validatePlan({ parent_issue: 42, steps: [step('feature', 'implementation', ['later']), step('later', 'implementation')] }, 42));
   assert.throws(() => validatePlan({ parent_issue: 42, steps: [step('feature', 'implementation'), step('feature', 'implementation')] }, 42));
   assert.throws(() => validatePlan({ parent_issue: 42, steps: [step('tests', 'test'), step('feature', 'implementation')] }, 42));

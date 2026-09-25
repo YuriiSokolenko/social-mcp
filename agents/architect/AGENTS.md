@@ -29,6 +29,8 @@ Python service.
   again if that helps produce independently finishable work. The workflow
   retains its link to the ancestor and closes ancestors after their descendants
   have all completed. Do not make a child depend on any of its open ancestors.
+  A contract-only or test-only child can be split into smaller tasks of its
+  own kind; do not invent implementation work just to fill a planning template.
 - Use two to six small steps. Each step needs a clear change, acceptance
   criteria, relevant tests, and out-of-scope boundaries. A single Pi
   Implementer must be able to finish each step without deciding architecture.
