@@ -3,9 +3,11 @@
 Error categories mirror the tool contract
 (``docs/threads-tool-contract.md`` Common response/error model) so an MCP
 client can branch on a stable, safe category instead of parsing platform
-responses. Tools raise :class:`McpError` for any failure they anticipate; the
-handler wrapper converts it into a single ``is_error=True`` result carrying the
-category and a human-readable message.
+responses. Tools raise :class:`McpError` for any failure they anticipate.
+Because :class:`McpError` is a ``ToolError`` subclass, the upstream MCP SDK's
+ tool-call handler converts it into an ``is_error=True`` result carrying the
+ category and a human-readable message (with no wrapper specific to this
+ service).
 
 Secrets-token rules: error messages never include access tokens, refresh tokens,
 client secrets, encryption keys or authorization headers.
@@ -47,10 +49,11 @@ SUPPORTED_CATEGORIES: frozenset[str] = frozenset(
 class McpError(ToolError):
     """An anticipated tool failure with a normalized, client-facing category.
 
-    Raising this from a tool lets the MCP server return ``is_error=True`` with a
-    structured message instead of treating the call as a crash. The category is
-    one of :data:`SUPPORTED_CATEGORIES`; the message is safe to return to the
-    client and must never contain secrets.
+    Raising this from a tool does not crash the call: because it is a ``ToolError``
+    subclass, the upstream MCP SDK's tool-call handler returns it as an
+    ``is_error=True`` result carrying the category and message rather than as a
+    crash. The category is one of :data:`SUPPORTED_CATEGORIES`; the message is
+    safe to return to the client and must never contain secrets.
     """
 
     category: str
