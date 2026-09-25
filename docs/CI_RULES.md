@@ -292,6 +292,15 @@ The workflow interprets the reviewer verdict and performs the GitHub updates.
 
 ## Deterministic review checks
 
+Every trusted Pi run loads `scripts/pi-bash-timeout.mjs` from the checked-out
+`dev` control repository. It wraps Pi's built-in `bash` tool with a per-command
+limit even if the model does not supply `timeout`. A shorter model-specified
+timeout is honored; a longer one is capped. Review, Architect, and Dispatcher
+use 600 seconds; PR repair uses 1200 seconds; implementation uses 1800 seconds.
+Pi terminates the shell process tree when this limit expires. Job-level
+`timeout-minutes` remains a separate bound for the entire run. The extension
+path must come from the trusted control checkout, not a PR worktree.
+
 Before asking Pi for a verdict, the review workflow runs:
 
 ```bash
