@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: Large issue to split into dependency-linked tasks
+        description: Issue to review, refine, or split into dependency-linked tasks
         required: true
         type: number
 
@@ -18,19 +18,22 @@ permissions:
 
 concurrency:
   group: pi-architect
+  queue: max
   cancel-in-progress: false
 
 jobs:
   architect:
     if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'architect:ready')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       GITHUB_REPOSITORY: ${{ github.repository }}
       ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
       PI_ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
       PI_PHASE: architect
       PI_BASH_TIMEOUT_SECONDS: '600'
+      PI_MAX_TURNS: '100'
+      PI_MAX_REPEAT_CALLS: '3'
 
     steps:
       - name: Checkout trusted dev
@@ -52,6 +55,7 @@ jobs:
           set -o pipefail
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \
@@ -63,7 +67,7 @@ jobs:
       - name: Validate and publish child tasks
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/pi-architect.mjs publish "$ISSUE" "$RUNNER_TEMP/pi-architect-result.jsonl"
+        run: node scripts/pi-architect.mjs publish "$ISSUE" "$RUNNER_TEMP/pi-architect-result.jsonl" "$RUNNER_TEMP/pi-architect-context.json"
 
       - name: Summarize Pi usage
         if: always()

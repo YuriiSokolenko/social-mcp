@@ -64,6 +64,7 @@ const trustedWorkflows = new Set([
   ".github/workflows/pi-issue-agent.yml",
   ".github/workflows/pi-pr-review.yml",
   ".github/workflows/pi-pr-fix.yml",
+  ".github/workflows/pi-architect.yml",
 ]);
 if (run.head_repository?.full_name !== repo || !trustedWorkflows.has(run.path)) {
   throw new Error("The requested run is not a trusted Pi workflow from this repository");
@@ -71,7 +72,7 @@ if (run.head_repository?.full_name !== repo || !trustedWorkflows.has(run.path)) 
 
 const jobsResponse = await request(`${api}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`);
 if (!jobsResponse.ok) throw new Error(`Failed to list jobs: ${jobsResponse.status}`);
-const jobs = (await jobsResponse.json()).jobs.filter((job) => ["pi", "review", "fix"].includes(job.name));
+const jobs = (await jobsResponse.json()).jobs.filter((job) => ["pi", "review", "fix", "architect"].includes(job.name));
 const newRows = [];
 for (const job of jobs) {
   if (job.conclusion === "skipped") {

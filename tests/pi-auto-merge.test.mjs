@@ -51,9 +51,11 @@ test('Pi cannot change the workflow definitions used for its own checks', () => 
   assert.equal(allowedFiles([{ filename: 'app/server.py' }], 2), false);
 });
 
-test('do not move a PR head while its reviewer is running', () => {
+test('do not move a PR head while its reviewer is running or a repair is in flight', () => {
   assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:running' }] }), true);
+  assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:changes-requested' }] }), true);
   assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:ready' }] }), false);
+  assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:passed' }] }), false);
 });
 
 test('closing a completed leaf closes its child epic and then its root epic', async () => {

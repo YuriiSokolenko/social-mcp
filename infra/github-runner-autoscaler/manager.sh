@@ -11,6 +11,14 @@ RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
 WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml,pi-architect.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
 MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
+# This loop has no external supervisor for a hang (only `restart: unless-stopped`,
+# which never fires for a process that is alive but stuck). Every network or
+# Docker call below must be individually bounded, or one unresponsive request
+# can freeze runner scaling for the whole host indefinitely.
+CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
+CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
+DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
+CURL_TIMEOUT_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS")
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 AUTH=(
@@ -23,12 +31,36 @@ log() {
   printf '[manager] %s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
 
+# Runs "$@" with a hard deadline. Uses a background job + watchdog instead of
+# the external `timeout` binary so a test's shell-function override of the
+# wrapped command (docker, curl, ...) still applies -- `timeout` would exec a
+# fresh process and only see the real binary on PATH. Assumes "$@" is a single
+# process that blocks in place (a stuck docker/curl call), not a wrapper that
+# forks its own children: killing only $pid, not a process group, will not
+# reliably reach grandchildren the wrapped command spawns.
+# The watchdog closes its own stdout/stderr so it can never hold open the pipe
+# a caller captures via $(...) -- otherwise, if it becomes an orphan (killed
+# too late to matter, or killed but not yet reaped), the command substitution
+# blocks until that orphan exits on its own, defeating the deadline entirely.
+run_with_timeout() {
+  local seconds="$1" pid watcher status
+  shift
+  "$@" &
+  pid=$!
+  ( exec >/dev/null 2>&1; sleep "$seconds"; kill -TERM "$pid" ) &
+  watcher=$!
+  if wait "$pid" 2>/dev/null; then status=0; else status=$?; fi
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+  return "$status"
+}
+
 api_get() {
-  curl -fsS "${AUTH[@]}" "$1"
+  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" "${AUTH[@]}" "$1"
 }
 
 registration_token() {
-  curl -fsS -X POST "${AUTH[@]}"     "${API}/actions/runners/registration-token" | jq -r '.token'
+  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -X POST "${AUTH[@]}"     "${API}/actions/runners/registration-token" | jq -r '.token'
 }
 
 queued_jobs() {
@@ -56,7 +88,7 @@ busy_ephemeral_runners() {
 cleanup_stale_registrations() {
   local registrations containers id name
   # A runner can briefly be offline while its container is still starting.
-  containers="$(docker ps -a --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
+  containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps -a --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
   registrations="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" \
     '.runners | if type != "array" then error("missing runners") else
       map(select((.name | type) == "string" and (.name | startswith($prefix)) and .status == "offline")) |
@@ -73,13 +105,13 @@ cleanup_stale_registrations() {
       continue
     fi
     log "removing stale GitHub runner registration id=$id"
-    curl -fsS -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || true
+    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || true
   done <<< "$registrations"
 }
 
 active_containers() {
   local names
-  names="$(docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
+  names="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
   printf '%s\n' "$names" | awk -v prefix="${RUNNER_PREFIX}-" 'index($0, prefix) == 1 { count++ } END { print count+0 }'
 }
 
@@ -93,7 +125,7 @@ retire_idle_runners() {
         and .status == "online" and .busy == false)) | map(.name) | join("\n")
     end')" || return 1
   [ -n "$names" ] || return 0
-  containers="$(docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
+  containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     printf '%s\n' "$containers" | grep -Fxq -- "$name" || continue
@@ -106,7 +138,7 @@ retire_idle_runners() {
       end')" || return 1
     [ "$still_idle" == true ] || continue
     log "stopping surplus idle runner $name"
-    docker stop "$name" >/dev/null || return 1
+    run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker stop "$name" >/dev/null || return 1
   done <<< "$names"
 }
 
@@ -118,7 +150,7 @@ model_start_capacity() {
     printf 'unknown unknown %s\n' "$MAX_RUNNERS"
     return 0
   fi
-  status="$(curl -fsS --max-time 5 "$MODEL_STATUS_URL")" || return 1
+  status="$(curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time 5 "$MODEL_STATUS_URL")" || return 1
   case "$MODEL_STATUS_URL" in
     */slots|*/slots\?*)
       # Busy slots may belong to these jobs; use the larger reservation count.
@@ -158,7 +190,7 @@ spawn_runner() {
 
   log "starting ephemeral runner $name"
 
-  docker run -d --rm     --name "$name"     --label social-mcp.pi-runner=ephemeral     --network host     -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"     -e "RUNNER_TOKEN=$token"     -e "RUNNER_NAME=$name"     -v "${PI_CONFIG_DIR}:/pi-config-ro:ro"     "${RUNNER_IMAGE}" >/dev/null
+  run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run -d --rm     --name "$name"     --label social-mcp.pi-runner=ephemeral     --network host     -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"     -e "RUNNER_TOKEN=$token"     -e "RUNNER_NAME=$name"     -v "${PI_CONFIG_DIR}:/pi-config-ro:ro"     "${RUNNER_IMAGE}" >/dev/null
 }
 
 main() {

@@ -302,7 +302,22 @@ limit even if the model does not supply `timeout`. A shorter model-specified
 timeout is honored; a longer one is capped. Review, Architect, and Dispatcher
 use 600 seconds; PR repair uses 1200 seconds; implementation uses 1800 seconds.
 Pi terminates the shell process tree when this limit expires. Job-level
-`timeout-minutes` remains a separate bound for the entire run. The extension
+`timeout-minutes` remains a separate bound for the entire run (120 minutes
+for Architect, since splitting a broad issue into contract/test/implementation
+steps on the self-hosted model can legitimately need to read many nearby
+files and task dependencies before proposing steps).
+
+Architect additionally loads `scripts/pi-loop-guard.mjs`, which blocks further
+tool calls once a run exceeds `PI_MAX_TURNS` (default 100) turns or repeats
+the exact same tool call more than `PI_MAX_REPEAT_CALLS` (default 3) times,
+and tells the model to finalize its `ARCHITECT_RESULT` instead. This targets
+a narrower failure than the job timeout: the small self-hosted model getting
+stuck re-running a failing or already-answered check dozens of times, which
+wastes turns without doing more real work, regardless of how much wall-clock
+budget remains. A genuinely thorough split still has headroom under both
+limits; `pi-usage-summary.mjs` also emits a `::warning::` annotation, visible
+in the job's Actions summary, when a run's response count or model time
+crosses `PI_USAGE_WARN_RESPONSES`/`PI_USAGE_WARN_SECONDS`. The extension
 path must come from the trusted control checkout, not a PR worktree.
 
 Before asking Pi for a verdict, the review workflow runs:
@@ -389,10 +404,13 @@ The dispatcher workflow is:
 
 It runs after a PR is merged into `dev`, or from a manual workflow run on `dev` for initial queue filling. Dispatcher jobs use one repository-wide concurrency group, `pi-dispatcher`, with `cancel-in-progress: false`. The dispatcher checks out `dev`, not the merged PR head. The write-capable workflow token is limited to validation and label steps; it is not passed to the Pi dispatcher process.
 
-The auto-merge gate waits for an active `review:running` job to finish before
-updating a PR branch that fell behind `dev`. A review made stale by a changed
-base releases its running label without approving the old result; the next gate
-run refreshes the branch and requests review of the new head.
+The auto-merge gate waits for an active `review:running` job, or a
+`review:changes-requested` PR whose Pi PR Fix repair may still be starting, to
+finish before updating a PR branch that fell behind `dev`. Moving the branch
+underneath an in-flight repair previously raced with it and wasted a
+duplicate reviewer run against the newly merged head. A review made stale by
+a changed base releases its running label without approving the old result;
+the next gate run refreshes the branch and requests review of the new head.
 
 For each accepted issue the workflow adds `pi:ready`, sends
 `pi_dispatch_issue`, and removes `dispatcher:ready`. The last step occurs
@@ -408,12 +426,18 @@ dispatches `.github/workflows/pi-architect.yml` on `dev`, and then removes
 `dispatcher:ready`. GitHub Actions does not run a new workflow on label events
 made with `GITHUB_TOKEN`; the explicit dispatch is required. Pi Architect
 reads the issue and downloaded planning skills, proposes two to six small tasks,
-and makes no GitHub changes itself. The workflow validates the plan, creates
+and makes no GitHub changes itself. Architect may also review an inactive
+issue already awaiting the dispatcher: keep it, revise its issue and task
+metadata, or split it. A kept or revised issue returns to its previous
+dispatcher eligibility; a deferred issue stays deferred. The workflow
+validates a split plan, creates
 child issues and their task files on `dev`, gives children `dispatcher:ready`,
 then explicitly dispatches Pi Dispatcher again. The parent gets
 `architect:epic` and closes as completed when every child is completed after
 merge into `dev`. If a child is also decomposed, it closes after its own
 children complete; completion then propagates upward through all ancestors.
+Architect runs share a repository-wide concurrency group with `queue: max`,
+so a batch of review requests waits in order without replacing pending runs.
 Separate contract tasks come first only for shared stable
 interfaces; separate test tasks precede implementation only when they can
 merge with passing CI. Otherwise each implementation issue includes its tests.

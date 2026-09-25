@@ -86,6 +86,50 @@ test("ignores a skipped Pi job without requesting its nonexistent log", () => {
   assert.match(result.stdout, /No Pi issue sessions found in completed run/);
 });
 
+test("collects a Pi Architect run's usage under its 'architect' job name", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-usage-architect-"));
+  const csvFile = join(dir, "usage.csv");
+  const eventFile = join(dir, "event.json");
+  const mockFile = join(dir, "mock.mjs");
+  writeFileSync(csvFile, readFileSync("reports/pi-usage.csv", "utf8").split("\n")[0] + "\n");
+  writeFileSync(eventFile, JSON.stringify({ workflow_run: {
+    id: 321, run_attempt: 1, status: "completed", name: "Pi Architect #9",
+    path: ".github/workflows/pi-architect.yml",
+    head_repository: { full_name: "test/repo" },
+  } }));
+  writeFileSync(mockFile, `
+    import { readFileSync, writeFileSync } from "node:fs";
+    const file = process.env.MOCK_CSV_FILE;
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.includes("/attempts/1/jobs")) return Response.json({ jobs: [{
+        id: 654, name: "architect", conclusion: "success",
+        started_at: "2026-09-25T11:16:00Z", completed_at: "2026-09-25T12:29:24Z",
+      }] });
+      if (url.endsWith("/jobs/654/logs")) return new Response([
+        '2026-09-25T11:16:12Z PI_TASK {"issue":9,"phase":"architect","call":"main"}',
+        '2026-09-25T12:29:21Z PI_METRIC {"issue":9,"call":"main","response":217,"usage":{"totalTokens":91519},"responseMs":20730}',
+      ].join("\\n"));
+      if (url.includes("/contents/reports/pi-usage.csv") && options.method === "PUT") {
+        writeFileSync(file, Buffer.from(JSON.parse(options.body).content, "base64"));
+        return Response.json({ content: { sha: "new" } });
+      }
+      if (url.includes("/contents/reports/pi-usage.csv")) return Response.json({
+        content: readFileSync(file).toString("base64"), sha: "old",
+      });
+      throw new Error("Unexpected URL " + url);
+    };
+  `);
+  const result = spawnSync(process.execPath, ["--import", pathToFileURL(mockFile).href, "scripts/pi-usage-collect.mjs"], {
+    encoding: "utf8", env: {
+      ...process.env, GITHUB_EVENT_PATH: eventFile, GITHUB_REPOSITORY: "test/repo",
+      GITHUB_TOKEN: "synthetic-token", MOCK_CSV_FILE: csvFile,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const rows = readFileSync(csvFile, "utf8").trim().split("\n");
+  assert.match(rows[2], /^attempt,9,architect,321,1,success,1,0,0,0,0,91519,20\.7,4404,/);
+});
+
 test("rejects a run with a trusted-looking title but an unrelated workflow path", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-usage-untrusted-"));
   const eventFile = join(dir, "event.json");
