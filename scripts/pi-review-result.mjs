@@ -13,8 +13,16 @@ function finalAssistantText(messages) {
     .join("");
 }
 
+export function validateReviewResult(result) {
+  if (!["PASS", "CHANGES_REQUESTED"].includes(result?.verdict) || typeof result.text !== "string" || !result.text.trim()) {
+    throw new Error("invalid review result");
+  }
+  return result;
+}
+
 export function parseReviewResult(jsonl) {
   let finalText = "";
+  let toolResult = null;
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let event;
@@ -23,6 +31,10 @@ export function parseReviewResult(jsonl) {
     } catch {
       continue;
     }
+    if (event.type === "entry_appended" && event.entry?.type === "custom" &&
+        event.entry?.customType === "review-result") {
+      toolResult = event.entry.data;
+    }
     if (event.type === "message_end" && event.message?.role === "assistant") {
       finalText = finalAssistantText([event.message]).trim();
     }
@@ -30,6 +42,18 @@ export function parseReviewResult(jsonl) {
       const assistant = [...event.messages].reverse().find((message) => message?.role === "assistant");
       if (assistant) finalText = finalAssistantText([assistant]).trim();
     }
+  }
+
+  // Prefer the structured result from the submit_result tool
+  // (pi-reviewer-result-tool.mjs). The REVIEW_RESULT text line is kept only
+  // as a fallback while that tool is still a prototype. The posted PR comment
+  // still needs a leading REVIEW_RESULT line: pi-pr-fix.yml finds the most
+  // recent "changes requested" review by scanning past comment bodies for
+  // that exact marker, so it is reconstructed deterministically here rather
+  // than asked of the model.
+  if (toolResult) {
+    const validated = validateReviewResult(toolResult);
+    return { verdict: validated.verdict, text: `REVIEW_RESULT: ${validated.verdict}\n\n${validated.text}` };
   }
 
   if (!finalText) throw new Error("Pi review did not produce a final assistant response");

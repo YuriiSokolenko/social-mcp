@@ -99,20 +99,22 @@ Pay particular attention to:
 
 ## Verdict format
 
-Your final response MUST begin with exactly one of:
+Call the `submit_result` tool exactly once, as your last action, with your
+verdict and a `summary` that is the complete write-up to post as the PR
+review comment:
 
-```text
-REVIEW_RESULT: PASS
-```
+`submit_result({"verdict":"PASS","summary":"..."})`
 
 or:
 
-```text
-REVIEW_RESULT: CHANGES_REQUESTED
-```
+`submit_result({"verdict":"CHANGES_REQUESTED","summary":"..."})`
 
 Use PASS only when the pull request is ready to merge from the perspective of the linked issue, correctness, tests, architecture, and security.
 
-For PASS, provide a concise summary of what was verified.
+For PASS, `summary` is a concise account of what was verified.
 
-For CHANGES_REQUESTED, list concrete actionable findings. Include file paths and relevant behavior when possible. Distinguish blocking findings from optional suggestions. Do not request cosmetic changes unless they materially improve correctness, maintainability, consistency, or safety.
+For CHANGES_REQUESTED, `summary` lists concrete actionable findings. Include file paths and relevant behavior when possible. Distinguish blocking findings from optional suggestions. Do not request cosmetic changes unless they materially improve correctness, maintainability, consistency, or safety.
+
+If `submit_result` is ever unavailable, fall back to a final response that
+begins with a standalone `REVIEW_RESULT: PASS` or `REVIEW_RESULT:
+CHANGES_REQUESTED` line, followed by the same write-up, instead.

@@ -246,14 +246,14 @@ checkout only), capping or overriding any model-requested timeout. Independent o
 
 | Script | Role |
 |---|---|
-| `scripts/pi-dispatcher.mjs` | snapshot + classify + apply dispatcher decisions, task-file validation |
-| `scripts/pi-architect.mjs` | prepare/publish architect plans, parent/child issue linking |
+| `scripts/pi-dispatcher.mjs`, `scripts/pi-dispatcher-result-tool.mjs` | snapshot + classify + apply dispatcher decisions, task-file validation |
+| `scripts/pi-architect.mjs`, `scripts/pi-architect-result-tool.mjs` | prepare/publish architect plans, parent/child issue linking |
 | `scripts/pi-auto-merge.mjs` | the merge gate state machine |
 | `scripts/pi-issue-status.sh` | issue label/comment state transitions |
 | `scripts/pi-pr-review-status.sh` | PR review label/comment/commit-status transitions |
 | `scripts/pi-bash-timeout.mjs`, `scripts/pi-bash-timeout-policy.mjs` | per-command Pi bash timeout cap |
 | `scripts/pi-loop-guard.mjs`, `scripts/pi-loop-guard-policy.mjs` | Architect-only: block tool calls past a turn/repeat-call budget |
 | `scripts/pi-log-filter.mjs` | streams/filters Pi's JSON event log into the Action log (`::group::` per turn/tool) and mirrors a fully nested turn → tool → args/result tree to the Job Summary tab |
-| `scripts/pi-review-result.mjs` | parses the mandatory `REVIEW_RESULT:` line from Pi's output |
+| `scripts/pi-review-result.mjs`, `scripts/pi-reviewer-result-tool.mjs` | parses the reviewer's verdict, preferring the `submit_result` tool call over the legacy `REVIEW_RESULT:` text line |
 | `scripts/pi-queue-context.mjs` | builds the live issues/PRs/Actions-queue snapshot fed to dispatcher and architect prompts |
 | `scripts/pi-usage-collect.mjs`, `scripts/pi-usage-summary.mjs` | harvest token/cost usage from Pi run logs |

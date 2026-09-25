@@ -205,10 +205,8 @@ jobs:
           - $RUNNER_TEMP/ruff.log
           
           Inspect the diff against origin/dev and relevant surrounding code.
-          
-          Your final response MUST start with exactly one of:
-          REVIEW_RESULT: PASS
-          REVIEW_RESULT: CHANGES_REQUESTED
+
+          Call submit_result exactly once, as your last action, with your verdict.
           EOF
 
           echo "TASK_FILE=$TASK_FILE" >> "$GITHUB_ENV"
@@ -222,6 +220,7 @@ jobs:
 
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \
@@ -244,8 +243,8 @@ jobs:
             cd "$JOB_DIR"
             set -o pipefail
             RETRY_RAW="$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
-            pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. The test logs are $RUNNER_TEMP/pytest.log and $RUNNER_TEMP/ruff.log. Your final response MUST begin with REVIEW_RESULT: PASS or REVIEW_RESULT: CHANGES_REQUESTED, followed by evidence." \
+            pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. The test logs are $RUNNER_TEMP/pytest.log and $RUNNER_TEMP/ruff.log. Call submit_result exactly once, as your last action, with your verdict and evidence." \
               | tee "$RETRY_RAW" | PI_CALL=retry node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RETRY_RAW")"
           fi

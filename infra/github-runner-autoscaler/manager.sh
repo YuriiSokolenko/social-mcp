@@ -8,7 +8,7 @@ MAX_RUNNERS="${MAX_RUNNERS:-2}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
-WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml,pi-architect.yml}}"
+WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
 MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 # This loop has no external supervisor for a hang (only `restart: unless-stopped`,

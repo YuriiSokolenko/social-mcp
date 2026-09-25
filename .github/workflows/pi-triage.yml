@@ -48,11 +48,12 @@ jobs:
           The candidate issues to review are at $RUNNER_TEMP/pi-triage-context.json.
           Read the snapshot and, for each candidate, the referenced tasks/<issue-number>.md file when it exists.
           Classify every candidate as ready for the dispatcher, needing a person, or skipped, per your role rules.
-          Return the exact TRIAGE_RESULT line specified by your role rules.
+          Call submit_result exactly once, as your last action, with your classification.
           Do not modify the repository or GitHub state.
           EOF
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-triage-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \

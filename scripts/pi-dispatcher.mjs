@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { readQueueContext } from "./pi-queue-context.mjs";
 
-const [mode, file] = process.argv.slice(2);
 const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
-if (!["prepare", "apply"].includes(mode) || !file || !repo || !token) {
+function usage() {
   throw new Error("usage: pi-dispatcher.mjs prepare <context.json> | apply <pi-jsonl>");
 }
 const base = `https://api.github.com/repos/${repo}`;
@@ -113,7 +113,7 @@ async function snapshot(includeQueue = false) {
   if (includeQueue) result.queue = await readQueueContext(endpoint => api(endpoint), repo, openIssues, prs);
   return result;
 }
-function finalText(jsonl) {
+export function finalText(jsonl) {
   let result = "";
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -126,7 +126,38 @@ function finalText(jsonl) {
   }
   return result;
 }
+export function validateDispatch(result) {
+  if (!Array.isArray(result.issues) || !result.issues.every(Number.isSafeInteger) ||
+      !Array.isArray(result.architect) || !result.architect.every(Number.isSafeInteger)) {
+    throw new Error("invalid dispatcher classification lists");
+  }
+  const selected = [...result.issues, ...result.architect];
+  if (new Set(selected).size !== selected.length) throw new Error("duplicate issue");
+  return result;
+}
+export function dispatchFromJsonl(jsonl) {
+  let toolResult = null;
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event.type === "entry_appended" && event.entry?.type === "custom" &&
+        event.entry?.customType === "dispatcher-result") {
+      toolResult = event.entry.data;
+    }
+  }
+  // Prefer the structured result from the submit_result tool
+  // (pi-dispatcher-result-tool.mjs). The DISPATCH_RESULT text line is kept
+  // only as a fallback while that tool is still a prototype.
+  if (toolResult) return validateDispatch(toolResult);
+  const text = finalText(jsonl);
+  const lines = text.split(/\r?\n/).filter(line => line.startsWith("DISPATCH_RESULT: "));
+  if (!lines.length) throw new Error("expected a DISPATCH_RESULT line");
+  return validateDispatch(JSON.parse(lines.at(-1).slice("DISPATCH_RESULT: ".length)));
+}
 async function main() {
+  const [mode, file] = process.argv.slice(2);
+  if (!["prepare", "apply"].includes(mode) || !file || !repo || !token) usage();
   if (mode === "prepare") {
     await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
     await ensureLabel("architect:ready", "c5def5", "Needs Pi Architect to split the issue");
@@ -136,16 +167,8 @@ async function main() {
     for (const item of data.skipped) console.log(`Skipped #${item.issue}: ${item.reason}`);
     return;
   }
-  const text = finalText(fs.readFileSync(file, "utf8"));
-  const lines = text.split(/\r?\n/).filter(line => line.startsWith("DISPATCH_RESULT: "));
-  if (!lines.length) throw new Error("expected a DISPATCH_RESULT line");
-  const result = JSON.parse(lines.at(-1).slice("DISPATCH_RESULT: ".length));
-  if (!Array.isArray(result.issues) || !result.issues.every(Number.isSafeInteger) ||
-      !Array.isArray(result.architect) || !result.architect.every(Number.isSafeInteger)) {
-    throw new Error("invalid dispatcher classification lists");
-  }
+  const result = dispatchFromJsonl(fs.readFileSync(file, "utf8"));
   const selected = [...result.issues, ...result.architect];
-  if (new Set(selected).size !== selected.length) throw new Error("duplicate issue");
 
   // The concurrency group serializes dispatcher jobs, but queued jobs can start
   // with stale trigger events. Always rebuild state after acquiring the runner
@@ -207,4 +230,6 @@ async function main() {
   }
   if (!selected.length) console.log("Dispatcher selected no issues");
 }
-main().catch(error => { console.error(error); process.exitCode = 1; });
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => { console.error(error); process.exitCode = 1; });
+}

@@ -71,16 +71,18 @@ write a generic "this issue is unclear" comment.
 
 ## Output contract
 
-Return one final line in this form, with valid compact JSON and no Markdown
-fence:
+Call the `submit_result` tool exactly once, as your last action, with your
+classification:
 
-`TRIAGE_RESULT: {"ready":[42],"needs_human":[{"issue":43,"comment":"tasks/43.md is missing; add one with priority and depends_on before this can be dispatched."}],"skipped":[{"issue":44,"reason":"already carries pi:needs-human and nothing has changed since the last review"}]}`
+`submit_result({"ready":[42],"needs_human":[{"issue":43,"comment":"tasks/43.md is missing; add one with priority and depends_on before this can be dispatched."}],"skipped":[{"issue":44,"reason":"already carries pi:needs-human and nothing has changed since the last review"}]})`
 
 Classify every candidate in the prepared context exactly once, across
 `ready`, `needs_human`, and `skipped`. Use `skipped` only when you cannot
 responsibly classify the issue either way yet (for example, you lack enough
 repository context to judge it) and explain why; do not use it to avoid
 writing a needs-human comment for an issue that actually needs one.
+If `submit_result` is ever unavailable, fall back to a single standalone final
+line `TRIAGE_RESULT: <the same JSON>` instead.
 
 ## GitHub boundary
 

@@ -2,11 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { pathToFileURL } from "node:url";
 
-const [mode, file] = process.argv.slice(2);
 const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
-if (!["prepare", "apply"].includes(mode) || !file || !repo || !token) {
+function usage() {
   throw new Error("usage: pi-triage.mjs prepare <context.json> | apply <pi-jsonl>");
 }
 const base = `https://api.github.com/repos/${repo}`;
@@ -127,7 +127,7 @@ async function candidates() {
   return result;
 }
 
-function finalText(jsonl) {
+export function finalText(jsonl) {
   let result = "";
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -141,24 +141,7 @@ function finalText(jsonl) {
   return result;
 }
 
-async function main() {
-  if (mode === "prepare") {
-    await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
-    await ensureLabel("pi:needs-human", "fbca04", "Pi finished without a usable repository change");
-    const list = await candidates();
-    fs.writeFileSync(file, JSON.stringify({ candidates: list }, null, 2) + "\n");
-    console.log(`Triage: ${list.length} candidate issue(s)`);
-    for (const item of list) {
-      console.log(`  #${item.issue}${item.reconsidering ? " (re-check after change)" : ""}`);
-    }
-    return;
-  }
-
-  const text = finalText(fs.readFileSync(file, "utf8"));
-  const lines = text.split(/\r?\n/).filter(line => line.startsWith("TRIAGE_RESULT: "));
-  if (!lines.length) throw new Error("expected a TRIAGE_RESULT line");
-  const result = JSON.parse(lines.at(-1).slice("TRIAGE_RESULT: ".length));
-
+export function validateTriage(result) {
   const isIntArray = value => Array.isArray(value) && value.every(Number.isSafeInteger);
   if (!isIntArray(result.ready)) throw new Error("invalid ready list");
   if (!Array.isArray(result.needs_human) || !result.needs_human.every(item =>
@@ -175,6 +158,51 @@ async function main() {
     ...result.skipped.map(item => item.issue),
   ];
   if (new Set(classified).size !== classified.length) throw new Error("duplicate issue classification");
+  return result;
+}
+
+export function triageFromJsonl(jsonl) {
+  let toolResult = null;
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event.type === "entry_appended" && event.entry?.type === "custom" &&
+        event.entry?.customType === "triage-result") {
+      toolResult = event.entry.data;
+    }
+  }
+  // Prefer the structured result from the submit_result tool
+  // (pi-triage-result-tool.mjs). The TRIAGE_RESULT text line is kept only as
+  // a fallback while that tool is still a prototype.
+  if (toolResult) return validateTriage(toolResult);
+  const text = finalText(jsonl);
+  const lines = text.split(/\r?\n/).filter(line => line.startsWith("TRIAGE_RESULT: "));
+  if (!lines.length) throw new Error("expected a TRIAGE_RESULT line");
+  return validateTriage(JSON.parse(lines.at(-1).slice("TRIAGE_RESULT: ".length)));
+}
+
+async function main() {
+  const [mode, file] = process.argv.slice(2);
+  if (!["prepare", "apply"].includes(mode) || !file || !repo || !token) usage();
+  if (mode === "prepare") {
+    await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
+    await ensureLabel("pi:needs-human", "fbca04", "Pi finished without a usable repository change");
+    const list = await candidates();
+    fs.writeFileSync(file, JSON.stringify({ candidates: list }, null, 2) + "\n");
+    console.log(`Triage: ${list.length} candidate issue(s)`);
+    for (const item of list) {
+      console.log(`  #${item.issue}${item.reconsidering ? " (re-check after change)" : ""}`);
+    }
+    return;
+  }
+
+  const result = triageFromJsonl(fs.readFileSync(file, "utf8"));
+  const classified = [
+    ...result.ready,
+    ...result.needs_human.map(item => item.issue),
+    ...result.skipped.map(item => item.issue),
+  ];
 
   // Recompute eligibility now, at apply time, rather than trusting the
   // prepare-time snapshot: it is the source of truth for what must be
@@ -230,4 +258,6 @@ async function main() {
   }
   if (!classified.length) console.log("Triage found no candidate issues");
 }
-main().catch(error => { console.error(error); process.exitCode = 1; });
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => { console.error(error); process.exitCode = 1; });
+}

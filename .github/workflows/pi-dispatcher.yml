@@ -53,11 +53,12 @@ jobs:
           The current GitHub issue and PR snapshot is at $RUNNER_TEMP/pi-dispatcher-context.json.
           Read the snapshot and relevant tasks/<issue-number>.md files.
           Classify every eligible candidate: issues for direct implementation, architect for decomposition before implementation. An architect child may be split again if it remains broad. Execution concurrency is controlled by the GitHub Actions queue and the N150 autoscaler.
-          Return the exact DISPATCH_RESULT line specified by your role rules.
+          Call submit_result exactly once, as your last action, with your classification.
           Do not modify the repository or GitHub state.
           EOF
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-dispatcher-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \
