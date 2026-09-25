@@ -39,7 +39,7 @@ jobs:
       - name: Checkout trusted dev
         uses: actions/checkout@v5
         with:
-          ref: proto/architect-submit-result-tool # TEMPORARY: revert to dev before merging
+          ref: dev
           persist-credentials: false
 
       - name: Initialize Pi usage
