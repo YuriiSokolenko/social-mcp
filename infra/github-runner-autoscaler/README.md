@@ -53,16 +53,18 @@ the tracked defaults does not override an existing host `.env`. Restart the
 autoscaler manager after changing its local environment.
 The example defaults to two; a local value such as three takes precedence.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
-Set `MODEL_METRICS_URL` in the N150 host's local `.env` to the active vLLM
-server's `/metrics` endpoint, reachable from the manager container. Recreate
-the manager after changing the URL or switching model servers. With this setting,
-the manager fills available runner slots up to `MAX_RUNNERS` while vLLM has no
-waiting requests. When vLLM already has a request backlog, it waits for the next
-poll before starting more runners; existing jobs continue. If the metrics
-endpoint is unavailable or its waiting-request gauge is missing, it also waits
-and logs a warning. An unset URL preserves the original queue-only behavior.
-vLLM reports requests rather than Pi jobs, so the manager continues to count
-running jobs by their runner containers, including pauses between model calls.
+Set `MODEL_STATUS_URL` in the N150 host's local `.env` to the active model
+server, reachable from the manager container. For the Laguna GGUF server on
+the Nano, use `http://192.168.8.210:3009/slots`. The llama.cpp endpoint
+returns the total slots and whether each is processing a request. The manager
+reserves one slot per active runner, including pauses between Pi's model calls.
+It also counts any occupied slots beyond those reservations as other load.
+The server does not identify which client owns a slot, so this is an estimate.
+The local `MAX_RUNNERS` still limits the number of workers. For vLLM, point
+to `/metrics`; a waiting-request backlog defers new runners. An unavailable
+endpoint or invalid status defers new runners and logs a warning. An unset URL
+preserves the previous queue-only behavior. Recreate the manager after changing
+the URL or switching model servers.
 The manager counts both `queued` and `pending` GitHub workflow runs. When GitHub
 or Docker state cannot be read, it skips that poll instead of treating the failed
 request as an empty queue or an empty runner pool.

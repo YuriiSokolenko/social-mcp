@@ -485,9 +485,11 @@ Expected behavior:
 ```
 
 Additional jobs wait in the GitHub Actions queue.
-When the N150 host sets `MODEL_METRICS_URL` to the active vLLM `/metrics`
-endpoint, the manager defers creating new runners while model requests are
-waiting. Missing or unreadable metrics also delay new runners. Active jobs
+When the N150 host sets `MODEL_STATUS_URL` to the active llama.cpp `/slots`
+endpoint, the manager counts total slots and occupied slots before starting
+more runners. It reserves a slot for every active runner, including pauses
+between model requests. A vLLM `/metrics` endpoint instead defers new runners
+while requests wait. Unreadable status also delays new runners. Active jobs
 continue; the local `MAX_RUNNERS` remains the upper bound, and an unset URL
 keeps the previous queue-only behavior.
 
