@@ -45,8 +45,8 @@ export function planFromJsonl(jsonl, parent) {
     final = assistant?.content?.filter(part => part?.type === 'text').map(part => part.text).join('') ?? final;
   }
   const lines = final.split(/\r?\n/).filter(line => line.startsWith('ARCHITECT_RESULT: '));
-  if (lines.length !== 1) throw new Error('Expected exactly one ARCHITECT_RESULT line');
-  return validatePlan(JSON.parse(lines[0].slice('ARCHITECT_RESULT: '.length)), parent);
+  if (!lines.length) throw new Error('Expected an ARCHITECT_RESULT line');
+  return validatePlan(JSON.parse(lines.at(-1).slice('ARCHITECT_RESULT: '.length)), parent);
 }
 
 export function validatePlan(plan, parent) {

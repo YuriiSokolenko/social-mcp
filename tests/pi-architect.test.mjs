@@ -25,6 +25,14 @@ test('can split a contract-only child without inventing an implementation', () =
   assert.equal(validatePlan(plan, 42), plan);
 });
 
+test('uses the last ARCHITECT_RESULT line when the model second-guesses itself mid-response', () => {
+  const draft = { parent_issue: 42, action: 'keep', reason: 'Draft reasoning that gets revised before the final answer.' };
+  const final = { parent_issue: 42, action: 'keep', reason: 'The task is already bounded and its dependencies are correct.' };
+  const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
+    content: [{ type: 'text', text: `ARCHITECT_RESULT: ${JSON.stringify(draft)}\nOn reflection:\nARCHITECT_RESULT: ${JSON.stringify(final)}` }] }] });
+  assert.deepEqual(planFromJsonl(jsonl, 42), final);
+});
+
 test('accepts review decisions without forcing unnecessary child issues', () => {
   const keep = { parent_issue: 42, action: 'keep', reason: 'The task is already bounded and its dependencies are correct.' };
   const revise = { parent_issue: 42, action: 'revise',
