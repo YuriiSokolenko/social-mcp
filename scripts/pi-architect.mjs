@@ -49,7 +49,7 @@ export function planFromJsonl(jsonl, parent) {
     const assistant = [...event.messages].reverse().find(message => message?.role === 'assistant');
     final = assistant?.content?.filter(part => part?.type === 'text').map(part => part.text).join('') ?? final;
   }
-  // Prefer the structured result from the submit_result tool (pi-result-tool.mjs).
+  // Prefer the structured result from the submit_result tool (pi-architect-result-tool.mjs).
   // The ARCHITECT_RESULT text line is kept only as a fallback while that tool
   // is still a prototype.
   if (toolResult) return validatePlan(toolResult, parent);

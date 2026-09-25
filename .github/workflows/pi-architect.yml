@@ -56,7 +56,7 @@ jobs:
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-result-tool.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-architect-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \

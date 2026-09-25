@@ -29,6 +29,20 @@ test('accepts one verdict after evidence in the final response', () => {
   assert.equal(parseReviewResult(events.map(line).join('\n')).verdict, 'PASS');
 });
 
+test('prefers a submit_result tool entry over any REVIEW_RESULT text line, and reconstructs the marker line pi-pr-fix.yml scans for', () => {
+  const events = [
+    { type: 'entry_appended', entry: { type: 'custom', customType: 'review-result',
+      data: { verdict: 'PASS', text: 'Verified tests and behavior against the linked issue.' } } },
+    { type: 'agent_end', messages: [{ role: 'assistant', content: [
+      { type: 'text', text: 'REVIEW_RESULT: CHANGES_REQUESTED\nStale text that should be ignored.' },
+    ] }] },
+  ];
+  assert.deepEqual(parseReviewResult(events.map(line).join('\n')), {
+    verdict: 'PASS',
+    text: 'REVIEW_RESULT: PASS\n\nVerified tests and behavior against the linked issue.',
+  });
+});
+
 test('uses the last verdict when the model restates the same one twice', () => {
   const events = [{ type: 'agent_end', messages: [{ role: 'assistant', content: [
     { type: 'text', text: 'REVIEW_RESULT: PASS\nOn reflection, confirming:\nREVIEW_RESULT: PASS' },

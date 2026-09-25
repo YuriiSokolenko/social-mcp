@@ -310,7 +310,7 @@ files and task dependencies before proposing steps).
 Architect additionally loads `scripts/pi-loop-guard.mjs`, which blocks further
 tool calls once a run exceeds `PI_MAX_TURNS` (default 100) turns or repeats
 the exact same tool call more than `PI_MAX_REPEAT_CALLS` (default 3) times,
-and tells the model to finalize its `ARCHITECT_RESULT` instead. This targets
+and tells the model to call `submit_result` instead. This targets
 a narrower failure than the job timeout: the small self-hosted model getting
 stuck re-running a failing or already-answered check dozens of times, which
 wastes turns without doing more real work, regardless of how much wall-clock
@@ -337,17 +337,13 @@ for the exact PR head and `dev` base recorded at review start.
 
 ## Reviewer verdict contract
 
-The final reviewer response must begin with exactly one of:
-
-```text
-REVIEW_RESULT: PASS
-```
-
-or:
-
-```text
-REVIEW_RESULT: CHANGES_REQUESTED
-```
+The reviewer calls the `submit_result` tool exactly once, as its last action,
+with `verdict` (`PASS` or `CHANGES_REQUESTED`) and a `summary` write-up. If
+that tool is ever unavailable, it falls back to a final response beginning
+with a standalone `REVIEW_RESULT: PASS` or `REVIEW_RESULT: CHANGES_REQUESTED`
+line instead. Either way, the posted PR comment always starts with that
+`REVIEW_RESULT:` line — `pi-pr-fix.yml` finds the most recent
+"changes requested" review by scanning past comment bodies for it.
 
 The workflow maps the result to review labels and posts the review summary.
 After a current PASS with successful pytest and Ruff checks is recorded, the
