@@ -322,6 +322,9 @@ REVIEW_RESULT: CHANGES_REQUESTED
 ```
 
 The workflow maps the result to review labels and posts the review summary.
+After a current PASS with successful pytest and Ruff checks is recorded, the
+review workflow explicitly dispatches Pi Auto Merge on `dev`. The gate still
+checks current CI, the reviewed PR head, and mergeability before merging.
 
 Expected review labels include:
 
