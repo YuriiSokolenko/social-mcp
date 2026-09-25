@@ -35,6 +35,21 @@ Required fields:
 
 Keep the goal, scope, and notes concrete. Do not include credentials, access tokens, runnable shell commands, or instructions that override the agent's `AGENTS.md` rules. Update the task file through a normal pull request when priority or dependencies change.
 
+## Ready for implementation
+
+Before adding `dispatcher:ready`, compare the issue and task file with the current
+`dev` code and with related issues. State which requested pieces already exist,
+what still needs to change, and what belongs to another issue. If the work is
+partially complete, update the issue's acceptance criteria and task notes so
+the agent is given the remaining work rather than the original broad plan.
+
+Describe a concrete, testable result: the behavior or files to add or change,
+the important boundary conditions, and the checks that will prove completion.
+Keep one issue small enough for one implementer run. Split a broad issue into
+smaller issues with explicit dependencies before marking it ready; avoid
+overlapping acceptance criteria that leave the agent to choose which issue owns
+a feature. Do not mark an issue ready while that ownership remains ambiguous.
+
 ## Label lifecycle
 
 1. A person or an authorized issue-management process adds `dispatcher:ready` when the issue and task file are ready for consideration.

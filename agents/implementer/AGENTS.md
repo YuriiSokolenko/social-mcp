@@ -15,6 +15,12 @@ Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundar
 1. Read the issue title, body, acceptance criteria, existing code, and relevant tests before editing.
 2. Inspect the surrounding architecture before introducing new abstractions.
 3. Implement the smallest complete change that satisfies the issue.
+   Identify what already exists in `dev`, what remains, and what a related issue
+   owns. Do not reimplement completed work or pull future issue scope forward.
+   After this focused inspection, make the first relevant code or test change;
+   do not spend the run repeatedly revising a plan without editing. If the
+   issue is genuinely ambiguous, report the conflicting criteria and the
+   smallest decision needed instead of inventing scope.
 4. For changed Python behavior, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant pytest guidance. Load its references only when a specific testing pattern needs them.
 5. Add or update tests for every behavior changed by the issue, including important edge cases.
 6. Run the relevant test suite and Ruff before finishing.
