@@ -443,14 +443,48 @@ interfaces; separate test tasks precede implementation only when they can
 merge with passing CI. Otherwise each implementation issue includes its tests.
 The skills and pinned upstream versions are recorded in `docs/skills-sources.md`.
 
+## Triage
+
+Pi Triage is a person-triggered, read-only reviewer that runs before the
+dispatcher queue. A person runs **Pi Triage → Run workflow** on `dev` to
+review every open issue that is not already in the pipeline (no
+`dispatcher:ready`, no active or blocked Pi/Architect label). For an issue
+carrying `pi:needs-human`, triage reconsiders it only if its body or task
+file changed since the last triage comment, using a hidden hash marker on
+that comment to detect the change; otherwise it leaves the issue alone so it
+does not repeat a comment a person has not yet acted on.
+
+For each candidate, triage checks whether a valid `tasks/<issue-number>.md`
+exists on `dev` and whether the issue states a concrete, testable goal and
+acceptance criteria. A candidate that passes gets `dispatcher:ready`, plus
+removal of `pi:needs-human` if it carried that label. A candidate that fails
+gets `pi:needs-human` and a specific comment naming what is missing or
+unclear. Triage never removes `dispatcher:ready` and never starts the
+dispatcher itself; run **Pi Dispatcher → Run workflow** afterward, or let the
+next PR merge into `dev` start it, per the bootstrap steps below.
+
+The workflow is:
+
+```text
+.github/workflows/pi-triage.yml
+agents/triage/AGENTS.md
+scripts/pi-triage.mjs
+```
+
+It re-checks each issue's current state immediately before changing labels
+or posting a comment, and requires the model to classify every current
+candidate exactly once, the same way the dispatcher validates its own
+classification before acting.
+
 ## First dispatcher run
 
 To approve a specific issue for automatic implementation:
 
 1. Merge its `tasks/<issue-number>.md` file into `dev` and check its
    priority and dependencies.
-2. Add `dispatcher:ready` to the open issue. This label alone does not
-   launch Pi.
+2. Add `dispatcher:ready` to the open issue, either by hand or by running
+   **Pi Triage**, which also checks the issue and task file for
+   completeness first. This label alone does not launch Pi.
 3. In GitHub Actions, open **Pi Dispatcher** and use **Run workflow** on
    `dev`, or let the next PR merge into `dev` start the dispatcher.
 4. Check the dispatcher job log for the selected issue and the separate

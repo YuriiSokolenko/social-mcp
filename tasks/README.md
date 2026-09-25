@@ -52,7 +52,7 @@ Clarify ambiguous ownership in the parent issue before adding the ready label.
 
 ## Label lifecycle
 
-1. A person or an authorized issue-management process adds `dispatcher:ready` when the issue and task file are ready for consideration.
+1. A person, or a manually triggered **Pi Triage** run (`agents/triage/AGENTS.md`), adds `dispatcher:ready` when the issue and task file are ready for consideration. Triage instead adds `pi:needs-human` with an explanatory comment when the issue or task file is unclear or incomplete.
 2. On a merged PR or a manual bootstrap run, the dispatcher classifies every eligible issue for implementation or decomposition, regardless of runner capacity.
 3. For a small issue, the workflow adds `pi:ready`, starts the implementer, then removes `dispatcher:ready`.
 4. For a broad issue, the workflow adds `architect:ready`, explicitly starts Pi Architect, then removes `dispatcher:ready`. Architect creates child issues and `tasks/<number>.md` on `dev`, adds `dispatcher:ready` to the children, and explicitly starts the dispatcher. The parent receives `architect:epic` and closes only after all children complete.

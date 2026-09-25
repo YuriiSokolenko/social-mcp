@@ -1,0 +1,68 @@
+name: Pi Triage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: pi-triage
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    runs-on: [self-hosted, linux, x64, n150, pi-agent]
+    timeout-minutes: 120
+    env:
+      REPO: ${{ github.repository }}
+      PI_BASH_TIMEOUT_SECONDS: '600'
+
+    steps:
+      - name: Checkout trusted dev
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Prepare triage context
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/pi-triage.mjs prepare "$RUNNER_TEMP/pi-triage-context.json"
+          if jq -e '(.candidates | length > 0)' "$RUNNER_TEMP/pi-triage-context.json" >/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ask Pi triage
+        if: steps.prepare.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          TASK_FILE="$RUNNER_TEMP/pi-triage-task.txt"
+          cat > "$TASK_FILE" <<EOF
+          Read and follow agents/triage/AGENTS.md and docs/PROJECT_CONTEXT.md.
+          The candidate issues to review are at $RUNNER_TEMP/pi-triage-context.json.
+          Read the snapshot and, for each candidate, the referenced tasks/<issue-number>.md file when it exists.
+          Classify every candidate as ready for the dispatcher, needing a person, or skipped, per your role rules.
+          Return the exact TRIAGE_RESULT line specified by your role rules.
+          Do not modify the repository or GitHub state.
+          EOF
+          pi \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --provider hp-laguna \
+            --model qwen3.8-flash-next \
+            --mode json \
+            --no-session \
+            "$(cat "$TASK_FILE")" \
+          | tee "$RUNNER_TEMP/pi-triage-result.jsonl" \
+          | node scripts/pi-log-filter.mjs
+
+      - name: Validate and apply triage decisions
+        if: steps.prepare.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/pi-triage.mjs apply "$RUNNER_TEMP/pi-triage-result.jsonl"
