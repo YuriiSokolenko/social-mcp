@@ -53,7 +53,7 @@ jobs:
           ISSUE="${HEAD_REF#pi/issue-}"
           echo "PI_ISSUE=$ISSUE" >> "$GITHUB_ENV"
           COMMENTS="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/comments?per_page=100")"
-          FEEDBACK="$(jq -r '[.[] | select(.body | startswith("REVIEW_RESULT: CHANGES_REQUESTED"))] | last | .body // empty' <<<"$COMMENTS")"
+          FEEDBACK="$(jq -r '[.[] | select(.user.login == "github-actions[bot]") | select((.body // "" | split("\n") | any(.[]; test("^[[:blank:]]*(?:#{1,6}[[:blank:]]+)?REVIEW_RESULT: CHANGES_REQUESTED[[:blank:]]*$"))))] | last | .body // empty' <<<"$COMMENTS")"
           [ -n "$FEEDBACK" ]
           echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
