@@ -29,6 +29,13 @@ test('accepts one verdict after evidence in the final response', () => {
   assert.equal(parseReviewResult(events.map(line).join('\n')).verdict, 'PASS');
 });
 
+test('uses the last verdict when the model restates the same one twice', () => {
+  const events = [{ type: 'agent_end', messages: [{ role: 'assistant', content: [
+    { type: 'text', text: 'REVIEW_RESULT: PASS\nOn reflection, confirming:\nREVIEW_RESULT: PASS' },
+  ] }] }];
+  assert.equal(parseReviewResult(events.map(line).join('\n')).verdict, 'PASS');
+});
+
 test('rejects missing or conflicting verdicts in the final response', () => {
   for (const text of ['Review passed.', 'REVIEW_RESULT: PASS\nREVIEW_RESULT: CHANGES_REQUESTED']) {
     const events = [{ type: 'agent_end', messages: [{ role: 'assistant', content: [
