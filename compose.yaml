@@ -2,11 +2,12 @@ services:
   app:
     build:
       context: .
-    # Non-secret runtime configuration may come from an environment file.
+    # Local runtime configuration can come from an optional environment file.
     # Secrets (TOKEN_ENCRYPTION_KEY, OAuth client secrets) are supplied by the
     # host environment and are never committed to Git or baked into the image.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       APP_NAME: Social MCP
       ENVIRONMENT: production

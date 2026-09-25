@@ -7,7 +7,7 @@ secrets live outside the disposable container filesystem.
 
 ## Prerequisites
 
-- Docker Engine with Compose V2 on the N150 host
+- Docker Engine with Compose V2.24 or later on the N150 host
 - A strong, unique token encryption key (generated once per deployment)
 - (Later) Meta and TikTok OAuth credentials, when connecting accounts
 

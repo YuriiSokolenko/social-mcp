@@ -2,8 +2,9 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /install
 
-# Install dependencies first for better layer caching.
-COPY pyproject.toml ./
+# Hatchling needs the README and package sources to build the wheel.
+COPY pyproject.toml README.md ./
+COPY src ./src
 RUN pip install --no-cache-dir --prefix=/install .
 
 # Runtime stage: minimal image with only the installed package.
