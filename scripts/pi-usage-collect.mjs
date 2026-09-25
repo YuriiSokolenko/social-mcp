@@ -60,7 +60,12 @@ if (!run && /^\d+$/.test(process.env.MANUAL_RUN_ID ?? "")) {
   run = await response.json();
 }
 if (!run?.id || !run?.run_attempt || run.status !== "completed") throw new Error("Expected a completed Pi workflow run");
-if (run.head_repository?.full_name !== repo || !["Pi Issue Agent", "Pi PR Review", "Pi PR Fix"].includes(run.name)) {
+const trustedWorkflows = new Set([
+  ".github/workflows/pi-issue-agent.yml",
+  ".github/workflows/pi-pr-review.yml",
+  ".github/workflows/pi-pr-fix.yml",
+]);
+if (run.head_repository?.full_name !== repo || !trustedWorkflows.has(run.path)) {
   throw new Error("The requested run is not a trusted Pi workflow from this repository");
 }
 
