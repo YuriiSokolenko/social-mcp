@@ -33,9 +33,12 @@ export function parseReviewResult(jsonl) {
   }
 
   if (!finalText) throw new Error("Pi review did not produce a final assistant response");
-  const match = /^REVIEW_RESULT:[ \t]*(PASS|CHANGES_REQUESTED)[ \t]*(?:\r?\n|$)/.exec(finalText);
-  if (!match) throw new Error("Pi review final response must start with REVIEW_RESULT: PASS|CHANGES_REQUESTED");
-  return { verdict: match[1], text: finalText };
+  // A completed review can include its verdict after the evidence or as a
+  // Markdown heading. Only read the last assistant message and reject an
+  // ambiguous response containing more than one verdict line.
+  const verdicts = [...finalText.matchAll(/^[ \t]*(?:#{1,6}[ \t]+)?REVIEW_RESULT:[ \t]*(PASS|CHANGES_REQUESTED)[ \t]*$/gm)];
+  if (verdicts.length !== 1) throw new Error("Pi review final response must contain exactly one REVIEW_RESULT: PASS|CHANGES_REQUESTED line");
+  return { verdict: verdicts[0][1], text: finalText };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

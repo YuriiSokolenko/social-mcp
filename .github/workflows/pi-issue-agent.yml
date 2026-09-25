@@ -160,7 +160,6 @@ jobs:
           git config user.name "social-mcp-pi"
           git config user.email "social-mcp-pi@users.noreply.github.com"
           git add -A
-          git diff --cached --check
           if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
             echo "Refusing to checkpoint a credential or runtime file" >&2
             exit 1
@@ -187,24 +186,24 @@ jobs:
             NEED_REPAIR=false
           fi
           if [ "$NEED_REPAIR" = false ]; then
+            if ! git diff --check origin/dev...HEAD > "$RUNNER_TEMP/pi-issue-whitespace.log" 2>&1; then NEED_REPAIR=true; fi
             python -m pip install -e .
             if ! pytest > "$RUNNER_TEMP/pi-issue-pytest.log" 2>&1; then NEED_REPAIR=true; fi
             if ! ruff check . > "$RUNNER_TEMP/pi-issue-ruff.log" 2>&1; then NEED_REPAIR=true; fi
-            cat "$RUNNER_TEMP/pi-issue-pytest.log" "$RUNNER_TEMP/pi-issue-ruff.log"
+            cat "$RUNNER_TEMP/pi-issue-whitespace.log" "$RUNNER_TEMP/pi-issue-pytest.log" "$RUNNER_TEMP/pi-issue-ruff.log"
           fi
           if [ "$NEED_REPAIR" = false ]; then exit 0; fi
           if [ "$NEED_REPAIR" = true ]; then
-            echo "One Pi repair attempt for integration or test failures"
+            echo "One Pi repair attempt for integration, whitespace or test failures"
             set -o pipefail
             pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-              "Read agents/implementer/AGENTS.md. Resolve the current merge conflict or failing tests in this worktree for issue #${ISSUE}. Do not commit, push or change GitHub state. Fix only integration problems, then run pytest and ruff check . before finishing. Existing test logs: $RUNNER_TEMP/pi-issue-pytest.log and $RUNNER_TEMP/pi-issue-ruff.log (read them if present)." \
+              "Read agents/implementer/AGENTS.md. Resolve the current merge conflict, whitespace errors or failing tests in this worktree for issue #${ISSUE}. Do not commit, push or change GitHub state. Fix only these problems, then run git diff --check origin/dev...HEAD, pytest and ruff check . before finishing. Existing logs: $RUNNER_TEMP/pi-issue-whitespace.log, $RUNNER_TEMP/pi-issue-pytest.log and $RUNNER_TEMP/pi-issue-ruff.log (read them if present)." \
               | PI_CALL=integration node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
               echo "Unresolved merge conflicts remain" >&2
               exit 1
             fi
             git add -A
-            git diff --cached --check
             if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
               echo "Refusing to commit a credential or runtime file" >&2
               exit 1
@@ -218,6 +217,7 @@ jobs:
           python -m pip install -e .
           pytest
           ruff check .
+          git diff --check origin/dev...HEAD
 
       - name: Save verified or failed integration checkpoint
         if: always() && steps.checkpoint.outputs.changed == 'true'
@@ -230,7 +230,6 @@ jobs:
             exit 0
           fi
           git add -A
-          git diff --cached --check
           if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
             echo "Refusing to checkpoint a credential or runtime file" >&2
             exit 1
@@ -254,6 +253,7 @@ jobs:
             echo "dev moved during verification; checkpoint preserved for retry" >&2
             exit 1
           }
+          git diff --check origin/dev...HEAD
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --set-upstream origin "HEAD:refs/heads/pi/issue-${ISSUE}"
 
       - name: Create or update pull request

@@ -130,7 +130,10 @@ async function processPR(prSummary) {
       return;
     }
     await api(`/pulls/${pr.number}/update-branch`, 'PUT', { expected_head_sha: sha });
-    console.log(`#${pr.number}: updated branch; awaiting checks on new SHA`);
+    // A branch update made with GITHUB_TOKEN may not start another gate run.
+    // Wake the gate after this run exits so it can dispatch checks for the new SHA.
+    await api('/actions/workflows/pi-auto-merge.yml/dispatches', 'POST', { ref: 'dev' });
+    console.log(`#${pr.number}: updated branch; queued checks for new SHA`);
     return;
   }
   if (comparison.status !== 'ahead' || comparison.behind_by !== 0) {
