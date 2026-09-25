@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { childNumbers, parentOf } from './pi-architect.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
@@ -76,6 +77,29 @@ async function trigger(pr, sha, statuses, runs) {
   }
 }
 
+export async function finishArchitectParents(childNumber, issueApi = api) {
+  const visited = new Set();
+  while (childNumber && !visited.has(childNumber)) {
+    visited.add(childNumber);
+    const child = await issueApi(`/issues/${childNumber}`);
+    const parentNumber = parentOf(child.body);
+    if (!parentNumber || visited.has(parentNumber)) return;
+    const parent = await issueApi(`/issues/${parentNumber}`);
+    if (!parent.labels.some(label => label.name === 'architect:epic')) return;
+    const numbers = childNumbers(parent.body);
+    if (!numbers.includes(childNumber)) return;
+    const siblings = await Promise.all(numbers.map(number => issueApi(`/issues/${number}`)));
+    if (!siblings.every(issue => issue.state === 'closed' && issue.state_reason === 'completed')) return;
+    if (parent.state === 'open') {
+      await issueApi(`/issues/${parentNumber}`, 'PATCH', { state: 'closed', state_reason: 'completed' });
+      console.log(`Architect parent #${parentNumber}: all child issues completed`);
+    } else if (parent.state_reason !== 'completed') {
+      return;
+    }
+    childNumber = parentNumber;
+  }
+}
+
 async function finalizeMergedPR(pr, issue) {
   const current = await api(`/issues/${issue}`);
   const labels = new Set(current.labels.map(label => label.name));
@@ -88,6 +112,7 @@ async function finalizeMergedPR(pr, issue) {
   } else if (current.state_reason !== 'completed') {
     return;
   }
+  await finishArchitectParents(issue);
   await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
   await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
   console.log(`#${pr.number}: dispatcher started`);

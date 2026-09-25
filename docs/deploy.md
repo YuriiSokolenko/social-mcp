@@ -86,6 +86,12 @@ The HTTP layer is published on the host at `http://127.0.0.1:8000` by default.
 The `/health` endpoint reports `ok` only when the SQLite account store is
 reachable, so a healthy status means the persistent data is mounted correctly.
 
+The initial Web Admin entry points are `/admin/dashboard` and `/admin/accounts`.
+They remain unavailable until `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set in
+the runtime environment or the untracked `.env` file. The current shell uses
+HTTP Basic authentication; keep the service bound to localhost and use HTTPS
+before exposing it remotely. `/health` does not require admin credentials.
+
 ## Persistent token storage strategy
 
 ```text

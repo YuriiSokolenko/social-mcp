@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, Request, Response
 
+from social_mcp.admin.routes import admin_router
 from social_mcp.config import Settings, get_settings
 from social_mcp.container import (
     ApplicationContainer,
@@ -53,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = app_settings
     app.state.container = None
     app.include_router(system_router)
+    app.include_router(admin_router)
     return app
 
 

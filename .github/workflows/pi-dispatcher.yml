@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: read
@@ -21,6 +22,7 @@ jobs:
     timeout-minutes: 480
     env:
       REPO: ${{ github.repository }}
+      PI_BASH_TIMEOUT_SECONDS: '600'
 
     steps:
       - name: Checkout trusted dev
@@ -50,11 +52,12 @@ jobs:
           Read and follow agents/dispatcher/AGENTS.md and docs/PROJECT_CONTEXT.md.
           The current GitHub issue and PR snapshot is at $RUNNER_TEMP/pi-dispatcher-context.json.
           Read the snapshot and relevant tasks/<issue-number>.md files.
-          Select all eligible candidates in priority order. Execution concurrency is controlled by the GitHub Actions queue and the N150 autoscaler, not by the dispatcher.
+          Classify every eligible candidate: issues for direct implementation, architect for decomposition before implementation. An architect child may be split again if it remains broad. Execution concurrency is controlled by the GitHub Actions queue and the N150 autoscaler.
           Return the exact DISPATCH_RESULT line specified by your role rules.
           Do not modify the repository or GitHub state.
           EOF
           pi \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \

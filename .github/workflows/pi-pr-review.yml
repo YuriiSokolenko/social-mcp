@@ -1,4 +1,5 @@
 name: Pi PR Review
+run-name: 'Pi review PR #${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}'
 
 on:
   repository_dispatch:
@@ -6,6 +7,11 @@ on:
   pull_request:
     types: [reopened, closed]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: number
 
 permissions:
   contents: write
@@ -13,12 +19,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number || github.run_id }}
+  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
-    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'repository_dispatch' || github.event.action == 'reopened')
+    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch' || github.event.action == 'reopened')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
     permissions:
@@ -28,9 +34,10 @@ jobs:
       statuses: write
       actions: write
     env:
-      PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
+      PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
+      PI_BASH_TIMEOUT_SECONDS: '600'
 
     steps:
       - name: Checkout dev control repository
@@ -214,6 +221,7 @@ jobs:
           echo "REVIEW_RAW=$RAW" >> "$GITHUB_ENV"
 
           pi \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \
@@ -236,7 +244,7 @@ jobs:
             cd "$JOB_DIR"
             set -o pipefail
             RETRY_RAW="$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
-            pi --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+            pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
               "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. The test logs are $RUNNER_TEMP/pytest.log and $RUNNER_TEMP/ruff.log. Your final response MUST begin with REVIEW_RESULT: PASS or REVIEW_RESULT: CHANGES_REQUESTED, followed by evidence." \
               | tee "$RETRY_RAW" | PI_CALL=retry node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RETRY_RAW")"
