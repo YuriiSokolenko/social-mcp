@@ -138,8 +138,8 @@ async function main() {
   }
   const text = finalText(fs.readFileSync(file, "utf8"));
   const lines = text.split(/\r?\n/).filter(line => line.startsWith("DISPATCH_RESULT: "));
-  if (lines.length !== 1) throw new Error("expected exactly one DISPATCH_RESULT line");
-  const result = JSON.parse(lines[0].slice("DISPATCH_RESULT: ".length));
+  if (!lines.length) throw new Error("expected a DISPATCH_RESULT line");
+  const result = JSON.parse(lines.at(-1).slice("DISPATCH_RESULT: ".length));
   if (!Array.isArray(result.issues) || !result.issues.every(Number.isSafeInteger) ||
       !Array.isArray(result.architect) || !result.architect.every(Number.isSafeInteger)) {
     throw new Error("invalid dispatcher classification lists");
