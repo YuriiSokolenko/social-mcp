@@ -228,7 +228,7 @@ Only the manager holds the Docker socket and the runner-administration PAT
 | `pi-pr-review.yml` | N150 self-hosted | `repository_dispatch: pi_pr_review`, PR reopened, workflow_dispatch | per PR, cancel previous |
 | `pi-pr-fix.yml` | N150 self-hosted | `repository_dispatch: pi_pr_fix`, workflow_dispatch | per PR, cancel previous |
 | `pi-auto-merge.yml` | GitHub-hosted | `workflow_run` completion of CI or Pi PR Review, workflow_dispatch | `pi-auto-merge`, serialized |
-| `pi-usage.yml` | GitHub-hosted | `workflow_run` completion of Issue Agent/Review/Fix, workflow_dispatch | none |
+| `pi-usage.yml` | GitHub-hosted | `workflow_run` completion of Issue Agent/Review/Fix/Architect, workflow_dispatch | none |
 
 ## Bash timeout per phase
 
@@ -252,6 +252,7 @@ checkout only), capping or overriding any model-requested timeout. Independent o
 | `scripts/pi-issue-status.sh` | issue label/comment state transitions |
 | `scripts/pi-pr-review-status.sh` | PR review label/comment/commit-status transitions |
 | `scripts/pi-bash-timeout.mjs`, `scripts/pi-bash-timeout-policy.mjs` | per-command Pi bash timeout cap |
+| `scripts/pi-loop-guard.mjs`, `scripts/pi-loop-guard-policy.mjs` | Architect-only: block tool calls past a turn/repeat-call budget |
 | `scripts/pi-log-filter.mjs` | streams/filters Pi's JSON event log into the Action log |
 | `scripts/pi-review-result.mjs` | parses the mandatory `REVIEW_RESULT:` line from Pi's output |
 | `scripts/pi-queue-context.mjs` | builds the live issues/PRs/Actions-queue snapshot fed to dispatcher and architect prompts |

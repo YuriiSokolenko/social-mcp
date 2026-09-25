@@ -302,7 +302,18 @@ limit even if the model does not supply `timeout`. A shorter model-specified
 timeout is honored; a longer one is capped. Review, Architect, and Dispatcher
 use 600 seconds; PR repair uses 1200 seconds; implementation uses 1800 seconds.
 Pi terminates the shell process tree when this limit expires. Job-level
-`timeout-minutes` remains a separate bound for the entire run. The extension
+`timeout-minutes` remains a separate bound for the entire run (30 minutes for
+Architect; longer for roles that run tests or wait on CI).
+
+Architect additionally loads `scripts/pi-loop-guard.mjs`, which blocks further
+tool calls once a run exceeds `PI_MAX_TURNS` (default 40) turns or repeats the
+exact same tool call more than `PI_MAX_REPEAT_CALLS` (default 3) times, and
+tells the model to finalize its `ARCHITECT_RESULT` instead. This exists
+because the small self-hosted model can get stuck re-running a failing or
+already-answered check for dozens of turns; `pi-usage-summary.mjs` also emits
+a `::warning::` annotation, visible in the job's Actions summary, when a run's
+response count or model time crosses `PI_USAGE_WARN_RESPONSES`/
+`PI_USAGE_WARN_SECONDS`. The extension
 path must come from the trusted control checkout, not a PR worktree.
 
 Before asking Pi for a verdict, the review workflow runs:

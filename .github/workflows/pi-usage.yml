@@ -2,7 +2,7 @@ name: Pi Usage
 
 on:
   workflow_run:
-    workflows: [Pi Issue Agent, Pi PR Review, Pi PR Fix]
+    workflows: [Pi Issue Agent, Pi PR Review, Pi PR Fix, Pi Architect]
     types: [completed]
   workflow_dispatch:
     inputs:

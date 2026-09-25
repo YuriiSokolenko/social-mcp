@@ -25,13 +25,15 @@ jobs:
   architect:
     if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'architect:ready')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
-    timeout-minutes: 90
+    timeout-minutes: 30
     env:
       GITHUB_REPOSITORY: ${{ github.repository }}
       ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
       PI_ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
       PI_PHASE: architect
       PI_BASH_TIMEOUT_SECONDS: '600'
+      PI_MAX_TURNS: '40'
+      PI_MAX_REPEAT_CALLS: '3'
 
     steps:
       - name: Checkout trusted dev
@@ -53,6 +55,7 @@ jobs:
           set -o pipefail
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \

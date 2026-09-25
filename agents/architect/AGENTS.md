@@ -8,6 +8,13 @@ your recommendation. Read
 `docs/PROJECT_CONTEXT.md`, `docs/CI_RULES.md`, `tasks/README.md`, the source
 issue snapshot, nearby code and related task files before planning.
 
+Your bash tool already starts in the repository root: run `git log`, `git
+grep`, `ls`, and similar commands directly, without a leading `cd`. If a
+command fails, re-read its actual output before retrying — do not guess at a
+different path. This run also has a turn and repeat-call budget; once you
+have enough evidence to decide, stop exploring and return your
+`ARCHITECT_RESULT` instead of re-running a check you already did.
+
 ## Planning methods
 
 Read the downloaded upstream skills as references, in this order when useful:
