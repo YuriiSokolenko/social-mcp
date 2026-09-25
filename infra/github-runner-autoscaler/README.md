@@ -4,7 +4,7 @@ This directory runs a small Docker-based autoscaler for the N150 host.
 
 It watches queued runs of `.github/workflows/pi-issue-agent.yml`,
 `.github/workflows/pi-pr-review.yml`, `.github/workflows/pi-dispatcher.yml`,
-and `.github/workflows/pi-architect.yml`,
+`.github/workflows/pi-architect.yml`, and `.github/workflows/pi-triage.yml`,
 and keeps up to `MAX_RUNNERS` ephemeral self-hosted runner containers alive. Each worker registers
 with GitHub using `--ephemeral`, accepts one job, and is removed after the job.
 
@@ -48,9 +48,10 @@ Before enabling the manager, stop the old persistent `github-pi-runner` containe
 it cannot consume jobs in parallel with the ephemeral pool.
 
 Set `MAX_RUNNERS` in the N150 host's local `.env` to the desired pool capacity.
-If `.env` defines `WORKFLOW_FILES`, add `pi-architect.yml` there too; updating
-the tracked defaults does not override an existing host `.env`. Restart the
-autoscaler manager after changing its local environment.
+If `.env` defines `WORKFLOW_FILES`, add any newly introduced workflow file
+there too (e.g. `pi-triage.yml`); updating the tracked defaults does not
+override an existing host `.env`. Restart the autoscaler manager after
+changing its local environment.
 The example defaults to two; a local value such as three takes precedence.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
 Set `MODEL_STATUS_URL` in the N150 host's local `.env` to the active model
