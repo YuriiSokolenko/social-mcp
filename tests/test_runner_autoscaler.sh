@@ -27,8 +27,14 @@ docker() {
 }
 
 curl() {
-  [[ "$*" == *' -X DELETE '* ]] || fail "unexpected curl command"
-  printf '%s\n' "${*: -1}" >> "$DELETED_IDS"
+  if [[ "${*: -1}" == "${MODEL_METRICS_URL:-unused}" ]]; then
+    if [[ "${METRICS_FAIL:-0}" == 1 ]]; then return 22; fi
+    printf '%s' "${METRICS_RESPONSE:-}"
+  elif [[ "$*" == *' -X DELETE '* ]]; then
+    printf '%s\n' "${*: -1}" >> "$DELETED_IDS"
+  else
+    fail "unexpected curl command"
+  fi
 }
 
 WORKFLOW_FILES=first.yml,second.yml
@@ -72,6 +78,43 @@ assert_failure cleanup_stale_registrations
 assert_failure active_containers
 [[ "$(wc -l < "$DELETED_IDS")" == 1 ]] || fail 'Docker failure caused deletion'
 unset DOCKER_FAIL
+
+MODEL_METRICS_URL='http://model:3009/metrics'
+METRICS_RESPONSE=$'vllm:num_requests_running{model_name="test"} 4\nvllm:num_requests_waiting{model_name="test"} 0\n'
+model_queue_clear || fail 'a busy model without a backlog must admit work'
+METRICS_RESPONSE=$'vllm:num_requests_waiting{model_name="a"} 0\nvllm:num_requests_waiting{model_name="b"} 2\n'
+assert_failure model_queue_clear
+METRICS_RESPONSE='vllm:num_requests_running 0'
+assert_failure model_queue_clear
+METRICS_RESPONSE='vllm:num_requests_waiting NaN'
+assert_failure model_queue_clear
+METRICS_FAIL=1
+assert_failure model_queue_clear
+unset METRICS_FAIL
+
+METRICS_RESPONSE='vllm:num_requests_waiting 1'
+(
+  queued_jobs() { printf '1\n'; }
+  busy_ephemeral_runners() { printf '0\n'; }
+  active_containers() { printf '0\n'; }
+  cleanup_stale_registrations() { :; }
+  spawn_runner() { fail 'spawned a runner despite model backlog'; }
+  sleep() { exit 0; }
+  main >/dev/null
+)
+
+METRICS_RESPONSE='vllm:num_requests_waiting 0'
+(
+  queued_jobs() { printf '4\n'; }
+  busy_ephemeral_runners() { printf '0\n'; }
+  active_containers() { printf '0\n'; }
+  cleanup_stale_registrations() { :; }
+  MAX_RUNNERS=4
+  spawned=0
+  spawn_runner() { spawned=$((spawned + 1)); }
+  sleep() { [[ "$spawned" == 4 ]] || fail "expected four runners, got $spawned"; exit 0; }
+  main >/dev/null
+)
 
 SECOND_FAIL=1
 (

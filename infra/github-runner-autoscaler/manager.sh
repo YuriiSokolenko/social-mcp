@@ -10,6 +10,7 @@ RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
 WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml,pi-architect.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
+MODEL_METRICS_URL="${MODEL_METRICS_URL:-}"
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 AUTH=(
@@ -82,6 +83,28 @@ active_containers() {
   printf '%s\n' "$names" | awk -v prefix="${RUNNER_PREFIX}-" 'index($0, prefix) == 1 { count++ } END { print count+0 }'
 }
 
+model_queue_clear() {
+  local metrics waiting
+  # A Pi job makes many model calls. Reserve runner slots for the entire job;
+  # only use the model's request queue to defer starting additional jobs.
+  [ -n "$MODEL_METRICS_URL" ] || return 0
+  metrics="$(curl -fsS --max-time 5 "$MODEL_METRICS_URL")" || return 1
+  waiting="$(printf '%s\n' "$metrics" | awk '
+    /^vllm:num_requests_waiting(\{[^}]*\})?[[:space:]]/ {
+      value = $NF
+      if (value !~ /^[0-9]+(\.[0-9]+)?$/) exit 2
+      total += value
+      found = 1
+    }
+    END { if (!found) exit 2; print total + 0 }
+  ')" || return 1
+  if awk -v waiting="$waiting" 'BEGIN { exit !(waiting > 0) }'; then
+    log "model queue has $waiting waiting requests; delaying new runners"
+    return 2
+  fi
+  return 0
+}
+
 spawn_runner() {
   local token name
   token="$(registration_token)"
@@ -114,6 +137,18 @@ main() {
     fi
 
     if [ "$active" -lt "$desired" ]; then
+      if model_queue_clear; then
+        model_state=0
+      else
+        model_state=$?
+      fi
+      if [ "$model_state" -ne 0 ]; then
+        if [ "$model_state" -eq 1 ]; then
+          log "warning: model metrics unavailable or invalid; delaying new runners"
+        fi
+        sleep "$POLL_SECONDS"
+        continue
+      fi
       to_start=$((desired - active))
       log "queued=$queued busy=$busy active=$active desired=$desired spawning=$to_start"
       for _ in $(seq 1 "$to_start"); do

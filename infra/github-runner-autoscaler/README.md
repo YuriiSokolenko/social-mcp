@@ -53,6 +53,16 @@ the tracked defaults does not override an existing host `.env`. Restart the
 autoscaler manager after changing its local environment.
 The example defaults to two; a local value such as three takes precedence.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
+Set `MODEL_METRICS_URL` in the N150 host's local `.env` to the active vLLM
+server's `/metrics` endpoint, reachable from the manager container. Recreate
+the manager after changing the URL or switching model servers. With this setting,
+the manager fills available runner slots up to `MAX_RUNNERS` while vLLM has no
+waiting requests. When vLLM already has a request backlog, it waits for the next
+poll before starting more runners; existing jobs continue. If the metrics
+endpoint is unavailable or its waiting-request gauge is missing, it also waits
+and logs a warning. An unset URL preserves the original queue-only behavior.
+vLLM reports requests rather than Pi jobs, so the manager continues to count
+running jobs by their runner containers, including pauses between model calls.
 The manager counts both `queued` and `pending` GitHub workflow runs. When GitHub
 or Docker state cannot be read, it skips that poll instead of treating the failed
 request as an empty queue or an empty runner pool.

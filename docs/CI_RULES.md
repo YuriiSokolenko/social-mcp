@@ -485,6 +485,11 @@ Expected behavior:
 ```
 
 Additional jobs wait in the GitHub Actions queue.
+When the N150 host sets `MODEL_METRICS_URL` to the active vLLM `/metrics`
+endpoint, the manager defers creating new runners while model requests are
+waiting. Missing or unreadable metrics also delay new runners. Active jobs
+continue; the local `MAX_RUNNERS` remains the upper bound, and an unset URL
+keeps the previous queue-only behavior.
 
 Each worker:
 
