@@ -8,10 +8,12 @@ configuration when the app starts and shared with request handlers through
 
 import logging
 import sqlite3
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from social_mcp.admin.routes import admin_router, public_router
@@ -21,8 +23,10 @@ from social_mcp.container import (
     ContainerUnavailableError,
     create_container,
 )
+from social_mcp.diagnostics import DiagnosticLogFilter, request_id_var, set_request_id
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("social_mcp")
+logger.addFilter(DiagnosticLogFilter())
 
 
 system_router = APIRouter(tags=["system"])
@@ -98,10 +102,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             same_site="lax",
         )
 
+    app.add_middleware(CorrelationMiddleware)
     app.include_router(system_router)
     app.include_router(public_router)
     app.include_router(admin_router)
     return app
+
+
+class CorrelationMiddleware(BaseHTTPMiddleware):
+    """Assign a per-request correlation id and bind it to the request context.
+
+    The id is logged onto every record emitted during the request (via the
+    :class:`DiagnosticLogFilter` on the ``social_mcp`` logger) so application and
+    platform/API errors can be correlated in the Web Admin log view. It is a
+    non-secret, short identifier: it never carries credentials.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        correlation_id = uuid.uuid4().hex[:12]
+        token = set_request_id(correlation_id)
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_var.reset(token)
+        response.headers.setdefault("x-correlation-id", correlation_id)
+        return response
 
 
 def get_container(request: Request) -> ApplicationContainer:
