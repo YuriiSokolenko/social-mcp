@@ -2,25 +2,43 @@ services:
   app:
     build:
       context: .
+    # Local runtime configuration can come from an optional environment file.
+    # Secrets (TOKEN_ENCRYPTION_KEY, OAuth client secrets) are supplied by the
+    # host environment and are never committed to Git or baked into the image.
+    env_file:
+      - path: .env
+        required: false
     environment:
       APP_NAME: Social MCP
-      ENVIRONMENT: test
+      ENVIRONMENT: production
       DATABASE_URL: sqlite:////data/social-mcp.db
+      # Required at startup: the key that encrypts OAuth tokens at rest. It is
+      # interpolated from the host environment by Compose, so it never lives in
+      # the image. In production, source it from your secret manager rather than
+      # exporting it on the command line.
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY is required}
     ports:
+      # The host port is chosen randomly by Compose to avoid conflicts on the
+      # host; discover it with `docker compose port app 8000`.
       - "127.0.0.1::8000"
     volumes:
+      # Named volume: durable application data managed by Docker, surviving
+      # `docker compose down` (without --volumes). Mounts at /data so the
+      # SQLite account store and encrypted token blobs persist across upgrades.
       - social-mcp-data:/data
     healthcheck:
+      # Probe the live /health endpoint, not just process presence. The account
+      # store must be reachable before the container is reported ready.
       test:
         - CMD
         - python
         - -c
         - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"
-      interval: 2s
-      timeout: 2s
-      retries: 15
-      start_period: 2s
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
 
 volumes:
   social-mcp-data:

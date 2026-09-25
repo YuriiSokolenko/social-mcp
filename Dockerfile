@@ -1,13 +1,29 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS builder
 
-WORKDIR /app
+WORKDIR /install
 
+# Hatchling needs the README and package sources to build the wheel.
 COPY pyproject.toml README.md ./
 COPY src ./src
+RUN pip install --no-cache-dir --prefix=/install .
 
-RUN pip install --no-cache-dir .
+# Runtime stage: minimal image with only the installed package.
+FROM python:3.12-slim AS runtime
 
-RUN mkdir -p /data
+# Create an unprivileged user and the writable data directory before switching.
+# The data directory is where the SQLite account store and encrypted tokens live;
+# it is mounted from a persistent volume in Compose so account data and token
+# blobs survive container replacement.
+RUN groupadd --system social-mcp \
+    && useradd --system --gid social-mcp --create-home social-mcp \
+    && mkdir -p /data \
+    && chown social-mcp:social-mcp /data
+
+COPY --from=builder /install /usr/local
+
+USER social-mcp
+
+WORKDIR /app
 
 ENV DATABASE_URL=sqlite:////data/social-mcp.db
 EXPOSE 8000

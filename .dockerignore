@@ -1,3 +1,7 @@
+# Version control
+.git
+.gitignore
+
 # Python
 __pycache__/
 *.py[cod]
@@ -8,16 +12,11 @@ __pycache__/
 venv/
 ENV/
 env/
-
-# Test / lint / coverage
 .pytest_cache/
 .ruff_cache/
+htmlcov/
 .coverage
 .coverage.*
-htmlcov/
-coverage.xml
-
-# Packaging
 build/
 dist/
 *.egg-info/
@@ -35,7 +34,10 @@ dist/
 # Deployment secrets
 secrets/
 
-# OS / editor
+# Editor / OS
 .DS_Store
 .idea/
 .vscode/
+
+# CI artifacts
+reports/
