@@ -246,6 +246,10 @@ It is triggered by the repository event:
 pi_pr_review
 ```
 
+For a hung or interrupted review, use **Pi PR Review → Run workflow** on
+`dev` and enter its PR number. Review runs for the same PR share a concurrency
+group with `cancel-in-progress: true`; the new run replaces the old one.
+
 and may also be manually retriggered by reopening a PR.
 
 Only same-repository branches matching:
@@ -291,6 +295,15 @@ The reviewer must not:
 The workflow interprets the reviewer verdict and performs the GitHub updates.
 
 ## Deterministic review checks
+
+Every trusted Pi run loads `scripts/pi-bash-timeout.mjs` from the checked-out
+`dev` control repository. It wraps Pi's built-in `bash` tool with a per-command
+limit even if the model does not supply `timeout`. A shorter model-specified
+timeout is honored; a longer one is capped. Review, Architect, and Dispatcher
+use 600 seconds; PR repair uses 1200 seconds; implementation uses 1800 seconds.
+Pi terminates the shell process tree when this limit expires. Job-level
+`timeout-minutes` remains a separate bound for the entire run. The extension
+path must come from the trusted control checkout, not a PR worktree.
 
 Before asking Pi for a verdict, the review workflow runs:
 
@@ -346,6 +359,14 @@ task file is the source of truth for priority. A file alone never starts work.
 The dispatcher agent reads `agents/dispatcher/AGENTS.md` and
 `docs/PROJECT_CONTEXT.md`. It recommends issue numbers but cannot mutate GitHub.
 The workflow independently checks its output and the current GitHub state.
+It classifies each candidate for direct implementation or Pi Architect. A
+decomposed child may also go to Architect if its remaining scope is still too
+large; its descendants form another level in the issue tree.
+Before either agent plans, its trusted workflow snapshots open `dev` PRs,
+active issue labels, and queued/running Actions jobs into the agent context.
+Run names include issue or PR numbers where available so work in progress can
+be linked back to its issue. The snapshot may be incomplete; the dispatcher
+always rechecks fresh GitHub state before changing any label or dispatching.
 All currently eligible candidates are dispatched in one run, ordered P0, P1,
 P2 and then by ascending issue number. Dispatcher readiness is independent of
 runner capacity: GitHub Actions may queue any excess Pi jobs, while the N150
@@ -381,6 +402,28 @@ Failures, missing task metadata, and stale states must be reported rather than
 silently assigning a different issue. `pi:failed`, `pi:needs-human`, and
 `pi:cancelled` require human attention before the issue may be made eligible
 again. Task-file structure and label lifecycle are specified in `tasks/README.md`.
+
+For a broad candidate, the dispatcher adds `architect:ready`, explicitly
+dispatches `.github/workflows/pi-architect.yml` on `dev`, and then removes
+`dispatcher:ready`. GitHub Actions does not run a new workflow on label events
+made with `GITHUB_TOKEN`; the explicit dispatch is required. Pi Architect
+reads the issue and downloaded planning skills, proposes two to six small tasks,
+and makes no GitHub changes itself. Architect may also review an inactive
+issue already awaiting the dispatcher: keep it, revise its issue and task
+metadata, or split it. A kept or revised issue returns to its previous
+dispatcher eligibility; a deferred issue stays deferred. The workflow
+validates a split plan, creates
+child issues and their task files on `dev`, gives children `dispatcher:ready`,
+then explicitly dispatches Pi Dispatcher again. The parent gets
+`architect:epic` and closes as completed when every child is completed after
+merge into `dev`. If a child is also decomposed, it closes after its own
+children complete; completion then propagates upward through all ancestors.
+Architect runs share a repository-wide concurrency group with `queue: max`,
+so a batch of review requests waits in order without replacing pending runs.
+Separate contract tasks come first only for shared stable
+interfaces; separate test tasks precede implementation only when they can
+merge with passing CI. Otherwise each implementation issue includes its tests.
+The skills and pinned upstream versions are recorded in `docs/skills-sources.md`.
 
 ## First dispatcher run
 
@@ -433,19 +476,31 @@ The manager must watch these trusted workflows:
 pi-issue-agent.yml
 pi-pr-review.yml
 pi-dispatcher.yml
+pi-architect.yml
 ```
 
-The configured maximum is currently two concurrent ephemeral workers.
+The N150 host's local `MAX_RUNNERS` sets the concurrent worker limit; the
+tracked example defaults to two and does not override that local value.
 
 Expected behavior:
 
 ```text
 0 queued/busy jobs -> 0 workers
 1 job              -> 1 worker
-2+ jobs            -> up to 2 workers
+2+ jobs            -> up to MAX_RUNNERS workers
 ```
 
 Additional jobs wait in the GitHub Actions queue.
+When the N150 host sets `MODEL_STATUS_URL` to the active llama.cpp `/slots`
+endpoint, the manager counts total slots and occupied slots before starting
+more runners. It reserves a slot for every active runner, including pauses
+between model requests. A vLLM `/metrics` endpoint instead defers new runners
+while requests wait. Unreadable status also delays new runners. Active jobs
+continue; the local `MAX_RUNNERS` remains the upper bound, and an unset URL
+keeps the previous queue-only behavior.
+When the queue is empty, the manager retires any surplus idle online runners
+while leaving GitHub-busy workers alone. Otherwise an idle runner could take a
+new job without going through the model admission check.
 
 Each worker:
 

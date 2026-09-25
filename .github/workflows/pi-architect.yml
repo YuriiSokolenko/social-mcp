@@ -1,0 +1,71 @@
+name: Pi Architect
+run-name: 'Pi Architect #${{ github.event.issue.number || inputs.issue_number }}'
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue to review, refine, or split into dependency-linked tasks
+        required: true
+        type: number
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+
+concurrency:
+  group: pi-architect
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  architect:
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'architect:ready')
+    runs-on: [self-hosted, linux, x64, n150, pi-agent]
+    timeout-minutes: 90
+    env:
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
+      PI_ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
+      PI_PHASE: architect
+      PI_BASH_TIMEOUT_SECONDS: '600'
+
+    steps:
+      - name: Checkout trusted dev
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Initialize Pi usage
+        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
+
+      - name: Load parent issue and queue state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/pi-architect.mjs prepare "$ISSUE" "$RUNNER_TEMP/pi-architect-context.json"
+
+      - name: Ask Pi Architect
+        run: |
+          set -o pipefail
+          pi \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --provider hp-laguna \
+            --model qwen3.8-flash-next \
+            --mode json \
+            --no-session \
+            "Read and follow agents/architect/AGENTS.md and docs/PROJECT_CONTEXT.md. The source issue and current queue are in $RUNNER_TEMP/pi-architect-context.json. Read that file and the relevant existing code and tasks. Return exactly one final ARCHITECT_RESULT line as your role specifies. Do not edit files or change GitHub state." \
+            | tee "$RUNNER_TEMP/pi-architect-result.jsonl" \
+            | PI_CALL=main node scripts/pi-log-filter.mjs
+
+      - name: Validate and publish child tasks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/pi-architect.mjs publish "$ISSUE" "$RUNNER_TEMP/pi-architect-result.jsonl" "$RUNNER_TEMP/pi-architect-context.json"
+
+      - name: Summarize Pi usage
+        if: always()
+        run: node scripts/pi-usage-summary.mjs

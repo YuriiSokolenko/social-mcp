@@ -8,8 +8,9 @@ MAX_RUNNERS="${MAX_RUNNERS:-2}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
-WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml}}"
+WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml,pi-architect.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
+MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 AUTH=(
@@ -82,6 +83,74 @@ active_containers() {
   printf '%s\n' "$names" | awk -v prefix="${RUNNER_PREFIX}-" 'index($0, prefix) == 1 { count++ } END { print count+0 }'
 }
 
+retire_idle_runners() {
+  local names containers name still_idle current_queue
+  # An already registered idle runner can accept a job without consulting the
+  # model gate. Remove surplus idle runners when no workflows are queued.
+  names="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" '
+    .runners | if type != "array" then error("missing runners") else
+      map(select((.name | type) == "string" and (.name | startswith($prefix))
+        and .status == "online" and .busy == false)) | map(.name) | join("\n")
+    end')" || return 1
+  [ -n "$names" ] || return 0
+  containers="$(docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$containers" | grep -Fxq -- "$name" || continue
+    current_queue="$(queued_jobs)" || return 1
+    [ "$current_queue" -eq 0 ] || return 0
+    # Check once more immediately before stopping; never stop a known busy runner.
+    still_idle="$(api_get "${API}/actions/runners?per_page=100" | jq -r --arg name "$name" '
+      .runners | if type != "array" then error("missing runners") else
+        any(.[]; .name == $name and .status == "online" and .busy == false)
+      end')" || return 1
+    [ "$still_idle" == true ] || continue
+    log "stopping surplus idle runner $name"
+    docker stop "$name" >/dev/null || return 1
+  done <<< "$names"
+}
+
+model_start_capacity() {
+  local active="$1" status waiting
+  # A Pi job makes many model calls. Reserve runner slots for the entire job;
+  # an idle inference slot does not imply an existing Pi job is finished.
+  if [ -z "$MODEL_STATUS_URL" ]; then
+    printf 'unknown unknown %s\n' "$MAX_RUNNERS"
+    return 0
+  fi
+  status="$(curl -fsS --max-time 5 "$MODEL_STATUS_URL")" || return 1
+  case "$MODEL_STATUS_URL" in
+    */slots|*/slots\?*)
+      # Busy slots may belong to these jobs; use the larger reservation count.
+      printf '%s\n' "$status" | jq -er --argjson active "$active" '
+        if type != "array" or length == 0 or any(.[]; (.is_processing | type) != "boolean")
+        then error("invalid llama.cpp slots")
+        else length as $total
+          | ([.[] | select(.is_processing)] | length) as $busy
+          | ($total - (if $active > $busy then $active else $busy end)) as $capacity
+          | [$total, $busy, (if $capacity > 0 then $capacity else 0 end)] | @tsv
+        end
+      '
+      ;;
+    *)
+      waiting="$(printf '%s\n' "$status" | awk '
+    /^vllm:num_requests_waiting(\{[^}]*\})?[[:space:]]/ {
+      value = $NF
+      if (value !~ /^[0-9]+(\.[0-9]+)?$/) exit 2
+      total += value
+      found = 1
+    }
+    END { if (!found) exit 2; print total + 0 }
+      ')" || return 1
+      if awk -v waiting="$waiting" 'BEGIN { exit !(waiting > 0) }'; then
+        printf 'unknown unknown 0\n'
+      else
+        printf 'unknown unknown %s\n' "$MAX_RUNNERS"
+      fi
+      ;;
+  esac
+}
+
 spawn_runner() {
   local token name
   token="$(registration_token)"
@@ -108,19 +177,36 @@ main() {
       continue
     fi
 
+    if [ "$queued" -eq 0 ] && [ "$active" -gt "$busy" ]; then
+      retire_idle_runners || log "warning: idle-runner cleanup failed"
+    fi
+
     desired=$((queued + busy))
     if [ "$desired" -gt "$MAX_RUNNERS" ]; then
       desired="$MAX_RUNNERS"
     fi
 
+    if snapshot="$(model_start_capacity "$active")"; then
+      read -r model_total model_busy available <<< "$snapshot"
+    else
+      model_total=unknown
+      model_busy=unknown
+      available=0
+      log "warning: model status unavailable or invalid; delaying new runners"
+    fi
+
+    to_start=0
     if [ "$active" -lt "$desired" ]; then
       to_start=$((desired - active))
-      log "queued=$queued busy=$busy active=$active desired=$desired spawning=$to_start"
+      if [ "$to_start" -gt "$available" ]; then
+        to_start="$available"
+      fi
+    fi
+    log "queued=$queued busy=$busy active=$active desired=$desired model_slots_total=$model_total model_slots_busy=$model_busy model_capacity=$available spawning=$to_start"
+    if [ "$to_start" -gt 0 ]; then
       for _ in $(seq 1 "$to_start"); do
         spawn_runner || log "warning: failed to start runner"
       done
-    else
-      log "queued=$queued busy=$busy active=$active desired=$desired"
     fi
 
     sleep "$POLL_SECONDS"

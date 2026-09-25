@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { allowedFiles, issueNumber, latestCI, latestStatus, needsCIDispatch, shouldDeferBranchUpdate } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, finishArchitectParents, issueNumber, latestCI, latestStatus, needsCIDispatch, shouldDeferBranchUpdate } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 const pr = {
@@ -54,4 +54,45 @@ test('Pi cannot change the workflow definitions used for its own checks', () => 
 test('do not move a PR head while its reviewer is running', () => {
   assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:running' }] }), true);
   assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:ready' }] }), false);
+});
+
+test('closing a completed leaf closes its child epic and then its root epic', async () => {
+  const issues = new Map([
+    [10, { number: 10, state: 'open', body: '<!-- architect-children:11,12 -->', labels: [{ name: 'architect:epic' }] }],
+    [11, { number: 11, state: 'open', body: '<!-- architect-parent:10; architect-key:part -->\n<!-- architect-children:13,14 -->', labels: [{ name: 'architect:epic' }] }],
+    [12, { number: 12, state: 'closed', state_reason: 'completed', body: '<!-- architect-parent:10; architect-key:rest -->', labels: [] }],
+    [13, { number: 13, state: 'closed', state_reason: 'completed', body: '<!-- architect-parent:11; architect-key:first -->', labels: [] }],
+    [14, { number: 14, state: 'closed', state_reason: 'completed', body: '<!-- architect-parent:11; architect-key:second -->', labels: [] }],
+  ]);
+  const changes = [];
+  const issueApi = async (endpoint, method = 'GET', patch = {}) => {
+    const number = Number(endpoint.split('/').pop());
+    if (method === 'PATCH') {
+      Object.assign(issues.get(number), patch);
+      changes.push(number);
+    }
+    return issues.get(number);
+  };
+  await finishArchitectParents(14, issueApi);
+  assert.deepEqual(changes, [11, 10]);
+  await finishArchitectParents(14, issueApi);
+  assert.deepEqual(changes, [11, 10]);
+});
+
+test('an unfinished sibling prevents closure of every ancestor', async () => {
+  const issues = new Map([
+    [10, { state: 'open', body: '<!-- architect-children:11,12 -->', labels: [{ name: 'architect:epic' }] }],
+    [11, { state: 'open', body: '<!-- architect-parent:10; architect-key:part -->\n<!-- architect-children:13,14 -->', labels: [{ name: 'architect:epic' }] }],
+    [12, { state: 'open', body: '', labels: [] }],
+    [13, { state: 'closed', state_reason: 'completed', body: '', labels: [] }],
+    [14, { state: 'closed', state_reason: 'completed', body: '<!-- architect-parent:11; architect-key:second -->', labels: [] }],
+  ]);
+  const changes = [];
+  const issueApi = async (endpoint, method = 'GET') => {
+    const number = Number(endpoint.split('/').pop());
+    if (method === 'PATCH') changes.push(number);
+    return issues.get(number);
+  };
+  await finishArchitectParents(14, issueApi);
+  assert.deepEqual(changes, [11]);
 });
