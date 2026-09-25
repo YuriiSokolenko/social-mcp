@@ -13,7 +13,8 @@ test("aggregates a cancelled attempt once and preserves it on reprocessing", () 
   const mockFile = join(dir, "mock.mjs");
   writeFileSync(csvFile, readFileSync("reports/pi-usage.csv", "utf8").split("\n")[0] + "\n");
   writeFileSync(eventFile, JSON.stringify({ workflow_run: {
-    id: 123, run_attempt: 2, status: "completed", name: "Pi Issue Agent",
+    id: 123, run_attempt: 2, status: "completed", name: "Pi Issue #51",
+    path: ".github/workflows/pi-issue-agent.yml",
     head_repository: { full_name: "test/repo" },
   } }));
   writeFileSync(mockFile, `
@@ -62,13 +63,14 @@ test("ignores a skipped Pi job without requesting its nonexistent log", () => {
   const eventFile = join(dir, "event.json");
   const mockFile = join(dir, "mock.mjs");
   writeFileSync(eventFile, JSON.stringify({ workflow_run: {
-    id: 456, run_attempt: 1, status: "completed", name: "Pi Issue Agent",
+    id: 456, run_attempt: 1, status: "completed", name: "Pi review PR #67",
+    path: ".github/workflows/pi-pr-review.yml",
     head_repository: { full_name: "test/repo" },
   } }));
   writeFileSync(mockFile, `
     globalThis.fetch = async (url) => {
       if (url.includes("/attempts/1/jobs")) return Response.json({ jobs: [{
-        id: 999, name: "pi", conclusion: "skipped",
+        id: 999, name: "review", conclusion: "skipped",
       }] });
       throw new Error("Skipped job must not request a log: " + url);
     };
@@ -82,4 +84,22 @@ test("ignores a skipped Pi job without requesting its nonexistent log", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Job 999 was skipped; no log to collect/);
   assert.match(result.stdout, /No Pi issue sessions found in completed run/);
+});
+
+test("rejects a run with a trusted-looking title but an unrelated workflow path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-usage-untrusted-"));
+  const eventFile = join(dir, "event.json");
+  writeFileSync(eventFile, JSON.stringify({ workflow_run: {
+    id: 457, run_attempt: 1, status: "completed", name: "Pi review PR #67",
+    path: ".github/workflows/ci.yml",
+    head_repository: { full_name: "test/repo" },
+  } }));
+  const result = spawnSync(process.execPath, ["scripts/pi-usage-collect.mjs"], {
+    encoding: "utf8", env: {
+      ...process.env, GITHUB_EVENT_PATH: eventFile, GITHUB_REPOSITORY: "test/repo",
+      GITHUB_TOKEN: "synthetic-token",
+    },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /not a trusted Pi workflow/);
 });
