@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SQLITE_URL_PREFIXES = ("sqlite:///", "sqlite:")
@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     meta_app_secret: str | None = None
     tiktok_client_key: str | None = None
     tiktok_client_secret: str | None = None
+
+    admin_username: str | None = None
+    admin_password: SecretStr | None = None
 
     # The key is supplied at runtime from the host environment. An alternative
     # ``TOKEN_ENCRYPTION_KEY_FILE`` form reads the key from a file (for example
