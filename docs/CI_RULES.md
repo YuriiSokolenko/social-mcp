@@ -362,6 +362,11 @@ The workflow independently checks its output and the current GitHub state.
 It classifies each candidate for direct implementation or Pi Architect. A
 decomposed child may also go to Architect if its remaining scope is still too
 large; its descendants form another level in the issue tree.
+Before either agent plans, its trusted workflow snapshots open `dev` PRs,
+active issue labels, and queued/running Actions jobs into the agent context.
+Run names include issue or PR numbers where available so work in progress can
+be linked back to its issue. The snapshot may be incomplete; the dispatcher
+always rechecks fresh GitHub state before changing any label or dispatching.
 All currently eligible candidates are dispatched in one run, ordered P0, P1,
 P2 and then by ascending issue number. Dispatcher readiness is independent of
 runner capacity: GitHub Actions may queue any excess Pi jobs, while the N150
