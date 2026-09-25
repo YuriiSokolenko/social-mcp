@@ -87,10 +87,42 @@ The `/health` endpoint reports `ok` only when the SQLite account store is
 reachable, so a healthy status means the persistent data is mounted correctly.
 
 The initial Web Admin entry points are `/admin/dashboard` and `/admin/accounts`.
-They remain unavailable until `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set in
-the runtime environment or the untracked `.env` file. The current shell uses
-HTTP Basic authentication; keep the service bound to localhost and use HTTPS
-before exposing it remotely. `/health` does not require admin credentials.
+They remain unavailable until `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and
+`ADMIN_SESSION_SECRET` are all set in the runtime environment or the untracked
+`.env` file. When any of these is missing, every `/admin` request (including
+login) is rejected with `503 Service Unavailable`, so the admin surface can
+never be exposed accidentally.
+
+The admin authenticates with HTTP Basic credentials, but access to every
+`/admin` route is gated on a signed session cookie rather than on per-request
+credentials. The cookie is `HttpOnly` and `SameSite=Lax`, and is `Secure`
+(only sent over HTTPS) unless `ENVIRONMENT=development`. `ADMIN_SESSION_SECRET`
+signs that cookie; it must never be committed. `/health` does not require admin
+credentials and remains suitable for container health checks.
+
+### Local development
+
+For local development on localhost, set the three values in `.env` (or export
+them) with throwaway values:
+
+```bash
+export ADMIN_USERNAME=admin
+export ADMIN_PASSWORD="example-secret"
+export ADMIN_SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+export ENVIRONMENT=development
+```
+
+In development mode the session cookie is not marked `Secure` so it can be
+used over plain HTTP on localhost. Log in at `http://127.0.0.1:8000/admin/login`
+with the credentials above; authenticated navigation is then available at
+`/admin/dashboard` and `/admin/accounts`. Keep the service bound to localhost
+and use HTTPS (and a non-development `ENVIRONMENT`) before exposing it remotely.
+
+For a deployment, source a strong random `ADMIN_SESSION_SECRET` from your
+secret manager instead of committing it. A file-based alternative is supported
+via `ADMIN_SESSION_SECRET_FILE`, pointing at a file (for example
+`secrets/admin_session_secret`) that holds the secret; verify the file is
+ignored by Git:
 
 ## Persistent token storage strategy
 
@@ -121,13 +153,16 @@ host: social-mcp-data (named volume)
 | Secret                  | Source                                  | Delivery                         |
 | ----------------------- | --------------------------------------- | -------------------------------- |
 | `TOKEN_ENCRYPTION_KEY`  | host env / secret manager               | `TOKEN_ENCRYPTION_KEY` env var (Compose interpolation) |
+| `ADMIN_SESSION_SECRET`  | host env / secret manager               | `ADMIN_SESSION_SECRET` / `ADMIN_SESSION_SECRET_FILE` env var |
 | OAuth client secrets    | `.env` / host secret manager            | environment variables            |
 | OAuth tokens at rest    | encrypted in `social-mcp.db`            | never in Git or the image        |
 
 `compose.yaml` requires `TOKEN_ENCRYPTION_KEY` at startup with
 `${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY is required}`, so a missing key
-fails the container rather than leaving tokens unprotected. No real
-credential, token, or key is committed.
+fails the container rather than leaving tokens unprotected. The Web Admin
+refuses all logins and `/admin` access unless `ADMIN_SESSION_SECRET` is also
+present, so a missing secret fails closed rather than leaving the admin open.
+No real credential, token, or key is committed.
 
 ## Health checks
 
