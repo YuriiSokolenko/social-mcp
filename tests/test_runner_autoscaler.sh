@@ -7,6 +7,26 @@ source "$(dirname "$0")/../infra/github-runner-autoscaler/manager.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_failure() { if "$@" >/dev/null 2>&1; then fail "expected failure: $*"; fi; }
 
+# run_with_timeout must never block the caller past its own deadline, and must
+# never block past the wrapped command's actual completion when it finishes
+# early -- a prior version left a killed watchdog holding the caller's stdout
+# pipe open, so $(...) silently blocked for the full deadline even when the
+# wrapped command had already returned.
+start="$(date +%s)"
+out="$(run_with_timeout 30 echo fast)"
+elapsed=$(( $(date +%s) - start ))
+[[ "$out" == fast ]] || fail 'run_with_timeout must return the wrapped command output'
+[[ "$elapsed" -le 2 ]] || fail "run_with_timeout blocked ${elapsed}s past a fast command's own completion"
+
+start="$(date +%s)"
+if out="$(run_with_timeout 1 sleep 30)"; then
+  fail 'run_with_timeout must fail when the command exceeds its deadline'
+fi
+elapsed=$(( $(date +%s) - start ))
+[[ "$elapsed" -le 3 ]] || fail "run_with_timeout did not enforce its deadline, took ${elapsed}s for a 1s budget"
+
+run_with_timeout 5 true || fail 'run_with_timeout must succeed for a command well under budget'
+
 api_get() {
   case "$1" in
     *first.yml*status=pending*) if [[ "${FIRST_PENDING_RESPONSE+x}" ]]; then printf '%s' "$FIRST_PENDING_RESPONSE"; else printf '%s' '{"total_count":1}'; fi ;;
