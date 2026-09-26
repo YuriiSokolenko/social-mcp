@@ -89,3 +89,15 @@ test('live Architect keeps ownership', () => {
   const findings = inspectIssueState(issue('open', ['architect:ready']), { hasLiveArchitect: true });
   assert.equal(findings.some(item => item.code === 'orphaned-architect-state'), false);
 });
+
+
+test('mr-created is only published from running implementation state', () => {
+  assert.equal(validateIssueTransition(issue('open', ['pi:running']), 'mr-created'), 'pi:mr-created');
+  assert.equal(validateIssueTransition(issue('open', ['pi:mr-created']), 'mr-created'), 'pi:mr-created');
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:ready']), 'mr-created'), /pi:running/);
+});
+
+test('PR-owned issue cannot be overwritten by needs-human state', () => {
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:mr-created']), 'needs-human'), /SHA-bound statuses/);
+  assert.equal(validateIssueTransition(issue('open', ['pi:running']), 'needs-human'), 'pi:needs-human');
+});
