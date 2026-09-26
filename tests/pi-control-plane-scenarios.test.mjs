@@ -143,3 +143,9 @@ test('repair with no repository change becomes terminal instead of retrying fore
   assert.match(repair, /repair completed without producing a repository change/);
   assert.match(repair, /pi-pr-review-status\.sh failed/);
 });
+
+
+test('repair checkpoint recovery respects terminal review failure', () => {
+  const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(source, /!initialPrLabels\.has\('review:failed'\)/);
+});
