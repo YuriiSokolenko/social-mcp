@@ -102,7 +102,7 @@ jobs:
             exit 0
           fi
 
-       - name: Mark review running
+      - name: Mark review running
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
