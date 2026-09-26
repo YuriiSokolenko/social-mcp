@@ -66,11 +66,10 @@ async function processPR(prSummary) {
   }
 
   const sha = pr.head.sha;
-  const [base, statusData] = await Promise.all([
+  const [base, statuses] = await Promise.all([
     api('/git/ref/heads/dev'),
-    api(`/commits/${sha}/statuses?per_page=100`),
+    pages(`/commits/${sha}/statuses`),
   ]);
-  const statuses = statusData;
   const integrationContext = `social-mcp/integration/${base.object.sha.slice(0, 12)}`;
   const integration = latestStatus(statuses, integrationContext);
   if (!integration || integration === 'error') {
