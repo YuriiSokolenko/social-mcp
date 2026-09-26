@@ -407,9 +407,9 @@ for await (const line of rl) {
       const metaLine = `${timing}${first} · ${usageSummary(usage)}${speed}`;
       turn.metaLine = metaLine;
       heading("✓", `Model #${responseNumber} · ${metaLine}`, C.yellow);
-      if (issue != null && usage && Object.values(usage).some(Number.isFinite)) {
+      if (usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
-        recordMetric({ issue, phase, call, response: responseNumber, usage: fields, responseMs: elapsed });
+        recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: fields, responseMs: elapsed });
       }
       responseStarted = null;
       streamKind = null;
