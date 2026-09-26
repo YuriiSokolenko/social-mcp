@@ -54,6 +54,7 @@ async function processPR(prSummary) {
   const integrationContext = `social-mcp/integration/${base.object.sha.slice(0, 12)}`;
   const integration = latestStatus(statuses, integrationContext);
   if (!integration) {
+    await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: integrationContext, description: 'Exact-pair integration CI dispatched' });
     await api('/actions/workflows/ci.yml/dispatches', 'POST', {
       ref: 'dev',
       inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), integration_base_sha: base.object.sha },
