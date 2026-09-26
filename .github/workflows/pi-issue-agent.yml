@@ -1,11 +1,19 @@
 name: Pi Issue Agent
-run-name: "🤖 Implement #${{ github.event.issue.number || github.event.client_payload.issue_number }} · ${{ github.event.issue.title || github.event.client_payload.issue_title || 'issue' }}"
+run-name: "🤖 Implement #${{ github.event.issue.number || inputs.issue_number }} · ${{ github.event.issue.title || inputs.issue_title || 'issue' }}"
 
 on:
   issues:
     types: [labeled]
-  repository_dispatch:
-    types: [pi_dispatch_issue]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to implement
+        required: true
+        type: string
+      issue_title:
+        description: Issue title for the Actions run name
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -14,18 +22,18 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-issue-${{ github.event.issue.number || github.event.client_payload.issue_number }}
+  group: pi-issue-${{ github.event.issue.number || inputs.issue_number }}
   cancel-in-progress: true
 
 jobs:
   pi:
-    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && ((github.event_name == 'issues' && github.event.label.name == 'pi:ready') || github.event_name == 'repository_dispatch')
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && ((github.event_name == 'issues' && github.event.label.name == 'pi:ready') || github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 1200
     env:
-      ISSUE: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
+      ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
       REPO: ${{ github.repository }}
-      PI_ISSUE: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
+      PI_ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
       PI_PHASE: implementation
       PI_BASH_TIMEOUT_SECONDS: '1800'
 
@@ -102,7 +110,7 @@ jobs:
 
       - name: Prepare issue task
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.client_payload.issue_number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           ISSUE_JSON="$(curl --fail-with-body -sS \
@@ -315,17 +323,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           API="https://api.github.com/repos/${REPO}"
-          jq -n \
-            --arg event_type "pi_pr_review" \
-            --arg pr_number "${{ steps.pr.outputs.number }}" \
-            '{event_type:$event_type,client_payload:{pr_number:$pr_number}}' |
+          jq -n --arg pr_number "${{ steps.pr.outputs.number }}" '{ref:"dev",inputs:{pr_number:$pr_number}}' |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Content-Type: application/json" \
             --data-binary @- \
-            "${API}/dispatches"
+            "${API}/actions/workflows/pi-pr-review.yml/dispatches"
 
       - name: Mark pull request created
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
