@@ -82,16 +82,18 @@ async function hasLiveReview(prNumber) {
 }
 
 async function trigger(pr, sha, baseSha, statuses, runs) {
-  const currentReview = latestStatus(statuses, reviewContext);
-  if (!currentReview && !(await hasLiveReview(pr.number))) {
-    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
-  }
   const ci = latestCI(runs, sha, pr.head.ref, baseSha);
   if (needsCIDispatch(ci)) {
     await api('/actions/workflows/ci.yml/dispatches', 'POST', {
       ref: 'dev',
       inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), integration_base_sha: baseSha },
     });
+    return;
+  }
+  if (ci.status !== 'completed' || ci.conclusion !== 'success') return;
+  const currentReview = latestStatus(statuses, reviewContext);
+  if (!currentReview && !(await hasLiveReview(pr.number))) {
+    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
   }
 }
 
