@@ -238,7 +238,7 @@ jobs:
             set -o pipefail
             RETRY_RAW="$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
             pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. Deterministic integration CI for exact dev/PR pair ${BASE_SHA}/${HEAD_SHA} has already run; do not rerun pytest or Ruff. Call submit_result exactly once, as your last action, with your verdict and evidence." \
+              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and the exact base commit ${BASE_SHA}. The first review did not produce a usable final verdict. Do not modify files or GitHub state. Deterministic integration CI for exact dev/PR pair ${BASE_SHA}/${HEAD_SHA} has already run; do not rerun pytest or Ruff. Call submit_result exactly once, as your last action, with your verdict and evidence." \
               | tee "$RETRY_RAW" | PI_CALL=retry node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RETRY_RAW")"
           fi
