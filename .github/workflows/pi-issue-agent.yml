@@ -75,7 +75,9 @@ jobs:
           START_REF=origin/dev
           BASE_SHA="$(git rev-parse origin/dev)"
           CHECKPOINT="pi/issue-${ISSUE}-checkpoint"
-          if git ls-remote --exit-code origin "refs/heads/${CHECKPOINT}" >/dev/null; then
+          CHECKPOINT_REMOTE="$(git ls-remote origin "refs/heads/${CHECKPOINT}" | awk '{print $1}')"
+          echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_REMOTE}" >> "$GITHUB_ENV"
+          if [ -n "$CHECKPOINT_REMOTE" ]; then
             git fetch origin "${CHECKPOINT}:refs/remotes/origin/${CHECKPOINT}"
             START_REF="refs/remotes/origin/${CHECKPOINT}"
             BASE_SHA="$(git rev-parse "${START_REF}^")"
@@ -212,7 +214,7 @@ jobs:
           CHECKPOINT_TREE="$(GIT_INDEX_FILE="$CHECKPOINT_INDEX" git write-tree)"
           rm -f "$CHECKPOINT_INDEX"
           CHECKPOINT_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$CHECKPOINT_TREE" -p origin/dev)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_EXPECTED}" origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh from dev and verify integrated code
@@ -285,7 +287,7 @@ jobs:
           fi
           INTEGRATION_TREE="$(git rev-parse HEAD^{tree})"
           INTEGRATION_COMMIT="$(printf 'fix: preserve integration for issue #%s\n' "$ISSUE" | git commit-tree "$INTEGRATION_TREE" -p origin/dev)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "${INTEGRATION_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_EXPECTED}" origin "${INTEGRATION_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
 
       - name: Push verified issue branch
         if: steps.checkpoint.outputs.changed == 'true'
