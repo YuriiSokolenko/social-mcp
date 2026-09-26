@@ -8,10 +8,6 @@ on:
         description: Pull request number associated with this CI run
         required: false
         type: string
-      pr_title:
-        description: Pull request title for the Actions run name
-        required: false
-        type: string
       target_sha:
         description: Exact commit SHA to test using the trusted dev workflow definition
         required: false
