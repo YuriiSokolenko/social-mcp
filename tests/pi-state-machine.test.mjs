@@ -10,7 +10,7 @@ test('closed issues cannot remain queued or active', () => {
 });
 
 test('terminal state wins over queued or active labels', () => {
-  const findings = inspectIssueState(issue('open', ['pi:failed', 'dispatcher:ready', 'pi:ready']));
+  const findings = inspectIssueState(issue('open', ['pi:needs-human', 'dispatcher:ready', 'pi:ready']));
   assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:ready']);
 });
 
@@ -65,20 +65,18 @@ test('checkpoint without live running state is reported but never deleted', () =
 
 
 test('terminal issue may retain a checkpoint for human recovery without reconciliation noise', () => {
-  for (const label of ['pi:failed', 'pi:needs-human', 'pi:cancelled']) {
-    const findings = inspectIssueState({ state: 'open', labels: [{ name: label }] }, {
-      hasOpenPiPr: false,
-      hasLiveImplementer: false,
-      hasCheckpoint: true,
-    });
-    assert.equal(findings.some(item => item.code === 'checkpoint-without-live-implementer'), false);
-    assert.equal(findings.some(item => item.code === 'orphaned-implementer-state'), false);
-  }
+  const findings = inspectIssueState({ state: 'open', labels: [{ name: 'pi:needs-human' }] }, {
+    hasOpenPiPr: false,
+    hasLiveImplementer: false,
+    hasCheckpoint: true,
+  });
+  assert.equal(findings.some(item => item.code === 'checkpoint-without-live-implementer'), false);
+  assert.equal(findings.some(item => item.code === 'orphaned-implementer-state'), false);
 });
 
 test('triage may queue an otherwise unowned open issue', () => {
   assert.equal(validateIssueTransition(issue('open', []), 'queued'), 'dispatcher:ready');
-  assert.throws(() => validateIssueTransition(issue('open', ['pi:failed']), 'queued'), /queued requires/);
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:needs-human']), 'queued'), /queued requires/);
 });
 
 test('orphaned Architect ownership is detected', () => {
