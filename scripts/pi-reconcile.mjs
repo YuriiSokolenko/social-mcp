@@ -52,12 +52,14 @@ async function removeLabel(number, label) {
   }
 }
 
-const [allIssues, prs, runs, refs] = await Promise.all([
+const liveStatuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
+const [allIssues, prs, runGroups, refs] = await Promise.all([
   pages('/issues?state=all'),
   pages('/pulls?state=all'),
-  workflowRunPages('/actions/runs?exclude_pull_requests=true'),
+  Promise.all(liveStatuses.map(status => workflowRunPages(`/actions/runs?exclude_pull_requests=true&status=${status}`))),
   pages('/git/matching-refs/heads/pi/'),
 ]);
+const runs = runGroups.flat();
 const issues = allIssues.filter(item => !item.pull_request);
 const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.ref === 'dev' &&
   pr.head.repo?.full_name === repo).map(pr => Number(pr.head.ref.match(/^pi\/issue-(\d+)$/)?.[1])).filter(Number.isSafeInteger));
@@ -66,7 +68,7 @@ const liveImplementers = new Set();
 const liveReviewers = new Set();
 const liveRepairs = new Set();
 for (const run of runs) {
-  if (!['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(run.status)) continue;
+  if (!liveStatuses.includes(run.status)) continue;
   const implement = /^🤖 Implement #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (run.name === 'Pi Issue Agent' && implement) liveImplementers.add(Number(implement[1]));
   const review = /^🔬 Review PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
