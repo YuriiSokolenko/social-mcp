@@ -69,6 +69,49 @@ export function needsCIDispatch(ci) {
   return !ci;
 }
 
+const reviewNeutralFiles = new Set(['reports/pi-usage.csv']);
+
+export function reviewNeutralChange(files) {
+  return files.length > 0 && files.every(file =>
+    [file.filename, file.previous_filename].filter(Boolean).every(name => reviewNeutralFiles.has(name)));
+}
+
+async function reusableReviewStatus(pr, sha) {
+  const commits = await pages(`/pulls/${pr.number}/commits`);
+  for (let index = commits.length - 2; index >= 0; index--) {
+    const previousSha = commits[index]?.sha;
+    if (!previousSha || previousSha === sha) continue;
+    const previousStatuses = await api(`/commits/${previousSha}/statuses?per_page=100`);
+    if (latestStatus(previousStatuses, reviewContext) !== 'success') continue;
+    const delta = await api(`/compare/${previousSha}...${sha}`);
+    if (delta.status === 'ahead' && reviewNeutralChange(delta.files ?? [])) {
+      return { previousSha, files: delta.files ?? [] };
+    }
+    return null;
+  }
+  return null;
+}
+
+async function carryForwardNeutralReview(pr, sha, statuses) {
+  if (latestStatus(statuses, reviewContext)) return false;
+  const reusable = await reusableReviewStatus(pr, sha);
+  if (!reusable) return false;
+  await api(`/statuses/${sha}`, 'POST', {
+    state: 'success',
+    context: reviewContext,
+    description: `Reused review from ${reusable.previousSha.slice(0, 12)}; telemetry-only change`,
+  });
+  const labels = new Set((pr.labels ?? []).map(label => label.name));
+  labels.delete('review:ready');
+  labels.delete('review:running');
+  labels.delete('review:changes-requested');
+  labels.delete('review:failed');
+  labels.add('review:passed');
+  await api(`/issues/${pr.number}`, 'PATCH', { labels: [...labels] });
+  console.log(`#${pr.number}: reused review from ${reusable.previousSha.slice(0, 12)} for telemetry-only head ${sha.slice(0, 12)}`);
+  return true;
+}
+
 export function shouldDeferBranchUpdate(pr) {
   // review:running: a reviewer is actively reading this exact head; don't move it under them.
   // review:changes-requested: Pi PR Fix was just dispatched for this exact head and may still be
@@ -242,9 +285,11 @@ async function processPR(prSummary) {
 
   const statuses = statusData;
   const runs = ciData.workflow_runs ?? [];
-  await trigger(pr, sha, statuses, runs);
+  await carryForwardNeutralReview(pr, sha, statuses);
+  const effectiveStatuses = await api(`/commits/${sha}/statuses?per_page=100`);
+  await trigger(pr, sha, effectiveStatuses, runs);
   const ci = latestCI(runs, sha, pr.head.ref);
-  const review = latestStatus(statuses, reviewContext);
+  const review = latestStatus(effectiveStatuses, reviewContext);
   if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success' ||
       !pr.labels.some(label => label.name === 'review:passed')) {
     console.log(`#${pr.number}: waiting for CI and SHA-bound review (${sha.slice(0, 12)})`);
