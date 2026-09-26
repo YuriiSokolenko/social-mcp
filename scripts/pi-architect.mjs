@@ -315,7 +315,7 @@ async function publish(issue, jsonl, contextFile) {
 async function main() {
   const [mode, rawIssue, filename, contextFile] = process.argv.slice(2);
   const issue = Number(rawIssue);
-  if (!repo || !token || !['prepare', 'publish'].includes(mode) ||
+  if (!['prepare', 'publish'].includes(mode) ||
       !Number.isSafeInteger(issue) || issue < 1 || !filename ||
       (mode === 'publish' && !contextFile)) {
     throw new Error('usage: pi-architect.mjs {prepare|publish} <issue> <file> [context]');
