@@ -288,15 +288,18 @@ async function publish(issue, jsonl, contextFile) {
   }
   await ensureLabel('architect:epic', '7057ff', 'Parent issue split into linked work items');
   await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
-  await api(`/issues/${issue}/labels`, 'POST', { labels: ['architect:epic'] });
-  for (const number of children) {
-    await api(`/issues/${number}/labels`, 'POST', { labels: ['dispatcher:ready'] });
-  }
   const latestParent = await api(`/issues/${issue}`);
-  const latestLabels = new Set(latestParent.labels.map(label => label.name));
-  if (latestLabels.has('architect:ready')) {
-    const keep = latestParent.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
-    await api(`/issues/${issue}`, 'PATCH', { labels: keep });
+  const latestState = issueStateLabels(latestParent);
+  if (JSON.stringify(latestState) !== JSON.stringify(['architect:ready'])) {
+    throw new Error(`Parent state changed before split publish: [${latestState}]`);
+  }
+  const parentKeep = latestParent.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
+  await api(`/issues/${issue}`, 'PATCH', { labels: [...new Set([...parentKeep, 'architect:epic'])] });
+  for (const number of children) {
+    const child = await api(`/issues/${number}`);
+    if (issueStateLabels(child).length) throw new Error(`Child #${number} acquired pipeline state before dispatch`);
+    const keep = child.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
+    await api(`/issues/${number}`, 'PATCH', { labels: [...new Set([...keep, 'dispatcher:ready'])] });
   }
   await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
   console.log(`Split #${issue} into ${children.map(n => `#${n}`).join(', ')}`);
