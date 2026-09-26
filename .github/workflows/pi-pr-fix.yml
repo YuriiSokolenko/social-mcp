@@ -111,9 +111,10 @@ jobs:
           cd "$JOB_DIR"
           git config user.name "social-mcp-pi"
           git config user.email "social-mcp-pi@users.noreply.github.com"
-          git fetch origin dev
+          git fetch origin "$BASE_SHA"
+          test "$(git rev-parse "$BASE_SHA")" = "$BASE_SHA"
           set +e
-          GIT_EDITOR=true git rebase origin/dev
+          GIT_EDITOR=true git rebase "$BASE_SHA"
           status=$?
           set -e
           if [ "$status" -eq 0 ]; then
@@ -245,8 +246,8 @@ jobs:
             exit 1
           fi
           if [ "$REASON" = "conflict" ]; then
-            git merge-base --is-ancestor origin/dev HEAD
-            git diff --check origin/dev...HEAD
+            git merge-base --is-ancestor $BASE_SHA HEAD
+            git diff --check $BASE_SHA...HEAD
           else
             git diff --check
           fi
@@ -281,7 +282,7 @@ jobs:
           [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
           if [ "$REASON" = "conflict" ]; then
             git fetch origin dev
-            git merge-base --is-ancestor origin/dev HEAD || {
+            git merge-base --is-ancestor $BASE_SHA HEAD || {
               echo "dev moved again during conflict resolution; Merge Gate will retry against the new dev" >&2
             }
           fi
