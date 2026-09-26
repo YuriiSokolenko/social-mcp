@@ -40,3 +40,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-auto-merge.mjs
+
+      - name: Summarize active Pi issues
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for issue in $(node scripts/pi-active-issues.mjs); do
+            node scripts/pi-issue-summary.mjs "$issue"
+          done
