@@ -96,7 +96,7 @@ jobs:
           echo "needed=true" >> "$GITHUB_OUTPUT"
 
       - name: Load review feedback
-        if: env.REASON == 'review'
+        if: steps.metadata.outputs.needed == 'true' && env.REASON == 'review'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -253,6 +253,7 @@ jobs:
           printf '\n'
 
       - name: Verify repair
+        if: steps.metadata.outputs.needed == 'true'
         run: |
           cd "$JOB_DIR"
           if git grep -Il '^<<<<<<< ' -- . > /dev/null 2>&1; then
@@ -273,6 +274,7 @@ jobs:
           ruff check .
 
       - name: Commit and push repair
+        if: steps.metadata.outputs.needed == 'true'
         id: changes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -313,7 +315,7 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Wake merge gate after published repair
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.metadata.outputs.needed == 'true' && steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -328,14 +330,14 @@ jobs:
             }
 
       - name: Mark no-change review repair terminal
-        if: steps.changes.outputs.changed == 'false' && env.REASON == 'review'
+        if: steps.metadata.outputs.needed == 'true' && steps.changes.outputs.changed == 'false' && env.REASON == 'review'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair completed without producing a repository change. Human attention is required. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Report review repair failure
-        if: failure() && steps.changes.outputs.changed != 'true' && env.REASON == 'review'
+        if: failure() && steps.metadata.outputs.needed == 'true' && steps.changes.outputs.changed != 'true' && env.REASON == 'review'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
