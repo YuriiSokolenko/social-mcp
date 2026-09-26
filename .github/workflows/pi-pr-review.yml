@@ -1,9 +1,7 @@
 name: Pi PR Review
-run-name: "🔬 Review PR #${{ github.event.pull_request.number || inputs.pr_number }}"
+run-name: "🔬 Review PR #${{ inputs.pr_number }}"
 
 on:
-  pull_request:
-    types: [reopened, closed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -17,12 +15,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  group: pi-pr-review-${{ inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
-    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'workflow_dispatch' || github.event.action == 'reopened')
+    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
     permissions:
@@ -32,7 +30,7 @@ jobs:
       statuses: write
       actions: write
     env:
-      PR: ${{ github.event.pull_request.number || inputs.pr_number }}
+      PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
       PI_BASH_TIMEOUT_SECONDS: '600'
