@@ -18,3 +18,11 @@ test('CI workflow avoids approval-gated pull_request runs for bot-authored Pi PR
   assert.match(workflow, /^\s*workflow_dispatch:/m);
   assert.match(workflow, /inputs\.target_sha \|\| github\.sha/);
 });
+
+
+test('Pi PR Review has a single explicit-dispatch trigger', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.doesNotMatch(workflow, /^\s*pull_request:/m);
+  assert.match(workflow, /^\s*workflow_dispatch:/m);
+  assert.doesNotMatch(workflow, /github\.event\.pull_request/);
+});
