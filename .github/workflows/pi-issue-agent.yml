@@ -185,7 +185,13 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "HEAD:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          # GitHub App installation tokens cannot create/update workflow files.
+          # Push only the issue delta on top of the remote dev tip so workflow
+          # changes already present on dev are not introduced by this branch push.
+          git fetch origin dev
+          ISSUE_TREE="$(git rev-parse HEAD^{tree})"
+          CHECKPOINT_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$ISSUE_TREE" -p origin/dev)"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh from dev and verify integrated code
