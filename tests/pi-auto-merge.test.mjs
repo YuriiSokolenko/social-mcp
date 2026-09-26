@@ -33,19 +33,16 @@ test('Pi cannot change the workflow definitions used for its own checks', () => 
   assert.equal(allowedFiles([{ filename: 'app/server.py' }], 2), false);
 });
 
-test('auto-merge guards reviewer dispatch against an already-live review', () => {
+test('pair-bound pending review status deduplicates reviewer dispatch', () => {
   const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.match(source, /async function hasLiveReview\(prNumber\)/);
-  assert.match(source, /await hasLiveReview\(pr\.number\)/);
-  assert.match(source, /Review PR/);
+  assert.match(source, /state: 'pending'.*social-mcp\/pi-review/s);
+  assert.doesNotMatch(source, /hasLiveReview|Review PR/);
 });
-
 
 test('merge gate does not use review labels or repair checkpoints for correctness', () => {
   const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.doesNotMatch(source, /review:passed|review:changes-requested|review:running/);
   assert.doesNotMatch(source, /hasRepairCheckpoint|repairCheckpoint/);
-  assert.match(source, /currentReview === 'failure'/);
   assert.match(source, /review !== 'success'/);
 });
 
