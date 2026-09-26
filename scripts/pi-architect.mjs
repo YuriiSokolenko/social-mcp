@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readQueueContext } from './pi-queue-context.mjs';
+import { replaceIssueState } from './pi-github-state.mjs';
 import { ISSUE_ACTIVE, ISSUE_STATE_LABELS, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-state-machine.mjs';
 import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
 
