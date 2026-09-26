@@ -64,6 +64,10 @@ async function processPR(prSummary) {
   const conflict = latestStatus(statuses, `social-mcp/integration-conflict/${base.object.sha.slice(0, 12)}`);
   const conflictRepair = latestStatus(statuses, `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`);
   if (conflict === 'failure') {
+    if (conflictRepair === 'error' || conflictRepair === 'failure') {
+      console.log(`#${pr.number}: conflict repair requires human attention`);
+      return;
+    }
     if (!conflictRepair) {
       await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`, description: 'Conflict repair dispatched' });
       await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
@@ -73,6 +77,10 @@ async function processPR(prSummary) {
   }
   const integrationRepair = latestStatus(statuses, `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`);
   if (integration === 'failure') {
+    if (integrationRepair === 'error' || integrationRepair === 'failure') {
+      console.log(`#${pr.number}: integration repair requires human attention`);
+      return;
+    }
     if (!integrationRepair) {
       await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`, description: 'Integration repair dispatched' });
       await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'integration' } });
@@ -83,6 +91,10 @@ async function processPR(prSummary) {
   const review = latestStatus(statuses, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
   const reviewRepair = latestStatus(statuses, `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`);
   if (review === 'failure') {
+    if (reviewRepair === 'error' || reviewRepair === 'failure') {
+      console.log(`#${pr.number}: review repair requires human attention`);
+      return;
+    }
     if (!reviewRepair) {
       await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`, description: 'Review repair dispatched' });
       await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' } });
