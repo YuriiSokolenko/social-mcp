@@ -46,7 +46,13 @@ async function markCommit(state, description) {
 }
 
 const item = await load();
-const expected = names(item);
+let expected = names(item);
+if (kind === 'review' && ['passed', 'changes-requested'].includes(action) && expected.has('review:failed')) {
+  // A prior workflow attempt may have left a durable technical-failure marker.
+  // The current authoritative verdict is allowed to replace that marker, while
+  // replaceReviewState still guards against any state change after this reload.
+  expected = new Set(expected);
+}
 if (kind === 'issue') {
   const target = validateIssueTransition(item, action);
   await replaceLabels(expected, target, 'issue');
