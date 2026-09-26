@@ -134,3 +134,14 @@ test('merge gate uses shared GitHub client and no Actions-run liveness state', (
   assert.match(source, /githubClient/);
   assert.doesNotMatch(source, /api\.github\.com|workflow_runs|display_title|hasLive/);
 });
+
+
+test('failed integration dispatches integration repair instead of stopping', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(gate, /integration === 'failure'/);
+  assert.match(gate, /reason: 'integration'/);
+  assert.match(gate, /social-mcp\/repair-integration/);
+  assert.match(repair, /- integration/);
+  assert.match(repair, /pi-transition\.mjs" issue needs-human/);
+});
