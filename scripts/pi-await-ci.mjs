@@ -13,10 +13,11 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(`GitHub ${response.status} ${path}: ${await response.text()}`);
   return response.status === 204 ? null : response.json();
 }
+const dispatchIdentity = `target:${sha} ref:${branch}`;
 function matching(runs) {
   return (runs.workflow_runs ?? []).filter(run =>
     (run.head_sha === sha && run.head_branch === branch && run.event === 'push') ||
-    (run.event === 'workflow_dispatch' && run.display_title?.includes(sha.slice(0, 12)))
+    (run.event === 'workflow_dispatch' && run.display_title === `🧪 CI · ${dispatchIdentity}`)
   ).sort((a,b) => b.id-a.id)[0] ?? null;
 }
 let data = await api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100');
