@@ -341,6 +341,14 @@ jobs:
             echo "Review is stale; not marking the current PR as failed"
             exit 0
           fi
+          CURRENT_LABELS="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls/${PR}" | jq -r '[.labels[].name] | join(" ")')"
+          if [[ " $CURRENT_LABELS " == *" review:changes-requested "* || " $CURRENT_LABELS " == *" review:passed "* ]]; then
+            echo "Review already reached durable final state; preserving it despite a later workflow failure"
+            exit 0
+          fi
           bash scripts/pi-pr-review-status.sh failed \
             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
