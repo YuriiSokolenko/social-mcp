@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ inputs.target_sha || github.sha }}-${{ inputs.integration_base_sha || 'direct' }}
@@ -55,7 +56,25 @@ jobs:
           test "$(git rev-parse HEAD)" = "$BASE_SHA"
           git config user.name "social-mcp-ci"
           git config user.email "social-mcp-ci@users.noreply.github.com"
+          set +e
           git merge --no-ff --no-edit "$TARGET_SHA"
+          merge_status=$?
+          set -e
+          if [ "$merge_status" -ne 0 ]; then
+            curl --fail-with-body -sS -X POST \
+              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              --data "$(jq -nc --arg context "social-mcp/integration-conflict/${BASE_SHA:0:12}" '{state:"failure",context:$context,description:"Exact dev+PR integration has merge conflicts"}')" \
+              "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
+            exit "$merge_status"
+          fi
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -nc --arg context "social-mcp/integration-conflict/${BASE_SHA:0:12}" '{state:"success",context:$context,description:"Exact dev+PR integration merges cleanly"}')" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
           echo "Tested integration: base=$BASE_SHA head=$TARGET_SHA result=$(git rev-parse HEAD)"
 
       - name: Set up Python
