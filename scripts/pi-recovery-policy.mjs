@@ -4,11 +4,6 @@ export function recoveryForIssue(issue, { hasCheckpoint = false, hasOpenPiPr = f
   if (hasOpenPiPr) return { add: 'pi:mr-created', dispatch: null, reason: 'open implementation PR exists' };
   return { add: 'pi:ready', dispatch: 'implementer', reason: hasCheckpoint ? 'resume saved checkpoint' : 'restart implementation' };
 }
-export function recoveryForPr(pr) {
-  const labels = new Set((pr.labels ?? []).map(x => typeof x === 'string' ? x : x.name));
-  if (pr.state !== 'open' || !labels.has('review:running')) return null;
-  return { add: 'review:ready', dispatch: 'reviewer', reason: 'restart semantic review for current PR head' };
-}
 export function checkpointGcDecision(issue, { hasOpenPiPr = false } = {}) {
   if (!issue) return { remove: false, reason: 'issue missing' };
   if (hasOpenPiPr) return { remove: false, reason: 'implementation PR still open' };
