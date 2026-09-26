@@ -14,20 +14,28 @@ async function api(path, options = {}) {
   return response.status === 204 ? null : response.json();
 }
 function matching(runs) {
-  return (runs.workflow_runs ?? []).filter(run => run.head_sha === sha && run.head_branch === branch &&
-    ['push','workflow_dispatch'].includes(run.event)).sort((a,b) => b.id-a.id)[0] ?? null;
+  return (runs.workflow_runs ?? []).filter(run =>
+    (run.head_sha === sha && run.head_branch === branch && run.event === 'push') ||
+    (run.event === 'workflow_dispatch' && run.display_title?.includes(sha.slice(0, 12)))
+  ).sort((a,b) => b.id-a.id)[0] ?? null;
 }
-let data = await api(`/actions/workflows/ci.yml/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`);
+let data = await api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100');
+if (!matching(data)) {
+  const pushData = await api(`/actions/workflows/ci.yml/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`);
+  data.workflow_runs = [...(data.workflow_runs ?? []), ...(pushData.workflow_runs ?? [])];
+}
 let run = matching(data);
 if (!run) {
-  await api('/actions/workflows/ci.yml/dispatches', { method:'POST', body: JSON.stringify({ ref: branch }) });
-  console.log(`CI dispatched for ${branch} @ ${sha.slice(0,12)}`);
+  await api('/actions/workflows/ci.yml/dispatches', { method:'POST', body: JSON.stringify({
+    ref: 'dev', inputs: { target_sha: sha, target_ref: branch, pr_title: `${branch} @ ${sha.slice(0,12)}` },
+  }) });
+  console.error(`CI dispatched from dev for ${branch} @ ${sha.slice(0,12)}`);
 }
 const deadline = Date.now() + Number(process.env.PI_CI_WAIT_MS ?? 20 * 60 * 1000);
 while (Date.now() < deadline) {
   if (!run) {
     await new Promise(resolve => setTimeout(resolve, 5000));
-    data = await api(`/actions/workflows/ci.yml/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`);
+    data = await api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100');
     run = matching(data);
     continue;
   }
@@ -36,7 +44,7 @@ while (Date.now() < deadline) {
     process.exit(run.conclusion === 'success' ? 0 : 3);
   }
   await new Promise(resolve => setTimeout(resolve, 10000));
-  data = await api(`/actions/workflows/ci.yml/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`);
+  data = await api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100');
   run = matching(data);
 }
 throw new Error(`Timed out waiting for CI on ${sha}`);
