@@ -175,6 +175,16 @@ async function processPR(prSummary) {
   }
 
   const sha = pr.head.sha;
+  const prLabels = new Set((pr.labels ?? []).map(label => label.name));
+  const [repairLive, repairCheckpoint] = await Promise.all([
+    hasLiveRepair(pr.number),
+    hasRepairCheckpoint(pr.number),
+  ]);
+  if (!repairLive && (prLabels.has('review:changes-requested') || repairCheckpoint)) {
+    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), reason: 'review' } });
+    console.log(`#${pr.number}: dispatched/resumed Pi review repair`);
+    return;
+  }
   const [base, comparison, statusData, ciData] = await Promise.all([
     api('/git/ref/heads/dev'),
     api(`/compare/dev...${sha}`),
@@ -187,10 +197,6 @@ async function processPR(prSummary) {
       return;
     }
     if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
-      const [repairLive, repairCheckpoint] = await Promise.all([
-        hasLiveRepair(pr.number),
-        hasRepairCheckpoint(pr.number),
-      ]);
       if (repairLive || repairCheckpoint) {
         console.log(`#${pr.number}: merge conflict; repair is already active or has a saved checkpoint`);
         return;
