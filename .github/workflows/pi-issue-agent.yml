@@ -274,7 +274,6 @@ jobs:
         id: pr
         if: steps.checkpoint.outputs.changed == 'true'
         env:
-          ISSUE_TITLE: ${{ github.event.issue.title }}
           OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
