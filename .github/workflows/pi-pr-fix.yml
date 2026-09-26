@@ -42,7 +42,8 @@ jobs:
       REASON: ${{ inputs.reason || 'review' }}
       PI_PHASE: repair
       PI_BASH_TIMEOUT_SECONDS: '1200'
-      PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS: '900'
+      PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS: '3600'
+      PI_REPAIR_MODEL_IDLE_TIMEOUT_SECONDS: '300'
       PI_REPAIR_STALL_TIMEOUT_SECONDS: '1800'
       PI_REPAIR_WATCHDOG_POLL_SECONDS: '30'
     steps:
@@ -169,21 +170,32 @@ jobs:
                 last_progress_at="$now"
               fi
 
+              active_tool_started_at="$(jq -rs '[.[] | select(.kind == "tool_start")] | last | .at // 0' "$activity_file")"
+              active_tool_ended_at="$(jq -rs '[.[] | select(.kind == "tool_end")] | last | .at // 0' "$activity_file")"
+              last_model_delta_at="$(jq -rs '[.[] | select(.kind == "model_delta")] | last | .at // 0' "$activity_file")"
+              model_is_live=false
+              if [ "$last_model_delta_at" -gt 0 ] && [ $((now * 1000 - last_model_delta_at)) -lt $((PI_REPAIR_MODEL_IDLE_TIMEOUT_SECONDS * 1000)) ]; then
+                model_is_live=true
+              fi
+              tool_is_active=false
+              if [ "$active_tool_started_at" -gt "$active_tool_ended_at" ]; then
+                tool_is_active=true
+              fi
+
               if [ "$signature" = "$initial_signature" ] && [ $((now - started_at)) -ge "$PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS" ]; then
-                printf 'Repair agent made no worktree change within %ss; stopping likely research/tool loop.\n' "$PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS" > "$watchdog_reason_file"
+                if [ "$model_is_live" = true ] || [ "$tool_is_active" = true ]; then
+                  continue
+                fi
+                printf 'Repair agent made no worktree change within %ss and has no live model/tool activity; stopping likely research loop.\n' "$PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS" > "$watchdog_reason_file"
                 kill -TERM "$PPID" 2>/dev/null || true
                 exit 0
               fi
 
               if [ "$signature" != "$initial_signature" ] && [ $((now - last_progress_at)) -ge "$PI_REPAIR_STALL_TIMEOUT_SECONDS" ]; then
-                active_tool_started_at="$(jq -rs '[.[] | select(.kind == "tool_start")] | last | .at // 0' "$activity_file")"
-                active_tool_ended_at="$(jq -rs '[.[] | select(.kind == "tool_end")] | last | .at // 0' "$activity_file")"
-                if [ "$active_tool_started_at" -gt "$active_tool_ended_at" ]; then
-                  # A Pi tool is still running. Its own timeout policy is authoritative;
-                  # do not mistake a long pytest/Ruff/bash command for model stagnation.
+                if [ "$model_is_live" = true ] || [ "$tool_is_active" = true ]; then
                   continue
                 fi
-                printf 'Repair worktree stopped changing for %ss with no active tool; stopping stalled agent.\n' "$PI_REPAIR_STALL_TIMEOUT_SECONDS" > "$watchdog_reason_file"
+                printf 'Repair worktree stopped changing for %ss with no live model/tool activity; stopping stalled agent.\n' "$PI_REPAIR_STALL_TIMEOUT_SECONDS" > "$watchdog_reason_file"
                 kill -TERM "$PPID" 2>/dev/null || true
                 exit 0
               fi
