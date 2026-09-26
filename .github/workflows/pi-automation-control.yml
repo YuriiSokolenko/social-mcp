@@ -1,5 +1,5 @@
 name: Pi Automation Control
-run-name: '⚙️ Automation · ${{ inputs.mode }}'
+run-name: "⚙️ Automation · ${{ inputs.mode }}"
 
 on:
   workflow_dispatch:
