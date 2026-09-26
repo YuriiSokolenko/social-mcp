@@ -155,6 +155,8 @@ jobs:
           started_at="$(date +%s)"
           last_progress_at="$started_at"
           watchdog_reason_file="$RUNNER_TEMP/pi-repair-watchdog-reason.txt"
+          activity_file="$RUNNER_TEMP/pi-repair-activity.jsonl"
+          : > "$activity_file"
           rm -f "$watchdog_reason_file"
 
           (
@@ -174,7 +176,14 @@ jobs:
               fi
 
               if [ "$signature" != "$initial_signature" ] && [ $((now - last_progress_at)) -ge "$PI_REPAIR_STALL_TIMEOUT_SECONDS" ]; then
-                printf 'Repair worktree stopped changing for %ss; stopping stalled agent.\n' "$PI_REPAIR_STALL_TIMEOUT_SECONDS" > "$watchdog_reason_file"
+                active_tool_started_at="$(jq -rs '[.[] | select(.kind == "tool_start")] | last | .at // 0' "$activity_file")"
+                active_tool_ended_at="$(jq -rs '[.[] | select(.kind == "tool_end")] | last | .at // 0' "$activity_file")"
+                if [ "$active_tool_started_at" -gt "$active_tool_ended_at" ]; then
+                  # A Pi tool is still running. Its own timeout policy is authoritative;
+                  # do not mistake a long pytest/Ruff/bash command for model stagnation.
+                  continue
+                fi
+                printf 'Repair worktree stopped changing for %ss with no active tool; stopping stalled agent.\n' "$PI_REPAIR_STALL_TIMEOUT_SECONDS" > "$watchdog_reason_file"
                 kill -TERM "$PPID" 2>/dev/null || true
                 exit 0
               fi
@@ -183,7 +192,7 @@ jobs:
           watchdog_pid=$!
 
           set +e
-          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+          PI_ACTIVITY_FILE="$activity_file" pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
             "Read and follow agents/repair/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. Address the blocking reviewer feedback below in the existing working tree. Do not commit, push, or modify GitHub state yourself.
 
           Reviewer feedback:
