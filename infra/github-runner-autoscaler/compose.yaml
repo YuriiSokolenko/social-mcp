@@ -13,7 +13,7 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-10}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}
       RUNNER_PREFIX: ${RUNNER_PREFIX:-n150-pi-eph}
-      WORKFLOW_FILES: ${WORKFLOW_FILES:-pi-issue-agent.yml,pi-pr-review.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}
+      WORKFLOW_FILES: ${WORKFLOW_FILES:-pi-issue-agent.yml,pi-pr-review.yml,pi-pr-fix.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}
       MODEL_STATUS_URL: ${MODEL_STATUS_URL:-}
       PI_CONFIG_DIR: ${PI_HOME_HOST}/.pi/agent
       CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
