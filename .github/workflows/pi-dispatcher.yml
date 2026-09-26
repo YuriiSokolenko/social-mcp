@@ -1,9 +1,7 @@
 name: Pi Dispatcher
-run-name: "🚦 Dispatcher · ${{ github.event_name == 'pull_request' && format('merged PR #{0}', github.event.pull_request.number) || 'queue scan' }}"
+run-name: "🚦 Dispatcher · queue scan"
 
 on:
-  pull_request:
-    types: [closed]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +16,7 @@ concurrency:
 
 jobs:
   dispatcher:
-    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'dev'))
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING'
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
     env:
@@ -31,6 +29,9 @@ jobs:
         with:
           ref: dev
           persist-credentials: false
+
+      - name: Initialize Pi usage
+        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl" >> "$GITHUB_ENV"
 
       - name: Prepare dispatcher context
         id: prepare
@@ -65,7 +66,7 @@ jobs:
             --no-session \
             "$(cat "$TASK_FILE")" \
           | tee "$RUNNER_TEMP/pi-dispatcher-result.jsonl" \
-          | node scripts/pi-log-filter.mjs
+          | PI_CALL=main node scripts/pi-log-filter.mjs
 
       - name: Validate and start selected issues
         if: steps.prepare.outputs.run == 'true'
