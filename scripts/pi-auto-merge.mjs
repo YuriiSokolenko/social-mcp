@@ -180,17 +180,18 @@ async function processPR(prSummary) {
     hasLiveRepair(pr.number),
     hasRepairCheckpoint(pr.number),
   ]);
-  if (!repairLive && (prLabels.has('review:changes-requested') || repairCheckpoint)) {
-    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), reason: 'review' } });
-    console.log(`#${pr.number}: dispatched/resumed Pi review repair`);
-    return;
-  }
   const [base, comparison, statusData, ciData] = await Promise.all([
     api('/git/ref/heads/dev'),
     api(`/compare/dev...${sha}`),
     api(`/commits/${sha}/statuses?per_page=100`),
     api(`/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`),
   ]);
+  if (!repairLive && (prLabels.has('review:changes-requested') || repairCheckpoint)) {
+    const reason = pr.mergeable === false && pr.mergeable_state === 'dirty' ? 'conflict' : 'review';
+    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), reason } });
+    console.log(`#${pr.number}: dispatched/resumed Pi ${reason} repair`);
+    return;
+  }
   if (comparison.behind_by > 0) {
     if (shouldDeferBranchUpdate(pr)) {
       console.log(`#${pr.number}: dev moved during review; waiting for the review to finish before updating the branch`);
