@@ -110,3 +110,8 @@ test('queued transition cannot steal PR ownership', () => {
 test('needs-human transition is idempotent for non-PR terminal issues', () => {
   assert.equal(validateIssueTransition(issue('open', ['pi:needs-human']), 'needs-human'), 'pi:needs-human');
 });
+
+
+test('queued transition cannot steal a live implementer state', () => {
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:running']), 'queued'), /queued requires/);
+});
