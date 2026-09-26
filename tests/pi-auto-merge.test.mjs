@@ -162,3 +162,10 @@ test('dispatch reservation errors are retryable while completed repair failures 
   assert.match(source, /integrationRepair === 'failure'/);
   assert.doesNotMatch(source, /integrationRepair === 'error' \|\| integrationRepair === 'failure'/);
 });
+
+
+test('unsafe control-plane PRs leave an explicit human-attention comment without stealing PR ownership', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(source, /Human review is required/);
+  assert.match(source, /PR ownership remains pi:mr-created/);
+});
