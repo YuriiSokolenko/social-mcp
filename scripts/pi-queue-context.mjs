@@ -23,8 +23,8 @@ export function summarizeQueue(issues, prs, runs, repo) {
     const phase = phases.get(filename);
     if (!phase || !statuses.includes(run.status)) return [];
     const title = run.display_title ?? '';
-    const task = /^(?:🤖 Implement|🏗 Architect) #([1-9]\d+)\b/.exec(title);
-    const review = /^(?:🔬 Review|🔧 Repair) PR #([1-9]\d+)\b/.exec(title);
+    const task = /^(?:🤖 Implement|🏗 Architect) #([1-9]\d+)(?:\s|·|$)/u.exec(title);
+    const review = /^(?:🔬 Review|🔧 Repair) PR #([1-9]\d+)(?:\s|·|$)/u.exec(title);
     const pr = review ? prByNumber.get(Number(review[1])) : null;
     return [{ id: run.id, phase, status: run.status,
       issue: task ? Number(task[1]) : pr?.issue ?? null,
