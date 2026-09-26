@@ -37,7 +37,7 @@ export const REVIEW_LABELS = new Set([
 
 const names = issue => new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
 
-export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplementer = undefined, hasCheckpoint = false } = {}) {
+export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplementer = undefined, hasLiveArchitect = undefined, hasCheckpoint = false } = {}) {
   const labels = names(issue);
   const findings = [];
   const active = [...ISSUE_ACTIVE].filter(label => labels.has(label));
@@ -73,6 +73,10 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
   if (issue.state === 'open' && labels.has(PIPELINE_LABELS.running) && hasLiveImplementer === false) {
     findings.push({ code: 'orphaned-implementer-state', severity: 'repair',
       remove: [PIPELINE_LABELS.running], checkpoint: hasCheckpoint });
+  }
+  if (issue.state === 'open' && labels.has(PIPELINE_LABELS.architectReady) && hasLiveArchitect === false) {
+    findings.push({ code: 'orphaned-architect-state', severity: 'repair',
+      remove: [PIPELINE_LABELS.architectReady] });
   }
   if (hasCheckpoint && issue.state === 'open' && !labels.has(PIPELINE_LABELS.running) && terminal.length === 0) {
     findings.push({ code: 'checkpoint-without-live-implementer', severity: 'warning' });
