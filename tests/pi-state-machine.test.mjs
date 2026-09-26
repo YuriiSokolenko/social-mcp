@@ -100,3 +100,14 @@ test('triage may queue an otherwise unowned open issue', () => {
   assert.equal(validateIssueTransition(issue('open', []), 'queued'), 'dispatcher:ready');
   assert.throws(() => validateIssueTransition(issue('open', ['pi:failed']), 'queued'), /queued requires/);
 });
+
+test('orphaned Architect ownership is detected', () => {
+  const findings = inspectIssueState(issue('open', ['architect:ready']), { hasLiveArchitect: false });
+  assert.deepEqual(safeRemovals(findings), ['architect:ready']);
+  assert.equal(findings.some(item => item.code === 'orphaned-architect-state'), true);
+});
+
+test('live Architect keeps ownership', () => {
+  const findings = inspectIssueState(issue('open', ['architect:ready']), { hasLiveArchitect: true });
+  assert.equal(findings.some(item => item.code === 'orphaned-architect-state'), false);
+});
