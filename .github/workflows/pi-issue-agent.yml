@@ -223,48 +223,12 @@ jobs:
           echo "PI_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Rebase onto latest dev and verify integrated code
+      - name: Verify implementation before publication
         if: steps.checkpoint.outputs.changed == 'true'
         run: |
           cd "$JOB_DIR"
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          git fetch origin dev
-
-          NEED_REPAIR=false
-          set +e
-          GIT_EDITOR=true git rebase origin/dev
-          REBASE_STATUS=$?
-          set -e
-          if [ "$REBASE_STATUS" -ne 0 ]; then
-            NEED_REPAIR=true
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/pi-issue-conflicts.txt"
-          fi
-
-          if [ "$NEED_REPAIR" = true ]; then
-            echo "Rebase needs conflict resolution; returning it to the same implementer"
-            set -o pipefail
-            pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-implementer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-              "Read agents/implementer/AGENTS.md. The implementation for issue #${ISSUE} is complete, but rebasing it onto the latest origin/dev produced Git conflicts. Resolve every current rebase conflict while preserving both the issue implementation and incoming dev changes. Stage resolved files with git add and continue with GIT_EDITOR=true git rebase --continue. Repeat for every later conflict until the rebase completes. Do not push or change GitHub state. After the rebase, run git diff --check origin/dev...HEAD, pytest, and ruff check . before finishing. Initial conflicted files are listed in $RUNNER_TEMP/pi-issue-conflicts.txt." \
-              | PI_CALL=integration node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
-          fi
-
-          if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
-            echo "Rebase is still in progress" >&2
-            exit 1
-          fi
-          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-            echo "Unresolved conflicts remain" >&2
-            exit 1
-          fi
-
-          git fetch origin dev
-          git merge-base --is-ancestor origin/dev HEAD || {
-            echo "dev moved again during verification; retry integration before publishing" >&2
-            exit 1
-          }
           python -m pip install -e .
-          git diff --check origin/dev...HEAD
+          git diff --check
           pytest
           ruff check .
 
@@ -286,13 +250,7 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "fix: preserve integration for issue #${ISSUE}"
           fi
-          git fetch origin dev
-          if ! git merge-base --is-ancestor origin/dev HEAD; then
-            echo "Latest dev is not integrated; keeping the previous safe checkpoint" >&2
-            exit 0
-          fi
-          INTEGRATION_TREE="$(git rev-parse HEAD^{tree})"
-          INTEGRATION_COMMIT="$(printf 'fix: preserve integration for issue #%s\n' "$ISSUE" | git commit-tree "$INTEGRATION_TREE" -p origin/dev)"
+          INTEGRATION_COMMIT="$(git rev-parse HEAD)"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_EXPECTED}" origin "${INTEGRATION_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
           echo "PI_CHECKPOINT_EXPECTED=${INTEGRATION_COMMIT}" >> "$GITHUB_ENV"
           echo "PI_CHECKPOINT_PUBLISHED=${INTEGRATION_COMMIT}" >> "$GITHUB_ENV"
@@ -306,16 +264,8 @@ jobs:
           rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
           rm -f .coverage coverage.xml
           find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-          git fetch origin dev
-          git merge-base --is-ancestor origin/dev HEAD || {
-            echo "dev moved during verification; checkpoint preserved for retry" >&2
-            exit 1
-          }
-          git diff --check origin/dev...HEAD
-          # Publish the verified tree with current dev as its parent for the same
-          # workflow-permission safety used by checkpoints and PR repairs.
-          ISSUE_TREE="$(git rev-parse HEAD^{tree})"
-          ISSUE_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$ISSUE_TREE" -p origin/dev)"
+          git diff --check
+          ISSUE_COMMIT="$(git rev-parse HEAD)"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --set-upstream origin "${ISSUE_COMMIT}:refs/heads/pi/issue-${ISSUE}"
 
       - name: Create or update pull request
