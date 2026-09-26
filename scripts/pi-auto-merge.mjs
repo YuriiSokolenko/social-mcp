@@ -198,10 +198,11 @@ async function processPR(prSummary) {
   const runs = ciData.workflow_runs ?? [];
   await trigger(pr, sha, base.object.sha, statuses, runs);
   const ci = latestCI(runs, sha, pr.head.ref, base.object.sha);
-  if (ci?.status === 'completed' && ci.conclusion === 'failure') {
+  const conflict = latestStatus(statuses, `social-mcp/integration-conflict/${base.object.sha.slice(0, 12)}`);
+  if (conflict === 'failure') {
     if (!repairLive) {
       await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
-      console.log(`#${pr.number}: exact integration failed; dispatched conflict/integration repair`);
+      console.log(`#${pr.number}: exact integration has a merge conflict; dispatched conflict repair`);
     }
     return;
   }
