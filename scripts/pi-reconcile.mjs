@@ -94,6 +94,7 @@ const repairCheckpointRefs = new Map(refs.map(ref => {
 }).filter(Boolean));
 
 const report = [];
+let mergeGateWakeNeeded = false;
 for (const issue of issues) {
   const findings = inspectIssueState(issue, {
     hasOpenPiPr: openPiPrIssues.has(issue.number),
@@ -102,7 +103,8 @@ for (const issue of issues) {
   });
   const issueLabels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   const retryReadyImplementer = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:ready') && !liveImplementers.has(issue.number);
-  if (!findings.length && !retryReadyImplementer) continue;
+  const retryMergeGateForPr = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:mr-created') && openPiPrIssues.has(issue.number);
+  if (!findings.length && !retryReadyImplementer && !retryMergeGateForPr) continue;
   const removals = safeRemovals(findings);
   let recovery = null;
   if (apply) {
@@ -118,6 +120,7 @@ for (const issue of issues) {
       }
     }
   }
+  if (retryMergeGateForPr) mergeGateWakeNeeded = true;
   if (retryReadyImplementer && !recovery) {
     const dispatched = await tryDispatchWorkflow('pi-dispatcher.yml', {}, `ready issue #${issue.number}`);
     recovery = { add: 'pi:ready', dispatch: dispatched ? 'dispatcher' : null, reason: dispatched ? 'wake serialized dispatcher for ready implementation' : 'dispatcher wake failed; pi:ready retained for retry' };
@@ -137,7 +140,9 @@ for (const pr of prs) {
   const findings = inspectPrState(pr, { hasLiveReviewer: liveReviewers.has(pr.number) });
   const prLabels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   const retryReadyReviewer = apply && recoveryDispatchAllowed && pr.state === 'open' && prLabels.has('review:ready') && !liveReviewers.has(pr.number);
-  if (!findings.length && !retryReadyReviewer) continue;
+  const retryRepair = apply && recoveryDispatchAllowed && pr.state === 'open' && prLabels.has('review:changes-requested') && !liveRepairs.has(pr.number) && !repairCheckpoint;
+  const retryMergeGateForPassed = apply && recoveryDispatchAllowed && pr.state === 'open' && prLabels.has('review:passed');
+  if (!findings.length && !retryReadyReviewer && !retryRepair && !retryMergeGateForPassed) continue;
   const removals = safeRemovals(findings);
   let recovery = null;
   if (apply) {
@@ -153,11 +158,20 @@ for (const pr of prs) {
       }
     }
   }
+  if (retryRepair && !recovery) {
+    const dispatched = await tryDispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), reason: 'review' }, `changes-requested PR #${pr.number}`);
+    recovery = { add: null, dispatch: dispatched ? 'repair' : null, reason: dispatched ? 'resume changes-requested repair' : 'repair dispatch failed; changes-requested retained for retry' };
+  }
+  if (retryMergeGateForPassed) mergeGateWakeNeeded = true;
   if (retryReadyReviewer && !recovery) {
     const dispatched = await tryDispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number) }, `ready review PR #${pr.number}`);
     recovery = { add: 'review:ready', dispatch: dispatched ? 'reviewer' : null, reason: dispatched ? 'resume ready review' : 'review dispatch failed; review:ready retained for retry' };
   }
   report.push({ type: 'pr', number: pr.number, title: pr.title, findings, removals, recovery });
+}
+
+if (apply && recoveryDispatchAllowed && mergeGateWakeNeeded) {
+  await tryDispatchWorkflow('pi-auto-merge.yml', {}, 'saved PR/review state');
 }
 
 if (apply) {
