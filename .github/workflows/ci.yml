@@ -12,6 +12,14 @@ on:
         description: Pull request title for the Actions run name
         required: false
         type: string
+      target_sha:
+        description: Exact commit SHA to test using the trusted dev workflow definition
+        required: false
+        type: string
+      target_ref:
+        description: Branch name associated with target_sha
+        required: false
+        type: string
   pull_request:
   push:
 
@@ -19,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ inputs.target_sha || github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -34,6 +42,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -66,6 +77,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          persist-credentials: false
 
       - name: Generate ephemeral test encryption key
         shell: bash
