@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { inspectIssueState, inspectPrState, safeRemovals } from './pi-state-machine.mjs';
+import { checkpointGcDecision, recoveryForIssue, recoveryForPr } from './pi-recovery-policy.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN;
@@ -22,6 +23,16 @@ async function pages(path) {
     all.push(...batch);
     if (batch.length < 100) return all;
   }
+}
+async function addLabel(number, label) {
+  await api(`/issues/${number}/labels`, { method: 'POST', body: JSON.stringify({ labels: [label] }) });
+}
+async function dispatch(event_type, payload) {
+  await api('/dispatches', { method: 'POST', body: JSON.stringify({ event_type, client_payload: payload }) });
+}
+async function deleteRef(ref) {
+  const response = await fetch(`${base}/git/refs/${ref}`, { method: 'DELETE', headers });
+  if (![204, 404].includes(response.status)) throw new Error(`Cannot delete ref ${ref}: ${response.status} ${await response.text()}`);
 }
 async function removeLabel(number, label) {
   const response = await fetch(`${base}/issues/${number}/labels/${encodeURIComponent(label)}`, {
@@ -62,15 +73,46 @@ for (const issue of issues) {
   });
   if (!findings.length) continue;
   const removals = safeRemovals(findings);
-  if (apply) for (const label of removals) await removeLabel(issue.number, label);
-  report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals });
+  let recovery = null;
+  if (apply) {
+    for (const label of removals) await removeLabel(issue.number, label);
+    if (findings.some(x => x.code === 'orphaned-implementer-state')) {
+      recovery = recoveryForIssue(issue, { hasCheckpoint: checkpoints.has(issue.number), hasOpenPiPr: openPiPrIssues.has(issue.number) });
+      if (recovery) {
+        await addLabel(issue.number, recovery.add);
+        if (recovery.dispatch === 'implementer') await dispatch('pi_dispatch_issue', { issue_number: issue.number, issue_title: issue.title });
+      }
+    }
+  }
+  report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
 }
 for (const pr of prs) {
   const findings = inspectPrState(pr, { hasLiveReviewer: liveReviewers.has(pr.number) });
   if (!findings.length) continue;
   const removals = safeRemovals(findings);
-  if (apply) for (const label of removals) await removeLabel(pr.number, label);
-  report.push({ type: 'pr', number: pr.number, title: pr.title, findings, removals });
+  let recovery = null;
+  if (apply) {
+    for (const label of removals) await removeLabel(pr.number, label);
+    if (findings.some(x => x.code === 'orphaned-review-state')) {
+      recovery = recoveryForPr(pr);
+      if (recovery) {
+        await addLabel(pr.number, recovery.add);
+        if (recovery.dispatch === 'reviewer') await dispatch('pi_pr_review', { pr_number: pr.number, pr_title: pr.title });
+      }
+    }
+  }
+  report.push({ type: 'pr', number: pr.number, title: pr.title, findings, removals, recovery });
+}
+
+if (apply) {
+  for (const number of checkpoints) {
+    const issue = issues.find(item => item.number === number);
+    const decision = checkpointGcDecision(issue, { hasOpenPiPr: openPiPrIssues.has(number) });
+    if (decision.remove) {
+      await deleteRef(`heads/pi/issue-${number}-checkpoint`);
+      report.push({ type: 'checkpoint', number, title: decision.reason, findings: [{ code: 'checkpoint-gc', severity: 'repair' }], removals: [], recovery: null });
+    }
+  }
 }
 
 console.log(`Pipeline reconciler: ${report.length} object(s) need attention; mode=${apply ? 'apply-safe-repairs' : 'audit'}`);
@@ -78,6 +120,7 @@ for (const item of report) {
   console.log(`${item.type.toUpperCase()} #${item.number} ${item.title}`);
   for (const finding of item.findings) console.log(`  - ${finding.severity}: ${finding.code}${finding.labels ? ` [${finding.labels.join(', ')}]` : ''}`);
   if (apply && item.removals.length) console.log(`  repaired: removed ${item.removals.join(', ')}`);
+  if (item.recovery) console.log(`  recovery: ${item.recovery.add}${item.recovery.dispatch ? ` + ${item.recovery.dispatch}` : ''} (${item.recovery.reason})`);
   if (item.findings.some(finding => finding.checkpoint)) console.log('  checkpoint preserved: saved implementation work may exist');
 }
 if (process.env.GITHUB_STEP_SUMMARY) {
