@@ -143,3 +143,17 @@ test('merge gate owns integration CI and starts review only after CI success', (
   assert.match(gate, /ci\.status !== 'completed' \|\| ci\.conclusion !== 'success'/);
   assert.doesNotMatch(awaitCi, /actions\/workflows\/ci\.yml\/dispatches/);
 });
+
+
+test('issue summary follows exact current dev and PR integration pair', () => {
+  const source = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
+  assert.match(source, /target:\$\{pr\.head\.sha\} ref:\$\{pr\.head\.ref\} base:\$\{base\.object\.sha\}/);
+  assert.doesNotMatch(source, /ci\.yml\/runs\?head_sha=/);
+});
+
+test('review transitions use SHA status rather than review labels', () => {
+  const source = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
+  assert.match(source, /social-mcp\/pi-review/);
+  const reviewBranch = source.slice(source.indexOf('} else {'));
+  assert.doesNotMatch(reviewBranch, /replaceLabels\(/);
+});
