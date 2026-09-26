@@ -34,7 +34,7 @@ const stage = issue.state === 'closed' && issue.state_reason === 'completed' ? '
   : labelNames.includes('architect:ready') ? 'ARCHITECTING'
   : labelNames.includes('dispatcher:ready') ? 'DISPATCHABLE'
   : labelNames.includes('architect:epic') ? 'EPIC'
-  : labelNames.find(x => ['pi:blocked','pi:failed','pi:needs-human','pi:cancelled'].includes(x)) ?? 'BACKLOG';
+  : labelNames.includes('pi:needs-human') ? 'NEEDS HUMAN' : 'BACKLOG';
 
 const lines = [
   `## Issue #${issueNumber} pipeline`,
