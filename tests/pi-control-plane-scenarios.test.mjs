@@ -108,3 +108,10 @@ test('stale repair dispatch exits without mutating pair status or running repair
   assert.match(repair, /Finalize repair status[\s\S]*steps\.metadata\.outputs\.needed == 'true'/);
   assert.match(repair, /Commit and push repair[\s\S]*steps\.metadata\.outputs\.needed == 'true'/);
 });
+
+
+test('conflict repair validates the exact SHA/base conflict status before work', () => {
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(repair, /social-mcp\/integration-conflict\/\$\{BASE_SHA:0:12\}/);
+  assert.match(repair, /no longer has an integration conflict/);
+});
