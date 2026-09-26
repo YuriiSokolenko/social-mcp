@@ -204,25 +204,21 @@ async function processPR(prSummary) {
     console.log(`#${pr.number}: dispatched/resumed Pi ${reason} repair for current head ${sha.slice(0, 12)}${repairCheckpoint ? ' from checkpoint' : ''}`);
     return;
   }
-  if (comparison.behind_by > 0) {
+  if (comparison.behind_by > 0 && pr.mergeable === false && pr.mergeable_state === 'dirty') {
     if (prLabels.has('review:running')) {
-      console.log(`#${pr.number}: dev moved while review is running; integration waits for that review to finish`);
+      console.log(`#${pr.number}: merge conflict appeared while review is running; waiting for review to finish`);
       return;
     }
-    // Published PRs are never mutated by the merge gate. If dev moved after
-    // publication, send the branch back through the integration job, which
-    // rebases onto the latest dev, resolves conflicts if necessary, runs tests,
-    // and publishes one new reviewed head.
     if (repairLive || repairCheckpoint) {
-      console.log(`#${pr.number}: dev moved; integration repair is already active or checkpointed`);
+      console.log(`#${pr.number}: merge conflict; integration repair is already active or checkpointed`);
       return;
     }
     await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
-    console.log(`#${pr.number}: dev moved after publication; dispatched integration rebase`);
+    console.log(`#${pr.number}: current dev conflicts with PR; dispatched conflict resolution`);
     return;
   }
-  if (comparison.status !== 'ahead' || comparison.behind_by !== 0) {
-    console.log(`#${pr.number}: head is not ahead of current dev`);
+  if (!['ahead', 'diverged'].includes(comparison.status)) {
+    console.log(`#${pr.number}: head cannot be integrated with current dev`);
     return;
   }
 
