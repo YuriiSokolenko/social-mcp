@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { issueTargetAfterRemovals, replaceIssueState, replaceReviewState, reviewTargetAfterRemovals } from './pi-github-state.mjs';
-import { inspectIssueState, inspectPrState, safeRemovals } from './pi-state-machine.mjs';
-import { checkpointGcDecision, recoveryForIssue, recoveryForPr } from './pi-recovery-policy.mjs';
+import { issueTargetAfterRemovals, replaceIssueState } from './pi-github-state.mjs';
+import { inspectIssueState, safeRemovals } from './pi-state-machine.mjs';
+import { checkpointGcDecision, recoveryForIssue } from './pi-recovery-policy.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN;
@@ -37,8 +37,8 @@ async function workflowRunPages(path) {
   }
 }
 async function replaceStateLabels(number, expected, target, kind) {
-  const replace = kind === 'issue' ? replaceIssueState : replaceReviewState;
-  await replace({
+  if (kind !== 'issue') throw new Error(`unsupported reconciliation state kind: ${kind}`);
+  await replaceIssueState({
     number, expected, target, context: 'reconciliation',
     load: n => api(`/issues/${n}`),
     patch: (n, labels) => api(`/issues/${n}`, { method: 'PATCH', body: JSON.stringify({ labels }) }),
@@ -127,8 +127,8 @@ for (const issue of issues) {
         }
       }
     } else if (findings.some(x => x.code === 'orphaned-architect-state')) {
-      await replaceStateLabels(issue.number, issue, 'pi:failed', 'issue');
-      recovery = { add: 'pi:failed', dispatch: null, reason: 'architect ownership disappeared; marked failed for explicit retry' };
+      await replaceStateLabels(issue.number, issue, 'pi:needs-human', 'issue');
+      recovery = { add: 'pi:needs-human', dispatch: null, reason: 'architect ownership disappeared; human retry required' };
     } else if (removals.length) {
       await replaceStateLabels(issue.number, issue, issueTargetAfterRemovals(issue, removals), 'issue');
     }
@@ -142,46 +142,33 @@ for (const issue of issues) {
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
 }
 for (const pr of prs) {
+  if (pr.state !== 'open') continue;
+  const issueNumber = Number(pr.head?.ref?.match(/^pi\/issue-(\d+)$/)?.[1]);
+  if (!Number.isSafeInteger(issueNumber)) continue;
+
   const repairCheckpoint = repairCheckpointRefs.get(pr.number);
-  const initialPrLabels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
-  if (repairCheckpoint && pr.state === 'open' && !initialPrLabels.has('review:failed') && !liveRepairs.has(pr.number)) {
-    if (apply && recoveryDispatchAllowed) mergeGateWakeNeeded = true;
-    report.push({ type: 'repair', number: pr.number, title: pr.title,
-      findings: [{ code: 'orphaned-repair-checkpoint', severity: 'repair', checkpoint: true }],
-      removals: [], recovery: apply ? { add: null, dispatch: recoveryDispatchAllowed ? 'merge-gate' : null, reason: recoveryDispatchAllowed ? 'resume saved repair checkpoint through merge-gate scheduler' : 'repair recovery deferred until RUNNING' } : null });
-  }
-  const findings = inspectPrState(pr, { hasLiveReviewer: liveReviewers.has(pr.number) });
-  const prLabels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
-  const retryReadyReviewer = apply && recoveryDispatchAllowed && pr.state === 'open' && prLabels.has('review:ready') && !liveReviewers.has(pr.number);
-  const retryRepair = apply && recoveryDispatchAllowed && pr.state === 'open' && prLabels.has('review:changes-requested') && !liveRepairs.has(pr.number) && !repairCheckpoint;
-  const retryMergeGateForPassed = apply && recoveryDispatchAllowed && pr.state === 'open' && prLabels.has('review:passed');
-  if (!findings.length && !retryReadyReviewer && !retryRepair && !retryMergeGateForPassed) continue;
-  const removals = safeRemovals(findings);
-  let recovery = null;
-  if (apply) {
-    if (findings.some(x => x.code === 'orphaned-review-state')) {
-      recovery = recoveryForPr(pr);
-      if (recovery) {
-        await replaceStateLabels(pr.number, pr, recovery.add, 'review');
-        if (recovery.dispatch === 'reviewer' && recoveryDispatchAllowed) {
-          mergeGateWakeNeeded = true;
-          recovery = { ...recovery, dispatch: 'merge-gate', reason: 'return orphaned review to merge-gate scheduler' };
-        }
-      }
-    } else if (removals.length) {
-      await replaceStateLabels(pr.number, pr, reviewTargetAfterRemovals(pr, removals), 'review');
-    }
-  }
-  if (retryRepair && !recovery) {
-    mergeGateWakeNeeded = true;
-    recovery = { add: null, dispatch: 'merge-gate', reason: 'resume changes-requested repair through merge-gate scheduler' };
-  }
-  if (retryMergeGateForPassed) mergeGateWakeNeeded = true;
-  if (retryReadyReviewer && !recovery) {
-    mergeGateWakeNeeded = true;
-    recovery = { add: 'review:ready', dispatch: 'merge-gate', reason: 'resume ready review through merge-gate scheduler' };
-  }
-  report.push({ type: 'pr', number: pr.number, title: pr.title, findings, removals, recovery });
+  const issue = issues.find(item => item.number === issueNumber);
+  const issueLabels = new Set((issue?.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
+  if (!issue || issue.state !== 'open' || !issueLabels.has('pi:mr-created') || issueLabels.has('pi:needs-human')) continue;
+
+  // Review/integration/repair progress is SHA+base-bound commit status owned by
+  // the merge gate. Reconciliation only needs to wake that scheduler; it must
+  // not recreate the removed review:* label state machine.
+  if (apply && recoveryDispatchAllowed) mergeGateWakeNeeded = true;
+  report.push({
+    type: repairCheckpoint ? 'repair' : 'pr',
+    number: pr.number,
+    title: pr.title,
+    findings: repairCheckpoint && !liveRepairs.has(pr.number)
+      ? [{ code: 'saved-repair-checkpoint', severity: 'warning', checkpoint: true }]
+      : [],
+    removals: [],
+    recovery: apply ? {
+      add: null,
+      dispatch: recoveryDispatchAllowed ? 'merge-gate' : null,
+      reason: recoveryDispatchAllowed ? 'resume durable PR pipeline through merge gate' : 'PR recovery deferred until RUNNING',
+    } : null,
+  });
 }
 
 if (apply && recoveryDispatchAllowed && mergeGateWakeNeeded) {
