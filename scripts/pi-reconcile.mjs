@@ -81,11 +81,11 @@ const liveRepairs = new Set();
 for (const run of runs) {
   if (!liveStatuses.includes(run.status)) continue;
   const implement = /^🤖 Implement #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
-  if (run.name === 'Pi Issue Agent' && implement) liveImplementers.add(Number(implement[1]));
+  if (implement) liveImplementers.add(Number(implement[1]));
   const review = /^🔬 Review PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
-  if (run.name === 'Pi PR Review' && review) liveReviewers.add(Number(review[1]));
+  if (review) liveReviewers.add(Number(review[1]));
   const repair = /^🔧 Repair PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
-  if (run.name === 'Pi PR Fix' && repair) liveRepairs.add(Number(repair[1]));
+  if (repair) liveRepairs.add(Number(repair[1]));
 }
 const checkpoints = new Set(refs.map(ref => Number(ref.ref.match(/^refs\/heads\/pi\/issue-(\d+)-checkpoint$/)?.[1])).filter(Number.isSafeInteger));
 const repairCheckpointRefs = new Map(refs.map(ref => {
