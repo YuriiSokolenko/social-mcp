@@ -83,7 +83,7 @@ function conflictMockSource() {
   return `
     import { appendFileSync } from 'node:fs';
     const repo = 'test/repo';
-    const hasMarker = process.env.MOCK_HAS_MARKER === 'true';
+    const hasLiveRepair = process.env.MOCK_HAS_MARKER === 'true';
     const pr = {
       number: 77, state: 'open', draft: false, body: 'Closes #77',
       changed_files: 1, mergeable: false, mergeable_state: 'dirty', labels: [],
@@ -103,14 +103,13 @@ function conflictMockSource() {
       if (path === '/pulls/77/files' && method === 'GET') return Response.json([{ filename: 'app/x.py' }]);
       if (path === '/git/ref/heads/dev') return Response.json({ object: { sha: 'devsha' } });
       if (path === '/compare/dev...abc123') return Response.json({ behind_by: 1, status: 'behind' });
-      if (path === '/commits/abc123/statuses') {
-        return Response.json(hasMarker ? [{ context: 'social-mcp/merge-conflict-fix-dispatched', state: 'success' }] : []);
-      }
+      if (path === '/commits/abc123/statuses') return Response.json([]);
       if (path === '/actions/workflows/ci.yml/runs') return Response.json({ workflow_runs: [] });
-      if (path === '/actions/workflows/pi-pr-fix.yml/runs' && method === 'GET') return Response.json({ workflow_runs: [] });
+      if (path === '/actions/workflows/pi-pr-fix.yml/runs' && method === 'GET') {
+        return Response.json({ workflow_runs: hasLiveRepair ? [{ display_title: '🔧 Repair PR #77 · conflict' }] : [] });
+      }
       if (path === '/git/ref/heads/pi/repair-pr-77-checkpoint' && method === 'GET') return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404, headers: { 'content-type': 'application/json' } });
       if (path === '/actions/workflows/pi-pr-fix.yml/dispatches' && method === 'POST') return new Response(null, { status: 204 });
-      if (path === '/statuses/abc123' && method === 'POST') return Response.json({ state: 'success' }, { status: 201 });
       throw new Error('Unexpected request: ' + method + ' ' + path);
     };
   `;
@@ -139,12 +138,10 @@ test('a real merge conflict is dispatched to Pi PR Fix instead of silently waiti
   const calls = runConflictMock(false);
   const dispatch = calls.find(call => call.path === '/actions/workflows/pi-pr-fix.yml/dispatches' && call.method === 'POST');
   assert.deepEqual(dispatch.body, { ref: 'dev', inputs: { pr_number: '77', reason: 'conflict' } });
-  const marker = calls.find(call => call.path === '/statuses/abc123' && call.method === 'POST');
-  assert.equal(marker.body.context, 'social-mcp/merge-conflict-fix-dispatched');
   assert.equal(calls.some(call => call.path === '/pulls/77/update-branch'), false);
 });
 
-test('a conflict repair already dispatched for this SHA is not dispatched again', () => {
+test('a live conflict repair is not dispatched again', () => {
   const calls = runConflictMock(true);
   assert.equal(calls.some(call => call.path === '/actions/workflows/pi-pr-fix.yml/dispatches'), false);
 });
