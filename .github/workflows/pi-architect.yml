@@ -78,7 +78,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" failed \
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue failed \
             "Pi Architect workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Mark Architect cancelled
@@ -87,7 +87,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" cancelled \
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue cancelled \
             "Pi Architect workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Summarize Pi usage
