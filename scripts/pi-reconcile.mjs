@@ -158,7 +158,13 @@ for (const pr of prs) {
 }
 
 if (apply && recoveryDispatchAllowed && mergeGateWakeNeeded) {
-  await tryDispatchWorkflow('pi-auto-merge.yml', {}, 'saved PR/review state');
+  const gateAlreadyLive = runs.some(run =>
+    run.path === '.github/workflows/pi-auto-merge.yml' && liveStatuses.includes(run.status));
+  if (gateAlreadyLive) {
+    console.log('Merge Gate is already queued/running; skipping duplicate reconciler wake');
+  } else {
+    await tryDispatchWorkflow('pi-auto-merge.yml', {}, 'saved PR/review state');
+  }
 }
 
 if (apply) {
