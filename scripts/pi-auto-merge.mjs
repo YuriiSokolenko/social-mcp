@@ -24,6 +24,15 @@ async function api(path, method = 'GET', body) {
   return response.status === 204 ? null : response.json();
 }
 
+async function pages(path) {
+  const all = [];
+  for (let page = 1; ; page++) {
+    const batch = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+    all.push(...batch);
+    if (batch.length < 100) return all;
+  }
+}
+
 export function linkedIssueNumber(pr, repository) {
   const match = /^pi\/issue-([1-9]\d*)$/.exec(pr.head?.ref ?? '');
   if (pr.draft || pr.base?.ref !== 'dev' ||
@@ -51,7 +60,7 @@ export function latestCI(runs, sha, branch) {
 }
 
 export function allowedFiles(files, changedCount) {
-  return changedCount <= 100 && files.length === changedCount &&
+  return files.length === changedCount &&
     files.every(file => [file.filename, file.previous_filename].filter(Boolean).every(name =>
       !name.startsWith('.github/workflows/') && !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(name)));
 }
@@ -138,11 +147,7 @@ async function processPR(prSummary) {
     console.log(`#${pr.number}: issue #${issue} is not ready for merge`);
     return;
   }
-  if (pr.changed_files > 100) {
-    console.log(`#${pr.number}: too many changed files for a complete safety check`);
-    return;
-  }
-  const files = await api(`/pulls/${pr.number}/files?per_page=100`);
+  const files = await pages(`/pulls/${pr.number}/files`);
   if (!allowedFiles(files, pr.changed_files)) {
     console.log(`#${pr.number}: changed control files or incomplete file list; human review required`);
     return;
@@ -210,7 +215,7 @@ export async function main() {
   if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
   // Recover a merge interrupted after GitHub accepted it but before the
   // linked issue was completed or the dispatcher was started.
-  const mergedPRs = await api('/pulls?state=closed&base=dev&per_page=100');
+  const mergedPRs = await pages('/pulls?state=closed&base=dev');
   for (const pr of mergedPRs) {
     if (!pr.merged_at || !pr.labels?.some(label => label.name === 'review:passed')) continue;
     const issue = linkedIssueNumber(pr, repo);
@@ -219,7 +224,7 @@ export async function main() {
     catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }
   }
   // Global concurrency prevents two runs from merging against the same base in parallel.
-  const prs = await api('/pulls?state=open&base=dev&per_page=100');
+  const prs = await pages('/pulls?state=open&base=dev');
   for (const pr of prs) {
     try { await processPR(pr); }
     catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }
