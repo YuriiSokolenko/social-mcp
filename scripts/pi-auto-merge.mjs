@@ -117,7 +117,6 @@ async function processPR(prSummary) {
 }
 
 export async function main() {
-  if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
   // Global concurrency prevents two runs from merging against the same base in parallel.
   const prs = await pages('/pulls?state=open&base=dev');
   for (const pr of prs) {
