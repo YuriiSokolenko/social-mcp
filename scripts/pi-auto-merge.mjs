@@ -69,59 +69,6 @@ export function needsCIDispatch(ci) {
   return !ci;
 }
 
-const reviewNeutralFiles = new Set(['reports/pi-usage.csv']);
-
-export function reviewNeutralChange(files) {
-  return files.length > 0 && files.every(file =>
-    [file.filename, file.previous_filename].filter(Boolean).every(name => reviewNeutralFiles.has(name)));
-}
-
-async function reusableReviewStatus(pr, sha) {
-  const commits = await pages(`/pulls/${pr.number}/commits`);
-  for (let index = commits.length - 2; index >= 0; index--) {
-    const previousSha = commits[index]?.sha;
-    if (!previousSha || previousSha === sha) continue;
-    const previousStatuses = await api(`/commits/${previousSha}/statuses?per_page=100`);
-    if (latestStatus(previousStatuses, reviewContext) !== 'success') continue;
-    const delta = await api(`/compare/${previousSha}...${sha}`);
-    if (delta.status === 'ahead' && reviewNeutralChange(delta.files ?? [])) {
-      return { previousSha, files: delta.files ?? [] };
-    }
-    return null;
-  }
-  return null;
-}
-
-async function carryForwardNeutralReview(pr, sha, statuses) {
-  if (latestStatus(statuses, reviewContext)) return false;
-  const reusable = await reusableReviewStatus(pr, sha);
-  if (!reusable) return false;
-  await api(`/statuses/${sha}`, 'POST', {
-    state: 'success',
-    context: reviewContext,
-    description: `Reused review from ${reusable.previousSha.slice(0, 12)}; telemetry-only change`,
-  });
-  const labels = new Set((pr.labels ?? []).map(label => label.name));
-  labels.delete('review:ready');
-  labels.delete('review:running');
-  labels.delete('review:changes-requested');
-  labels.delete('review:failed');
-  labels.add('review:passed');
-  await api(`/issues/${pr.number}`, 'PATCH', { labels: [...labels] });
-  console.log(`#${pr.number}: reused review from ${reusable.previousSha.slice(0, 12)} for telemetry-only head ${sha.slice(0, 12)}`);
-  return true;
-}
-
-export function shouldDeferBranchUpdate(pr) {
-  // review:running: a reviewer is actively reading this exact head; don't move it under them.
-  // review:changes-requested: Pi PR Fix was just dispatched for this exact head and may still be
-  // starting up. Updating the branch here raced Pi PR Fix in practice: auto-merge dispatched a
-  // second, duplicate review for the merged head while the fix job kept working, wasting a full
-  // reviewer run. Wait for the fix cycle to either push a new head (which re-triggers review) or
-  // finish with no changes (leaving review:changes-requested for a person to look at).
-  return pr.labels?.some(label => ['review:running', 'review:changes-requested'].includes(label.name)) ?? false;
-}
-
 async function hasLiveReview(prNumber) {
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     const data = await api(`/actions/workflows/pi-pr-review.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
@@ -258,24 +205,16 @@ async function processPR(prSummary) {
     return;
   }
   if (comparison.behind_by > 0) {
-    if (shouldDeferBranchUpdate(pr)) {
-      console.log(`#${pr.number}: dev moved during review; waiting for the review to finish before updating the branch`);
+    // Published PRs are never mutated by the merge gate. If dev moved after
+    // publication, send the branch back through the integration job, which
+    // rebases onto the latest dev, resolves conflicts if necessary, runs tests,
+    // and publishes one new reviewed head.
+    if (repairLive || repairCheckpoint) {
+      console.log(`#${pr.number}: dev moved; integration repair is already active or checkpointed`);
       return;
     }
-    if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
-      if (repairLive || repairCheckpoint) {
-        console.log(`#${pr.number}: merge conflict; repair is already active or has a saved checkpoint`);
-        return;
-      }
-      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
-      console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
-      return;
-    }
-    await api(`/pulls/${pr.number}/update-branch`, 'PUT', { expected_head_sha: sha });
-    // A branch update made with GITHUB_TOKEN may not start another gate run.
-    // Wake the gate after this run exits so it can dispatch checks for the new SHA.
-    await api('/actions/workflows/pi-auto-merge.yml/dispatches', 'POST', { ref: 'dev' });
-    console.log(`#${pr.number}: updated branch; queued checks for new SHA`);
+    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
+    console.log(`#${pr.number}: dev moved after publication; dispatched integration rebase`);
     return;
   }
   if (comparison.status !== 'ahead' || comparison.behind_by !== 0) {
@@ -285,11 +224,9 @@ async function processPR(prSummary) {
 
   const statuses = statusData;
   const runs = ciData.workflow_runs ?? [];
-  await carryForwardNeutralReview(pr, sha, statuses);
-  const effectiveStatuses = await api(`/commits/${sha}/statuses?per_page=100`);
-  await trigger(pr, sha, effectiveStatuses, runs);
+  await trigger(pr, sha, statuses, runs);
   const ci = latestCI(runs, sha, pr.head.ref);
-  const review = latestStatus(effectiveStatuses, reviewContext);
+  const review = latestStatus(statuses, reviewContext);
   if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success' ||
       !pr.labels.some(label => label.name === 'review:passed')) {
     console.log(`#${pr.number}: waiting for CI and SHA-bound review (${sha.slice(0, 12)})`);
