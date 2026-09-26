@@ -83,3 +83,10 @@ test('issue state family is intentionally small', () => {
   }
   assert.doesNotMatch(source, /pi:failed|pi:cancelled/);
 });
+
+
+test('non-review repair failures cannot overwrite review status', () => {
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(repair, /name: Report review repair failure[\s\S]*env\.REASON == 'review'/);
+  assert.match(repair, /social-mcp\/repair-\$\{REASON\}/);
+});
