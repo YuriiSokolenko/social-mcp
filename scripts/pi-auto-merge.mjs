@@ -5,7 +5,7 @@ import { replaceIssueState } from './pi-github-state.mjs';
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
 const apiRoot = `https://api.github.com/repos/${repo}`;
-const reviewContext = 'social-mcp/pi-review';
+
 
 async function api(path, method = 'GET', body) {
   const response = await fetch(`${apiRoot}${path}`, {
@@ -91,7 +91,7 @@ async function trigger(pr, sha, baseSha, statuses, runs) {
     return;
   }
   if (ci.status !== 'completed' || ci.conclusion !== 'success') return;
-  const currentReview = latestStatus(statuses, reviewContext);
+  const currentReview = latestStatus(statuses, `social-mcp/pi-review/${baseSha.slice(0, 12)}`);
   if (!currentReview && !(await hasLiveReview(pr.number))) {
     await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
   }
@@ -183,7 +183,7 @@ async function processPR(prSummary) {
     api(`/commits/${sha}/statuses?per_page=100`),
     api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100'),
   ]);
-  const currentReview = latestStatus(statusData, reviewContext);
+  const currentReview = latestStatus(statusData, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
   // SHA-bound status is authoritative. Review labels are presentation only.
   const currentHeadNeedsRepair = currentReview === 'failure';
   if (!repairLive && currentHeadNeedsRepair) {
@@ -207,7 +207,7 @@ async function processPR(prSummary) {
   const runs = ciData.workflow_runs ?? [];
   await trigger(pr, sha, base.object.sha, statuses, runs);
   const ci = latestCI(runs, sha, pr.head.ref, base.object.sha);
-  const review = latestStatus(statuses, reviewContext);
+  const review = latestStatus(statuses, `social-mcp/pi-review/${baseSha.slice(0, 12)}`);
   if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success') {
     console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)}) and review`);
     return;
