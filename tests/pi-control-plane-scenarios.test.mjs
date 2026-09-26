@@ -90,6 +90,21 @@ test('reconciler recognizes live agents by custom run title', () => {
 });
 
 
+test('Architect failure and cancellation cannot strand architect ownership', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-architect.yml', 'utf8');
+  const reconciler = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(workflow, /Mark Architect failed/);
+  assert.match(workflow, /Mark Architect cancelled/);
+  assert.match(reconciler, /const liveArchitects = new Set\(\)/);
+  assert.match(reconciler, /orphaned-architect-state/);
+  assert.match(reconciler, /architect ownership disappeared; marked failed for explicit retry/);
+});
+
+test('implementer cancellation preserves already published PR state', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.match(workflow, /if: cancelled\(\) && steps\.pr\.outputs\.number == ''/);
+});
+
 test('agent concurrency preserves active work and duplicate runs have idempotency guards', () => {
   for (const path of ['.github/workflows/pi-issue-agent.yml', '.github/workflows/pi-pr-review.yml', '.github/workflows/pi-pr-fix.yml']) {
     const workflow = fs.readFileSync(path, 'utf8');
