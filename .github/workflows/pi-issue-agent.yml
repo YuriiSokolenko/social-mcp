@@ -310,6 +310,14 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human             "Pi completed the task but produced no repository changes. Human review is required."
 
+      - name: Recover publication state after failure
+        if: failure() && steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue mr-created \
+            "Pi published PR #${{ steps.pr.outputs.number }} before a later workflow step failed: ${{ steps.pr.outputs.url }}. Merge Gate/reconciler will continue from the published PR."
+
       - name: Mark failed result
         if: failure() && steps.pr.outputs.number == ''
         env:
@@ -320,6 +328,14 @@ jobs:
             MESSAGE="$MESSAGE Saved work: https://github.com/${REPO}/tree/pi/issue-${ISSUE}-checkpoint"
           fi
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human "$MESSAGE"
+
+      - name: Recover publication state after cancellation
+        if: cancelled() && steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue mr-created \
+            "Pi published PR #${{ steps.pr.outputs.number }} before the workflow was cancelled: ${{ steps.pr.outputs.url }}. Merge Gate/reconciler will continue from the published PR."
 
       - name: Mark cancelled result
         if: cancelled() && steps.pr.outputs.number == ''
