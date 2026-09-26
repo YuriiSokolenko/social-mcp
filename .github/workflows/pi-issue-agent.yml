@@ -211,29 +211,6 @@ jobs:
           pytest
           ruff check .
 
-      - name: Save verified or failed integration checkpoint
-        if: always() && steps.checkpoint.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cd "$JOB_DIR"
-          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-            echo "Keeping the previous checkpoint; unresolved conflict cannot be committed" >&2
-            exit 0
-          fi
-          git add -A
-          if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
-            echo "Refusing to checkpoint a credential or runtime file" >&2
-            exit 1
-          fi
-          if ! git diff --cached --quiet; then
-            git commit -m "fix: preserve integration for issue #${ISSUE}"
-          fi
-          INTEGRATION_COMMIT="$(git rev-parse HEAD)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_EXPECTED}" origin "${INTEGRATION_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
-          echo "PI_CHECKPOINT_EXPECTED=${INTEGRATION_COMMIT}" >> "$GITHUB_ENV"
-          echo "PI_CHECKPOINT_PUBLISHED=${INTEGRATION_COMMIT}" >> "$GITHUB_ENV"
-
       - name: Push verified issue branch
         if: steps.checkpoint.outputs.changed == 'true'
         env:
