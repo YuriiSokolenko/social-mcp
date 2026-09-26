@@ -227,16 +227,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin --delete "pi/repair-pr-${PR}-checkpoint" 2>/dev/null || true
 
-      - name: Trigger fresh review
+      - name: Wake merge gate
         if: steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          jq -n --arg pr_number "$PR" '{ref:"dev",inputs:{pr_number:$pr_number}}' |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" --data-binary @- \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-review.yml/dispatches"
+            -H "Content-Type: application/json" --data '{"ref":"dev"}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches"
 
       - name: Report repair failure
         if: failure()
