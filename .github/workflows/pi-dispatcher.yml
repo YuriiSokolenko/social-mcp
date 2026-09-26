@@ -38,7 +38,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/pi-dispatcher.mjs prepare "$RUNNER_TEMP/pi-dispatcher-context.json"
+          node "$GITHUB_WORKSPACE/scripts/pi-dispatcher.mjs" prepare "$RUNNER_TEMP/pi-dispatcher-context.json"
           if jq -e '(.candidates | length > 0)' "$RUNNER_TEMP/pi-dispatcher-context.json" >/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -66,10 +66,10 @@ jobs:
             --no-session \
             "$(cat "$TASK_FILE")" \
           | tee "$RUNNER_TEMP/pi-dispatcher-result.jsonl" \
-          | PI_CALL=main node scripts/pi-log-filter.mjs
+          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
       - name: Validate and start selected issues
         if: steps.prepare.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/pi-dispatcher.mjs apply "$RUNNER_TEMP/pi-dispatcher-result.jsonl"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-dispatcher.mjs" apply "$RUNNER_TEMP/pi-dispatcher-result.jsonl"
