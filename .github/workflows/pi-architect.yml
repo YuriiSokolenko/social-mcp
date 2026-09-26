@@ -1,5 +1,5 @@
 name: Pi Architect
-run-name: '🏗 Architect #${{ github.event.issue.number || inputs.issue_number }} · ${{ github.event.issue.title || inputs.issue_title || 'issue' }}'
+run-name: "🏗 Architect #${{ github.event.issue.number || inputs.issue_number }} · ${{ github.event.issue.title || inputs.issue_title || 'issue' }}"
 
 on:
   issues:
