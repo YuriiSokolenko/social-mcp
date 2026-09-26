@@ -133,12 +133,10 @@ for (const pr of prs) {
   const repairCheckpoint = repairCheckpointRefs.get(pr.number);
   const initialPrLabels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   if (repairCheckpoint && pr.state === 'open' && !initialPrLabels.has('review:failed') && !liveRepairs.has(pr.number)) {
-    if (apply && recoveryDispatchAllowed) {
-      await tryDispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), reason: 'review' }, `repair PR #${pr.number}`);
-    }
+    if (apply && recoveryDispatchAllowed) mergeGateWakeNeeded = true;
     report.push({ type: 'repair', number: pr.number, title: pr.title,
       findings: [{ code: 'orphaned-repair-checkpoint', severity: 'repair', checkpoint: true }],
-      removals: [], recovery: apply ? { add: null, dispatch: recoveryDispatchAllowed ? 'repair' : null, reason: recoveryDispatchAllowed ? 'resume saved repair checkpoint' : 'repair recovery deferred until RUNNING' } : null });
+      removals: [], recovery: apply ? { add: null, dispatch: recoveryDispatchAllowed ? 'merge-gate' : null, reason: recoveryDispatchAllowed ? 'resume saved repair checkpoint through merge-gate scheduler' : 'repair recovery deferred until RUNNING' } : null });
   }
   const findings = inspectPrState(pr, { hasLiveReviewer: liveReviewers.has(pr.number) });
   const prLabels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
@@ -162,8 +160,8 @@ for (const pr of prs) {
     }
   }
   if (retryRepair && !recovery) {
-    const dispatched = await tryDispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), reason: 'review' }, `changes-requested PR #${pr.number}`);
-    recovery = { add: null, dispatch: dispatched ? 'repair' : null, reason: dispatched ? 'resume changes-requested repair' : 'repair dispatch failed; changes-requested retained for retry' };
+    mergeGateWakeNeeded = true;
+    recovery = { add: null, dispatch: 'merge-gate', reason: 'resume changes-requested repair through merge-gate scheduler' };
   }
   if (retryMergeGateForPassed) mergeGateWakeNeeded = true;
   if (retryReadyReviewer && !recovery) {
