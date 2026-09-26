@@ -1,3 +1,4 @@
+import { ISSUE_ACTIVE, PIPELINE_LABELS } from './pi-state-machine.mjs';
 const phases = new Map([
   ['pi-issue-agent.yml', 'implementation'],
   ['pi-pr-review.yml', 'review'],
@@ -5,7 +6,7 @@ const phases = new Map([
   ['pi-architect.yml', 'architect'],
   ['pi-dispatcher.yml', 'dispatcher'],
 ]);
-const statuses = ['queued', 'in_progress', 'waiting', 'pending'];
+const statuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
 
 export function summarizeQueue(issues, prs, runs, repo) {
   const openPrs = prs.filter(pr => pr.base?.ref === 'dev').map(pr => {
@@ -35,7 +36,7 @@ export function summarizeQueue(issues, prs, runs, repo) {
     ...openPrs.map(pr => pr.issue).filter(Boolean),
     ...activeRuns.map(run => run.issue).filter(Boolean),
   ]);
-  const activeLabels = new Set(['pi:ready', 'pi:running', 'pi:mr-created', 'architect:ready', 'architect:epic']);
+  const activeLabels = new Set([...ISSUE_ACTIVE, PIPELINE_LABELS.epic]);
   const activeIssues = issues.filter(issue =>
     linked.has(issue.number) || issue.labels.some(label => activeLabels.has(label.name)))
     .map(issue => ({ number: issue.number, title: issue.title,
