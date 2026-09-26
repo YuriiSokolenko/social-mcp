@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { replaceIssueState, replaceReviewState } from './pi-github-state.mjs';
+import { replaceIssueState } from './pi-github-state.mjs';
 import { validateIssueTransition } from './pi-state-machine.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
@@ -25,8 +25,7 @@ async function load() {
   return api(kind === 'issue' ? `/issues/${number}` : `/pulls/${number}`);
 }
 async function replaceLabels(expected, target, kind, action) {
-  const replace = kind === 'issue' ? replaceIssueState : replaceReviewState;
-  await replace({
+  await replaceIssueState({
     number,
     expected: { labels: [...expected] },
     target,
