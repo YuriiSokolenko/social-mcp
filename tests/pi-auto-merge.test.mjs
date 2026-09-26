@@ -169,3 +169,10 @@ test('unsafe control-plane PRs leave an explicit human-attention comment without
   assert.match(source, /Human review is required/);
   assert.match(source, /PR ownership remains pi:mr-created/);
 });
+
+
+test('unsafe PR escalation comments are idempotent across merge-gate scans', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(source, /merge-gate:unsafe-pr:/);
+  assert.match(source, /comments\.some\(comment => \(comment\.body \?\? ''\)\.includes\(marker\)\)/);
+});
