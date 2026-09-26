@@ -361,6 +361,13 @@ jobs:
           echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
+      - name: Mark pull request created
+        if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/pi-issue-status.sh mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
+
       - name: Wake merge gate
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
         env:
@@ -374,13 +381,6 @@ jobs:
             -H "Content-Type: application/json" \
             --data '{"ref":"dev"}' \
             "${API}/actions/workflows/pi-auto-merge.yml/dispatches"
-
-      - name: Mark pull request created
-        if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          bash scripts/pi-issue-status.sh mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
 
       - name: Remove published checkpoint
         if: steps.pr.outputs.number != '' && env.PI_CHECKPOINT_PUBLISHED != ''
