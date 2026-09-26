@@ -23,6 +23,89 @@ from social_mcp.app import create_app
 from social_mcp.config import Settings
 from social_mcp.storage.models import ConnectedAccount, SocialPlatform
 
+# --- Threads OAuth connect-flow test fixtures and helpers (issue #16) -------
+
+SAMPLE_TOKEN_RESPONSE: dict = {
+    "access_token": "fake-threads-access-token-not-a-credential",
+    "token_type": "bearer",
+    "user_id": 123456789,
+}
+
+
+def _csrf(client: TestClient) -> str:
+    """Return a fresh CSRF token by re-logging in."""
+
+    response = client.post("/admin/login", auth=ADMIN_AUTH)
+    match = re.search(r"value='([^']+)'", response.text)
+    assert match is not None, "login response did not expose a CSRF token"
+    return match.group(1)
+
+
+def _create_state(app, csrf_token: str) -> str:
+    """Create an OAuth state value via the app's OAuthStateManager."""
+
+    oauth_manager = app.state.container.require_oauth_state_manager()
+    return oauth_manager.create(csrf_token, platform="threads")
+
+
+class _FakeThreadsTransport:
+    """Fake transport that records calls and returns a configurable response."""
+
+    def __init__(self, response: dict[str, object] | None = None) -> None:
+        self._response: dict[str, object] = response or {}
+        self.calls: list[tuple[str, dict[str, str]]] = []
+
+    @property
+    def response(self) -> dict[str, object]:
+        return self._response
+
+    @response.setter
+    def response(self, value: dict[str, object]) -> None:
+        self._response = value
+
+    async def post(self, url: str, data: dict[str, str]) -> dict[str, object]:
+        self.calls.append((url, dict(data)))
+        return self._response
+
+
+@pytest.fixture()
+def configured_admin_app(tmp_path: Path, make_settings: Callable[..., Settings]):
+    """An authenticated admin app with Threads/Meta fully configured."""
+
+    app = create_app(
+        make_settings(
+            tmp_path,
+            admin_username="admin",
+            admin_password="example-secret",
+            admin_session_secret=ADMIN_SESSION_SECRET,
+            meta_app_id="test-app-id",
+            meta_app_secret="test-app-secret",
+            oauth_state_secret="test-oauth-state-secret-not-for-production",
+        )
+    )
+    with TestClient(app) as client:
+        client.post("/admin/login", auth=ADMIN_AUTH)
+        yield app, client
+
+
+@pytest.fixture()
+def mock_threads_transport(monkeypatch):
+    """Replace HttpxThreadsTransport with a fake; returns the fake instance."""
+
+    fake = _FakeThreadsTransport(SAMPLE_TOKEN_RESPONSE)
+
+    class _FakeClass:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def post(self, url: str, data: dict[str, str]) -> dict[str, object]:
+            return await fake.post(url, data)
+
+    monkeypatch.setattr(
+        "social_mcp.admin.routes.HttpxThreadsTransport", _FakeClass
+    )
+    return fake
+
 ADMIN_AUTH = ("admin", "example-secret")
 ADMIN_SESSION_SECRET = "test-session-secret-not-for-production-use"
 
@@ -594,7 +677,25 @@ def test_accounts_lists_connected_accounts_without_tokens(
     assert b"fake-access-token-bytes" not in response.text.encode("utf-8")
 
 
-def test_accounts_page_has_disabled_connect_threads_placeholder(
+def test_accounts_page_shows_connect_button_when_configured(
+    configured_admin_app,
+) -> None:
+    _, client = configured_admin_app
+
+    response = client.get("/admin/accounts")
+
+    assert response.status_code == 200
+    assert "Connect Threads (coming soon)" not in response.text
+    # The button is a real form that posts to the connect route.
+    assert '<form' in response.text
+    assert 'action="/admin/connect/threads"' in response.text
+    assert '<button type="submit">Connect Threads</button>' in response.text
+    # A CSRF token is embedded as a hidden field.
+    assert 'name="csrf_token"' in response.text
+    assert "oauth/authorize" not in response.text
+
+
+def test_accounts_page_shows_config_notice_when_not_configured(
     admin_app,
 ) -> None:
     _, client = admin_app
@@ -602,11 +703,9 @@ def test_accounts_page_has_disabled_connect_threads_placeholder(
     response = client.get("/admin/accounts")
 
     assert response.status_code == 200
-    assert "Connect Threads (coming soon)" in response.text
-    assert '<button type="button" disabled>' in response.text
-    assert "/admin/connect" not in response.text
-    assert 'action="' not in response.text
-    assert "oauth/authorize" not in response.text
+    assert "Connect Threads (coming soon)" not in response.text
+    assert "Configure META_APP_ID" in response.text
+    assert 'action="/admin/connect/threads"' not in response.text
 
 
 def test_accounts_never_exposes_encrypted_token_bytes(
@@ -798,3 +897,569 @@ def test_session_cookie_carries_a_csrf_token_after_login(
     assert match is not None
     token = match.group(1)
     assert len(token) >= 16
+
+
+# --- Threads OAuth connect flow (issue #16) --------------------------------
+
+
+def test_connect_threads_starts_oauth_flow(
+    configured_admin_app,
+) -> None:
+    _, client = configured_admin_app
+    csrf_token = _csrf(client)
+
+    response = client.post(
+        "/admin/connect/threads",
+        data={"csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "threads.com/oauth/authorize" in location
+    assert "client_id=test-app-id" in location
+    assert "response_type=code" in location
+    assert "redirect_uri=" in location
+    # The auth URL carries the scope and a signed state, but never a token.
+    assert "scope=" in location
+    assert "state=" in location
+    assert "access_token" not in location
+    assert "client_secret" not in location
+
+
+def test_connect_threads_requires_csrf(configured_admin_app) -> None:
+    _, client = configured_admin_app
+
+    response = client.post("/admin/connect/threads")
+
+    assert response.status_code == 403
+    assert "access_token" not in response.text
+
+
+def test_connect_threads_rejects_invalid_csrf(configured_admin_app) -> None:
+    _, client = configured_admin_app
+
+    response = client.post(
+        "/admin/connect/threads",
+        data={"csrf_token": "wrong-token"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_connect_threads_not_configured_returns_503(admin_app) -> None:
+    _, client = admin_app
+    csrf_token = _csrf(client)
+
+    response = client.post(
+        "/admin/connect/threads",
+        data={"csrf_token": csrf_token},
+    )
+
+    # When the adapter is not configured (no Meta credentials / secrets), the
+    # connect route reports a safe 503 rather than starting a half-flow.
+    assert response.status_code == 503
+
+
+def test_connect_threads_auth_url_contains_required_scopes(
+    configured_admin_app,
+) -> None:
+    _, client = configured_admin_app
+    csrf_token = _csrf(client)
+
+    response = client.post(
+        "/admin/connect/threads",
+        data={"csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+
+    location = response.headers["location"]
+    # threads_basic is always required.
+    assert "threads_basic" in location
+
+
+def test_connect_threads_state_is_session_bound(
+    configured_admin_app,
+) -> None:
+    app, client = configured_admin_app
+    csrf_token = _csrf(client)
+
+    response = client.post(
+        "/admin/connect/threads",
+        data={"csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+    location = response.headers["location"]
+
+    # The state value in the redirect URL is signed and bound to the session.
+    state_match = re.search(r"state=([^&]+)", location)
+    assert state_match is not None
+    state_value = state_match.group(1)
+
+    # A state minted for a different session_id must not validate against this
+    # session (the OAuthStateManager enforces session binding).
+    other_state = app.state.container.require_oauth_state_manager().create(
+        "different-session-id", platform="threads"
+    )
+    consumed_different = False
+    consumed_same = False
+    try:
+        app.state.container.require_oauth_state_manager().consume(
+            state_value, session_id=csrf_token
+        )
+        consumed_same = True
+    except Exception:  # noqa: BLE001
+        consumed_same = False
+    try:
+        app.state.container.require_oauth_state_manager().consume(
+            other_state, session_id=csrf_token
+        )
+        consumed_different = True
+    except Exception:  # noqa: BLE001
+        consumed_different = False
+    assert consumed_same, "state bound to the current session should be consumable"
+    assert not consumed_different, "state bound to a different session should be rejected"
+
+
+def test_connect_threads_redirect_uri_matches_callback(
+    configured_admin_app,
+) -> None:
+    _, client = configured_admin_app
+    csrf_token = _csrf(client)
+
+    response = client.post(
+        "/admin/connect/threads",
+        data={"csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+    location = response.headers["location"]
+
+    # The redirect_uri in the auth URL must point at the callback route.
+    # The value is URL-encoded in the query string, so decode it.
+    from urllib.parse import parse_qs, urlsplit
+
+    params = parse_qs(urlsplit(location).query)
+    redirect_uri = params["redirect_uri"][0]
+    assert "/admin/oauth/callback/threads" in redirect_uri
+
+
+def test_callback_exchanges_code_and_persists_account(
+    configured_admin_app,
+    monkeypatch,
+    mock_threads_transport,
+) -> None:
+    app, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(app, csrf_token)
+
+    response = client.get(
+        f"/admin/oauth/callback/threads?code=fake-auth-code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "connected successfully" in response.text
+    # The access token is never shown in the UI.
+    assert "fake-threads-access-token" not in response.text
+
+    # The transport was called to exchange the code.
+    assert len(mock_threads_transport.calls) == 1
+    url, form = mock_threads_transport.calls[0]
+    assert url == "https://graph.threads.com/oauth/access_token"
+    assert form["grant_type"] == "authorization_code"
+    assert form["code"] == "fake-auth-code"
+    assert form["client_id"] == "test-app-id"
+    assert form["client_secret"] == "test-app-secret"
+    assert "/admin/oauth/callback/threads" in form["redirect_uri"]
+
+    # The account was persisted with encrypted (not plaintext) tokens.
+    accounts = app.state.container.account_store.list_accounts()
+    assert len(accounts) == 1
+    assert accounts[0].external_account_id == "123456789"
+    assert accounts[0].platform is SocialPlatform.THREADS
+    assert accounts[0].scopes == ["threads_basic"]
+    assert accounts[0].token_expires_at is not None
+    encrypted = accounts[0].access_token_encrypted
+    assert encrypted != b"fake-threads-access-token"
+    assert b"fake-threads-access-token" not in encrypted
+    raw_db = app.state.container.account_store.database_path.read_bytes()
+    assert b"fake-threads-access-token" not in raw_db
+
+
+def test_callback_strips_trailing_fragment_from_code(
+    configured_admin_app,
+    monkeypatch,
+    mock_threads_transport,
+) -> None:
+    app, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(app, csrf_token)
+
+    # Meta appends ``#_`` to the redirect URI. In a browser the ``#`` starts a
+    # fragment and is never sent to the server, so the code arrives clean.
+    # If a code value somehow carries a ``#_`` suffix (e.g. via a proxy that
+    # does not strip fragments), the callback strips it defensively.
+    response = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code%23_&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert len(mock_threads_transport.calls) == 1
+    _, form = mock_threads_transport.calls[0]
+    assert form["code"] == "fake-code"
+
+
+def test_callback_handles_canceled_authorization(
+    configured_admin_app,
+    mock_threads_transport,
+) -> None:
+    _, client = configured_admin_app
+
+    response = client.get(
+        "/admin/oauth/callback/threads?error=access_denied"
+        "&error_reason=user_denied",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "cancelled" in response.text.lower()
+    assert len(mock_threads_transport.calls) == 0
+    assert "access_token" not in response.text
+
+
+def test_callback_rejects_invalid_state(
+    configured_admin_app,
+    mock_threads_transport,
+) -> None:
+    _, client = configured_admin_app
+
+    response = client.get(
+        "/admin/oauth/callback/threads?code=fake-code&state=invalid-state",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "error" in response.text.lower() or "not" in response.text.lower()
+    assert len(mock_threads_transport.calls) == 0
+    assert "access_token" not in response.text
+
+
+def test_callback_requires_code_and_state(
+    configured_admin_app,
+    mock_threads_transport,
+) -> None:
+    _, client = configured_admin_app
+
+    # Missing both code and state.
+    response = client.get(
+        "/admin/oauth/callback/threads",
+        follow_redirects=False,
+    )
+    assert response.status_code == 200
+    assert "error" in response.text.lower() or "not" in response.text.lower()
+    assert len(mock_threads_transport.calls) == 0
+
+
+def test_callback_handles_error_from_meta(
+    configured_admin_app,
+    monkeypatch,
+) -> None:
+    _, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(app=configured_admin_app[0], csrf_token=csrf_token)
+
+    error_response = {
+        "error_type": "OAuthException",
+        "code": 400,
+        "error_message": "Matching code was not found or was already used",
+    }
+    fake = _FakeThreadsTransport(error_response)
+
+    class _FakeClass:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def post(self, url: str, data: dict[str, str]) -> dict[str, object]:
+            return await fake.post(url, data)
+
+    monkeypatch.setattr(
+        "social_mcp.admin.routes.HttpxThreadsTransport", _FakeClass
+    )
+
+    response = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "error" in response.text.lower() or "failed" in response.text.lower()
+    assert len(fake.calls) == 1
+    # The error message is shown safely without revealing secrets.
+    assert "client_secret" not in response.text
+    assert "test-app-secret" not in response.text
+
+
+def test_callback_handles_http_error_from_transport(
+    configured_admin_app,
+    monkeypatch,
+) -> None:
+    _, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(app=configured_admin_app[0], csrf_token=csrf_token)
+
+    class _ErrorTransport:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def post(self, url: str, data: dict[str, str]) -> dict[str, object]:
+            from social_mcp.platforms.threads import ThreadsOAuthError
+
+            raise ThreadsOAuthError("Threads token endpoint returned HTTP 500.")
+
+    monkeypatch.setattr(
+        "social_mcp.admin.routes.HttpxThreadsTransport", _ErrorTransport
+    )
+
+    response = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "error" in response.text.lower() or "failed" in response.text.lower()
+    assert "500" not in response.text or "HTTP 500" in response.text
+    # No credentials are leaked.
+    assert "test-app-secret" not in response.text
+
+
+def test_callback_persists_scopes_and_expiry(
+    configured_admin_app,
+    monkeypatch,
+    mock_threads_transport,
+) -> None:
+    app, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(app, csrf_token)
+
+    response = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    accounts = app.state.container.account_store.list_accounts()
+    assert len(accounts) == 1
+    stored = accounts[0]
+    # Granted scopes are stored (threads_basic is always requested by default).
+    assert "threads_basic" in stored.scopes
+    # Expiry metadata is stored.
+    assert stored.token_expires_at is not None
+
+
+def test_reconnect_replaces_existing_connection(
+    configured_admin_app,
+    monkeypatch,
+    mock_threads_transport,
+) -> None:
+    app, client = configured_admin_app
+
+    # First connection.
+    csrf_token = _csrf(client)
+    state = _create_state(app, csrf_token)
+    response = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 200
+    accounts = app.state.container.account_store.list_accounts()
+    assert len(accounts) == 1
+    first = accounts[0]
+
+    # Reconnect: a second callback with a new state for the same account.
+    csrf_token2 = _csrf(client)
+    state2 = _create_state(app, csrf_token2)
+    response2 = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code-2&state={state2}",
+        follow_redirects=False,
+    )
+    assert response2.status_code == 200
+    accounts = app.state.container.account_store.list_accounts()
+    # Still one account (the same user_id), so no duplicate.
+    assert len(accounts) == 1
+    # The connection was updated, not duplicated.
+    assert accounts[0].updated_at >= first.updated_at
+
+
+def test_reconnect_with_new_token_replaces_encrypted_value(
+    configured_admin_app,
+    monkeypatch,
+) -> None:
+    app, client = configured_admin_app
+
+    # First connection with one token.
+    first_response = dict(SAMPLE_TOKEN_RESPONSE)
+    first_fake = _FakeThreadsTransport(first_response)
+
+    # Second connection with a different token.
+    second_response = {
+        "access_token": "different-fake-token-not-a-credential",
+        "token_type": "bearer",
+        "user_id": 123456789,
+    }
+    second_fake = _FakeThreadsTransport(second_response)
+    fakes = [first_fake, second_fake]
+
+    class _SequenceClass:
+        calls: list[int] = [0]  # noqa: RUF012
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def post(self, url: str, data: dict[str, str]) -> dict[str, object]:
+            fake = fakes[self.calls[0]]
+            self.calls[0] += 1
+            return await fake.post(url, data)
+
+    monkeypatch.setattr(
+        "social_mcp.admin.routes.HttpxThreadsTransport", _SequenceClass
+    )
+
+    csrf_token = _csrf(client)
+    state = _create_state(app, csrf_token)
+    client.get(
+        f"/admin/oauth/callback/threads?code=code1&state={state}",
+        follow_redirects=False,
+    )
+    first_accounts = app.state.container.account_store.list_accounts()
+    first_token = first_accounts[0].access_token_encrypted
+    assert b"different-fake-token" not in first_token
+
+    csrf_token2 = _csrf(client)
+    state2 = _create_state(app, csrf_token2)
+    client.get(
+        f"/admin/oauth/callback/threads?code=code2&state={state2}",
+        follow_redirects=False,
+    )
+    second_accounts = app.state.container.account_store.list_accounts()
+    assert len(second_accounts) == 1
+    second_token = second_accounts[0].access_token_encrypted
+    # The encrypted token was replaced, not appended.
+    assert second_token != first_token
+    assert b"different-fake-token" not in second_token
+    # Neither plaintext token is in the database file.
+    raw_db = app.state.container.account_store.database_path.read_bytes()
+    assert b"fake-threads-access-token" not in raw_db
+    assert b"different-fake-token" not in raw_db
+
+
+def test_callback_no_manual_token_copy_paste(
+    configured_admin_app,
+    mock_threads_transport,
+) -> None:
+    app, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(app, csrf_token)
+
+    response = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    # The entire flow (code exchange, token persistence) happens server-side
+    # without the user seeing or copying any token value.
+    body = response.text
+    assert "fake-threads-access-token" not in body
+    assert "test-app-secret" not in body
+    assert "test-app-id" not in body
+    # The success page doesn't contain a token input field.
+    assert "<input" not in body or "token" not in body.lower()
+
+
+def test_connect_flow_state_is_one_shot(
+    configured_admin_app,
+    monkeypatch,
+    mock_threads_transport,
+) -> None:
+    app, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(app, csrf_token)
+
+    # First callback succeeds.
+    first = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+    assert first.status_code == 200
+    assert "successfully" in first.text
+
+    # Reusing the same state must be rejected (one-shot CSRF protection).
+    second = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+    assert second.status_code == 200
+    assert "already been used" in second.text or "error" in second.text.lower()
+    # The transport is not called for the replay.
+    assert len(mock_threads_transport.calls) == 1
+
+
+def test_connect_flow_shows_account_in_accounts_page(
+    configured_admin_app,
+    monkeypatch,
+    mock_threads_transport,
+) -> None:
+    app, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(app, csrf_token)
+
+    client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+
+    # The accounts page now shows the connected Threads account.
+    response = client.get("/admin/accounts")
+    assert response.status_code == 200
+    assert "threads" in response.text
+    assert "123456789" in response.text
+    # No token material on the page.
+    assert "fake-threads-access-token" not in response.text
+
+
+def test_callback_not_configured_shows_error(
+    admin_app,
+) -> None:
+    _, client = admin_app
+
+    response = client.get(
+        "/admin/oauth/callback/threads?code=fake-code&state=fake-state",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "not configured" in response.text.lower() or "error" in response.text.lower()
+
+
+def test_dashboard_shows_token_encryption_status(configured_admin_app) -> None:
+    _, client = configured_admin_app
+
+    response = client.get("/admin/dashboard")
+
+    assert response.status_code == 200
+    assert "Token encryption: configured" in response.text
+
+
+def test_callback_callback_path_matches_docs(configured_admin_app) -> None:
+    _, client = configured_admin_app
+    csrf_token = _csrf(client)
+    state = _create_state(configured_admin_app[0], csrf_token)
+
+    response = client.get(
+        f"/admin/oauth/callback/threads?code=fake-code&state={state}",
+        follow_redirects=False,
+    )
+
+    # The callback route is at /admin/oauth/callback/threads (matches docs/oauth.md).
+    assert response.status_code == 200
