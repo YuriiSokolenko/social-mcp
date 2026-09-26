@@ -8,6 +8,7 @@ const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
 const number = kind === 'issue' ? process.env.ISSUE : process.env.PR;
 const headSha = process.env.HEAD_SHA ?? '';
+const baseSha = process.env.BASE_SHA ?? '';
 if (!['issue', 'review'].includes(kind) || !action || !repo || !token || !number) {
   throw new Error('usage: pi-transition.mjs <issue|review> <action> [comment]');
 }
@@ -39,9 +40,9 @@ async function postComment() {
   await api(`/issues/${number}/comments`, { method: 'POST', body: JSON.stringify({ body: comment }) });
 }
 async function markCommit(state, description) {
-  if (!headSha) return;
+  if (!headSha || !baseSha) throw new Error('HEAD_SHA and BASE_SHA are required for review status');
   await api(`/statuses/${headSha}`, { method: 'POST', body: JSON.stringify({
-    state, context: 'social-mcp/pi-review', description,
+    state, context: `social-mcp/pi-review/${baseSha.slice(0, 12)}`, description,
   }) });
 }
 
