@@ -157,3 +157,14 @@ test('stranded pi:ready is requeued for dispatcher rather than merely waking it'
   assert.match(source, /addLabel\(issue\.number, 'dispatcher:ready'\)/);
   assert.match(source, /return stranded ready issue to serialized dispatcher/);
 });
+
+
+test('merge gate is the sole scheduler for ready semantic reviews', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const reconciler = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(gate, /label\.name === 'review:running'/);
+  assert.doesNotMatch(gate, /\['review:ready', 'review:running'\]/);
+  assert.doesNotMatch(reconciler, /tryDispatchWorkflow\('pi-pr-review\.yml'/);
+  assert.match(reconciler, /resume ready review through merge-gate scheduler/);
+  assert.match(reconciler, /return orphaned review to merge-gate scheduler/);
+});
