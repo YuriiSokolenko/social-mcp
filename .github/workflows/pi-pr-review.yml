@@ -348,6 +348,12 @@ jobs:
           bash scripts/pi-pr-review-status.sh failed \
             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
+      - name: Summarize issue pipeline
+        if: always() && env.ISSUE != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/pi-issue-summary.mjs "$ISSUE"
+
       - name: Summarize Pi usage
         if: always()
         run: node scripts/pi-usage-summary.mjs
