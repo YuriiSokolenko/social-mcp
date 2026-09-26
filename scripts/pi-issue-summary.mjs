@@ -17,7 +17,7 @@ let base = null;
 if (pr) {
   [base, statuses] = await Promise.all([
     api('/git/ref/heads/dev'),
-    api(`/commits/${pr.head.sha}/statuses?per_page=100`),
+    pages(`/commits/${pr.head.sha}/statuses`),
   ]);
   const integrationContext = `social-mcp/integration/${base.object.sha.slice(0, 12)}`;
   integration = statuses.filter(status => status.context === integrationContext)
