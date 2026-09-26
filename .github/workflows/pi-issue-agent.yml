@@ -223,50 +223,50 @@ jobs:
           echo "PI_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Refresh from dev and verify integrated code
+      - name: Rebase onto latest dev and verify integrated code
         if: steps.checkpoint.outputs.changed == 'true'
         run: |
           cd "$JOB_DIR"
+          git config user.name "social-mcp-pi"
+          git config user.email "social-mcp-pi@users.noreply.github.com"
           git fetch origin dev
-          if ! git merge --no-edit origin/dev; then
-            echo "Merge with dev needs repair" >&2
+
+          NEED_REPAIR=false
+          set +e
+          GIT_EDITOR=true git rebase origin/dev
+          REBASE_STATUS=$?
+          set -e
+          if [ "$REBASE_STATUS" -ne 0 ]; then
             NEED_REPAIR=true
-          else
-            NEED_REPAIR=false
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/pi-issue-conflicts.txt"
           fi
-          if [ "$NEED_REPAIR" = false ]; then
-            if ! git diff --check origin/dev...HEAD > "$RUNNER_TEMP/pi-issue-whitespace.log" 2>&1; then NEED_REPAIR=true; fi
-            python -m pip install -e .
-            if ! pytest > "$RUNNER_TEMP/pi-issue-pytest.log" 2>&1; then NEED_REPAIR=true; fi
-            if ! ruff check . > "$RUNNER_TEMP/pi-issue-ruff.log" 2>&1; then NEED_REPAIR=true; fi
-            cat "$RUNNER_TEMP/pi-issue-whitespace.log" "$RUNNER_TEMP/pi-issue-pytest.log" "$RUNNER_TEMP/pi-issue-ruff.log"
-          fi
-          if [ "$NEED_REPAIR" = false ]; then exit 0; fi
+
           if [ "$NEED_REPAIR" = true ]; then
-            echo "One Pi repair attempt for integration, whitespace or test failures"
+            echo "Rebase needs conflict resolution; returning it to the same implementer"
             set -o pipefail
             pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-implementer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-              "Read agents/implementer/AGENTS.md. Resolve the current merge conflict, whitespace errors or failing tests in this worktree for issue #${ISSUE}. Do not commit, push or change GitHub state. Fix only these problems, then run git diff --check origin/dev...HEAD, pytest and ruff check . before finishing. Existing logs: $RUNNER_TEMP/pi-issue-whitespace.log, $RUNNER_TEMP/pi-issue-pytest.log and $RUNNER_TEMP/pi-issue-ruff.log (read them if present)." \
+              "Read agents/implementer/AGENTS.md. The implementation for issue #${ISSUE} is complete, but rebasing it onto the latest origin/dev produced Git conflicts. Resolve every current rebase conflict while preserving both the issue implementation and incoming dev changes. Stage resolved files with git add and continue with GIT_EDITOR=true git rebase --continue. Repeat for every later conflict until the rebase completes. Do not push or change GitHub state. After the rebase, run git diff --check origin/dev...HEAD, pytest, and ruff check . before finishing. Initial conflicted files are listed in $RUNNER_TEMP/pi-issue-conflicts.txt." \
               | PI_CALL=integration node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
-            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-              echo "Unresolved merge conflicts remain" >&2
-              exit 1
-            fi
-            git add -A
-            if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
-              echo "Refusing to commit a credential or runtime file" >&2
-              exit 1
-            fi
-            if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
-              git commit --no-edit
-            elif ! git diff --cached --quiet; then
-              git commit -m "fix: resolve integration for issue #${ISSUE}"
-            fi
           fi
+
+          if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+            echo "Rebase is still in progress" >&2
+            exit 1
+          fi
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "Unresolved conflicts remain" >&2
+            exit 1
+          fi
+
+          git fetch origin dev
+          git merge-base --is-ancestor origin/dev HEAD || {
+            echo "dev moved again during verification; retry integration before publishing" >&2
+            exit 1
+          }
           python -m pip install -e .
+          git diff --check origin/dev...HEAD
           pytest
           ruff check .
-          git diff --check origin/dev...HEAD
 
       - name: Save verified or failed integration checkpoint
         if: always() && steps.checkpoint.outputs.changed == 'true'
