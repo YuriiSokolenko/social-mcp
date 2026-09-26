@@ -3,7 +3,8 @@ const repo = process.env.REPO ?? process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
 const sha = process.env.HEAD_SHA ?? process.argv[2];
 const branch = process.env.HEAD_REF ?? process.argv[3];
-if (!repo || !token || !sha || !branch) throw new Error('repo, token, SHA and branch are required');
+const baseSha = process.env.BASE_SHA ?? process.argv[4];
+if (!repo || !token || !sha || !branch || !baseSha) throw new Error('repo, token, SHA, branch and base SHA are required');
 
 const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
   'X-GitHub-Api-Version': '2022-11-28' };
@@ -13,7 +14,7 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(`GitHub ${response.status} ${path}: ${await response.text()}`);
   return response.status === 204 ? null : response.json();
 }
-const dispatchIdentity = `target:${sha} ref:${branch}`;
+const dispatchIdentity = `target:${sha} ref:${branch} base:${baseSha}`;
 function matching(runs) {
   return (runs.workflow_runs ?? []).filter(run =>
     run.event === 'workflow_dispatch' &&
@@ -24,9 +25,9 @@ let data = await api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&bra
 let run = matching(data);
 if (!run) {
   await api('/actions/workflows/ci.yml/dispatches', { method:'POST', body: JSON.stringify({
-    ref: 'dev', inputs: { target_sha: sha, target_ref: branch },
+    ref: 'dev', inputs: { target_sha: sha, target_ref: branch, integration_base_sha: baseSha },
   }) });
-  console.error(`CI dispatched from dev for ${branch} @ ${sha.slice(0,12)}`);
+  console.error(`Integration CI dispatched for dev ${baseSha.slice(0,12)} + ${branch} @ ${sha.slice(0,12)}`);
 }
 const deadline = Date.now() + Number(process.env.PI_CI_WAIT_MS ?? 20 * 60 * 1000);
 while (Date.now() < deadline) {
@@ -37,11 +38,11 @@ while (Date.now() < deadline) {
     continue;
   }
   if (run.status === 'completed') {
-    console.log(JSON.stringify({ id: run.id, url: run.html_url, sha, branch, status: run.status, conclusion: run.conclusion }));
+    console.log(JSON.stringify({ id: run.id, url: run.html_url, sha, branch, baseSha, status: run.status, conclusion: run.conclusion }));
     process.exit(run.conclusion === 'success' ? 0 : 3);
   }
   await new Promise(resolve => setTimeout(resolve, 10000));
   data = await api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100');
   run = matching(data);
 }
-throw new Error(`Timed out waiting for CI on ${sha}`);
+throw new Error(`Timed out waiting for integration CI on ${baseSha} + ${sha}`);
