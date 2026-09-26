@@ -35,7 +35,7 @@ async function removeLabel(number, label) {
 const [allIssues, prs, runs, refs] = await Promise.all([
   pages('/issues?state=all'),
   pages('/pulls?state=all'),
-  pages('/actions/runs?status=in_progress'),
+  pages('/actions/runs?exclude_pull_requests=true'),
   pages('/git/matching-refs/heads/pi/issue-'),
 ]);
 const issues = allIssues.filter(item => !item.pull_request);
