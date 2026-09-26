@@ -294,9 +294,9 @@ jobs:
           git add -A
           if ! git diff --cached --quiet; then git commit -m "fix: checkpoint repair for PR #${PR}"; fi
           if [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ]; then exit 0; fi
-          git fetch origin dev
-          REPAIR_TREE="$(git rev-parse HEAD^{tree})"
-          CHECKPOINT_COMMIT="$(printf 'fix: checkpoint repair for PR #%s\n' "$PR" | git commit-tree "$REPAIR_TREE" -p origin/dev)"
+          # Preserve the exact repair state. Do not manufacture a new parent
+          # from latest dev; integration validity is established by Merge Gate CI.
+          CHECKPOINT_COMMIT="$(git rev-parse HEAD)"
           CHECKPOINT_REF="refs/heads/pi/repair-pr-${PR}-checkpoint"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
             push --force-with-lease="${CHECKPOINT_REF}:${REPAIR_CHECKPOINT_EXPECTED}" origin "${CHECKPOINT_COMMIT}:${CHECKPOINT_REF}"
