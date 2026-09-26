@@ -54,8 +54,7 @@ async function processPR(prSummary) {
   const files = await pages(`/pulls/${pr.number}/files`);
   if (!allowedFiles(files, pr.changed_files)) {
     console.log(`#${pr.number}: changed control files or incomplete file list; human review required`);
-    const labels = [...new Set(issueData.labels.map(label => label.name).filter(label => label !== 'pi:mr-created').concat('pi:needs-human'))];
-    await api(`/issues/${issue}`, 'PATCH', { labels });
+    console.log(`#${pr.number}: PR ownership remains pi:mr-created; PR failures are represented by pair-bound statuses`);
     await api(`/issues/${issue}/comments`, 'POST', {
       body: `Merge Gate stopped PR #${pr.number}: it changes CI/control-plane files or the changed-file list was incomplete. Human review is required.`,
     });
