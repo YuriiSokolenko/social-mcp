@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readQueueContext } from './pi-queue-context.mjs';
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS } from './pi-state-machine.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN;
@@ -178,8 +179,8 @@ async function prepare(issue, filename) {
     labels.add('architect:ready');
   }
   if (!parent || parent.state !== 'open' || !labels.has('architect:ready') ||
-      ['pi:running', 'pi:ready', 'pi:mr-created', 'pi:failed', 'pi:needs-human',
-        'pi:blocked', 'pi:cancelled', 'architect:epic'].some(x => labels.has(x))) {
+      [...ISSUE_ACTIVE, ...ISSUE_TERMINAL, PIPELINE_LABELS.epic]
+        .filter(x => x !== PIPELINE_LABELS.architectReady).some(x => labels.has(x))) {
     throw new Error('Parent must be an open, inactive issue labeled architect:ready');
   }
   if (labels.has('dispatcher:ready')) {
