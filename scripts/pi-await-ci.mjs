@@ -28,7 +28,7 @@ if (!matching(data)) {
 let run = matching(data);
 if (!run) {
   await api('/actions/workflows/ci.yml/dispatches', { method:'POST', body: JSON.stringify({
-    ref: 'dev', inputs: { target_sha: sha, target_ref: branch, pr_title: `${branch} @ ${sha.slice(0,12)}` },
+    ref: 'dev', inputs: { target_sha: sha, target_ref: branch },
   }) });
   console.error(`CI dispatched from dev for ${branch} @ ${sha.slice(0,12)}`);
 }
