@@ -127,3 +127,10 @@ test('merge gate never scans workflow runs for review or repair liveness', () =>
   assert.match(source, /social-mcp\/repair-conflict/);
   assert.match(source, /social-mcp\/repair-review/);
 });
+
+
+test('merge gate uses shared GitHub client and no Actions-run liveness state', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(source, /githubClient/);
+  assert.doesNotMatch(source, /api\.github\.com|workflow_runs|display_title|hasLive/);
+});
