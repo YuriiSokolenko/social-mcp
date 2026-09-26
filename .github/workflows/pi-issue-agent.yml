@@ -51,7 +51,7 @@ jobs:
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate dispatched issue
-        if: github.event_name == 'repository_dispatch'
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
