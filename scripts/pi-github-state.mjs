@@ -1,4 +1,4 @@
-import { ISSUE_STATE_LABELS, REVIEW_LABELS, issueStateLabels } from './pi-state-machine.mjs';
+import { ISSUE_STATE_LABELS, issueStateLabels } from './pi-state-machine.mjs';
 
 export function labelNames(item) {
   return (item?.labels ?? []).map(label => typeof label === 'string' ? label : label.name);
@@ -40,14 +40,7 @@ export function issueTargetAfterRemovals(item, removals) {
   return stateTargetAfterRemovals(item, removals, ISSUE_STATE_LABELS);
 }
 
-export function reviewTargetAfterRemovals(item, removals) {
-  return stateTargetAfterRemovals(item, removals, REVIEW_LABELS);
-}
-
 export async function replaceIssueState(options) {
   return replaceStateLabels({ ...options, stateLabels: ISSUE_STATE_LABELS });
 }
 
-export async function replaceReviewState(options) {
-  return replaceStateLabels({ ...options, stateLabels: REVIEW_LABELS });
-}
