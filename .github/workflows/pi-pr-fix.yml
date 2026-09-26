@@ -1,5 +1,5 @@
 name: Pi PR Fix
-run-name: 'Pi repair PR #${{ github.event.client_payload.pr_number || inputs.pr_number }}'
+run-name: '🔧 Repair PR #${{ github.event.client_payload.pr_number || inputs.pr_number }} · ${{ github.event.client_payload.pr_title || inputs.pr_title || 'pull request' }}'
 
 on:
   repository_dispatch:
@@ -9,6 +9,10 @@ on:
       pr_number:
         description: Pull request number to repair
         required: true
+        type: string
+      pr_title:
+        description: Pull request title for the Actions run name
+        required: false
         type: string
       reason:
         description: Why this repair was requested
