@@ -19,6 +19,7 @@ on:
         options:
           - review
           - conflict
+          - integration
         default: review
 
 permissions:
@@ -82,10 +83,16 @@ jobs:
               echo "PR #${PR} head ${HEAD_SHA} no longer has a failing review status; duplicate repair exits."
               exit 0
             fi
+          elif [ "$REASON" = "integration" ]; then
+            INTEGRATION_STATE="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | jq -r --arg context "social-mcp/integration/${BASE_SHA:0:12}" '[.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
+            if [ "$INTEGRATION_STATE" != "failure" ]; then
+              echo "PR #${PR} no longer has failing integration checks; duplicate repair exits."
+              exit 0
+            fi
           fi
 
       - name: Load review feedback
-        if: env.REASON != 'conflict'
+        if: env.REASON == 'review'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -201,12 +208,17 @@ jobs:
           watchdog_pid=$!
 
           set +e
-          PI_ACTIVITY_FILE="$activity_file" pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "Read and follow agents/repair/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. Address the blocking reviewer feedback below in the existing working tree. Do not commit, push, or modify GitHub state yourself.
+          if [ "$REASON" = "integration" ]; then
+            REPAIR_TASK="Read and follow agents/repair/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. The exact integration of PR head ${HEAD_SHA} with dev base ${BASE_SHA} merges cleanly, but deterministic Integration CI failed. Reproduce the failing repository checks locally (pytest, Ruff, Docker/build checks as relevant), diagnose the actual failure, and make the smallest repository change that makes the exact integration pass. Do not commit, push, or modify GitHub state yourself."
+          else
+            REPAIR_TASK="Read and follow agents/repair/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. Address the blocking reviewer feedback below in the existing working tree. Do not commit, push, or modify GitHub state yourself.
 
           Reviewer feedback:
 
-          $(cat "$RUNNER_TEMP/review-feedback.txt")" \
+          $(cat "$RUNNER_TEMP/review-feedback.txt")"
+          fi
+          PI_ACTIVITY_FILE="$activity_file" pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+            "$REPAIR_TASK" \
           | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
           pi_status=${PIPESTATUS[0]}
           set -e
@@ -270,7 +282,11 @@ jobs:
             if [ "$REASON" = "conflict" ]; then
               git commit -m "fix: integrate latest dev for issue #${ISSUE}"
             else
-              git commit -m "fix: address review for issue #${ISSUE}"
+              if [ "$REASON" = "integration" ]; then
+                git commit -m "fix: repair integration for issue #${ISSUE}"
+              else
+                git commit -m "fix: address review for issue #${ISSUE}"
+              fi
             fi
           fi
           NEW_HEAD="$(git rev-parse HEAD)"
