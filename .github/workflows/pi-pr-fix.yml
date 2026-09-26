@@ -1,5 +1,5 @@
 name: Pi PR Fix
-run-name: "🔧 Repair PR #${{ inputs.pr_number }} · ${{ inputs.pr_title || 'title unavailable' }}"
+run-name: "🔧 Repair PR #${{ inputs.pr_number }} ${{ inputs.pr_title && format('· {0}', inputs.pr_title) || '' }}"
 
 on:
   workflow_dispatch:
