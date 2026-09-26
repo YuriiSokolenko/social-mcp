@@ -122,8 +122,10 @@ for (const issue of issues) {
   }
   if (retryMergeGateForPr) mergeGateWakeNeeded = true;
   if (retryReadyImplementer && !recovery) {
+    await removeLabel(issue.number, 'pi:ready');
+    await addLabel(issue.number, 'dispatcher:ready');
     const dispatched = await tryDispatchWorkflow('pi-dispatcher.yml', {}, `ready issue #${issue.number}`);
-    recovery = { add: 'pi:ready', dispatch: dispatched ? 'dispatcher' : null, reason: dispatched ? 'wake serialized dispatcher for ready implementation' : 'dispatcher wake failed; pi:ready retained for retry' };
+    recovery = { add: 'dispatcher:ready', dispatch: dispatched ? 'dispatcher' : null, reason: dispatched ? 'return stranded ready issue to serialized dispatcher' : 'dispatcher wake failed; dispatcher:ready retained for retry' };
   }
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
 }
