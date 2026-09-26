@@ -16,6 +16,10 @@ on:
         description: Branch name associated with target_sha
         required: false
         type: string
+      integration_base_sha:
+        description: Exact dev SHA to merge with target_sha before testing
+        required: false
+        type: string
   # Pi PRs are checked through SHA-bound workflow_dispatch runs from trusted dev.
   # Do not use pull_request here: PRs created by GITHUB_TOKEN are authored by
   # github-actions[bot] and GitHub approval-gates those runs before any job exists.
@@ -37,8 +41,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.target_sha || github.sha }}
+          ref: ${{ inputs.integration_base_sha || inputs.target_sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Build exact integration result
+        if: inputs.integration_base_sha != ''
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.integration_base_sha }}
+        run: |
+          git fetch origin "$TARGET_SHA"
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          git config user.name "social-mcp-ci"
+          git config user.email "social-mcp-ci@users.noreply.github.com"
+          git merge --no-ff --no-edit "$TARGET_SHA"
+          echo "Tested integration: base=$BASE_SHA head=$TARGET_SHA result=$(git rev-parse HEAD)"
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -71,8 +89,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.target_sha || github.sha }}
+          ref: ${{ inputs.integration_base_sha || inputs.target_sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Build exact integration result
+        if: inputs.integration_base_sha != ''
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.integration_base_sha }}
+        run: |
+          git fetch origin "$TARGET_SHA"
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          git config user.name "social-mcp-ci"
+          git config user.email "social-mcp-ci@users.noreply.github.com"
+          git merge --no-ff --no-edit "$TARGET_SHA"
 
       - name: Generate ephemeral test encryption key
         shell: bash
