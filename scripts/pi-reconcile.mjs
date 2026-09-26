@@ -34,8 +34,8 @@ async function markerExists(sha, context) {
 async function mark(sha, context, description) {
   await api(`/statuses/${sha}`, { method: 'POST', body: JSON.stringify({ state: 'success', context, description: description.slice(0, 140) }) });
 }
-async function dispatch(event_type, payload) {
-  await api('/dispatches', { method: 'POST', body: JSON.stringify({ event_type, client_payload: payload }) });
+async function dispatchWorkflow(workflow, inputs) {
+  await api(`/actions/workflows/${workflow}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: 'dev', inputs }) });
 }
 async function deleteRef(ref) {
   const response = await fetch(`${base}/git/refs/${ref}`, { method: 'DELETE', headers });
@@ -93,7 +93,7 @@ for (const issue of issues) {
           const context = `social-mcp/recovery-implement-${issue.number}`;
           if (!await markerExists(markerSha, context)) {
             await mark(markerSha, context, `Implementer recovery dispatched for issue #${issue.number}`);
-            await dispatch('pi_dispatch_issue', { issue_number: issue.number, issue_title: issue.title });
+            await dispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number), issue_title: issue.title });
           }
         }
       }
@@ -116,7 +116,7 @@ for (const pr of prs) {
           const context = `social-mcp/recovery-review-${pr.number}`;
           if (!await markerExists(pr.head.sha, context)) {
             await mark(pr.head.sha, context, `Reviewer recovery dispatched for PR #${pr.number}`);
-            await dispatch('pi_pr_review', { pr_number: pr.number, pr_title: pr.title });
+            await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title });
           }
         }
       }
