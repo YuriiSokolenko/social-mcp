@@ -24,6 +24,15 @@ async function pages(path) {
     if (batch.length < 100) return all;
   }
 }
+async function workflowRunPages(path) {
+  const all = [];
+  for (let page = 1; ; page++) {
+    const data = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+    const batch = data.workflow_runs ?? [];
+    all.push(...batch);
+    if (batch.length < 100) return all;
+  }
+}
 async function addLabel(number, label) {
   await api(`/issues/${number}/labels`, { method: 'POST', body: JSON.stringify({ labels: [label] }) });
 }
@@ -53,7 +62,7 @@ async function removeLabel(number, label) {
 const [allIssues, prs, runs, refs] = await Promise.all([
   pages('/issues?state=all'),
   pages('/pulls?state=all'),
-  pages('/actions/runs?exclude_pull_requests=true'),
+  workflowRunPages('/actions/runs?exclude_pull_requests=true'),
   pages('/git/matching-refs/heads/pi/issue-'),
 ]);
 const issues = allIssues.filter(item => !item.pull_request);
