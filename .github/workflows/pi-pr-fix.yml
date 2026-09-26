@@ -97,16 +97,8 @@ jobs:
         run: |
           JOB_DIR="$RUNNER_TEMP/social-mcp-fix-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
-          REPAIR_CHECKPOINT="pi/repair-pr-${PR}-checkpoint"
-          CHECKPOINT_REMOTE="$(git ls-remote origin "refs/heads/${REPAIR_CHECKPOINT}" | awk '{print $1}')"
-          echo "REPAIR_CHECKPOINT_EXPECTED=${CHECKPOINT_REMOTE}" >> "$GITHUB_ENV"
-          if [ -n "$CHECKPOINT_REMOTE" ]; then
-            git fetch origin "${REPAIR_CHECKPOINT}:refs/remotes/origin/${REPAIR_CHECKPOINT}"
-            START_REF="refs/remotes/origin/${REPAIR_CHECKPOINT}"
-          else
-            git fetch origin "$HEAD_REF"
-            START_REF="$HEAD_SHA"
-          fi
+          git fetch origin "$HEAD_REF"
+          START_REF="$HEAD_SHA"
           git worktree prune
           git worktree add -B "$HEAD_REF" "$JOB_DIR" "$START_REF"
 
@@ -259,32 +251,6 @@ jobs:
           pytest
           ruff check .
 
-      - name: Save repair checkpoint
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cd "$JOB_DIR"
-          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-            echo "Unresolved conflict cannot be checkpointed safely" >&2
-            exit 0
-          fi
-          rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
-          rm -f .coverage coverage.xml
-          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          git add -A
-          if ! git diff --cached --quiet; then git commit -m "fix: checkpoint repair for PR #${PR}"; fi
-          if [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ]; then exit 0; fi
-          # Preserve the exact repair state. Do not manufacture a new parent
-          # from latest dev; integration validity is established by Merge Gate CI.
-          CHECKPOINT_COMMIT="$(git rev-parse HEAD)"
-          CHECKPOINT_REF="refs/heads/pi/repair-pr-${PR}-checkpoint"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
-            push --force-with-lease="${CHECKPOINT_REF}:${REPAIR_CHECKPOINT_EXPECTED}" origin "${CHECKPOINT_COMMIT}:${CHECKPOINT_REF}"
-          echo "REPAIR_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
-
       - name: Commit and push repair
         id: changes
         env:
@@ -320,15 +286,6 @@ jobs:
           git diff --check
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "HEAD:refs/heads/$HEAD_REF"
           echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Remove published repair checkpoint
-        if: steps.changes.outputs.changed == 'true' && (env.REPAIR_CHECKPOINT_PUBLISHED != '' || env.REPAIR_CHECKPOINT_EXPECTED != '')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
-            push --force-with-lease="refs/heads/pi/repair-pr-${PR}-checkpoint:${REPAIR_CHECKPOINT_PUBLISHED:-$REPAIR_CHECKPOINT_EXPECTED}" origin ":refs/heads/pi/repair-pr-${PR}-checkpoint" || \
-            echo "::warning::Published repair is safe, but checkpoint cleanup was skipped because the checkpoint changed."
 
       - name: Mark no-change repair terminal
         if: steps.changes.outputs.changed == 'false'
