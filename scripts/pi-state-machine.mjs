@@ -125,6 +125,11 @@ export const REVIEW_TRANSITIONS = Object.freeze({
   failed: PIPELINE_LABELS.reviewFailed,
 });
 
+export function issueStateLabels(issue) {
+  const labels = names(issue);
+  return [...ISSUE_STATE_LABELS].filter(label => labels.has(label)).sort();
+}
+
 export function validateIssueTransition(issue, action) {
   const target = ISSUE_TRANSITIONS[action];
   if (!target) throw new Error(`unknown issue transition: ${action}`);
