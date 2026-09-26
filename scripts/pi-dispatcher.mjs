@@ -48,19 +48,13 @@ async function ensureLabel(name, color, description) {
 }
 const labels = issue => new Set(issue.labels.map(label => label.name));
 async function transitionIssue(number, action) {
-  const issue = await api(`/issues/${number}`);
-  const expected = labels(issue);
-  const target = validateIssueTransition(issue, action);
-  const current = await api(`/issues/${number}`);
-  const currentNames = labels(current);
-  const expectedState = [...ISSUE_STATE_LABELS].filter(label => expected.has(label)).sort();
-  const currentState = [...ISSUE_STATE_LABELS].filter(label => currentNames.has(label)).sort();
-  if (JSON.stringify(expectedState) !== JSON.stringify(currentState)) {
-    throw new Error(`concurrent pipeline transition on #${number}: expected [${expectedState}], found [${currentState}]`);
-  }
-  const keep = current.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
-  await api(`/issues/${number}`, { method: "PATCH",
-    body: JSON.stringify({ labels: [...new Set([...keep, target])] }) });
+  const expected = await api(`/issues/${number}`);
+  const target = validateIssueTransition(expected, action);
+  await replaceIssueState({
+    number, expected, target,
+    load: n => api(`/issues/${n}`),
+    patch: (n, labels) => api(`/issues/${n}`, { method: "PATCH", body: JSON.stringify({ labels }) }),
+  });
 }
 
 const activeLabels = [...ISSUE_ACTIVE].filter(label => label !== PIPELINE_LABELS.architectReady);
