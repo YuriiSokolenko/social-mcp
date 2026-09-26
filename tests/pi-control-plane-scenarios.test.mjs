@@ -68,3 +68,17 @@ test('reconciler retries stranded ready implementation and review states', () =>
   assert.match(source, /retryReadyReviewer/);
   assert.match(source, /resume ready review/);
 });
+
+
+test('agent concurrency preserves active work and duplicate runs have idempotency guards', () => {
+  for (const path of ['.github/workflows/pi-issue-agent.yml', '.github/workflows/pi-pr-review.yml', '.github/workflows/pi-pr-fix.yml']) {
+    const workflow = fs.readFileSync(path, 'utf8');
+    assert.match(workflow, /cancel-in-progress: false/);
+  }
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(review, /social-mcp\/pi-review/);
+  assert.match(review, /already has final state/);
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(repair, /review:changes-requested/);
+  assert.match(repair, /duplicate dispatch exits without model work/);
+});
