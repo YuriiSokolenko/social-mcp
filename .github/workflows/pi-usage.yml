@@ -3,7 +3,7 @@ run-name: "📊 Usage · ${{ github.event.workflow_run.display_title || inputs.r
 
 on:
   workflow_run:
-    workflows: [Pi Issue Agent, Pi PR Review, Pi PR Fix, Pi Architect]
+    workflows: [Pi Issue Agent, Pi PR Review, Pi PR Fix, Pi Architect, Pi Dispatcher, Pi Triage]
     types: [completed]
   workflow_dispatch:
     inputs:
