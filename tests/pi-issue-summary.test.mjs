@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
-test('issue summary helper is tracked by CI node test glob', async () => {
-  const fs = await import('node:fs');
+test('issue summary reports the status-driven merge pipeline', () => {
   const source = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
   assert.match(source, /social-mcp\/pi-review/);
+  assert.match(source, /social-mcp\/integration/);
   assert.match(source, /MERGE GATE/);
   assert.match(source, /pi\/issue-/);
-  assert.match(source, /run\.event === 'workflow_dispatch'/);
-  assert.match(source, /run\.head_sha === pr\.head\.sha/);
-  assert.doesNotMatch(source, /\['push', 'workflow_dispatch'\]/);
+  assert.match(source, /SHA-bound status/);
+  assert.match(source, /exact dev\+PR pair status/);
+  assert.doesNotMatch(source, /pi:failed|pi:cancelled|pi:blocked/);
 });
