@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { allowedFiles, finishArchitectParents, issueNumber, latestCI, latestStatus, needsCIDispatch } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, issueNumber, latestCI, latestStatus, needsCIDispatch } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 const pr = {
@@ -136,12 +136,11 @@ test('agent workflows execute control scripts only from fresh GITHUB_WORKSPACE c
 });
 
 
-test('merge gate owns integration CI and starts review only after CI success', () => {
+test('merge gate solely owns integration CI dispatch and review starts only after CI success', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  const awaitCi = fs.readFileSync('scripts/pi-await-ci.mjs', 'utf8');
   assert.match(gate, /actions\/workflows\/ci\.yml\/dispatches/);
   assert.match(gate, /ci\.status !== 'completed' \|\| ci\.conclusion !== 'success'/);
-  assert.doesNotMatch(awaitCi, /actions\/workflows\/ci\.yml\/dispatches/);
+  assert.equal(fs.existsSync('scripts/pi-await-ci.mjs'), false);
 });
 
 
@@ -164,4 +163,17 @@ test('shared state helpers contain issue state only', () => {
     const source = fs.readFileSync(path, 'utf8');
     assert.doesNotMatch(source, /REVIEW_LABELS|REVIEW_TRANSITIONS|review:ready|review:running|review:passed|review:changes-requested|review:failed/, path);
   }
+});
+
+
+test('merge gate has no issue or architect finalization responsibilities', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.doesNotMatch(source, /finishArchitectParents|finalizeMergedPR|replaceIssueState|pi-dispatcher\.yml/);
+  assert.doesNotMatch(source, /mergeable_state/);
+  assert.match(source, /social-mcp\/integration-conflict/);
+});
+
+test('review status is bound to the exact dev base', () => {
+  const source = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
+  assert.match(source, /social-mcp\/pi-review\/\$\{baseSha\.slice\(0, 12\)\}/);
 });
