@@ -68,11 +68,12 @@ test('review state is SHA/base-bound commit status, not review labels', () => {
   assert.doesNotMatch(review, /review:(?:ready|running|passed|changes-requested|failed)/);
 });
 
-test('repair either publishes a new head or escalates issue to needs-human', () => {
+test('repair keeps PR ownership and records terminal outcome in pair-bound statuses', () => {
   const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  assert.match(repair, /Mark no-change repair terminal/);
-  assert.match(repair, /issue needs-human/);
+  assert.match(repair, /Mark no-change review repair terminal/);
+  assert.doesNotMatch(repair, /pi-transition\.mjs" issue needs-human/);
   assert.match(repair, /steps\.changes\.outputs\.changed == 'false'/);
+  assert.match(repair, /social-mcp\/repair-\$\{REASON\}/);
   assert.match(repair, /pi-auto-merge\.yml\/dispatches/);
 });
 
