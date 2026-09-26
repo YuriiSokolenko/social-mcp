@@ -78,10 +78,18 @@ export function shouldDeferBranchUpdate(pr) {
   return pr.labels?.some(label => ['review:running', 'review:changes-requested'].includes(label.name)) ?? false;
 }
 
+async function hasLiveReview(prNumber) {
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+    const data = await api(`/actions/workflows/pi-pr-review.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
+    if ((data.workflow_runs ?? []).some(run => run.display_title === `🔬 Review PR #${prNumber}`)) return true;
+  }
+  return false;
+}
+
 async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   const reviewActive = pr.labels?.some(label => ['review:ready', 'review:running'].includes(label.name)) ?? false;
-  if (!currentReview && !reviewActive) {
+  if (!currentReview && !reviewActive && !(await hasLiveReview(pr.number))) {
     await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number) } });
   }
   const ci = latestCI(runs, sha, pr.head.ref);
