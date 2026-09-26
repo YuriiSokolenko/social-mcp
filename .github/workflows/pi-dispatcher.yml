@@ -35,6 +35,12 @@ jobs:
       - name: Initialize Pi usage
         run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl" >> "$GITHUB_ENV"
 
+      - name: Reconcile completed issue hierarchy
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node "$GITHUB_WORKSPACE/scripts/pi-issue-reconcile.mjs" "${{ github.event.issue.number }}"
+
       - name: Prepare dispatcher context
         id: prepare
         env:
