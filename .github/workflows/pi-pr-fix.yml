@@ -1,5 +1,5 @@
 name: Pi PR Fix
-run-name: "🔧 Repair PR #${{ inputs.pr_number }} · ${{ inputs.pr_title || 'pull request' }}"
+run-name: "🔧 Repair PR #${{ inputs.pr_number }}"
 
 on:
   workflow_dispatch:
@@ -7,10 +7,6 @@ on:
       pr_number:
         description: Pull request number to repair
         required: true
-        type: string
-      pr_title:
-        description: Pull request title for the Actions run name
-        required: false
         type: string
       reason:
         description: Why this repair was requested
