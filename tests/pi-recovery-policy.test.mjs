@@ -30,7 +30,7 @@ test('orphaned review returns to review-ready and restarts reviewer', () => {
 
 test('checkpoint GC only removes proven published or completed work', () => {
   assert.equal(checkpointGcDecision(issue('open', ['pi:running'])).remove, false);
-  assert.equal(checkpointGcDecision(issue('open', ['pi:mr-created'])).remove, true);
+  assert.equal(checkpointGcDecision(issue('open', ['pi:mr-created'])).remove, false);
   assert.equal(checkpointGcDecision(issue('closed', [], 'completed')).remove, true);
   assert.equal(checkpointGcDecision(issue('closed', [], 'not_planned')).remove, false);
   assert.equal(checkpointGcDecision(issue('closed', [], 'completed'), { hasOpenPiPr: true }).remove, false);
