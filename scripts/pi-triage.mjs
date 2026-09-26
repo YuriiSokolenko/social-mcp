@@ -36,8 +36,8 @@ async function transitionIssue(number, action) {
 // pipeline; triage never re-classifies them. `pi:needs-human` is handled
 // separately below, since triage is exactly what re-reviews those.
 const pipelineLabels = [
-  "dispatcher:ready", "pi:ready", "pi:running", "pi:mr-created", "pi:blocked",
-  "pi:failed", "pi:cancelled", "architect:ready", "architect:epic",
+  "dispatcher:ready", "pi:ready", "pi:running", "pi:mr-created",
+  "architect:ready", "architect:epic",
 ];
 
 function hash(value) {
