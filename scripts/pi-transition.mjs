@@ -24,16 +24,13 @@ const names = item => new Set((item.labels ?? []).map(label => typeof label === 
 async function load() {
   return api(kind === 'issue' ? `/issues/${number}` : `/pulls/${number}`);
 }
-async function replaceLabels(expected, target, kind, action) {
+async function replaceIssueLabels(expected, target, action) {
   await replaceIssueState({
     number,
     expected: { labels: [...expected] },
     target,
     load,
-    validateCurrent: current => {
-      if (kind === 'issue') validateIssueTransition(current, action);
-      else validateReviewTransition(current, action);
-    },
+    validateCurrent: current => validateIssueTransition(current, action),
     patch: async (_number, labels) => api(`/issues/${number}`, { method: 'PATCH', body: JSON.stringify({ labels }) }),
   });
 }
@@ -52,7 +49,7 @@ const item = await load();
 const expected = names(item);
 if (kind === 'issue') {
   const target = validateIssueTransition(item, action);
-  await replaceLabels(expected, target, 'issue', action);
+  await replaceIssueLabels(expected, target, action);
   if (action !== 'running') await postComment();
   console.log(`issue #${number}: transitioned to ${target}`);
 } else {
@@ -64,7 +61,9 @@ if (kind === 'issue') {
     stale: ['pending', 'Review base changed; waiting for refreshed branch'],
     failed: ['error', 'Automated review workflow failed'],
   };
-  const [state, description] = statuses[action];
+  const status = statuses[action];
+  if (!status) throw new Error(`unknown review action: ${action}`);
+  const [state, description] = status;
   await markCommit(state, description);
   if (action !== 'stale') await postComment();
   console.log(`review #${number}: status ${state}`);
