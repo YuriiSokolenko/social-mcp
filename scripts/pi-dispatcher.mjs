@@ -187,10 +187,21 @@ async function main() {
     if (classified.architect.includes(number)) {
       await transitionIssue(number, "architect-ready");
       // GITHUB_TOKEN label events cannot trigger another Actions workflow.
-      // Dispatch explicitly, and keep the new label if dispatch fails for a manual retry.
-      await api("/actions/workflows/pi-architect.yml/dispatches", {
-        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
-      });
+      // If the explicit dispatch fails, return ownership to the serialized
+      // dispatcher instead of misclassifying an infrastructure failure as
+      // architect/human work.
+      try {
+        await api("/actions/workflows/pi-architect.yml/dispatches", {
+          method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
+        });
+      } catch (error) {
+        try {
+          await transitionIssue(number, "queued");
+        } catch (rollbackError) {
+          console.error(`Could not roll back architect:ready on #${number}: ${rollbackError}`);
+        }
+        throw error;
+      }
       console.log(`Sent #${number} to Architect`);
       continue;
     }
