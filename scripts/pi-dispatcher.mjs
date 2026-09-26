@@ -130,13 +130,21 @@ export function finalText(jsonl) {
   return result;
 }
 export function validateDispatch(result) {
-  if (!Array.isArray(result.issues) || !result.issues.every(Number.isSafeInteger) ||
-      !Array.isArray(result.architect) || !result.architect.every(Number.isSafeInteger)) {
-    throw new Error("invalid dispatcher classification lists");
+  if (!Array.isArray(result.classifications) ||
+      !result.classifications.every(item => Number.isSafeInteger(item?.issue) &&
+        ["IMPLEMENT", "ARCHITECT"].includes(item?.decision))) {
+    throw new Error("invalid dispatcher classifications");
   }
-  const selected = [...result.issues, ...result.architect];
-  if (new Set(selected).size !== selected.length) throw new Error("duplicate issue");
+  const numbers = result.classifications.map(item => item.issue);
+  if (new Set(numbers).size !== numbers.length) throw new Error("duplicate issue");
   return result;
+}
+
+export function classificationLists(result) {
+  return {
+    issues: result.classifications.filter(item => item.decision === "IMPLEMENT").map(item => item.issue),
+    architect: result.classifications.filter(item => item.decision === "ARCHITECT").map(item => item.issue),
+  };
 }
 export function dispatchFromJsonl(jsonl) {
   let toolResult = null;
@@ -171,7 +179,8 @@ async function main() {
     return;
   }
   const result = dispatchFromJsonl(fs.readFileSync(file, "utf8"));
-  const selected = [...result.issues, ...result.architect];
+  const classified = classificationLists(result);
+  const selected = result.classifications.map(item => item.issue);
 
   // The concurrency group serializes dispatcher jobs, but queued jobs can start
   // with stale trigger events. Always rebuild state after acquiring the runner
@@ -197,7 +206,7 @@ async function main() {
       continue;
     }
 
-    if (result.architect.includes(number)) {
+    if (classified.architect.includes(number)) {
       await api(`/issues/${number}/labels`, {
         method: "POST", body: JSON.stringify({ labels: ["architect:ready"] }),
       });
