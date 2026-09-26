@@ -66,16 +66,18 @@ jobs:
           BASE_REF="$(jq -r '.base.ref' <<<"$PR_JSON")"
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
           HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
+          BASE_SHA="$(jq -r '.base.sha' <<<"$PR_JSON")"
           [[ "$BASE_REF" == "dev" ]]
           [[ "$HEAD_REF" == pi/issue-* ]]
           ISSUE="${HEAD_REF#pi/issue-}"
           echo "PI_ISSUE=$ISSUE" >> "$GITHUB_ENV"
           echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
           if [ "$REASON" = "review" ]; then
-            REVIEW_STATE="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | jq -r '[.[] | select(.context == "social-mcp/pi-review")] | sort_by(.id) | last | .state // empty')"
+            REVIEW_STATE="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | jq -r --arg context "social-mcp/pi-review/${BASE_SHA:0:12}" '[.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
             if [ "$REVIEW_STATE" != "failure" ]; then
               echo "PR #${PR} head ${HEAD_SHA} no longer has a failing review status; duplicate repair exits."
               exit 0
