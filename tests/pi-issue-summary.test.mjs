@@ -18,3 +18,9 @@ test('issue summary follows gate order: integration before semantic review', () 
   const source = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
   assert.match(source, /integration !== 'success' \? 'CI' : review === 'success' \? 'MERGE GATE' : 'REVIEW'/);
 });
+
+
+test('issue summary paginates commit statuses', () => {
+  const source = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
+  assert.match(source, /pages\(.+commits\/.+\/statuses/);
+});
