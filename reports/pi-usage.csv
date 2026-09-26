@@ -10,8 +10,8 @@ issue,21,all,,,,12,33102,7740,281553,0,322395,787.3,808,https://github.com/Yurii
 issue,22,all,,,,14,23010,6366,241121,0,270497,584.9,605,https://github.com/YuriiSokolenko/social-mcp/issues/22
 issue,24,all,,,,17,37653,2814,523942,0,564409,339.7,359,https://github.com/YuriiSokolenko/social-mcp/issues/24
 issue,25,all,,,,10,19537,2657,89273,0,111467,165.6,266,https://github.com/YuriiSokolenko/social-mcp/issues/25
-issue,78,all,,,,86,89757,53260,6560605,0,6703622,3771.1,3944,https://github.com/YuriiSokolenko/social-mcp/issues/78
-issue,78,all,,,,18,44465,15114,623378,0,682957,1327.2,1396,https://github.com/YuriiSokolenko/social-mcp/issues/78
+issue,78,all,,,,104,134222,68374,7183983,0,7386579,5098.3,5340,https://github.com/YuriiSokolenko/social-mcp/issues/78
+issue,92,all,,,,8,41976,1202,164060,0,207238,238.3,259,https://github.com/YuriiSokolenko/social-mcp/issues/92
 attempt,25,implementation,36039015936,1,cancelled,10,19537,2657,89273,0,111467,165.6,266,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36039015936/attempts/1
 attempt,10,implementation,36093253439,1,success,14,32423,59901,296631,0,388955,7281.5,7339,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093253439/attempts/1
 attempt,18,implementation,36093256959,1,success,78,61865,30747,2878475,0,2971087,3027.9,3130,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093256959/attempts/1
@@ -31,3 +31,4 @@ attempt,2,architect,36193816095,1,success,7,28825,8048,137294,0,174167,733.3,753
 attempt,9,architect,36197616403,1,success,11,28136,5871,178842,0,212849,749.0,772,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36197616403/attempts/1
 attempt,78,repair,36203471936,1,cancelled,4,14317,2756,38397,0,55470,263.6,325,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36203471936/attempts/1
 attempt,78,review,36204747705,1,success,18,44465,15114,623378,0,682957,1327.2,1396,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36204747705/attempts/1
+attempt,92,architect,36218590269,1,cancelled,8,41976,1202,164060,0,207238,238.3,259,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36218590269/attempts/1
