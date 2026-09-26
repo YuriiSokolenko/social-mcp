@@ -152,3 +152,9 @@ test('orphaned architect ownership is infrastructure recovery, not human escalat
   assert.match(reconcile, /orphaned-architect-state[\s\S]*dispatcher:ready[\s\S]*pi-dispatcher\.yml/);
   assert.doesNotMatch(reconcile, /orphaned-architect-state[\s\S]{0,180}pi:needs-human/);
 });
+
+
+test('implementer structured result requires at least one concrete change', () => {
+  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  assert.match(tool, /at least one concrete change is required/);
+});
