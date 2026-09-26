@@ -41,6 +41,15 @@ async function addLabel(number, label) {
 async function dispatchWorkflow(workflow, inputs) {
   await api(`/actions/workflows/${workflow}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: 'dev', inputs }) });
 }
+async function tryDispatchWorkflow(workflow, inputs, context) {
+  try {
+    await dispatchWorkflow(workflow, inputs);
+    return true;
+  } catch (error) {
+    console.error(`Recovery dispatch failed for ${context}: ${error.message}`);
+    return false;
+  }
+}
 async function deleteRef(ref) {
   const response = await fetch(`${base}/git/refs/${ref}`, { method: 'DELETE', headers });
   if (![204, 404].includes(response.status)) throw new Error(`Cannot delete ref ${ref}: ${response.status} ${await response.text()}`);
@@ -101,7 +110,8 @@ for (const issue of issues) {
       if (recovery) {
         await addLabel(issue.number, recovery.add);
         if (recovery.dispatch === 'implementer' && recoveryDispatchAllowed) {
-          await dispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number) });
+          const dispatched = await tryDispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number) }, `issue #${issue.number}`);
+          if (!dispatched) recovery = { ...recovery, dispatch: null, reason: 'implementer recovery dispatch failed; pi:ready retained for retry' };
         }
       }
     }
@@ -112,7 +122,7 @@ for (const pr of prs) {
   const repairCheckpoint = repairCheckpointRefs.get(pr.number);
   if (repairCheckpoint && pr.state === 'open' && !liveRepairs.has(pr.number)) {
     if (apply && recoveryDispatchAllowed) {
-      await dispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), reason: 'review' });
+      await tryDispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), reason: 'review' }, `repair PR #${pr.number}`);
     }
     report.push({ type: 'repair', number: pr.number, title: pr.title,
       findings: [{ code: 'orphaned-repair-checkpoint', severity: 'repair', checkpoint: true }],
@@ -129,7 +139,8 @@ for (const pr of prs) {
       if (recovery) {
         await addLabel(pr.number, recovery.add);
         if (recovery.dispatch === 'reviewer' && recoveryDispatchAllowed) {
-          await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number) });
+          const dispatched = await tryDispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number) }, `review PR #${pr.number}`);
+          if (!dispatched) recovery = { ...recovery, dispatch: null, reason: 'review recovery dispatch failed; review:ready retained for retry' };
         }
       }
     }
