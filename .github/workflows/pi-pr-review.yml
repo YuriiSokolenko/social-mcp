@@ -1,9 +1,7 @@
 name: Pi PR Review
-run-name: "🔬 Review PR #${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }} · ${{ github.event.pull_request.title || github.event.client_payload.pr_title || inputs.pr_title || 'pull request' }}"
+run-name: "🔬 Review PR #${{ github.event.pull_request.number || inputs.pr_number }} · ${{ github.event.pull_request.title || inputs.pr_title || 'pull request' }}"
 
 on:
-  repository_dispatch:
-    types: [pi_pr_review]
   pull_request:
     types: [reopened, closed]
   workflow_dispatch:
@@ -23,12 +21,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
+  group: pi-pr-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
-    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch' || github.event.action == 'reopened')
+    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'workflow_dispatch' || github.event.action == 'reopened')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
     permissions:
@@ -38,7 +36,7 @@ jobs:
       statuses: write
       actions: write
     env:
-      PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}
+      PR: ${{ github.event.pull_request.number || inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
       PI_BASH_TIMEOUT_SECONDS: '600'
@@ -305,13 +303,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          jq -n --arg event_type "pi_pr_fix" --arg pr_number "$PR" \
-            '{event_type:$event_type,client_payload:{pr_number:$pr_number}}' |
+          jq -n --arg pr_number "$PR" '{ref:"dev",inputs:{pr_number:$pr_number,reason:"review"}}' |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
-            --data-binary @- "https://api.github.com/repos/${REPO}/dispatches"
+            --data-binary @- "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-fix.yml/dispatches"
 
       - name: Mark review failed
         if: failure()
