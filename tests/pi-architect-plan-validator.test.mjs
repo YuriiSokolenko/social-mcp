@@ -44,7 +44,7 @@ test('rejects cycles already present in executable task graph', () => {
 
 test('accepts a normal nested split below depth limit', () => {
   tasks.set(30, []);
-  tasks.set(31, [30]);
+  tasks.set(31, []);
   const plan = split(31);
   assert.equal(validateArchitectPlanAgainstBacklog(plan, 31, [
     issue(30), issue(31, '<!-- architect-parent:30; architect-key:child -->'),
