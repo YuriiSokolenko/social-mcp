@@ -136,7 +136,7 @@ function runConflictMock(hasMarker) {
 test('a real merge conflict is dispatched to Pi PR Fix instead of silently waiting for a person', () => {
   const calls = runConflictMock(false);
   const dispatch = calls.find(call => call.path === '/actions/workflows/pi-pr-fix.yml/dispatches' && call.method === 'POST');
-  assert.deepEqual(dispatch.body, { ref: 'dev', inputs: { pr_number: '77', pr_title: undefined, reason: 'conflict' } });
+  assert.deepEqual(dispatch.body, { ref: 'dev', inputs: { pr_number: '77', reason: 'conflict' } });
   const marker = calls.find(call => call.path === '/statuses/abc123' && call.method === 'POST');
   assert.equal(marker.body.context, 'social-mcp/merge-conflict-fix-dispatched');
   assert.equal(calls.some(call => call.path === '/pulls/77/update-branch'), false);
