@@ -302,6 +302,21 @@ jobs:
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed \
             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
+      - name: Wake merge gate after current review result
+        if: always() && steps.freshness.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data '{"ref":"dev"}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
+              echo "::warning::Review status is durable; reconciler can wake Merge Gate later."
+              exit 0
+            }
+
       - name: Summarize issue pipeline
         if: always() && env.ISSUE != ''
         env:
