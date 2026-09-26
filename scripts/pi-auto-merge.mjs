@@ -135,7 +135,7 @@ async function hasLiveRepair(prNumber) {
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     const data = await api(`/actions/workflows/pi-pr-fix.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
     if ((data.workflow_runs ?? []).some(run =>
-      run.display_title?.startsWith(`🔧 Repair PR #${prNumber} ·`))) return true;
+      run.display_title === `🔧 Repair PR #${prNumber}`)) return true;
   }
   return false;
 }
