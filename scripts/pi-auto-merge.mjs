@@ -29,6 +29,18 @@ export function allowedFiles(files, changedCount) {
       !name.startsWith('.github/workflows/') && !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(name)));
 }
 
+async function reserveAndDispatch(sha, context, description, workflow, inputs) {
+  await api(`/statuses/${sha}`, 'POST', { state: 'pending', context, description });
+  try {
+    await api(`/actions/workflows/${workflow}/dispatches`, 'POST', { ref: 'dev', inputs });
+  } catch (error) {
+    await api(`/statuses/${sha}`, 'POST', {
+      state: 'error', context, description: `Dispatch failed: ${workflow}`,
+    });
+    throw error;
+  }
+}
+
 async function processPR(prSummary) {
   const pr = await api(`/pulls/${prSummary.number}`);
   const issue = issueNumber(pr, repo);
@@ -54,11 +66,8 @@ async function processPR(prSummary) {
   const integrationContext = `social-mcp/integration/${base.object.sha.slice(0, 12)}`;
   const integration = latestStatus(statuses, integrationContext);
   if (!integration) {
-    await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: integrationContext, description: 'Exact-pair integration CI dispatched' });
-    await api('/actions/workflows/ci.yml/dispatches', 'POST', {
-      ref: 'dev',
-      inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), integration_base_sha: base.object.sha },
-    });
+    await reserveAndDispatch(sha, integrationContext, 'Exact-pair integration CI dispatched', 'ci.yml',
+      { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), integration_base_sha: base.object.sha });
     console.log(`#${pr.number}: dispatched integration CI for exact pair`);
     return;
   }
@@ -70,8 +79,8 @@ async function processPR(prSummary) {
       return;
     }
     if (!conflictRepair) {
-      await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`, description: 'Conflict repair dispatched' });
-      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
+      await reserveAndDispatch(sha, `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`, 'Conflict repair dispatched', 'pi-pr-fix.yml',
+        { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' });
       console.log(`#${pr.number}: exact integration has a merge conflict; dispatched conflict repair`);
     }
     return;
@@ -83,8 +92,8 @@ async function processPR(prSummary) {
       return;
     }
     if (!integrationRepair) {
-      await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`, description: 'Integration repair dispatched' });
-      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'integration' } });
+      await reserveAndDispatch(sha, `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`, 'Integration repair dispatched', 'pi-pr-fix.yml',
+        { pr_number: String(pr.number), pr_title: pr.title, reason: 'integration' });
       console.log(`#${pr.number}: integration checks failed; dispatched integration repair`);
     }
     return;
@@ -97,8 +106,8 @@ async function processPR(prSummary) {
       return;
     }
     if (!reviewRepair) {
-      await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`, description: 'Review repair dispatched' });
-      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' } });
+      await reserveAndDispatch(sha, `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`, 'Review repair dispatched', 'pi-pr-fix.yml',
+        { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' });
       console.log(`#${pr.number}: dispatched review repair for exact pair`);
     }
     return;
@@ -108,8 +117,8 @@ async function processPR(prSummary) {
     return;
   }
   if (!review) {
-    await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`, description: 'Automated review dispatched' });
-    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
+    await reserveAndDispatch(sha, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`, 'Automated review dispatched',
+      'pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title });
     console.log(`#${pr.number}: dispatched review for exact pair`);
     return;
   }
