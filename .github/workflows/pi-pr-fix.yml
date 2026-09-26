@@ -30,6 +30,7 @@ permissions:
 
 concurrency:
   group: pi-pr-fix-${{ inputs.pr_number }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
