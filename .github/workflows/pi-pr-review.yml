@@ -292,7 +292,10 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Content-Type: application/json" \
             --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches"
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
+              echo "::warning::Review PASS is already recorded for PR #${PR}, but Merge Gate wake failed; the gate/reconciler can recover it."
+              exit 0
+            }
           echo "Pi Auto Merge dispatched after review of PR #${PR}"
 
       - name: Mark changes requested
@@ -316,7 +319,10 @@ jobs:
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
-            --data-binary @- "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-fix.yml/dispatches"
+            --data-binary @- "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-fix.yml/dispatches" || {
+              echo "::warning::CHANGES_REQUESTED is already recorded for PR #${PR}, but Repair dispatch failed; reconciler can recover it."
+              exit 0
+            }
 
       - name: Mark review failed
         if: failure()
