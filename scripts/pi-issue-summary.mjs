@@ -1,27 +1,13 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import { githubClient } from './github-api.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY ?? process.env.REPO;
 const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
 const issueNumber = Number(process.argv[2] ?? process.env.PI_ISSUE ?? process.env.ISSUE);
 if (!repo || !token || !Number.isSafeInteger(issueNumber)) throw new Error('repository, token and issue number are required');
 
-const root = `https://api.github.com/repos/${repo}`;
-const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
-  'X-GitHub-Api-Version': '2022-11-28' };
-async function api(path) {
-  const response = await fetch(root + path, { headers });
-  if (!response.ok) throw new Error(`GitHub ${response.status} ${path}: ${await response.text()}`);
-  return response.json();
-}
-async function pages(path) {
-  const all = [];
-  for (let page = 1; ; page++) {
-    const batch = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
-    all.push(...batch);
-    if (batch.length < 100) return all;
-  }
-}
+const { api, pages } = githubClient({ repo, token });
 const issue = await api(`/issues/${issueNumber}`);
 const prs = await pages('/pulls?state=all&base=dev');
 const pr = prs.find(item => item.head.repo?.full_name === repo && item.head.ref === `pi/issue-${issueNumber}`) ?? null;
