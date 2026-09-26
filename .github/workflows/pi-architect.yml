@@ -72,6 +72,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/pi-architect.mjs publish "$ISSUE" "$RUNNER_TEMP/pi-architect-result.jsonl" "$RUNNER_TEMP/pi-architect-context.json"
 
+      - name: Mark Architect failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          bash scripts/pi-issue-status.sh failed \
+            "Pi Architect workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Mark Architect cancelled
+        if: cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          bash scripts/pi-issue-status.sh cancelled \
+            "Pi Architect workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
       - name: Summarize Pi usage
         if: always()
         run: node scripts/pi-usage-summary.mjs
