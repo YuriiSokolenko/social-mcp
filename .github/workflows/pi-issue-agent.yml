@@ -77,17 +77,20 @@ jobs:
           rm -rf "$JOB_DIR"
           git fetch origin dev
           START_REF=origin/dev
-          echo "PI_IMPLEMENTER_BASE_SHA=$(git rev-parse origin/dev)" >> "$GITHUB_ENV"
+          BASE_SHA="$(git rev-parse origin/dev)"
           CHECKPOINT="pi/issue-${ISSUE}-checkpoint"
           if git ls-remote --exit-code origin "refs/heads/${CHECKPOINT}" >/dev/null; then
             git fetch origin "${CHECKPOINT}:refs/remotes/origin/${CHECKPOINT}"
             START_REF="refs/remotes/origin/${CHECKPOINT}"
+            BASE_SHA="$(git rev-parse "${START_REF}^")"
             echo "Resuming issue #${ISSUE} from its checkpoint"
           elif git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}" >/dev/null; then
             git fetch origin "pi/issue-${ISSUE}:refs/remotes/origin/pi/issue-${ISSUE}"
             START_REF="refs/remotes/origin/pi/issue-${ISSUE}"
+            BASE_SHA="$(git rev-parse "${START_REF}^")"
             echo "Resuming issue #${ISSUE} from its PR branch"
           fi
+          echo "PI_IMPLEMENTER_BASE_SHA=${BASE_SHA}" >> "$GITHUB_ENV"
           git worktree prune
           git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" "$START_REF"
           echo "Temporary worktree: $JOB_DIR"
