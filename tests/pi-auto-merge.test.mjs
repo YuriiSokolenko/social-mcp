@@ -176,3 +176,10 @@ test('unsafe PR escalation comments are idempotent across merge-gate scans', () 
   assert.match(source, /merge-gate:unsafe-pr:/);
   assert.match(source, /comments\.some\(comment => \(comment\.body \?\? ''\)\.includes\(marker\)\)/);
 });
+
+
+test('merge gate paginates commit statuses instead of assuming one page contains every pair context', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(source, /pages\(.+commits\/.+\/statuses/);
+  assert.doesNotMatch(source, /statuses\?per_page=100/);
+});
