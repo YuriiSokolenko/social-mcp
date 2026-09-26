@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { childNumbers, parentOf } from './pi-architect.mjs';
+import { ISSUE_STATE_LABELS, issueStateLabels } from './pi-state-machine.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
@@ -121,6 +122,20 @@ export async function finishArchitectParents(childNumber, issueApi = api) {
   }
 }
 
+async function clearCompletedIssueState(number, expected) {
+  const current = await api(`/issues/${number}`);
+  if (current.state !== 'closed' || current.state_reason !== 'completed') {
+    throw new Error(`issue #${number} is not completed while finalizing merge`);
+  }
+  const expectedState = issueStateLabels(expected);
+  const currentState = issueStateLabels(current);
+  if (JSON.stringify(expectedState) !== JSON.stringify(currentState)) {
+    throw new Error(`concurrent merge finalization on #${number}: expected [${expectedState}], found [${currentState}]`);
+  }
+  const keep = current.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
+  await api(`/issues/${number}`, 'PATCH', { labels: keep });
+}
+
 async function finalizeMergedPR(pr, issue) {
   const current = await api(`/issues/${issue}`);
   const labels = new Set(current.labels.map(label => label.name));
@@ -135,7 +150,7 @@ async function finalizeMergedPR(pr, issue) {
   }
   await finishArchitectParents(issue);
   await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
-  await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
+  await clearCompletedIssueState(issue, current);
   console.log(`#${pr.number}: dispatcher started`);
 }
 
