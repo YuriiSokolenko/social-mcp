@@ -89,7 +89,6 @@ jobs:
           if git ls-remote --exit-code origin "refs/heads/${REPAIR_CHECKPOINT}" >/dev/null; then
             git fetch origin "${REPAIR_CHECKPOINT}:refs/remotes/origin/${REPAIR_CHECKPOINT}"
             START_REF="refs/remotes/origin/${REPAIR_CHECKPOINT}"
-            echo "Resuming PR #${PR} repair from checkpoint"
           else
             git fetch origin "$HEAD_REF"
             START_REF="$HEAD_SHA"
@@ -180,95 +179,8 @@ jobs:
           git config user.name "social-mcp-pi"
           git config user.email "social-mcp-pi@users.noreply.github.com"
           git add -A
-          if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example      - name: Commit and push repair
-        id: changes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cd "$JOB_DIR"
-          rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
-          rm -f .coverage coverage.xml
-          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          git add -A
-          if ! git diff --cached --quiet; then
-            if [ "$REASON" = "conflict" ]; then
-              git commit -m "fix: merge dev and resolve conflicts for issue #${ISSUE}"
-            else
-              git commit -m "fix: address review for issue #${ISSUE}"
-            fi
-          fi
-          NEW_HEAD="$(git rev-parse HEAD)"
-          if [ "$NEW_HEAD" = "$HEAD_SHA" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
-          [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
-          # Review repairs may run for hours while dev keeps moving. Integrate the
-          # latest dev before re-rooting so the repaired tree cannot silently
-          # revert unrelated changes that landed after this job started.
-          git fetch origin dev
-          if ! git merge --no-edit origin/dev; then
-            echo "dev moved and now conflicts with the repaired PR; refusing to publish a stale tree" >&2
-            exit 1
-          fi
-          REPAIR_TREE="$(git rev-parse HEAD^{tree})"
-          REPAIR_COMMIT="$(printf 'fix: repair issue #%s\n' "$ISSUE" | git commit-tree "$REPAIR_TREE" -p origin/dev)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "$REPAIR_COMMIT:refs/heads/$HEAD_REF"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Remove published repair checkpoint
-        if: steps.changes.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin --delete "pi/repair-pr-${PR}-checkpoint" 2>/dev/null || true
-
-      - name: Trigger fresh review
-        if: steps.changes.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          jq -n --arg pr_number "$PR" '{ref:"dev",inputs:{pr_number:$pr_number}}' |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" --data-binary @- \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-review.yml/dispatches"
-
-      - name: Report repair failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          MESSAGE="Automated Pi repair (reason: ${REASON}) did not produce a mergeable, passing PR. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          if git ls-remote --exit-code origin "refs/heads/pi/repair-pr-${PR}-checkpoint" >/dev/null; then
-            MESSAGE="$MESSAGE Saved repair: https://github.com/${REPO}/tree/pi/repair-pr-${PR}-checkpoint"
-          fi
-          bash scripts/pi-pr-review-status.sh failed "$MESSAGE"
-
-      - name: Summarize Pi usage
-        if: always()
-        run: node scripts/pi-usage-summary.mjs
-
-      - name: Clean worktree
-        if: always()
-        run: |
-          set +e
-          [ -n "${JOB_DIR:-}" ] && [ -d "$JOB_DIR" ] && git worktree remove --force "$JOB_DIR"
-          rm -f "$RUNNER_TEMP/review-feedback.txt" "$RUNNER_TEMP/conflicted-files.txt"
-          git worktree prune
-; then
-            echo "Refusing to checkpoint a credential or runtime file" >&2
-            exit 1
-          fi
-          if ! git diff --cached --quiet; then
-            git commit -m "fix: checkpoint repair for PR #${PR}"
-          fi
-          if [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ]; then
-            exit 0
-          fi
+          if ! git diff --cached --quiet; then git commit -m "fix: checkpoint repair for PR #${PR}"; fi
+          if [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ]; then exit 0; fi
           git fetch origin dev
           REPAIR_TREE="$(git rev-parse HEAD^{tree})"
           CHECKPOINT_COMMIT="$(printf 'fix: checkpoint repair for PR #%s\n' "$PR" | git commit-tree "$REPAIR_TREE" -p origin/dev)"
@@ -312,6 +224,12 @@ jobs:
           REPAIR_COMMIT="$(printf 'fix: repair issue #%s\n' "$ISSUE" | git commit-tree "$REPAIR_TREE" -p origin/dev)"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "$REPAIR_COMMIT:refs/heads/$HEAD_REF"
           echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Remove published repair checkpoint
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin --delete "pi/repair-pr-${PR}-checkpoint" 2>/dev/null || true
 
       - name: Trigger fresh review
         if: steps.changes.outputs.changed == 'true'
