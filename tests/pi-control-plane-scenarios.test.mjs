@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { inspectIssueState, inspectPrState, safeRemovals } from '../scripts/pi-state-machine.mjs';
 import { recoveryForIssue, recoveryForPr, checkpointGcDecision } from '../scripts/pi-recovery-policy.mjs';
+import { issueTargetAfterRemovals, reviewTargetAfterRemovals } from '../scripts/pi-github-state.mjs';
 
 const labels = (...names) => names.map(name => ({ name }));
 test('control plane: dead implementer with checkpoint is released and resumed', () => {
@@ -28,6 +29,14 @@ test('control plane: dead reviewer is released and review is restarted', () => {
 
 test('control plane: completed issue makes checkpoint garbage collectable', () => {
   assert.equal(checkpointGcDecision({ state:'closed', state_reason:'completed', labels:[] }).remove, true);
+});
+
+test('reconciliation preserves the surviving issue and review state', () => {
+  const failedAndReady = { labels: labels('pi:failed', 'pi:ready') };
+  assert.equal(issueTargetAfterRemovals(failedAndReady, ['pi:ready']), 'pi:failed');
+
+  const runningAndPassed = { labels: labels('review:running', 'review:passed') };
+  assert.equal(reviewTargetAfterRemovals(runningAndPassed, ['review:passed']), 'review:running');
 });
 
 
