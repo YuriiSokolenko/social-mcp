@@ -118,11 +118,6 @@ async function allIssues() {
   }
 }
 
-async function ensureLabel(name, color, description) {
-  const current = await api(`/labels/${encodeURIComponent(name)}`);
-  if (!current) await api('/labels', 'POST', { name, color, description });
-}
-
 async function transitionIssue(issue, action) {
   const expected = await api(`/issues/${issue}`);
   const target = validateIssueTransition(expected, action);
