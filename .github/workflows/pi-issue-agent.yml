@@ -77,16 +77,20 @@ jobs:
           rm -rf "$JOB_DIR"
           git fetch origin dev
           START_REF=origin/dev
+          BASE_SHA="$(git rev-parse origin/dev)"
           CHECKPOINT="pi/issue-${ISSUE}-checkpoint"
           if git ls-remote --exit-code origin "refs/heads/${CHECKPOINT}" >/dev/null; then
             git fetch origin "${CHECKPOINT}:refs/remotes/origin/${CHECKPOINT}"
             START_REF="refs/remotes/origin/${CHECKPOINT}"
+            BASE_SHA="$(git rev-parse "${START_REF}^")"
             echo "Resuming issue #${ISSUE} from its checkpoint"
           elif git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}" >/dev/null; then
             git fetch origin "pi/issue-${ISSUE}:refs/remotes/origin/pi/issue-${ISSUE}"
             START_REF="refs/remotes/origin/pi/issue-${ISSUE}"
+            BASE_SHA="$(git rev-parse "${START_REF}^")"
             echo "Resuming issue #${ISSUE} from its PR branch"
           fi
+          echo "PI_IMPLEMENTER_BASE_SHA=${BASE_SHA}" >> "$GITHUB_ENV"
           git worktree prune
           git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" "$START_REF"
           echo "Temporary worktree: $JOB_DIR"
@@ -178,26 +182,40 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "feat: implement issue #${ISSUE}"
           fi
-          if git diff --quiet origin/dev...HEAD; then
+          if git diff --quiet "${PI_IMPLEMENTER_BASE_SHA}"...HEAD; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # GitHub App installation tokens cannot create/update workflow files.
-          # Push only the issue delta on top of the remote dev tip so workflow
-          # changes already present on dev are not introduced by this branch push.
+          # Preserve only the issue delta. Never publish workflow/control-plane
+          # changes through the Implementer token: dev may have moved while this
+          # long-running job was executing, and GitHub rejects workflow updates
+          # made by the Actions installation token.
           git fetch origin dev
-          # The worktree may have started hours ago. Merge the current dev tip
-          # before snapshotting so the checkpoint tree cannot silently revert
-          # files that changed on dev while Pi was working.
-          if ! git merge --no-edit origin/dev; then
-            echo "Latest dev conflicts with implementation; integration repair must resolve it before a new checkpoint is published" >&2
-            git merge --abort || true
+          START_BASE="${PI_IMPLEMENTER_BASE_SHA}"
+          git cat-file -e "${START_BASE}^{commit}"
+          if git diff --name-only "$START_BASE"...HEAD | grep -q '^\.github/workflows/'; then
+            echo "Implementer attempted to modify .github/workflows; refusing unsafe checkpoint" >&2
+            exit 1
+          fi
+          PATCH_FILE="$RUNNER_TEMP/pi-issue-${ISSUE}-checkpoint.patch"
+          git diff --binary "$START_BASE"...HEAD -- . ':(exclude).github/workflows/**' > "$PATCH_FILE"
+          if [ ! -s "$PATCH_FILE" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHECKPOINT_INDEX="$RUNNER_TEMP/pi-issue-${ISSUE}-checkpoint.index"
+          rm -f "$CHECKPOINT_INDEX"
+          GIT_INDEX_FILE="$CHECKPOINT_INDEX" git read-tree origin/dev
+          if ! GIT_INDEX_FILE="$CHECKPOINT_INDEX" git apply --cached --3way "$PATCH_FILE"; then
+            echo "Issue delta conflicts with latest dev; keeping worktree for integration repair" >&2
+            rm -f "$CHECKPOINT_INDEX"
             echo "changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          ISSUE_TREE="$(git rev-parse HEAD^{tree})"
-          CHECKPOINT_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$ISSUE_TREE" -p origin/dev)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          CHECKPOINT_TREE="$(GIT_INDEX_FILE="$CHECKPOINT_INDEX" git write-tree)"
+          rm -f "$CHECKPOINT_INDEX"
+          CHECKPOINT_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$CHECKPOINT_TREE" -p origin/dev)"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh from dev and verify integrated code
