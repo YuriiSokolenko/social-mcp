@@ -201,7 +201,8 @@ test('status wrappers delegate mutations to guarded transition engine', () => {
   assert.doesNotMatch(review, /clear_review_status|remove_label|add_label/);
   assert.match(issue, /pi-transition\.mjs issue/);
   assert.match(review, /pi-transition\.mjs review/);
-  assert.match(transition, /concurrent pipeline transition detected/);
+  assert.match(transition, /replaceIssueState/);
+  assert.match(transition, /replaceReviewState/);
   assert.match(transition, /await load\(\)/);
   assert.match(transition, /method: 'PATCH'/);
 });
@@ -221,7 +222,8 @@ test('dispatcher and reconciler use guarded whole-state writes', () => {
   assert.match(dispatcher, /transitionIssue\(number, "queued"\)/);
   assert.match(dispatcher, /transitionIssue\(number, "architect-ready"\)/);
   assert.doesNotMatch(dispatcher, /labels\/pi%3Aready|labels\/dispatcher%3Aready/);
-  assert.match(reconciler, /concurrent reconciliation transition/);
+  assert.match(reconciler, /replaceIssueState/);
+  assert.match(reconciler, /replaceReviewState/);
   assert.match(reconciler, /replaceStateLabels\(issue\.number, issue, recovery\.add, ISSUE_STATE_LABELS\)/);
   assert.match(reconciler, /replaceStateLabels\(pr\.number, pr, recovery\.add, REVIEW_LABELS\)/);
   assert.doesNotMatch(reconciler, /async function addLabel|async function removeLabel/);
@@ -240,7 +242,7 @@ test('merge finalization clears issue state with a guarded whole-state write', (
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /clearCompletedIssueState/);
   assert.match(gate, /issueStateLabels\(expected\)/);
-  assert.match(gate, /concurrent merge finalization/);
+  assert.match(gate, /replaceIssueState/);
   assert.doesNotMatch(gate, /labels\/pi%3Amr-created/);
 });
 
@@ -258,7 +260,7 @@ test('triage uses guarded whole-state classification transitions', () => {
   const source = fs.readFileSync('scripts/pi-triage.mjs', 'utf8');
   assert.match(source, /transitionIssue\(number, "queued"\)/);
   assert.match(source, /transitionIssue\(number, "needs-human"\)/);
-  assert.match(source, /concurrent Triage transition/);
+  assert.match(source, /replaceIssueState/);
   assert.doesNotMatch(source, /labels\/pi%3Aneeds-human/);
 });
 
@@ -269,5 +271,26 @@ test('label provisioning covers the complete executable issue state family', () 
   assert.match(source, /architect:ready/);
   for (const label of ['pi:ready','pi:running','pi:mr-created','pi:needs-human','pi:failed','pi:cancelled']) {
     assert.match(source, new RegExp(label.replace(':', '\\:')));
+  }
+});
+
+
+test('all execution-state writers delegate CAS semantics to pi-github-state', () => {
+  const helper = fs.readFileSync('scripts/pi-github-state.mjs', 'utf8');
+  assert.match(helper, /expectedState/);
+  assert.match(helper, /currentState/);
+  assert.match(helper, /concurrent \${context} transition/);
+  assert.match(helper, /filter\(label => !stateLabels\.has\(label\)\)/);
+  for (const path of [
+    'scripts/pi-transition.mjs',
+    'scripts/pi-dispatcher.mjs',
+    'scripts/pi-reconcile.mjs',
+    'scripts/pi-architect.mjs',
+    'scripts/pi-triage.mjs',
+    'scripts/pi-auto-merge.mjs',
+  ]) {
+    const source = fs.readFileSync(path, 'utf8');
+    assert.match(source, /pi-github-state\.mjs/);
+    assert.doesNotMatch(source, /JSON\.stringify\(expectedState\)\s*!==\s*JSON\.stringify\(currentState\)/);
   }
 });
