@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ISSUE_ACTIVE, ISSUE_TERMINAL, REVIEW_LABELS, validateIssueTransition, validateReviewTransition } from './pi-state-machine.mjs';
+import { ISSUE_STATE_LABELS, REVIEW_LABELS, validateIssueTransition, validateReviewTransition } from './pi-state-machine.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
 const comment = commentParts.join(' ');
@@ -52,7 +52,7 @@ const item = await load();
 const expected = names(item);
 if (kind === 'issue') {
   const target = validateIssueTransition(item, action);
-  await replaceLabels(expected, target, new Set([...ISSUE_ACTIVE, ...ISSUE_TERMINAL]));
+  await replaceLabels(expected, target, ISSUE_STATE_LABELS);
   if (action !== 'running') await postComment();
   console.log(`issue #${number}: transitioned to ${target}`);
 } else {
