@@ -146,7 +146,7 @@ export function dispatchFromJsonl(jsonl) {
 }
 async function main() {
   const [mode, file] = process.argv.slice(2);
-  if (!["prepare", "apply"].includes(mode) || !file || !repo || !token) usage();
+  if (!["prepare", "apply"].includes(mode) || !file) usage();
   if (mode === "prepare") {
     await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
     await ensureLabel("architect:ready", "c5def5", "Needs Pi Architect to split the issue");
