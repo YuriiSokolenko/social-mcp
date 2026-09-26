@@ -157,3 +157,11 @@ test('review transitions use SHA status rather than review labels', () => {
   const reviewBranch = source.slice(source.indexOf('} else {'));
   assert.doesNotMatch(reviewBranch, /replaceLabels\(/);
 });
+
+
+test('shared state helpers contain issue state only', () => {
+  for (const path of ['scripts/pi-state-machine.mjs', 'scripts/pi-github-state.mjs', 'scripts/pi-labels.mjs']) {
+    const source = fs.readFileSync(path, 'utf8');
+    assert.doesNotMatch(source, /REVIEW_LABELS|REVIEW_TRANSITIONS|review:ready|review:running|review:passed|review:changes-requested|review:failed/, path);
+  }
+});
