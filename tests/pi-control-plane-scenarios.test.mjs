@@ -214,6 +214,7 @@ test('status wrappers delegate mutations to guarded transition engine', () => {
   assert.match(transition, /replaceIssueState/);
   assert.match(transition, /replaceReviewState/);
   assert.match(transition, /await load\(\)/);
+  assert.match(transition, /validateCurrent/);
   assert.match(transition, /method: 'PATCH'/);
 });
 
@@ -263,6 +264,8 @@ test('architect uses guarded state handoffs and atomic split ownership', () => {
   assert.match(source, /transitionIssue\(issue, 'queued'\)/);
   assert.match(source, /Parent state changed before split publish/);
   assert.match(source, /Child #\$\{number\} acquired pipeline state before dispatch/);
+  assert.match(source, /context: 'Architect split parent'/);
+  assert.match(source, /context: 'Architect split child'/);
   assert.doesNotMatch(source, /labels\/dispatcher%3Aready|labels\/architect%3Aready/);
 });
 
