@@ -323,6 +323,14 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair (reason: ${REASON}) did not produce a mergeable, passing PR. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
+      - name: Escalate unsuccessful repair
+        if: (failure() || cancelled()) && env.ISSUE != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human \
+            "Automated Pi repair (${REASON}) failed or was cancelled. Human attention is required. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
       - name: Finalize repair status
         if: always() && env.HEAD_SHA != ''
         env:
