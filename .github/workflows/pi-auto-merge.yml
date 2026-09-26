@@ -3,7 +3,7 @@ run-name: "🔀 Merge gate · ${{ github.event.workflow_run.display_title || 'ma
 
 on:
   workflow_run:
-    workflows: [CI, Pi PR Review, Pi PR Fix, Pi Issue Agent]
+    workflows: [CI, Pi PR Review, Pi PR Fix, Pi Issue Agent, Pi Dispatcher]
     types: [completed]
   workflow_dispatch:
 
