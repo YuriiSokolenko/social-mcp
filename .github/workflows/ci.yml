@@ -1,5 +1,5 @@
 name: CI
-run-name: "🧪 CI · ${{ inputs.target_sha && format('target:{0} ref:{1}', inputs.target_sha, inputs.target_ref) || github.event.pull_request.title || github.event.head_commit.message || github.ref_name }}"
+run-name: "🧪 CI · ${{ inputs.target_sha && inputs.integration_base_sha && format('target:{0} ref:{1} base:{2}', inputs.target_sha, inputs.target_ref, inputs.integration_base_sha) || inputs.target_sha && format('target:{0} ref:{1}', inputs.target_sha, inputs.target_ref) || github.event.pull_request.title || github.event.head_commit.message || github.ref_name }}"
 
 on:
   workflow_dispatch:
