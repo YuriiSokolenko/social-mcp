@@ -107,7 +107,7 @@ function conflictMockSource() {
         return Response.json(hasMarker ? [{ context: 'social-mcp/merge-conflict-fix-dispatched', state: 'success' }] : []);
       }
       if (path === '/actions/workflows/ci.yml/runs') return Response.json({ workflow_runs: [] });
-      if (path === '/dispatches' && method === 'POST') return new Response(null, { status: 204 });
+      if (path === '/actions/workflows/pi-pr-fix.yml/dispatches' && method === 'POST') return new Response(null, { status: 204 });
       if (path === '/statuses/abc123' && method === 'POST') return Response.json({ state: 'success' }, { status: 201 });
       throw new Error('Unexpected request: ' + method + ' ' + path);
     };
@@ -135,8 +135,8 @@ function runConflictMock(hasMarker) {
 
 test('a real merge conflict is dispatched to Pi PR Fix instead of silently waiting for a person', () => {
   const calls = runConflictMock(false);
-  const dispatch = calls.find(call => call.path === '/dispatches' && call.method === 'POST');
-  assert.deepEqual(dispatch.body, { event_type: 'pi_pr_fix', client_payload: { pr_number: 77, reason: 'conflict' } });
+  const dispatch = calls.find(call => call.path === '/actions/workflows/pi-pr-fix.yml/dispatches' && call.method === 'POST');
+  assert.deepEqual(dispatch.body, { ref: 'dev', inputs: { pr_number: '77', pr_title: undefined, reason: 'conflict' } });
   const marker = calls.find(call => call.path === '/statuses/abc123' && call.method === 'POST');
   assert.equal(marker.body.context, 'social-mcp/merge-conflict-fix-dispatched');
   assert.equal(calls.some(call => call.path === '/pulls/77/update-branch'), false);
@@ -144,7 +144,7 @@ test('a real merge conflict is dispatched to Pi PR Fix instead of silently waiti
 
 test('a conflict repair already dispatched for this SHA is not dispatched again', () => {
   const calls = runConflictMock(true);
-  assert.equal(calls.some(call => call.path === '/dispatches'), false);
+  assert.equal(calls.some(call => call.path === '/actions/workflows/pi-pr-fix.yml/dispatches'), false);
 });
 
 test('Pi PRs cannot auto-merge changes to control scripts', () => {
