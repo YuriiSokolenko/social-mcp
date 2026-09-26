@@ -55,3 +55,10 @@ test('finalText uses the last non-empty assistant message across agent_end event
   ].join('\n');
   assert.equal(finalText(jsonl), 'second');
 });
+
+
+test('architect dispatch failure returns issue ownership to dispatcher queue', () => {
+  const source = fs.readFileSync('scripts/pi-dispatcher.mjs', 'utf8');
+  assert.match(source, /pi-architect\.yml\/dispatches[\s\S]*transitionIssue\(number, "queued"\)/);
+  assert.match(source, /Could not roll back architect:ready/);
+});
