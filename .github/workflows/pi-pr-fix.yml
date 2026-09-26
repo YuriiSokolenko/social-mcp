@@ -80,21 +80,21 @@ jobs:
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
           if [ "$REASON" = "review" ]; then
-            REVIEW_STATE="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | jq -r --arg context "social-mcp/pi-review/${BASE_SHA:0:12}" '[.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
+            REVIEW_STATE="$(for page in {1..10}; do batch="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"; printf '%s\n' "$batch"; [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break; done | jq -s -r --arg context "social-mcp/pi-review/${BASE_SHA:0:12}" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
             if [ "$REVIEW_STATE" != "failure" ]; then
               echo "PR #${PR} head ${HEAD_SHA} no longer has a failing review status; duplicate repair exits."
               echo "needed=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           elif [ "$REASON" = "integration" ]; then
-            INTEGRATION_STATE="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | jq -r --arg context "social-mcp/integration/${BASE_SHA:0:12}" '[.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
+            INTEGRATION_STATE="$(for page in {1..10}; do batch="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"; printf '%s\n' "$batch"; [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break; done | jq -s -r --arg context "social-mcp/integration/${BASE_SHA:0:12}" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
             if [ "$INTEGRATION_STATE" != "failure" ]; then
               echo "PR #${PR} no longer has failing integration checks; duplicate repair exits."
               echo "needed=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           elif [ "$REASON" = "conflict" ]; then
-            CONFLICT_STATE="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | jq -r --arg context "social-mcp/integration-conflict/${BASE_SHA:0:12}" '[.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
+            CONFLICT_STATE="$(for page in {1..10}; do batch="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"; printf '%s\n' "$batch"; [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break; done | jq -s -r --arg context "social-mcp/integration-conflict/${BASE_SHA:0:12}" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
             if [ "$CONFLICT_STATE" != "failure" ]; then
               echo "PR #${PR} no longer has an integration conflict; duplicate repair exits."
               echo "needed=false" >> "$GITHUB_OUTPUT"
