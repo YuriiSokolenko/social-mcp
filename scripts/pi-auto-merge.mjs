@@ -1,6 +1,4 @@
 import { pathToFileURL } from 'node:url';
-import { childNumbers, parentOf } from './pi-architect.mjs';
-import { replaceIssueState } from './pi-github-state.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
@@ -97,60 +95,6 @@ async function trigger(pr, sha, baseSha, statuses, runs) {
   }
 }
 
-export async function finishArchitectParents(childNumber, issueApi = api) {
-  const visited = new Set();
-  while (childNumber && !visited.has(childNumber)) {
-    visited.add(childNumber);
-    const child = await issueApi(`/issues/${childNumber}`);
-    const parentNumber = parentOf(child.body);
-    if (!parentNumber || visited.has(parentNumber)) return;
-    const parent = await issueApi(`/issues/${parentNumber}`);
-    if (!parent.labels.some(label => label.name === 'architect:epic')) return;
-    const numbers = childNumbers(parent.body);
-    if (!numbers.includes(childNumber)) return;
-    const siblings = await Promise.all(numbers.map(number => issueApi(`/issues/${number}`)));
-    if (!siblings.every(issue => issue.state === 'closed' && issue.state_reason === 'completed')) return;
-    if (parent.state === 'open') {
-      await issueApi(`/issues/${parentNumber}`, 'PATCH', { state: 'closed', state_reason: 'completed' });
-      console.log(`Architect parent #${parentNumber}: all child issues completed`);
-    } else if (parent.state_reason !== 'completed') {
-      return;
-    }
-    childNumber = parentNumber;
-  }
-}
-
-async function clearCompletedIssueState(number, expected) {
-  await replaceIssueState({
-    number, expected, target: null, context: 'merge finalization',
-    load: n => api(`/issues/${n}`),
-    validateCurrent: current => {
-      if (current.state !== 'closed' || current.state_reason !== 'completed') {
-        throw new Error(`issue #${number} is not completed while finalizing merge`);
-      }
-    },
-    patch: (n, labels) => api(`/issues/${n}`, 'PATCH', { labels }),
-  });
-}
-
-async function finalizeMergedPR(pr, issue) {
-  const current = await api(`/issues/${issue}`);
-  const labels = new Set(current.labels.map(label => label.name));
-  // Keep this label until both closure and dispatch succeed, so a later run
-  // can finish an interrupted merge without dispatching unfinished work.
-  if (!labels.has('pi:mr-created')) return;
-  if (current.state === 'open') {
-    await api(`/issues/${issue}`, 'PATCH', { state: 'closed', state_reason: 'completed' });
-    console.log(`#${pr.number}: completed issue #${issue} after merge into dev`);
-  } else if (current.state_reason !== 'completed') {
-    return;
-  }
-  await finishArchitectParents(issue);
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
-  await clearCompletedIssueState(issue, current);
-  console.log(`#${pr.number}: dispatcher started`);
-}
-
 async function hasLiveRepair(prNumber) {
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     const data = await api(`/actions/workflows/pi-pr-fix.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
@@ -220,22 +164,11 @@ async function processPR(prSummary) {
   }
   const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
   if (!merged.merged) throw new Error(`#${pr.number}: merge API did not confirm merge`);
-  console.log(`#${pr.number}: merged ${sha}`);
-  await finalizeMergedPR(pr, issue);
+  console.log(`#${pr.number}: merged ${sha}; linked issue #${issue} will close via the PR closing keyword`);
 }
 
 export async function main() {
   if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
-  // Recover a merge interrupted after GitHub accepted it but before the
-  // linked issue was completed or the dispatcher was started.
-  const mergedPRs = await pages('/pulls?state=closed&base=dev');
-  for (const pr of mergedPRs) {
-    if (!pr.merged_at) continue;
-    const issue = linkedIssueNumber(pr, repo);
-    if (!issue) continue;
-    try { await finalizeMergedPR(pr, issue); }
-    catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }
-  }
   // Global concurrency prevents two runs from merging against the same base in parallel.
   const prs = await pages('/pulls?state=open&base=dev');
   for (const pr of prs) {
