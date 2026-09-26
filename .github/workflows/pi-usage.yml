@@ -1,5 +1,5 @@
 name: Pi Usage
-run-name: '📊 Usage · ${{ github.event.workflow_run.display_title || inputs.run_id || 'manual' }}'
+run-name: "📊 Usage · ${{ github.event.workflow_run.display_title || inputs.run_id || 'manual' }}"
 
 on:
   workflow_run:
