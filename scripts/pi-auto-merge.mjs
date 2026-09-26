@@ -65,7 +65,7 @@ async function processPR(prSummary) {
   const statuses = statusData;
   const integrationContext = `social-mcp/integration/${base.object.sha.slice(0, 12)}`;
   const integration = latestStatus(statuses, integrationContext);
-  if (!integration) {
+  if (!integration || integration === 'error') {
     await reserveAndDispatch(sha, integrationContext, 'Exact-pair integration CI dispatched', 'ci.yml',
       { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), integration_base_sha: base.object.sha });
     console.log(`#${pr.number}: dispatched integration CI for exact pair`);
@@ -74,11 +74,11 @@ async function processPR(prSummary) {
   const conflict = latestStatus(statuses, `social-mcp/integration-conflict/${base.object.sha.slice(0, 12)}`);
   const conflictRepair = latestStatus(statuses, `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`);
   if (conflict === 'failure') {
-    if (conflictRepair === 'error' || conflictRepair === 'failure') {
+    if (conflictRepair === 'failure') {
       console.log(`#${pr.number}: conflict repair requires human attention`);
       return;
     }
-    if (!conflictRepair) {
+    if (!conflictRepair || conflictRepair === 'error') {
       await reserveAndDispatch(sha, `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`, 'Conflict repair dispatched', 'pi-pr-fix.yml',
         { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' });
       console.log(`#${pr.number}: exact integration has a merge conflict; dispatched conflict repair`);
@@ -87,11 +87,11 @@ async function processPR(prSummary) {
   }
   const integrationRepair = latestStatus(statuses, `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`);
   if (integration === 'failure') {
-    if (integrationRepair === 'error' || integrationRepair === 'failure') {
+    if (integrationRepair === 'failure') {
       console.log(`#${pr.number}: integration repair requires human attention`);
       return;
     }
-    if (!integrationRepair) {
+    if (!integrationRepair || integrationRepair === 'error') {
       await reserveAndDispatch(sha, `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`, 'Integration repair dispatched', 'pi-pr-fix.yml',
         { pr_number: String(pr.number), pr_title: pr.title, reason: 'integration' });
       console.log(`#${pr.number}: integration checks failed; dispatched integration repair`);
@@ -101,11 +101,11 @@ async function processPR(prSummary) {
   const review = latestStatus(statuses, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
   const reviewRepair = latestStatus(statuses, `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`);
   if (review === 'failure') {
-    if (reviewRepair === 'error' || reviewRepair === 'failure') {
+    if (reviewRepair === 'failure') {
       console.log(`#${pr.number}: review repair requires human attention`);
       return;
     }
-    if (!reviewRepair) {
+    if (!reviewRepair || reviewRepair === 'error') {
       await reserveAndDispatch(sha, `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`, 'Review repair dispatched', 'pi-pr-fix.yml',
         { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' });
       console.log(`#${pr.number}: dispatched review repair for exact pair`);
@@ -116,7 +116,7 @@ async function processPR(prSummary) {
     console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)})`);
     return;
   }
-  if (!review) {
+  if (!review || review === 'error') {
     await reserveAndDispatch(sha, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`, 'Automated review dispatched',
       'pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title });
     console.log(`#${pr.number}: dispatched review for exact pair`);
