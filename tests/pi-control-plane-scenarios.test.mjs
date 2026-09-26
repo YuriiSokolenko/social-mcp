@@ -104,3 +104,11 @@ test('published checkpoints update their leases and deletion requires exact publ
   assert.match(repair, /REPAIR_CHECKPOINT_PUBLISHED=\$\{CHECKPOINT_COMMIT\}/);
   assert.match(repair, /--force-with-lease="refs\/heads\/pi\/repair-pr-\$\{PR\}-checkpoint:\$\{REPAIR_CHECKPOINT_PUBLISHED:-\$REPAIR_CHECKPOINT_EXPECTED\}"/);
 });
+
+
+test('published PR state is committed before merge-gate wake and survives wake failure', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.ok(workflow.indexOf('- name: Mark pull request created') < workflow.indexOf('- name: Wake merge gate'));
+  assert.match(workflow, /if: failure\(\) && steps\.pr\.outputs\.number == ''/);
+  assert.match(workflow, /Merge Gate wake failed/);
+});
