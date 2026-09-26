@@ -9,11 +9,6 @@ export const PIPELINE_LABELS = Object.freeze({
   cancelled: 'pi:cancelled',
   architectReady: 'architect:ready',
   epic: 'architect:epic',
-  reviewReady: 'review:ready',
-  reviewRunning: 'review:running',
-  reviewPassed: 'review:passed',
-  reviewChanges: 'review:changes-requested',
-  reviewFailed: 'review:failed',
 });
 
 export const ISSUE_ACTIVE = new Set([
@@ -28,11 +23,6 @@ export const ISSUE_STATE_LABELS = new Set([
   PIPELINE_LABELS.queued,
   PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
   ...ISSUE_TERMINAL,
-]);
-
-export const REVIEW_LABELS = new Set([
-  PIPELINE_LABELS.reviewReady, PIPELINE_LABELS.reviewRunning, PIPELINE_LABELS.reviewPassed,
-  PIPELINE_LABELS.reviewChanges, PIPELINE_LABELS.reviewFailed,
 ]);
 
 const names = issue => new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
@@ -84,29 +74,6 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
   return findings;
 }
 
-export function inspectPrState(pr, { hasLiveReviewer = undefined } = {}) {
-  const labels = names(pr);
-  const review = [...REVIEW_LABELS].filter(label => labels.has(label));
-  const findings = [];
-  if (review.length > 1) {
-    const precedence = [
-      PIPELINE_LABELS.reviewRunning, PIPELINE_LABELS.reviewChanges, PIPELINE_LABELS.reviewPassed,
-      PIPELINE_LABELS.reviewReady, PIPELINE_LABELS.reviewFailed,
-    ];
-    const keep = precedence.find(label => labels.has(label));
-    findings.push({ code: 'multiple-review-states', severity: 'repair', labels: review,
-      remove: review.filter(label => label !== keep), keep });
-  }
-  if (pr.state === 'open' && labels.has(PIPELINE_LABELS.reviewRunning) && hasLiveReviewer === false) {
-    findings.push({ code: 'orphaned-review-state', severity: 'repair', remove: [PIPELINE_LABELS.reviewRunning] });
-  }
-  if (pr.state !== 'open' && review.some(label => label === PIPELINE_LABELS.reviewRunning || label === PIPELINE_LABELS.reviewReady)) {
-    findings.push({ code: 'closed-pr-active-review', severity: 'repair',
-      remove: review.filter(label => label === PIPELINE_LABELS.reviewRunning || label === PIPELINE_LABELS.reviewReady) });
-  }
-  return findings;
-}
-
 export function safeRemovals(findings) {
   return [...new Set(findings.filter(item => item.severity === 'repair').flatMap(item => item.remove ?? []))];
 }
@@ -121,14 +88,6 @@ export const ISSUE_TRANSITIONS = Object.freeze({
   failed: PIPELINE_LABELS.failed,
   cancelled: PIPELINE_LABELS.cancelled,
 });
-export const REVIEW_TRANSITIONS = Object.freeze({
-  running: PIPELINE_LABELS.reviewRunning,
-  passed: PIPELINE_LABELS.reviewPassed,
-  'changes-requested': PIPELINE_LABELS.reviewChanges,
-  stale: PIPELINE_LABELS.reviewReady,
-  failed: PIPELINE_LABELS.reviewFailed,
-});
-
 export function issueStateLabels(issue) {
   const labels = names(issue);
   return [...ISSUE_STATE_LABELS].filter(label => labels.has(label)).sort();
@@ -164,9 +123,3 @@ export function validateIssueTransition(issue, action) {
   return target;
 }
 
-export function validateReviewTransition(pr, action) {
-  const target = REVIEW_TRANSITIONS[action];
-  if (!target) throw new Error(`unknown review transition: ${action}`);
-  if (pr.state !== 'open') throw new Error(`cannot transition closed PR to ${target}`);
-  return target;
-}
