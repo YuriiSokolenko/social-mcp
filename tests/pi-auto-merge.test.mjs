@@ -103,7 +103,7 @@ test('integration correctness uses pair-bound statuses, never workflow titles', 
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   const summary = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
   assert.match(gate, /social-mcp\/integration\//);
-  assert.match(gate, /actions\/workflows\/ci\.yml\/dispatches/);
+  assert.match(gate, /reserveAndDispatch\(sha, integrationContext[\s\S]*'ci\.yml'/);
   assert.doesNotMatch(gate, /latestCI|needsCIDispatch|actions\/workflows\/ci\.yml\/runs/);
   assert.doesNotMatch(summary, /display_title|workflow_runs/);
 });
@@ -140,7 +140,7 @@ test('failed integration dispatches integration repair instead of stopping', () 
   assert.match(gate, /reason: 'integration'/);
   assert.match(gate, /social-mcp\/repair-integration/);
   assert.match(repair, /- integration/);
-  assert.match(repair, /pi-transition\.mjs" issue needs-human/);
+  assert.doesNotMatch(repair, /pi-transition\.mjs" issue needs-human/);
 });
 
 
