@@ -119,8 +119,8 @@ for (const issue of issues) {
     }
   }
   if (retryReadyImplementer && !recovery) {
-    const dispatched = await tryDispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number) }, `ready issue #${issue.number}`);
-    recovery = { add: 'pi:ready', dispatch: dispatched ? 'implementer' : null, reason: dispatched ? 'resume ready implementation' : 'implementer dispatch failed; pi:ready retained for retry' };
+    const dispatched = await tryDispatchWorkflow('pi-dispatcher.yml', {}, `ready issue #${issue.number}`);
+    recovery = { add: 'pi:ready', dispatch: dispatched ? 'dispatcher' : null, reason: dispatched ? 'wake serialized dispatcher for ready implementation' : 'dispatcher wake failed; pi:ready retained for retry' };
   }
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
 }
