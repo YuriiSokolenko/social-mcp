@@ -37,6 +37,8 @@ test('reconciler defers recovery dispatch outside RUNNING mode', () => {
   assert.match(source, /recoveryDispatchAllowed/);
   assert.match(source, /recovery\.dispatch === 'implementer' && recoveryDispatchAllowed/);
   assert.match(source, /recovery\.dispatch === 'reviewer' && recoveryDispatchAllowed/);
+  assert.match(source, /apply && recoveryDispatchAllowed/);
+  assert.match(source, /repair recovery deferred until RUNNING/);
   const workflow = fs.readFileSync('.github/workflows/pi-reconcile.yml', 'utf8');
   assert.match(workflow, /PI_AUTOMATION_MODE:/);
 });
