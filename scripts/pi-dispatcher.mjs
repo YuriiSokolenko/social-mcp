@@ -70,7 +70,7 @@ async function snapshot(includeQueue = false) {
     const stateFindings = inspectIssueState(issue, { hasOpenPiPr: openPrIssues.has(issue.number) });
     if (stateFindings.length) reason = `inconsistent pipeline state: ${stateFindings.map(item => item.code).join(", ")}`;
     if (active.has(issue.number)) reason = "already active";
-    else if (blockedLabels.some(label => labels(issue).has(label))) reason = "blocked by Pi failure label";
+    else if (blockedLabels.some(label => labels(issue).has(label))) reason = "owned by a non-dispatchable pipeline state";
     let metadata;
     if (!reason) {
       try { metadata = task(issue.number); }
