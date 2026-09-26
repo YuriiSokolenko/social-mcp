@@ -82,7 +82,6 @@ const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.r
 
 const liveImplementers = new Set();
 const liveArchitects = new Set();
-const liveRepairs = new Set();
 for (const run of runs) {
   if (!liveStatuses.includes(run.status)) continue;
   const implement = /^🤖 Implement #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
@@ -93,11 +92,6 @@ for (const run of runs) {
   if (repair) liveRepairs.add(Number(repair[1]));
 }
 const checkpoints = new Set(refs.map(ref => Number(ref.ref.match(/^refs\/heads\/pi\/issue-(\d+)-checkpoint$/)?.[1])).filter(Number.isSafeInteger));
-const repairCheckpointRefs = new Map(refs.map(ref => {
-  const number = Number(ref.ref.match(/^refs\/heads\/pi\/repair-pr-(\d+)-checkpoint$/)?.[1]);
-  return Number.isSafeInteger(number) ? [number, ref] : null;
-}).filter(Boolean));
-
 const report = [];
 let mergeGateWakeNeeded = false;
 for (const issue of issues) {
@@ -143,7 +137,6 @@ for (const pr of prs) {
   const issueNumber = Number(pr.head?.ref?.match(/^pi\/issue-(\d+)$/)?.[1]);
   if (!Number.isSafeInteger(issueNumber)) continue;
 
-  const repairCheckpoint = repairCheckpointRefs.get(pr.number);
   const issue = issues.find(item => item.number === issueNumber);
   const issueLabels = new Set((issue?.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   if (!issue || issue.state !== 'open' || !issueLabels.has('pi:mr-created') || issueLabels.has('pi:needs-human')) continue;
@@ -153,12 +146,10 @@ for (const pr of prs) {
   // not recreate the removed review:* label state machine.
   if (apply && recoveryDispatchAllowed) mergeGateWakeNeeded = true;
   report.push({
-    type: repairCheckpoint ? 'repair' : 'pr',
+    type: 'pr',
     number: pr.number,
     title: pr.title,
-    findings: repairCheckpoint && !liveRepairs.has(pr.number)
-      ? [{ code: 'saved-repair-checkpoint', severity: 'warning', checkpoint: true }]
-      : [],
+    findings: [],
     removals: [],
     recovery: apply ? {
       add: null,
