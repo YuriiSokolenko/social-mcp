@@ -99,3 +99,12 @@ test('architect and reconciler contain no removed terminal-state machinery', () 
   assert.doesNotMatch(architect, /pi:failed|pi:blocked|pi:cancelled/);
   assert.doesNotMatch(reconcile, /repairCheckpointRefs|liveRepairs|repair-pr-/);
 });
+
+
+test('stale repair dispatch exits without mutating pair status or running repair stages', () => {
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(repair, /id: metadata/);
+  assert.match(repair, /needed=false/);
+  assert.match(repair, /Finalize repair status[\s\S]*steps\.metadata\.outputs\.needed == 'true'/);
+  assert.match(repair, /Commit and push repair[\s\S]*steps\.metadata\.outputs\.needed == 'true'/);
+});
