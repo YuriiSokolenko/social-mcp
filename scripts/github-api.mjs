@@ -23,5 +23,15 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
       if (batch.length < 100) return all;
     }
   }
-  return { api, pages, repo };
+  async function ensureLabel(name, color, description) {
+    const response = await fetch(root + '/labels', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, color, description }),
+    });
+    if (![201, 422].includes(response.status)) {
+      throw new Error(`Cannot ensure ${name} label: ${response.status} ${await response.text()}`);
+    }
+  }
+  return { api, pages, ensureLabel, repo };
 }
