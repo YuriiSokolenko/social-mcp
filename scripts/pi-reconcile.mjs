@@ -155,8 +155,8 @@ for (const pr of prs) {
       if (recovery) {
         await addLabel(pr.number, recovery.add);
         if (recovery.dispatch === 'reviewer' && recoveryDispatchAllowed) {
-          const dispatched = await tryDispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number) }, `review PR #${pr.number}`);
-          if (!dispatched) recovery = { ...recovery, dispatch: null, reason: 'review recovery dispatch failed; review:ready retained for retry' };
+          mergeGateWakeNeeded = true;
+          recovery = { ...recovery, dispatch: 'merge-gate', reason: 'return orphaned review to merge-gate scheduler' };
         }
       }
     }
@@ -167,8 +167,8 @@ for (const pr of prs) {
   }
   if (retryMergeGateForPassed) mergeGateWakeNeeded = true;
   if (retryReadyReviewer && !recovery) {
-    const dispatched = await tryDispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number) }, `ready review PR #${pr.number}`);
-    recovery = { add: 'review:ready', dispatch: dispatched ? 'reviewer' : null, reason: dispatched ? 'resume ready review' : 'review dispatch failed; review:ready retained for retry' };
+    mergeGateWakeNeeded = true;
+    recovery = { add: 'review:ready', dispatch: 'merge-gate', reason: 'resume ready review through merge-gate scheduler' };
   }
   report.push({ type: 'pr', number: pr.number, title: pr.title, findings, removals, recovery });
 }
