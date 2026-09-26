@@ -64,16 +64,6 @@ jobs:
             --data "$(jq -nc --arg context "social-mcp/integration/${BASE_SHA:0:12}" '{state:"pending",context:$context,description:"Exact dev+PR integration CI is running"}')" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
 
-      - name: Wake merge gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pi-auto-merge.yml/dispatches"
           set +e
           git merge --no-ff --no-edit "$TARGET_SHA"
           merge_status=$?
@@ -200,3 +190,14 @@ jobs:
             -H "Content-Type: application/json" \
             --data "$(jq -nc --arg state "$STATE" --arg context "social-mcp/integration/${BASE_SHA:0:12}" --arg description "$DESCRIPTION" '{state:$state,context:$context,description:$description}')" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
+
+      - name: Wake merge gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data '{"ref":"dev"}' \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pi-auto-merge.yml/dispatches"
