@@ -20,6 +20,7 @@ permissions:
 
 concurrency:
   group: pi-pipeline-reconciler
+  queue: max
   cancel-in-progress: false
 
 jobs:
