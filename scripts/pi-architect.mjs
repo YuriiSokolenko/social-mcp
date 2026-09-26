@@ -4,7 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readQueueContext } from './pi-queue-context.mjs';
 import { replaceIssueState } from './pi-github-state.mjs';
-import { ISSUE_ACTIVE, ISSUE_STATE_LABELS, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-state-machine.mjs';
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-state-machine.mjs';
 import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
@@ -290,17 +290,40 @@ async function publish(issue, jsonl, contextFile) {
   await ensureLabel('architect:epic', '7057ff', 'Parent issue split into linked work items');
   await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
   const latestParent = await api(`/issues/${issue}`);
-  const latestState = issueStateLabels(latestParent);
-  if (JSON.stringify(latestState) !== JSON.stringify(['architect:ready'])) {
-    throw new Error(`Parent state changed before split publish: [${latestState}]`);
-  }
-  const parentKeep = latestParent.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
-  await api(`/issues/${issue}`, 'PATCH', { labels: [...new Set([...parentKeep, 'architect:epic'])] });
+  await replaceIssueState({
+    number: issue,
+    expected: latestParent,
+    target: null,
+    context: 'Architect split parent',
+    load: number => api(`/issues/${number}`),
+    validateCurrent: current => {
+      const state = issueStateLabels(current);
+      if (current.state !== 'open' || state.length !== 1 || state[0] !== 'architect:ready') {
+        throw new Error(`Parent state changed before split publish: [${state}]`);
+      }
+    },
+    patch: (number, labels) => api(`/issues/${number}`, 'PATCH', {
+      labels: [...new Set([...labels, 'architect:epic'])],
+    }),
+  });
   for (const number of children) {
     const child = await api(`/issues/${number}`);
-    if (issueStateLabels(child).length) throw new Error(`Child #${number} acquired pipeline state before dispatch`);
-    const keep = child.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
-    await api(`/issues/${number}`, 'PATCH', { labels: [...new Set([...keep, 'dispatcher:ready'])] });
+    if (child.state !== 'open' || issueStateLabels(child).length) {
+      throw new Error(`Child #${number} acquired pipeline state before dispatch`);
+    }
+    await replaceIssueState({
+      number,
+      expected: child,
+      target: 'dispatcher:ready',
+      context: 'Architect split child',
+      load: childNumber => api(`/issues/${childNumber}`),
+      validateCurrent: current => {
+        if (current.state !== 'open' || issueStateLabels(current).length) {
+          throw new Error(`Child #${number} acquired pipeline state before dispatch`);
+        }
+      },
+      patch: (childNumber, labels) => api(`/issues/${childNumber}`, 'PATCH', { labels }),
+    });
   }
   await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
   console.log(`Split #${issue} into ${children.map(n => `#${n}`).join(', ')}`);
