@@ -4,6 +4,8 @@ const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
 if (!['issue', 'review'].includes(kind) || !repo || !token) throw new Error('usage: pi-labels.mjs <issue|review>');
 const labels = kind === 'issue' ? [
+  ['dispatcher:ready','5319e7','Ready for deterministic dispatcher ownership'],
+  ['architect:ready','c5def5','Large issue approved for Pi Architect'],
   ['pi:ready','57f678','Ready for the Pi issue agent'],
   ['pi:running','0052cc','Pi agent is working on this issue'],
   ['pi:mr-created','1d76db','Pi agent created a pull request'],
