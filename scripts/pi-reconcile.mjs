@@ -100,7 +100,7 @@ for (const issue of issues) {
     hasCheckpoint: checkpoints.has(issue.number),
   });
   const issueLabels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
-  const retryReadyImplementer = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:ready') && !liveImplementers.has(issue.number);
+  const retryReadyImplementer = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:ready') && !liveImplementers.has(issue.number) && !openPiPrIssues.has(issue.number);
   const retryMergeGateForPr = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:mr-created') && openPiPrIssues.has(issue.number);
   if (!findings.length && !retryReadyImplementer && !retryMergeGateForPr) continue;
   const removals = safeRemovals(findings);
