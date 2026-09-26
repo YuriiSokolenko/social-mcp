@@ -28,6 +28,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from hmac import compare_digest
+from secrets import token_urlsafe
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -35,9 +36,26 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import SecretStr
 
-from social_mcp.container import ApplicationContainer
-from social_mcp.diagnostics import DiagnosticLevel
-from social_mcp.storage.models import ConnectedAccount
+from social_mcp.admin.oauth import (
+    SESSION_ID_KEY,
+    _tiktok_client_configured,
+    build_tiktok_connect_service,
+    get_tiktok_adapter,
+    redirect_to_accounts,
+)
+from social_mcp.auth.oauth_state import OAuthStateError
+from social_mcp.container import (
+    ApplicationContainer,
+    OAuthStateUnavailableError,
+    TokenCipherUnavailableError,
+)
+from social_mcp.diagnostics import DiagnosticLevel, current_request_id
+from social_mcp.platforms.tiktok import (
+    TikTokLoginKitAdapter,
+    resolve_tiktok_capabilities,
+)
+from social_mcp.platforms.tiktok.oauth import TikTokOAuthError
+from social_mcp.storage.models import ConnectedAccount, SocialPlatform
 
 basic_auth = HTTPBasic(auto_error=False)
 
@@ -96,7 +114,16 @@ def _is_configured(container: ApplicationContainer) -> bool:
 def _generate_csrf_token() -> str:
     """Random CSRF token for a freshly authenticated session."""
 
-    from secrets import token_urlsafe
+    return token_urlsafe(32)
+
+
+def _generate_session_id() -> str:
+    """Random, unguessable identifier for an admin session.
+
+    Stored in the signed session cookie and used to bind OAuth ``state`` values
+    to the session that started the flow. It is never a credential and is
+    never logged in full; only its presence matters for state binding.
+    """
 
     return token_urlsafe(32)
 
@@ -190,6 +217,7 @@ def login(
 
     request.session[_SESSION_KEY] = True
     request.session[_CSRF_KEY] = _generate_csrf_token()
+    request.session[SESSION_ID_KEY] = _generate_session_id()
     csrf_token = request.session[_CSRF_KEY]
     body = (
         "<!doctype html><html><head><meta charset='utf-8'></head>"
@@ -210,7 +238,7 @@ def logout(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/admin/login", status_code=303)
 
 
-def admin_only(
+async def admin_only(
     request: Request,
     container: Annotated[ApplicationContainer, Depends(get_admin_container)],
 ) -> None:
@@ -219,8 +247,9 @@ def admin_only(
     Unauthenticated browser navigation (``GET``/``HEAD``) is redirected to the
     login page; all other methods receive ``401`` so non-browser clients can
     detect the missing session. State-changing methods (``POST``/``PUT``/
-    ``PATCH``/``DELETE``) must also present a CSRF token in the
-    ``x-csrf-token`` header matching the session.
+    ``PATCH``/``DELETE``) must also present a CSRF token matching the session,
+    sent either in the ``x-csrf-token`` header (API/CLI clients) or as a
+    ``csrf_token`` form field (browser forms, so no JavaScript is required).
     """
 
     if not _is_configured(container):
@@ -233,7 +262,13 @@ def admin_only(
             raise HTTPException(status_code=303, headers={"location": "/admin/login"})
         raise HTTPException(status_code=401, detail="Authentication required")
     if request.method in {"POST", "PUT", "PATCH", "DELETE", "PURGE"}:
-        _check_csrf(request, request.headers.get("x-csrf-token"))
+        token = request.headers.get("x-csrf-token")
+        if not token:
+            # Fall back to a form field so browser-based admin forms (which
+            # cannot set custom headers) still submit a CSRF token.
+            form = await request.form()
+            token = form.get("csrf_token")
+        _check_csrf(request, token)
 
 
 # Protected routes — every one is guarded by the ``admin_only`` dependency.
@@ -278,10 +313,18 @@ def accounts(request: Request) -> HTMLResponse:
     except sqlite3.Error:
         stored_accounts = []
 
+    tiktok_account = next(
+        (a for a in stored_accounts if a.platform is SocialPlatform.TIKTOK), None
+    )
+    csrf_token = request.session.get(_CSRF_KEY, "")
+    status = request.query_params.get("tiktok")
+
     main = (
         "<section><h2>Connected accounts</h2>"
-        '<button type="button" disabled>Connect Threads (coming soon)</button>'
-        + _render_accounts(stored_accounts)
+        + _render_tiktok_connect(tiktok_account, csrf_token, _tiktok_client_configured(container))
+        + '<button type="button" disabled>Connect Threads (coming soon)</button>'
+        + _render_status(status)
+        + _render_accounts(stored_accounts, show_capabilities_for=tiktok_account)
         + "</section>"
     )
     return _page("Accounts", main)
@@ -330,6 +373,271 @@ def disconnect_account(request: Request) -> HTMLResponse:
     return _page("Disconnect", body)
 
 
+# --- TikTok OAuth: connect / reconnect / callback (issue #79) ----------------
+
+@admin_router.post("/connect/tiktok", dependencies=[Depends(admin_only)])
+async def connect_tiktok(
+    request: Request,
+    container: Annotated[ApplicationContainer, Depends(get_admin_container)],
+    adapter: Annotated[TikTokLoginKitAdapter, Depends(get_tiktok_adapter)],
+) -> RedirectResponse:
+    """Initiate a TikTok Login Kit connection and redirect to TikTok for consent.
+
+    The browser form submits a CSRF token (form field), which ``admin_only``
+    checks before this handler runs. State is minted for the current admin
+    session so it cannot be replayed from a different session.
+    """
+
+    if not _tiktok_client_configured(container):
+        _record(container, DiagnosticLevel.ERROR,
+                "TikTok OAuth initiation refused: client not configured")
+        raise HTTPException(status_code=503, detail="TikTok authentication is not configured")
+
+    try:
+        service = build_tiktok_connect_service(container, adapter)
+        auth_url = service.build_authorization_url(request)
+    except TikTokOAuthError as exc:
+        _record_error(container, exc, "TikTok OAuth flow could not be started")
+        raise HTTPException(status_code=503, detail="Unable to start the TikTok connection") from exc
+    except (TokenCipherUnavailableError, OAuthStateUnavailableError) as exc:
+        _record_error(container, exc, "TikTok OAuth flow could not be started")
+        raise HTTPException(status_code=503, detail="Unable to start the TikTok connection") from exc
+
+    _record(container, DiagnosticLevel.INFO, "TikTok OAuth flow initiated")
+    return RedirectResponse(url=auth_url, status_code=303)
+
+
+@admin_router.post("/reconnect/tiktok", dependencies=[Depends(admin_only)])
+async def reconnect_tiktok(
+    request: Request,
+    container: Annotated[ApplicationContainer, Depends(get_admin_container)],
+    adapter: Annotated[TikTokLoginKitAdapter, Depends(get_tiktok_adapter)],
+) -> RedirectResponse:
+    """Reconnect an already-connected TikTok account.
+
+    Reconnect re-authorizes through TikTok so the granted scopes and token expiry
+    are refreshed. The store upserts by ``(platform, external_account_id)``,
+    so authorizing the same account updates it and authorizing a different one
+    adds a new row.
+    """
+
+    if not _tiktok_client_configured(container):
+        _record(container, DiagnosticLevel.ERROR,
+                "TikTok OAuth reconnect refused: client not configured")
+        raise HTTPException(status_code=503, detail="TikTok authentication is not configured")
+
+    try:
+        service = build_tiktok_connect_service(container, adapter)
+        auth_url = service.build_authorization_url(request)
+    except TikTokOAuthError as exc:
+        _record_error(container, exc, "TikTok OAuth reconnect could not be started")
+        raise HTTPException(status_code=503, detail="Unable to start the TikTok reconnection") from exc
+    except (TokenCipherUnavailableError, OAuthStateUnavailableError) as exc:
+        _record_error(container, exc, "TikTok OAuth reconnect could not be started")
+        raise HTTPException(status_code=503, detail="Unable to start the TikTok reconnection") from exc
+
+    _record(container, DiagnosticLevel.INFO, "TikTok OAuth reconnect initiated")
+    return RedirectResponse(url=auth_url, status_code=303)
+
+
+@admin_router.get("/oauth/callback/tiktok", dependencies=[Depends(admin_only)])
+async def tiktok_oauth_callback(
+    request: Request,
+    container: Annotated[ApplicationContainer, Depends(get_admin_container)],
+    adapter: Annotated[TikTokLoginKitAdapter, Depends(get_tiktok_adapter)],
+) -> RedirectResponse:
+    """Handle the TikTok Login Kit authorization-code callback.
+
+    TikTok redirects the browser here with ``code`` and ``state``. The state is
+    consumed (validated for signature, expiry, session binding and one-shot use)
+    before the code is exchanged server-side for tokens. Tokens are encrypted at
+    rest with the configured :class:`TokenCipher` and the account upserted.
+
+    Errors are recorded and the browser is sent back to the accounts page with a
+    fixed ``?tiktok=error`` flag; no token, secret or platform error detail is
+    reflected to the client.
+    """
+
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    if not code or not state:
+        _record(container, DiagnosticLevel.ERROR,
+                "TikTok OAuth callback received an incomplete response")
+        return redirect_to_accounts("error")
+
+    try:
+        existing = any(
+            a.platform is SocialPlatform.TIKTOK for a in container.account_store.list_accounts()
+        )
+        service = build_tiktok_connect_service(container, adapter)
+        await service.complete_callback(request, code, state)
+    except OAuthStateError as exc:
+        _record_error(container, exc, "TikTok OAuth state rejected")
+        return redirect_to_accounts("error")
+    except (TikTokOAuthError, ValueError) as exc:
+        _record_error(container, exc, "TikTok OAuth token exchange failed")
+        return redirect_to_accounts("error")
+    except (TokenCipherUnavailableError, OAuthStateUnavailableError) as exc:
+        _record_error(container, exc, "TikTok OAuth persistence dependencies unavailable")
+        return redirect_to_accounts("error")
+    except sqlite3.Error as exc:
+        # ``list_accounts`` (above) or ``complete_callback`` -> ``save`` can fail
+        # if the store is unavailable. A failure before state consumption leaves
+        # the state valid (retryable); a failure after consumption is handled
+        # gracefully here rather than surfacing a 500. Matches the ``accounts``
+        # and ``dashboard`` routes, which also guard ``list_accounts``.
+        _record_error(container, exc, "TikTok OAuth callback storage error")
+        return redirect_to_accounts("error")
+
+    _record(
+        container, DiagnosticLevel.INFO,
+        "TikTok account reconnected" if existing else "TikTok account connected",
+    )
+    return redirect_to_accounts("reconnected" if existing else "connected")
+
+
+# --- rendering helpers --------------------------------------------------------
+
+
+def _render_tiktok_connect(
+    tiktok_account: ConnectedAccount | None,
+    csrf_token: str,
+    configured: bool,
+) -> str:
+    """Render the Connect / Reconnect form for TikTok.
+
+    A browser form posts the CSRF token as a hidden field (no JavaScript needed).
+    When TikTok client credentials are not configured the buttons are disabled
+    and a note is shown instead, so the admin surface stays usable.
+    """
+
+    if not configured:
+        return (
+            "<p>TikTok is not configured. Set TIKTOK_CLIENT_KEY and "
+            "TIKTOK_CLIENT_SECRET to connect an account.</p>"
+        )
+
+    action = "/admin/connect/tiktok" if tiktok_account is None else "/admin/reconnect/tiktok"
+    label = "Connect TikTok" if tiktok_account is None else "Reconnect TikTok"
+    return (
+        f'<form method="post" action="{action}">'
+        f'<input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}" />'
+        f'<button type="submit">{label}</button></form>'
+    )
+
+
+def _render_status(status: str | None) -> str:
+    """Render a non-secret status banner from a fixed set of server flags."""
+
+    messages = {
+        "connected": "TikTok account connected.",
+        "reconnected": "TikTok account reconnected.",
+        "error": "TikTok connection failed. See logs for details.",
+    }
+    message = messages.get(status or "")
+    if not message:
+        return ""
+    return f'<p role="status">{html.escape(message)}</p>'
+
+
+def _record(
+    container: ApplicationContainer,
+    level: DiagnosticLevel,
+    message: str,
+) -> None:
+    """Record a diagnostic event with the current request correlation id."""
+
+    container.diagnostics.record(
+        level, source="tiktok_oauth", message=message, correlation_id=current_request_id()
+    )
+
+
+def _record_error(
+    container: ApplicationContainer, error: BaseException, message: str
+) -> None:
+    """Record an exception as an error diagnostic event (no full traceback).
+
+    Only the exception type and its (non-secret) message are captured, matching
+    the project's existing diagnostic policy; no full traceback or credential
+    is ever stored.
+    """
+
+    container.diagnostics.record(
+        DiagnosticLevel.ERROR, source="tiktok_oauth", message=message,
+        correlation_id=current_request_id(),
+        detail=f"{type(error).__name__}: {error}",
+    )
+
+
+_TIKTOK_ROW_ID = "_tiktok_capabilities"
+
+
+
+def _render_accounts(
+    accounts: Sequence[ConnectedAccount],
+    *,
+    show_capabilities_for: ConnectedAccount | None = None,
+) -> str:
+    """Render the connected accounts table, never exposing token values.
+
+    The token columns show only the status (valid/expired/no expiry); the
+    encrypted token bytes themselves are never rendered. When
+    ``show_capabilities_for`` is a TikTok account, its granted capabilities
+    (profile/video/statistics) are surfaced below the table -- only the scopes
+    actually granted unlock a capability.
+    """
+
+    if not accounts:
+        return "<p>No connected accounts.</p>"
+
+    rows = [
+        "<tr>" + "".join(
+            f"<td>{html.escape(cell)}</td>"
+            for cell in (
+                account.platform.value,
+                account.username or "",
+                account.external_account_id,
+                ", ".join(account.scopes),
+                _token_status(account),
+                account.created_at.isoformat(),
+                account.updated_at.isoformat(),
+            )
+        ) + "</tr>"
+        for account in accounts
+    ]
+
+    table = (
+        "<table>"
+        "<thead><tr>"
+        "<th>Platform</th><th>Username</th><th>Account ID</th>"
+        "<th>Scopes</th><th>Token</th><th>Connected</th><th>Updated</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    )
+
+    if show_capabilities_for is not None and show_capabilities_for.platform is SocialPlatform.TIKTOK:
+        table += _render_tiktok_capabilities(show_capabilities_for)
+
+    return table
+
+
+def _render_tiktok_capabilities(account: ConnectedAccount) -> str:
+    """Render the read capabilities granted to a connected TikTok account."""
+
+    resolved = resolve_tiktok_capabilities(account)
+    items = "".join(
+        f"<li>{html.escape(name)}: {html.escape('available' if cap.available else 'unavailable' + (f' ({cap.reason})' if cap.reason else ''))}</li>"
+        for name, cap in resolved.capabilities.items()
+    )
+    return (
+        f'<section id="{_TIKTOK_ROW_ID}"><h3>TikTok capabilities</h3>'
+        f'<p>Platform: {html.escape(resolved.platform)} ('
+        f'{len(resolved.available)}/{len(resolved.capabilities)} available)</p>'
+        f"<ul>{items}</ul></section>"
+    )
+
+
 _NAV = ("<nav><a href='/admin/dashboard'>Dashboard</a> "
          "<a href='/admin/accounts'>Accounts</a> "
          "<a href='/admin/logs'>Logs</a> "
@@ -364,43 +672,6 @@ def _token_status(account: ConnectedAccount) -> str:
     if expires_at is None:
         return "no expiry"
     return "expired" if expires_at <= datetime.now(UTC) else "valid"
-
-
-def _render_accounts(accounts: Sequence[ConnectedAccount]) -> str:
-    """Render the connected accounts table, never exposing token values.
-
-    The token columns show only the status (valid/expired/no expiry); the
-    encrypted token bytes themselves are never rendered.
-    """
-
-    if not accounts:
-        return "<p>No connected accounts.</p>"
-
-    rows = [
-        "<tr>" + "".join(
-            f"<td>{html.escape(cell)}</td>"
-            for cell in (
-                account.platform.value,
-                account.username or "",
-                account.external_account_id,
-                ", ".join(account.scopes),
-                _token_status(account),
-                account.created_at.isoformat(),
-                account.updated_at.isoformat(),
-            )
-        ) + "</tr>"
-        for account in accounts
-    ]
-
-    return (
-        "<table>"
-        "<thead><tr>"
-        "<th>Platform</th><th>Username</th><th>Account ID</th>"
-        "<th>Scopes</th><th>Token</th><th>Connected</th><th>Updated</th>"
-        "</tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody>"
-        "</table>"
-    )
 
 
 _LEVELS = {DiagnosticLevel.ERROR, DiagnosticLevel.CRITICAL}
