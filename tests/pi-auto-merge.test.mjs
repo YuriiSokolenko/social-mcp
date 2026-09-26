@@ -100,3 +100,11 @@ test('an unfinished sibling prevents closure of every ancestor', async () => {
   await finishArchitectParents(14, issueApi);
   assert.deepEqual(changes, [11]);
 });
+
+
+test('auto-merge guards reviewer dispatch against an already-live review', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(source, /async function hasLiveReview\(prNumber\)/);
+  assert.match(source, /await hasLiveReview\(pr\.number\)/);
+  assert.match(source, /Review PR/);
+});
