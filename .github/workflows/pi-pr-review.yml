@@ -1,5 +1,5 @@
 name: Pi PR Review
-run-name: "🔬 Review PR #${{ inputs.pr_number }}"
+run-name: "🔬 Review PR #${{ inputs.pr_number }} ${{ inputs.pr_title && format('· {0}', inputs.pr_title) || '' }}"
 
 on:
   workflow_dispatch:
@@ -8,6 +8,10 @@ on:
         description: Pull request number to review
         required: true
         type: number
+      pr_title:
+        description: Automatically resolved from the GitHub pull request by the launcher
+        required: false
+        type: string
 
 permissions:
   contents: write
