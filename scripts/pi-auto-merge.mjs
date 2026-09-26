@@ -71,6 +71,15 @@ async function processPR(prSummary) {
     }
     return;
   }
+  const integrationRepair = latestStatus(statuses, `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`);
+  if (integration === 'failure') {
+    if (!integrationRepair) {
+      await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`, description: 'Integration repair dispatched' });
+      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'integration' } });
+      console.log(`#${pr.number}: integration checks failed; dispatched integration repair`);
+    }
+    return;
+  }
   const review = latestStatus(statuses, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
   const reviewRepair = latestStatus(statuses, `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`);
   if (review === 'failure') {
