@@ -130,12 +130,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
-          CI_JSON="$(node scripts/pi-await-ci.mjs "$HEAD_SHA" "$HEAD_REF")"
+          CI_JSON="$(node scripts/pi-await-ci.mjs "$HEAD_SHA" "$HEAD_REF" "$BASE_SHA")"
           CI_EXIT=$?
           set -e
           echo "$CI_JSON"
           if [ "$CI_EXIT" -ne 0 ]; then
-            echo "Deterministic CI failed for $HEAD_SHA; semantic review is unnecessary." >&2
+            echo "Integration CI failed for dev $BASE_SHA + PR $HEAD_SHA; semantic review is unnecessary." >&2
             echo "ci_passed=false" >> "$GITHUB_OUTPUT"
           else
             echo "ci_passed=true" >> "$GITHUB_OUTPUT"
@@ -192,11 +192,11 @@ jobs:
           Pull request body:
           ${PR_BODY}
           
-          Deterministic CI for this exact head SHA: ${CI_PASSED}.
+          Deterministic integration CI for exact dev/PR pair ${BASE_SHA}/${HEAD_SHA}: ${CI_PASSED}.
           The CI run metadata is available at $RUNNER_TEMP/pi-ci-result.json.
           Do not rerun pytest or Ruff; GitHub-hosted CI is authoritative for deterministic checks.
           
-          Inspect the diff against origin/dev and relevant surrounding code.
+          Inspect the PR diff against the exact reviewed base commit ${BASE_SHA} and relevant surrounding code. Do not silently switch to a newer origin/dev during this review.
 
           Call submit_result exactly once, as your last action, with your verdict.
           EOF
@@ -238,7 +238,7 @@ jobs:
             set -o pipefail
             RETRY_RAW="$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
             pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. Deterministic CI for this exact SHA has already run; do not rerun pytest or Ruff. Call submit_result exactly once, as your last action, with your verdict and evidence." \
+              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. Deterministic integration CI for exact dev/PR pair ${BASE_SHA}/${HEAD_SHA} has already run; do not rerun pytest or Ruff. Call submit_result exactly once, as your last action, with your verdict and evidence." \
               | tee "$RETRY_RAW" | PI_CALL=retry node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RETRY_RAW")"
           fi
