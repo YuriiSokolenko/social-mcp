@@ -43,6 +43,12 @@ const issue = /^\d+$/.test(process.env.PI_ISSUE ?? "") ? Number(process.env.PI_I
 const phase = process.env.PI_PHASE ?? "agent";
 const call = process.env.PI_CALL ?? "main";
 const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+const activityFile = process.env.PI_ACTIVITY_FILE;
+
+function recordActivity(kind, extra = {}) {
+  if (!activityFile) return;
+  appendFileSync(activityFile, JSON.stringify({ at: Date.now(), kind, ...extra }) + "\n");
+}
 
 // Job Summary mirror: unlike ::group::, HTML <details> in $GITHUB_STEP_SUMMARY nests,
 // so the full run tree (turn > thinking/response/tool > args/result) is browsable there.
@@ -421,6 +427,7 @@ for await (const line of rl) {
       const summaryRecord = { name, hint, args: event.args, isError: false, result: undefined, ms: null };
       getCurrentTurn().tools.push(summaryRecord);
       activeTools.set(event.toolCallId, { name, args: event.args, at: Date.now(), summaryRecord });
+      recordActivity("tool_start", { tool: name });
       toolCount += 1;
       heading("🔧", name + (hint ? " · " + oneLine(hint) : ""), C.magenta);
       break;
@@ -428,6 +435,7 @@ for await (const line of rl) {
     case "tool_execution_end": {
       const started = activeTools.get(event.toolCallId);
       activeTools.delete(event.toolCallId);
+      recordActivity("tool_end", { tool: event.toolName ?? started?.name ?? "unknown" });
       const name = event.toolName ?? started?.name ?? "unknown";
       const isError = Boolean(event.isError);
       const ms = started?.at == null ? null : Date.now() - started.at;
