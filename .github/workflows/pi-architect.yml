@@ -1,9 +1,7 @@
 name: Pi Architect
-run-name: "🏗 Architect #${{ github.event.issue.number || inputs.issue_number }} · ${{ github.event.issue.title || inputs.issue_title || 'issue' }}"
+run-name: "🏗 Architect #${{ inputs.issue_number }} · ${{ inputs.issue_title || 'issue' }}"
 
 on:
-  issues:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -27,13 +25,13 @@ concurrency:
 
 jobs:
   architect:
-    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'architect:ready')
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING'
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
       GITHUB_REPOSITORY: ${{ github.repository }}
-      ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
-      PI_ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
+      ISSUE: ${{ inputs.issue_number }}
+      PI_ISSUE: ${{ inputs.issue_number }}
       PI_PHASE: architect
       PI_BASH_TIMEOUT_SECONDS: '600'
       PI_MAX_TURNS: '100'
