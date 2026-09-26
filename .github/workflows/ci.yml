@@ -16,22 +16,20 @@ on:
         description: Branch name associated with target_sha
         required: false
         type: string
-  pull_request:
+  # Pi PRs are checked through SHA-bound workflow_dispatch runs from trusted dev.
+  # Do not use pull_request here: PRs created by GITHUB_TOKEN are authored by
+  # github-actions[bot] and GitHub approval-gates those runs before any job exists.
   push:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ inputs.target_sha || github.event.pull_request.head.sha || github.sha }}
+  group: ci-${{ github.workflow }}-${{ inputs.target_sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
   test:
-    # pi-auto-merge.mjs always dispatches a workflow_dispatch CI run for pi/issue-*
-    # branches, so skip the redundant pull_request-triggered run for those branches
-    # instead of letting the concurrency group cancel it (which shows as a failure).
-    if: github.event_name != 'pull_request' || !startsWith(github.event.pull_request.head.ref, 'pi/issue-')
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -64,7 +62,6 @@ jobs:
         run: bash tests/test_runner_autoscaler.sh
 
   docker:
-    if: github.event_name != 'pull_request' || !startsWith(github.event.pull_request.head.ref, 'pi/issue-')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
