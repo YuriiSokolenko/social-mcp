@@ -190,8 +190,10 @@ jobs:
           # before snapshotting so the checkpoint tree cannot silently revert
           # files that changed on dev while Pi was working.
           if ! git merge --no-edit origin/dev; then
-            echo "Latest dev conflicts with implementation; preserving the local worktree for the integration-repair step" >&2
+            echo "Latest dev conflicts with implementation; integration repair must resolve it before a new checkpoint is published" >&2
             git merge --abort || true
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           ISSUE_TREE="$(git rev-parse HEAD^{tree})"
           CHECKPOINT_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$ISSUE_TREE" -p origin/dev)"
@@ -261,9 +263,11 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "fix: preserve integration for issue #${ISSUE}"
           fi
-          # Re-root the preserved tree on the latest dev so a long-running job
-          # never pushes workflow-history changes through the restricted token.
           git fetch origin dev
+          if ! git merge-base --is-ancestor origin/dev HEAD; then
+            echo "Latest dev is not integrated; keeping the previous safe checkpoint" >&2
+            exit 0
+          fi
           INTEGRATION_TREE="$(git rev-parse HEAD^{tree})"
           INTEGRATION_COMMIT="$(printf 'fix: preserve integration for issue #%s\n' "$ISSUE" | git commit-tree "$INTEGRATION_TREE" -p origin/dev)"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "${INTEGRATION_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
