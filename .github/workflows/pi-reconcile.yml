@@ -36,6 +36,7 @@ jobs:
       - name: Audit and reconcile
         env:
           GH_TOKEN: ${{ github.token }}
+          PI_AUTOMATION_MODE: ${{ vars.PI_AUTOMATION_MODE }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.apply_safe_repairs }}" = "true" ]; then
             node scripts/pi-reconcile.mjs --apply
