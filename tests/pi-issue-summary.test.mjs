@@ -12,3 +12,9 @@ test('issue summary reports the status-driven merge pipeline', () => {
   assert.match(source, /exact dev\+PR pair status/);
   assert.doesNotMatch(source, /pi:failed|pi:cancelled|pi:blocked/);
 });
+
+
+test('issue summary follows gate order: integration before semantic review', () => {
+  const source = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
+  assert.match(source, /integration !== 'success' \? 'CI' : review === 'success' \? 'MERGE GATE' : 'REVIEW'/);
+});
