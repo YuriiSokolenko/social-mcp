@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { allowedFiles, finishArchitectParents, issueNumber, latestCI, latestStatus, needsCIDispatch, shouldDeferBranchUpdate } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
