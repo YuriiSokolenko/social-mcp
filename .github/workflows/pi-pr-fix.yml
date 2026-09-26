@@ -223,36 +223,13 @@ jobs:
           [ "$pi_status" -eq 0 ] || exit "$pi_status"
           printf '\n'
 
-      - name: Rebase reviewed repair onto latest dev
-        if: env.REASON != 'conflict'
-        id: review_rebase
-        run: |
-          cd "$JOB_DIR"
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "fix: address review for issue #${ISSUE}"
-          fi
-          git fetch origin dev
-          set +e
-          GIT_EDITOR=true git rebase origin/dev
-          status=$?
-          set -e
-          if [ "$status" -eq 0 ]; then
-            echo "conflicted=false" >> "$GITHUB_OUTPUT"
-          else
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicted-files.txt"
-            echo "conflicted=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run Pi conflict resolution
-        if: (env.REASON == 'conflict' && steps.rebase.outputs.conflicted == 'true') || (env.REASON != 'conflict' && steps.review_rebase.outputs.conflicted == 'true')
+        if: env.REASON == 'conflict' && steps.rebase.outputs.conflicted == 'true'
         run: |
           set -o pipefail
           cd "$JOB_DIR"
           pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "Read and follow agents/implementer/AGENTS.md. You are rebasing PR #${PR} for issue #${ISSUE} onto the latest origin/dev after implementation or review repair. The rebase left unresolved Git conflicts in these files:
+            "Read and follow agents/implementer/AGENTS.md. You are rebasing PR #${PR} for issue #${ISSUE} onto the latest origin/dev to resolve an actual integration conflict. The rebase left unresolved Git conflicts in these files:
 
           $(cat "$RUNNER_TEMP/conflicted-files.txt")
 
@@ -271,8 +248,12 @@ jobs:
             echo "Rebase is still in progress" >&2
             exit 1
           fi
-          git merge-base --is-ancestor origin/dev HEAD
-          git diff --check origin/dev...HEAD
+          if [ "$REASON" = "conflict" ]; then
+            git merge-base --is-ancestor origin/dev HEAD
+            git diff --check origin/dev...HEAD
+          else
+            git diff --check
+          fi
           pytest
           ruff check .
 
@@ -328,16 +309,13 @@ jobs:
           fi
           CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
           [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
-          # Publish only a branch that is based on the latest dev observed now.
-          # If dev moved again while this job was running, do not create another
-          # merge commit or silently re-root the tree; let the next integration
-          # pass rebase and verify it cleanly.
-          git fetch origin dev
-          git merge-base --is-ancestor origin/dev HEAD || {
-            echo "dev moved again during integration; retry against the new dev head" >&2
-            exit 1
-          }
-          git diff --check origin/dev...HEAD
+          if [ "$REASON" = "conflict" ]; then
+            git fetch origin dev
+            git merge-base --is-ancestor origin/dev HEAD || {
+              echo "dev moved again during conflict resolution; Merge Gate will retry against the new dev" >&2
+            }
+          fi
+          git diff --check
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "HEAD:refs/heads/$HEAD_REF"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
