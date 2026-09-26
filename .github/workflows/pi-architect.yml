@@ -1,5 +1,5 @@
 name: Pi Architect
-run-name: 'Pi Architect #${{ github.event.issue.number || inputs.issue_number }}'
+run-name: '🏗 Architect #${{ github.event.issue.number || inputs.issue_number }} · ${{ github.event.issue.title || inputs.issue_title || 'issue' }}'
 
 on:
   issues:
@@ -10,6 +10,10 @@ on:
         description: Issue to review, refine, or split into dependency-linked tasks
         required: true
         type: number
+      issue_title:
+        description: Issue title for the Actions run name
+        required: false
+        type: string
 
 permissions:
   actions: write
