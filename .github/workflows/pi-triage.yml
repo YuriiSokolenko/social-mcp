@@ -41,7 +41,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/pi-triage.mjs prepare "$RUNNER_TEMP/pi-triage-context.json"
+          node "$GITHUB_WORKSPACE/scripts/pi-triage.mjs" prepare "$RUNNER_TEMP/pi-triage-context.json"
           if jq -e '(.candidates | length > 0)' "$RUNNER_TEMP/pi-triage-context.json" >/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -70,10 +70,10 @@ jobs:
             --no-session \
             "$(cat "$TASK_FILE")" \
           | tee "$RUNNER_TEMP/pi-triage-result.jsonl" \
-          | PI_CALL=main node scripts/pi-log-filter.mjs
+          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
       - name: Validate and apply triage decisions
         if: steps.prepare.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/pi-triage.mjs apply "$RUNNER_TEMP/pi-triage-result.jsonl"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-triage.mjs" apply "$RUNNER_TEMP/pi-triage-result.jsonl"
