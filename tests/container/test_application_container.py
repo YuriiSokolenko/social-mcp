@@ -246,6 +246,31 @@ def test_oauth_state_secret_is_independent_of_token_encryption(
     assert manager.consume(state, session_id="admin-session").session_id == "admin-session"
 
 
+def test_oauth_state_manager_is_cached_across_calls(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    """The OAuth state manager must be cached so one-shot state validation
+    persists across requests (a consumed state must remain consumed)."""
+
+    from social_mcp.auth.oauth_state import OAuthStateError
+
+    container = create_container(make_settings(tmp_path, oauth_state_secret=STATE_SECRET))
+
+    manager1 = container.require_oauth_state_manager()
+    state = manager1.create("admin-session", platform="threads")
+
+    # First call consumes the state.
+    data = manager1.consume(state, session_id="admin-session")
+    assert data.session_id == "admin-session"
+
+    # A second call to require_oauth_state_manager returns the SAME cached
+    # instance, so the already-consumed state must be rejected on reuse.
+    manager2 = container.require_oauth_state_manager()
+    assert manager2 is manager1
+    with pytest.raises(OAuthStateError, match="already been used"):
+        manager2.consume(state, session_id="admin-session")
+
+
 def test_missing_oauth_state_secret_warns_without_preventing_startup(
     tmp_path: Path,
     make_settings: Callable[..., Settings],

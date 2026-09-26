@@ -24,20 +24,38 @@ suitable for container health checks.
 """
 
 import html
+import logging
 import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from hmac import compare_digest
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import SecretStr
 
+from social_mcp.auth.oauth_state import OAuthStateError
 from social_mcp.container import ApplicationContainer
 from social_mcp.diagnostics import DiagnosticLevel
+from social_mcp.platforms.threads import (
+    ThreadsLoginAdapter,
+    ThreadsOAuthError,
+    ThreadsOAuthTransport,
+    ThreadsTokenSuccessResponse,
+)
+from social_mcp.platforms.threads import token_response_to_account_state as _map_token_response
+from social_mcp.platforms.threads.constants import (
+    DEFAULT_CALLBACK_PATH,
+    PLATFORM_THREADS,
+    SCOPE_THREADS_BASIC,
+)
+from social_mcp.platforms.threads.oauth import ThreadsAccountState
 from social_mcp.storage.models import ConnectedAccount
+
+logger = logging.getLogger(__name__)
 
 basic_auth = HTTPBasic(auto_error=False)
 
@@ -210,7 +228,7 @@ def logout(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/admin/login", status_code=303)
 
 
-def admin_only(
+async def admin_only(
     request: Request,
     container: Annotated[ApplicationContainer, Depends(get_admin_container)],
 ) -> None:
@@ -219,8 +237,9 @@ def admin_only(
     Unauthenticated browser navigation (``GET``/``HEAD``) is redirected to the
     login page; all other methods receive ``401`` so non-browser clients can
     detect the missing session. State-changing methods (``POST``/``PUT``/
-    ``PATCH``/``DELETE``) must also present a CSRF token in the
-    ``x-csrf-token`` header matching the session.
+    ``PATCH``/``DELETE``) must also present a CSRF token matching the session,
+    taken from the ``x-csrf-token`` header (API clients) or a ``csrf_token``
+    form field (browser form submissions).
     """
 
     if not _is_configured(container):
@@ -233,7 +252,13 @@ def admin_only(
             raise HTTPException(status_code=303, headers={"location": "/admin/login"})
         raise HTTPException(status_code=401, detail="Authentication required")
     if request.method in {"POST", "PUT", "PATCH", "DELETE", "PURGE"}:
-        _check_csrf(request, request.headers.get("x-csrf-token"))
+        token = request.headers.get("x-csrf-token")
+        if token is None:
+            # Browser form submissions cannot set custom headers; fall back to a
+            # ``csrf_token`` hidden form field. Form parsing is cached by
+            # Starlette so the route handler can still access it.
+            token = (await request.form()).get("csrf_token")
+        _check_csrf(request, token)
 
 
 # Protected routes — every one is guarded by the ``admin_only`` dependency.
@@ -278,9 +303,10 @@ def accounts(request: Request) -> HTMLResponse:
     except sqlite3.Error:
         stored_accounts = []
 
+    connect_button = _render_connect_threads_button(container, request)
     main = (
         "<section><h2>Connected accounts</h2>"
-        '<button type="button" disabled>Connect Threads (coming soon)</button>'
+        + connect_button
         + _render_accounts(stored_accounts)
         + "</section>"
     )
@@ -328,6 +354,315 @@ def disconnect_account(request: Request) -> HTMLResponse:
         "<p>Account disconnection is not yet implemented.</p></section>"
     )
     return _page("Disconnect", body)
+
+
+# ---------------------------------------------------------------------------
+# Threads OAuth connect flow (issue #16)
+# ---------------------------------------------------------------------------
+
+
+class HttpxThreadsTransport:
+    """HTTP transport that POSTs to the Meta/Threads token endpoint via httpx.
+
+    This is the production transport boundary used by
+    :class:`~social_mcp.platforms.threads.ThreadsLoginAdapter`. Tests inject a
+    fake :class:`~social_mcp.platforms.threads.ThreadsOAuthTransport` instead.
+    Only the token endpoint is reached; no other Meta API is called from here.
+    """
+
+    def __init__(self, *, timeout: float = 30.0) -> None:
+        self._timeout = timeout
+
+    async def post(self, url: str, data: dict[str, str]) -> dict[str, object]:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, data=data, timeout=self._timeout)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            # Surface a safe, non-secret message: never include headers or body.
+            raise ThreadsOAuthError(
+                f"Threads token endpoint returned HTTP {exc.response.status_code}."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ThreadsOAuthError("Threads token endpoint could not be reached.") from exc
+        except (ValueError, TypeError) as exc:
+            # response.json() failed to parse a non-JSON body.
+            raise ThreadsOAuthError("Threads token endpoint returned an invalid response.") from exc
+
+
+def build_threads_adapter(transport: ThreadsOAuthTransport) -> ThreadsLoginAdapter:
+    """Construct the Threads OAuth adapter with a given transport boundary."""
+
+    return ThreadsLoginAdapter(transport=transport)
+
+
+def _threads_configured(container: ApplicationContainer) -> bool:
+    """Whether all dependencies for the Threads connect flow are present.
+
+    Requires: Meta app credentials, the OAuth state secret (for CSRF state),
+    the token encryption key (for encrypting stored tokens), and the redirect
+    URI resolution (which always has a default). Returns ``False`` rather than
+    raising so callers can report a safe 503 to the admin.
+    """
+
+    settings = container.settings
+    if not settings.meta_app_id or not settings.meta_app_secret:
+        return False
+    if container.token_cipher_or_none() is None:
+        return False
+    return container.oauth_state_manager_or_none() is not None
+
+
+def _resolve_threads_redirect_uri(settings) -> str:
+    """Return the configured redirect URI, defaulting to the dev callback route."""
+
+    configured = getattr(settings, "threads_redirect_uri", None)
+    if configured and configured.strip():
+        return configured
+    return f"http://127.0.0.1:8000{DEFAULT_CALLBACK_PATH}"
+
+
+def _resolve_threads_scopes(settings) -> list[str]:
+    """Return the scopes to request, always including ``threads_basic``."""
+
+    from social_mcp.platforms.threads import parse_scopes
+
+    configured = getattr(settings, "threads_scopes", None)
+    if configured and configured.strip():
+        return parse_scopes(configured)
+    return [SCOPE_THREADS_BASIC]
+
+
+def _current_session_id(request: Request) -> str:
+    """Return the CSRF token from the session, used as the OAuth state session id.
+
+    The CSRF token is stable for the lifetime of the admin session and unique
+    per session, which makes it a suitable ``session_id`` for binding an OAuth
+    state value. Raises ``403`` if no session is active (no CSRF token).
+    """
+
+    return _current_csrf(request)
+
+
+# OAuth callback path. ``DEFAULT_CALLBACK_PATH`` includes the ``/admin`` prefix
+# (for the redirect URI sent to Meta); the route itself is relative to the
+# ``admin_router`` prefix, so it drops the leading ``/admin``.
+_THREADS_CALLBACK_PATH = DEFAULT_CALLBACK_PATH
+# Drop the ``/admin`` prefix: the route is relative to the ``admin_router``
+# prefix, so ``/oauth/callback/threads`` + prefix ``/admin`` = full path.
+_THREADS_CALLBACK_ROUTE = DEFAULT_CALLBACK_PATH.removeprefix("/admin")
+
+
+@admin_router.post("/connect/threads", response_class=HTMLResponse, dependencies=[Depends(admin_only)])
+async def connect_threads(
+    request: Request,
+    container: Annotated[ApplicationContainer, Depends(get_admin_container)],
+) -> RedirectResponse:
+    """Start the Threads OAuth authorization flow from the protected Accounts page.
+
+    Creates a signed, session-bound OAuth state, builds the Meta authorization
+    URL with the configured scopes, and redirects the browser to Meta. The state
+    is validated and consumed in the callback. No token material is exposed to
+    the browser.
+
+    Raises ``503`` when the Threads adapter is not fully configured (missing Meta
+    credentials, encryption key, or OAuth state secret).
+    """
+
+    if not _threads_configured(container):
+        logger.warning(
+            "Threads connect flow not configured; a Connect Threads request was rejected."
+        )
+        raise HTTPException(status_code=503, detail="Threads connection is not configured")
+
+    settings = container.settings
+    oauth_manager = container.require_oauth_state_manager()
+    session_id = _current_session_id(request)
+
+    state = oauth_manager.create(session_id, platform=PLATFORM_THREADS)
+
+    adapter = build_threads_adapter(HttpxThreadsTransport())
+    auth_url = adapter.authorization_url(
+        client_id=settings.meta_app_id,
+        redirect_uri=_resolve_threads_redirect_uri(settings),
+        scopes=_resolve_threads_scopes(settings),
+        state=state,
+    )
+    return RedirectResponse(url=auth_url, status_code=303)
+
+
+@admin_router.get(_THREADS_CALLBACK_ROUTE, response_class=HTMLResponse, dependencies=[Depends(admin_only)])
+async def threads_oauth_callback(
+    request: Request,
+    container: Annotated[ApplicationContainer, Depends(get_admin_container)],
+) -> HTMLResponse:
+    """Handle the Meta OAuth callback for Threads account connection.
+
+    The callback is a GET redirect target, so it is not subject to CSRF-token
+    checking (it is a GET); the signed OAuth ``state`` parameter provides CSRF
+    protection by binding the callback to the initiating admin session.
+
+    On success the authorization code is exchanged server-side for an access
+    token, the token is encrypted, and the account identity and granted scopes
+    are persisted (replacing any existing connection for the same account,
+    which is how reconnect works).
+    """
+
+    if not _threads_configured(container):
+        logger.warning(
+            "Threads OAuth callback received but the adapter is not configured.")
+        return _connection_error_page("Threads connection is not configured.")
+
+    settings = container.settings
+    oauth_manager = container.require_oauth_state_manager()
+    cipher = container.require_token_cipher()
+
+    # Canceled authorization: Meta redirects with an error instead of a code.
+    error = request.query_params.get("error")
+    if error:
+        return _connection_error_page("Authorization was cancelled.")
+
+    code = request.query_params.get("code", "")
+    state_value = request.query_params.get("state", "")
+    # Meta appends ``#_`` to the redirect URI; strip it defensively from the code
+    # in case it is ever carried into the query string.
+    code = code.removesuffix("#_").strip()
+
+    if not code or not state_value:
+        return _connection_error_page(
+            "Missing authorization code or state. The connection was not completed."
+        )
+
+    session_id = _current_session_id(request)
+    try:
+        oauth_manager.consume(state_value, session_id=session_id)
+    except OAuthStateError as exc:
+        logger.warning("Threads OAuth state validation failed: %s", exc)
+        return _connection_error_page(str(exc))
+
+    redirect_uri = _resolve_threads_redirect_uri(settings)
+    adapter = build_threads_adapter(HttpxThreadsTransport())
+    try:
+        token_response = await adapter.exchange_code_for_token(
+            client_id=settings.meta_app_id,
+            client_secret=settings.meta_app_secret,
+            code=code,
+            redirect_uri=redirect_uri,
+        )
+    except ThreadsOAuthError as exc:
+        logger.warning("Threads token exchange failed: %s", exc)
+        _record_connection_attempt(request, exc)
+        return _connection_error_page(str(exc))
+
+    encrypted_token = cipher.encrypt(token_response.access_token)
+    scopes = _resolve_threads_scopes(settings)
+    account_state = _token_response_to_account_state(
+        token_response, encrypted_token, scopes
+    )
+
+    try:
+        stored = container.account_store.save(account_state.to_connected_account())
+    except sqlite3.Error as exc:
+        logger.error("Failed to persist Threads account: %s", exc)
+        return _connection_error_page("The connection was established but could not be saved.")
+
+    logger.info("Threads account %s connected.", stored.external_account_id)
+    return _connection_success_page(stored)
+
+
+def _token_response_to_account_state(
+    token_response: ThreadsTokenSuccessResponse,
+    encrypted_token: bytes,
+    scopes: list[str],
+) -> ThreadsAccountState:
+    """Map the token response to an account state, preferring response scopes.
+
+    Uses the granted scopes from the token response when present; otherwise falls
+    back to the requested scopes (Meta does not always return scopes in the
+    short-lived token response). Encryption is performed by the caller.
+    """
+
+    return _map_token_response(
+        token_response, access_token_encrypted=encrypted_token, scopes=scopes
+    )
+
+
+def _render_connect_threads_button(
+    container: ApplicationContainer, request: Request
+) -> str:
+    """Render the Connect Threads button, or a notice when not configured.
+
+    The form submits the session CSRF token as a ``csrf_token`` hidden field so
+    that the ``admin_only`` CSRF check passes for browser form submissions.
+    """
+
+    if not _threads_configured(container):
+        return (
+            '<p>Configure META_APP_ID, META_APP_SECRET, TOKEN_ENCRYPTION_KEY and '
+            'OAUTH_STATE_SECRET to connect Threads.</p>'
+        )
+    csrf_token = request.session.get(_CSRF_KEY)
+    if not isinstance(csrf_token, str):
+        # admin_only already verified the session; a missing CSRF token here is
+        # unexpected, so fall back to a fresh one (the form will still be
+        # submitted and the session-bound state will be validated in the callback).
+        csrf_token = _generate_csrf_token()
+    return (
+        '<form method="post" action="/admin/connect/threads">'
+        f'<input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}" />'
+        '<button type="submit">Connect Threads</button></form>'
+    )
+
+
+def _connection_error_page(message: str) -> HTMLResponse:
+    """Render a safe error page for a failed Threads connection.
+
+    Only the provided message is shown; no token, header, or secret value is
+    ever rendered. The message is escaped for safe HTML.
+    """
+
+    body = (
+        "<section><h2>Threads connection</h2>"
+        f'<p class="error">{html.escape(message)}</p>'
+        '<p><a href="/admin/accounts">Back to accounts</a></p></section>'
+    )
+    return _page("Threads connection", body)
+
+
+def _connection_success_page(stored: ConnectedAccount) -> HTMLResponse:
+    """Render a success page after a Threads account is connected or reconnected."""
+
+    body = (
+        "<section><h2>Threads connection</h2>"
+        '<p>Your Threads account was connected successfully.</p>'
+        f'<p>Account: {html.escape(stored.username or stored.external_account_id)}</p>'
+        '<p><a href="/admin/accounts">View connected accounts</a></p></section>'
+    )
+    return _page("Threads connection", body)
+
+
+def _record_connection_attempt(request: Request, error: Exception) -> None:
+    """Record a failed Threads connection attempt in the diagnostic log.
+
+    Only a safe, non-secret summary is recorded; no token, header, or secret is
+    ever logged.
+    """
+
+    correlation_id = getattr(request.state, "correlation_id", None)
+    try:
+        request.app.state.container.diagnostics.record(
+            level=DiagnosticLevel.ERROR,
+            source="threads-oauth",
+            message=f"Threads connection failed: {error}",
+            correlation_id=correlation_id,
+            platform=PLATFORM_THREADS,
+            endpoint=_THREADS_CALLBACK_PATH,
+            status_code=400,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Diagnostics are best-effort; never let logging break the callback.
+        logger.debug("Diagnostic recording failed: %s", exc)
 
 
 _NAV = ("<nav><a href='/admin/dashboard'>Dashboard</a> "

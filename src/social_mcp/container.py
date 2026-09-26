@@ -61,6 +61,13 @@ class ApplicationContainer:
     settings: Settings
     account_store: SQLiteAccountStore
     diagnostics: DiagnosticLog = field(default_factory=DiagnosticLog)
+    # Lazily populated cache of the OAuth state manager. The manager tracks
+    # consumed state nonces, so it must persist for the lifetime of the
+    # container (one-shot state validation requires the same instance across
+    # requests). Cached on first use via ``oauth_state_manager_or_none``.
+    _oauth_state_manager: OAuthStateManager | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def start(self) -> None:
         """Create the account database and confirm the store is reachable.
@@ -104,24 +111,37 @@ class ApplicationContainer:
         return cipher
 
     def oauth_state_manager_or_none(self) -> OAuthStateManager | None:
-        """Build the OAuth state manager from configuration, without raising.
+        """Return the cached OAuth state manager, creating it on first use.
 
         OAuth state signing (``OAUTH_STATE_SECRET``) is intentionally NOT
         required at startup: a missing secret disables OAuth state without
         aborting the whole app, mirroring token encryption above. It is
         independent of the token cipher: OAuth state signing does not require
         token encryption.
+
+        The manager is cached so its one-shot nonce set persists across
+        requests: a state consumed in one request must remain consumed in a
+        later request to prevent replay. The container is created once at
+        startup, so the cache lives for the application's lifetime.
         """
 
+        if self._oauth_state_manager is not None:
+            return self._oauth_state_manager
         secret = self.settings.oauth_state_secret
         if not secret:
             return None
         try:
-            return OAuthStateManager(secret)
+            manager = OAuthStateManager(secret)
         except ValueError:
             # A malformed secret is treated as absent; the configured value is
             # never surfaced.
             return None
+        # The dataclass is frozen; use ``object.__setattr__`` to populate the
+        # cache lazily. This is safe because the manager is deterministic for a
+        # given secret (the randomness is in individual state values, not the
+        # manager itself).
+        object.__setattr__(self, "_oauth_state_manager", manager)
+        return manager
 
     def require_oauth_state_manager(self) -> OAuthStateManager:
         """Return the manager for an OAuth state operation.
@@ -159,6 +179,7 @@ def build_container(settings: Settings) -> ApplicationContainer:
         account_store=SQLiteAccountStore(settings.database_path),
         diagnostics=DiagnosticLog(),
     )
+
 
 
 def create_container(settings: Settings) -> ApplicationContainer:
