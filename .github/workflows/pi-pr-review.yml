@@ -135,6 +135,7 @@ jobs:
           printf '%s\n' "$CI_JSON" > "$RUNNER_TEMP/pi-ci-result.json"
 
       - name: Build review context
+        if: steps.checks.outputs.ci_passed == 'true'
         env:
           CI_PASSED: ${{ steps.checks.outputs.ci_passed }}
           GH_TOKEN: ${{ github.token }}
@@ -195,6 +196,7 @@ jobs:
           echo "TASK_FILE=$TASK_FILE" >> "$GITHUB_ENV"
 
       - name: Run Pi reviewer with live progress
+        if: steps.checks.outputs.ci_passed == 'true'
         run: |
           set -o pipefail
           cd "$JOB_DIR"
@@ -215,6 +217,7 @@ jobs:
           printf '\n'
 
       - name: Parse review result
+        if: steps.checks.outputs.ci_passed == 'true'
         id: result
         run: |
           if RESULT_JSON="$(node scripts/pi-review-result.mjs "$REVIEW_RAW")"; then
@@ -236,6 +239,7 @@ jobs:
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
 
       - name: Verify reviewed head is still current
+        if: always() && steps.checks.outcome == 'success'
         id: freshness
         env:
           GH_TOKEN: ${{ github.token }}
