@@ -152,3 +152,13 @@ test('workflow dispatch reservation cannot strand a pending status', () => {
   assert.match(source, /reserveAndDispatch\(sha, integrationContext/);
   assert.match(source, /'ci\.yml'/);
 });
+
+
+test('dispatch reservation errors are retryable while completed repair failures are terminal', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(source, /!integration \|\| integration === 'error'/);
+  assert.match(source, /!review \|\| review === 'error'/);
+  assert.match(source, /!integrationRepair \|\| integrationRepair === 'error'/);
+  assert.match(source, /integrationRepair === 'failure'/);
+  assert.doesNotMatch(source, /integrationRepair === 'error' \|\| integrationRepair === 'failure'/);
+});
