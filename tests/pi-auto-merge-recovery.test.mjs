@@ -107,6 +107,8 @@ function conflictMockSource() {
         return Response.json(hasMarker ? [{ context: 'social-mcp/merge-conflict-fix-dispatched', state: 'success' }] : []);
       }
       if (path === '/actions/workflows/ci.yml/runs') return Response.json({ workflow_runs: [] });
+      if (path === '/actions/workflows/pi-pr-fix.yml/runs' && method === 'GET') return Response.json({ workflow_runs: [] });
+      if (path === '/git/ref/heads/pi/repair-pr-77-checkpoint' && method === 'GET') return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404, headers: { 'content-type': 'application/json' } });
       if (path === '/actions/workflows/pi-pr-fix.yml/dispatches' && method === 'POST') return new Response(null, { status: 204 });
       if (path === '/statuses/abc123' && method === 'POST') return Response.json({ state: 'success' }, { status: 201 });
       throw new Error('Unexpected request: ' + method + ' ' + path);
