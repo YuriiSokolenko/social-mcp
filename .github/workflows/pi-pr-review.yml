@@ -88,6 +88,16 @@ jobs:
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
 
+          REVIEW_STATE="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | \
+            jq -r '[.[] | select(.context == "social-mcp/pi-review")] | sort_by(.id) | last | .state // empty')"
+          if [[ "$REVIEW_STATE" == "success" || "$REVIEW_STATE" == "failure" ]]; then
+            echo "Review for ${HEAD_SHA} already has final state ${REVIEW_STATE}; duplicate dispatch exits without model work."
+            exit 0
+          fi
+
       - name: Ensure review labels
         env:
           GH_TOKEN: ${{ github.token }}
