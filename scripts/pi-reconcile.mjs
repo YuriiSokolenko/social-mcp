@@ -27,6 +27,13 @@ async function pages(path) {
 async function addLabel(number, label) {
   await api(`/issues/${number}/labels`, { method: 'POST', body: JSON.stringify({ labels: [label] }) });
 }
+async function markerExists(sha, context) {
+  const statuses = await api(`/commits/${sha}/statuses?per_page=100`);
+  return statuses.some(status => status.context === context && status.state === 'success');
+}
+async function mark(sha, context, description) {
+  await api(`/statuses/${sha}`, { method: 'POST', body: JSON.stringify({ state: 'success', context, description: description.slice(0, 140) }) });
+}
 async function dispatch(event_type, payload) {
   await api('/dispatches', { method: 'POST', body: JSON.stringify({ event_type, client_payload: payload }) });
 }
@@ -80,7 +87,15 @@ for (const issue of issues) {
       recovery = recoveryForIssue(issue, { hasCheckpoint: checkpoints.has(issue.number), hasOpenPiPr: openPiPrIssues.has(issue.number) });
       if (recovery) {
         await addLabel(issue.number, recovery.add);
-        if (recovery.dispatch === 'implementer') await dispatch('pi_dispatch_issue', { issue_number: issue.number, issue_title: issue.title });
+        if (recovery.dispatch === 'implementer') {
+          const checkpointRef = refs.find(ref => ref.ref === `refs/heads/pi/issue-${issue.number}-checkpoint`);
+          const markerSha = checkpointRef?.object?.sha ?? (await api('/git/ref/heads/dev')).object.sha;
+          const context = `social-mcp/recovery-implement-${issue.number}`;
+          if (!await markerExists(markerSha, context)) {
+            await mark(markerSha, context, `Implementer recovery dispatched for issue #${issue.number}`);
+            await dispatch('pi_dispatch_issue', { issue_number: issue.number, issue_title: issue.title });
+          }
+        }
       }
     }
   }
@@ -97,7 +112,13 @@ for (const pr of prs) {
       recovery = recoveryForPr(pr);
       if (recovery) {
         await addLabel(pr.number, recovery.add);
-        if (recovery.dispatch === 'reviewer') await dispatch('pi_pr_review', { pr_number: pr.number, pr_title: pr.title });
+        if (recovery.dispatch === 'reviewer') {
+          const context = `social-mcp/recovery-review-${pr.number}`;
+          if (!await markerExists(pr.head.sha, context)) {
+            await mark(pr.head.sha, context, `Reviewer recovery dispatched for PR #${pr.number}`);
+            await dispatch('pi_pr_review', { pr_number: pr.number, pr_title: pr.title });
+          }
+        }
       }
     }
   }
