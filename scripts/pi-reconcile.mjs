@@ -45,7 +45,15 @@ async function replaceStateLabels(number, expected, target, kind) {
   });
 }
 async function dispatchWorkflow(workflow, inputs) {
-  await api(`/actions/workflows/${workflow}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: 'dev', inputs }) });
+  const enriched = { ...inputs };
+  if (workflow === 'pi-issue-agent.yml' || workflow === 'pi-architect.yml') {
+    const issue = await api(`/issues/${inputs.issue_number}`);
+    enriched.issue_title = issue.title;
+  } else if (workflow === 'pi-pr-review.yml' || workflow === 'pi-pr-fix.yml') {
+    const pr = await api(`/pulls/${inputs.pr_number}`);
+    enriched.pr_title = pr.title;
+  }
+  await api(`/actions/workflows/${workflow}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: 'dev', inputs: enriched }) });
 }
 async function tryDispatchWorkflow(workflow, inputs, context) {
   try {
