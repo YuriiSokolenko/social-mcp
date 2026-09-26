@@ -165,8 +165,7 @@ test('repair checkpoint recovery respects terminal review failure', () => {
 
 test('stranded pi:ready is requeued for dispatcher rather than merely waking it', () => {
   const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(source, /removeLabel\(issue\.number, 'pi:ready'\)/);
-  assert.match(source, /addLabel\(issue\.number, 'dispatcher:ready'\)/);
+  assert.match(source, /replaceStateLabels\(issue\.number, issue, 'dispatcher:ready', ISSUE_STATE_LABELS\)/);
   assert.match(source, /return stranded ready issue to serialized dispatcher/);
 });
 
@@ -210,6 +209,28 @@ test('status wrappers delegate mutations to guarded transition engine', () => {
 test('guarded transition replaces only its state-family labels', () => {
   const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
   assert.match(transition, /filter\(label => !stateLabels\.has\(label\)\)/);
-  assert.match(transition, /ISSUE_ACTIVE, \.\.\.ISSUE_TERMINAL/);
+  assert.match(transition, /ISSUE_STATE_LABELS/);
   assert.match(transition, /REVIEW_LABELS/);
+});
+
+
+test('dispatcher and reconciler use guarded whole-state writes', () => {
+  const dispatcher = fs.readFileSync('scripts/pi-dispatcher.mjs', 'utf8');
+  const reconciler = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(dispatcher, /transitionIssue\(number, "ready"\)/);
+  assert.match(dispatcher, /transitionIssue\(number, "queued"\)/);
+  assert.match(dispatcher, /transitionIssue\(number, "architect-ready"\)/);
+  assert.doesNotMatch(dispatcher, /labels\/pi%3Aready|labels\/dispatcher%3Aready/);
+  assert.match(reconciler, /concurrent reconciliation transition/);
+  assert.match(reconciler, /replaceStateLabels\(issue\.number, issue, recovery\.add, ISSUE_STATE_LABELS\)/);
+  assert.match(reconciler, /replaceStateLabels\(pr\.number, pr, recovery\.add, REVIEW_LABELS\)/);
+  assert.doesNotMatch(reconciler, /async function addLabel|async function removeLabel/);
+});
+
+test('issue state family includes dispatcher ownership', () => {
+  const source = fs.readFileSync('scripts/pi-state-machine.mjs', 'utf8');
+  assert.match(source, /ISSUE_STATE_LABELS/);
+  assert.match(source, /PIPELINE_LABELS\.queued/);
+  assert.match(source, /ready: PIPELINE_LABELS\.ready/);
+  assert.match(source, /'architect-ready': PIPELINE_LABELS\.architectReady/);
 });
