@@ -127,17 +127,6 @@ async function processPR(prSummary) {
     api(`/commits/${sha}/statuses?per_page=100`),
     api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100'),
   ]);
-  const currentReview = latestStatus(statusData, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
-  // SHA-bound status is authoritative. Review labels are presentation only.
-  const currentHeadNeedsRepair = currentReview === 'failure';
-  if (!repairLive && currentHeadNeedsRepair) {
-    // Reviewer feedback repairs the PR's own change. Integration conflicts are
-    // handled separately below only when current dev actually conflicts.
-    const reason = 'review';
-    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason } });
-    console.log(`#${pr.number}: dispatched Pi review repair for current head ${sha.slice(0, 12)}`);
-    return;
-  }
   const statuses = statusData;
   const runs = ciData.workflow_runs ?? [];
   await trigger(pr, sha, base.object.sha, statuses, runs);
@@ -151,6 +140,13 @@ async function processPR(prSummary) {
     return;
   }
   const review = latestStatus(statuses, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
+  if (review === 'failure') {
+    if (!repairLive) {
+      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' } });
+      console.log(`#${pr.number}: dispatched review repair for exact pair`);
+    }
+    return;
+  }
   if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success') {
     console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)}) and review`);
     return;
