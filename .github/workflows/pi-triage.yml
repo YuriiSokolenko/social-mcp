@@ -1,4 +1,5 @@
 name: Pi Triage
+run-name: '🔎 Triage · ${{ github.event.issue.title || 'queue scan' }}'
 
 on:
   workflow_dispatch:
