@@ -182,7 +182,7 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "feat: implement issue #${ISSUE}"
           fi
-          if git diff --quiet origin/dev...HEAD; then
+          if git diff --quiet "${PI_IMPLEMENTER_BASE_SHA}"...HEAD; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
