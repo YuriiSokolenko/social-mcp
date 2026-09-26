@@ -106,7 +106,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash "$GITHUB_WORKSPACE/scripts/pi-pr-review-status.sh" running \
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review running \
             "Automated Pi review started for \`${HEAD_SHA:0:12}\`."
 
       - name: Create temporary PR worktree
@@ -119,23 +119,25 @@ jobs:
           git worktree add --detach "$JOB_DIR" "$HEAD_SHA"
           echo "Temporary review worktree: $JOB_DIR"
 
-      - name: Await SHA-bound deterministic CI
+      - name: Verify exact integration CI passed
         id: checks
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set +e
-          CI_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-await-ci.mjs" "$HEAD_SHA" "$HEAD_REF" "$BASE_SHA")"
-          CI_EXIT=$?
-          set -e
-          echo "$CI_JSON"
-          if [ "$CI_EXIT" -ne 0 ]; then
-            echo "Integration CI failed for dev $BASE_SHA + PR $HEAD_SHA; semantic review is unnecessary." >&2
-            echo "ci_passed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ci_passed=true" >> "$GITHUB_OUTPUT"
-          fi
-          printf '%s\n' "$CI_JSON" > "$RUNNER_TEMP/pi-ci-result.json"
+          API="https://api.github.com/repos/${REPO}"
+          MARKER="target:${HEAD_SHA} ref:${HEAD_REF} base:${BASE_SHA}"
+          RUNS="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API}/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100")"
+          CI="$(jq -c --arg marker "$MARKER" '[.workflow_runs[] | select(.display_title | contains($marker))] | sort_by(.id) | last // empty' <<<"$RUNS")"
+          [ -n "$CI" ] || { echo "Exact integration CI is missing; Merge Gate must dispatch it first." >&2; exit 1; }
+          [ "$(jq -r '.status' <<<"$CI")" = "completed" ] && [ "$(jq -r '.conclusion' <<<"$CI")" = "success" ] || {
+            echo "Exact integration CI has not passed; semantic review will not run." >&2
+            exit 1
+          }
+          printf '%s\n' "$CI" > "$RUNNER_TEMP/pi-ci-result.json"
+          echo "ci_passed=true" >> "$GITHUB_OUTPUT"
 
       - name: Build review context
         if: steps.checks.outputs.ci_passed == 'true'
@@ -272,7 +274,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
-          bash "$GITHUB_WORKSPACE/scripts/pi-pr-review-status.sh" passed "$COMMENT"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review passed "$COMMENT"
 
       - name: Mark changes requested
         id: changes_requested
@@ -288,7 +290,7 @@ jobs:
           if [ "${{ steps.checks.outputs.ci_passed }}" != 'true' ] && [[ "$COMMENT" != Deterministic* ]]; then
             COMMENT="Deterministic GitHub-hosted CI failed for the reviewed SHA.\n\n${COMMENT}"
           fi
-          bash "$GITHUB_WORKSPACE/scripts/pi-pr-review-status.sh" changes-requested "$COMMENT"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review changes-requested "$COMMENT"
 
       - name: Mark review failed
         if: failure() && steps.changes_requested.outcome != 'success' && steps.passed.outcome != 'success'
