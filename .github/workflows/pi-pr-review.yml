@@ -93,11 +93,11 @@ jobs:
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
 
-          REVIEW_STATE="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | \
-            jq -r --arg context "social-mcp/pi-review/${BASE_SHA:0:12}" '[.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
+          REVIEW_STATE="$(for page in {1..10}; do
+            batch="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"
+            printf '%s\n' "$batch"
+            [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break
+          done | jq -s -r --arg context "social-mcp/pi-review/${BASE_SHA:0:12}" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
           if [[ "$REVIEW_STATE" == "success" || "$REVIEW_STATE" == "failure" ]]; then
             echo "Review for ${HEAD_SHA} already has final state ${REVIEW_STATE}; duplicate dispatch exits without model work."
             exit 0
@@ -127,11 +127,11 @@ jobs:
         run: |
           API="https://api.github.com/repos/${REPO}"
           CONTEXT="social-mcp/integration/${BASE_SHA:0:12}"
-          STATE="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | \
-            jq -r --arg context "$CONTEXT" '[.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
+          STATE="$(for page in {1..10}; do
+            batch="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"
+            printf '%s\n' "$batch"
+            [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break
+          done | jq -s -r --arg context "$CONTEXT" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
           [ "$STATE" = "success" ] || { echo "Exact integration CI has not passed." >&2; exit 1; }
           echo "ci_passed=true" >> "$GITHUB_OUTPUT"
 
