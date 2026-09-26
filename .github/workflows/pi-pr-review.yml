@@ -295,8 +295,12 @@ jobs:
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${REPO}/pulls/${PR}" | jq -r '.head.sha')"
-          if [ "${HEAD_SHA:-}" != "$CURRENT_HEAD" ]; then
-            echo "Review is stale; not marking the current PR as failed"
+          CURRENT_BASE="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/git/ref/heads/dev" | jq -r '.object.sha')"
+          if [ "${HEAD_SHA:-}" != "$CURRENT_HEAD" ] || [ "${BASE_SHA:-}" != "$CURRENT_BASE" ]; then
+            echo "Review is stale; not marking the current PR/base pair as failed"
             exit 0
           fi
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed \
