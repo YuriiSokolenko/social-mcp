@@ -16,18 +16,18 @@ export const PIPELINE_LABELS = Object.freeze({
   reviewFailed: 'review:failed',
 });
 
-export const ISSUE_STATE_LABELS = new Set([
-  PIPELINE_LABELS.queued,
-  PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
-  ...ISSUE_TERMINAL,
-]);
-
 export const ISSUE_ACTIVE = new Set([
   PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
 ]);
 
 export const ISSUE_TERMINAL = new Set([
   PIPELINE_LABELS.blocked, PIPELINE_LABELS.failed, PIPELINE_LABELS.needsHuman, PIPELINE_LABELS.cancelled,
+]);
+
+export const ISSUE_STATE_LABELS = new Set([
+  PIPELINE_LABELS.queued,
+  PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
+  ...ISSUE_TERMINAL,
 ]);
 
 export const REVIEW_LABELS = new Set([
