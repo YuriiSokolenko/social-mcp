@@ -102,12 +102,7 @@ jobs:
             exit 0
           fi
 
-      - name: Ensure review labels
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/pi-pr-review-status.sh ensure
-
-      - name: Mark review running
+       - name: Mark review running
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -270,13 +265,7 @@ jobs:
             echo "Reviewed head/base $HEAD_SHA/$BASE_SHA is stale; current pair is $CURRENT_HEAD/$CURRENT_BASE. Verdict will not mutate PR state."
           fi
 
-      - name: Release stale review
-        if: steps.freshness.outputs.current == 'false' && steps.freshness.outputs.head_same == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/pi-pr-review-status.sh stale
-
-      - name: Mark review passed
+       - name: Mark review passed
         id: passed
         if: steps.freshness.outputs.current == 'true' && steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.ci_passed == 'true'
         env:
