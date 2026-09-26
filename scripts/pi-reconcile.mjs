@@ -5,6 +5,8 @@ import { checkpointGcDecision, recoveryForIssue, recoveryForPr } from './pi-reco
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN;
 const apply = process.argv.includes('--apply');
+const automationMode = process.env.PI_AUTOMATION_MODE ?? 'PAUSED';
+const recoveryDispatchAllowed = automationMode === 'RUNNING';
 if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GH_TOKEN are required');
 
 const base = `https://api.github.com/repos/${repo}`;
@@ -98,7 +100,7 @@ for (const issue of issues) {
       recovery = recoveryForIssue(issue, { hasCheckpoint: checkpoints.has(issue.number), hasOpenPiPr: openPiPrIssues.has(issue.number) });
       if (recovery) {
         await addLabel(issue.number, recovery.add);
-        if (recovery.dispatch === 'implementer') {
+        if (recovery.dispatch === 'implementer' && recoveryDispatchAllowed) {
           await dispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number) });
         }
       }
@@ -126,7 +128,7 @@ for (const pr of prs) {
       recovery = recoveryForPr(pr);
       if (recovery) {
         await addLabel(pr.number, recovery.add);
-        if (recovery.dispatch === 'reviewer') {
+        if (recovery.dispatch === 'reviewer' && recoveryDispatchAllowed) {
           await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number) });
         }
       }
@@ -146,7 +148,7 @@ if (apply) {
   }
 }
 
-console.log(`Pipeline reconciler: ${report.length} object(s) need attention; mode=${apply ? 'apply-safe-repairs' : 'audit'}`);
+console.log(`Pipeline reconciler: ${report.length} object(s) need attention; mode=${apply ? 'apply-safe-repairs' : 'audit'}; automation=${automationMode}; recovery-dispatch=${recoveryDispatchAllowed ? 'enabled' : 'deferred'}`);
 for (const item of report) {
   console.log(`${item.type.toUpperCase()} #${item.number} ${item.title}`);
   for (const finding of item.findings) console.log(`  - ${finding.severity}: ${finding.code}${finding.labels ? ` [${finding.labels.join(', ')}]` : ''}`);
