@@ -53,3 +53,9 @@ test('review failure fallback refuses a stale dev base as well as a stale head',
   assert.match(workflow, /CURRENT_BASE=.*git\/ref\/heads\/dev/s);
   assert.match(workflow, /BASE_SHA:-.*CURRENT_BASE/s);
 });
+
+
+test('exact-pair CI result stays successful when only the merge-gate wake fails', () => {
+  const workflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(workflow, /Integration status is durable; reconciler can wake Merge Gate later/);
+});
