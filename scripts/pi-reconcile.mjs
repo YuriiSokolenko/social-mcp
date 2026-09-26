@@ -101,8 +101,8 @@ for (const issue of issues) {
           const markerSha = checkpointRef?.object?.sha ?? (await api('/git/ref/heads/dev')).object.sha;
           const context = `social-mcp/recovery-implement-${issue.number}`;
           if (!await markerExists(markerSha, context)) {
-            await mark(markerSha, context, `Implementer recovery dispatched for issue #${issue.number}`);
             await dispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number), issue_title: issue.title });
+            await mark(markerSha, context, `Implementer recovery dispatched for issue #${issue.number}`);
           }
         }
       }
@@ -124,8 +124,8 @@ for (const pr of prs) {
         if (recovery.dispatch === 'reviewer') {
           const context = `social-mcp/recovery-review-${pr.number}`;
           if (!await markerExists(pr.head.sha, context)) {
-            await mark(pr.head.sha, context, `Reviewer recovery dispatched for PR #${pr.number}`);
             await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title });
+            await mark(pr.head.sha, context, `Reviewer recovery dispatched for PR #${pr.number}`);
           }
         }
       }
