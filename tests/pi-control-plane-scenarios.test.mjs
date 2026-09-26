@@ -28,3 +28,14 @@ test('control plane: dead reviewer is released and review is restarted', () => {
 test('control plane: completed issue makes checkpoint garbage collectable', () => {
   assert.equal(checkpointGcDecision({ state:'closed', state_reason:'completed', labels:[] }).remove, true);
 });
+
+
+test('reconciler defers recovery dispatch outside RUNNING mode', () => {
+  const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(source, /automationMode === 'RUNNING'/);
+  assert.match(source, /recoveryDispatchAllowed/);
+  assert.match(source, /recovery\.dispatch === 'implementer' && recoveryDispatchAllowed/);
+  assert.match(source, /recovery\.dispatch === 'reviewer' && recoveryDispatchAllowed/);
+  const workflow = fs.readFileSync('.github/workflows/pi-reconcile.yml', 'utf8');
+  assert.match(workflow, /PI_AUTOMATION_MODE:/);
+});
