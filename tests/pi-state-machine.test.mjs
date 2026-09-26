@@ -95,3 +95,8 @@ test('terminal issue may retain a checkpoint for human recovery without reconcil
     assert.equal(findings.some(item => item.code === 'orphaned-implementer-state'), false);
   }
 });
+
+test('triage may queue an otherwise unowned open issue', () => {
+  assert.equal(validateIssueTransition(issue('open', []), 'queued'), 'dispatcher:ready');
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:failed']), 'queued'), /queued requires/);
+});
