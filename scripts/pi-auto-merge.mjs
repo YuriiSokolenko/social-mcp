@@ -198,13 +198,8 @@ async function processPR(prSummary) {
     api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100'),
   ]);
   const currentReview = latestStatus(statusData, reviewContext);
-  // Review labels and repair checkpoints can outlive the SHA that created them.
-  // Only a failure status attached to the current HEAD authorizes review repair.
-  // A new HEAD must be reviewed first instead of inheriting CHANGES_REQUESTED
-  // from an older commit. A checkpoint may resume that current-SHA repair, but
-  // must never start repair by itself after the PR head has moved.
-  const currentHeadNeedsRepair =
-    prLabels.has('review:changes-requested') && currentReview === 'failure';
+  // SHA-bound status is authoritative. Review labels are presentation only.
+  const currentHeadNeedsRepair = currentReview === 'failure';
   if (!repairLive && currentHeadNeedsRepair) {
     // Reviewer feedback repairs the PR's own change. Integration conflicts are
     // handled separately below only when current dev actually conflicts.
@@ -236,8 +231,7 @@ async function processPR(prSummary) {
   await trigger(pr, sha, base.object.sha, statuses, runs);
   const ci = latestCI(runs, sha, pr.head.ref, base.object.sha);
   const review = latestStatus(statuses, reviewContext);
-  if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success' ||
-      !pr.labels.some(label => label.name === 'review:passed')) {
+  if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success') {
     console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)}) and review`);
     return;
   }
@@ -245,8 +239,8 @@ async function processPR(prSummary) {
   const fresh = await api(`/pulls/${pr.number}`);
   const freshBase = await api('/git/ref/heads/dev');
   if (fresh.head.sha !== sha || freshBase.object.sha !== base.object.sha ||
-      fresh.mergeable !== true || !fresh.labels.some(label => label.name === 'review:passed')) {
-    console.log(`#${pr.number}: head, dev, review label or mergeability changed`);
+      fresh.mergeable !== true) {
+    console.log(`#${pr.number}: head, dev or mergeability changed`);
     return;
   }
   const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
@@ -261,7 +255,7 @@ export async function main() {
   // linked issue was completed or the dispatcher was started.
   const mergedPRs = await pages('/pulls?state=closed&base=dev');
   for (const pr of mergedPRs) {
-    if (!pr.merged_at || !pr.labels?.some(label => label.name === 'review:passed')) continue;
+    if (!pr.merged_at) continue;
     const issue = linkedIssueNumber(pr, repo);
     if (!issue) continue;
     try { await finalizeMergedPR(pr, issue); }
