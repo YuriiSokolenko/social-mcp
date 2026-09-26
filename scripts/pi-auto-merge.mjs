@@ -82,7 +82,7 @@ async function trigger(pr, sha, statuses, runs) {
   }
   const ci = latestCI(runs, sha, pr.head.ref);
   if (needsCIDispatch(ci, latestStatus(statuses, ciMarker))) {
-    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: pr.head.ref, inputs: { pr_number: String(pr.number), pr_title: pr.title } });
+    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: 'dev', inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), pr_title: `${pr.head.ref} @ ${sha.slice(0, 12)}` } });
     await mark(sha, ciMarker, 'success', `CI dispatch requested for PR #${pr.number}`);
   }
 }
