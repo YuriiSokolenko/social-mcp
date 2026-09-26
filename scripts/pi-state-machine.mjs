@@ -68,7 +68,7 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
     findings.push({ code: 'orphaned-implementer-state', severity: 'repair',
       remove: [PIPELINE_LABELS.running], checkpoint: hasCheckpoint });
   }
-  if (hasCheckpoint && issue.state === 'open' && !labels.has(PIPELINE_LABELS.running)) {
+  if (hasCheckpoint && issue.state === 'open' && !labels.has(PIPELINE_LABELS.running) && terminal.length === 0) {
     findings.push({ code: 'checkpoint-without-live-implementer', severity: 'warning' });
   }
   return findings;

@@ -66,3 +66,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data '{"ref":"dev"}' \
             "https://api.github.com/repos/${REPO}/actions/workflows/pi-dispatcher.yml/dispatches"
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Content-Type: application/json" \
+            --data '{"ref":"dev","inputs":{"apply_safe_repairs":"true"}}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-reconcile.yml/dispatches"

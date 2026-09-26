@@ -7,4 +7,7 @@ test('issue summary helper is tracked by CI node test glob', async () => {
   assert.match(source, /social-mcp\/pi-review/);
   assert.match(source, /MERGE GATE/);
   assert.match(source, /pi\/issue-/);
+  assert.match(source, /run\.event === 'workflow_dispatch'/);
+  assert.match(source, /run\.head_sha === pr\.head\.sha/);
+  assert.doesNotMatch(source, /\['push', 'workflow_dispatch'\]/);
 });

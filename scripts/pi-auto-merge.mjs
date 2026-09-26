@@ -78,10 +78,18 @@ export function shouldDeferBranchUpdate(pr) {
   return pr.labels?.some(label => ['review:running', 'review:changes-requested'].includes(label.name)) ?? false;
 }
 
+async function hasLiveReview(prNumber) {
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+    const data = await api(`/actions/workflows/pi-pr-review.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
+    if ((data.workflow_runs ?? []).some(run => run.display_title === `🔬 Review PR #${prNumber}`)) return true;
+  }
+  return false;
+}
+
 async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
-  const reviewActive = pr.labels?.some(label => ['review:ready', 'review:running'].includes(label.name)) ?? false;
-  if (!currentReview && !reviewActive) {
+  const reviewRunning = pr.labels?.some(label => label.name === 'review:running') ?? false;
+  if (!currentReview && !reviewRunning && !(await hasLiveReview(pr.number))) {
     await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number) } });
   }
   const ci = latestCI(runs, sha, pr.head.ref);
@@ -167,22 +175,29 @@ async function processPR(prSummary) {
   }
 
   const sha = pr.head.sha;
+  const prLabels = new Set((pr.labels ?? []).map(label => label.name));
+  const [repairLive, repairCheckpoint] = await Promise.all([
+    hasLiveRepair(pr.number),
+    hasRepairCheckpoint(pr.number),
+  ]);
   const [base, comparison, statusData, ciData] = await Promise.all([
     api('/git/ref/heads/dev'),
     api(`/compare/dev...${sha}`),
     api(`/commits/${sha}/statuses?per_page=100`),
     api(`/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`),
   ]);
+  if (!repairLive && (prLabels.has('review:changes-requested') || repairCheckpoint)) {
+    const reason = pr.mergeable === false && pr.mergeable_state === 'dirty' ? 'conflict' : 'review';
+    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), reason } });
+    console.log(`#${pr.number}: dispatched/resumed Pi ${reason} repair`);
+    return;
+  }
   if (comparison.behind_by > 0) {
     if (shouldDeferBranchUpdate(pr)) {
       console.log(`#${pr.number}: dev moved during review; waiting for the review to finish before updating the branch`);
       return;
     }
     if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
-      const [repairLive, repairCheckpoint] = await Promise.all([
-        hasLiveRepair(pr.number),
-        hasRepairCheckpoint(pr.number),
-      ]);
       if (repairLive || repairCheckpoint) {
         console.log(`#${pr.number}: merge conflict; repair is already active or has a saved checkpoint`);
         return;

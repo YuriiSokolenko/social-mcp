@@ -33,6 +33,9 @@ jobs:
           ref: dev
           persist-credentials: false
 
+      - name: Initialize Pi usage
+        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl" >> "$GITHUB_ENV"
+
       - name: Prepare triage context
         id: prepare
         env:
@@ -67,7 +70,7 @@ jobs:
             --no-session \
             "$(cat "$TASK_FILE")" \
           | tee "$RUNNER_TEMP/pi-triage-result.jsonl" \
-          | node scripts/pi-log-filter.mjs
+          | PI_CALL=main node scripts/pi-log-filter.mjs
 
       - name: Validate and apply triage decisions
         if: steps.prepare.outputs.run == 'true'

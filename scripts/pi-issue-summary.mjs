@@ -32,7 +32,8 @@ if (pr) {
     api(`/actions/workflows/ci.yml/runs?head_sha=${pr.head.sha}&per_page=30`),
     api(`/commits/${pr.head.sha}/statuses?per_page=100`),
   ]);
-  ci = (runs.workflow_runs ?? []).filter(run => ['push', 'workflow_dispatch'].includes(run.event))
+  ci = (runs.workflow_runs ?? []).filter(run => run.event === 'workflow_dispatch' &&
+    run.head_sha === pr.head.sha && run.head_branch === pr.head.ref)
     .sort((a, b) => b.id - a.id)[0] ?? null;
   statuses = statusRows;
 }

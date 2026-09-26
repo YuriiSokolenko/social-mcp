@@ -136,3 +136,13 @@ test("redacts secrets in the Job Summary and skips it when GITHUB_STEP_SUMMARY i
   const output = render([{ type: "agent_end", messages: [] }]);
   assert.ok(output.length > 0);
 });
+
+
+test("emits issue=0 metrics for system agents without PI_ISSUE", () => {
+  const output = render([
+    { type: "turn_start" },
+    { type: "message_end", message: { role: "assistant", content: [], usage: { input: 12, output: 3, totalTokens: 15 } } },
+    { type: "agent_end", messages: [] },
+  ], { PI_PHASE: "dispatcher", PI_CALL: "main", PI_ISSUE: "" });
+  assert.match(output, /PI_METRIC \{"issue":0,"phase":"dispatcher","call":"main","response":1/);
+});

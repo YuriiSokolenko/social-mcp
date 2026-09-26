@@ -82,3 +82,16 @@ test('orphaned reviewer state is safely released', () => {
   });
   assert.deepEqual(safeRemovals(findings), ['review:running']);
 });
+
+
+test('terminal issue may retain a checkpoint for human recovery without reconciliation noise', () => {
+  for (const label of ['pi:failed', 'pi:needs-human', 'pi:cancelled']) {
+    const findings = inspectIssueState({ state: 'open', labels: [{ name: label }] }, {
+      hasOpenPiPr: false,
+      hasLiveImplementer: false,
+      hasCheckpoint: true,
+    });
+    assert.equal(findings.some(item => item.code === 'checkpoint-without-live-implementer'), false);
+    assert.equal(findings.some(item => item.code === 'orphaned-implementer-state'), false);
+  }
+});

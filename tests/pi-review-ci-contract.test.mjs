@@ -26,3 +26,12 @@ test('Pi PR Review has a single explicit-dispatch trigger', () => {
   assert.match(workflow, /^\s*workflow_dispatch:/m);
   assert.doesNotMatch(workflow, /github\.event\.pull_request/);
 });
+
+
+test('implementer and repair delegate review scheduling to the merge gate', () => {
+  for (const path of ['.github/workflows/pi-issue-agent.yml', '.github/workflows/pi-pr-fix.yml']) {
+    const workflow = fs.readFileSync(path, 'utf8');
+    assert.doesNotMatch(workflow, /pi-pr-review\.yml\/dispatches/);
+    assert.match(workflow, /pi-auto-merge\.yml\/dispatches/);
+  }
+});

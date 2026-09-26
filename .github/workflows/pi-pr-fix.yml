@@ -25,7 +25,7 @@ permissions:
 
 concurrency:
   group: pi-pr-fix-${{ inputs.pr_number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   fix:
@@ -66,6 +66,12 @@ jobs:
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
+          LABELS="$(jq -r '[.labels[].name] | join(" ")' <<<"$PR_JSON")"
+          if [ "$REASON" = "review" ] && ! grep -qw "review:changes-requested" <<<"$LABELS"; then
+            echo "PR #${PR} no longer requests review repair; duplicate dispatch exits without model work."
+            exit 0
+          fi
+
       - name: Load review feedback
         if: env.REASON != 'conflict'
         env:
@@ -82,7 +88,9 @@ jobs:
           JOB_DIR="$RUNNER_TEMP/social-mcp-fix-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
           REPAIR_CHECKPOINT="pi/repair-pr-${PR}-checkpoint"
-          if git ls-remote --exit-code origin "refs/heads/${REPAIR_CHECKPOINT}" >/dev/null; then
+          CHECKPOINT_REMOTE="$(git ls-remote origin "refs/heads/${REPAIR_CHECKPOINT}" | awk '{print $1}')"
+          echo "REPAIR_CHECKPOINT_EXPECTED=${CHECKPOINT_REMOTE}" >> "$GITHUB_ENV"
+          if [ -n "$CHECKPOINT_REMOTE" ]; then
             git fetch origin "${REPAIR_CHECKPOINT}:refs/remotes/origin/${REPAIR_CHECKPOINT}"
             START_REF="refs/remotes/origin/${REPAIR_CHECKPOINT}"
           else
@@ -180,7 +188,10 @@ jobs:
           git fetch origin dev
           REPAIR_TREE="$(git rev-parse HEAD^{tree})"
           CHECKPOINT_COMMIT="$(printf 'fix: checkpoint repair for PR #%s\n' "$PR" | git commit-tree "$REPAIR_TREE" -p origin/dev)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force origin "${CHECKPOINT_COMMIT}:refs/heads/pi/repair-pr-${PR}-checkpoint"
+          CHECKPOINT_REF="refs/heads/pi/repair-pr-${PR}-checkpoint"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
+            push --force-with-lease="${CHECKPOINT_REF}:${REPAIR_CHECKPOINT_EXPECTED}" origin "${CHECKPOINT_COMMIT}:${CHECKPOINT_REF}"
+          echo "REPAIR_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
 
       - name: Commit and push repair
         id: changes
@@ -222,24 +233,36 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Remove published repair checkpoint
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.changes.outputs.changed == 'true' && (env.REPAIR_CHECKPOINT_PUBLISHED != '' || env.REPAIR_CHECKPOINT_EXPECTED != '')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin --delete "pi/repair-pr-${PR}-checkpoint" 2>/dev/null || true
+        run: |
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
+            push --force-with-lease="refs/heads/pi/repair-pr-${PR}-checkpoint:${REPAIR_CHECKPOINT_PUBLISHED:-$REPAIR_CHECKPOINT_EXPECTED}" origin ":refs/heads/pi/repair-pr-${PR}-checkpoint" || \
+            echo "::warning::Published repair is safe, but checkpoint cleanup was skipped because the checkpoint changed."
 
-      - name: Trigger fresh review
+      - name: Mark no-change repair terminal
+        if: steps.changes.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/pi-pr-review-status.sh failed "Automated Pi repair completed without producing a repository change. The existing review findings remain unresolved and require human attention. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Wake merge gate
         if: steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          jq -n --arg pr_number "$PR" '{ref:"dev",inputs:{pr_number:$pr_number}}' |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" --data-binary @- \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-review.yml/dispatches"
+            -H "Content-Type: application/json" --data '{"ref":"dev"}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
+              echo "::warning::Repair is already published for PR #${PR}, but Merge Gate wake failed; the gate/reconciler can recover it."
+              exit 0
+            }
 
       - name: Report repair failure
-        if: failure()
+        if: failure() && steps.changes.outputs.changed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
