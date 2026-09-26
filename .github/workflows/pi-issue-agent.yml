@@ -201,15 +201,6 @@ jobs:
           echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
           echo "PI_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
           echo "changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CHECKPOINT_TREE="$(GIT_INDEX_FILE="$CHECKPOINT_INDEX" git write-tree)"
-          rm -f "$CHECKPOINT_INDEX"
-          CHECKPOINT_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$CHECKPOINT_TREE" -p origin/dev)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_EXPECTED}" origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
-          echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
-          echo "PI_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify implementation before publication
         if: steps.checkpoint.outputs.changed == 'true'
