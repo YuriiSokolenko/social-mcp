@@ -122,3 +122,11 @@ test('conflict repair never publishes a rebase against a dev base that moved', (
   assert.match(repair, /CURRENT_BASE=.*origin\/dev/s);
   assert.match(repair, /dev moved during conflict repair; refusing to publish a stale rebase/);
 });
+
+
+test('reconciler coalesces merge-gate wake when a gate run is already live', () => {
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconcile, /gateAlreadyLive/);
+  assert.match(reconcile, /pi-auto-merge\.yml/);
+  assert.match(reconcile, /skipping duplicate reconciler wake/);
+});
