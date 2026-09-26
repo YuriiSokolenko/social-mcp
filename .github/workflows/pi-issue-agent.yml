@@ -257,7 +257,12 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "fix: preserve integration for issue #${ISSUE}"
           fi
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "HEAD:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          # Re-root the preserved tree on the latest dev so a long-running job
+          # never pushes workflow-history changes through the restricted token.
+          git fetch origin dev
+          INTEGRATION_TREE="$(git rev-parse HEAD^{tree})"
+          INTEGRATION_COMMIT="$(printf 'fix: preserve integration for issue #%s\n' "$ISSUE" | git commit-tree "$INTEGRATION_TREE" -p origin/dev)"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "${INTEGRATION_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
 
       - name: Push verified issue branch
         if: steps.checkpoint.outputs.changed == 'true'
@@ -274,7 +279,11 @@ jobs:
             exit 1
           }
           git diff --check origin/dev...HEAD
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --set-upstream origin "HEAD:refs/heads/pi/issue-${ISSUE}"
+          # Publish the verified tree with current dev as its parent for the same
+          # workflow-permission safety used by checkpoints and PR repairs.
+          ISSUE_TREE="$(git rev-parse HEAD^{tree})"
+          ISSUE_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$ISSUE_TREE" -p origin/dev)"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --set-upstream origin "${ISSUE_COMMIT}:refs/heads/pi/issue-${ISSUE}"
 
       - name: Create or update pull request
         id: pr
