@@ -309,18 +309,18 @@ jobs:
           fi
           bash scripts/pi-pr-review-status.sh changes-requested "$COMMENT"
 
-      - name: Dispatch Pi repair
+      - name: Wake merge gate for repair
         if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || steps.checks.outputs.ci_passed != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          jq -n --arg pr_number "$PR" '{ref:"dev",inputs:{pr_number:$pr_number,reason:"review"}}' |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
-            --data-binary @- "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-fix.yml/dispatches" || {
-              echo "::warning::CHANGES_REQUESTED is already recorded for PR #${PR}, but Repair dispatch failed; reconciler can recover it."
+            --data '{"ref":"dev"}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
+              echo "::warning::CHANGES_REQUESTED is already recorded for PR #${PR}, but Merge Gate wake failed; reconciler can recover it."
               exit 0
             }
 
