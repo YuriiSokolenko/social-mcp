@@ -42,6 +42,9 @@ jobs:
       REASON: ${{ inputs.reason || 'review' }}
       PI_PHASE: repair
       PI_BASH_TIMEOUT_SECONDS: '1200'
+      PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS: '900'
+      PI_REPAIR_STALL_TIMEOUT_SECONDS: '1800'
+      PI_REPAIR_WATCHDOG_POLL_SECONDS: '30'
     steps:
       - name: Checkout dev control repository
         uses: actions/checkout@v5
@@ -138,13 +141,65 @@ jobs:
         run: |
           set -o pipefail
           cd "$JOB_DIR"
+
+          progress_signature() {
+            {
+              git status --porcelain=v1 --untracked-files=all
+              git diff --no-ext-diff --binary
+              git diff --cached --no-ext-diff --binary
+            } | git hash-object --stdin
+          }
+
+          initial_signature="$(progress_signature)"
+          last_signature="$initial_signature"
+          started_at="$(date +%s)"
+          last_progress_at="$started_at"
+          watchdog_reason_file="$RUNNER_TEMP/pi-repair-watchdog-reason.txt"
+          rm -f "$watchdog_reason_file"
+
+          (
+            while true; do
+              sleep "$PI_REPAIR_WATCHDOG_POLL_SECONDS"
+              now="$(date +%s)"
+              signature="$(progress_signature)"
+              if [ "$signature" != "$last_signature" ]; then
+                last_signature="$signature"
+                last_progress_at="$now"
+              fi
+
+              if [ "$signature" = "$initial_signature" ] && [ $((now - started_at)) -ge "$PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS" ]; then
+                printf 'Repair agent made no worktree change within %ss; stopping likely research/tool loop.\n' "$PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS" > "$watchdog_reason_file"
+                kill -TERM "$PPID" 2>/dev/null || true
+                exit 0
+              fi
+
+              if [ "$signature" != "$initial_signature" ] && [ $((now - last_progress_at)) -ge "$PI_REPAIR_STALL_TIMEOUT_SECONDS" ]; then
+                printf 'Repair worktree stopped changing for %ss; stopping stalled agent.\n' "$PI_REPAIR_STALL_TIMEOUT_SECONDS" > "$watchdog_reason_file"
+                kill -TERM "$PPID" 2>/dev/null || true
+                exit 0
+              fi
+            done
+          ) &
+          watchdog_pid=$!
+
+          set +e
           pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "Read and follow agents/implementer/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. Work on the existing PR branch; do not discard existing implementation. Address every blocking item in this reviewer feedback, add/update tests, run relevant tests and Ruff, and keep changes focused. Do not commit, push, or modify GitHub state yourself.
+            "Read and follow agents/repair/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. Address the blocking reviewer feedback below in the existing working tree. Do not commit, push, or modify GitHub state yourself.
 
           Reviewer feedback:
 
           $(cat "$RUNNER_TEMP/review-feedback.txt")" \
           | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+          pi_status=${PIPESTATUS[0]}
+          set -e
+
+          kill "$watchdog_pid" 2>/dev/null || true
+          wait "$watchdog_pid" 2>/dev/null || true
+          if [ -s "$watchdog_reason_file" ]; then
+            cat "$watchdog_reason_file" >&2
+            exit 124
+          fi
+          [ "$pi_status" -eq 0 ] || exit "$pi_status"
           printf '\n'
 
       - name: Run Pi conflict resolution
