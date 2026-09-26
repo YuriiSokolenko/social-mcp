@@ -77,12 +77,12 @@ async function mark(sha, context, state, description) {
 async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   if (!currentReview && !latestStatus(statuses, reviewMarker)) {
-    await api('/dispatches', 'POST', { event_type: 'pi_pr_review', client_payload: { pr_number: pr.number } });
+    await api('/dispatches', 'POST', { event_type: 'pi_pr_review', client_payload: { pr_number: pr.number, pr_title: pr.title } });
     await mark(sha, reviewMarker, 'success', `Review dispatch requested for PR #${pr.number}`);
   }
   const ci = latestCI(runs, sha, pr.head.ref);
   if (needsCIDispatch(ci, latestStatus(statuses, ciMarker))) {
-    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: pr.head.ref });
+    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: pr.head.ref, inputs: { pr_number: String(pr.number), pr_title: pr.title } });
     await mark(sha, ciMarker, 'success', `CI dispatch requested for PR #${pr.number}`);
   }
 }
@@ -123,7 +123,7 @@ async function finalizeMergedPR(pr, issue) {
     return;
   }
   await finishArchitectParents(issue);
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
+  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev', inputs: { source: `merged PR #${pr.number} · ${pr.title}` } });
   await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
   console.log(`#${pr.number}: dispatcher started`);
 }
@@ -165,7 +165,7 @@ async function processPR(prSummary) {
         console.log(`#${pr.number}: merge conflict; repair already dispatched for ${sha.slice(0, 12)}`);
         return;
       }
-      await api('/dispatches', 'POST', { event_type: 'pi_pr_fix', client_payload: { pr_number: pr.number, reason: 'conflict' } });
+      await api('/dispatches', 'POST', { event_type: 'pi_pr_fix', client_payload: { pr_number: pr.number, pr_title: pr.title, reason: 'conflict' } });
       await mark(sha, conflictMarker, 'success', `Conflict repair dispatched for PR #${pr.number}`);
       console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
       return;
