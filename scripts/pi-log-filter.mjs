@@ -361,6 +361,7 @@ for await (const line of rl) {
         const delta = typeof update.delta === "string" ? update.delta : "";
         if (delta) {
           firstTokenAt ??= Date.now();
+          recordActivity("model_delta", { stream: update.type === "thinking_delta" ? "thinking" : "text" });
           streamContent(update.type === "thinking_delta" ? "thinking" : "text", delta);
           const turn = getCurrentTurn();
           if (update.type === "thinking_delta") {
