@@ -24,13 +24,17 @@ const names = item => new Set((item.labels ?? []).map(label => typeof label === 
 async function load() {
   return api(kind === 'issue' ? `/issues/${number}` : `/pulls/${number}`);
 }
-async function replaceLabels(expected, target, kind) {
+async function replaceLabels(expected, target, kind, action) {
   const replace = kind === 'issue' ? replaceIssueState : replaceReviewState;
   await replace({
     number,
     expected: { labels: [...expected] },
     target,
     load,
+    validateCurrent: current => {
+      if (kind === 'issue') validateIssueTransition(current, action);
+      else validateReviewTransition(current, action);
+    },
     patch: async (_number, labels) => api(`/issues/${number}`, { method: 'PATCH', body: JSON.stringify({ labels }) }),
   });
 }
@@ -49,12 +53,12 @@ const item = await load();
 const expected = names(item);
 if (kind === 'issue') {
   const target = validateIssueTransition(item, action);
-  await replaceLabels(expected, target, 'issue');
+  await replaceLabels(expected, target, 'issue', action);
   if (action !== 'running') await postComment();
   console.log(`issue #${number}: transitioned to ${target}`);
 } else {
   const target = validateReviewTransition(item, action);
-  await replaceLabels(expected, target, 'review');
+  await replaceLabels(expected, target, 'review', action);
   const statuses = {
     running: ['pending', 'Automated review is running'],
     passed: ['success', 'Automated review and deterministic checks passed'],
