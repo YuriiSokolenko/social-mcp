@@ -31,7 +31,7 @@ export const REVIEW_LABELS = new Set([
 
 const names = issue => new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
 
-export function inspectIssueState(issue, { hasOpenPiPr = false } = {}) {
+export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplementer = undefined, hasCheckpoint = false } = {}) {
   const labels = names(issue);
   const findings = [];
   const active = [...ISSUE_ACTIVE].filter(label => labels.has(label));
@@ -59,14 +59,24 @@ export function inspectIssueState(issue, { hasOpenPiPr = false } = {}) {
   if (labels.has(PIPELINE_LABELS.pr) && !hasOpenPiPr && issue.state === 'open') {
     findings.push({ code: 'mr-label-without-open-pr', severity: 'warning' });
   }
+  if (issue.state === 'open' && labels.has(PIPELINE_LABELS.running) && hasLiveImplementer === false) {
+    findings.push({ code: 'orphaned-implementer-state', severity: 'repair',
+      remove: [PIPELINE_LABELS.running], checkpoint: hasCheckpoint });
+  }
+  if (hasCheckpoint && issue.state === 'open' && !labels.has(PIPELINE_LABELS.running)) {
+    findings.push({ code: 'checkpoint-without-live-implementer', severity: 'warning' });
+  }
   return findings;
 }
 
-export function inspectPrState(pr) {
+export function inspectPrState(pr, { hasLiveReviewer = undefined } = {}) {
   const labels = names(pr);
   const review = [...REVIEW_LABELS].filter(label => labels.has(label));
   const findings = [];
   if (review.length > 1) findings.push({ code: 'multiple-review-states', severity: 'warning', labels: review });
+  if (pr.state === 'open' && labels.has(PIPELINE_LABELS.reviewRunning) && hasLiveReviewer === false) {
+    findings.push({ code: 'orphaned-review-state', severity: 'repair', remove: [PIPELINE_LABELS.reviewRunning] });
+  }
   if (pr.state !== 'open' && review.some(label => label === PIPELINE_LABELS.reviewRunning || label === PIPELINE_LABELS.reviewReady)) {
     findings.push({ code: 'closed-pr-active-review', severity: 'repair',
       remove: review.filter(label => label === PIPELINE_LABELS.reviewRunning || label === PIPELINE_LABELS.reviewReady) });
