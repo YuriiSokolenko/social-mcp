@@ -5,8 +5,6 @@ const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
 const apiRoot = `https://api.github.com/repos/${repo}`;
 const reviewContext = 'social-mcp/pi-review';
-const ciMarker = 'social-mcp/merge-ci-dispatched';
-const reviewMarker = 'social-mcp/merge-review-dispatched';
 const conflictMarker = 'social-mcp/merge-conflict-fix-dispatched';
 
 async function api(path, method = 'GET', body) {
@@ -65,7 +63,7 @@ export function allowedFiles(files, changedCount) {
       !name.startsWith('.github/workflows/') && !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(name)));
 }
 
-export function needsCIDispatch(ci, marker) {
+export function needsCIDispatch(ci) {
   return !ci;
 }
 
@@ -85,14 +83,13 @@ async function mark(sha, context, state, description) {
 
 async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
-  if (!currentReview && !latestStatus(statuses, reviewMarker)) {
+  const reviewActive = pr.labels?.some(label => ['review:ready', 'review:running'].includes(label.name)) ?? false;
+  if (!currentReview && !reviewActive) {
     await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
-    await mark(sha, reviewMarker, 'success', `Review dispatch requested for PR #${pr.number}`);
   }
   const ci = latestCI(runs, sha, pr.head.ref);
-  if (needsCIDispatch(ci, latestStatus(statuses, ciMarker))) {
+  if (needsCIDispatch(ci)) {
     await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: 'dev', inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), pr_title: `${pr.head.ref} @ ${sha.slice(0, 12)}` } });
-    await mark(sha, ciMarker, 'success', `CI dispatch requested for PR #${pr.number}`);
   }
 }
 
