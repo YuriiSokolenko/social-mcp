@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { ISSUE_STATE_LABELS, issueStateLabels, validateIssueTransition } from "./pi-state-machine.mjs";
+import { replaceIssueState } from "./pi-github-state.mjs";
+import { validateIssueTransition } from "./pi-state-machine.mjs";
 
 const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
