@@ -274,23 +274,6 @@ jobs:
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
           bash scripts/pi-pr-review-status.sh passed "$COMMENT"
 
-      - name: Trigger Pi Auto Merge after passed review
-        if: steps.passed.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
-              echo "::warning::Review PASS is already recorded for PR #${PR}, but Merge Gate wake failed; the gate/reconciler can recover it."
-              exit 0
-            }
-          echo "Pi Auto Merge dispatched after review of PR #${PR}"
-
       - name: Mark changes requested
         id: changes_requested
         if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || steps.checks.outputs.ci_passed != 'true')
@@ -306,21 +289,6 @@ jobs:
             COMMENT="Deterministic GitHub-hosted CI failed for the reviewed SHA.\n\n${COMMENT}"
           fi
           bash scripts/pi-pr-review-status.sh changes-requested "$COMMENT"
-
-      - name: Wake merge gate for repair
-        if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || steps.checks.outputs.ci_passed != 'true')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
-              echo "::warning::CHANGES_REQUESTED is already recorded for PR #${PR}, but Merge Gate wake failed; reconciler can recover it."
-              exit 0
-            }
 
       - name: Mark review failed
         if: failure() && steps.changes_requested.outcome != 'success' && steps.passed.outcome != 'success'
