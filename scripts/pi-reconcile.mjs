@@ -180,7 +180,6 @@ for (const item of report) {
   for (const finding of item.findings) console.log(`  - ${finding.severity}: ${finding.code}${finding.labels ? ` [${finding.labels.join(', ')}]` : ''}`);
   if (apply && item.removals.length) console.log(`  repaired: removed ${item.removals.join(', ')}`);
   if (item.recovery) console.log(`  recovery: ${item.recovery.add}${item.recovery.dispatch ? ` + ${item.recovery.dispatch}` : ''} (${item.recovery.reason})`);
-  if (item.findings.some(finding => finding.checkpoint)) console.log('  checkpoint preserved: saved implementation work may exist');
 }
 if (process.env.GITHUB_STEP_SUMMARY) {
   const fs = await import('node:fs');
