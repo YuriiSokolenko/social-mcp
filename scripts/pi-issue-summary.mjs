@@ -28,17 +28,20 @@ const pr = prs.find(item => item.head.repo?.full_name === repo && item.head.ref 
 let ci = null;
 let statuses = [];
 if (pr) {
-  const [runs, statusRows] = await Promise.all([
-    api(`/actions/workflows/ci.yml/runs?head_sha=${pr.head.sha}&per_page=30`),
+  const [base, runs, statusRows] = await Promise.all([
+    api('/git/ref/heads/dev'),
+    api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100'),
     api(`/commits/${pr.head.sha}/statuses?per_page=100`),
   ]);
-  ci = (runs.workflow_runs ?? []).filter(run => run.event === 'workflow_dispatch' &&
-    run.head_sha === pr.head.sha && run.head_branch === pr.head.ref)
+  const marker = `target:${pr.head.sha} ref:${pr.head.ref} base:${base.object.sha}`;
+  ci = (runs.workflow_runs ?? []).filter(run =>
+    run.event === 'workflow_dispatch' && run.display_title?.includes(marker))
     .sort((a, b) => b.id - a.id)[0] ?? null;
   statuses = statusRows;
 }
 const labelNames = issue.labels.map(label => label.name);
-const review = statuses.find(status => status.context === 'social-mcp/pi-review')?.state ?? null;
+const review = statuses.filter(status => status.context === 'social-mcp/pi-review')
+  .sort((a, b) => new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0))[0]?.state ?? null;
 const stage = issue.state === 'closed' && issue.state_reason === 'completed' ? 'COMPLETED'
   : labelNames.includes('pi:mr-created') ? (review === 'success' ? (ci?.conclusion === 'success' ? 'MERGE GATE' : 'CI') : 'REVIEW')
   : labelNames.includes('pi:running') ? 'IMPLEMENTING'
@@ -60,8 +63,8 @@ const lines = [
   `| Dispatch | ${labelNames.includes('dispatcher:ready') ? 'queued' : '—'} | labels: ${labelNames.join(', ') || 'none'} |`,
   `| Implement | ${labelNames.includes('pi:running') ? 'running' : labelNames.includes('pi:mr-created') || issue.state === 'closed' ? 'done' : '—'} | branch: \`pi/issue-${issueNumber}\` |`,
   `| Pull request | ${pr ? pr.state : '—'} | ${pr ? `#${pr.number} · ${pr.title} · \`${pr.head.sha.slice(0,12)}\`` : 'not created'} |`,
-  `| Review | ${review ?? '—'} | ${pr?.labels?.map(x => x.name).filter(x => x.startsWith('review:')).join(', ') || 'no review label'} |`,
-  `| CI | ${ci ? `${ci.status}/${ci.conclusion ?? 'pending'}` : '—'} | ${ci ? `run #${ci.run_number}` : 'no SHA-bound CI run'} |`,
+  `| Review | ${review ?? '—'} | SHA-bound status |`,
+  `| CI | ${ci ? `${ci.status}/${ci.conclusion ?? 'pending'}` : '—'} | ${ci ? `run #${ci.run_number}` : 'no exact dev+PR integration CI run'} |`,
   `| Merge | ${pr?.merged_at ? 'merged' : stage === 'MERGE GATE' ? 'ready for gate' : '—'} | ${pr?.merged_at ?? ''} |`,
   '',
 ];
