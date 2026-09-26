@@ -205,6 +205,10 @@ async function processPR(prSummary) {
     return;
   }
   if (comparison.behind_by > 0) {
+    if (prLabels.has('review:running')) {
+      console.log(`#${pr.number}: dev moved while review is running; integration waits for that review to finish`);
+      return;
+    }
     // Published PRs are never mutated by the merge gate. If dev moved after
     // publication, send the branch back through the integration job, which
     // rebases onto the latest dev, resolves conflicts if necessary, runs tests,
