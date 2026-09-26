@@ -13,7 +13,8 @@ on:
     - cron: '17 * * * *'
 
 permissions:
-  contents: read
+  actions: write
+  contents: write
   issues: write
   pull-requests: write
 
