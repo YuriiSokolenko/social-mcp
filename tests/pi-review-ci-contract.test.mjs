@@ -59,3 +59,13 @@ test('exact-pair CI result stays successful when only the merge-gate wake fails'
   const workflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(workflow, /Integration status is durable; reconciler can wake Merge Gate later/);
 });
+
+
+test('review and repair freshness checks paginate commit statuses', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(review, /statuses\?per_page=100&page=\$\{page\}/);
+  assert.match(repair, /statuses\?per_page=100&page=\$\{page\}/);
+  assert.doesNotMatch(review, /statuses\?per_page=100" \|/);
+  assert.doesNotMatch(repair, /statuses\?per_page=100" \|/);
+});
