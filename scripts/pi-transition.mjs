@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { replaceIssueState, replaceReviewState } from './pi-github-state.mjs';
-import { validateIssueTransition, validateReviewTransition } from './pi-state-machine.mjs';
+import { validateIssueTransition } from './pi-state-machine.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
 const comment = commentParts.join(' ');
@@ -57,9 +57,7 @@ if (kind === 'issue') {
   if (action !== 'running') await postComment();
   console.log(`issue #${number}: transitioned to ${target}`);
 } else {
-  // Review labels are presentation only. The SHA-bound commit status is
-  // authoritative for merge correctness.
-  validateReviewTransition(item, action);
+  if (item.state !== 'open') throw new Error('cannot review a closed PR');
   const statuses = {
     running: ['pending', 'Automated review is running'],
     passed: ['success', 'Automated review and deterministic checks passed'],
