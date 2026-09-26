@@ -1,5 +1,5 @@
 name: CI
-run-name: '🧪 CI · ${{ github.event.pull_request.title || inputs.pr_title || github.event.head_commit.message || github.ref_name }}'
+run-name: "🧪 CI · ${{ github.event.pull_request.title || inputs.pr_title || github.event.head_commit.message || github.ref_name }}"
 
 on:
   workflow_dispatch:
