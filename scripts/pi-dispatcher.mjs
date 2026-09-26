@@ -222,7 +222,7 @@ async function main() {
       // GITHUB_TOKEN label events cannot trigger another Actions workflow.
       // Dispatch explicitly, and keep the new label if dispatch fails for a manual retry.
       await api("/actions/workflows/pi-architect.yml/dispatches", {
-        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
+        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
       });
       console.log(`Sent #${number} to Architect`);
       continue;
@@ -232,7 +232,7 @@ async function main() {
     try {
       await api("/actions/workflows/pi-issue-agent.yml/dispatches", {
         method: "POST",
-        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
+        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
       });
     } catch (error) {
       try {
