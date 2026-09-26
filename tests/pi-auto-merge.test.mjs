@@ -142,3 +142,11 @@ test('failed integration dispatches integration repair instead of stopping', () 
   assert.match(repair, /- integration/);
   assert.match(repair, /pi-transition\.mjs" issue needs-human/);
 });
+
+
+test('integration dispatch reserves its pair-bound status before launching CI', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const reserve = source.indexOf("state: 'pending', context: integrationContext");
+  const dispatch = source.indexOf("/actions/workflows/ci.yml/dispatches");
+  assert.ok(reserve >= 0 && dispatch > reserve);
+});
