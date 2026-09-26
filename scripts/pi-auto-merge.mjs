@@ -42,8 +42,11 @@ export function latestStatus(statuses, context) {
 }
 
 export function latestCI(runs, sha, branch) {
+  // A direct push already starts CI for normal branch updates. Reuse that run instead of
+  // dispatching a duplicate workflow for the same SHA. pull_request runs stay excluded
+  // because bot-authored PR runs may be action_required and cannot satisfy the merge gate.
   return runs.filter(run => run.head_sha === sha && run.head_branch === branch &&
-    run.event === 'workflow_dispatch')
+    ['push', 'workflow_dispatch'].includes(run.event))
     .sort((a, b) => b.id - a.id)[0] ?? null;
 }
 
