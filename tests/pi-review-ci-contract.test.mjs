@@ -19,6 +19,7 @@ test('CI workflow is explicitly dispatched for exact integration pairs', () => {
   assert.match(workflow, /^\s*workflow_dispatch:/m);
   assert.match(workflow, /inputs\.target_sha \|\| github\.sha/);
   assert.match(workflow, /integration_base_sha/);
+  assert.match(workflow, /actions\/workflows\/pi-auto-merge\.yml\/dispatches/);
 });
 
 test('Pi PR Review has a single explicit-dispatch trigger', () => {
@@ -34,4 +35,14 @@ test('implementer and repair delegate scheduling back to the merge gate', () => 
     assert.doesNotMatch(workflow, /pi-pr-review\.yml\/dispatches/);
     assert.match(workflow, /pi-auto-merge\.yml\/dispatches/);
   }
+});
+
+
+test('merge gate is explicitly wake-driven and does not fan out from workflow_run completions', () => {
+  const gate = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(gate, /^\s*workflow_dispatch:/m);
+  assert.doesNotMatch(gate, /^\s*workflow_run:/m);
+  assert.match(review, /Wake merge gate after current review result/);
+  assert.match(review, /pi-auto-merge\.yml\/dispatches/);
 });
