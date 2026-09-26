@@ -63,7 +63,8 @@ test('reconciler keeps recovery retryable when workflow dispatch fails', () => {
 test('reconciler retries stranded ready implementation and review states', () => {
   const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(source, /retryReadyImplementer/);
-  assert.match(source, /resume ready implementation/);
+  assert.match(source, /wake serialized dispatcher for ready implementation/);
+  assert.match(source, /tryDispatchWorkflow\('pi-dispatcher\.yml'/);
   assert.match(source, /retryReadyReviewer/);
   assert.match(source, /resume ready review/);
 });
