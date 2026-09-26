@@ -3,10 +3,7 @@ export const PIPELINE_LABELS = Object.freeze({
   ready: 'pi:ready',
   running: 'pi:running',
   pr: 'pi:mr-created',
-  blocked: 'pi:blocked',
-  failed: 'pi:failed',
   needsHuman: 'pi:needs-human',
-  cancelled: 'pi:cancelled',
   architectReady: 'architect:ready',
   epic: 'architect:epic',
 });
@@ -16,7 +13,7 @@ export const ISSUE_ACTIVE = new Set([
 ]);
 
 export const ISSUE_TERMINAL = new Set([
-  PIPELINE_LABELS.blocked, PIPELINE_LABELS.failed, PIPELINE_LABELS.needsHuman, PIPELINE_LABELS.cancelled,
+  PIPELINE_LABELS.needsHuman,
 ]);
 
 export const ISSUE_STATE_LABELS = new Set([
@@ -85,8 +82,6 @@ export const ISSUE_TRANSITIONS = Object.freeze({
   running: PIPELINE_LABELS.running,
   'mr-created': PIPELINE_LABELS.pr,
   'needs-human': PIPELINE_LABELS.needsHuman,
-  failed: PIPELINE_LABELS.failed,
-  cancelled: PIPELINE_LABELS.cancelled,
 });
 export function issueStateLabels(issue) {
   const labels = names(issue);
