@@ -365,6 +365,12 @@ jobs:
         run: |
           bash scripts/pi-issue-status.sh cancelled             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
+      - name: Summarize issue pipeline
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/pi-issue-summary.mjs "$ISSUE"
+
       - name: Summarize Pi usage
         if: always()
         run: node scripts/pi-usage-summary.mjs
