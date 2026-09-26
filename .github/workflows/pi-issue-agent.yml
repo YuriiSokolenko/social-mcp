@@ -189,6 +189,13 @@ jobs:
           # Push only the issue delta on top of the remote dev tip so workflow
           # changes already present on dev are not introduced by this branch push.
           git fetch origin dev
+          # The worktree may have started hours ago. Merge the current dev tip
+          # before snapshotting so the checkpoint tree cannot silently revert
+          # files that changed on dev while Pi was working.
+          if ! git merge --no-edit origin/dev; then
+            echo "Latest dev conflicts with implementation; preserving the local worktree for the integration-repair step" >&2
+            git merge --abort || true
+          fi
           ISSUE_TREE="$(git rev-parse HEAD^{tree})"
           CHECKPOINT_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$ISSUE_TREE" -p origin/dev)"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
