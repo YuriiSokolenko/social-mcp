@@ -178,7 +178,7 @@ async function main() {
       initial.candidates.some(candidate => !selected.includes(candidate.issue))) {
     throw new Error("classify every eligible issue exactly once");
   }
-  for (const { issue: number } of initial.candidates) {
+  for (const { issue: number, title } of initial.candidates) {
     const state = await snapshot();
 
     // A previous serialized dispatcher may already have assigned this issue.
@@ -201,7 +201,7 @@ async function main() {
       // GITHUB_TOKEN label events cannot trigger another Actions workflow.
       // Dispatch explicitly, and keep the new label if dispatch fails for a manual retry.
       await api("/actions/workflows/pi-architect.yml/dispatches", {
-        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
+        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
       });
       await api(`/issues/${number}/labels/dispatcher%3Aready`, { method: "DELETE" });
       console.log(`Sent #${number} to Architect`);
@@ -215,7 +215,7 @@ async function main() {
     try {
       await api("/dispatches", {
         method: "POST",
-        body: JSON.stringify({ event_type: "pi_dispatch_issue", client_payload: { issue_number: number } }),
+        body: JSON.stringify({ event_type: "pi_dispatch_issue", client_payload: { issue_number: number, issue_title: title } }),
       });
     } catch (error) {
       try {
