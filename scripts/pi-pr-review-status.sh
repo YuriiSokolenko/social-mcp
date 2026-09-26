@@ -3,10 +3,11 @@ set -euo pipefail
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${REPO:?REPO is required}"
 : "${PR:?PR is required}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="${1:-}"
 COMMENT="${2:-}"
 if [[ "$ACTION" == "ensure" ]]; then
-  node scripts/pi-labels.mjs review
+  node "$SCRIPT_DIR/pi-labels.mjs" review
   exit 0
 fi
-exec node scripts/pi-transition.mjs review "$ACTION" "$COMMENT"
+exec node "$SCRIPT_DIR/pi-transition.mjs" review "$ACTION" "$COMMENT"
