@@ -40,7 +40,7 @@ test('a bot PR CI run needing approval must not count as a passing run', () => {
   assert.equal(needsCIDispatch({ event: 'workflow_dispatch', conclusion: 'failure' }, null), false);
 });
 
-test('latest review status must refer to exact SHA fetched by caller', () => {
+test('latest review status is the merge gate authority for the fetched PR SHA', () => {
   assert.equal(latestStatus([
     { context: 'social-mcp/pi-review', state: 'failure', updated_at: '2026-09-26T11:00:00Z' },
     { context: 'social-mcp/pi-review', state: 'success', updated_at: '2026-09-26T11:01:00Z' },
@@ -101,4 +101,13 @@ test('auto-merge guards reviewer dispatch against an already-live review', () =>
   assert.match(source, /async function hasLiveReview\(prNumber\)/);
   assert.match(source, /await hasLiveReview\(pr\.number\)/);
   assert.match(source, /Review PR/);
+});
+
+
+test('merge gate does not use review labels or repair checkpoints for correctness', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.doesNotMatch(source, /review:passed|review:changes-requested|review:running/);
+  assert.doesNotMatch(source, /hasRepairCheckpoint|repairCheckpoint/);
+  assert.match(source, /currentReview === 'failure'/);
+  assert.match(source, /review !== 'success'/);
 });
