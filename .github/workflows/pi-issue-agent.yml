@@ -62,12 +62,12 @@ jobs:
       - name: Ensure workflow labels
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/pi-issue-status.sh ensure
+        run: bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" ensure
 
       - name: Mark issue running
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/pi-issue-status.sh running
+        run: bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" running
 
       - name: Create temporary issue worktree
         id: worktree
@@ -276,7 +276,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash scripts/pi-issue-status.sh mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
+          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
 
       - name: Wake merge gate
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
@@ -308,7 +308,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash scripts/pi-issue-status.sh needs-human             "Pi completed the task but produced no repository changes. Human review is required."
+          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" needs-human             "Pi completed the task but produced no repository changes. Human review is required."
 
       - name: Mark failed result
         if: failure() && steps.pr.outputs.number == ''
@@ -319,24 +319,24 @@ jobs:
           if git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}-checkpoint" >/dev/null; then
             MESSAGE="$MESSAGE Saved work: https://github.com/${REPO}/tree/pi/issue-${ISSUE}-checkpoint"
           fi
-          bash scripts/pi-issue-status.sh failed "$MESSAGE"
+          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" failed "$MESSAGE"
 
       - name: Mark cancelled result
         if: cancelled() && steps.pr.outputs.number == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash scripts/pi-issue-status.sh cancelled             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" cancelled             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Summarize issue pipeline
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/pi-issue-summary.mjs "$ISSUE"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-issue-summary.mjs" "$ISSUE"
 
       - name: Summarize Pi usage
         if: always()
-        run: node scripts/pi-usage-summary.mjs
+        run: node "$GITHUB_WORKSPACE/scripts/pi-usage-summary.mjs"
 
       - name: Clean temporary worktree
         if: always()
