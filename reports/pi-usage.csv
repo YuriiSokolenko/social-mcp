@@ -14,8 +14,8 @@ issue,78,all,,,,104,134222,68374,7183983,0,7386579,5098.3,5340,https://github.co
 issue,79,all,,,,30,71329,26350,1564623,0,1662302,5538.1,5617,https://github.com/YuriiSokolenko/social-mcp/issues/79
 issue,92,all,,,,8,41976,1202,164060,0,207238,238.3,259,https://github.com/YuriiSokolenko/social-mcp/issues/92
 issue,93,all,,,,70,62195,65685,5954119,0,6081999,12143.6,12301,https://github.com/YuriiSokolenko/social-mcp/issues/93
-issue,95,all,,,,0,0,0,0,0,0,0.0,62,https://github.com/YuriiSokolenko/social-mcp/issues/95
-issue,95,all,,,,119,85348,108577,15000874,0,15194799,21296.3,21402,https://github.com/YuriiSokolenko/social-mcp/issues/95
+issue,93,all,,,,34,76938,39613,2376087,0,2492638,8562.3,8741,https://github.com/YuriiSokolenko/social-mcp/issues/93
+issue,95,all,,,,119,85348,108577,15000874,0,15194799,21296.3,21464,https://github.com/YuriiSokolenko/social-mcp/issues/95
 attempt,25,implementation,36039015936,1,cancelled,10,19537,2657,89273,0,111467,165.6,266,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36039015936/attempts/1
 attempt,10,implementation,36093253439,1,success,14,32423,59901,296631,0,388955,7281.5,7339,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093253439/attempts/1
 attempt,18,implementation,36093256959,1,success,78,61865,30747,2878475,0,2971087,3027.9,3130,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093256959/attempts/1
@@ -42,3 +42,4 @@ attempt,16,implementation,36220720882,1,success,167,103633,102453,21873949,0,220
 attempt,93,implementation,36220725143,1,failure,70,62195,65685,5954119,0,6081999,12143.6,12229,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36220725143/attempts/1
 attempt,95,implementation,36220729053,1,failure,119,85348,108577,15000874,0,15194799,21296.3,21402,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36220729053/attempts/1
 attempt,79,review,36228088586,1,success,30,71329,26350,1564623,0,1662302,5538.1,5617,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36228088586/attempts/1
+attempt,93,implementation,36231338483,1,cancelled,34,76938,39613,2376087,0,2492638,8562.3,8741,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36231338483/attempts/1
