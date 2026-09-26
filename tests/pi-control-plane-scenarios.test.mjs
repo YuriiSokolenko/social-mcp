@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { inspectIssueState, inspectPrState, safeRemovals } from '../scripts/pi-state-machine.mjs';
 import { recoveryForIssue, recoveryForPr, checkpointGcDecision } from '../scripts/pi-recovery-policy.mjs';
 
@@ -38,4 +39,11 @@ test('reconciler defers recovery dispatch outside RUNNING mode', () => {
   assert.match(source, /recovery\.dispatch === 'reviewer' && recoveryDispatchAllowed/);
   const workflow = fs.readFileSync('.github/workflows/pi-reconcile.yml', 'utf8');
   assert.match(workflow, /PI_AUTOMATION_MODE:/);
+});
+
+
+test('RUNNING control wakes both dispatcher and reconciler', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-automation-control.yml', 'utf8');
+  assert.match(workflow, /pi-dispatcher\.yml\/dispatches/);
+  assert.match(workflow, /pi-reconcile\.yml\/dispatches/);
 });
