@@ -46,3 +46,32 @@ test('review transitions require an open PR', () => {
   assert.equal(validateReviewTransition({ state: 'open', labels: [] }, 'passed'), 'review:passed');
   assert.throws(() => validateReviewTransition({ state: 'closed', labels: [] }, 'passed'), /closed PR/);
 });
+
+
+test('orphaned implementer state is safely released while checkpoint is preserved', () => {
+  const findings = inspectIssueState(issue('open', ['pi:running']), {
+    hasLiveImplementer: false, hasCheckpoint: true,
+  });
+  assert.deepEqual(safeRemovals(findings), ['pi:running']);
+  assert.equal(findings.some(item => item.code === 'orphaned-implementer-state' && item.checkpoint === true), true);
+});
+
+test('live implementer keeps running state', () => {
+  const findings = inspectIssueState(issue('open', ['pi:running']), { hasLiveImplementer: true });
+  assert.equal(findings.some(item => item.code === 'orphaned-implementer-state'), false);
+});
+
+test('checkpoint without live running state is reported but never deleted', () => {
+  const findings = inspectIssueState(issue('open', ['pi:ready']), {
+    hasLiveImplementer: false, hasCheckpoint: true,
+  });
+  assert.equal(findings.some(item => item.code === 'checkpoint-without-live-implementer'), true);
+  assert.deepEqual(safeRemovals(findings), []);
+});
+
+test('orphaned reviewer state is safely released', () => {
+  const findings = inspectPrState({ state: 'open', labels: [{ name: 'review:running' }] }, {
+    hasLiveReviewer: false,
+  });
+  assert.deepEqual(safeRemovals(findings), ['review:running']);
+});
