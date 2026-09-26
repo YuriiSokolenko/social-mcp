@@ -32,21 +32,41 @@ async function removeLabel(number, label) {
   }
 }
 
-const [allIssues, prs] = await Promise.all([pages('/issues?state=all'), pages('/pulls?state=all')]);
+const [allIssues, prs, runs, refs] = await Promise.all([
+  pages('/issues?state=all'),
+  pages('/pulls?state=all'),
+  pages('/actions/runs?status=in_progress'),
+  pages('/git/matching-refs/heads/pi/issue-'),
+]);
 const issues = allIssues.filter(item => !item.pull_request);
 const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.ref === 'dev' &&
   pr.head.repo?.full_name === repo).map(pr => Number(pr.head.ref.match(/^pi\/issue-(\d+)$/)?.[1])).filter(Number.isSafeInteger));
 
+const liveImplementers = new Set();
+const liveReviewers = new Set();
+for (const run of runs) {
+  if (!['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(run.status)) continue;
+  const implement = /^🤖 Implement #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
+  if (run.name === 'Pi Issue Agent' && implement) liveImplementers.add(Number(implement[1]));
+  const review = /^🔬 Review PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
+  if (run.name === 'Pi PR Review' && review) liveReviewers.add(Number(review[1]));
+}
+const checkpoints = new Set(refs.map(ref => Number(ref.ref.match(/^refs\/heads\/pi\/issue-(\d+)-checkpoint$/)?.[1])).filter(Number.isSafeInteger));
+
 const report = [];
 for (const issue of issues) {
-  const findings = inspectIssueState(issue, { hasOpenPiPr: openPiPrIssues.has(issue.number) });
+  const findings = inspectIssueState(issue, {
+    hasOpenPiPr: openPiPrIssues.has(issue.number),
+    hasLiveImplementer: liveImplementers.has(issue.number),
+    hasCheckpoint: checkpoints.has(issue.number),
+  });
   if (!findings.length) continue;
   const removals = safeRemovals(findings);
   if (apply) for (const label of removals) await removeLabel(issue.number, label);
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals });
 }
 for (const pr of prs) {
-  const findings = inspectPrState(pr);
+  const findings = inspectPrState(pr, { hasLiveReviewer: liveReviewers.has(pr.number) });
   if (!findings.length) continue;
   const removals = safeRemovals(findings);
   if (apply) for (const label of removals) await removeLabel(pr.number, label);
@@ -58,6 +78,7 @@ for (const item of report) {
   console.log(`${item.type.toUpperCase()} #${item.number} ${item.title}`);
   for (const finding of item.findings) console.log(`  - ${finding.severity}: ${finding.code}${finding.labels ? ` [${finding.labels.join(', ')}]` : ''}`);
   if (apply && item.removals.length) console.log(`  repaired: removed ${item.removals.join(', ')}`);
+  if (item.findings.some(finding => finding.checkpoint)) console.log('  checkpoint preserved: saved implementation work may exist');
 }
 if (process.env.GITHUB_STEP_SUMMARY) {
   const fs = await import('node:fs');
