@@ -321,15 +321,12 @@ jobs:
               exit 0
             }
 
-      - name: Mark no-change repair terminal
-        if: steps.changes.outputs.changed == 'false'
+      - name: Mark no-change review repair terminal
+        if: steps.changes.outputs.changed == 'false' && env.REASON == 'review'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human
-          if [ "$REASON" = "review" ]; then
-            node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair completed without producing a repository change. Human attention is required. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          fi
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair completed without producing a repository change. Human attention is required. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Report review repair failure
         if: failure() && steps.changes.outputs.changed != 'true' && env.REASON == 'review'
@@ -337,14 +334,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair (reason: ${REASON}) did not produce a mergeable, passing PR. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-
-      - name: Escalate unsuccessful repair
-        if: (failure() || cancelled()) && env.ISSUE != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human \
-            "Automated Pi repair (${REASON}) failed or was cancelled. Human attention is required. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Finalize repair status
         if: always() && env.HEAD_SHA != ''
