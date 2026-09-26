@@ -111,12 +111,12 @@ for (const issue of issues) {
 for (const pr of prs) {
   const repairCheckpoint = repairCheckpointRefs.get(pr.number);
   if (repairCheckpoint && pr.state === 'open' && !liveRepairs.has(pr.number)) {
-    if (apply) {
+    if (apply && recoveryDispatchAllowed) {
       await dispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), reason: 'review' });
     }
     report.push({ type: 'repair', number: pr.number, title: pr.title,
       findings: [{ code: 'orphaned-repair-checkpoint', severity: 'repair', checkpoint: true }],
-      removals: [], recovery: apply ? { add: null, dispatch: 'repair', reason: 'resume saved repair checkpoint' } : null });
+      removals: [], recovery: apply ? { add: null, dispatch: recoveryDispatchAllowed ? 'repair' : null, reason: recoveryDispatchAllowed ? 'resume saved repair checkpoint' : 'repair recovery deferred until RUNNING' } : null });
   }
   const findings = inspectPrState(pr, { hasLiveReviewer: liveReviewers.has(pr.number) });
   if (!findings.length) continue;
