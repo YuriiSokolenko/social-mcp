@@ -115,3 +115,10 @@ test('conflict repair validates the exact SHA/base conflict status before work',
   assert.match(repair, /social-mcp\/integration-conflict\/\$\{BASE_SHA:0:12\}/);
   assert.match(repair, /no longer has an integration conflict/);
 });
+
+
+test('conflict repair never publishes a rebase against a dev base that moved', () => {
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(repair, /CURRENT_BASE=.*origin\/dev/s);
+  assert.match(repair, /dev moved during conflict repair; refusing to publish a stale rebase/);
+});
