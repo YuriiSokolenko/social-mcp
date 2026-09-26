@@ -2,49 +2,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { githubClient } from "./github-api.mjs";
 import { readQueueContext } from "./pi-queue-context.mjs";
 import { replaceIssueState } from "./pi-github-state.mjs";
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-state-machine.mjs";
 
-const repo = process.env.REPO;
-const token = process.env.GH_TOKEN;
+const { api: request, pages, ensureLabel, repo } = githubClient();
+const api = (endpoint, options = {}) =>
+  request(endpoint, options.method ?? "GET", options.body ? JSON.parse(options.body) : undefined);
 function usage() {
   throw new Error("usage: pi-dispatcher.mjs prepare <context.json> | apply <pi-jsonl>");
-}
-const base = `https://api.github.com/repos/${repo}`;
-const headers = {
-  Authorization: `Bearer ${token}`,
-  Accept: "application/vnd.github+json",
-  "X-GitHub-Api-Version": "2022-11-28",
-};
-async function api(endpoint, options = {}) {
-  const response = await fetch(`${base}${endpoint}`, {
-    ...options,
-    headers: { ...headers, ...(options.body ? { "Content-Type": "application/json" } : {}) },
-  });
-  if (!response.ok) throw new Error(`GitHub ${response.status} ${endpoint}: ${await response.text()}`);
-  if (response.status === 204) return null;
-  return response.json();
-}
-async function pages(endpoint) {
-  const items = [];
-  for (let page = 1; ; page++) {
-    const batch = await api(`${endpoint}${endpoint.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
-    items.push(...batch);
-    if (batch.length < 100) return items;
-  }
-}
-async function ensureLabel(name, color, description) {
-  const response = await fetch(`${base}/labels`, {
-    method: "POST",
-    headers: { ...headers, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name, color, description,
-    }),
-  });
-  if (![201, 422].includes(response.status)) {
-    throw new Error(`Cannot ensure ${name} label: ${response.status} ${await response.text()}`);
-  }
 }
 const labels = issue => new Set(issue.labels.map(label => label.name));
 async function transitionIssue(number, action) {
