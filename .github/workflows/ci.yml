@@ -200,4 +200,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
             --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pi-auto-merge.yml/dispatches"
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pi-auto-merge.yml/dispatches" || {
+              echo "::warning::Integration status is durable; reconciler can wake Merge Gate later."
+              exit 0
+            }
