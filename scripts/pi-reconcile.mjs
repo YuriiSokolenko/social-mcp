@@ -99,7 +99,7 @@ for (const issue of issues) {
       if (recovery) {
         await addLabel(issue.number, recovery.add);
         if (recovery.dispatch === 'implementer') {
-          await dispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number), issue_title: issue.title });
+          await dispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number) });
         }
       }
     }
