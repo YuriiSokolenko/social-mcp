@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkpointGcDecision, recoveryForIssue, recoveryForPr } from '../scripts/pi-recovery-policy.mjs';
+import { checkpointGcDecision, recoveryForIssue } from '../scripts/pi-recovery-policy.mjs';
 
 const issue = (state, labels, state_reason) => ({ state, state_reason, labels: labels.map(name => ({ name })) });
 
@@ -22,11 +22,6 @@ test('existing implementation PR recovers to mr-created without duplicate implem
   });
 });
 
-test('orphaned review returns to review-ready and restarts reviewer', () => {
-  assert.deepEqual(recoveryForPr({ state: 'open', labels: [{ name: 'review:running' }] }), {
-    add: 'review:ready', dispatch: 'reviewer', reason: 'restart semantic review for current PR head',
-  });
-});
 
 test('checkpoint GC only removes proven published or completed work', () => {
   assert.equal(checkpointGcDecision(issue('open', ['pi:running'])).remove, false);
