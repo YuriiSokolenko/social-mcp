@@ -123,3 +123,14 @@ test('final review and repair states survive secondary dispatch failures', () =>
   assert.match(repair, /Repair is already published/);
   assert.match(repair, /if: failure\(\) && steps\.changes\.outputs\.changed != 'true'/);
 });
+
+
+test('reconciler resumes durable PR pipeline states', () => {
+  const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(source, /issueLabels\.has\('pi:mr-created'\)/);
+  assert.match(source, /prLabels\.has\('review:passed'\)/);
+  assert.match(source, /prLabels\.has\('review:changes-requested'\)/);
+  assert.match(source, /!liveRepairs\.has\(pr\.number\) && !repairCheckpoint/);
+  assert.match(source, /tryDispatchWorkflow\('pi-pr-fix\.yml'/);
+  assert.match(source, /tryDispatchWorkflow\('pi-auto-merge\.yml'/);
+});
