@@ -223,13 +223,36 @@ jobs:
           [ "$pi_status" -eq 0 ] || exit "$pi_status"
           printf '\n'
 
+      - name: Rebase reviewed repair onto latest dev
+        if: env.REASON != 'conflict'
+        id: review_rebase
+        run: |
+          cd "$JOB_DIR"
+          git config user.name "social-mcp-pi"
+          git config user.email "social-mcp-pi@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: address review for issue #${ISSUE}"
+          fi
+          git fetch origin dev
+          set +e
+          GIT_EDITOR=true git rebase origin/dev
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicted-files.txt"
+            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Pi conflict resolution
-        if: env.REASON == 'conflict' && steps.rebase.outputs.conflicted == 'true'
+        if: (env.REASON == 'conflict' && steps.rebase.outputs.conflicted == 'true') || (env.REASON != 'conflict' && steps.review_rebase.outputs.conflicted == 'true')
         run: |
           set -o pipefail
           cd "$JOB_DIR"
           pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "Read and follow agents/implementer/AGENTS.md. You are rebasing PR #${PR} for issue #${ISSUE} onto the latest origin/dev. The rebase left unresolved Git conflicts in these files:
+            "Read and follow agents/implementer/AGENTS.md. You are rebasing PR #${PR} for issue #${ISSUE} onto the latest origin/dev after implementation or review repair. The rebase left unresolved Git conflicts in these files:
 
           $(cat "$RUNNER_TEMP/conflicted-files.txt")
 
