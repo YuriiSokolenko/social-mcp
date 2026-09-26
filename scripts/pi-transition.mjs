@@ -57,8 +57,9 @@ if (kind === 'issue') {
   if (action !== 'running') await postComment();
   console.log(`issue #${number}: transitioned to ${target}`);
 } else {
-  const target = validateReviewTransition(item, action);
-  await replaceLabels(expected, target, 'review', action);
+  // Review labels are presentation only. The SHA-bound commit status is
+  // authoritative for merge correctness.
+  validateReviewTransition(item, action);
   const statuses = {
     running: ['pending', 'Automated review is running'],
     passed: ['success', 'Automated review and deterministic checks passed'],
@@ -69,5 +70,5 @@ if (kind === 'issue') {
   const [state, description] = statuses[action];
   await markCommit(state, description);
   if (action !== 'stale') await postComment();
-  console.log(`review #${number}: transitioned to ${target}`);
+  console.log(`review #${number}: status ${state}`);
 }
