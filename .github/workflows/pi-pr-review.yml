@@ -20,6 +20,7 @@ permissions:
 
 concurrency:
   group: pi-pr-review-${{ inputs.pr_number || github.run_id }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
