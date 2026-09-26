@@ -77,7 +77,7 @@ async function mark(sha, context, state, description) {
 async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   if (!currentReview && !latestStatus(statuses, reviewMarker)) {
-    await api('/dispatches', 'POST', { event_type: 'pi_pr_review', client_payload: { pr_number: pr.number, pr_title: pr.title } });
+    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
     await mark(sha, reviewMarker, 'success', `Review dispatch requested for PR #${pr.number}`);
   }
   const ci = latestCI(runs, sha, pr.head.ref);
@@ -165,7 +165,7 @@ async function processPR(prSummary) {
         console.log(`#${pr.number}: merge conflict; repair already dispatched for ${sha.slice(0, 12)}`);
         return;
       }
-      await api('/dispatches', 'POST', { event_type: 'pi_pr_fix', client_payload: { pr_number: pr.number, pr_title: pr.title, reason: 'conflict' } });
+      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
       await mark(sha, conflictMarker, 'success', `Conflict repair dispatched for PR #${pr.number}`);
       console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
       return;
