@@ -208,10 +208,10 @@ test('status wrappers delegate mutations to guarded transition engine', () => {
 });
 
 test('guarded transition replaces only its state-family labels', () => {
-  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
-  assert.match(transition, /filter\(label => !stateLabels\.has\(label\)\)/);
-  assert.match(transition, /ISSUE_STATE_LABELS/);
-  assert.match(transition, /REVIEW_LABELS/);
+  const helper = fs.readFileSync('scripts/pi-github-state.mjs', 'utf8');
+  assert.match(helper, /filter\(label => !stateLabels\.has\(label\)\)/);
+  assert.match(helper, /ISSUE_STATE_LABELS/);
+  assert.match(helper, /REVIEW_LABELS/);
 });
 
 
@@ -224,8 +224,8 @@ test('dispatcher and reconciler use guarded whole-state writes', () => {
   assert.doesNotMatch(dispatcher, /labels\/pi%3Aready|labels\/dispatcher%3Aready/);
   assert.match(reconciler, /replaceIssueState/);
   assert.match(reconciler, /replaceReviewState/);
-  assert.match(reconciler, /replaceStateLabels\(issue\.number, issue, recovery\.add, ISSUE_STATE_LABELS\)/);
-  assert.match(reconciler, /replaceStateLabels\(pr\.number, pr, recovery\.add, REVIEW_LABELS\)/);
+  assert.match(reconciler, /replaceStateLabels\(issue\.number, issue, recovery\.add, 'issue'\)/);
+  assert.match(reconciler, /replaceStateLabels\(pr\.number, pr, recovery\.add, 'review'\)/);
   assert.doesNotMatch(reconciler, /async function addLabel|async function removeLabel/);
 });
 
