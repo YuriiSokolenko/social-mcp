@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { childNumbers, parentOf } from './pi-architect.mjs';
-import { ISSUE_STATE_LABELS, issueStateLabels } from './pi-state-machine.mjs';
+import { replaceIssueState } from './pi-github-state.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
