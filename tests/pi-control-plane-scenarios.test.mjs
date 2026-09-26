@@ -234,3 +234,12 @@ test('issue state family includes dispatcher ownership', () => {
   assert.match(source, /ready: PIPELINE_LABELS\.ready/);
   assert.match(source, /'architect-ready': PIPELINE_LABELS\.architectReady/);
 });
+
+
+test('merge finalization clears issue state with a guarded whole-state write', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(gate, /clearCompletedIssueState/);
+  assert.match(gate, /issueStateLabels\(expected\)/);
+  assert.match(gate, /concurrent merge finalization/);
+  assert.doesNotMatch(gate, /labels\/pi%3Amr-created/);
+});
