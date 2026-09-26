@@ -159,16 +159,6 @@ async function hasLiveRepair(prNumber) {
   return false;
 }
 
-async function hasRepairCheckpoint(prNumber) {
-  try {
-    await api(`/git/ref/heads/pi/repair-pr-${prNumber}-checkpoint`);
-    return true;
-  } catch (error) {
-    if (/GET .*: 404 /.test(error.message)) return false;
-    throw error;
-  }
-}
-
 async function processPR(prSummary) {
   const pr = await api(`/pulls/${prSummary.number}`);
   const issue = issueNumber(pr, repo);
@@ -187,10 +177,7 @@ async function processPR(prSummary) {
 
   const sha = pr.head.sha;
   const prLabels = new Set((pr.labels ?? []).map(label => label.name));
-  const [repairLive, repairCheckpoint] = await Promise.all([
-    hasLiveRepair(pr.number),
-    hasRepairCheckpoint(pr.number),
-  ]);
+  const repairLive = await hasLiveRepair(pr.number);
   const [base, comparison, statusData, ciData] = await Promise.all([
     api('/git/ref/heads/dev'),
     api(`/compare/dev...${sha}`),
@@ -213,8 +200,8 @@ async function processPR(prSummary) {
       console.log(`#${pr.number}: merge conflict appeared while review is running; waiting for review to finish`);
       return;
     }
-    if (repairLive || repairCheckpoint) {
-      console.log(`#${pr.number}: merge conflict; integration repair is already active or checkpointed`);
+    if (repairLive) {
+      console.log(`#${pr.number}: merge conflict; integration repair is already active`);
       return;
     }
     await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
