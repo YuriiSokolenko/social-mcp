@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { ISSUE_STATE_LABELS, REVIEW_LABELS, inspectIssueState, inspectPrState, safeRemovals } from './pi-state-machine.mjs';
+import { replaceIssueState, replaceReviewState } from './pi-github-state.mjs';
+import { inspectIssueState, inspectPrState, safeRemovals } from './pi-state-machine.mjs';
 import { checkpointGcDecision, recoveryForIssue, recoveryForPr } from './pi-recovery-policy.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
@@ -35,36 +36,13 @@ async function workflowRunPages(path) {
     if (batch.length < 100) return all;
   }
 }
-async function replaceStateLabels(number, expectedIssue, target, stateLabels) {
-  const current = await api(`/issues/${number}`);
-  const names = item => new Set((item.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
-  const expected = names(expectedIssue);
-  const actual = names(current);
-  const expectedState = [...stateLabels].filter(label => expected.has(label)).sort();
-  const actualState = [...stateLabels].filter(label => actual.has(label)).sort();
-  if (JSON.stringify(expectedState) !== JSON.stringify(actualState)) {
-    throw new Error(`concurrent reconciliation transition on #${number}: expected [${expectedState}], found [${actualState}]`);
-  }
-  const keep = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name)
-    .filter(label => !stateLabels.has(label));
-  await api(`/issues/${number}`, { method: 'PATCH',
-    body: JSON.stringify({ labels: target ? [...new Set([...keep, target])] : keep }) });
-}
-async function dispatchWorkflow(workflow, inputs) {
-  await api(`/actions/workflows/${workflow}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: 'dev', inputs }) });
-}
-async function tryDispatchWorkflow(workflow, inputs, context) {
-  try {
-    await dispatchWorkflow(workflow, inputs);
-    return true;
-  } catch (error) {
-    console.error(`Recovery dispatch failed for ${context}: ${error.message}`);
-    return false;
-  }
-}
-async function deleteRef(ref) {
-  const response = await fetch(`${base}/git/refs/${ref}`, { method: 'DELETE', headers });
-  if (![204, 404].includes(response.status)) throw new Error(`Cannot delete ref ${ref}: ${response.status} ${await response.text()}`);
+async function replaceStateLabels(number, expected, target, kind) {
+  const replace = kind === 'issue' ? replaceIssueState : replaceReviewState;
+  await replace({
+    number, expected, target, context: 'reconciliation',
+    load: n => api(`/issues/${n}`),
+    patch: (n, labels) => api(`/issues/${n}`, { method: 'PATCH', body: JSON.stringify({ labels }) }),
+  });
 }
 const liveStatuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
 const [allIssues, prs, runGroups, refs] = await Promise.all([
@@ -114,19 +92,19 @@ for (const issue of issues) {
     if (findings.some(x => x.code === 'orphaned-implementer-state')) {
       recovery = recoveryForIssue(issue, { hasCheckpoint: checkpoints.has(issue.number), hasOpenPiPr: openPiPrIssues.has(issue.number) });
       if (recovery) {
-        await replaceStateLabels(issue.number, issue, recovery.add, ISSUE_STATE_LABELS);
+        await replaceStateLabels(issue.number, issue, recovery.add, 'issue');
         if (recovery.dispatch === 'implementer' && recoveryDispatchAllowed) {
           const dispatched = await tryDispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number) }, `issue #${issue.number}`);
           if (!dispatched) recovery = { ...recovery, dispatch: null, reason: 'implementer recovery dispatch failed; pi:ready retained for retry' };
         }
       }
     } else if (removals.length) {
-      await replaceStateLabels(issue.number, issue, null, ISSUE_STATE_LABELS);
+      await replaceStateLabels(issue.number, issue, null, 'issue');
     }
   }
   if (retryMergeGateForPr) mergeGateWakeNeeded = true;
   if (retryReadyImplementer && !recovery) {
-    await replaceStateLabels(issue.number, issue, 'dispatcher:ready', ISSUE_STATE_LABELS);
+    await replaceStateLabels(issue.number, issue, 'dispatcher:ready', 'issue');
     const dispatched = await tryDispatchWorkflow('pi-dispatcher.yml', {}, `ready issue #${issue.number}`);
     recovery = { add: 'dispatcher:ready', dispatch: dispatched ? 'dispatcher' : null, reason: dispatched ? 'return stranded ready issue to serialized dispatcher' : 'dispatcher wake failed; dispatcher:ready retained for retry' };
   }
@@ -153,14 +131,14 @@ for (const pr of prs) {
     if (findings.some(x => x.code === 'orphaned-review-state')) {
       recovery = recoveryForPr(pr);
       if (recovery) {
-        await replaceStateLabels(pr.number, pr, recovery.add, REVIEW_LABELS);
+        await replaceStateLabels(pr.number, pr, recovery.add, 'review');
         if (recovery.dispatch === 'reviewer' && recoveryDispatchAllowed) {
           mergeGateWakeNeeded = true;
           recovery = { ...recovery, dispatch: 'merge-gate', reason: 'return orphaned review to merge-gate scheduler' };
         }
       }
     } else if (removals.length) {
-      await replaceStateLabels(pr.number, pr, null, REVIEW_LABELS);
+      await replaceStateLabels(pr.number, pr, null, 'review');
     }
   }
   if (retryRepair && !recovery) {
