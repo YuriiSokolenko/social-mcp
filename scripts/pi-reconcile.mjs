@@ -110,7 +110,7 @@ for (const pr of prs) {
   const repairCheckpoint = repairCheckpointRefs.get(pr.number);
   if (repairCheckpoint && pr.state === 'open' && !liveRepairs.has(pr.number)) {
     if (apply) {
-      await dispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' });
+      await dispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), reason: 'review' });
     }
     report.push({ type: 'repair', number: pr.number, title: pr.title,
       findings: [{ code: 'orphaned-repair-checkpoint', severity: 'repair', checkpoint: true }],
@@ -127,7 +127,7 @@ for (const pr of prs) {
       if (recovery) {
         await addLabel(pr.number, recovery.add);
         if (recovery.dispatch === 'reviewer') {
-          await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title });
+          await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number) });
         }
       }
     }
