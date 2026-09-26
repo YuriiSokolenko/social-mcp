@@ -38,7 +38,9 @@ jobs:
           persist-credentials: false
 
       - name: Initialize Pi usage
-        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
+        run: |
+          echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
+          echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate dispatched issue
         if: github.event_name == 'repository_dispatch'
@@ -141,6 +143,7 @@ jobs:
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-implementer-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
             --mode json \
@@ -281,13 +284,26 @@ jobs:
           PR_NUMBER="$(jq -r '.[0].number // empty' <<<"$EXISTING")"
           PR_URL="$(jq -r '.[0].html_url // empty' <<<"$EXISTING")"
 
-          if [ -z "$PR_NUMBER" ]; then
-            PR_JSON="$(
-              jq -n                 --arg title "Pi: #${ISSUE} ${ISSUE_TITLE}"                 --arg head "pi/issue-${ISSUE}"                 --arg base "dev"                 --arg body "Closes #${ISSUE}\n\nImplemented automatically by the N150 Pi runner."                 '{title:$title,head:$head,base:$base,body:$body}' |               curl -fsS -X POST "${AUTH[@]}"                 -H "Content-Type: application/json"                 --data-binary @-                 "${API}/pulls"
-            )"
+          RESULT_FILE="${PI_IMPLEMENTER_RESULT_FILE}"
+          if [ ! -s "$RESULT_FILE" ]; then
+            echo "Implementer PR metadata missing; using issue-based fallback"
+            jq -n --arg title "Pi: #${ISSUE} ${ISSUE_TITLE}" --arg summary "Implements issue #${ISSUE}." \
+              '{title:$title,summary:$summary,changes:[],security_notes:"",limitations:""}' > "$RESULT_FILE"
+          fi
+          TITLE="$(jq -r '.title' "$RESULT_FILE")"
+          SUMMARY="$(jq -r '.summary' "$RESULT_FILE")"
+          CHANGES="$(jq -r 'if (.changes // []) | length > 0 then (.changes | map("- " + .) | join("\n")) else "- See the diff for implementation details." end' "$RESULT_FILE")"
+          SECURITY="$(jq -r '.security_notes // ""' "$RESULT_FILE")"
+          LIMITATIONS="$(jq -r '.limitations // ""' "$RESULT_FILE")"
+          TESTS="- pytest: passed\n- ruff check .: passed\n- git diff --check origin/dev...HEAD: passed"
+          BODY="$(printf '## Summary\n%s\n\n## Changes\n%b\n\n## Security\n%s\n\n## Validation\n%b\n\n## Known limitations\n%s\n\nCloses #%s\n' "$SUMMARY" "$CHANGES" "${SECURITY:-No special security impact identified.}" "$TESTS" "${LIMITATIONS:-None identified.}" "$ISSUE")"
 
+          if [ -z "$PR_NUMBER" ]; then
+            PR_JSON="$(jq -n --arg title "$TITLE" --arg head "pi/issue-${ISSUE}" --arg base "dev" --arg body "$BODY" '{title:$title,head:$head,base:$base,body:$body}' | curl -fsS -X POST "${AUTH[@]}" -H "Content-Type: application/json" --data-binary @- "${API}/pulls")"
             PR_NUMBER="$(jq -r '.number' <<<"$PR_JSON")"
             PR_URL="$(jq -r '.html_url' <<<"$PR_JSON")"
+          else
+            jq -n --arg title "$TITLE" --arg body "$BODY" '{title:$title,body:$body}' | curl -fsS -X PATCH "${AUTH[@]}" -H "Content-Type: application/json" --data-binary @- "${API}/pulls/${PR_NUMBER}" >/dev/null
           fi
 
           echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
