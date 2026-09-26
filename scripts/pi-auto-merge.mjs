@@ -123,17 +123,16 @@ export async function finishArchitectParents(childNumber, issueApi = api) {
 }
 
 async function clearCompletedIssueState(number, expected) {
-  const current = await api(`/issues/${number}`);
-  if (current.state !== 'closed' || current.state_reason !== 'completed') {
-    throw new Error(`issue #${number} is not completed while finalizing merge`);
-  }
-  const expectedState = issueStateLabels(expected);
-  const currentState = issueStateLabels(current);
-  if (JSON.stringify(expectedState) !== JSON.stringify(currentState)) {
-    throw new Error(`concurrent merge finalization on #${number}: expected [${expectedState}], found [${currentState}]`);
-  }
-  const keep = current.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
-  await api(`/issues/${number}`, 'PATCH', { labels: keep });
+  await replaceIssueState({
+    number, expected, target: null, context: 'merge finalization',
+    load: n => api(`/issues/${n}`),
+    validateCurrent: current => {
+      if (current.state !== 'closed' || current.state_reason !== 'completed') {
+        throw new Error(`issue #${number} is not completed while finalizing merge`);
+      }
+    },
+    patch: (n, labels) => api(`/issues/${n}`, 'PATCH', { labels }),
+  });
 }
 
 async function finalizeMergedPR(pr, issue) {
