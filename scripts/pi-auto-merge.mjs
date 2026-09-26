@@ -5,7 +5,6 @@ const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
 const apiRoot = `https://api.github.com/repos/${repo}`;
 const reviewContext = 'social-mcp/pi-review';
-const conflictMarker = 'social-mcp/merge-conflict-fix-dispatched';
 
 async function api(path, method = 'GET', body) {
   const response = await fetch(`${apiRoot}${path}`, {
@@ -77,10 +76,6 @@ export function shouldDeferBranchUpdate(pr) {
   return pr.labels?.some(label => ['review:running', 'review:changes-requested'].includes(label.name)) ?? false;
 }
 
-async function mark(sha, context, state, description) {
-  return api(`/statuses/${sha}`, 'POST', { context, state, description: description.slice(0, 140) });
-}
-
 async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   const reviewActive = pr.labels?.some(label => ['review:ready', 'review:running'].includes(label.name)) ?? false;
@@ -134,6 +129,25 @@ async function finalizeMergedPR(pr, issue) {
   console.log(`#${pr.number}: dispatcher started`);
 }
 
+async function hasLiveRepair(prNumber) {
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+    const data = await api(`/actions/workflows/pi-pr-fix.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
+    if ((data.workflow_runs ?? []).some(run =>
+      run.display_title?.startsWith(`🔧 Repair PR #${prNumber} ·`))) return true;
+  }
+  return false;
+}
+
+async function hasRepairCheckpoint(prNumber) {
+  try {
+    await api(`/git/ref/heads/pi/repair-pr-${prNumber}-checkpoint`);
+    return true;
+  } catch (error) {
+    if (/GET .*: 404 /.test(error.message)) return false;
+    throw error;
+  }
+}
+
 async function processPR(prSummary) {
   const pr = await api(`/pulls/${prSummary.number}`);
   const issue = issueNumber(pr, repo);
@@ -163,12 +177,15 @@ async function processPR(prSummary) {
       return;
     }
     if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
-      if (latestStatus(statusData, conflictMarker)) {
-        console.log(`#${pr.number}: merge conflict; repair already dispatched for ${sha.slice(0, 12)}`);
+      const [repairLive, repairCheckpoint] = await Promise.all([
+        hasLiveRepair(pr.number),
+        hasRepairCheckpoint(pr.number),
+      ]);
+      if (repairLive || repairCheckpoint) {
+        console.log(`#${pr.number}: merge conflict; repair is already active or has a saved checkpoint`);
         return;
       }
       await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
-      await mark(sha, conflictMarker, 'success', `Conflict repair dispatched for PR #${pr.number}`);
       console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
       return;
     }
