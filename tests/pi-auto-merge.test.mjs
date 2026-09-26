@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { allowedFiles, finishArchitectParents, issueNumber, latestCI, latestStatus, needsCIDispatch, shouldDeferBranchUpdate } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, finishArchitectParents, issueNumber, latestCI, latestStatus, needsCIDispatch } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 const pr = {
@@ -19,15 +19,15 @@ test('only a same-repository Pi PR closing its own issue is eligible', () => {
   assert.equal(issueNumber({ ...pr, head: { ...pr.head, ref: 'feature/42' } }, repo), null);
 });
 
-test('CI must match current SHA and branch and only dispatched runs are authoritative', () => {
+test('integration CI must match exact PR SHA, branch and dev base SHA', () => {
   const runs = [
-    { id: 1, head_sha: 'old', head_branch: 'pi/issue-42', event: 'pull_request', conclusion: 'success' },
-    { id: 2, head_sha: 'new', head_branch: 'pi/issue-42', event: 'workflow_dispatch', conclusion: 'success' },
-    { id: 3, head_sha: 'new', head_branch: 'pi/issue-42', event: 'push', conclusion: 'failure' },
+    { id: 1, event: 'workflow_dispatch', display_title: '🧪 CI · target:new ref:pi/issue-42 base:dev-old', conclusion: 'success' },
+    { id: 2, event: 'workflow_dispatch', display_title: '🧪 CI · target:new ref:pi/issue-42 base:dev-new', conclusion: 'success' },
+    { id: 3, event: 'push', display_title: '🧪 CI · target:new ref:pi/issue-42 base:dev-new', conclusion: 'failure' },
   ];
-  assert.equal(latestCI(runs, 'new', 'pi/issue-42').conclusion, 'success');
-  assert.equal(latestCI(runs, 'missing', 'pi/issue-42'), null);
-  assert.equal(latestCI(runs, 'new', 'pi/issue-43'), null);
+  assert.equal(latestCI(runs, 'new', 'pi/issue-42', 'dev-new').id, 2);
+  assert.equal(latestCI(runs, 'new', 'pi/issue-42', 'missing'), null);
+  assert.equal(latestCI(runs, 'new', 'pi/issue-43', 'dev-new'), null);
 });
 
 test('a bot PR CI run needing approval must not count as a passing run', () => {
@@ -52,13 +52,6 @@ test('Pi cannot change the workflow definitions used for its own checks', () => 
   assert.equal(allowedFiles([{ filename: 'app/server.py' }], 1), true);
   assert.equal(allowedFiles([{ filename: '.github/workflows/ci.yml' }], 1), false);
   assert.equal(allowedFiles([{ filename: 'app/server.py' }], 2), false);
-});
-
-test('do not move a PR head while its reviewer is running or a repair is in flight', () => {
-  assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:running' }] }), true);
-  assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:changes-requested' }] }), true);
-  assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:ready' }] }), false);
-  assert.equal(shouldDeferBranchUpdate({ labels: [{ name: 'review:passed' }] }), false);
 });
 
 test('closing a completed leaf closes its child epic and then its root epic', async () => {
