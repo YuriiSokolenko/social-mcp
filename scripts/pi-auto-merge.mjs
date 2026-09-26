@@ -176,9 +176,8 @@ async function processPR(prSummary) {
 
   const sha = pr.head.sha;
   const repairLive = await hasLiveRepair(pr.number);
-  const [base, comparison, statusData, ciData] = await Promise.all([
+  const [base, statusData, ciData] = await Promise.all([
     api('/git/ref/heads/dev'),
-    api(`/compare/dev...${sha}`),
     api(`/commits/${sha}/statuses?per_page=100`),
     api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100'),
   ]);
@@ -193,7 +192,7 @@ async function processPR(prSummary) {
     console.log(`#${pr.number}: dispatched Pi review repair for current head ${sha.slice(0, 12)}`);
     return;
   }
-  if (comparison.behind_by > 0 && pr.mergeable === false && pr.mergeable_state === 'dirty') {
+  if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
     if (repairLive) {
       console.log(`#${pr.number}: merge conflict; integration repair is already active`);
       return;
@@ -202,11 +201,6 @@ async function processPR(prSummary) {
     console.log(`#${pr.number}: current dev conflicts with PR; dispatched conflict resolution`);
     return;
   }
-  if (!['ahead', 'diverged'].includes(comparison.status)) {
-    console.log(`#${pr.number}: head cannot be integrated with current dev`);
-    return;
-  }
-
   const statuses = statusData;
   const runs = ciData.workflow_runs ?? [];
   await trigger(pr, sha, base.object.sha, statuses, runs);
