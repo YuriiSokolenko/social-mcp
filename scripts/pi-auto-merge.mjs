@@ -194,19 +194,17 @@ async function processPR(prSummary) {
     console.log(`#${pr.number}: dispatched Pi review repair for current head ${sha.slice(0, 12)}`);
     return;
   }
-  if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
-    if (repairLive) {
-      console.log(`#${pr.number}: merge conflict; integration repair is already active`);
-      return;
-    }
-    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
-    console.log(`#${pr.number}: current dev conflicts with PR; dispatched conflict resolution`);
-    return;
-  }
   const statuses = statusData;
   const runs = ciData.workflow_runs ?? [];
   await trigger(pr, sha, base.object.sha, statuses, runs);
   const ci = latestCI(runs, sha, pr.head.ref, base.object.sha);
+  if (ci?.status === 'completed' && ci.conclusion === 'failure') {
+    if (!repairLive) {
+      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
+      console.log(`#${pr.number}: exact integration failed; dispatched conflict/integration repair`);
+    }
+    return;
+  }
   const review = latestStatus(statuses, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
   if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success') {
     console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)}) and review`);
@@ -215,9 +213,8 @@ async function processPR(prSummary) {
   // Re-read mutable state immediately before the merge; the merge API also rejects a moved head.
   const fresh = await api(`/pulls/${pr.number}`);
   const freshBase = await api('/git/ref/heads/dev');
-  if (fresh.head.sha !== sha || freshBase.object.sha !== base.object.sha ||
-      fresh.mergeable !== true) {
-    console.log(`#${pr.number}: head, dev or mergeability changed`);
+  if (fresh.head.sha !== sha || freshBase.object.sha !== base.object.sha) {
+    console.log(`#${pr.number}: head or dev changed`);
     return;
   }
   const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
