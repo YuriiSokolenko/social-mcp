@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     tiktok_client_key: str | None = None
     tiktok_client_secret: str | None = None
 
+    # Threads OAuth redirect URI and scopes (issue #16). The redirect URI must
+    # exactly match one of the app's registered valid OAuth URIs; when unset it
+    # defaults to the development callback route. ``threads_scopes`` defaults to
+    # ``threads_basic`` (the required minimum); ``parse_scopes`` always ensures
+    # ``threads_basic`` is present. These are read from environment configuration
+    # and never sent to the browser or baked into the image.
+    threads_redirect_uri: str | None = None
+    threads_scopes: str | None = None
+
     # Secret used to sign OAuth ``state`` values issued during the Threads
     # authorization-code flow (issue #15). It must be supplied at runtime from
     # the environment (or a secret file) and is never committed. A file-based
