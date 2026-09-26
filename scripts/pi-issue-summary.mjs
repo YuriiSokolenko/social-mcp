@@ -28,7 +28,7 @@ const reviewContext = `social-mcp/pi-review/${base?.object?.sha?.slice(0, 12) ??
 const review = statuses.filter(status => status.context === reviewContext)
   .sort((a, b) => new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0))[0]?.state ?? null;
 const stage = issue.state === 'closed' && issue.state_reason === 'completed' ? 'COMPLETED'
-  : labelNames.includes('pi:mr-created') ? (review === 'success' ? (integration === 'success' ? 'MERGE GATE' : 'CI') : 'REVIEW')
+  : labelNames.includes('pi:mr-created') ? (integration !== 'success' ? 'CI' : review === 'success' ? 'MERGE GATE' : 'REVIEW')
   : labelNames.includes('pi:running') ? 'IMPLEMENTING'
   : labelNames.includes('pi:ready') ? 'READY'
   : labelNames.includes('architect:ready') ? 'ARCHITECTING'
