@@ -72,9 +72,9 @@ test('reconciler retries stranded ready implementation and review states', () =>
 
 test('reconciler recognizes live agents by custom run title', () => {
   const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(source, /Implement #\\(\\d\+\\)/);
-  assert.match(source, /Review PR #\\(\\d\+\\)/);
-  assert.match(source, /Repair PR #\\(\\d\+\\)/);
+  assert.match(source, /const implement = \/\^🤖 Implement #/);
+  assert.match(source, /const review = \/\^🔬 Review PR #/);
+  assert.match(source, /const repair = \/\^🔧 Repair PR #/);
   assert.doesNotMatch(source, /run\.name === 'Pi Issue Agent'/);
   assert.doesNotMatch(source, /run\.name === 'Pi PR Review'/);
   assert.doesNotMatch(source, /run\.name === 'Pi PR Fix'/);
