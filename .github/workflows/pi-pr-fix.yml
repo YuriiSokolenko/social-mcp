@@ -226,7 +226,7 @@ jobs:
           set -o pipefail
           cd "$JOB_DIR"
           pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "Read and follow agents/implementer/AGENTS.md. You are rebasing PR #${PR} for issue #${ISSUE} onto the latest origin/dev to resolve an actual integration conflict. The rebase left unresolved Git conflicts in these files:
+            "Read and follow agents/implementer/AGENTS.md. You are rebasing PR #${PR} for issue #${ISSUE} onto the exact integration base ${BASE_SHA} to resolve an actual integration conflict. The rebase left unresolved Git conflicts in these files:
 
           $(cat "$RUNNER_TEMP/conflicted-files.txt")
 
