@@ -100,7 +100,9 @@ for (const issue of issues) {
     hasLiveImplementer: liveImplementers.has(issue.number),
     hasCheckpoint: checkpoints.has(issue.number),
   });
-  if (!findings.length) continue;
+  const issueLabels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
+  const retryReadyImplementer = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:ready') && !liveImplementers.has(issue.number);
+  if (!findings.length && !retryReadyImplementer) continue;
   const removals = safeRemovals(findings);
   let recovery = null;
   if (apply) {
@@ -116,6 +118,10 @@ for (const issue of issues) {
       }
     }
   }
+  if (retryReadyImplementer && !recovery) {
+    const dispatched = await tryDispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number) }, `ready issue #${issue.number}`);
+    recovery = { add: 'pi:ready', dispatch: dispatched ? 'implementer' : null, reason: dispatched ? 'resume ready implementation' : 'implementer dispatch failed; pi:ready retained for retry' };
+  }
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
 }
 for (const pr of prs) {
@@ -129,7 +135,9 @@ for (const pr of prs) {
       removals: [], recovery: apply ? { add: null, dispatch: recoveryDispatchAllowed ? 'repair' : null, reason: recoveryDispatchAllowed ? 'resume saved repair checkpoint' : 'repair recovery deferred until RUNNING' } : null });
   }
   const findings = inspectPrState(pr, { hasLiveReviewer: liveReviewers.has(pr.number) });
-  if (!findings.length) continue;
+  const prLabels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
+  const retryReadyReviewer = apply && recoveryDispatchAllowed && pr.state === 'open' && prLabels.has('review:ready') && !liveReviewers.has(pr.number);
+  if (!findings.length && !retryReadyReviewer) continue;
   const removals = safeRemovals(findings);
   let recovery = null;
   if (apply) {
@@ -144,6 +152,10 @@ for (const pr of prs) {
         }
       }
     }
+  }
+  if (retryReadyReviewer && !recovery) {
+    const dispatched = await tryDispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number) }, `ready review PR #${pr.number}`);
+    recovery = { add: 'review:ready', dispatch: dispatched ? 'reviewer' : null, reason: dispatched ? 'resume ready review' : 'review dispatch failed; review:ready retained for retry' };
   }
   report.push({ type: 'pr', number: pr.number, title: pr.title, findings, removals, recovery });
 }
