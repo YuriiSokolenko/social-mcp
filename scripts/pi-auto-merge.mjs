@@ -48,27 +48,10 @@ export function latestStatus(statuses, context) {
     .sort((a, b) => new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0))[0]?.state ?? null;
 }
 
-export function latestCI(runs, sha, branch, baseSha = null) {
-  // Integration CI is dispatched from trusted dev, so its workflow run head is
-  // dev rather than the PR SHA. Its display title carries the exact PR/base pair.
-  if (baseSha) {
-    const marker = `target:${sha} ref:${branch} base:${baseSha}`;
-    return runs.filter(run => run.event === 'workflow_dispatch' && run.display_title?.includes(marker))
-      .sort((a, b) => b.id - a.id)[0] ?? null;
-  }
-  return runs.filter(run => run.head_sha === sha && run.head_branch === branch &&
-    run.event === 'workflow_dispatch')
-    .sort((a, b) => b.id - a.id)[0] ?? null;
-}
-
 export function allowedFiles(files, changedCount) {
   return files.length === changedCount &&
     files.every(file => [file.filename, file.previous_filename].filter(Boolean).every(name =>
       !name.startsWith('.github/workflows/') && !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(name)));
-}
-
-export function needsCIDispatch(ci) {
-  return !ci;
 }
 
 async function hasLiveReview(prNumber) {
@@ -77,22 +60,6 @@ async function hasLiveReview(prNumber) {
     if ((data.workflow_runs ?? []).some(run => run.display_title?.startsWith(`🔬 Review PR #${prNumber} ·`) || run.display_title === `🔬 Review PR #${prNumber}`)) return true;
   }
   return false;
-}
-
-async function trigger(pr, sha, baseSha, statuses, runs) {
-  const ci = latestCI(runs, sha, pr.head.ref, baseSha);
-  if (needsCIDispatch(ci)) {
-    await api('/actions/workflows/ci.yml/dispatches', 'POST', {
-      ref: 'dev',
-      inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), integration_base_sha: baseSha },
-    });
-    return;
-  }
-  if (ci.status !== 'completed' || ci.conclusion !== 'success') return;
-  const currentReview = latestStatus(statuses, `social-mcp/pi-review/${baseSha.slice(0, 12)}`);
-  if (!currentReview && !(await hasLiveReview(pr.number))) {
-    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
-  }
 }
 
 async function hasLiveRepair(prNumber) {
@@ -122,15 +89,21 @@ async function processPR(prSummary) {
 
   const sha = pr.head.sha;
   const repairLive = await hasLiveRepair(pr.number);
-  const [base, statusData, ciData] = await Promise.all([
+  const [base, statusData] = await Promise.all([
     api('/git/ref/heads/dev'),
     api(`/commits/${sha}/statuses?per_page=100`),
-    api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100'),
   ]);
   const statuses = statusData;
-  const runs = ciData.workflow_runs ?? [];
-  await trigger(pr, sha, base.object.sha, statuses, runs);
-  const ci = latestCI(runs, sha, pr.head.ref, base.object.sha);
+  const integrationContext = `social-mcp/integration/${base.object.sha.slice(0, 12)}`;
+  const integration = latestStatus(statuses, integrationContext);
+  if (!integration) {
+    await api('/actions/workflows/ci.yml/dispatches', 'POST', {
+      ref: 'dev',
+      inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), integration_base_sha: base.object.sha },
+    });
+    console.log(`#${pr.number}: dispatched integration CI for exact pair`);
+    return;
+  }
   const conflict = latestStatus(statuses, `social-mcp/integration-conflict/${base.object.sha.slice(0, 12)}`);
   if (conflict === 'failure') {
     if (!repairLive) {
@@ -147,7 +120,7 @@ async function processPR(prSummary) {
     }
     return;
   }
-  if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success') {
+  if (integration !== 'success' || review !== 'success') {
     console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)}) and review`);
     return;
   }
