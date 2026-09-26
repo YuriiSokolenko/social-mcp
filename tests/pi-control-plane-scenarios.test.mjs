@@ -92,3 +92,15 @@ test('long-running checkpoints use explicit compare-and-swap leases', () => {
   assert.match(repair, /REPAIR_CHECKPOINT_EXPECTED/);
   assert.match(repair, /--force-with-lease="\$\{CHECKPOINT_REF\}:\$\{REPAIR_CHECKPOINT_EXPECTED\}"/);
 });
+
+
+test('published checkpoints update their leases and deletion requires exact published SHA', () => {
+  const issue = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(issue, /PI_CHECKPOINT_EXPECTED=\$\{CHECKPOINT_COMMIT\}/);
+  assert.match(issue, /PI_CHECKPOINT_EXPECTED=\$\{INTEGRATION_COMMIT\}/);
+  assert.match(issue, /PI_CHECKPOINT_PUBLISHED/);
+  assert.match(issue, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}-checkpoint:\$\{PI_CHECKPOINT_PUBLISHED\}"/);
+  assert.match(repair, /REPAIR_CHECKPOINT_PUBLISHED=\$\{CHECKPOINT_COMMIT\}/);
+  assert.match(repair, /--force-with-lease="refs\/heads\/pi\/repair-pr-\$\{PR\}-checkpoint:\$\{REPAIR_CHECKPOINT_PUBLISHED\}"/);
+});
