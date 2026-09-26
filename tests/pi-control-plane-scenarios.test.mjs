@@ -158,3 +158,9 @@ test('implementer structured result requires at least one concrete change', () =
   const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
   assert.match(tool, /at least one concrete change is required/);
 });
+
+
+test('reconciler never redispatches a ready implementer when its PR already exists', () => {
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconcile, /retryReadyImplementer[\s\S]*!openPiPrIssues\.has\(issue\.number\)/);
+});
