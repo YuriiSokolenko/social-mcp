@@ -108,16 +108,16 @@ jobs:
           git worktree prune
           git worktree add -B "$HEAD_REF" "$JOB_DIR" "$START_REF"
 
-      - name: Merge dev into branch
+      - name: Rebase branch onto latest dev
         if: env.REASON == 'conflict'
-        id: merge
+        id: rebase
         run: |
           cd "$JOB_DIR"
           git config user.name "social-mcp-pi"
           git config user.email "social-mcp-pi@users.noreply.github.com"
           git fetch origin dev
           set +e
-          git merge --no-edit origin/dev
+          GIT_EDITOR=true git rebase origin/dev
           status=$?
           set -e
           if [ "$status" -eq 0 ]; then
@@ -224,16 +224,16 @@ jobs:
           printf '\n'
 
       - name: Run Pi conflict resolution
-        if: env.REASON == 'conflict' && steps.merge.outputs.conflicted == 'true'
+        if: env.REASON == 'conflict' && steps.rebase.outputs.conflicted == 'true'
         run: |
           set -o pipefail
           cd "$JOB_DIR"
           pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "Read and follow agents/implementer/AGENTS.md. You are resolving a merge of the latest dev into PR #${PR} for issue #${ISSUE}. Merging origin/dev left unresolved Git conflict markers in these files:
+            "Read and follow agents/implementer/AGENTS.md. You are rebasing PR #${PR} for issue #${ISSUE} onto the latest origin/dev. The rebase left unresolved Git conflicts in these files:
 
           $(cat "$RUNNER_TEMP/conflicted-files.txt")
 
-          Open each file and resolve every conflict marker so the result compiles and preserves the intent of both this PR's own change and the incoming dev change; do not discard either side wholesale. Then run the relevant tests and Ruff. Do not commit, push, or modify GitHub state yourself." \
+          Open each file and resolve every conflict marker so the result compiles and preserves the intent of both this PR's own change and the incoming dev change; do not discard either side wholesale. Stage the resolved files with git add, then continue the rebase with GIT_EDITOR=true git rebase --continue. If another rebase conflict appears, resolve it the same way and continue until the rebase completes. Then run the relevant tests and Ruff. Do not push or modify GitHub state yourself." \
           | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
           printf '\n'
 
@@ -241,9 +241,15 @@ jobs:
         run: |
           cd "$JOB_DIR"
           if git grep -Il '^<<<<<<< ' -- . > /dev/null 2>&1; then
-            echo "Unresolved merge conflict markers remain" >&2
+            echo "Unresolved conflict markers remain" >&2
             exit 1
           fi
+          if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+            echo "Rebase is still in progress" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor origin/dev HEAD
+          git diff --check origin/dev...HEAD
           pytest
           ruff check .
 
@@ -287,7 +293,7 @@ jobs:
           git add -A
           if ! git diff --cached --quiet; then
             if [ "$REASON" = "conflict" ]; then
-              git commit -m "fix: merge dev and resolve conflicts for issue #${ISSUE}"
+              git commit -m "fix: integrate latest dev for issue #${ISSUE}"
             else
               git commit -m "fix: address review for issue #${ISSUE}"
             fi
@@ -299,17 +305,17 @@ jobs:
           fi
           CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
           [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
-          # Review repairs may run for hours while dev keeps moving. Integrate the
-          # latest dev before re-rooting so the repaired tree cannot silently
-          # revert unrelated changes that landed after this job started.
+          # Publish only a branch that is based on the latest dev observed now.
+          # If dev moved again while this job was running, do not create another
+          # merge commit or silently re-root the tree; let the next integration
+          # pass rebase and verify it cleanly.
           git fetch origin dev
-          if ! git merge --no-edit origin/dev; then
-            echo "dev moved and now conflicts with the repaired PR; refusing to publish a stale tree" >&2
+          git merge-base --is-ancestor origin/dev HEAD || {
+            echo "dev moved again during integration; retry against the new dev head" >&2
             exit 1
-          fi
-          REPAIR_TREE="$(git rev-parse HEAD^{tree})"
-          REPAIR_COMMIT="$(printf 'fix: repair issue #%s\n' "$ISSUE" | git commit-tree "$REPAIR_TREE" -p origin/dev)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "$REPAIR_COMMIT:refs/heads/$HEAD_REF"
+          }
+          git diff --check origin/dev...HEAD
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "HEAD:refs/heads/$HEAD_REF"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Remove published repair checkpoint
