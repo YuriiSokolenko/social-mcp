@@ -1,5 +1,5 @@
 name: Pi Issue Agent
-run-name: 'Pi Issue #${{ github.event.issue.number || github.event.client_payload.issue_number }}'
+run-name: '🤖 Implement #${{ github.event.issue.number || github.event.client_payload.issue_number }} · ${{ github.event.issue.title || github.event.client_payload.issue_title || 'issue' }}'
 
 on:
   issues:
