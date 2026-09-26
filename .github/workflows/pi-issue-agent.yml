@@ -215,6 +215,8 @@ jobs:
           rm -f "$CHECKPOINT_INDEX"
           CHECKPOINT_COMMIT="$(printf 'feat: implement issue #%s\n' "$ISSUE" | git commit-tree "$CHECKPOINT_TREE" -p origin/dev)"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_EXPECTED}" origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
+          echo "PI_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh from dev and verify integrated code
@@ -288,6 +290,8 @@ jobs:
           INTEGRATION_TREE="$(git rev-parse HEAD^{tree})"
           INTEGRATION_COMMIT="$(printf 'fix: preserve integration for issue #%s\n' "$ISSUE" | git commit-tree "$INTEGRATION_TREE" -p origin/dev)"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_EXPECTED}" origin "${INTEGRATION_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
+          echo "PI_CHECKPOINT_EXPECTED=${INTEGRATION_COMMIT}" >> "$GITHUB_ENV"
+          echo "PI_CHECKPOINT_PUBLISHED=${INTEGRATION_COMMIT}" >> "$GITHUB_ENV"
 
       - name: Push verified issue branch
         if: steps.checkpoint.outputs.changed == 'true'
@@ -379,10 +383,12 @@ jobs:
           bash scripts/pi-issue-status.sh mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
 
       - name: Remove published checkpoint
-        if: steps.pr.outputs.number != ''
+        if: steps.pr.outputs.number != '' && env.PI_CHECKPOINT_PUBLISHED != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push origin --delete "pi/issue-${ISSUE}-checkpoint"
+        run: |
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
+            push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_PUBLISHED}" origin ":refs/heads/pi/issue-${ISSUE}-checkpoint"
 
       - name: Mark no-change result
         if: steps.checkpoint.outputs.changed == 'false'
