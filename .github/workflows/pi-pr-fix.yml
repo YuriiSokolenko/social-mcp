@@ -292,18 +292,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash scripts/pi-pr-review-status.sh failed "Automated Pi repair completed without producing a repository change. The existing review findings remain unresolved and require human attention. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          bash "$GITHUB_WORKSPACE/scripts/pi-pr-review-status.sh" failed "Automated Pi repair completed without producing a repository change. The existing review findings remain unresolved and require human attention. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Report repair failure
         if: failure() && steps.changes.outputs.changed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash scripts/pi-pr-review-status.sh failed "Automated Pi repair (reason: ${REASON}) did not produce a mergeable, passing PR. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          bash "$GITHUB_WORKSPACE/scripts/pi-pr-review-status.sh" failed "Automated Pi repair (reason: ${REASON}) did not produce a mergeable, passing PR. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Summarize Pi usage
         if: always()
-        run: node scripts/pi-usage-summary.mjs
+        run: node "$GITHUB_WORKSPACE/scripts/pi-usage-summary.mjs"
 
       - name: Clean worktree
         if: always()
