@@ -112,3 +112,14 @@ test('published PR state is committed before merge-gate wake and survives wake f
   assert.match(workflow, /if: failure\(\) && steps\.pr\.outputs\.number == ''/);
   assert.match(workflow, /Merge Gate wake failed/);
 });
+
+
+test('final review and repair states survive secondary dispatch failures', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(review, /Review PASS is already recorded/);
+  assert.match(review, /CHANGES_REQUESTED is already recorded/);
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(repair, /Published repair is safe/);
+  assert.match(repair, /Repair is already published/);
+  assert.match(repair, /if: failure\(\) && steps\.changes\.outputs\.changed != 'true'/);
+});
