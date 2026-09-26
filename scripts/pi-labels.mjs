@@ -1,22 +1,16 @@
 #!/usr/bin/env node
+import { githubClient } from './github-api.mjs';
+
 const [kind] = process.argv.slice(2);
-const repo = process.env.REPO;
-const token = process.env.GH_TOKEN;
-if (kind !== 'issue' || !repo || !token) throw new Error('usage: pi-labels.mjs issue');
+if (kind !== 'issue') throw new Error('usage: pi-labels.mjs issue');
+const { ensureLabel } = githubClient();
 const labels = [
   ['dispatcher:ready','5319e7','Ready for deterministic dispatcher ownership'],
   ['architect:ready','c5def5','Large issue approved for Pi Architect'],
+  ['architect:epic','8250df','Architect epic containing child issues'],
   ['pi:ready','57f678','Ready for the Pi issue agent'],
   ['pi:running','0052cc','Pi agent is working on this issue'],
   ['pi:mr-created','1d76db','Pi agent created a pull request'],
-  ['pi:needs-human','fbca04','Pi finished without a usable repository change'],
-  ['pi:failed','d73a4a','Pi agent workflow failed'],
-  ['pi:cancelled','6e7781','Pi agent workflow was cancelled'],
-
+  ['pi:needs-human','fbca04','Automation requires human attention'],
 ];
-const base=`https://api.github.com/repos/${repo}`;
-const headers={Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'};
-for (const [name,color,description] of labels) {
-  const response=await fetch(`${base}/labels`,{method:'POST',headers,body:JSON.stringify({name,color,description})});
-  if (![201,422].includes(response.status)) throw new Error(`Cannot ensure ${name}: ${response.status} ${await response.text()}`);
-}
+for (const [name, color, description] of labels) await ensureLabel(name, color, description);
