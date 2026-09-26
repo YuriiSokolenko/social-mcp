@@ -119,3 +119,11 @@ test('dispatcher owns post-completion issue reconciliation', () => {
   assert.match(dispatcher, /types: \[closed\]/);
   assert.match(dispatcher, /pi-issue-reconcile\.mjs/);
 });
+
+
+test('merge gate never scans workflow runs for review or repair liveness', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.doesNotMatch(source, /workflow_runs|display_title|hasLiveReview|hasLiveRepair|actions\/workflows\/pi-pr-(?:review|fix)\.yml\/runs/);
+  assert.match(source, /social-mcp\/repair-conflict/);
+  assert.match(source, /social-mcp\/repair-review/);
+});
