@@ -101,3 +101,12 @@ test('PR-owned issue cannot be overwritten by needs-human state', () => {
   assert.throws(() => validateIssueTransition(issue('open', ['pi:mr-created']), 'needs-human'), /SHA-bound statuses/);
   assert.equal(validateIssueTransition(issue('open', ['pi:running']), 'needs-human'), 'pi:needs-human');
 });
+
+
+test('queued transition cannot steal PR ownership', () => {
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:mr-created']), 'queued'), /queued requires/);
+});
+
+test('needs-human transition is idempotent for non-PR terminal issues', () => {
+  assert.equal(validateIssueTransition(issue('open', ['pi:needs-human']), 'needs-human'), 'pi:needs-human');
+});
