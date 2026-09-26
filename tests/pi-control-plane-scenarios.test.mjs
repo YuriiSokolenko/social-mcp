@@ -55,8 +55,8 @@ test('published PR state is durable before merge-gate wake', () => {
 test('merge gate owns exact-pair integration, review, repair, and merge scheduling', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /social-mcp\/integration\//);
-  assert.match(gate, /pi-pr-review\.yml\/dispatches/);
-  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  assert.match(gate, /'pi-pr-review\.yml'/);
+  assert.match(gate, /'pi-pr-fix\.yml'/);
   assert.match(gate, /\/pulls\/\$\{pr\.number\}\/merge/);
 });
 
