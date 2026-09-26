@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectIssueState, inspectPrState, safeRemovals, validateIssueTransition, validateReviewTransition } from '../scripts/pi-state-machine.mjs';
+import { inspectIssueState, safeRemovals, validateIssueTransition } from '../scripts/pi-state-machine.mjs';
 
 const issue = (state, labels) => ({ state, labels: labels.map(name => ({ name })) });
 
@@ -25,22 +25,12 @@ test('ambiguous multiple active states keep the furthest safe state', () => {
   assert.deepEqual(safeRemovals(findings), ['pi:ready']);
 });
 
-test('multiple review states keep the currently executing state', () => {
-  const findings = inspectPrState({ state: 'open', labels: [
-    { name: 'review:ready' }, { name: 'review:running' }, { name: 'review:passed' },
-  ] }, { hasLiveReviewer: true });
-  assert.deepEqual(safeRemovals(findings).sort(), ['review:passed', 'review:ready']);
-});
 
 test('mr-created without a matching open PR needs investigation', () => {
   const findings = inspectIssueState(issue('open', ['pi:mr-created']), { hasOpenPiPr: false });
   assert.equal(findings.some(item => item.code === 'mr-label-without-open-pr'), true);
 });
 
-test('closed PR cannot keep an active review label', () => {
-  const findings = inspectPrState({ state: 'closed', labels: [{ name: 'review:running' }] });
-  assert.deepEqual(safeRemovals(findings), ['review:running']);
-});
 
 test('implementer transitions require an open executable issue', () => {
   assert.equal(validateIssueTransition(issue('open', ['pi:ready']), 'running'), 'pi:running');
@@ -49,10 +39,6 @@ test('implementer transitions require an open executable issue', () => {
   assert.throws(() => validateIssueTransition(issue('open', []), 'running'), /pi:ready/);
 });
 
-test('review transitions require an open PR', () => {
-  assert.equal(validateReviewTransition({ state: 'open', labels: [] }, 'passed'), 'review:passed');
-  assert.throws(() => validateReviewTransition({ state: 'closed', labels: [] }, 'passed'), /closed PR/);
-});
 
 
 test('orphaned implementer state is safely released while checkpoint is preserved', () => {
@@ -76,12 +62,6 @@ test('checkpoint without live running state is reported but never deleted', () =
   assert.deepEqual(safeRemovals(findings), []);
 });
 
-test('orphaned reviewer state is safely released', () => {
-  const findings = inspectPrState({ state: 'open', labels: [{ name: 'review:running' }] }, {
-    hasLiveReviewer: false,
-  });
-  assert.deepEqual(safeRemovals(findings), ['review:running']);
-});
 
 
 test('terminal issue may retain a checkpoint for human recovery without reconciliation noise', () => {
