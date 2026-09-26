@@ -202,8 +202,7 @@ async function publish(issue, jsonl, contextFile) {
   const parent = await api(`/issues/${issue}`);
   const labels = new Set(parent?.labels?.map(label => label.name));
   if (parent?.state !== 'open' || !labels.has('architect:ready') ||
-      ['pi:running', 'pi:ready', 'pi:mr-created', 'pi:failed', 'pi:needs-human',
-        'pi:blocked', 'pi:cancelled'].some(x => labels.has(x))) {
+      ['pi:running', 'pi:ready', 'pi:mr-created', 'pi:needs-human'].some(x => labels.has(x))) {
     throw new Error('Parent changed while Architect was planning');
   }
   const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
