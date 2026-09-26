@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: pi-pr-review-${{ inputs.pr_number || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   review:
