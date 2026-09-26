@@ -82,11 +82,11 @@ async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   const reviewActive = pr.labels?.some(label => ['review:ready', 'review:running'].includes(label.name)) ?? false;
   if (!currentReview && !reviewActive) {
-    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
+    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number) } });
   }
   const ci = latestCI(runs, sha, pr.head.ref);
   if (needsCIDispatch(ci)) {
-    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: 'dev', inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), pr_title: `${pr.head.ref} @ ${sha.slice(0, 12)}` } });
+    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: 'dev', inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number) } });
   }
 }
 
@@ -187,7 +187,7 @@ async function processPR(prSummary) {
         console.log(`#${pr.number}: merge conflict; repair is already active or has a saved checkpoint`);
         return;
       }
-      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
+      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), reason: 'conflict' } });
       console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
       return;
     }
