@@ -44,7 +44,9 @@ export function issueNumber(pr, repository) {
 }
 
 export function latestStatus(statuses, context) {
-  return statuses.find(status => status.context === context)?.state ?? null;
+  return statuses
+    .filter(status => status.context === context)
+    .sort((a, b) => new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0))[0]?.state ?? null;
 }
 
 export function latestCI(runs, sha, branch) {
