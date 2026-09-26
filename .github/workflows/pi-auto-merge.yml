@@ -1,5 +1,5 @@
 name: Pi Auto Merge
-run-name: '🔀 Merge gate · ${{ github.event.workflow_run.display_title || 'manual scan' }}'
+run-name: "🔀 Merge gate · ${{ github.event.workflow_run.display_title || 'manual scan' }}"
 
 on:
   workflow_run:
