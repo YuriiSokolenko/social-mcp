@@ -1,25 +1,18 @@
 #!/usr/bin/env node
 import { replaceIssueState } from './pi-github-state.mjs';
 import { validateIssueTransition } from './pi-state-machine.mjs';
+import { githubClient } from './github-api.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
 const comment = commentParts.join(' ');
-const repo = process.env.REPO;
-const token = process.env.GH_TOKEN;
+const { api: request } = githubClient();
+const api = (path, options = {}) =>
+  request(path, options.method ?? 'GET', options.body ? JSON.parse(options.body) : undefined);
 const number = kind === 'issue' ? process.env.ISSUE : process.env.PR;
 const headSha = process.env.HEAD_SHA ?? '';
 const baseSha = process.env.BASE_SHA ?? '';
-if (!['issue', 'review'].includes(kind) || !action || !repo || !token || !number) {
+if (!['issue', 'review'].includes(kind) || !action || !number) {
   throw new Error('usage: pi-transition.mjs <issue|review> <action> [comment]');
-}
-const base = `https://api.github.com/repos/${repo}`;
-const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
-  'X-GitHub-Api-Version': '2022-11-28' };
-async function api(path, options = {}) {
-  const response = await fetch(base + path, { ...options, headers: { ...headers,
-    ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
-  if (!response.ok) throw new Error(`GitHub ${response.status} ${path}: ${await response.text()}`);
-  return response.status === 204 ? null : response.json();
 }
 const names = item => new Set((item.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
 async function load() {
