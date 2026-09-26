@@ -111,3 +111,12 @@ test('merge gate does not use review labels or repair checkpoints for correctnes
   assert.match(source, /currentReview === 'failure'/);
   assert.match(source, /review !== 'success'/);
 });
+
+
+test('merge gate is pair-driven and does not orchestrate branch ancestry', () => {
+  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.doesNotMatch(source, /behind_by|ahead_by|compare\/dev|update-branch/);
+  assert.match(source, /base\.object\.sha/);
+  assert.match(source, /latestCI\(runs, sha, pr\.head\.ref, base\.object\.sha\)/);
+  assert.match(source, /freshBase\.object\.sha !== base\.object\.sha/);
+});
