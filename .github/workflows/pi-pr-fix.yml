@@ -10,6 +10,14 @@ on:
         description: Pull request number to repair
         required: true
         type: string
+      reason:
+        description: Why this repair was requested
+        required: false
+        type: choice
+        options:
+          - review
+          - conflict
+        default: review
 
 permissions:
   contents: write
@@ -28,6 +36,7 @@ jobs:
     env:
       PR: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
       REPO: ${{ github.repository }}
+      REASON: ${{ github.event.client_payload.reason || inputs.reason || 'review' }}
       PI_PHASE: repair
       PI_BASH_TIMEOUT_SECONDS: '1200'
     steps:
@@ -41,7 +50,7 @@ jobs:
       - name: Initialize Pi usage
         run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
 
-      - name: Load PR and review feedback
+      - name: Load PR metadata
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -54,12 +63,19 @@ jobs:
           [[ "$HEAD_REF" == pi/issue-* ]]
           ISSUE="${HEAD_REF#pi/issue-}"
           echo "PI_ISSUE=$ISSUE" >> "$GITHUB_ENV"
-          COMMENTS="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/comments?per_page=100")"
-          FEEDBACK="$(jq -r '[.[] | select(.user.login == "github-actions[bot]") | select((.body // "" | split("\n") | any(.[]; test("^[[:blank:]]*(?:#{1,6}[[:blank:]]+)?REVIEW_RESULT: CHANGES_REQUESTED[[:blank:]]*$"))))] | last | .body // empty' <<<"$COMMENTS")"
-          [ -n "$FEEDBACK" ]
           echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
+
+      - name: Load review feedback
+        if: env.REASON != 'conflict'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          API="https://api.github.com/repos/${REPO}"
+          COMMENTS="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/comments?per_page=100")"
+          FEEDBACK="$(jq -r '[.[] | select(.user.login == "github-actions[bot]") | select((.body // "" | split("\n") | any(.[]; test("^[[:blank:]]*(?:#{1,6}[[:blank:]]+)?REVIEW_RESULT: CHANGES_REQUESTED[[:blank:]]*$"))))] | last | .body // empty' <<<"$COMMENTS")"
+          [ -n "$FEEDBACK" ]
           printf '%s\n' "$FEEDBACK" > "$RUNNER_TEMP/review-feedback.txt"
 
       - name: Create PR worktree
@@ -69,6 +85,25 @@ jobs:
           git fetch origin "$HEAD_REF"
           git worktree prune
           git worktree add -B "$HEAD_REF" "$JOB_DIR" "$HEAD_SHA"
+
+      - name: Merge dev into branch
+        if: env.REASON == 'conflict'
+        id: merge
+        run: |
+          cd "$JOB_DIR"
+          git config user.name "social-mcp-pi"
+          git config user.email "social-mcp-pi@users.noreply.github.com"
+          git fetch origin dev
+          set +e
+          git merge --no-edit origin/dev
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicted-files.txt"
+            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Prepare Python environment
         run: |
@@ -81,6 +116,7 @@ jobs:
           echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run Pi repair with live progress
+        if: env.REASON != 'conflict'
         run: |
           set -o pipefail
           cd "$JOB_DIR"
@@ -93,9 +129,27 @@ jobs:
           | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
           printf '\n'
 
+      - name: Run Pi conflict resolution
+        if: env.REASON == 'conflict' && steps.merge.outputs.conflicted == 'true'
+        run: |
+          set -o pipefail
+          cd "$JOB_DIR"
+          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+            "Read and follow agents/implementer/AGENTS.md. You are resolving a merge of the latest dev into PR #${PR} for issue #${ISSUE}. Merging origin/dev left unresolved Git conflict markers in these files:
+
+          $(cat "$RUNNER_TEMP/conflicted-files.txt")
+
+          Open each file and resolve every conflict marker so the result compiles and preserves the intent of both this PR's own change and the incoming dev change; do not discard either side wholesale. Then run the relevant tests and Ruff. Do not commit, push, or modify GitHub state yourself." \
+          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+          printf '\n'
+
       - name: Verify repair
         run: |
           cd "$JOB_DIR"
+          if git grep -Il '^<<<<<<< ' -- . > /dev/null 2>&1; then
+            echo "Unresolved merge conflict markers remain" >&2
+            exit 1
+          fi
           pytest
           ruff check .
 
@@ -108,16 +162,23 @@ jobs:
           rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
           rm -f .coverage coverage.xml
           find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-          if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+          git config user.name "social-mcp-pi"
+          git config user.email "social-mcp-pi@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            if [ "$REASON" = "conflict" ]; then
+              git commit -m "fix: merge dev and resolve conflicts for issue #${ISSUE}"
+            else
+              git commit -m "fix: address review for issue #${ISSUE}"
+            fi
+          fi
+          NEW_HEAD="$(git rev-parse HEAD)"
+          if [ "$NEW_HEAD" = "$HEAD_SHA" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
           [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          git add -A
-          git commit -m "fix: address review for issue #${ISSUE}"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "$HEAD_REF"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
@@ -133,6 +194,13 @@ jobs:
             -H "Content-Type: application/json" --data-binary @- \
             "https://api.github.com/repos/${REPO}/dispatches"
 
+      - name: Report repair failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/pi-pr-review-status.sh failed "Automated Pi repair (reason: ${REASON}) did not produce a mergeable, passing PR. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
       - name: Summarize Pi usage
         if: always()
         run: node scripts/pi-usage-summary.mjs
@@ -142,5 +210,5 @@ jobs:
         run: |
           set +e
           [ -n "${JOB_DIR:-}" ] && [ -d "$JOB_DIR" ] && git worktree remove --force "$JOB_DIR"
-          rm -f "$RUNNER_TEMP/review-feedback.txt"
+          rm -f "$RUNNER_TEMP/review-feedback.txt" "$RUNNER_TEMP/conflicted-files.txt"
           git worktree prune

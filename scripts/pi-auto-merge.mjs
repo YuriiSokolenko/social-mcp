@@ -7,6 +7,7 @@ const apiRoot = `https://api.github.com/repos/${repo}`;
 const reviewContext = 'social-mcp/pi-review';
 const ciMarker = 'social-mcp/merge-ci-dispatched';
 const reviewMarker = 'social-mcp/merge-review-dispatched';
+const conflictMarker = 'social-mcp/merge-conflict-fix-dispatched';
 
 async function api(path, method = 'GET', body) {
   const response = await fetch(`${apiRoot}${path}`, {
@@ -157,7 +158,13 @@ async function processPR(prSummary) {
       return;
     }
     if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
-      console.log(`#${pr.number}: merge conflict; needs a person`);
+      if (latestStatus(statusData, conflictMarker)) {
+        console.log(`#${pr.number}: merge conflict; repair already dispatched for ${sha.slice(0, 12)}`);
+        return;
+      }
+      await api('/dispatches', 'POST', { event_type: 'pi_pr_fix', client_payload: { pr_number: pr.number, reason: 'conflict' } });
+      await mark(sha, conflictMarker, 'success', `Conflict repair dispatched for PR #${pr.number}`);
+      console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
       return;
     }
     await api(`/pulls/${pr.number}/update-branch`, 'PUT', { expected_head_sha: sha });
