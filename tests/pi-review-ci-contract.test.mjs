@@ -46,3 +46,10 @@ test('merge gate is explicitly wake-driven and does not fan out from workflow_ru
   assert.match(review, /Wake merge gate after current review result/);
   assert.match(review, /pi-auto-merge\.yml\/dispatches/);
 });
+
+
+test('review failure fallback refuses a stale dev base as well as a stale head', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(workflow, /CURRENT_BASE=.*git\/ref\/heads\/dev/s);
+  assert.match(workflow, /BASE_SHA:-.*CURRENT_BASE/s);
+});
