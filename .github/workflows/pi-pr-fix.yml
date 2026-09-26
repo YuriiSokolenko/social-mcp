@@ -331,8 +331,8 @@ jobs:
             node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair completed without producing a repository change. Human attention is required. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
           fi
 
-      - name: Report repair failure
-        if: failure() && steps.changes.outputs.changed != 'true'
+      - name: Report review repair failure
+        if: failure() && steps.changes.outputs.changed != 'true' && env.REASON == 'review'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
