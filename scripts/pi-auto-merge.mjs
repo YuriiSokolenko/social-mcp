@@ -200,10 +200,18 @@ async function processPR(prSummary) {
     api(`/commits/${sha}/statuses?per_page=100`),
     api(`/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`),
   ]);
-  if (!repairLive && (prLabels.has('review:changes-requested') || repairCheckpoint)) {
+  const currentReview = latestStatus(statusData, reviewContext);
+  // Review labels and repair checkpoints can outlive the SHA that created them.
+  // Only a failure status attached to the current HEAD authorizes review repair.
+  // A new HEAD must be reviewed first instead of inheriting CHANGES_REQUESTED
+  // from an older commit. A checkpoint may resume that current-SHA repair, but
+  // must never start repair by itself after the PR head has moved.
+  const currentHeadNeedsRepair =
+    prLabels.has('review:changes-requested') && currentReview === 'failure';
+  if (!repairLive && currentHeadNeedsRepair) {
     const reason = pr.mergeable === false && pr.mergeable_state === 'dirty' ? 'conflict' : 'review';
     await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason } });
-    console.log(`#${pr.number}: dispatched/resumed Pi ${reason} repair`);
+    console.log(`#${pr.number}: dispatched/resumed Pi ${reason} repair for current head ${sha.slice(0, 12)}${repairCheckpoint ? ' from checkpoint' : ''}`);
     return;
   }
   if (comparison.behind_by > 0) {
