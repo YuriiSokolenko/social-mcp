@@ -98,6 +98,22 @@ function lastTriageHash(comments) {
 
 async function candidates() {
   const issues = (await pages("/issues?state=open")).filter(issue => !issue.pull_request);
+  const openByNumber = new Map(issues.map(issue => [issue.number, issue]));
+  const dependencyState = async number => {
+    const open = openByNumber.get(number);
+    if (open) return { issue: number, state: "open", title: open.title };
+    try {
+      const dependency = await api(`/issues/${number}`);
+      return {
+        issue: number,
+        state: dependency.state,
+        title: dependency.title,
+        pull_request: !!dependency.pull_request,
+      };
+    } catch (error) {
+      return { issue: number, state: "unknown", error: String(error?.message ?? error) };
+    }
+  };
   const result = [];
   for (const issue of issues) {
     const owned = labelsOf(issue);
@@ -111,6 +127,9 @@ async function candidates() {
       const currentHash = hashFor(issue.body, task.exists ? task.text : "");
       if (previousHash === currentHash) continue; // nothing changed since last review
     }
+    const dependencies = task.valid
+      ? await Promise.all(task.dependencies.map(dependencyState))
+      : [];
     result.push({
       issue: issue.number,
       title: issue.title,
@@ -122,6 +141,7 @@ async function candidates() {
         .slice(-15)
         .map(comment => ({ author: comment.user?.login ?? "unknown", body: comment.body ?? "" })),
       task,
+      dependency_states: dependencies,
     });
   }
   return result;
