@@ -311,7 +311,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair completed without producing a repository change. The existing review findings remain unresolved and require human attention. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human
+          if [ "$REASON" = "review" ]; then
+            node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair completed without producing a repository change. Human attention is required. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          fi
 
       - name: Report repair failure
         if: failure() && steps.changes.outputs.changed != 'true'
@@ -319,6 +322,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair (reason: ${REASON}) did not produce a mergeable, passing PR. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Finalize repair status
+        if: always() && env.HEAD_SHA != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CONTEXT="social-mcp/repair-${REASON}/${BASE_SHA:0:12}"
+          if [ "${{ steps.changes.outputs.changed }}" = "true" ]; then
+            STATE=success
+            DESCRIPTION="Repair produced a new PR head"
+          elif [ "${{ job.status }}" = "success" ]; then
+            STATE=failure
+            DESCRIPTION="Repair produced no repository change"
+          else
+            STATE=error
+            DESCRIPTION="Repair workflow failed"
+          fi
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -nc --arg state "$STATE" --arg context "$CONTEXT" --arg description "$DESCRIPTION" '{state:$state,context:$context,description:$description}')" \
+            "https://api.github.com/repos/${REPO}/statuses/${HEAD_SHA}"
 
       - name: Summarize Pi usage
         if: always()
