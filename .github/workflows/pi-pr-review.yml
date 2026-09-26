@@ -125,18 +125,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           API="https://api.github.com/repos/${REPO}"
-          MARKER="target:${HEAD_SHA} ref:${HEAD_REF} base:${BASE_SHA}"
-          RUNS="$(curl --fail-with-body -sS \
+          CONTEXT="social-mcp/integration/${BASE_SHA:0:12}"
+          STATE="$(curl --fail-with-body -sS \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "${API}/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100")"
-          CI="$(jq -c --arg marker "$MARKER" '[.workflow_runs[] | select(.display_title | contains($marker))] | sort_by(.id) | last // empty' <<<"$RUNS")"
-          [ -n "$CI" ] || { echo "Exact integration CI is missing; Merge Gate must dispatch it first." >&2; exit 1; }
-          [ "$(jq -r '.status' <<<"$CI")" = "completed" ] && [ "$(jq -r '.conclusion' <<<"$CI")" = "success" ] || {
-            echo "Exact integration CI has not passed; semantic review will not run." >&2
-            exit 1
-          }
-          printf '%s\n' "$CI" > "$RUNNER_TEMP/pi-ci-result.json"
+            "${API}/commits/${HEAD_SHA}/statuses?per_page=100" | \
+            jq -r --arg context "$CONTEXT" '[.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
+          [ "$STATE" = "success" ] || { echo "Exact integration CI has not passed." >&2; exit 1; }
           echo "ci_passed=true" >> "$GITHUB_OUTPUT"
 
       - name: Build review context
@@ -190,7 +185,6 @@ jobs:
           ${PR_BODY}
           
           Deterministic integration CI for exact dev/PR pair ${BASE_SHA}/${HEAD_SHA}: ${CI_PASSED}.
-          The CI run metadata is available at $RUNNER_TEMP/pi-ci-result.json.
           Do not rerun pytest or Ruff; GitHub-hosted CI is authoritative for deterministic checks.
           
           Inspect the PR diff against the exact reviewed base commit ${BASE_SHA} and relevant surrounding code. Do not silently switch to a newer origin/dev during this review.
