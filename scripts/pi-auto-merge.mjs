@@ -35,7 +35,7 @@ async function processPR(prSummary) {
   if (!issue) return;
   const issueData = await api(`/issues/${issue}`);
   const labels = new Set(issueData.labels.map(label => label.name));
-  if (issueData.state !== 'open' || !labels.has('pi:mr-created') || labels.has('pi:needs-human') || labels.has('pi:failed')) {
+  if (issueData.state !== 'open' || !labels.has('pi:mr-created') || labels.has('pi:needs-human')) {
     console.log(`#${pr.number}: issue #${issue} is not ready for merge`);
     return;
   }
