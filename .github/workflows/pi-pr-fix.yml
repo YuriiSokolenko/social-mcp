@@ -66,6 +66,12 @@ jobs:
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
+          LABELS="$(jq -r '[.labels[].name] | join(" ")' <<<"$PR_JSON")"
+          if [ "$REASON" = "review" ] && ! grep -qw "review:changes-requested" <<<"$LABELS"; then
+            echo "PR #${PR} no longer requests review repair; duplicate dispatch exits without model work."
+            exit 0
+          fi
+
       - name: Load review feedback
         if: env.REASON != 'conflict'
         env:
