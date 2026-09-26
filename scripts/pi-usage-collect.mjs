@@ -65,6 +65,8 @@ const trustedWorkflows = new Set([
   ".github/workflows/pi-pr-review.yml",
   ".github/workflows/pi-pr-fix.yml",
   ".github/workflows/pi-architect.yml",
+  ".github/workflows/pi-dispatcher.yml",
+  ".github/workflows/pi-triage.yml",
 ]);
 if (run.head_repository?.full_name !== repo || !trustedWorkflows.has(run.path)) {
   throw new Error("The requested run is not a trusted Pi workflow from this repository");
@@ -72,7 +74,7 @@ if (run.head_repository?.full_name !== repo || !trustedWorkflows.has(run.path)) 
 
 const jobsResponse = await request(`${api}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`);
 if (!jobsResponse.ok) throw new Error(`Failed to list jobs: ${jobsResponse.status}`);
-const jobs = (await jobsResponse.json()).jobs.filter((job) => ["pi", "review", "fix", "architect"].includes(job.name));
+const jobs = (await jobsResponse.json()).jobs.filter((job) => ["pi", "review", "fix", "architect", "dispatcher", "triage"].includes(job.name));
 const newRows = [];
 for (const job of jobs) {
   if (job.conclusion === "skipped") {
@@ -87,13 +89,16 @@ for (const job of jobs) {
     await new Promise((resolve) => setTimeout(resolve, 1000 * (retry + 1)));
   }
   const task = events(log, "PI_TASK")[0];
-  if (!task || !integer(task.issue)) {
+  const systemPhase = job.name === "dispatcher" || job.name === "triage" ? job.name : null;
+  if ((!task || !integer(task.issue)) && !systemPhase) {
     console.log(`Job ${job.id} did not start a Pi issue session; skipping`);
     continue;
   }
+  const issue = task?.issue ?? 0;
+  const phase = task?.phase ?? systemPhase;
   const responses = new Map();
   for (const metric of events(log, "PI_METRIC")) {
-    if (metric.issue !== task.issue || !integer(metric.response)) continue;
+    if (task && metric.issue !== issue || !integer(metric.response)) continue;
     responses.set(`${metric.call}:${metric.response}`, metric);
   }
   const totals = { input: 0, output: 0, cache_read: 0, cache_write: 0, total_tokens: 0, model_seconds: 0 };
@@ -109,7 +114,7 @@ for (const job of jobs) {
   const runnerSeconds = job.started_at && job.completed_at
     ? Math.max(0, Math.round((Date.parse(job.completed_at) - Date.parse(job.started_at)) / 1000)) : 0;
   newRows.push({
-    scope: "attempt", issue: task.issue, phase: task.phase, run_id: run.id,
+    scope: "attempt", issue, phase, run_id: run.id,
     attempt: run.run_attempt, status: job.conclusion ?? "unknown", responses: responses.size,
     ...totals, model_seconds: totals.model_seconds.toFixed(1), runner_seconds: runnerSeconds,
     url: `https://github.com/${repo}/actions/runs/${run.id}/attempts/${run.run_attempt}`,
@@ -130,6 +135,7 @@ for (let retry = 0; retry < 8; retry++) {
   for (const row of newRows) attempts.set(`${row.run_id}:${row.attempt}`, row);
   const issueTotals = new Map();
   for (const row of attempts.values()) {
+    if (Number(row.issue) === 0) continue;
     const total = issueTotals.get(row.issue) ?? {
       scope: "issue", issue: row.issue, phase: "all", run_id: "", attempt: "", status: "",
       responses: 0, input: 0, output: 0, cache_read: 0, cache_write: 0,
