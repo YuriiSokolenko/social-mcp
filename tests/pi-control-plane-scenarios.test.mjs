@@ -129,6 +129,7 @@ test('final review and repair states survive secondary dispatch failures', () =>
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   assert.match(review, /Review PASS is already recorded/);
   assert.match(review, /CHANGES_REQUESTED is already recorded/);
+  assert.match(review, /Review already reached durable final state; preserving it despite a later workflow failure/);
   const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
   assert.match(repair, /Published repair is safe/);
   assert.match(repair, /Repair is already published/);
@@ -165,7 +166,7 @@ test('repair checkpoint recovery respects terminal review failure', () => {
 
 test('stranded pi:ready is requeued for dispatcher rather than merely waking it', () => {
   const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(source, /replaceStateLabels\(issue\.number, issue, 'dispatcher:ready', ISSUE_STATE_LABELS\)/);
+  assert.match(source, /replaceStateLabels\(issue\.number, issue, 'dispatcher:ready', 'issue'\)/);
   assert.match(source, /return stranded ready issue to serialized dispatcher/);
 });
 
