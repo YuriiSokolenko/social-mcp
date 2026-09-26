@@ -134,3 +134,12 @@ test('reconciler resumes durable PR pipeline states', () => {
   assert.match(source, /tryDispatchWorkflow\('pi-pr-fix\.yml'/);
   assert.match(source, /tryDispatchWorkflow\('pi-auto-merge\.yml'/);
 });
+
+
+test('repair with no repository change becomes terminal instead of retrying forever', () => {
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(repair, /Mark no-change repair terminal/);
+  assert.match(repair, /if: steps\.changes\.outputs\.changed == 'false'/);
+  assert.match(repair, /repair completed without producing a repository change/);
+  assert.match(repair, /pi-pr-review-status\.sh failed/);
+});
