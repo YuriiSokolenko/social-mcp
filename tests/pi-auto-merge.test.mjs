@@ -107,7 +107,7 @@ test('integration correctness uses pair-bound statuses, never workflow titles', 
   const summary = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
   assert.match(gate, /social-mcp\/integration\//);
   assert.match(gate, /actions\/workflows\/ci\.yml\/dispatches/);
-  assert.doesNotMatch(gate, /display_title|latestCI|needsCIDispatch/);
+  assert.doesNotMatch(gate, /latestCI|needsCIDispatch|actions\/workflows\/ci\.yml\/runs/);
   assert.doesNotMatch(summary, /display_title|workflow_runs/);
 });
 
