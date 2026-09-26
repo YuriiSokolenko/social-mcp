@@ -168,3 +168,15 @@ test('merge gate is the sole scheduler for ready semantic reviews', () => {
   assert.match(reconciler, /resume ready review through merge-gate scheduler/);
   assert.match(reconciler, /return orphaned review to merge-gate scheduler/);
 });
+
+
+test('merge gate is the sole scheduler for Pi repair workflow', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const reconciler = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const reviewer = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  assert.doesNotMatch(reconciler, /pi-pr-fix\.yml\/dispatches|tryDispatchWorkflow\('pi-pr-fix\.yml'/);
+  assert.doesNotMatch(reviewer, /pi-pr-fix\.yml\/dispatches/);
+  assert.match(reconciler, /resume saved repair checkpoint through merge-gate scheduler/);
+  assert.match(reconciler, /resume changes-requested repair through merge-gate scheduler/);
+});
