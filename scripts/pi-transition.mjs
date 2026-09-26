@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { ISSUE_STATE_LABELS, REVIEW_LABELS, validateIssueTransition, validateReviewTransition } from './pi-state-machine.mjs';
+import { replaceIssueState, replaceReviewState } from './pi-github-state.mjs';
+import { validateIssueTransition, validateReviewTransition } from './pi-state-machine.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
 const comment = commentParts.join(' ');
@@ -23,19 +24,15 @@ const names = item => new Set((item.labels ?? []).map(label => typeof label === 
 async function load() {
   return api(kind === 'issue' ? `/issues/${number}` : `/pulls/${number}`);
 }
-async function replaceLabels(expected, target, stateLabels) {
-  // Re-read immediately before mutation. If another workflow changed a pipeline
-  // label after validation, abort instead of overwriting its newer state.
-  const current = await load();
-  const currentNames = names(current);
-  const currentState = [...stateLabels].filter(label => currentNames.has(label)).sort();
-  const expectedState = [...stateLabels].filter(label => expected.has(label)).sort();
-  if (JSON.stringify(currentState) !== JSON.stringify(expectedState)) {
-    throw new Error(`concurrent pipeline transition detected: expected [${expectedState}], found [${currentState}]`);
-  }
-  const keep = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name)
-    .filter(label => !stateLabels.has(label));
-  await api(`/issues/${number}`, { method: 'PATCH', body: JSON.stringify({ labels: [...new Set([...keep, target])] }) });
+async function replaceLabels(expected, target, kind) {
+  const replace = kind === 'issue' ? replaceIssueState : replaceReviewState;
+  await replace({
+    number,
+    expected: { labels: [...expected] },
+    target,
+    load,
+    patch: async (_number, labels) => api(`/issues/${number}`, { method: 'PATCH', body: JSON.stringify({ labels }) }),
+  });
 }
 async function postComment() {
   if (!comment) return;
@@ -52,12 +49,12 @@ const item = await load();
 const expected = names(item);
 if (kind === 'issue') {
   const target = validateIssueTransition(item, action);
-  await replaceLabels(expected, target, ISSUE_STATE_LABELS);
+  await replaceLabels(expected, target, 'issue');
   if (action !== 'running') await postComment();
   console.log(`issue #${number}: transitioned to ${target}`);
 } else {
   const target = validateReviewTransition(item, action);
-  await replaceLabels(expected, target, REVIEW_LABELS);
+  await replaceLabels(expected, target, 'review');
   const statuses = {
     running: ['pending', 'Automated review is running'],
     passed: ['success', 'Automated review and deterministic checks passed'],
