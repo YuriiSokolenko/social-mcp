@@ -1,9 +1,7 @@
 name: Pi PR Fix
-run-name: "🔧 Repair PR #${{ github.event.client_payload.pr_number || inputs.pr_number }} · ${{ github.event.client_payload.pr_title || inputs.pr_title || 'pull request' }}"
+run-name: "🔧 Repair PR #${{ inputs.pr_number }} · ${{ inputs.pr_title || 'pull request' }}"
 
 on:
-  repository_dispatch:
-    types: [pi_pr_fix]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -29,7 +27,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-fix-${{ github.event.client_payload.pr_number || inputs.pr_number }}
+  group: pi-pr-fix-${{ inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -38,9 +36,9 @@ jobs:
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 1200
     env:
-      PR: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
+      PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
-      REASON: ${{ github.event.client_payload.reason || inputs.reason || 'review' }}
+      REASON: ${{ inputs.reason || 'review' }}
       PI_PHASE: repair
       PI_BASH_TIMEOUT_SECONDS: '1200'
     steps:
@@ -191,12 +189,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          jq -n --arg event_type "pi_pr_review" --arg pr_number "$PR" \
-            '{event_type:$event_type,client_payload:{pr_number:$pr_number}}' |
+          jq -n --arg pr_number "$PR" '{ref:"dev",inputs:{pr_number:$pr_number}}' |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" --data-binary @- \
-            "https://api.github.com/repos/${REPO}/dispatches"
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-review.yml/dispatches"
 
       - name: Report repair failure
         if: failure()
