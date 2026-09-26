@@ -36,13 +36,6 @@ async function workflowRunPages(path) {
 async function addLabel(number, label) {
   await api(`/issues/${number}/labels`, { method: 'POST', body: JSON.stringify({ labels: [label] }) });
 }
-async function markerExists(sha, context) {
-  const statuses = await api(`/commits/${sha}/statuses?per_page=100`);
-  return statuses.some(status => status.context === context && status.state === 'success');
-}
-async function mark(sha, context, description) {
-  await api(`/statuses/${sha}`, { method: 'POST', body: JSON.stringify({ state: 'success', context, description: description.slice(0, 140) }) });
-}
 async function dispatchWorkflow(workflow, inputs) {
   await api(`/actions/workflows/${workflow}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: 'dev', inputs }) });
 }
@@ -104,13 +97,7 @@ for (const issue of issues) {
       if (recovery) {
         await addLabel(issue.number, recovery.add);
         if (recovery.dispatch === 'implementer') {
-          const checkpointRef = refs.find(ref => ref.ref === `refs/heads/pi/issue-${issue.number}-checkpoint`);
-          const markerSha = checkpointRef?.object?.sha ?? (await api('/git/ref/heads/dev')).object.sha;
-          const context = `social-mcp/recovery-implement-${issue.number}`;
-          if (!await markerExists(markerSha, context)) {
-            await dispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number), issue_title: issue.title });
-            await mark(markerSha, context, `Implementer recovery dispatched for issue #${issue.number}`);
-          }
+          await dispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number), issue_title: issue.title });
         }
       }
     }
@@ -120,15 +107,12 @@ for (const issue of issues) {
 for (const pr of prs) {
   const repairCheckpoint = repairCheckpointRefs.get(pr.number);
   if (repairCheckpoint && pr.state === 'open' && !liveRepairs.has(pr.number)) {
-    const context = `social-mcp/recovery-repair-${pr.number}`;
-    const alreadyDispatched = await markerExists(repairCheckpoint.object.sha, context);
-    if (apply && !alreadyDispatched) {
+    if (apply) {
       await dispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' });
-      await mark(repairCheckpoint.object.sha, context, `Repair recovery dispatched for PR #${pr.number}`);
     }
     report.push({ type: 'repair', number: pr.number, title: pr.title,
       findings: [{ code: 'orphaned-repair-checkpoint', severity: 'repair', checkpoint: true }],
-      removals: [], recovery: apply && !alreadyDispatched ? { add: null, dispatch: 'repair', reason: 'resume saved repair checkpoint' } : null });
+      removals: [], recovery: apply ? { add: null, dispatch: 'repair', reason: 'resume saved repair checkpoint' } : null });
   }
   const findings = inspectPrState(pr, { hasLiveReviewer: liveReviewers.has(pr.number) });
   if (!findings.length) continue;
@@ -141,11 +125,7 @@ for (const pr of prs) {
       if (recovery) {
         await addLabel(pr.number, recovery.add);
         if (recovery.dispatch === 'reviewer') {
-          const context = `social-mcp/recovery-review-${pr.number}`;
-          if (!await markerExists(pr.head.sha, context)) {
-            await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title });
-            await mark(pr.head.sha, context, `Reviewer recovery dispatched for PR #${pr.number}`);
-          }
+          await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title });
         }
       }
     }
