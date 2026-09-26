@@ -6,26 +6,9 @@ import { readQueueContext } from './pi-queue-context.mjs';
 import { replaceIssueState } from './pi-github-state.mjs';
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-state-machine.mjs';
 import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
+import { githubClient } from './github-api.mjs';
 
-const repo = process.env.GITHUB_REPOSITORY;
-const token = process.env.GH_TOKEN;
-const base = `https://api.github.com/repos/${repo}`;
-const headers = {
-  Authorization: `Bearer ${token}`,
-  Accept: 'application/vnd.github+json',
-  'X-GitHub-Api-Version': '2022-11-28',
-};
-
-async function api(endpoint, method = 'GET', body) {
-  const response = await fetch(`${base}${endpoint}`, {
-    method,
-    headers: { ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  if (response.status === 404 && method === 'GET') return null;
-  if (!response.ok) throw new Error(`${method} ${endpoint}: ${response.status} ${await response.text()}`);
-  return response.status === 204 ? null : response.json();
-}
+const { api, pages, ensureLabel, repo } = githubClient();
 
 export function parentOf(body) {
   const match = /<!-- architect-parent:(\d+); architect-key:([a-z][a-z0-9-]*) -->/.exec(body ?? '');
