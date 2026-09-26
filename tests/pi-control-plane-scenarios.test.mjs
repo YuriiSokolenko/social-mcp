@@ -102,5 +102,5 @@ test('published checkpoints update their leases and deletion requires exact publ
   assert.match(issue, /PI_CHECKPOINT_PUBLISHED/);
   assert.match(issue, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}-checkpoint:\$\{PI_CHECKPOINT_PUBLISHED\}"/);
   assert.match(repair, /REPAIR_CHECKPOINT_PUBLISHED=\$\{CHECKPOINT_COMMIT\}/);
-  assert.match(repair, /--force-with-lease="refs\/heads\/pi\/repair-pr-\$\{PR\}-checkpoint:\$\{REPAIR_CHECKPOINT_PUBLISHED\}"/);
+  assert.match(repair, /--force-with-lease="refs\/heads\/pi\/repair-pr-\$\{PR\}-checkpoint:\$\{REPAIR_CHECKPOINT_PUBLISHED:-\$REPAIR_CHECKPOINT_EXPECTED\}"/);
 });
