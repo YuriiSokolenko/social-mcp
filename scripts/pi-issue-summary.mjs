@@ -14,8 +14,16 @@ async function api(path) {
   if (!response.ok) throw new Error(`GitHub ${response.status} ${path}: ${await response.text()}`);
   return response.json();
 }
+async function pages(path) {
+  const all = [];
+  for (let page = 1; ; page++) {
+    const batch = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+    all.push(...batch);
+    if (batch.length < 100) return all;
+  }
+}
 const issue = await api(`/issues/${issueNumber}`);
-const prs = await api('/pulls?state=all&base=dev&per_page=100');
+const prs = await pages('/pulls?state=all&base=dev');
 const pr = prs.find(item => item.head.repo?.full_name === repo && item.head.ref === `pi/issue-${issueNumber}`) ?? null;
 let ci = null;
 let statuses = [];
