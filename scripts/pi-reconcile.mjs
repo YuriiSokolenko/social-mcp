@@ -82,7 +82,6 @@ const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.r
 
 const liveImplementers = new Set();
 const liveArchitects = new Set();
-const liveReviewers = new Set();
 const liveRepairs = new Set();
 for (const run of runs) {
   if (!liveStatuses.includes(run.status)) continue;
@@ -90,8 +89,6 @@ for (const run of runs) {
   if (implement) liveImplementers.add(Number(implement[1]));
   const architect = /^🏗 Architect #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (architect) liveArchitects.add(Number(architect[1]));
-  const review = /^🔬 Review PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
-  if (review) liveReviewers.add(Number(review[1]));
   const repair = /^🔧 Repair PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (repair) liveRepairs.add(Number(repair[1]));
 }
