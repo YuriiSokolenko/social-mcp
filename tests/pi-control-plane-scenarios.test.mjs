@@ -192,3 +192,24 @@ test('merge gate is the sole scheduler for Pi repair workflow', () => {
   assert.match(reconciler, /resume saved repair checkpoint through merge-gate scheduler/);
   assert.match(reconciler, /resume changes-requested repair through merge-gate scheduler/);
 });
+
+
+test('status wrappers delegate mutations to guarded transition engine', () => {
+  const issue = fs.readFileSync('scripts/pi-issue-status.sh', 'utf8');
+  const review = fs.readFileSync('scripts/pi-pr-review-status.sh', 'utf8');
+  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
+  assert.doesNotMatch(issue, /clear_states|remove_label|add_label/);
+  assert.doesNotMatch(review, /clear_review_status|remove_label|add_label/);
+  assert.match(issue, /pi-transition\.mjs issue/);
+  assert.match(review, /pi-transition\.mjs review/);
+  assert.match(transition, /concurrent pipeline transition detected/);
+  assert.match(transition, /await load\(\)/);
+  assert.match(transition, /method: 'PATCH'/);
+});
+
+test('guarded transition replaces only its state-family labels', () => {
+  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
+  assert.match(transition, /filter\(label => !stateLabels\.has\(label\)\)/);
+  assert.match(transition, /ISSUE_ACTIVE, \.\.\.ISSUE_TERMINAL/);
+  assert.match(transition, /REVIEW_LABELS/);
+});
