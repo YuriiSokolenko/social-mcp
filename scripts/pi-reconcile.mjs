@@ -129,7 +129,8 @@ for (const issue of issues) {
 }
 for (const pr of prs) {
   const repairCheckpoint = repairCheckpointRefs.get(pr.number);
-  if (repairCheckpoint && pr.state === 'open' && !liveRepairs.has(pr.number)) {
+  const initialPrLabels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
+  if (repairCheckpoint && pr.state === 'open' && !initialPrLabels.has('review:failed') && !liveRepairs.has(pr.number)) {
     if (apply && recoveryDispatchAllowed) {
       await tryDispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number), reason: 'review' }, `repair PR #${pr.number}`);
     }
