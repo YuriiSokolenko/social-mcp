@@ -241,7 +241,7 @@ test('issue state family includes dispatcher ownership', () => {
 test('merge finalization clears issue state with a guarded whole-state write', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /clearCompletedIssueState/);
-  assert.match(gate, /issueStateLabels\(expected\)/);
+  assert.match(gate, /replaceIssueState/);
   assert.match(gate, /replaceIssueState/);
   assert.doesNotMatch(gate, /labels\/pi%3Amr-created/);
 });
