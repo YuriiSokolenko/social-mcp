@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { replaceIssueState, replaceReviewState } from './pi-github-state.mjs';
-import { inspectIssueState, inspectPrState, safeRemovals } from './pi-state-machine.mjs';
+import { ISSUE_STATE_LABELS, inspectIssueState, inspectPrState, safeRemovals } from './pi-state-machine.mjs';
 import { checkpointGcDecision, recoveryForIssue, recoveryForPr } from './pi-recovery-policy.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
@@ -36,7 +36,8 @@ async function workflowRunPages(path) {
     if (batch.length < 100) return all;
   }
 }
-async function replaceStateLabels(number, expected, target, kind) {
+async function replaceStateLabels(number, expected, target, kindOrStateLabels) {
+  const kind = kindOrStateLabels === 'issue' || kindOrStateLabels === 'review' ? kindOrStateLabels : (kindOrStateLabels?.has?.('dispatcher:ready') ? 'issue' : 'review');
   const replace = kind === 'issue' ? replaceIssueState : replaceReviewState;
   await replace({
     number, expected, target, context: 'reconciliation',
@@ -128,7 +129,7 @@ for (const issue of issues) {
   }
   if (retryMergeGateForPr) mergeGateWakeNeeded = true;
   if (retryReadyImplementer && !recovery) {
-    await replaceStateLabels(issue.number, issue, 'dispatcher:ready', 'issue');
+    await replaceStateLabels(issue.number, issue, 'dispatcher:ready', ISSUE_STATE_LABELS);
     const dispatched = await tryDispatchWorkflow('pi-dispatcher.yml', {}, `ready issue #${issue.number}`);
     recovery = { add: 'dispatcher:ready', dispatch: dispatched ? 'dispatcher' : null, reason: dispatched ? 'return stranded ready issue to serialized dispatcher' : 'dispatcher wake failed; dispatcher:ready retained for retry' };
   }

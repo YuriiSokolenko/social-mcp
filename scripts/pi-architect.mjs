@@ -143,14 +143,14 @@ async function ensureLabel(name, color, description) {
 async function transitionIssue(issue, action) {
   const expected = await api(`/issues/${issue}`);
   const target = validateIssueTransition(expected, action);
-  const current = await api(`/issues/${issue}`);
-  const expectedState = issueStateLabels(expected);
-  const currentState = issueStateLabels(current);
-  if (JSON.stringify(expectedState) !== JSON.stringify(currentState)) {
-    throw new Error(`concurrent Architect transition on #${issue}: expected [${expectedState}], found [${currentState}]`);
-  }
-  const keep = current.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
-  await api(`/issues/${issue}`, 'PATCH', { labels: [...new Set([...keep, target])] });
+  await replaceIssueState({
+    number: issue,
+    expected,
+    target,
+    context: 'Architect',
+    load: number => api(`/issues/${number}`),
+    patch: (number, labels) => api(`/issues/${number}`, 'PATCH', { labels }),
+  });
 }
 
 async function ensureTask(number, title, priority, dependencies, body) {
