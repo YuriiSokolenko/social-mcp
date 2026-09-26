@@ -337,19 +337,6 @@ jobs:
         run: |
           bash scripts/pi-pr-review-status.sh failed "Automated Pi repair completed without producing a repository change. The existing review findings remain unresolved and require human attention. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
-      - name: Wake merge gate
-        if: steps.changes.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
-              echo "::warning::Repair is already published for PR #${PR}, but Merge Gate wake failed; the gate/reconciler can recover it."
-              exit 0
-            }
-
       - name: Report repair failure
         if: failure() && steps.changes.outputs.changed != 'true'
         env:
