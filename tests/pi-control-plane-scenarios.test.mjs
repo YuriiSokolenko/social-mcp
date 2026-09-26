@@ -70,6 +70,17 @@ test('reconciler retries stranded ready implementation and review states', () =>
 });
 
 
+test('reconciler recognizes live agents by custom run title', () => {
+  const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(source, /const implement = \/\^🤖 Implement #/);
+  assert.match(source, /const review = \/\^🔬 Review PR #/);
+  assert.match(source, /const repair = \/\^🔧 Repair PR #/);
+  assert.doesNotMatch(source, /run\.name === 'Pi Issue Agent'/);
+  assert.doesNotMatch(source, /run\.name === 'Pi PR Review'/);
+  assert.doesNotMatch(source, /run\.name === 'Pi PR Fix'/);
+});
+
+
 test('agent concurrency preserves active work and duplicate runs have idempotency guards', () => {
   for (const path of ['.github/workflows/pi-issue-agent.yml', '.github/workflows/pi-pr-review.yml', '.github/workflows/pi-pr-fix.yml']) {
     const workflow = fs.readFileSync(path, 'utf8');
@@ -131,7 +142,8 @@ test('reconciler resumes durable PR pipeline states', () => {
   assert.match(source, /prLabels\.has\('review:passed'\)/);
   assert.match(source, /prLabels\.has\('review:changes-requested'\)/);
   assert.match(source, /!liveRepairs\.has\(pr\.number\) && !repairCheckpoint/);
-  assert.match(source, /tryDispatchWorkflow\('pi-pr-fix\.yml'/);
+  assert.match(source, /mergeGateWakeNeeded = true/);
+  assert.doesNotMatch(source, /tryDispatchWorkflow\('pi-pr-fix\.yml'/);
   assert.match(source, /tryDispatchWorkflow\('pi-auto-merge\.yml'/);
 });
 
