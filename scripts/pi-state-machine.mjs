@@ -142,8 +142,17 @@ export function validateIssueTransition(issue, action) {
   if (action === 'architect-ready' && !labels.has(PIPELINE_LABELS.queued) && !labels.has(PIPELINE_LABELS.architectReady)) {
     throw new Error('architect-ready requires dispatcher:ready or an idempotent architect:ready state');
   }
-  if (action === 'queued' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running) && !labels.has(PIPELINE_LABELS.architectReady) && !labels.has(PIPELINE_LABELS.needsHuman) && !labels.has(PIPELINE_LABELS.queued)) {
-    throw new Error('queued requires pi:ready, pi:running, architect:ready, pi:needs-human, or an idempotent dispatcher:ready state');
+  if (action === 'queued') {
+    const owned = [...ISSUE_STATE_LABELS].filter(label => labels.has(label));
+    const allowedSource = owned.length === 0 ||
+      labels.has(PIPELINE_LABELS.ready) ||
+      labels.has(PIPELINE_LABELS.running) ||
+      labels.has(PIPELINE_LABELS.architectReady) ||
+      labels.has(PIPELINE_LABELS.needsHuman) ||
+      labels.has(PIPELINE_LABELS.queued);
+    if (!allowedSource) {
+      throw new Error('queued requires an unowned issue, pi:ready, pi:running, architect:ready, pi:needs-human, or an idempotent dispatcher:ready state');
+    }
   }
   if (action === 'running' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running)) {
     throw new Error('running requires pi:ready or an idempotent pi:running state');
