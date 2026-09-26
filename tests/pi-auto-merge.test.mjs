@@ -120,3 +120,17 @@ test('merge gate is pair-driven and does not orchestrate branch ancestry', () =>
   assert.match(source, /latestCI\(runs, sha, pr\.head\.ref, base\.object\.sha\)/);
   assert.match(source, /freshBase\.object\.sha !== base\.object\.sha/);
 });
+
+
+test('agent workflows execute control scripts only from fresh GITHUB_WORKSPACE checkout', () => {
+  const workflows = [
+    'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml',
+    'pi-dispatcher.yml', 'pi-architect.yml', 'pi-triage.yml', 'pi-auto-merge.yml',
+  ];
+  for (const name of workflows) {
+    const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.doesNotMatch(source, /(?:node|bash) scripts\//, name);
+    assert.doesNotMatch(source, /\/home\/runner|actions-runner\/_work/, name);
+    assert.match(source, /GITHUB_WORKSPACE\/scripts\//, name);
+  }
+});
