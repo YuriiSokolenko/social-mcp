@@ -104,12 +104,11 @@ export function validateIssueTransition(issue, action) {
     const owned = [...ISSUE_STATE_LABELS].filter(label => labels.has(label));
     const allowedSource = owned.length === 0 ||
       labels.has(PIPELINE_LABELS.ready) ||
-      labels.has(PIPELINE_LABELS.running) ||
       labels.has(PIPELINE_LABELS.architectReady) ||
       labels.has(PIPELINE_LABELS.needsHuman) ||
       labels.has(PIPELINE_LABELS.queued);
     if (!allowedSource) {
-      throw new Error('queued requires an unowned issue, pi:ready, pi:running, architect:ready, pi:needs-human, or an idempotent dispatcher:ready state');
+      throw new Error('queued requires an unowned issue, pi:ready, architect:ready, pi:needs-human, or an idempotent dispatcher:ready state');
     }
   }
   if (action === 'running' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running)) {
