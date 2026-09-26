@@ -54,23 +54,6 @@ export function allowedFiles(files, changedCount) {
       !name.startsWith('.github/workflows/') && !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(name)));
 }
 
-async function hasLiveReview(prNumber) {
-  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
-    const data = await api(`/actions/workflows/pi-pr-review.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
-    if ((data.workflow_runs ?? []).some(run => run.display_title?.startsWith(`🔬 Review PR #${prNumber} ·`) || run.display_title === `🔬 Review PR #${prNumber}`)) return true;
-  }
-  return false;
-}
-
-async function hasLiveRepair(prNumber) {
-  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
-    const data = await api(`/actions/workflows/pi-pr-fix.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
-    if ((data.workflow_runs ?? []).some(run =>
-      run.display_title?.startsWith(`🔧 Repair PR #${prNumber} ·`) || run.display_title === `🔧 Repair PR #${prNumber}`)) return true;
-  }
-  return false;
-}
-
 async function processPR(prSummary) {
   const pr = await api(`/pulls/${prSummary.number}`);
   const issue = issueNumber(pr, repo);
@@ -88,7 +71,6 @@ async function processPR(prSummary) {
   }
 
   const sha = pr.head.sha;
-  const repairLive = await hasLiveRepair(pr.number);
   const [base, statusData] = await Promise.all([
     api('/git/ref/heads/dev'),
     api(`/commits/${sha}/statuses?per_page=100`),
@@ -105,23 +87,37 @@ async function processPR(prSummary) {
     return;
   }
   const conflict = latestStatus(statuses, `social-mcp/integration-conflict/${base.object.sha.slice(0, 12)}`);
+  const conflictRepair = latestStatus(statuses, `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`);
   if (conflict === 'failure') {
-    if (!repairLive) {
+    if (!conflictRepair) {
+      await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`, description: 'Conflict repair dispatched' });
       await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
       console.log(`#${pr.number}: exact integration has a merge conflict; dispatched conflict repair`);
     }
     return;
   }
   const review = latestStatus(statuses, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
+  const reviewRepair = latestStatus(statuses, `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`);
   if (review === 'failure') {
-    if (!repairLive) {
+    if (!reviewRepair) {
+      await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`, description: 'Review repair dispatched' });
       await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' } });
       console.log(`#${pr.number}: dispatched review repair for exact pair`);
     }
     return;
   }
-  if (integration !== 'success' || review !== 'success') {
-    console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)}) and review`);
+  if (integration !== 'success') {
+    console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)})`);
+    return;
+  }
+  if (!review) {
+    await api(`/statuses/${sha}`, 'POST', { state: 'pending', context: `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`, description: 'Automated review dispatched' });
+    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
+    console.log(`#${pr.number}: dispatched review for exact pair`);
+    return;
+  }
+  if (review !== 'success') {
+    console.log(`#${pr.number}: waiting for exact-pair review`);
     return;
   }
   // Re-read mutable state immediately before the merge; the merge API also rejects a moved head.
