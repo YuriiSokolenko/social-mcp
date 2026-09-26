@@ -49,3 +49,12 @@ test('RUNNING control wakes both dispatcher and reconciler', () => {
   assert.match(workflow, /pi-dispatcher\.yml\/dispatches/);
   assert.match(workflow, /pi-reconcile\.yml\/dispatches/);
 });
+
+
+test('reconciler keeps recovery retryable when workflow dispatch fails', () => {
+  const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(source, /async function tryDispatchWorkflow/);
+  assert.match(source, /pi:ready retained for retry/);
+  assert.match(source, /review:ready retained for retry/);
+  assert.match(source, /Recovery dispatch failed/);
+});
