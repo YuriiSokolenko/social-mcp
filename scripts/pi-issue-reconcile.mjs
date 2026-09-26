@@ -1,26 +1,13 @@
 #!/usr/bin/env node
 import { childNumbers, parentOf } from './pi-architect.mjs';
+import { githubClient } from './github-api.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
 const start = Number(process.argv[2] ?? process.env.ISSUE);
 if (!repo || !token || !Number.isSafeInteger(start)) throw new Error('repository, token and issue number are required');
 
-const root = `https://api.github.com/repos/${repo}`;
-async function api(path, method = 'GET', body) {
-  const response = await fetch(root + path, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${await response.text()}`);
-  return response.status === 204 ? null : response.json();
-}
+const { api } = githubClient({ repo, token });
 
 let childNumber = start;
 const visited = new Set();
