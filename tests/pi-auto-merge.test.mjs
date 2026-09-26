@@ -54,7 +54,7 @@ test('merge gate is pair-driven and does not orchestrate branch ancestry', () =>
   const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.doesNotMatch(source, /behind_by|ahead_by|compare\/dev|update-branch/);
   assert.match(source, /base\.object\.sha/);
-  assert.match(source, /latestCI\(runs, sha, pr\.head\.ref, base\.object\.sha\)/);
+  assert.match(source, /social-mcp\/integration\/\$\{base\.object\.sha\.slice\(0, 12\)\}/);
   assert.match(source, /freshBase\.object\.sha !== base\.object\.sha/);
 });
 
@@ -109,4 +109,13 @@ test('integration correctness uses pair-bound statuses, never workflow titles', 
   assert.match(gate, /actions\/workflows\/ci\.yml\/dispatches/);
   assert.doesNotMatch(gate, /display_title|latestCI|needsCIDispatch/);
   assert.doesNotMatch(summary, /display_title|workflow_runs/);
+});
+
+
+test('dispatcher owns post-completion issue reconciliation', () => {
+  const mergeGate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const dispatcher = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
+  assert.doesNotMatch(mergeGate, /architect:epic|pi-issue-reconcile|pi-dispatcher\.yml/);
+  assert.match(dispatcher, /types: \[closed\]/);
+  assert.match(dispatcher, /pi-issue-reconcile\.mjs/);
 });
