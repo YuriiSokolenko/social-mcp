@@ -74,9 +74,9 @@ test('terminal issue may retain a checkpoint for human recovery without reconcil
   assert.equal(findings.some(item => item.code === 'orphaned-implementer-state'), false);
 });
 
-test('triage may queue an otherwise unowned open issue', () => {
+test('triage or a human retry may queue unowned and needs-human issues', () => {
   assert.equal(validateIssueTransition(issue('open', []), 'queued'), 'dispatcher:ready');
-  assert.throws(() => validateIssueTransition(issue('open', ['pi:needs-human']), 'queued'), /queued requires/);
+  assert.equal(validateIssueTransition(issue('open', ['pi:needs-human']), 'queued'), 'dispatcher:ready');
 });
 
 test('orphaned Architect ownership is detected', () => {
