@@ -81,12 +81,15 @@ const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.r
   pr.head.repo?.full_name === repo).map(pr => Number(pr.head.ref.match(/^pi\/issue-(\d+)$/)?.[1])).filter(Number.isSafeInteger));
 
 const liveImplementers = new Set();
+const liveArchitects = new Set();
 const liveReviewers = new Set();
 const liveRepairs = new Set();
 for (const run of runs) {
   if (!liveStatuses.includes(run.status)) continue;
   const implement = /^🤖 Implement #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (implement) liveImplementers.add(Number(implement[1]));
+  const architect = /^🏗 Architect #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
+  if (architect) liveArchitects.add(Number(architect[1]));
   const review = /^🔬 Review PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (review) liveReviewers.add(Number(review[1]));
   const repair = /^🔧 Repair PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
@@ -104,6 +107,7 @@ for (const issue of issues) {
   const findings = inspectIssueState(issue, {
     hasOpenPiPr: openPiPrIssues.has(issue.number),
     hasLiveImplementer: liveImplementers.has(issue.number),
+    hasLiveArchitect: liveArchitects.has(issue.number),
     hasCheckpoint: checkpoints.has(issue.number),
   });
   const issueLabels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
@@ -122,6 +126,9 @@ for (const issue of issues) {
           if (!dispatched) recovery = { ...recovery, dispatch: null, reason: 'implementer recovery dispatch failed; pi:ready retained for retry' };
         }
       }
+    } else if (findings.some(x => x.code === 'orphaned-architect-state')) {
+      await replaceStateLabels(issue.number, issue, 'pi:failed', 'issue');
+      recovery = { add: 'pi:failed', dispatch: null, reason: 'architect ownership disappeared; marked failed for explicit retry' };
     } else if (removals.length) {
       await replaceStateLabels(issue.number, issue, issueTargetAfterRemovals(issue, removals), 'issue');
     }
