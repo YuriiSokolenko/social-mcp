@@ -134,3 +134,12 @@ test('agent workflows execute control scripts only from fresh GITHUB_WORKSPACE c
     assert.match(source, /GITHUB_WORKSPACE\/scripts\//, name);
   }
 });
+
+
+test('merge gate owns integration CI and starts review only after CI success', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const awaitCi = fs.readFileSync('scripts/pi-await-ci.mjs', 'utf8');
+  assert.match(gate, /actions\/workflows\/ci\.yml\/dispatches/);
+  assert.match(gate, /ci\.status !== 'completed' \|\| ci\.conclusion !== 'success'/);
+  assert.doesNotMatch(awaitCi, /actions\/workflows\/ci\.yml\/dispatches/);
+});
