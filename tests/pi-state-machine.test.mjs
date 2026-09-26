@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectIssueState, inspectPrState, safeRemovals } from '../scripts/pi-state-machine.mjs';
+import { inspectIssueState, inspectPrState, safeRemovals, validateIssueTransition, validateReviewTransition } from '../scripts/pi-state-machine.mjs';
 
 const issue = (state, labels) => ({ state, labels: labels.map(name => ({ name })) });
 
@@ -33,4 +33,16 @@ test('mr-created without a matching open PR needs investigation', () => {
 test('closed PR cannot keep an active review label', () => {
   const findings = inspectPrState({ state: 'closed', labels: [{ name: 'review:running' }] });
   assert.deepEqual(safeRemovals(findings), ['review:running']);
+});
+
+test('implementer transitions require an open executable issue', () => {
+  assert.equal(validateIssueTransition(issue('open', ['pi:ready']), 'running'), 'pi:running');
+  assert.throws(() => validateIssueTransition(issue('closed', ['pi:ready']), 'running'), /closed issue/);
+  assert.throws(() => validateIssueTransition(issue('open', ['architect:epic', 'pi:ready']), 'running'), /epic/);
+  assert.throws(() => validateIssueTransition(issue('open', []), 'running'), /pi:ready/);
+});
+
+test('review transitions require an open PR', () => {
+  assert.equal(validateReviewTransition({ state: 'open', labels: [] }, 'passed'), 'review:passed');
+  assert.throws(() => validateReviewTransition({ state: 'closed', labels: [] }, 'passed'), /closed PR/);
 });
