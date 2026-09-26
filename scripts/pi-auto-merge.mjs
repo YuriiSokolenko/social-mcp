@@ -50,11 +50,11 @@ export function latestStatus(statuses, context) {
 }
 
 export function latestCI(runs, sha, branch) {
-  // A direct push already starts CI for normal branch updates. Reuse that run instead of
-  // dispatching a duplicate workflow for the same SHA. pull_request runs stay excluded
-  // because bot-authored PR runs may be action_required and cannot satisfy the merge gate.
+  // Pi branches are published with GITHUB_TOKEN, whose push events do not start workflows.
+  // Their authoritative check is the SHA-bound workflow_dispatch run from trusted dev.
+  // Never treat pull_request/action_required runs as merge-gate CI.
   return runs.filter(run => run.head_sha === sha && run.head_branch === branch &&
-    ['push', 'workflow_dispatch'].includes(run.event))
+    run.event === 'workflow_dispatch')
     .sort((a, b) => b.id - a.id)[0] ?? null;
 }
 
