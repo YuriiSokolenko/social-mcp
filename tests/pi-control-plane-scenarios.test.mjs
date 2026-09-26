@@ -130,3 +130,10 @@ test('reconciler coalesces merge-gate wake when a gate run is already live', () 
   assert.match(reconcile, /pi-auto-merge\.yml/);
   assert.match(reconcile, /skipping duplicate reconciler wake/);
 });
+
+
+test('implementer preserves PR ownership when a post-publication step fails or is cancelled', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.match(workflow, /Recover publication state after failure[\s\S]*failure\(\).*steps\.pr\.outputs\.number != ''[\s\S]*issue mr-created/);
+  assert.match(workflow, /Recover publication state after cancellation[\s\S]*cancelled\(\).*steps\.pr\.outputs\.number != ''[\s\S]*issue mr-created/);
+});
