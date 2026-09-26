@@ -13,10 +13,10 @@ const prs = [{ number: 60, title: 'MCP transport PR', draft: false,
 
 test('connects running review to PR and issue without treating queued tasks as completed', () => {
   const runs = [
-    { id: 1, path: '.github/workflows/pi-pr-review.yml', display_title: 'Pi review PR #60', status: 'in_progress', html_url: 'https://example.test/1' },
-    { id: 2, path: '.github/workflows/pi-issue-agent.yml', display_title: 'Pi Issue #25', status: 'queued' },
-    { id: 3, path: '.github/workflows/pi-pr-review.yml', display_title: 'pi_pr_review', status: 'in_progress' },
-    { id: 4, path: '.github/workflows/pi-issue-agent.yml', display_title: 'Pi Issue #18', status: 'completed' },
+    { id: 1, path: '.github/workflows/pi-pr-review.yml', display_title: '🔬 Review PR #60 · MCP transport PR', status: 'in_progress', html_url: 'https://example.test/1' },
+    { id: 2, path: '.github/workflows/pi-issue-agent.yml', display_title: '🤖 Implement #25 · New feature', status: 'queued' },
+    { id: 3, path: '.github/workflows/pi-pr-review.yml', display_title: 'Pi PR Review', status: 'in_progress' },
+    { id: 4, path: '.github/workflows/pi-issue-agent.yml', display_title: '🤖 Implement #18 · MCP transport', status: 'completed' },
   ];
   const queue = summarizeQueue(issues, prs, runs, repo);
   assert.deepEqual(queue.open_prs[0].labels, ['review:running']);

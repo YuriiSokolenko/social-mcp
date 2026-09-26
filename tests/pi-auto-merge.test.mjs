@@ -41,8 +41,10 @@ test('a bot PR CI run needing approval must not count as a passing run', () => {
 });
 
 test('latest review status must refer to exact SHA fetched by caller', () => {
-  assert.equal(latestStatus([{ context: 'social-mcp/pi-review', state: 'failure' },
-    { context: 'social-mcp/pi-review', state: 'success' }], 'social-mcp/pi-review'), 'failure');
+  assert.equal(latestStatus([
+    { context: 'social-mcp/pi-review', state: 'failure', updated_at: '2026-09-26T11:00:00Z' },
+    { context: 'social-mcp/pi-review', state: 'success', updated_at: '2026-09-26T11:01:00Z' },
+  ], 'social-mcp/pi-review'), 'success');
   assert.equal(latestStatus([], 'social-mcp/pi-review'), null);
 });
 

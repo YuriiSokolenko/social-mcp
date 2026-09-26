@@ -54,7 +54,12 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
     findings.push({ code: 'queued-active', severity: 'repair', remove: [PIPELINE_LABELS.queued] });
   }
   if (active.length > 1) {
-    findings.push({ code: 'multiple-active', severity: 'warning', labels: active });
+    const precedence = [
+      PIPELINE_LABELS.pr, PIPELINE_LABELS.running, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.ready,
+    ];
+    const keep = precedence.find(label => labels.has(label));
+    findings.push({ code: 'multiple-active', severity: 'repair', labels: active,
+      remove: active.filter(label => label !== keep), keep });
   }
   if (labels.has(PIPELINE_LABELS.pr) && !hasOpenPiPr && issue.state === 'open') {
     findings.push({ code: 'mr-label-without-open-pr', severity: 'warning' });
@@ -73,7 +78,15 @@ export function inspectPrState(pr, { hasLiveReviewer = undefined } = {}) {
   const labels = names(pr);
   const review = [...REVIEW_LABELS].filter(label => labels.has(label));
   const findings = [];
-  if (review.length > 1) findings.push({ code: 'multiple-review-states', severity: 'warning', labels: review });
+  if (review.length > 1) {
+    const precedence = [
+      PIPELINE_LABELS.reviewRunning, PIPELINE_LABELS.reviewChanges, PIPELINE_LABELS.reviewPassed,
+      PIPELINE_LABELS.reviewReady, PIPELINE_LABELS.reviewFailed,
+    ];
+    const keep = precedence.find(label => labels.has(label));
+    findings.push({ code: 'multiple-review-states', severity: 'repair', labels: review,
+      remove: review.filter(label => label !== keep), keep });
+  }
   if (pr.state === 'open' && labels.has(PIPELINE_LABELS.reviewRunning) && hasLiveReviewer === false) {
     findings.push({ code: 'orphaned-review-state', severity: 'repair', remove: [PIPELINE_LABELS.reviewRunning] });
   }

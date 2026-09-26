@@ -44,7 +44,9 @@ export function issueNumber(pr, repository) {
 }
 
 export function latestStatus(statuses, context) {
-  return statuses.find(status => status.context === context)?.state ?? null;
+  return statuses
+    .filter(status => status.context === context)
+    .sort((a, b) => new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0))[0]?.state ?? null;
 }
 
 export function latestCI(runs, sha, branch) {
@@ -80,11 +82,11 @@ async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   const reviewActive = pr.labels?.some(label => ['review:ready', 'review:running'].includes(label.name)) ?? false;
   if (!currentReview && !reviewActive) {
-    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
+    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number) } });
   }
   const ci = latestCI(runs, sha, pr.head.ref);
   if (needsCIDispatch(ci)) {
-    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: 'dev', inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), pr_title: `${pr.head.ref} @ ${sha.slice(0, 12)}` } });
+    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: 'dev', inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number) } });
   }
 }
 
@@ -124,7 +126,7 @@ async function finalizeMergedPR(pr, issue) {
     return;
   }
   await finishArchitectParents(issue);
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev', inputs: { source: `merged PR #${pr.number} · ${pr.title}` } });
+  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
   await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
   console.log(`#${pr.number}: dispatcher started`);
 }
@@ -133,7 +135,7 @@ async function hasLiveRepair(prNumber) {
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     const data = await api(`/actions/workflows/pi-pr-fix.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
     if ((data.workflow_runs ?? []).some(run =>
-      run.display_title?.startsWith(`🔧 Repair PR #${prNumber} ·`))) return true;
+      run.display_title === `🔧 Repair PR #${prNumber}`)) return true;
   }
   return false;
 }
@@ -185,7 +187,7 @@ async function processPR(prSummary) {
         console.log(`#${pr.number}: merge conflict; repair is already active or has a saved checkpoint`);
         return;
       }
-      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
+      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), reason: 'conflict' } });
       console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
       return;
     }

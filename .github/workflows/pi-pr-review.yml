@@ -1,5 +1,5 @@
 name: Pi PR Review
-run-name: "🔬 Review PR #${{ github.event.pull_request.number || inputs.pr_number }} · ${{ github.event.pull_request.title || inputs.pr_title || 'pull request' }}"
+run-name: "🔬 Review PR #${{ github.event.pull_request.number || inputs.pr_number }}"
 
 on:
   pull_request:
@@ -10,10 +10,6 @@ on:
         description: Pull request number to review
         required: true
         type: number
-      pr_title:
-        description: Pull request title for the Actions run name
-        required: false
-        type: string
 
 permissions:
   contents: write

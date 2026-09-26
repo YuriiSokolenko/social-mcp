@@ -1,5 +1,5 @@
 name: Pi Issue Agent
-run-name: "🤖 Implement #${{ inputs.issue_number }} · ${{ inputs.issue_title || 'issue' }}"
+run-name: "🤖 Implement #${{ inputs.issue_number }}"
 
 on:
   workflow_dispatch:
@@ -7,10 +7,6 @@ on:
       issue_number:
         description: Issue number to implement
         required: true
-        type: string
-      issue_title:
-        description: Issue title for the Actions run name
-        required: false
         type: string
 
 permissions:
@@ -120,6 +116,7 @@ jobs:
             "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}")"
           ISSUE_TITLE="$(jq -r '.title' <<<"$ISSUE_JSON")"
           ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
+          printf 'PI_ISSUE_TITLE=%s\n' "$ISSUE_TITLE" >> "$GITHUB_ENV"
 
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
@@ -315,7 +312,7 @@ jobs:
         id: pr
         if: steps.checkpoint.outputs.changed == 'true'
         env:
-          ISSUE_TITLE: ${{ inputs.issue_title || 'issue' }}
+          ISSUE_TITLE: ${{ env.PI_ISSUE_TITLE }}
           OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -19,10 +19,17 @@ test('epics are never executable work', () => {
   assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:running']);
 });
 
-test('ambiguous multiple active states are reported but not guessed', () => {
+test('ambiguous multiple active states keep the furthest safe state', () => {
   const findings = inspectIssueState(issue('open', ['pi:ready', 'pi:running']));
-  assert.equal(findings.some(item => item.code === 'multiple-active' && item.severity === 'warning'), true);
-  assert.deepEqual(safeRemovals(findings), []);
+  assert.equal(findings.some(item => item.code === 'multiple-active' && item.keep === 'pi:running'), true);
+  assert.deepEqual(safeRemovals(findings), ['pi:ready']);
+});
+
+test('multiple review states keep the currently executing state', () => {
+  const findings = inspectPrState({ state: 'open', labels: [
+    { name: 'review:ready' }, { name: 'review:running' }, { name: 'review:passed' },
+  ] }, { hasLiveReviewer: true });
+  assert.deepEqual(safeRemovals(findings).sort(), ['review:passed', 'review:ready']);
 });
 
 test('mr-created without a matching open PR needs investigation', () => {
