@@ -25,6 +25,7 @@ export default function (pi) {
         limitations: params.limitations.trim(),
       };
       if (!result.title || !result.summary) throw new Error('title and summary are required');
+      if (!result.changes.length) throw new Error('at least one concrete change is required');
       const path = process.env.PI_IMPLEMENTER_RESULT_FILE;
       if (!path) throw new Error('PI_IMPLEMENTER_RESULT_FILE is not configured');
       writeFileSync(path, JSON.stringify(result, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
