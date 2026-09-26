@@ -82,3 +82,13 @@ test('agent concurrency preserves active work and duplicate runs have idempotenc
   assert.match(repair, /review:changes-requested/);
   assert.match(repair, /duplicate dispatch exits without model work/);
 });
+
+
+test('long-running checkpoints use explicit compare-and-swap leases', () => {
+  const implementer = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.match(implementer, /PI_CHECKPOINT_EXPECTED/);
+  assert.match(implementer, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}-checkpoint:\$\{PI_CHECKPOINT_EXPECTED\}"/);
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(repair, /REPAIR_CHECKPOINT_EXPECTED/);
+  assert.match(repair, /--force-with-lease="\$\{CHECKPOINT_REF\}:\$\{REPAIR_CHECKPOINT_EXPECTED\}"/);
+});
