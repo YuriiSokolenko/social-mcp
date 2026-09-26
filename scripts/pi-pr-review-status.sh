@@ -66,6 +66,10 @@ ensure_all() {
   ensure_label "review:failed" "b60205" "Automated Pi review workflow failed"
 }
 
+if [[ "$ACTION" != "ensure" ]]; then
+  node scripts/pi-validate-transition.mjs review "$ACTION"
+fi
+
 case "$ACTION" in
   ensure)
     ensure_all
