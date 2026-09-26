@@ -55,7 +55,7 @@ test('reconciler keeps recovery retryable when workflow dispatch fails', () => {
   const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(source, /async function tryDispatchWorkflow/);
   assert.match(source, /pi:ready retained for retry/);
-  assert.match(source, /review:ready retained for retry/);
+  assert.match(source, /resume ready review through merge-gate scheduler/);
   assert.match(source, /Recovery dispatch failed/);
 });
 
