@@ -1,5 +1,5 @@
 name: Pi Architect
-run-name: "🏗 Architect #${{ inputs.issue_number }} · ${{ inputs.issue_title || 'title unavailable' }}"
+run-name: "🏗 Architect #${{ inputs.issue_number }} ${{ inputs.issue_title && format('· {0}', inputs.issue_title) || '' }}"
 
 on:
   workflow_dispatch:
