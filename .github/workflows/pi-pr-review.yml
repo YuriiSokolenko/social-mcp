@@ -305,7 +305,7 @@ jobs:
             echo "Review is stale; not marking the current PR as failed"
             exit 0
           fi
-          bash "$GITHUB_WORKSPACE/scripts/pi-pr-review-status.sh" failed \
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed \
             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Summarize issue pipeline
