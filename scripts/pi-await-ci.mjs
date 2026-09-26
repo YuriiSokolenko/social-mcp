@@ -24,10 +24,7 @@ function matching(runs) {
 let data = await api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100');
 let run = matching(data);
 if (!run) {
-  await api('/actions/workflows/ci.yml/dispatches', { method:'POST', body: JSON.stringify({
-    ref: 'dev', inputs: { target_sha: sha, target_ref: branch, integration_base_sha: baseSha },
-  }) });
-  console.error(`Integration CI dispatched for dev ${baseSha.slice(0,12)} + ${branch} @ ${sha.slice(0,12)}`);
+  console.error(`Waiting for Merge Gate to dispatch integration CI for dev ${baseSha.slice(0,12)} + ${branch} @ ${sha.slice(0,12)}`);
 }
 const deadline = Date.now() + Number(process.env.PI_CI_WAIT_MS ?? 20 * 60 * 1000);
 while (Date.now() < deadline) {
