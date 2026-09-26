@@ -1,4 +1,11 @@
-import { childNumbers, parentOf } from './pi-architect.mjs';
+function parentOf(body) {
+  const match = /<!-- architect-parent:(\\d+); architect-key:[a-z][a-z0-9-]* -->/.exec(body ?? '');
+  return match ? Number(match[1]) : null;
+}
+function childNumbers(body) {
+  const match = /<!-- architect-children:([1-9]\\d*(?:,[1-9]\\d*)*) -->/.exec(body ?? '');
+  return match ? match[1].split(',').map(Number) : [];
+}
 
 export function ancestorChain(issueNumber, issuesByNumber, maxDepth = 4) {
   const chain = [];
