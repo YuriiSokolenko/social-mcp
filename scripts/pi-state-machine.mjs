@@ -77,3 +77,37 @@ export function inspectPrState(pr) {
 export function safeRemovals(findings) {
   return [...new Set(findings.filter(item => item.severity === 'repair').flatMap(item => item.remove ?? []))];
 }
+
+export const ISSUE_TRANSITIONS = Object.freeze({
+  running: PIPELINE_LABELS.running,
+  'mr-created': PIPELINE_LABELS.pr,
+  'needs-human': PIPELINE_LABELS.needsHuman,
+  failed: PIPELINE_LABELS.failed,
+  cancelled: PIPELINE_LABELS.cancelled,
+});
+export const REVIEW_TRANSITIONS = Object.freeze({
+  running: PIPELINE_LABELS.reviewRunning,
+  passed: PIPELINE_LABELS.reviewPassed,
+  'changes-requested': PIPELINE_LABELS.reviewChanges,
+  stale: PIPELINE_LABELS.reviewReady,
+  failed: PIPELINE_LABELS.reviewFailed,
+});
+
+export function validateIssueTransition(issue, action) {
+  const target = ISSUE_TRANSITIONS[action];
+  if (!target) throw new Error(`unknown issue transition: ${action}`);
+  const labels = names(issue);
+  if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target}`);
+  if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target}`);
+  if (action === 'running' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running)) {
+    throw new Error('running requires pi:ready or an idempotent pi:running state');
+  }
+  return target;
+}
+
+export function validateReviewTransition(pr, action) {
+  const target = REVIEW_TRANSITIONS[action];
+  if (!target) throw new Error(`unknown review transition: ${action}`);
+  if (pr.state !== 'open') throw new Error(`cannot transition closed PR to ${target}`);
+  return target;
+}
