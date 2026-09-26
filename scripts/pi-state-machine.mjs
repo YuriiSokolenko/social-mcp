@@ -16,6 +16,12 @@ export const PIPELINE_LABELS = Object.freeze({
   reviewFailed: 'review:failed',
 });
 
+export const ISSUE_STATE_LABELS = new Set([
+  PIPELINE_LABELS.queued,
+  PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
+  ...ISSUE_TERMINAL,
+]);
+
 export const ISSUE_ACTIVE = new Set([
   PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
 ]);
@@ -102,6 +108,9 @@ export function safeRemovals(findings) {
 }
 
 export const ISSUE_TRANSITIONS = Object.freeze({
+  queued: PIPELINE_LABELS.queued,
+  ready: PIPELINE_LABELS.ready,
+  'architect-ready': PIPELINE_LABELS.architectReady,
   running: PIPELINE_LABELS.running,
   'mr-created': PIPELINE_LABELS.pr,
   'needs-human': PIPELINE_LABELS.needsHuman,
@@ -122,6 +131,15 @@ export function validateIssueTransition(issue, action) {
   const labels = names(issue);
   if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target}`);
   if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target}`);
+  if (action === 'ready' && !labels.has(PIPELINE_LABELS.queued) && !labels.has(PIPELINE_LABELS.ready)) {
+    throw new Error('ready requires dispatcher:ready or an idempotent pi:ready state');
+  }
+  if (action === 'architect-ready' && !labels.has(PIPELINE_LABELS.queued) && !labels.has(PIPELINE_LABELS.architectReady)) {
+    throw new Error('architect-ready requires dispatcher:ready or an idempotent architect:ready state');
+  }
+  if (action === 'queued' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running) && !labels.has(PIPELINE_LABELS.queued)) {
+    throw new Error('queued recovery requires pi:ready, pi:running, or an idempotent dispatcher:ready state');
+  }
   if (action === 'running' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running)) {
     throw new Error('running requires pi:ready or an idempotent pi:running state');
   }
