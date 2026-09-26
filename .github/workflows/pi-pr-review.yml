@@ -308,8 +308,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
-          if [ "${{ steps.checks.outputs.ci_passed }}" != 'true' ]; then
+          if [ -f "$RUNNER_TEMP/pi-review-comment.txt" ]; then
+            COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
+          else
+            COMMENT="Deterministic GitHub-hosted CI failed for the reviewed SHA. Semantic review was skipped because deterministic checks are authoritative."
+          fi
+          if [ "${{ steps.checks.outputs.ci_passed }}" != 'true' ] && [[ "$COMMENT" != Deterministic* ]]; then
             COMMENT="Deterministic GitHub-hosted CI failed for the reviewed SHA.\n\n${COMMENT}"
           fi
           bash scripts/pi-pr-review-status.sh changes-requested "$COMMENT"
