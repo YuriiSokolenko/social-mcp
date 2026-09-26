@@ -176,7 +176,6 @@ async function processPR(prSummary) {
   }
 
   const sha = pr.head.sha;
-  const prLabels = new Set((pr.labels ?? []).map(label => label.name));
   const repairLive = await hasLiveRepair(pr.number);
   const [base, comparison, statusData, ciData] = await Promise.all([
     api('/git/ref/heads/dev'),
@@ -192,14 +191,10 @@ async function processPR(prSummary) {
     // handled separately below only when current dev actually conflicts.
     const reason = 'review';
     await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason } });
-    console.log(`#${pr.number}: dispatched/resumed Pi ${reason} repair for current head ${sha.slice(0, 12)}${repairCheckpoint ? ' from checkpoint' : ''}`);
+    console.log(`#${pr.number}: dispatched Pi review repair for current head ${sha.slice(0, 12)}`);
     return;
   }
   if (comparison.behind_by > 0 && pr.mergeable === false && pr.mergeable_state === 'dirty') {
-    if (prLabels.has('review:running')) {
-      console.log(`#${pr.number}: merge conflict appeared while review is running; waiting for review to finish`);
-      return;
-    }
     if (repairLive) {
       console.log(`#${pr.number}: merge conflict; integration repair is already active`);
       return;
