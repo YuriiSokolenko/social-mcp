@@ -265,7 +265,7 @@ jobs:
             echo "Reviewed head/base $HEAD_SHA/$BASE_SHA is stale; current pair is $CURRENT_HEAD/$CURRENT_BASE. Verdict will not mutate PR state."
           fi
 
-       - name: Mark review passed
+      - name: Mark review passed
         id: passed
         if: steps.freshness.outputs.current == 'true' && steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.ci_passed == 'true'
         env:
