@@ -49,15 +49,17 @@ const labelsOf = issue => new Set(issue.labels.map(label => label.name));
 async function transitionIssue(number, action) {
   const expected = await api(`/issues/${number}`);
   const target = validateIssueTransition(expected, action);
-  const current = await api(`/issues/${number}`);
-  const expectedState = issueStateLabels(expected);
-  const currentState = issueStateLabels(current);
-  if (JSON.stringify(expectedState) !== JSON.stringify(currentState)) {
-    throw new Error(`concurrent Triage transition on #${number}: expected [${expectedState}], found [${currentState}]`);
-  }
-  const keep = current.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
-  await api(`/issues/${number}`, { method: "PATCH",
-    body: JSON.stringify({ labels: [...new Set([...keep, target])] }) });
+  await replaceIssueState({
+    number,
+    expected,
+    target,
+    context: "Triage",
+    load: issue => api(`/issues/${issue}`),
+    patch: (issue, labels) => api(`/issues/${issue}`, {
+      method: "PATCH",
+      body: JSON.stringify({ labels }),
+    }),
+  });
 }
 
 
