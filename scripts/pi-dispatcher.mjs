@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { readQueueContext } from "./pi-queue-context.mjs";
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState } from "./pi-state-machine.mjs";
 
 const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
@@ -45,8 +46,8 @@ async function ensureLabel(name, color, description) {
   }
 }
 const labels = issue => new Set(issue.labels.map(label => label.name));
-const activeLabels = ["pi:ready", "pi:running", "pi:mr-created"];
-const blockedLabels = ["pi:blocked", "pi:failed", "pi:needs-human", "pi:cancelled", "architect:ready", "architect:epic"];
+const activeLabels = [...ISSUE_ACTIVE].filter(label => label !== PIPELINE_LABELS.architectReady);
+const blockedLabels = [...ISSUE_TERMINAL, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic];
 
 function task(number) {
   const filename = path.join("tasks", `${number}.md`);
@@ -86,8 +87,10 @@ async function snapshot(includeQueue = false) {
   }
   const skipped = [];
   const candidates = [];
-  for (const issue of openIssues.filter(item => labels(item).has("dispatcher:ready"))) {
+  for (const issue of openIssues.filter(item => labels(item).has(PIPELINE_LABELS.queued))) {
     let reason;
+    const stateFindings = inspectIssueState(issue, { hasOpenPiPr: openPrIssues.has(issue.number) });
+    if (stateFindings.length) reason = `inconsistent pipeline state: ${stateFindings.map(item => item.code).join(", ")}`;
     if (active.has(issue.number)) reason = "already active";
     else if (blockedLabels.some(label => labels(issue).has(label))) reason = "blocked by Pi failure label";
     let metadata;
