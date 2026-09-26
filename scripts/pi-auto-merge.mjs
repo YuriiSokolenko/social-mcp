@@ -50,10 +50,14 @@ export function latestStatus(statuses, context) {
     .sort((a, b) => new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0))[0]?.state ?? null;
 }
 
-export function latestCI(runs, sha, branch) {
-  // Pi branches are published with GITHUB_TOKEN, whose push events do not start workflows.
-  // Their authoritative check is the SHA-bound workflow_dispatch run from trusted dev.
-  // Never treat pull_request/action_required runs as merge-gate CI.
+export function latestCI(runs, sha, branch, baseSha = null) {
+  // Integration CI is dispatched from trusted dev, so its workflow run head is
+  // dev rather than the PR SHA. Its display title carries the exact PR/base pair.
+  if (baseSha) {
+    const marker = `target:${sha} ref:${branch} base:${baseSha}`;
+    return runs.filter(run => run.event === 'workflow_dispatch' && run.display_title?.includes(marker))
+      .sort((a, b) => b.id - a.id)[0] ?? null;
+  }
   return runs.filter(run => run.head_sha === sha && run.head_branch === branch &&
     run.event === 'workflow_dispatch')
     .sort((a, b) => b.id - a.id)[0] ?? null;
@@ -77,15 +81,18 @@ async function hasLiveReview(prNumber) {
   return false;
 }
 
-async function trigger(pr, sha, statuses, runs) {
+async function trigger(pr, sha, baseSha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   const reviewRunning = pr.labels?.some(label => label.name === 'review:running') ?? false;
   if (!currentReview && !reviewRunning && !(await hasLiveReview(pr.number))) {
     await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
   }
-  const ci = latestCI(runs, sha, pr.head.ref);
+  const ci = latestCI(runs, sha, pr.head.ref, baseSha);
   if (needsCIDispatch(ci)) {
-    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: 'dev', inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number) } });
+    await api('/actions/workflows/ci.yml/dispatches', 'POST', {
+      ref: 'dev',
+      inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), integration_base_sha: baseSha },
+    });
   }
 }
 
@@ -188,7 +195,7 @@ async function processPR(prSummary) {
     api('/git/ref/heads/dev'),
     api(`/compare/dev...${sha}`),
     api(`/commits/${sha}/statuses?per_page=100`),
-    api(`/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`),
+    api('/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=dev&per_page=100'),
   ]);
   const currentReview = latestStatus(statusData, reviewContext);
   // Review labels and repair checkpoints can outlive the SHA that created them.
@@ -224,12 +231,12 @@ async function processPR(prSummary) {
 
   const statuses = statusData;
   const runs = ciData.workflow_runs ?? [];
-  await trigger(pr, sha, statuses, runs);
-  const ci = latestCI(runs, sha, pr.head.ref);
+  await trigger(pr, sha, base.object.sha, statuses, runs);
+  const ci = latestCI(runs, sha, pr.head.ref, base.object.sha);
   const review = latestStatus(statuses, reviewContext);
   if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success' ||
       !pr.labels.some(label => label.name === 'review:passed')) {
-    console.log(`#${pr.number}: waiting for CI and SHA-bound review (${sha.slice(0, 12)})`);
+    console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)}) and review`);
     return;
   }
   // Re-read mutable state immediately before the merge; the merge API also rejects a moved head.
