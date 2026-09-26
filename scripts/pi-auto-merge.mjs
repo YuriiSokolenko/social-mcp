@@ -206,7 +206,9 @@ async function processPR(prSummary) {
   const currentHeadNeedsRepair =
     prLabels.has('review:changes-requested') && currentReview === 'failure';
   if (!repairLive && currentHeadNeedsRepair) {
-    const reason = pr.mergeable === false && pr.mergeable_state === 'dirty' ? 'conflict' : 'review';
+    // Reviewer feedback repairs the PR's own change. Integration conflicts are
+    // handled separately below only when current dev actually conflicts.
+    const reason = 'review';
     await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason } });
     console.log(`#${pr.number}: dispatched/resumed Pi ${reason} repair for current head ${sha.slice(0, 12)}${repairCheckpoint ? ' from checkpoint' : ''}`);
     return;
