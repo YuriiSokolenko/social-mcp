@@ -144,9 +144,11 @@ test('failed integration dispatches integration repair instead of stopping', () 
 });
 
 
-test('integration dispatch reserves its pair-bound status before launching CI', () => {
+test('workflow dispatch reservation cannot strand a pending status', () => {
   const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  const reserve = source.indexOf("state: 'pending', context: integrationContext");
-  const dispatch = source.indexOf("/actions/workflows/ci.yml/dispatches");
-  assert.ok(reserve >= 0 && dispatch > reserve);
+  assert.match(source, /async function reserveAndDispatch/);
+  assert.match(source, /state: 'pending', context, description/);
+  assert.match(source, /state: 'error', context, description: `Dispatch failed:/);
+  assert.match(source, /reserveAndDispatch\(sha, integrationContext/);
+  assert.match(source, /'ci\.yml'/);
 });
