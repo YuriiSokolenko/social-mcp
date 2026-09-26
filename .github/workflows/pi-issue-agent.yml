@@ -301,7 +301,7 @@ jobs:
           CHANGES="$(jq -r 'if (.changes // []) | length > 0 then (.changes | map("- " + .) | join("\n")) else "- See the diff for implementation details." end' "$RESULT_FILE")"
           SECURITY="$(jq -r '.security_notes // ""' "$RESULT_FILE")"
           LIMITATIONS="$(jq -r '.limitations // ""' "$RESULT_FILE")"
-          TESTS="- pytest: passed\n- ruff check .: passed\n- git diff --check origin/dev...HEAD: passed"
+          TESTS="- pytest: passed\n- ruff check .: passed\n- git diff --check: passed\n- Final dev+PR integration is validated separately by Merge Gate CI before merge."
           BODY="$(printf '## Summary\n%s\n\n## Changes\n%b\n\n## Security\n%s\n\n## Validation\n%b\n\n## Known limitations\n%s\n\nCloses #%s\n' "$SUMMARY" "$CHANGES" "${SECURITY:-No special security impact identified.}" "$TESTS" "${LIMITATIONS:-None identified.}" "$ISSUE")"
 
           if [ -z "$PR_NUMBER" ]; then
