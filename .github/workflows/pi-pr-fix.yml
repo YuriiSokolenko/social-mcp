@@ -233,12 +233,12 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Remove published repair checkpoint
-        if: steps.changes.outputs.changed == 'true' && env.REPAIR_CHECKPOINT_PUBLISHED != ''
+        if: steps.changes.outputs.changed == 'true' && (env.REPAIR_CHECKPOINT_PUBLISHED != '' || env.REPAIR_CHECKPOINT_EXPECTED != '')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
-            push --force-with-lease="refs/heads/pi/repair-pr-${PR}-checkpoint:${REPAIR_CHECKPOINT_PUBLISHED}" origin ":refs/heads/pi/repair-pr-${PR}-checkpoint"
+            push --force-with-lease="refs/heads/pi/repair-pr-${PR}-checkpoint:${REPAIR_CHECKPOINT_PUBLISHED:-$REPAIR_CHECKPOINT_EXPECTED}" origin ":refs/heads/pi/repair-pr-${PR}-checkpoint"
 
       - name: Wake merge gate
         if: steps.changes.outputs.changed == 'true'
