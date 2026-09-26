@@ -18,11 +18,11 @@ test('only a same-repository Pi PR closing its own issue is eligible', () => {
   assert.equal(issueNumber({ ...pr, head: { ...pr.head, ref: 'feature/42' } }, repo), null);
 });
 
-test('CI must match current SHA and branch and latest run must pass', () => {
+test('CI must match current SHA and branch and latest push or dispatched run must pass', () => {
   const runs = [
     { id: 1, head_sha: 'old', head_branch: 'pi/issue-42', event: 'pull_request', conclusion: 'success' },
     { id: 2, head_sha: 'new', head_branch: 'pi/issue-42', event: 'workflow_dispatch', conclusion: 'success' },
-    { id: 3, head_sha: 'new', head_branch: 'pi/issue-42', event: 'workflow_dispatch', conclusion: 'failure' },
+    { id: 3, head_sha: 'new', head_branch: 'pi/issue-42', event: 'push', conclusion: 'failure' },
   ];
   assert.equal(latestCI(runs, 'new', 'pi/issue-42').conclusion, 'failure');
   assert.equal(latestCI(runs, 'missing', 'pi/issue-42'), null);
@@ -32,9 +32,10 @@ test('CI must match current SHA and branch and latest run must pass', () => {
 test('a bot PR CI run needing approval must not count as a passing run', () => {
   const runs = [{ id: 7, head_sha: 'new', head_branch: 'pi/issue-42',
     event: 'pull_request', status: 'completed', conclusion: 'action_required' }];
-  // PR-triggered runs may require approval; only a workflow_dispatch run can satisfy the merge gate.
+  // PR-triggered runs may require approval; a push or workflow_dispatch run can satisfy the merge gate.
   assert.equal(latestCI(runs, 'new', 'pi/issue-42'), null);
   assert.equal(needsCIDispatch(latestCI(runs, 'new', 'pi/issue-42'), null), true);
+  assert.equal(needsCIDispatch({ event: 'push', status: 'in_progress' }, null), false);
   assert.equal(needsCIDispatch({ event: 'workflow_dispatch', status: 'queued' }, null), false);
   assert.equal(needsCIDispatch({ event: 'workflow_dispatch', conclusion: 'failure' }, null), false);
 });
