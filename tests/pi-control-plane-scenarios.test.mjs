@@ -91,3 +91,11 @@ test('non-review repair failures cannot overwrite review status', () => {
   assert.match(repair, /name: Report review repair failure[\s\S]*env\.REASON == 'review'/);
   assert.match(repair, /social-mcp\/repair-\$\{REASON\}/);
 });
+
+
+test('architect and reconciler contain no removed terminal-state machinery', () => {
+  const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.doesNotMatch(architect, /pi:failed|pi:blocked|pi:cancelled/);
+  assert.doesNotMatch(reconcile, /repair-pr-.*-checkpoint|repairCheckpointRefs|liveRepairs/);
+});
