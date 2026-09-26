@@ -83,8 +83,7 @@ async function hasLiveReview(prNumber) {
 
 async function trigger(pr, sha, baseSha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
-  const reviewRunning = pr.labels?.some(label => label.name === 'review:running') ?? false;
-  if (!currentReview && !reviewRunning && !(await hasLiveReview(pr.number))) {
+  if (!currentReview && !(await hasLiveReview(pr.number))) {
     await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
   }
   const ci = latestCI(runs, sha, pr.head.ref, baseSha);
