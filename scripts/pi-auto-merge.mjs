@@ -126,7 +126,7 @@ async function finalizeMergedPR(pr, issue) {
     return;
   }
   await finishArchitectParents(issue);
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev', inputs: { source: `merged PR #${pr.number} · ${pr.title}` } });
+  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
   await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
   console.log(`#${pr.number}: dispatcher started`);
 }
