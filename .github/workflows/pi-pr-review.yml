@@ -303,6 +303,7 @@ jobs:
           echo "Pi Auto Merge dispatched after review of PR #${PR}"
 
       - name: Mark changes requested
+        id: changes_requested
         if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || steps.checks.outputs.ci_passed != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -329,7 +330,7 @@ jobs:
             }
 
       - name: Mark review failed
-        if: failure()
+        if: failure() && steps.changes_requested.outcome != 'success' && steps.passed.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
