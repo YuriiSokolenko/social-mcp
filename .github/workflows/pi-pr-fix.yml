@@ -306,6 +306,21 @@ jobs:
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "HEAD:refs/heads/$HEAD_REF"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
+      - name: Wake merge gate after published repair
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data '{"ref":"dev"}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
+              echo "::warning::Repair was published; reconciler can wake Merge Gate later."
+              exit 0
+            }
+
       - name: Mark no-change repair terminal
         if: steps.changes.outputs.changed == 'false'
         env:
