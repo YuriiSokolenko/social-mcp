@@ -1,8 +1,17 @@
 name: CI
-run-name: '🧪 CI · ${{ github.event.pull_request.title || github.event.head_commit.message || github.ref_name }}'
+run-name: '🧪 CI · ${{ github.event.pull_request.title || inputs.pr_title || github.event.head_commit.message || github.ref_name }}'
 
 on:
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number associated with this CI run
+        required: false
+        type: string
+      pr_title:
+        description: Pull request title for the Actions run name
+        required: false
+        type: string
   pull_request:
   push:
 
