@@ -243,3 +243,21 @@ test('merge finalization clears issue state with a guarded whole-state write', (
   assert.match(gate, /concurrent merge finalization/);
   assert.doesNotMatch(gate, /labels\/pi%3Amr-created/);
 });
+
+
+test('architect uses guarded state handoffs and atomic split ownership', () => {
+  const source = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
+  assert.match(source, /transitionIssue\(issue, 'architect-ready'\)/);
+  assert.match(source, /transitionIssue\(issue, 'queued'\)/);
+  assert.match(source, /Parent state changed before split publish/);
+  assert.match(source, /Child #\$\{number\} acquired pipeline state before dispatch/);
+  assert.doesNotMatch(source, /labels\/dispatcher%3Aready|labels\/architect%3Aready/);
+});
+
+test('triage uses guarded whole-state classification transitions', () => {
+  const source = fs.readFileSync('scripts/pi-triage.mjs', 'utf8');
+  assert.match(source, /transitionIssue\(number, "queued"\)/);
+  assert.match(source, /transitionIssue\(number, "needs-human"\)/);
+  assert.match(source, /concurrent Triage transition/);
+  assert.doesNotMatch(source, /labels\/pi%3Aneeds-human/);
+});
