@@ -149,3 +149,11 @@ test('repair checkpoint recovery respects terminal review failure', () => {
   const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(source, /!initialPrLabels\.has\('review:failed'\)/);
 });
+
+
+test('stranded pi:ready is requeued for dispatcher rather than merely waking it', () => {
+  const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(source, /removeLabel\(issue\.number, 'pi:ready'\)/);
+  assert.match(source, /addLabel\(issue\.number, 'dispatcher:ready'\)/);
+  assert.match(source, /return stranded ready issue to serialized dispatcher/);
+});
