@@ -27,6 +27,23 @@ export async function replaceStateLabels({
   return { current, labels };
 }
 
+export function stateTargetAfterRemovals(item, removals, stateLabels) {
+  const removed = new Set(removals);
+  const remaining = stateSnapshot(item, stateLabels).filter(label => !removed.has(label));
+  if (remaining.length > 1) {
+    throw new Error(`state repair would remain ambiguous: [${remaining}]`);
+  }
+  return remaining[0] ?? null;
+}
+
+export function issueTargetAfterRemovals(item, removals) {
+  return stateTargetAfterRemovals(item, removals, ISSUE_STATE_LABELS);
+}
+
+export function reviewTargetAfterRemovals(item, removals) {
+  return stateTargetAfterRemovals(item, removals, REVIEW_LABELS);
+}
+
 export async function replaceIssueState(options) {
   return replaceStateLabels({ ...options, stateLabels: ISSUE_STATE_LABELS });
 }
