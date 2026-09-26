@@ -182,9 +182,14 @@ jobs:
           fi
           CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
           [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
-          # Re-root the repaired tree on current dev. This keeps workflow files
-          # already present on dev out of the GitHub App's pushed diff.
+          # Review repairs may run for hours while dev keeps moving. Integrate the
+          # latest dev before re-rooting so the repaired tree cannot silently
+          # revert unrelated changes that landed after this job started.
           git fetch origin dev
+          if ! git merge --no-edit origin/dev; then
+            echo "dev moved and now conflicts with the repaired PR; refusing to publish a stale tree" >&2
+            exit 1
+          fi
           REPAIR_TREE="$(git rev-parse HEAD^{tree})"
           REPAIR_COMMIT="$(printf 'fix: repair issue #%s\n' "$ISSUE" | git commit-tree "$REPAIR_TREE" -p origin/dev)"
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "$REPAIR_COMMIT:refs/heads/$HEAD_REF"
