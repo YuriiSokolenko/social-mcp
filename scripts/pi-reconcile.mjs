@@ -111,7 +111,6 @@ for (const issue of issues) {
   const removals = safeRemovals(findings);
   let recovery = null;
   if (apply) {
-    if (removals.length) await replaceStateLabels(issue.number, issue, null, ISSUE_STATE_LABELS);
     if (findings.some(x => x.code === 'orphaned-implementer-state')) {
       recovery = recoveryForIssue(issue, { hasCheckpoint: checkpoints.has(issue.number), hasOpenPiPr: openPiPrIssues.has(issue.number) });
       if (recovery) {
@@ -121,6 +120,8 @@ for (const issue of issues) {
           if (!dispatched) recovery = { ...recovery, dispatch: null, reason: 'implementer recovery dispatch failed; pi:ready retained for retry' };
         }
       }
+    } else if (removals.length) {
+      await replaceStateLabels(issue.number, issue, null, ISSUE_STATE_LABELS);
     }
   }
   if (retryMergeGateForPr) mergeGateWakeNeeded = true;
@@ -149,7 +150,6 @@ for (const pr of prs) {
   const removals = safeRemovals(findings);
   let recovery = null;
   if (apply) {
-    if (removals.length) await replaceStateLabels(pr.number, pr, null, REVIEW_LABELS);
     if (findings.some(x => x.code === 'orphaned-review-state')) {
       recovery = recoveryForPr(pr);
       if (recovery) {
@@ -159,6 +159,8 @@ for (const pr of prs) {
           recovery = { ...recovery, dispatch: 'merge-gate', reason: 'return orphaned review to merge-gate scheduler' };
         }
       }
+    } else if (removals.length) {
+      await replaceStateLabels(pr.number, pr, null, REVIEW_LABELS);
     }
   }
   if (retryRepair && !recovery) {
