@@ -115,6 +115,12 @@ export function validateIssueTransition(issue, action) {
   if (action === 'running' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running)) {
     throw new Error('running requires pi:ready or an idempotent pi:running state');
   }
+  if (action === 'mr-created' && !labels.has(PIPELINE_LABELS.running) && !labels.has(PIPELINE_LABELS.pr)) {
+    throw new Error('mr-created requires pi:running or an idempotent pi:mr-created state');
+  }
+  if (action === 'needs-human' && labels.has(PIPELINE_LABELS.pr)) {
+    throw new Error('needs-human cannot replace pi:mr-created; PR failures are tracked by SHA-bound statuses');
+  }
   return target;
 }
 
