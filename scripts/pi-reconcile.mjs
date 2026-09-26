@@ -88,8 +88,6 @@ for (const run of runs) {
   if (implement) liveImplementers.add(Number(implement[1]));
   const architect = /^🏗 Architect #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (architect) liveArchitects.add(Number(architect[1]));
-  const repair = /^🔧 Repair PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
-  if (repair) liveRepairs.add(Number(repair[1]));
 }
 const checkpoints = new Set(refs.map(ref => Number(ref.ref.match(/^refs\/heads\/pi\/issue-(\d+)-checkpoint$/)?.[1])).filter(Number.isSafeInteger));
 const report = [];
