@@ -56,6 +56,12 @@ jobs:
           test "$(git rev-parse HEAD)" = "$BASE_SHA"
           git config user.name "social-mcp-ci"
           git config user.email "social-mcp-ci@users.noreply.github.com"
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -nc --arg context "social-mcp/integration/${BASE_SHA:0:12}" '{state:"pending",context:$context,description:"Exact dev+PR integration CI is running"}')" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
           set +e
           git merge --no-ff --no-edit "$TARGET_SHA"
           merge_status=$?
@@ -155,3 +161,30 @@ jobs:
       - name: Tear down Compose environment
         if: always()
         run: docker compose down --volumes --remove-orphans
+
+  integration-result:
+    if: always() && inputs.integration_base_sha != ''
+    needs: [test, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish exact-pair integration result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.integration_base_sha }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DOCKER_RESULT: ${{ needs.docker.result }}
+        run: |
+          if [ "$TEST_RESULT" = "success" ] && [ "$DOCKER_RESULT" = "success" ]; then
+            STATE=success
+            DESCRIPTION="Exact dev+PR integration CI passed"
+          else
+            STATE=failure
+            DESCRIPTION="Exact dev+PR integration CI failed"
+          fi
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -nc --arg state "$STATE" --arg context "social-mcp/integration/${BASE_SHA:0:12}" --arg description "$DESCRIPTION" '{state:$state,context:$context,description:$description}')" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
