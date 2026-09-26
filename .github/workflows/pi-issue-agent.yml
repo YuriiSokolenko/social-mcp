@@ -380,7 +380,10 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Content-Type: application/json" \
             --data '{"ref":"dev"}' \
-            "${API}/actions/workflows/pi-auto-merge.yml/dispatches"
+            "${API}/actions/workflows/pi-auto-merge.yml/dispatches" || {
+              echo "::warning::PR #${{ steps.pr.outputs.number }} is published and marked pi:mr-created, but Merge Gate wake failed; scheduled reconciler/merge gate can recover it."
+              exit 0
+            }
 
       - name: Remove published checkpoint
         if: steps.pr.outputs.number != '' && env.PI_CHECKPOINT_PUBLISHED != ''
@@ -398,7 +401,7 @@ jobs:
           bash scripts/pi-issue-status.sh needs-human             "Pi completed the task but produced no repository changes. Human review is required."
 
       - name: Mark failed result
-        if: failure()
+        if: failure() && steps.pr.outputs.number == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
