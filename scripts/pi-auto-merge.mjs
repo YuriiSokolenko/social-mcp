@@ -207,7 +207,7 @@ async function processPR(prSummary) {
   const runs = ciData.workflow_runs ?? [];
   await trigger(pr, sha, base.object.sha, statuses, runs);
   const ci = latestCI(runs, sha, pr.head.ref, base.object.sha);
-  const review = latestStatus(statuses, `social-mcp/pi-review/${baseSha.slice(0, 12)}`);
+  const review = latestStatus(statuses, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`);
   if (ci?.status !== 'completed' || ci.conclusion !== 'success' || review !== 'success') {
     console.log(`#${pr.number}: waiting for tested integration (dev ${base.object.sha.slice(0, 12)} + PR ${sha.slice(0, 12)}) and review`);
     return;
