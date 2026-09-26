@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { readQueueContext } from "./pi-queue-context.mjs";
-import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState } from "./pi-state-machine.mjs";
+import { replaceIssueState } from "./pi-github-state.mjs";
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-state-machine.mjs";
 
 const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
@@ -46,6 +47,16 @@ async function ensureLabel(name, color, description) {
   }
 }
 const labels = issue => new Set(issue.labels.map(label => label.name));
+async function transitionIssue(number, action) {
+  const expected = await api(`/issues/${number}`);
+  const target = validateIssueTransition(expected, action);
+  await replaceIssueState({
+    number, expected, target,
+    load: n => api(`/issues/${n}`),
+    patch: (n, labels) => api(`/issues/${n}`, { method: "PATCH", body: JSON.stringify({ labels }) }),
+  });
+}
+
 const activeLabels = [...ISSUE_ACTIVE].filter(label => label !== PIPELINE_LABELS.architectReady);
 const blockedLabels = [...ISSUE_TERMINAL, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic];
 
@@ -207,37 +218,30 @@ async function main() {
     }
 
     if (classified.architect.includes(number)) {
-      await api(`/issues/${number}/labels`, {
-        method: "POST", body: JSON.stringify({ labels: ["architect:ready"] }),
-      });
+      await transitionIssue(number, "architect-ready");
       // GITHUB_TOKEN label events cannot trigger another Actions workflow.
       // Dispatch explicitly, and keep the new label if dispatch fails for a manual retry.
       await api("/actions/workflows/pi-architect.yml/dispatches", {
-        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
+        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
       });
-      await api(`/issues/${number}/labels/dispatcher%3Aready`, { method: "DELETE" });
       console.log(`Sent #${number} to Architect`);
       continue;
     }
 
-    await api(`/issues/${number}/labels`, {
-      method: "POST",
-      body: JSON.stringify({ labels: ["pi:ready"] }),
-    });
+    await transitionIssue(number, "ready");
     try {
       await api("/actions/workflows/pi-issue-agent.yml/dispatches", {
         method: "POST",
-        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
+        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
       });
     } catch (error) {
       try {
-        await api(`/issues/${number}/labels/pi%3Aready`, { method: "DELETE" });
+        await transitionIssue(number, "queued");
       } catch (rollbackError) {
         console.error(`Could not roll back pi:ready on #${number}: ${rollbackError}`);
       }
       throw error;
     }
-    await api(`/issues/${number}/labels/dispatcher%3Aready`, { method: "DELETE" });
     console.log(`Dispatched #${number}`);
   }
   if (!selected.length) console.log("Dispatcher selected no issues");

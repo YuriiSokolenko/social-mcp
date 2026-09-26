@@ -1,5 +1,5 @@
 name: Pi Architect
-run-name: "🏗 Architect #${{ inputs.issue_number }}"
+run-name: "🏗 Architect #${{ inputs.issue_number }} ${{ inputs.issue_title && format('· {0}', inputs.issue_title) || '' }}"
 
 on:
   workflow_dispatch:
@@ -8,6 +8,10 @@ on:
         description: Issue to review, refine, or split into dependency-linked tasks
         required: true
         type: number
+      issue_title:
+        description: Automatically resolved from the GitHub issue by the launcher
+        required: false
+        type: string
 
 permissions:
   actions: write

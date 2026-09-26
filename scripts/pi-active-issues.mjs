@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ISSUE_ACTIVE, PIPELINE_LABELS } from './pi-state-machine.mjs';
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
 if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
@@ -11,7 +12,7 @@ for (let page = 1; ; page++) {
   issues.push(...batch);
   if (batch.length < 100) break;
 }
-const active = new Set(['pi:ready','pi:running','pi:mr-created','architect:ready','dispatcher:ready']);
+const active = new Set([...ISSUE_ACTIVE, PIPELINE_LABELS.queued]);
 for (const issue of issues) {
   if (issue.pull_request) continue;
   if (issue.labels.some(label => active.has(label.name))) console.log(issue.number);

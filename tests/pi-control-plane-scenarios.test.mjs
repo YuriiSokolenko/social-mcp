@@ -165,8 +165,7 @@ test('repair checkpoint recovery respects terminal review failure', () => {
 
 test('stranded pi:ready is requeued for dispatcher rather than merely waking it', () => {
   const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(source, /removeLabel\(issue\.number, 'pi:ready'\)/);
-  assert.match(source, /addLabel\(issue\.number, 'dispatcher:ready'\)/);
+  assert.match(source, /replaceStateLabels\(issue\.number, issue, 'dispatcher:ready', ISSUE_STATE_LABELS\)/);
   assert.match(source, /return stranded ready issue to serialized dispatcher/);
 });
 
@@ -191,4 +190,107 @@ test('merge gate is the sole scheduler for Pi repair workflow', () => {
   assert.doesNotMatch(reviewer, /pi-pr-fix\.yml\/dispatches/);
   assert.match(reconciler, /resume saved repair checkpoint through merge-gate scheduler/);
   assert.match(reconciler, /resume changes-requested repair through merge-gate scheduler/);
+});
+
+
+test('status wrappers delegate mutations to guarded transition engine', () => {
+  const issue = fs.readFileSync('scripts/pi-issue-status.sh', 'utf8');
+  const review = fs.readFileSync('scripts/pi-pr-review-status.sh', 'utf8');
+  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
+  assert.doesNotMatch(issue, /clear_states|remove_label|add_label/);
+  assert.doesNotMatch(review, /clear_review_status|remove_label|add_label/);
+  assert.match(issue, /pi-transition\.mjs issue/);
+  assert.match(review, /pi-transition\.mjs review/);
+  assert.match(transition, /replaceIssueState/);
+  assert.match(transition, /replaceReviewState/);
+  assert.match(transition, /await load\(\)/);
+  assert.match(transition, /method: 'PATCH'/);
+});
+
+test('guarded transition replaces only its state-family labels', () => {
+  const helper = fs.readFileSync('scripts/pi-github-state.mjs', 'utf8');
+  assert.match(helper, /filter\(label => !stateLabels\.has\(label\)\)/);
+  assert.match(helper, /ISSUE_STATE_LABELS/);
+  assert.match(helper, /REVIEW_LABELS/);
+});
+
+
+test('dispatcher and reconciler use guarded whole-state writes', () => {
+  const dispatcher = fs.readFileSync('scripts/pi-dispatcher.mjs', 'utf8');
+  const reconciler = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(dispatcher, /transitionIssue\(number, "ready"\)/);
+  assert.match(dispatcher, /transitionIssue\(number, "queued"\)/);
+  assert.match(dispatcher, /transitionIssue\(number, "architect-ready"\)/);
+  assert.doesNotMatch(dispatcher, /labels\/pi%3Aready|labels\/dispatcher%3Aready/);
+  assert.match(reconciler, /replaceIssueState/);
+  assert.match(reconciler, /replaceReviewState/);
+  assert.match(reconciler, /replaceStateLabels\(issue\.number, issue, recovery\.add, 'issue'\)/);
+  assert.match(reconciler, /replaceStateLabels\(pr\.number, pr, recovery\.add, 'review'\)/);
+  assert.doesNotMatch(reconciler, /async function addLabel|async function removeLabel/);
+});
+
+test('issue state family includes dispatcher ownership', () => {
+  const source = fs.readFileSync('scripts/pi-state-machine.mjs', 'utf8');
+  assert.match(source, /ISSUE_STATE_LABELS/);
+  assert.match(source, /PIPELINE_LABELS\.queued/);
+  assert.match(source, /ready: PIPELINE_LABELS\.ready/);
+  assert.match(source, /'architect-ready': PIPELINE_LABELS\.architectReady/);
+});
+
+
+test('merge finalization clears issue state with a guarded whole-state write', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(gate, /clearCompletedIssueState/);
+  assert.match(gate, /replaceIssueState/);
+  assert.match(gate, /replaceIssueState/);
+  assert.doesNotMatch(gate, /labels\/pi%3Amr-created/);
+});
+
+
+test('architect uses guarded state handoffs and atomic split ownership', () => {
+  const source = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
+  assert.match(source, /transitionIssue\(issue, 'architect-ready'\)/);
+  assert.match(source, /transitionIssue\(issue, 'queued'\)/);
+  assert.match(source, /Parent state changed before split publish/);
+  assert.match(source, /Child #\$\{number\} acquired pipeline state before dispatch/);
+  assert.doesNotMatch(source, /labels\/dispatcher%3Aready|labels\/architect%3Aready/);
+});
+
+test('triage uses guarded whole-state classification transitions', () => {
+  const source = fs.readFileSync('scripts/pi-triage.mjs', 'utf8');
+  assert.match(source, /transitionIssue\(number, "queued"\)/);
+  assert.match(source, /transitionIssue\(number, "needs-human"\)/);
+  assert.match(source, /replaceIssueState/);
+  assert.doesNotMatch(source, /labels\/pi%3Aneeds-human/);
+});
+
+
+test('label provisioning covers the complete executable issue state family', () => {
+  const source = fs.readFileSync('scripts/pi-labels.mjs', 'utf8');
+  assert.match(source, /dispatcher:ready/);
+  assert.match(source, /architect:ready/);
+  for (const label of ['pi:ready','pi:running','pi:mr-created','pi:needs-human','pi:failed','pi:cancelled']) {
+    assert.match(source, new RegExp(label.replace(':', '\\:')));
+  }
+});
+
+
+test('all execution-state writers delegate CAS semantics to pi-github-state', () => {
+  const helper = fs.readFileSync('scripts/pi-github-state.mjs', 'utf8');
+  assert.match(helper, /expectedState/);
+  assert.match(helper, /currentState/);
+  assert.match(helper, /concurrent \${context} transition/);
+  assert.match(helper, /filter\(label => !stateLabels\.has\(label\)\)/);
+  for (const path of [
+    'scripts/pi-transition.mjs',
+    'scripts/pi-dispatcher.mjs',
+    'scripts/pi-reconcile.mjs',
+    'scripts/pi-architect.mjs',
+    'scripts/pi-triage.mjs',
+    'scripts/pi-auto-merge.mjs',
+  ]) {
+    const source = fs.readFileSync(path, 'utf8');
+    assert.match(source, /pi-github-state\.mjs/);
+    assert.doesNotMatch(source, /JSON\.stringify\(expectedState\)\s*!==\s*JSON\.stringify\(currentState\)/);
+  }
 });

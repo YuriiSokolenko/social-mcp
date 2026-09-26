@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { replaceIssueState } from "./pi-github-state.mjs";
+import { validateIssueTransition } from "./pi-state-machine.mjs";
 
 const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
@@ -44,6 +46,20 @@ async function ensureLabel(name, color, description) {
 }
 
 const labelsOf = issue => new Set(issue.labels.map(label => label.name));
+async function transitionIssue(number, action) {
+  const expected = await api(`/issues/${number}`);
+  const target = validateIssueTransition(expected, action);
+  const current = await api(`/issues/${number}`);
+  const expectedState = issueStateLabels(expected);
+  const currentState = issueStateLabels(current);
+  if (JSON.stringify(expectedState) !== JSON.stringify(currentState)) {
+    throw new Error(`concurrent Triage transition on #${number}: expected [${expectedState}], found [${currentState}]`);
+  }
+  const keep = current.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
+  await api(`/issues/${number}`, { method: "PATCH",
+    body: JSON.stringify({ labels: [...new Set([...keep, target])] }) });
+}
+
 
 // Issues already in one of these states are owned by another stage of the
 // pipeline; triage never re-classifies them. `pi:needs-human` is handled
@@ -241,12 +257,7 @@ async function main() {
       console.log(`Skipped #${number}: no longer an eligible candidate`);
       continue;
     }
-    await api(`/issues/${number}/labels`, {
-      method: "POST", body: JSON.stringify({ labels: ["dispatcher:ready"] }),
-    });
-    if (owned.has("pi:needs-human")) {
-      await api(`/issues/${number}/labels/pi%3Aneeds-human`, { method: "DELETE" });
-    }
+    await transitionIssue(number, "queued");
     console.log(`Marked #${number} dispatcher:ready`);
   }
 
@@ -259,11 +270,7 @@ async function main() {
     }
     const task = readTask(number);
     const marker = markerFor(issue.body, task.exists ? task.text : "");
-    if (!owned.has("pi:needs-human")) {
-      await api(`/issues/${number}/labels`, {
-        method: "POST", body: JSON.stringify({ labels: ["pi:needs-human"] }),
-      });
-    }
+    if (!owned.has("pi:needs-human")) await transitionIssue(number, "needs-human");
     await api(`/issues/${number}/comments`, {
       method: "POST",
       body: JSON.stringify({

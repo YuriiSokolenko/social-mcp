@@ -34,6 +34,7 @@ test('recovers a merged dev PR by closing its issue before dispatch', () => {
       base: { ref: 'dev', repo: { full_name: repo } },
       head: { ref: 'pi/issue-42', repo: { full_name: repo } },
     };
+    let issueClosed = false;
     globalThis.fetch = async (input, options = {}) => {
       const url = new URL(input);
       const path = url.pathname.replace('/repos/test/repo', '');
@@ -46,15 +47,13 @@ test('recovers a merged dev PR by closing its issue before dispatch', () => {
         return Response.json([]);
       }
       if (path === '/issues/42' && method === 'GET') {
-        return Response.json({ state: 'open', labels: [{ name: 'pi:mr-created' }] });
+        return Response.json({ state: issueClosed ? 'closed' : 'open', state_reason: issueClosed ? 'completed' : null, labels: [{ name: 'pi:mr-created' }] });
       }
       if (path === '/issues/42' && method === 'PATCH') {
-        return Response.json({ state: 'closed', state_reason: 'completed' });
+        issueClosed = true;
+        return Response.json({ state: 'closed', state_reason: 'completed', labels: [{ name: 'pi:mr-created' }] });
       }
       if (path === '/actions/workflows/pi-dispatcher.yml/dispatches' && method === 'POST') {
-        return new Response(null, { status: 204 });
-      }
-      if (path === '/issues/42/labels/pi%3Amr-created' && method === 'DELETE') {
         return new Response(null, { status: 204 });
       }
       throw new Error('Unexpected request: ' + method + ' ' + path);
@@ -75,7 +74,7 @@ test('recovers a merged dev PR by closing its issue before dispatch', () => {
   assert.deepEqual(actions, [
     { path: '/issues/42', method: 'PATCH' },
     { path: '/actions/workflows/pi-dispatcher.yml/dispatches', method: 'POST' },
-    { path: '/issues/42/labels/pi%3Amr-created', method: 'DELETE' },
+    { path: '/issues/42', method: 'PATCH' },
   ]);
 });
 

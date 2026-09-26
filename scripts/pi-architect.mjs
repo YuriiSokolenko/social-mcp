@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readQueueContext } from './pi-queue-context.mjs';
-import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS } from './pi-state-machine.mjs';
+import { replaceIssueState } from './pi-github-state.mjs';
+import { ISSUE_ACTIVE, ISSUE_STATE_LABELS, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-state-machine.mjs';
 import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
@@ -139,6 +140,19 @@ async function ensureLabel(name, color, description) {
   if (!current) await api('/labels', 'POST', { name, color, description });
 }
 
+async function transitionIssue(issue, action) {
+  const expected = await api(`/issues/${issue}`);
+  const target = validateIssueTransition(expected, action);
+  const current = await api(`/issues/${issue}`);
+  const expectedState = issueStateLabels(expected);
+  const currentState = issueStateLabels(current);
+  if (JSON.stringify(expectedState) !== JSON.stringify(currentState)) {
+    throw new Error(`concurrent Architect transition on #${issue}: expected [${expectedState}], found [${currentState}]`);
+  }
+  const keep = current.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
+  await api(`/issues/${issue}`, 'PATCH', { labels: [...new Set([...keep, target])] });
+}
+
 async function ensureTask(number, title, priority, dependencies, body) {
   const filename = `tasks/${number}.md`;
   const content = `---\nissue: ${number}\npriority: ${priority}\ndepends_on: [${dependencies.join(', ')}]\n---\n\n# ${title}\n\n## Scope and acceptance\n${body}\n`;
@@ -176,16 +190,18 @@ async function prepare(issue, filename) {
   if (parent?.state === 'open' && !labels.has('architect:ready') &&
       process.env.GITHUB_EVENT_NAME === 'workflow_dispatch') {
     await ensureLabel('architect:ready', 'c5def5', 'Large issue approved for Pi Architect');
-    await api(`/issues/${issue}/labels`, 'POST', { labels: ['architect:ready'] });
+    if (labels.has('dispatcher:ready')) {
+      await transitionIssue(issue, 'architect-ready');
+    } else {
+      throw new Error('Manual Architect dispatch requires dispatcher:ready');
+    }
+    labels.delete('dispatcher:ready');
     labels.add('architect:ready');
   }
   if (!parent || parent.state !== 'open' || !labels.has('architect:ready') ||
       [...ISSUE_ACTIVE, ...ISSUE_TERMINAL, PIPELINE_LABELS.epic]
         .filter(x => x !== PIPELINE_LABELS.architectReady).some(x => labels.has(x))) {
     throw new Error('Parent must be an open, inactive issue labeled architect:ready');
-  }
-  if (labels.has('dispatcher:ready')) {
-    await api(`/issues/${issue}/labels/dispatcher%3Aready`, 'DELETE');
   }
   const openIssues = (await allIssues()).filter(x => x.state === 'open');
   const known = openIssues
@@ -238,8 +254,7 @@ async function publish(issue, jsonl, contextFile) {
     // This also covers manual workflow_dispatch reviews, where dispatcher:ready
     // may not have existed before Architect temporarily claimed the issue.
     await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
-    await api(`/issues/${issue}/labels`, 'POST', { labels: ['dispatcher:ready'] });
-    await api(`/issues/${issue}/labels/architect%3Aready`, 'DELETE');
+    await transitionIssue(issue, 'queued');
     await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
     console.log(`Reviewed #${issue}: ${plan.action}`);
     return;
@@ -274,11 +289,19 @@ async function publish(issue, jsonl, contextFile) {
   }
   await ensureLabel('architect:epic', '7057ff', 'Parent issue split into linked work items');
   await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
-  await api(`/issues/${issue}/labels`, 'POST', { labels: ['architect:epic'] });
-  for (const number of children) {
-    await api(`/issues/${number}/labels`, 'POST', { labels: ['dispatcher:ready'] });
+  const latestParent = await api(`/issues/${issue}`);
+  const latestState = issueStateLabels(latestParent);
+  if (JSON.stringify(latestState) !== JSON.stringify(['architect:ready'])) {
+    throw new Error(`Parent state changed before split publish: [${latestState}]`);
   }
-  await api(`/issues/${issue}/labels/architect%3Aready`, 'DELETE');
+  const parentKeep = latestParent.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
+  await api(`/issues/${issue}`, 'PATCH', { labels: [...new Set([...parentKeep, 'architect:epic'])] });
+  for (const number of children) {
+    const child = await api(`/issues/${number}`);
+    if (issueStateLabels(child).length) throw new Error(`Child #${number} acquired pipeline state before dispatch`);
+    const keep = child.labels.map(label => label.name).filter(label => !ISSUE_STATE_LABELS.has(label));
+    await api(`/issues/${number}`, 'PATCH', { labels: [...new Set([...keep, 'dispatcher:ready'])] });
+  }
   await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
   console.log(`Split #${issue} into ${children.map(n => `#${n}`).join(', ')}`);
 }

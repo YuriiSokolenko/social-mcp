@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { childNumbers, parentOf } from './pi-architect.mjs';
+import { replaceIssueState } from './pi-github-state.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
@@ -81,7 +82,7 @@ export function shouldDeferBranchUpdate(pr) {
 async function hasLiveReview(prNumber) {
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     const data = await api(`/actions/workflows/pi-pr-review.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
-    if ((data.workflow_runs ?? []).some(run => run.display_title === `🔬 Review PR #${prNumber}`)) return true;
+    if ((data.workflow_runs ?? []).some(run => run.display_title?.startsWith(`🔬 Review PR #${prNumber} ·`) || run.display_title === `🔬 Review PR #${prNumber}`)) return true;
   }
   return false;
 }
@@ -90,7 +91,7 @@ async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
   const reviewRunning = pr.labels?.some(label => label.name === 'review:running') ?? false;
   if (!currentReview && !reviewRunning && !(await hasLiveReview(pr.number))) {
-    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number) } });
+    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
   }
   const ci = latestCI(runs, sha, pr.head.ref);
   if (needsCIDispatch(ci)) {
@@ -121,6 +122,19 @@ export async function finishArchitectParents(childNumber, issueApi = api) {
   }
 }
 
+async function clearCompletedIssueState(number, expected) {
+  await replaceIssueState({
+    number, expected, target: null, context: 'merge finalization',
+    load: n => api(`/issues/${n}`),
+    validateCurrent: current => {
+      if (current.state !== 'closed' || current.state_reason !== 'completed') {
+        throw new Error(`issue #${number} is not completed while finalizing merge`);
+      }
+    },
+    patch: (n, labels) => api(`/issues/${n}`, 'PATCH', { labels }),
+  });
+}
+
 async function finalizeMergedPR(pr, issue) {
   const current = await api(`/issues/${issue}`);
   const labels = new Set(current.labels.map(label => label.name));
@@ -135,7 +149,7 @@ async function finalizeMergedPR(pr, issue) {
   }
   await finishArchitectParents(issue);
   await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
-  await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
+  await clearCompletedIssueState(issue, current);
   console.log(`#${pr.number}: dispatcher started`);
 }
 
@@ -143,7 +157,7 @@ async function hasLiveRepair(prNumber) {
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     const data = await api(`/actions/workflows/pi-pr-fix.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
     if ((data.workflow_runs ?? []).some(run =>
-      run.display_title === `🔧 Repair PR #${prNumber}`)) return true;
+      run.display_title?.startsWith(`🔧 Repair PR #${prNumber} ·`) || run.display_title === `🔧 Repair PR #${prNumber}`)) return true;
   }
   return false;
 }
@@ -188,7 +202,7 @@ async function processPR(prSummary) {
   ]);
   if (!repairLive && (prLabels.has('review:changes-requested') || repairCheckpoint)) {
     const reason = pr.mergeable === false && pr.mergeable_state === 'dirty' ? 'conflict' : 'review';
-    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), reason } });
+    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason } });
     console.log(`#${pr.number}: dispatched/resumed Pi ${reason} repair`);
     return;
   }
@@ -202,7 +216,7 @@ async function processPR(prSummary) {
         console.log(`#${pr.number}: merge conflict; repair is already active or has a saved checkpoint`);
         return;
       }
-      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), reason: 'conflict' } });
+      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
       console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
       return;
     }
