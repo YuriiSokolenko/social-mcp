@@ -44,6 +44,22 @@ async function replaceStateLabels(number, expected, target, kind) {
     patch: (n, labels) => api(`/issues/${n}`, { method: 'PATCH', body: JSON.stringify({ labels }) }),
   });
 }
+async function dispatchWorkflow(workflow, inputs) {
+  await api(`/actions/workflows/${workflow}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: 'dev', inputs }) });
+}
+async function tryDispatchWorkflow(workflow, inputs, context) {
+  try {
+    await dispatchWorkflow(workflow, inputs);
+    return true;
+  } catch (error) {
+    console.error(`Recovery dispatch failed for ${context}: ${error.message}`);
+    return false;
+  }
+}
+async function deleteRef(ref) {
+  const response = await fetch(`${base}/git/refs/${ref}`, { method: 'DELETE', headers });
+  if (![204, 404].includes(response.status)) throw new Error(`Cannot delete ref ${ref}: ${response.status} ${await response.text()}`);
+}
 const liveStatuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
 const [allIssues, prs, runGroups, refs] = await Promise.all([
   pages('/issues?state=all'),
