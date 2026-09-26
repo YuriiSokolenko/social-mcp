@@ -62,12 +62,12 @@ jobs:
       - name: Ensure workflow labels
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" ensure
+        run: node "$GITHUB_WORKSPACE/scripts/pi-labels.mjs" issue
 
       - name: Mark issue running
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" running
+        run: node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue running
 
       - name: Create temporary issue worktree
         id: worktree
@@ -276,7 +276,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
 
       - name: Wake merge gate
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
@@ -308,7 +308,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" needs-human             "Pi completed the task but produced no repository changes. Human review is required."
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human             "Pi completed the task but produced no repository changes. Human review is required."
 
       - name: Mark failed result
         if: failure() && steps.pr.outputs.number == ''
@@ -319,14 +319,14 @@ jobs:
           if git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}-checkpoint" >/dev/null; then
             MESSAGE="$MESSAGE Saved work: https://github.com/${REPO}/tree/pi/issue-${ISSUE}-checkpoint"
           fi
-          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" failed "$MESSAGE"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue failed "$MESSAGE"
 
       - name: Mark cancelled result
         if: cancelled() && steps.pr.outputs.number == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash "$GITHUB_WORKSPACE/scripts/pi-issue-status.sh" cancelled             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue cancelled             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Summarize issue pipeline
         if: always()
