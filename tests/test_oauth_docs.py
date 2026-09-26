@@ -125,7 +125,56 @@ def test_oauth_doc_links_implementation_tasks() -> None:
         assert issue in text, f"docs/oauth.md must reference {issue}"
 
 
-# --- .env.example exposes the Meta config empty and links the docs ---------
+def test_oauth_doc_maps_concerns_to_correct_issues() -> None:
+    """Acceptance criterion #5 of issue #2: callback handling, token exchange,
+    and token lifecycle must be tracked in issues #15, #16, and #17
+    respectively. CI must catch a regression that conflates callback handling
+    with token exchange under a single issue."""
+    text = OAUTH_DOC.read_text()
+    # Collect Markdown table rows from the "What is already done" table only
+    # (other tables in the doc also contain words like "callback").
+    table_rows: list[str] = []
+    in_done_table = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("## what is already done"):
+            in_done_table = True
+            continue
+        if in_done_table and stripped.startswith("|"):
+            if "---" in stripped:
+                continue
+            table_rows.append(stripped)
+        elif in_done_table and stripped and not stripped.startswith("|"):
+            # Left the table at the first non-pipe line after entering it.
+            break
+
+    def row_for(keyword: str) -> str | None:
+        for row in table_rows:
+            if keyword.lower() in row.lower():
+                return row
+        return None
+
+    # Callback handling must map to #15 and must NOT be conflated with #16
+    # (token exchange).
+    callback_row = row_for("callback")
+    assert callback_row is not None, "table must list a callback-handling row"
+    assert "#15" in callback_row, "callback handling must be tracked by #15"
+    assert "#16" not in callback_row, (
+        "callback handling must not be conflated with token exchange (#16)"
+    )
+
+    # Token exchange (code exchange) must map to #16.
+    exchange_row = row_for("exchange")
+    assert exchange_row is not None, "table must list a token-exchange row"
+    assert "#16" in exchange_row, "token exchange must be tracked by #16"
+
+    # Token lifecycle must map to #17.
+    lifecycle_row = row_for("lifecycle")
+    assert lifecycle_row is not None, "table must list a lifecycle row"
+    assert "#17" in lifecycle_row, "token lifecycle must be tracked by #17"
+
+
+# --- .env.example exposes the Meta config empty and links the docs ---------</arg_value></tool_call><tool_call>edit<arg_key>path</arg_key><arg_value>/home/runner/actions-runner/_work/_temp/social-mcp-fix-36207900669-1/tests/test_oauth_docs.py</arg_value><arg_key>edits</arg_key><arg_value>[{
 
 
 def _env_value(name: str) -> str | None:

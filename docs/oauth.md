@@ -2,11 +2,12 @@
 
 This document describes how Social MCP connects a Threads account through the
 official Meta OAuth flow, and how the resulting tokens are kept safe at rest.
-The current implementation covers configuration and state security; the
-callback route, token exchange and token lifecycle are implemented in issues
-[#16](https://github.com/social-mcp/social-mcp/issues/16) (token exchange) and
-[#17](https://github.com/social-mcp/social-mcp/issues/17) (token lifecycle),
-on top of the state validation in [#15](https://github.com/social-mcp/social-mcp/issues/15).
+The current implementation covers configuration only; the
+callback route, state validation and code exchange, and token lifecycle are
+tracked in issues [#15](https://github.com/social-mcp/social-mcp/issues/15)
+(state validation and callback handling), [#16](https://github.com/social-mcp/social-mcp/issues/16)
+(token exchange), and [#17](https://github.com/social-mcp/social-mcp/issues/17)
+(token lifecycle), respectively.
 
 Verified against the official Meta/Threads documentation as of September 2026.
 Meta may evolve endpoint paths, versions and scopes, so re-verify against
@@ -87,7 +88,7 @@ current set evolves with the API, so always re-check
 ### 3. Handle the callback
 
 After the user allows (or denies) permission, Meta redirects to the registered
-`redirect_uri` (handled in issue #16).
+`redirect_uri` (handled in issue #15).
 
 - **Success:** the redirect carries a `code` parameter. Note that Meta appends
   `#_` to the redirect URI; this fragment is **not** part of the code and must
@@ -259,9 +260,12 @@ export TOKEN_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet
 | ------------------------------- | ------------- | ---------- |
 | Meta app config and OAuth docs  | Documented here (issue #2) | #2 |
 | OAuth `state` minting/validation | Implemented   | #15 |
-| Callback handling and code exchange | Pending    | #16 |
+| Callback handling and state validation | Pending    | #15 |
+| Token exchange (code exchange) | Pending    | #16 |
 | Token persistence (encrypted) and lifecycle | Pending | #17 |
 
-This issue is documentation and configuration only. The callback route, token
-exchange, encrypted persistence, and refresh behavior are implemented in
-issues #16 and #17, which follow the boundaries documented here.
+This issue is documentation and configuration only. The callback route and
+state validation are tracked in [#15](https://github.com/social-mcp/social-mcp/issues/15),
+token exchange in [#16](https://github.com/social-mcp/social-mcp/issues/16), and encrypted
+persistence and refresh behavior in [#17](https://github.com/social-mcp/social-mcp/issues/17),
+which follow the boundaries documented here.
