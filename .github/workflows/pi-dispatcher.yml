@@ -1,9 +1,15 @@
 name: Pi Dispatcher
+run-name: "🚦 Dispatcher · ${{ github.event.pull_request.title || inputs.source || 'queue scan' }}"
 
 on:
   pull_request:
     types: [closed]
   workflow_dispatch:
+    inputs:
+      source:
+        description: Why the dispatcher was started
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -49,12 +55,11 @@ jobs:
           set -o pipefail
           TASK_FILE="$RUNNER_TEMP/pi-dispatcher-task.txt"
           cat > "$TASK_FILE" <<EOF
-          Read and follow agents/dispatcher/AGENTS.md and docs/PROJECT_CONTEXT.md.
-          The current GitHub issue and PR snapshot is at $RUNNER_TEMP/pi-dispatcher-context.json.
-          Read the snapshot and relevant tasks/<issue-number>.md files.
-          Classify every eligible candidate: issues for direct implementation, architect for decomposition before implementation. An architect child may be split again if it remains broad. Execution concurrency is controlled by the GitHub Actions queue and the N150 autoscaler.
-          Call submit_result exactly once, as your last action, with your classification.
-          Do not modify the repository or GitHub state.
+          Read and follow agents/dispatcher/AGENTS.md.
+          Read $RUNNER_TEMP/pi-dispatcher-context.json and the task file for each entry in candidates.
+          The candidates list is authoritative: do not re-check eligibility, dependencies, priority, ordering or capacity.
+          For every candidate decide only IMPLEMENT or ARCHITECT based on scope.
+          Call submit_result exactly once as your last action. Do not modify repository or GitHub state.
           EOF
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \

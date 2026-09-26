@@ -1,7 +1,10 @@
 name: Pi Triage
+run-name: "🔎 Triage · ${{ github.event.issue.title || 'queue scan' }}"
 
 on:
   workflow_dispatch:
+  issues:
+    types: [closed]
 
 permissions:
   contents: read
@@ -13,6 +16,10 @@ concurrency:
 
 jobs:
   triage:
+    # Manual runs always triage. Issue-close events only wake triage when an
+    # ordinary issue (not a PR) closed; prepare remains the source of truth
+    # and will exit without invoking Pi when no candidates exist.
+    if: github.event_name == 'workflow_dispatch' || github.event.issue.pull_request == null
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:

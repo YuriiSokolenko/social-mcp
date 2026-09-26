@@ -1,4 +1,5 @@
 name: Pi Auto Merge
+run-name: "🔀 Merge gate · ${{ github.event.workflow_run.display_title || 'manual scan' }}"
 
 on:
   workflow_run:
@@ -39,3 +40,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-auto-merge.mjs
+
+      - name: Summarize active Pi issues
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for issue in $(node scripts/pi-active-issues.mjs); do
+            node scripts/pi-issue-summary.mjs "$issue"
+          done

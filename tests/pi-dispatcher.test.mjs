@@ -1,23 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchFromJsonl, finalText, validateDispatch } from '../scripts/pi-dispatcher.mjs';
+import { classificationLists, dispatchFromJsonl, finalText, validateDispatch } from '../scripts/pi-dispatcher.mjs';
 
-test('accepts disjoint issue and architect lists', () => {
-  const result = { issues: [3, 4], architect: [5] };
+test('accepts binary classifications and derives handoff lists', () => {
+  const result = { classifications: [
+    { issue: 3, decision: 'IMPLEMENT' },
+    { issue: 4, decision: 'IMPLEMENT' },
+    { issue: 5, decision: 'ARCHITECT' },
+  ] };
   assert.equal(validateDispatch(result), result);
+  assert.deepEqual(classificationLists(result), { issues: [3, 4], architect: [5] });
 });
 
-test('rejects an issue classified into both lists', () => {
-  assert.throws(() => validateDispatch({ issues: [3], architect: [3] }), /duplicate issue/);
+test('rejects duplicate issue classifications', () => {
+  assert.throws(() => validateDispatch({ classifications: [
+    { issue: 3, decision: 'IMPLEMENT' }, { issue: 3, decision: 'ARCHITECT' },
+  ] }), /duplicate issue/);
 });
 
-test('rejects a non-integer entry', () => {
-  assert.throws(() => validateDispatch({ issues: [3.5], architect: [] }), /invalid dispatcher classification/);
+test('rejects an invalid decision or non-integer issue', () => {
+  assert.throws(() => validateDispatch({ classifications: [{ issue: 3.5, decision: 'IMPLEMENT' }] }), /invalid dispatcher classifications/);
+  assert.throws(() => validateDispatch({ classifications: [{ issue: 3, decision: 'SKIP' }] }), /invalid dispatcher classifications/);
 });
 
 test('prefers a submit_result tool entry over any DISPATCH_RESULT text line', () => {
-  const result = { issues: [3], architect: [] };
-  const stale = { issues: [4], architect: [] };
+  const result = { classifications: [{ issue: 3, decision: 'IMPLEMENT' }] };
+  const stale = { classifications: [{ issue: 4, decision: 'IMPLEMENT' }] };
   const jsonl = [
     JSON.stringify({ type: 'entry_appended', entry: { type: 'custom', customType: 'dispatcher-result', data: result } }),
     JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
@@ -27,8 +35,8 @@ test('prefers a submit_result tool entry over any DISPATCH_RESULT text line', ()
 });
 
 test('uses the last DISPATCH_RESULT line when the model second-guesses itself mid-response', () => {
-  const draft = { issues: [4], architect: [] };
-  const final = { issues: [3], architect: [] };
+  const draft = { classifications: [{ issue: 4, decision: 'IMPLEMENT' }] };
+  const final = { classifications: [{ issue: 3, decision: 'IMPLEMENT' }] };
   const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
     content: [{ type: 'text', text: `DISPATCH_RESULT: ${JSON.stringify(draft)}\nOn reflection:\nDISPATCH_RESULT: ${JSON.stringify(final)}` }] }] });
   assert.deepEqual(dispatchFromJsonl(jsonl), final);

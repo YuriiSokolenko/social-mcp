@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { readQueueContext } from "./pi-queue-context.mjs";
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState } from "./pi-state-machine.mjs";
 
 const repo = process.env.REPO;
 const token = process.env.GH_TOKEN;
@@ -45,8 +46,8 @@ async function ensureLabel(name, color, description) {
   }
 }
 const labels = issue => new Set(issue.labels.map(label => label.name));
-const activeLabels = ["pi:ready", "pi:running", "pi:mr-created"];
-const blockedLabels = ["pi:blocked", "pi:failed", "pi:needs-human", "pi:cancelled", "architect:ready", "architect:epic"];
+const activeLabels = [...ISSUE_ACTIVE].filter(label => label !== PIPELINE_LABELS.architectReady);
+const blockedLabels = [...ISSUE_TERMINAL, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic];
 
 function task(number) {
   const filename = path.join("tasks", `${number}.md`);
@@ -86,8 +87,10 @@ async function snapshot(includeQueue = false) {
   }
   const skipped = [];
   const candidates = [];
-  for (const issue of openIssues.filter(item => labels(item).has("dispatcher:ready"))) {
+  for (const issue of openIssues.filter(item => labels(item).has(PIPELINE_LABELS.queued))) {
     let reason;
+    const stateFindings = inspectIssueState(issue, { hasOpenPiPr: openPrIssues.has(issue.number) });
+    if (stateFindings.length) reason = `inconsistent pipeline state: ${stateFindings.map(item => item.code).join(", ")}`;
     if (active.has(issue.number)) reason = "already active";
     else if (blockedLabels.some(label => labels(issue).has(label))) reason = "blocked by Pi failure label";
     let metadata;
@@ -127,13 +130,21 @@ export function finalText(jsonl) {
   return result;
 }
 export function validateDispatch(result) {
-  if (!Array.isArray(result.issues) || !result.issues.every(Number.isSafeInteger) ||
-      !Array.isArray(result.architect) || !result.architect.every(Number.isSafeInteger)) {
-    throw new Error("invalid dispatcher classification lists");
+  if (!Array.isArray(result.classifications) ||
+      !result.classifications.every(item => Number.isSafeInteger(item?.issue) &&
+        ["IMPLEMENT", "ARCHITECT"].includes(item?.decision))) {
+    throw new Error("invalid dispatcher classifications");
   }
-  const selected = [...result.issues, ...result.architect];
-  if (new Set(selected).size !== selected.length) throw new Error("duplicate issue");
+  const numbers = result.classifications.map(item => item.issue);
+  if (new Set(numbers).size !== numbers.length) throw new Error("duplicate issue");
   return result;
+}
+
+export function classificationLists(result) {
+  return {
+    issues: result.classifications.filter(item => item.decision === "IMPLEMENT").map(item => item.issue),
+    architect: result.classifications.filter(item => item.decision === "ARCHITECT").map(item => item.issue),
+  };
 }
 export function dispatchFromJsonl(jsonl) {
   let toolResult = null;
@@ -168,7 +179,8 @@ async function main() {
     return;
   }
   const result = dispatchFromJsonl(fs.readFileSync(file, "utf8"));
-  const selected = [...result.issues, ...result.architect];
+  const classified = classificationLists(result);
+  const selected = result.classifications.map(item => item.issue);
 
   // The concurrency group serializes dispatcher jobs, but queued jobs can start
   // with stale trigger events. Always rebuild state after acquiring the runner
@@ -178,12 +190,12 @@ async function main() {
       initial.candidates.some(candidate => !selected.includes(candidate.issue))) {
     throw new Error("classify every eligible issue exactly once");
   }
-  for (const { issue: number } of initial.candidates) {
+  for (const { issue: number, title } of initial.candidates) {
     const state = await snapshot();
 
     // A previous serialized dispatcher may already have assigned this issue.
     // That is a successful no-op, not an error and must never emit a duplicate
-    // repository_dispatch event.
+    // workflow dispatch.
     if (state.active.includes(number)) {
       console.log(`Skipped #${number}: already assigned by an earlier dispatcher`);
       continue;
@@ -194,14 +206,14 @@ async function main() {
       continue;
     }
 
-    if (result.architect.includes(number)) {
+    if (classified.architect.includes(number)) {
       await api(`/issues/${number}/labels`, {
         method: "POST", body: JSON.stringify({ labels: ["architect:ready"] }),
       });
       // GITHUB_TOKEN label events cannot trigger another Actions workflow.
       // Dispatch explicitly, and keep the new label if dispatch fails for a manual retry.
       await api("/actions/workflows/pi-architect.yml/dispatches", {
-        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
+        method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
       });
       await api(`/issues/${number}/labels/dispatcher%3Aready`, { method: "DELETE" });
       console.log(`Sent #${number} to Architect`);
@@ -213,9 +225,9 @@ async function main() {
       body: JSON.stringify({ labels: ["pi:ready"] }),
     });
     try {
-      await api("/dispatches", {
+      await api("/actions/workflows/pi-issue-agent.yml/dispatches", {
         method: "POST",
-        body: JSON.stringify({ event_type: "pi_dispatch_issue", client_payload: { issue_number: number } }),
+        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
       });
     } catch (error) {
       try {

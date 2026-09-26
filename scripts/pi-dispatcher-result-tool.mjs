@@ -10,10 +10,12 @@ export default function (pi) {
   pi.registerTool({
     name: 'submit_result',
     label: 'Submit dispatcher result',
-    description: 'Submit your final classification of every prepared candidate issue. Call this exactly once, as your last action, instead of writing a DISPATCH_RESULT line.',
+    description: 'Classify every prepared candidate exactly once as IMPLEMENT or ARCHITECT. The workflow owns eligibility, ordering, dependencies and capacity.',
     parameters: Type.Object({
-      issues: Type.Array(Type.Integer(), { description: 'Candidates for pi:ready' }),
-      architect: Type.Array(Type.Integer(), { description: 'Candidates to send to Pi Architect' }),
+      classifications: Type.Array(Type.Object({
+        issue: Type.Integer(),
+        decision: Type.Union([Type.Literal('IMPLEMENT'), Type.Literal('ARCHITECT')]),
+      })),
     }),
     async execute(_toolCallId, params) {
       const result = validateDispatch(params);

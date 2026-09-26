@@ -58,7 +58,12 @@ clear_states() {
   remove_label "pi%3Acancelled"
 }
 
-case "${1:-}" in
+ACTION="${1:-}"
+if [[ "$ACTION" != "ensure" ]]; then
+  node scripts/pi-validate-transition.mjs issue "$ACTION"
+fi
+
+case "$ACTION" in
   ensure)
     ensure_label "pi:ready" "57f678" "Ready for the Pi issue agent"
     ensure_label "pi:running" "0052cc" "Pi agent is working on this issue"

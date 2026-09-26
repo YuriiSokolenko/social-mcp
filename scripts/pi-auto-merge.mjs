@@ -5,9 +5,6 @@ const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
 const apiRoot = `https://api.github.com/repos/${repo}`;
 const reviewContext = 'social-mcp/pi-review';
-const ciMarker = 'social-mcp/merge-ci-dispatched';
-const reviewMarker = 'social-mcp/merge-review-dispatched';
-const conflictMarker = 'social-mcp/merge-conflict-fix-dispatched';
 
 async function api(path, method = 'GET', body) {
   const response = await fetch(`${apiRoot}${path}`, {
@@ -22,6 +19,15 @@ async function api(path, method = 'GET', body) {
   });
   if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${await response.text()}`);
   return response.status === 204 ? null : response.json();
+}
+
+async function pages(path) {
+  const all = [];
+  for (let page = 1; ; page++) {
+    const batch = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+    all.push(...batch);
+    if (batch.length < 100) return all;
+  }
 }
 
 export function linkedIssueNumber(pr, repository) {
@@ -51,12 +57,12 @@ export function latestCI(runs, sha, branch) {
 }
 
 export function allowedFiles(files, changedCount) {
-  return changedCount <= 100 && files.length === changedCount &&
+  return files.length === changedCount &&
     files.every(file => [file.filename, file.previous_filename].filter(Boolean).every(name =>
       !name.startsWith('.github/workflows/') && !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(name)));
 }
 
-export function needsCIDispatch(ci, marker) {
+export function needsCIDispatch(ci) {
   return !ci;
 }
 
@@ -70,20 +76,15 @@ export function shouldDeferBranchUpdate(pr) {
   return pr.labels?.some(label => ['review:running', 'review:changes-requested'].includes(label.name)) ?? false;
 }
 
-async function mark(sha, context, state, description) {
-  return api(`/statuses/${sha}`, 'POST', { context, state, description: description.slice(0, 140) });
-}
-
 async function trigger(pr, sha, statuses, runs) {
   const currentReview = latestStatus(statuses, reviewContext);
-  if (!currentReview && !latestStatus(statuses, reviewMarker)) {
-    await api('/dispatches', 'POST', { event_type: 'pi_pr_review', client_payload: { pr_number: pr.number } });
-    await mark(sha, reviewMarker, 'success', `Review dispatch requested for PR #${pr.number}`);
+  const reviewActive = pr.labels?.some(label => ['review:ready', 'review:running'].includes(label.name)) ?? false;
+  if (!currentReview && !reviewActive) {
+    await api('/actions/workflows/pi-pr-review.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title } });
   }
   const ci = latestCI(runs, sha, pr.head.ref);
-  if (needsCIDispatch(ci, latestStatus(statuses, ciMarker))) {
-    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: pr.head.ref });
-    await mark(sha, ciMarker, 'success', `CI dispatch requested for PR #${pr.number}`);
+  if (needsCIDispatch(ci)) {
+    await api('/actions/workflows/ci.yml/dispatches', 'POST', { ref: 'dev', inputs: { target_sha: sha, target_ref: pr.head.ref, pr_number: String(pr.number), pr_title: `${pr.head.ref} @ ${sha.slice(0, 12)}` } });
   }
 }
 
@@ -123,9 +124,28 @@ async function finalizeMergedPR(pr, issue) {
     return;
   }
   await finishArchitectParents(issue);
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
+  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev', inputs: { source: `merged PR #${pr.number} · ${pr.title}` } });
   await api(`/issues/${issue}/labels/pi%3Amr-created`, 'DELETE');
   console.log(`#${pr.number}: dispatcher started`);
+}
+
+async function hasLiveRepair(prNumber) {
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+    const data = await api(`/actions/workflows/pi-pr-fix.yml/runs?event=workflow_dispatch&branch=dev&status=${status}&per_page=100`);
+    if ((data.workflow_runs ?? []).some(run =>
+      run.display_title?.startsWith(`🔧 Repair PR #${prNumber} ·`))) return true;
+  }
+  return false;
+}
+
+async function hasRepairCheckpoint(prNumber) {
+  try {
+    await api(`/git/ref/heads/pi/repair-pr-${prNumber}-checkpoint`);
+    return true;
+  } catch (error) {
+    if (/GET .*: 404 /.test(error.message)) return false;
+    throw error;
+  }
 }
 
 async function processPR(prSummary) {
@@ -138,11 +158,7 @@ async function processPR(prSummary) {
     console.log(`#${pr.number}: issue #${issue} is not ready for merge`);
     return;
   }
-  if (pr.changed_files > 100) {
-    console.log(`#${pr.number}: too many changed files for a complete safety check`);
-    return;
-  }
-  const files = await api(`/pulls/${pr.number}/files?per_page=100`);
+  const files = await pages(`/pulls/${pr.number}/files`);
   if (!allowedFiles(files, pr.changed_files)) {
     console.log(`#${pr.number}: changed control files or incomplete file list; human review required`);
     return;
@@ -161,12 +177,15 @@ async function processPR(prSummary) {
       return;
     }
     if (pr.mergeable === false && pr.mergeable_state === 'dirty') {
-      if (latestStatus(statusData, conflictMarker)) {
-        console.log(`#${pr.number}: merge conflict; repair already dispatched for ${sha.slice(0, 12)}`);
+      const [repairLive, repairCheckpoint] = await Promise.all([
+        hasLiveRepair(pr.number),
+        hasRepairCheckpoint(pr.number),
+      ]);
+      if (repairLive || repairCheckpoint) {
+        console.log(`#${pr.number}: merge conflict; repair is already active or has a saved checkpoint`);
         return;
       }
-      await api('/dispatches', 'POST', { event_type: 'pi_pr_fix', client_payload: { pr_number: pr.number, reason: 'conflict' } });
-      await mark(sha, conflictMarker, 'success', `Conflict repair dispatched for PR #${pr.number}`);
+      await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', { ref: 'dev', inputs: { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' } });
       console.log(`#${pr.number}: merge conflict with dev; dispatched Pi conflict repair`);
       return;
     }
@@ -210,7 +229,7 @@ export async function main() {
   if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
   // Recover a merge interrupted after GitHub accepted it but before the
   // linked issue was completed or the dispatcher was started.
-  const mergedPRs = await api('/pulls?state=closed&base=dev&per_page=100');
+  const mergedPRs = await pages('/pulls?state=closed&base=dev');
   for (const pr of mergedPRs) {
     if (!pr.merged_at || !pr.labels?.some(label => label.name === 'review:passed')) continue;
     const issue = linkedIssueNumber(pr, repo);
@@ -219,7 +238,7 @@ export async function main() {
     catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }
   }
   // Global concurrency prevents two runs from merging against the same base in parallel.
-  const prs = await api('/pulls?state=open&base=dev&per_page=100');
+  const prs = await pages('/pulls?state=open&base=dev');
   for (const pr of prs) {
     try { await processPR(pr); }
     catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }

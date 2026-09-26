@@ -44,14 +44,21 @@ export function summarizeQueue(issues, prs, runs, repo) {
     open_prs: openPrs, active_runs: activeRuns };
 }
 
+async function runsForStatus(api, status) {
+  const runs = [];
+  for (let page = 1; ; page++) {
+    const data = await api(`/actions/runs?status=${status}&per_page=100&page=${page}`);
+    const batch = data?.workflow_runs ?? [];
+    runs.push(...batch);
+    if (batch.length < 100) return runs;
+  }
+}
+
 export async function readQueueContext(api, repo, issues, prs) {
-  const responses = await Promise.allSettled(statuses.map(status =>
-    api(`/actions/runs?status=${status}&per_page=100`)));
-  const runs = responses.flatMap(result => result.status === 'fulfilled'
-    ? result.value?.workflow_runs ?? [] : []);
+  const responses = await Promise.allSettled(statuses.map(status => runsForStatus(api, status)));
+  const runs = responses.flatMap(result => result.status === 'fulfilled' ? result.value : []);
   return {
     ...summarizeQueue(issues, prs, runs, repo),
-    runs_incomplete: responses.some(result => result.status === 'rejected' ||
-      !result.value || result.value.total_count > 100),
+    runs_incomplete: responses.some(result => result.status === 'rejected'),
   };
 }

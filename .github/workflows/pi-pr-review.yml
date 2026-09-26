@@ -1,9 +1,7 @@
 name: Pi PR Review
-run-name: 'Pi review PR #${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}'
+run-name: "🔬 Review PR #${{ github.event.pull_request.number || inputs.pr_number }} · ${{ github.event.pull_request.title || inputs.pr_title || 'pull request' }}"
 
 on:
-  repository_dispatch:
-    types: [pi_pr_review]
   pull_request:
     types: [reopened, closed]
   workflow_dispatch:
@@ -12,6 +10,10 @@ on:
         description: Pull request number to review
         required: true
         type: number
+      pr_title:
+        description: Pull request title for the Actions run name
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -19,12 +21,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
+  group: pi-pr-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
-    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch' || github.event.action == 'reopened')
+    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) && (github.event_name == 'workflow_dispatch' || github.event.action == 'reopened')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
     permissions:
@@ -34,7 +36,7 @@ jobs:
       statuses: write
       actions: write
     env:
-      PR: ${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}
+      PR: ${{ github.event.pull_request.number || inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
       PI_BASH_TIMEOUT_SECONDS: '600'
@@ -114,42 +116,27 @@ jobs:
           git worktree add --detach "$JOB_DIR" "$HEAD_SHA"
           echo "Temporary review worktree: $JOB_DIR"
 
-      - name: Prepare Python environment
-        run: |
-          cd "$JOB_DIR"
-          python --version
-          sqlite3 --version
-          python -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install -e .
-          python -m pip install pytest pytest-asyncio ruff
-          echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
-
-      - name: Run deterministic checks
+      - name: Await SHA-bound deterministic CI
         id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cd "$JOB_DIR"
           set +e
-          pytest > "$RUNNER_TEMP/pytest.log" 2>&1
-          PYTEST_EXIT=$?
-          ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
-          RUFF_EXIT=$?
+          CI_JSON="$(node scripts/pi-await-ci.mjs "$HEAD_SHA" "$HEAD_REF")"
+          CI_EXIT=$?
           set -e
-
-          echo "pytest_exit=$PYTEST_EXIT" >> "$GITHUB_OUTPUT"
-          echo "ruff_exit=$RUFF_EXIT" >> "$GITHUB_OUTPUT"
-
-          echo "=== pytest ==="
-          cat "$RUNNER_TEMP/pytest.log"
-          echo
-          echo "=== ruff ==="
-          cat "$RUNNER_TEMP/ruff.log"
+          echo "$CI_JSON"
+          if [ "$CI_EXIT" -ne 0 ]; then
+            echo "Deterministic CI failed for $HEAD_SHA; semantic review is unnecessary." >&2
+            echo "ci_passed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ci_passed=true" >> "$GITHUB_OUTPUT"
+          fi
+          printf '%s\n' "$CI_JSON" > "$RUNNER_TEMP/pi-ci-result.json"
 
       - name: Build review context
         env:
-          PYTEST_EXIT: ${{ steps.checks.outputs.pytest_exit }}
-          RUFF_EXIT: ${{ steps.checks.outputs.ruff_exit }}
+          CI_PASSED: ${{ steps.checks.outputs.ci_passed }}
           GH_TOKEN: ${{ github.token }}
         run: |
           ISSUE="${HEAD_REF#pi/issue-}"
@@ -196,13 +183,9 @@ jobs:
           Pull request body:
           ${PR_BODY}
           
-          Deterministic check exit codes:
-          - pytest: ${PYTEST_EXIT}
-          - ruff check .: ${RUFF_EXIT}
-          
-          The detailed pytest and Ruff logs are available at:
-          - $RUNNER_TEMP/pytest.log
-          - $RUNNER_TEMP/ruff.log
+          Deterministic CI for this exact head SHA: ${CI_PASSED}.
+          The CI run metadata is available at $RUNNER_TEMP/pi-ci-result.json.
+          Do not rerun pytest or Ruff; GitHub-hosted CI is authoritative for deterministic checks.
           
           Inspect the diff against origin/dev and relevant surrounding code.
 
@@ -244,7 +227,7 @@ jobs:
             set -o pipefail
             RETRY_RAW="$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
             pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. The test logs are $RUNNER_TEMP/pytest.log and $RUNNER_TEMP/ruff.log. Call submit_result exactly once, as your last action, with your verdict and evidence." \
+              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and origin/dev. The first review did not produce a usable final verdict. Do not modify files or GitHub state. Deterministic CI for this exact SHA has already run; do not rerun pytest or Ruff. Call submit_result exactly once, as your last action, with your verdict and evidence." \
               | tee "$RETRY_RAW" | PI_CALL=retry node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
             RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RETRY_RAW")"
           fi
@@ -283,7 +266,7 @@ jobs:
 
       - name: Mark review passed
         id: passed
-        if: steps.freshness.outputs.current == 'true' && steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.pytest_exit == '0' && steps.checks.outputs.ruff_exit == '0'
+        if: steps.freshness.outputs.current == 'true' && steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.ci_passed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -305,28 +288,27 @@ jobs:
           echo "Pi Auto Merge dispatched after review of PR #${PR}"
 
       - name: Mark changes requested
-        if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || (steps.result.outputs.verdict == 'PASS' && (steps.checks.outputs.pytest_exit != '0' || steps.checks.outputs.ruff_exit != '0')))
+        if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || steps.checks.outputs.ci_passed != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
-          if [ "${{ steps.checks.outputs.pytest_exit }}" != '0' ] || [ "${{ steps.checks.outputs.ruff_exit }}" != '0' ]; then
-            COMMENT="Deterministic checks failed (pytest=${{ steps.checks.outputs.pytest_exit }}, Ruff=${{ steps.checks.outputs.ruff_exit }}).\n\n${COMMENT}"
+          if [ "${{ steps.checks.outputs.ci_passed }}" != 'true' ]; then
+            COMMENT="Deterministic GitHub-hosted CI failed for the reviewed SHA.\n\n${COMMENT}"
           fi
           bash scripts/pi-pr-review-status.sh changes-requested "$COMMENT"
 
       - name: Dispatch Pi repair
-        if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || (steps.result.outputs.verdict == 'PASS' && (steps.checks.outputs.pytest_exit != '0' || steps.checks.outputs.ruff_exit != '0')))
+        if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || steps.checks.outputs.ci_passed != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          jq -n --arg event_type "pi_pr_fix" --arg pr_number "$PR" \
-            '{event_type:$event_type,client_payload:{pr_number:$pr_number}}' |
+          jq -n --arg pr_number "$PR" '{ref:"dev",inputs:{pr_number:$pr_number,reason:"review"}}' |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
-            --data-binary @- "https://api.github.com/repos/${REPO}/dispatches"
+            --data-binary @- "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-fix.yml/dispatches"
 
       - name: Mark review failed
         if: failure()
@@ -344,6 +326,12 @@ jobs:
           bash scripts/pi-pr-review-status.sh failed \
             "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
+      - name: Summarize issue pipeline
+        if: always() && env.ISSUE != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/pi-issue-summary.mjs "$ISSUE"
+
       - name: Summarize Pi usage
         if: always()
         run: node scripts/pi-usage-summary.mjs
@@ -358,8 +346,7 @@ jobs:
           fi
           rm -rf "$JOB_DIR"
           rm -f \
-            "$RUNNER_TEMP/pytest.log" \
-            "$RUNNER_TEMP/ruff.log" \
+            "$RUNNER_TEMP/pi-ci-result.json" \
             "$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" \
             "$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" \
             "$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" \

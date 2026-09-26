@@ -25,6 +25,7 @@ Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundar
 5. Add or update tests for every behavior changed by the issue, including important edge cases.
 6. Run the relevant test suite and Ruff before finishing.
 7. Leave the repository ready for CI.
+8. After implementation, tests, and lint are complete, call `submit_result` exactly once as your final action. The submitted metadata becomes the pull request title and description, so describe the code that actually exists in the final working tree, not the original plan. Use a concise conventional PR title; a self-contained summary; concrete changes; security-relevant behavior; and any known limitations. Do not claim tests in this metadata—the workflow records deterministic validation itself.
 
 Do not consider an implementation complete without appropriate automated tests.
 

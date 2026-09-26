@@ -34,9 +34,9 @@ Before reviewing, read `docs/PROJECT_CONTEXT.md` for the product goal and bounda
 6. Consider realistic edge cases and regressions.
 7. Check for unrelated changes or generated/local artifacts.
 8. Check security-sensitive behavior.
-9. Use the deterministic pytest and Ruff results supplied by the workflow.
+9. Use the SHA-bound GitHub-hosted CI result supplied by the workflow. Do not rerun pytest, Ruff, Node tests, autoscaler tests, Docker Compose, or other deterministic CI checks on the N150 reviewer runner.
 
-A failing deterministic check can never receive PASS.
+A failing deterministic CI run can never receive PASS. Semantic inspection remains your responsibility even when CI passes.
 
 ## What to verify
 
@@ -55,7 +55,7 @@ A failing deterministic check can never receive PASS.
 
 ### Tests
 
-For changes to Python behavior or tests, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant guidance to judge whether tests verify behavior and important failure paths. Do not run optional tools or add dependencies merely because the skill shows examples. The workflow's pytest and Ruff results remain mandatory.
+For changes to Python behavior or tests, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant guidance to judge whether tests verify behavior and important failure paths. Do not run optional tools or add dependencies merely because the skill shows examples. The workflow's SHA-bound CI result remains mandatory; judge test quality from the code without rerunning the deterministic suite.
 
 ### MCP protocol
 

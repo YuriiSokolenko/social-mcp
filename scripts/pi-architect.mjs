@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readQueueContext } from './pi-queue-context.mjs';
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS } from './pi-state-machine.mjs';
+import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN;
@@ -108,7 +110,7 @@ export function validatePlan(plan, parent) {
   return plan;
 }
 
-function taskMetadata(number) {
+export function taskMetadata(number) {
   const filename = path.join('tasks', `${number}.md`);
   if (!fs.existsSync(filename)) return { priority: 'P1', dependencies: [] };
   const source = fs.readFileSync(filename, 'utf8');
@@ -178,8 +180,8 @@ async function prepare(issue, filename) {
     labels.add('architect:ready');
   }
   if (!parent || parent.state !== 'open' || !labels.has('architect:ready') ||
-      ['pi:running', 'pi:ready', 'pi:mr-created', 'pi:failed', 'pi:needs-human',
-        'pi:blocked', 'pi:cancelled', 'architect:epic'].some(x => labels.has(x))) {
+      [...ISSUE_ACTIVE, ...ISSUE_TERMINAL, PIPELINE_LABELS.epic]
+        .filter(x => x !== PIPELINE_LABELS.architectReady).some(x => labels.has(x))) {
     throw new Error('Parent must be an open, inactive issue labeled architect:ready');
   }
   if (labels.has('dispatcher:ready')) {
@@ -217,15 +219,11 @@ async function publish(issue, jsonl, contextFile) {
     throw new Error('Source issue changed while Architect was planning');
   }
   const plan = planFromJsonl(fs.readFileSync(jsonl, 'utf8'), issue);
+  const backlog = await allIssues();
+  validateArchitectPlanAgainstBacklog(plan, issue, backlog, taskMetadata);
   if (plan.action === 'keep' || plan.action === 'revise') {
     if (childNumbers(parent.body).length) throw new Error('Cannot revise an already split issue');
     if (plan.action === 'revise') {
-      const existing = await allIssues();
-      for (const dependency of plan.depends_on) {
-        if (!existing.some(item => item.number === dependency)) {
-          throw new Error(`Dependency #${dependency} does not exist`);
-        }
-      }
       await reviseTask(issue, plan);
       const marker = /<!-- architect-parent:\d+; architect-key:[a-z][a-z0-9-]* -->/.exec(parent.body ?? '')?.[0];
       const body = marker ? `${plan.body}\n\n${marker}` : plan.body;
@@ -247,7 +245,7 @@ async function publish(issue, jsonl, contextFile) {
     return;
   }
   const inherited = taskMetadata(issue).dependencies;
-  const existing = await allIssues();
+  const existing = backlog;
   const created = new Map();
   for (const step of plan.steps) {
     const marker = `<!-- architect-parent:${issue}; architect-key:${step.key} -->`;

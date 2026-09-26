@@ -1,0 +1,44 @@
+name: Pi Pipeline Reconciler
+run-name: "🧭 Reconcile pipeline state"
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_safe_repairs:
+        description: Remove only labels proven impossible by the state-machine invariants
+        required: true
+        default: true
+        type: boolean
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pi-pipeline-reconciler
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted dev
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Audit and reconcile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.apply_safe_repairs }}" = "true" ]; then
+            node scripts/pi-reconcile.mjs --apply
+          else
+            node scripts/pi-reconcile.mjs
+          fi
