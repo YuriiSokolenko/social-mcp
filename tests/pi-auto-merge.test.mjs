@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { allowedFiles, issueNumber, latestCI, latestStatus, needsCIDispatch } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, issueNumber, latestStatus } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 const pr = {
@@ -17,27 +17,6 @@ test('only a same-repository Pi PR closing its own issue is eligible', () => {
   assert.equal(issueNumber({ ...pr, head: { ...pr.head, repo: { full_name: 'attacker/fork' } } }, repo), null);
   assert.equal(issueNumber({ ...pr, draft: true }, repo), null);
   assert.equal(issueNumber({ ...pr, head: { ...pr.head, ref: 'feature/42' } }, repo), null);
-});
-
-test('integration CI must match exact PR SHA, branch and dev base SHA', () => {
-  const runs = [
-    { id: 1, event: 'workflow_dispatch', display_title: '🧪 CI · target:new ref:pi/issue-42 base:dev-old', conclusion: 'success' },
-    { id: 2, event: 'workflow_dispatch', display_title: '🧪 CI · target:new ref:pi/issue-42 base:dev-new', conclusion: 'success' },
-    { id: 3, event: 'push', display_title: '🧪 CI · target:new ref:pi/issue-42 base:dev-new', conclusion: 'failure' },
-  ];
-  assert.equal(latestCI(runs, 'new', 'pi/issue-42', 'dev-new').id, 2);
-  assert.equal(latestCI(runs, 'new', 'pi/issue-42', 'missing'), null);
-  assert.equal(latestCI(runs, 'new', 'pi/issue-43', 'dev-new'), null);
-});
-
-test('a bot PR CI run needing approval must not count as a passing run', () => {
-  const runs = [{ id: 7, head_sha: 'new', head_branch: 'pi/issue-42',
-    event: 'pull_request', status: 'completed', conclusion: 'action_required' }];
-  // PR-triggered runs may require approval; only trusted workflow_dispatch can satisfy the merge gate.
-  assert.equal(latestCI(runs, 'new', 'pi/issue-42'), null);
-  assert.equal(needsCIDispatch(latestCI(runs, 'new', 'pi/issue-42'), null), true);
-  assert.equal(needsCIDispatch({ event: 'workflow_dispatch', status: 'queued' }, null), false);
-  assert.equal(needsCIDispatch({ event: 'workflow_dispatch', conclusion: 'failure' }, null), false);
 });
 
 test('latest review status is the merge gate authority for the fetched PR SHA', () => {
@@ -94,20 +73,6 @@ test('agent workflows execute control scripts only from fresh GITHUB_WORKSPACE c
 });
 
 
-test('merge gate solely owns integration CI dispatch and review starts only after CI success', () => {
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.match(gate, /actions\/workflows\/ci\.yml\/dispatches/);
-  assert.match(gate, /ci\.status !== 'completed' \|\| ci\.conclusion !== 'success'/);
-  assert.equal(fs.existsSync('scripts/pi-await-ci.mjs'), false);
-});
-
-
-test('issue summary follows exact current dev and PR integration pair', () => {
-  const source = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
-  assert.match(source, /target:\$\{pr\.head\.sha\} ref:\$\{pr\.head\.ref\} base:\$\{base\.object\.sha\}/);
-  assert.doesNotMatch(source, /ci\.yml\/runs\?head_sha=/);
-});
-
 test('review transitions use SHA status rather than review labels', () => {
   const source = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
   assert.match(source, /social-mcp\/pi-review/);
@@ -134,4 +99,14 @@ test('merge gate has no issue or architect finalization responsibilities', () =>
 test('review status is bound to the exact dev base', () => {
   const source = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
   assert.match(source, /social-mcp\/pi-review\/\$\{baseSha\.slice\(0, 12\)\}/);
+});
+
+
+test('integration correctness uses pair-bound statuses, never workflow titles', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const summary = fs.readFileSync('scripts/pi-issue-summary.mjs', 'utf8');
+  assert.match(gate, /social-mcp\/integration\//);
+  assert.match(gate, /actions\/workflows\/ci\.yml\/dispatches/);
+  assert.doesNotMatch(gate, /display_title|latestCI|needsCIDispatch/);
+  assert.doesNotMatch(summary, /display_title|workflow_runs/);
 });
