@@ -1,9 +1,7 @@
 name: Pi Issue Agent
-run-name: "🤖 Implement #${{ github.event.issue.number || inputs.issue_number }} · ${{ github.event.issue.title || inputs.issue_title || 'issue' }}"
+run-name: "🤖 Implement #${{ inputs.issue_number }} · ${{ inputs.issue_title || 'issue' }}"
 
 on:
-  issues:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -22,18 +20,18 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-issue-${{ github.event.issue.number || inputs.issue_number }}
+  group: pi-issue-${{ inputs.issue_number }}
   cancel-in-progress: true
 
 jobs:
   pi:
-    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && ((github.event_name == 'issues' && github.event.label.name == 'pi:ready') || github.event_name == 'workflow_dispatch')
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING'
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 1200
     env:
-      ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
+      ISSUE: ${{ inputs.issue_number }}
       REPO: ${{ github.repository }}
-      PI_ISSUE: ${{ github.event.issue.number || inputs.issue_number }}
+      PI_ISSUE: ${{ inputs.issue_number }}
       PI_PHASE: implementation
       PI_BASH_TIMEOUT_SECONDS: '1800'
 
@@ -51,7 +49,6 @@ jobs:
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate dispatched issue
-        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -110,7 +107,7 @@ jobs:
 
       - name: Prepare issue task
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           ISSUE_JSON="$(curl --fail-with-body -sS \
@@ -296,7 +293,7 @@ jobs:
         id: pr
         if: steps.checkpoint.outputs.changed == 'true'
         env:
-          ISSUE_TITLE: ${{ github.event.issue.title || inputs.issue_title || 'issue' }}
+          ISSUE_TITLE: ${{ inputs.issue_title || 'issue' }}
           OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
