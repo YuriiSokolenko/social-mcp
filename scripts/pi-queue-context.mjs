@@ -1,8 +1,6 @@
 import { ISSUE_ACTIVE, PIPELINE_LABELS } from './pi-state-machine.mjs';
 const phases = new Map([
   ['pi-issue-agent.yml', 'implementation'],
-  ['pi-pr-review.yml', 'review'],
-  ['pi-pr-fix.yml', 'repair'],
   ['pi-architect.yml', 'architect'],
   ['pi-dispatcher.yml', 'dispatcher'],
 ]);
@@ -18,18 +16,15 @@ export function summarizeQueue(issues, prs, runs, repo) {
       labels: (pr.labels ?? []).map(label => label.name),
     };
   });
-  const prByNumber = new Map(openPrs.map(pr => [pr.number, pr]));
   const activeRuns = runs.flatMap(run => {
     const filename = run.path?.split('/').pop();
     const phase = phases.get(filename);
     if (!phase || !statuses.includes(run.status)) return [];
     const title = run.display_title ?? '';
     const task = /^(?:🤖 Implement|🏗 Architect) #([1-9]\d+)(?:\s|·|$)/u.exec(title);
-    const review = /^(?:🔬 Review|🔧 Repair) PR #([1-9]\d+)(?:\s|·|$)/u.exec(title);
-    const pr = review ? prByNumber.get(Number(review[1])) : null;
     return [{ id: run.id, phase, status: run.status,
-      issue: task ? Number(task[1]) : pr?.issue ?? null,
-      pr: review ? Number(review[1]) : null,
+      issue: task ? Number(task[1]) : null,
+      pr: null,
       url: run.html_url }];
   }).sort((a, b) => a.id - b.id);
   const linked = new Set([
