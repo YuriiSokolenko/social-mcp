@@ -3,6 +3,8 @@ run-name: "🚦 Dispatcher · queue scan"
 
 on:
   workflow_dispatch:
+  issues:
+    types: [closed]
 
 permissions:
   actions: write
