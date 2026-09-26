@@ -195,7 +195,7 @@ async function main() {
 
     // A previous serialized dispatcher may already have assigned this issue.
     // That is a successful no-op, not an error and must never emit a duplicate
-    // repository_dispatch event.
+    // workflow dispatch.
     if (state.active.includes(number)) {
       console.log(`Skipped #${number}: already assigned by an earlier dispatcher`);
       continue;
@@ -225,9 +225,9 @@ async function main() {
       body: JSON.stringify({ labels: ["pi:ready"] }),
     });
     try {
-      await api("/dispatches", {
+      await api("/actions/workflows/pi-issue-agent.yml/dispatches", {
         method: "POST",
-        body: JSON.stringify({ event_type: "pi_dispatch_issue", client_payload: { issue_number: number, issue_title: title } }),
+        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
       });
     } catch (error) {
       try {
