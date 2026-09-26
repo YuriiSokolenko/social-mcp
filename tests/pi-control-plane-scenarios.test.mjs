@@ -145,3 +145,10 @@ test('serialized control workflows queue bursts instead of cancelling pending ru
     assert.match(workflow, /concurrency:[\s\S]*?queue: max[\s\S]*?cancel-in-progress: false/);
   }
 });
+
+
+test('orphaned architect ownership is infrastructure recovery, not human escalation', () => {
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconcile, /orphaned-architect-state[\s\S]*dispatcher:ready[\s\S]*pi-dispatcher\.yml/);
+  assert.doesNotMatch(reconcile, /orphaned-architect-state[\s\S]{0,180}pi:needs-human/);
+});
