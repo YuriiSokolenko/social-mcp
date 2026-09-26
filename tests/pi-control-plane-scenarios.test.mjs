@@ -261,3 +261,13 @@ test('triage uses guarded whole-state classification transitions', () => {
   assert.match(source, /concurrent Triage transition/);
   assert.doesNotMatch(source, /labels\/pi%3Aneeds-human/);
 });
+
+
+test('label provisioning covers the complete executable issue state family', () => {
+  const source = fs.readFileSync('scripts/pi-labels.mjs', 'utf8');
+  assert.match(source, /dispatcher:ready/);
+  assert.match(source, /architect:ready/);
+  for (const label of ['pi:ready','pi:running','pi:mr-created','pi:needs-human','pi:failed','pi:cancelled']) {
+    assert.match(source, new RegExp(label.replace(':', '\\:')));
+  }
+});
