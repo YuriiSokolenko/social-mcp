@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { replaceIssueState, replaceReviewState } from './pi-github-state.mjs';
+import { issueTargetAfterRemovals, replaceIssueState, replaceReviewState, reviewTargetAfterRemovals } from './pi-github-state.mjs';
 import { inspectIssueState, inspectPrState, safeRemovals } from './pi-state-machine.mjs';
 import { checkpointGcDecision, recoveryForIssue, recoveryForPr } from './pi-recovery-policy.mjs';
 
@@ -123,7 +123,7 @@ for (const issue of issues) {
         }
       }
     } else if (removals.length) {
-      await replaceStateLabels(issue.number, issue, null, 'issue');
+      await replaceStateLabels(issue.number, issue, issueTargetAfterRemovals(issue, removals), 'issue');
     }
   }
   if (retryMergeGateForPr) mergeGateWakeNeeded = true;
@@ -162,7 +162,7 @@ for (const pr of prs) {
         }
       }
     } else if (removals.length) {
-      await replaceStateLabels(pr.number, pr, null, 'review');
+      await replaceStateLabels(pr.number, pr, reviewTargetAfterRemovals(pr, removals), 'review');
     }
   }
   if (retryRepair && !recovery) {
