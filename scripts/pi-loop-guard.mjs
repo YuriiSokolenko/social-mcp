@@ -11,12 +11,13 @@ export default function (pi) {
     turnLimit: Number(process.env.PI_MAX_TURNS ?? 100),
     repeatThreshold: Number(process.env.PI_MAX_REPEAT_CALLS ?? 3),
     requireComplexity: process.env.PI_REQUIRE_TASK_COMPLEXITY === '1',
+    reviewMode: process.env.PI_LOOP_GUARD_MODE === 'review',
   });
 
   pi.registerTool({
     name: 'declare_task_complexity',
     label: 'Declare task complexity',
-    description: 'REQUIRED FIRST ACTION for Implementer. Classify the issue once: trivial for an exact tiny edit with no behavior/design work; normal for ordinary implementation; complex for broad architectural or multi-part work. This selects the runtime execution budget.',
+    description: 'REQUIRED FIRST ACTION. Classify the current task once: trivial for an exact tiny scope with no behavior/design work; normal for ordinary work; complex for broad architectural or multi-part work. This selects the runtime execution budget.',
     parameters: Type.Object({
       complexity: Type.Union([
         Type.Literal('trivial'),
