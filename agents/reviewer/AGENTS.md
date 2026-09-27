@@ -22,7 +22,16 @@ Never expose credentials/tokens, invoke production write operations, or make des
 
 ## Execution
 
-Read `agents/reviewer/AGENTS.md` before declaring review complexity. Reading this instruction file is the only action allowed before complexity declaration. Before declaring complexity, do not inspect the linked issue, PR diff, repository code, history, run bash/search, load skills, or begin the review. After reading this file, call `declare_task_complexity` as the only action in that response before any other work.
+Use this order. Complexity must be based on evidence from the actual review target, never guessed before seeing the task and changed code.
+
+1. Read `agents/reviewer/AGENTS.md`.
+2. Read the linked issue and identify its concrete acceptance criteria.
+3. Inspect the complete PR diff against `origin/dev` and the changed code needed to understand that diff.
+4. Write a concise review plan for yourself, at most 1000 tokens, focused on the acceptance criteria and concrete risk areas visible in the change.
+5. Call `declare_task_complexity` based on the issue, diff, changed code, and plan.
+6. Continue the semantic review using the evidence-driven loop below.
+
+Before `declare_task_complexity`, stay within initial orientation: the agent instructions, linked issue, PR diff, changed code, and the short plan. Do not expand into repository history, unrelated code, broad searches, optional skills, or speculative investigation until complexity has been declared.
 
 Choose complexity from the review scope:
 
@@ -30,13 +39,11 @@ Choose complexity from the review scope:
 - **normal** — ordinary code/test change requiring local semantic context.
 - **complex** — broad multi-component, architectural, conflict-heavy, or security-sensitive change requiring substantial synthesis.
 
-Then follow this evidence-driven sequence:
+After complexity is declared, follow this evidence-driven loop:
 
-1. Read the linked issue and identify its concrete acceptance criteria.
-2. Inspect the complete PR diff against `origin/dev`.
-3. Ask: **can every acceptance criterion and relevant correctness concern already be judged from the issue and diff?**
-4. If yes, decide the verdict immediately and call `submit_result`.
-5. If no, state the specific unresolved review question to yourself, inspect only the context needed to answer that question, then return to step 3.
+1. Ask: **can every acceptance criterion and relevant correctness concern already be judged from the issue, diff, and changed code already inspected?**
+2. If yes, decide the verdict immediately and call `submit_result`.
+3. If no, state the specific unresolved review question to yourself, inspect only the context needed to answer that question, then return to step 1.
 
 Additional investigation is allowed whenever it answers a concrete review question. This can include repository history, prior implementations/PRs, surrounding code, tests, configuration, documentation, or a relevant skill. Reused training/test issues may legitimately require history to distinguish the current change from earlier attempts.
 
