@@ -77,12 +77,14 @@ jobs:
           CHECKPOINT="pi/issue-${ISSUE}-checkpoint"
           CHECKPOINT_REMOTE="$(git ls-remote origin "refs/heads/${CHECKPOINT}" | awk '{print $1}')"
           echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_REMOTE}" >> "$GITHUB_ENV"
+          ISSUE_BRANCH_REMOTE="$(git ls-remote origin "refs/heads/pi/issue-${ISSUE}" | awk '{print $1}')"
+          echo "PI_ISSUE_BRANCH_EXPECTED=${ISSUE_BRANCH_REMOTE}" >> "$GITHUB_ENV"
           RESUME_REF=""
           if [ -n "$CHECKPOINT_REMOTE" ]; then
             git fetch origin "${CHECKPOINT}:refs/remotes/origin/${CHECKPOINT}"
             RESUME_REF="refs/remotes/origin/${CHECKPOINT}"
             echo "Replaying issue #${ISSUE} checkpoint onto latest dev"
-          elif git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}" >/dev/null; then
+          elif [ -n "$ISSUE_BRANCH_REMOTE" ]; then
             git fetch origin "pi/issue-${ISSUE}:refs/remotes/origin/pi/issue-${ISSUE}"
             RESUME_REF="refs/remotes/origin/pi/issue-${ISSUE}"
             echo "Replaying issue #${ISSUE} branch onto latest dev"
@@ -140,9 +142,11 @@ jobs:
           Issue body:
           ${ISSUE_BODY}
 
-          Work directly in the checked-out repository.\n          The checked-out worktree is always based on the latest dev branch. dev is the only development base; never switch to, compare against, or treat main as an alternative source tree.
+          Work directly in the checked-out repository.
+          The checked-out worktree is always based on the latest dev branch. dev is the only development base; never switch to, compare against, or treat main as an alternative source tree.
           Implement the issue completely, keeping the change focused.
-          Inspect existing code and tests before editing.\n          If replayed checkpoint work left merge conflicts in the worktree, resolve those conflicts first against the current dev code; do not abandon current dev or inspect main as a replacement base.
+          Inspect existing code and tests before editing.
+          If replayed checkpoint work left merge conflicts in the worktree, resolve those conflicts first against the current dev code; do not abandon current dev or inspect main as a replacement base.
           Add or update unit tests for every behavior changed by this issue.
           Cover the acceptance criteria and important edge cases.
           Do not consider the implementation complete without appropriate automated tests.
@@ -232,7 +236,7 @@ jobs:
           find . -type d -name '__pycache__' -prune -exec rm -rf {} +
           git diff --check
           ISSUE_COMMIT="$(git rev-parse HEAD)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --set-upstream origin "${ISSUE_COMMIT}:refs/heads/pi/issue-${ISSUE}"
+          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}:${PI_ISSUE_BRANCH_EXPECTED}" --set-upstream origin "${ISSUE_COMMIT}:refs/heads/pi/issue-${ISSUE}"
 
       - name: Create or update pull request
         id: pr
@@ -371,6 +375,7 @@ jobs:
             git worktree remove --force "$JOB_DIR"
           fi
           rm -rf "$JOB_DIR"
-          rm -f "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"\n          rm -f "${RUNNER_TEMP}/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch"
+          rm -f "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          rm -f "${RUNNER_TEMP}/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch"
           git worktree prune
           echo "Temporary worktree removed: $JOB_DIR"
