@@ -4,7 +4,7 @@ set -euo pipefail
 : "${GH_ADMIN_TOKEN:?GH_ADMIN_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
-MAX_RUNNERS="${MAX_RUNNERS:-2}"
+MAX_RUNNERS="${MAX_RUNNERS:-4}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
