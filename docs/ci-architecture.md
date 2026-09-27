@@ -99,6 +99,13 @@ tested application code -> triggering commit
 
 Use only GitHub Actions' supported concurrency contract: a stable `concurrency.group` and `cancel-in-progress: false` where active work must not be cancelled. Never add `concurrency.queue` / `queue: max`. Serialization comes from the concurrency group; application/model capacity comes from the N150 autoscaler and model-slot limits.
 
+
+## Shared-helper rule
+
+Trusted reusable pipeline policy belongs in `scripts/pi-common/`, with its purpose and non-goals documented in `scripts/pi-common/README.md`. YAML should express stage order, conditions, permissions, and environment wiring—not copies of GitHub API clients, pagination loops, security gates, state-machine logic, or deterministic product-check implementations.
+
+Keep stage-specific orchestration outside the common directory. A helper is common only when multiple stages need the same deterministic rule.
+
 ## Recovery rule
 
 Recovery must be smaller than the normal pipeline. Prefer returning stranded work directly to its normal owner. Do not reproduce the happy path inside Reconciler, and do not add recovery-specific copies of merge/review/dispatch logic.
