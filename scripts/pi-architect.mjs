@@ -186,12 +186,13 @@ async function publish(issue, jsonl, contextFile) {
   }
   const plan = planFromJsonl(fs.readFileSync(jsonl, 'utf8'), issue);
   const backlog = await allIssues();
-  validateArchitectPlanAgainstBacklog(plan, issue, backlog, taskMetadata);
+  validateArchitectPlanAgainstBacklog(plan, issue, backlog, item => taskMetadataFromBody(item.number, item.body).dependencies);
   if (plan.action === 'keep' || plan.action === 'revise') {
     if (childNumbers(parent.body).length) throw new Error('Cannot revise an already split issue');
     if (plan.action === 'revise') {
             const marker = /<!-- architect-parent:\d+; architect-key:[a-z][a-z0-9-]* -->/.exec(parent.body ?? '')?.[0];
-      const body = marker ? `${plan.body}\n\n${marker}` : plan.body;
+      const revised = withTaskMetadata(plan.body, plan.priority, plan.depends_on);
+      const body = marker ? `${revised}\n\n${marker}` : revised;
       if (parent.title !== plan.title || parent.body !== body) {
         await api(`/issues/${issue}`, 'PATCH', { title: plan.title, body });
       }
@@ -213,7 +214,10 @@ async function publish(issue, jsonl, contextFile) {
   const created = new Map();
   for (const step of plan.steps) {
     const marker = `<!-- architect-parent:${issue}; architect-key:${step.key} -->`;
-    const body = `Part of #${issue}.\n\n${step.body}\n\n${marker}`;
+    const dependencies = [...new Set([
+      ...inherited, ...step.depends_on.map(key => created.get(key)),
+    ])];
+    const body = withTaskMetadata(`Part of #${issue}.\n\n${step.body}\n\n${marker}`, step.priority, dependencies);
     const matches = existing.filter(item => item.body?.includes(marker));
     if (matches.length > 1) throw new Error(`Duplicate issues for ${marker}`);
     const task = matches[0] ?? await api('/issues', 'POST', { title: step.title, body });
@@ -221,10 +225,7 @@ async function publish(issue, jsonl, contextFile) {
     if (task.state !== 'open' || task.title !== step.title || task.body !== body) {
       throw new Error(`Existing issue #${task.number} differs from Architect plan`);
     }
-    const dependencies = [...new Set([
-      ...inherited, ...step.depends_on.map(key => created.get(key)),
-    ])];
-        created.set(step.key, task.number);
+    created.set(step.key, task.number);
     console.log(`${step.key}: #${task.number} after [${dependencies.join(', ')}]`);
   }
   const children = [...created.values()];
