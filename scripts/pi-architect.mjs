@@ -108,7 +108,7 @@ export function taskMetadataFromBody(number, body) {
 function withTaskMetadata(body, priority, dependencies) {
   const block = `## Task metadata\nPriority: ${priority}\nDepends on: [${dependencies.map(number => `#${number}`).join(', ')}]\n\n`;
   const source = body ?? '';
-  if (/^## Task metadata/m.test(source)) return source.replace(/^## Task metadata\s*\r?\n[\s\S]*?(?=^##\s|\z)/m, block);
+  if (/^## Task metadata/m.test(source)) return source.replace(/^## Task metadata\s*\r?\n[\s\S]*?(?=^##\s|(?![\s\S]))/m, block);
   return block + source;
 }
 
@@ -167,7 +167,7 @@ async function prepare(issue, filename) {
   fs.writeFileSync(filename, JSON.stringify({
     number: issue, title: parent.title, body: parent.body,
     was_dispatcher_ready: wasDispatcherReady,
-    metadata: taskMetadataFromBody(issue.number ?? issue, issue.body ?? ''), open_issues: known, queue,
+    metadata: taskMetadataFromBody(parent.number, parent.body ?? ''), open_issues: known, queue,
   }, null, 2));
 }
 
@@ -181,7 +181,7 @@ async function publish(issue, jsonl, contextFile) {
   const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
   if (context.number !== issue || context.title !== parent.title || context.body !== parent.body ||
       typeof context.was_dispatcher_ready !== 'boolean' ||
-      JSON.stringify(context.metadata) !== JSON.stringify(taskMetadataFromBody(issue.number ?? issue, issue.body ?? ''))) {
+      JSON.stringify(context.metadata) !== JSON.stringify(taskMetadataFromBody(parent.number, parent.body ?? ''))) {
     throw new Error('Source issue changed while Architect was planning');
   }
   const plan = planFromJsonl(fs.readFileSync(jsonl, 'utf8'), issue);
@@ -209,7 +209,7 @@ async function publish(issue, jsonl, contextFile) {
     console.log(`Reviewed #${issue}: ${plan.action}`);
     return;
   }
-  const inherited = taskMetadataFromBody(issue.number ?? issue, issue.body ?? '').dependencies;
+  const inherited = taskMetadataFromBody(parent.number, parent.body ?? '').dependencies;
   const existing = backlog;
   const created = new Map();
   for (const step of plan.steps) {
