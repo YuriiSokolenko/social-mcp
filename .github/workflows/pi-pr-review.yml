@@ -43,6 +43,7 @@ jobs:
       PI_PHASE: review
       PI_BASH_TIMEOUT_SECONDS: '600'
       PI_REQUIRE_TASK_COMPLEXITY: '1'
+      PI_LOOP_GUARD_MODE: review
       PI_MAX_REPEAT_CALLS: '3'
     steps:
       - name: Checkout trusted control repository
