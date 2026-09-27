@@ -114,7 +114,8 @@ test('stateful control workflows preserve pending bursts while merge gate coales
 
 test('orphaned architect ownership is infrastructure recovery, not human escalation', () => {
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(reconcile, /orphaned-architect-state[\s\S]*dispatcher:ready[\s\S]*pi-dispatcher\.yml/);
+  assert.match(reconcile, /orphaned-architect-state[\s\S]*dispatcher:ready/);
+  assert.doesNotMatch(reconcile, /orphaned-architect-state[\s\S]{0,600}pi-dispatcher\.yml/);
   assert.doesNotMatch(reconcile, /orphaned-architect-state[\s\S]{0,180}pi:needs-human/);
 });
 
@@ -150,4 +151,12 @@ test('reconciler restarts stranded ready work without another dispatcher round t
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /retryReadyImplementer[\s\S]*pi-issue-agent\.yml/);
   assert.doesNotMatch(reconcile, /retryReadyImplementer[\s\S]{0,500}pi-dispatcher\.yml/);
+});
+
+
+test('dispatcher-ready label event is the only normal wake after architect publication', () => {
+  const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
+  const dispatcher = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
+  assert.match(dispatcher, /github\.event\.label\.name == 'dispatcher:ready'/);
+  assert.doesNotMatch(architect, /pi-dispatcher\.yml\/dispatches/);
 });
