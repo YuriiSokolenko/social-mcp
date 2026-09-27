@@ -1,3 +1,17 @@
+/**
+ * Shared authenticated GitHub REST client for trusted Pi control-plane code.
+ *
+ * WHY: pagination/auth/error handling must behave identically in Dispatcher,
+ * Architect, PR guards, Merge Gate and recovery code. Workflows should not
+ * grow their own curl loops.
+ *
+ * GUARANTEES: fail on non-2xx responses; pages() exhausts every 100-item page;
+ * ensureLabel() treats "already exists" as success.
+ *
+ * NOT FOR: agent worktrees or untrusted PR code. Callers must run this module
+ * from the trusted dev control-plane checkout.
+ */
+
 export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.env.REPO, token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN } = {}) {
   const requireConfig = () => {
     if (!repo || !token) throw new Error('GitHub repository and token are required');
