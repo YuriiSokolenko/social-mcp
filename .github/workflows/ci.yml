@@ -6,6 +6,7 @@ on:
   push:
 
 permissions:
+  actions: write
   contents: read
 
 concurrency:
@@ -93,3 +94,22 @@ jobs:
         run: docker compose down --volumes --remove-orphans
 
 
+
+  wake-merge-gate:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
+    needs: [test, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Continue merge queue after green dev CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Content-Type: application/json" \
+            --data '{"ref":"dev"}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches"
