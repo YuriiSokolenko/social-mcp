@@ -7,7 +7,7 @@ import { replaceIssueState } from "./pi-common/github-state.mjs";
 import { validateIssueTransition } from "./pi-common/state-machine.mjs";
 import { taskMetadata } from "./pi-common/task-metadata.mjs";
 
-const { api: request, pages, ensureLabel, repo } = githubClient();
+const { api: request, pages, ensureLabel, repo, comment: postIssueComment } = githubClient();
 const api = (endpoint, options = {}) =>
   request(endpoint, options.method ?? "GET", options.body ? JSON.parse(options.body) : undefined);
 function usage() {
@@ -220,12 +220,7 @@ async function main() {
     }
     const marker = markerFor(issue.body);
     if (!owned.has("pi:needs-human")) await transitionIssue(number, "needs-human");
-    await api(`/issues/${number}/comments`, {
-      method: "POST",
-      body: JSON.stringify({
-        body: `Pi Triage: needs a person before this can be dispatched.\n\n${comment}\n\n${marker}`,
-      }),
-    });
+    await postIssueComment(number, `Pi Triage: needs a person before this can be dispatched.\n\n${comment}\n\n${marker}`);
     console.log(`Flagged #${number} pi:needs-human`);
   }
 
