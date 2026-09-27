@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { inspectIssueState, safeRemovals } from '../scripts/pi-state-machine.mjs';
-import { checkpointGcDecision, recoveryForIssue } from '../scripts/pi-recovery-policy.mjs';
+import { inspectIssueState, safeRemovals } from '../scripts/pi-common/state-machine.mjs';
+import { checkpointGcDecision, recoveryForIssue } from '../scripts/pi-common/recovery-policy.mjs';
 
 const labels = (...names) => names.map(name => ({ name }));
 
@@ -60,7 +60,7 @@ test('published PR state is durable before independent review starts', () => {
 
 
 test('issue state family is intentionally small', () => {
-  const source = fs.readFileSync('scripts/pi-state-machine.mjs', 'utf8');
+  const source = fs.readFileSync('scripts/pi-common/state-machine.mjs', 'utf8');
   for (const label of ['dispatcher:ready', 'pi:ready', 'pi:running', 'pi:mr-created', 'pi:needs-human', 'architect:ready']) {
     assert.match(source, new RegExp(label.replace(':', '\\:')));
   }
