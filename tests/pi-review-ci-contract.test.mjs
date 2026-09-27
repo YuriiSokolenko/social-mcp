@@ -70,8 +70,7 @@ test('implementer resolves latest-dev integration inside the live agent session 
   assert.match(tool, /fetch', 'origin', 'dev/);
   assert.match(tool, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /Merge conflicts are still unresolved|Latest dev conflicts with the implementation/);
-  assert.match(tool, /pytest/);
-  assert.match(tool, /ruff/);
+  assert.match(tool, /runProductChecks\(\)/);
   assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
@@ -92,8 +91,7 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(tool, /fetch', 'origin', 'dev/);
   assert.match(tool, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /PR conflicts with current dev/);
-  assert.match(tool, /pytest/);
-  assert.match(tool, /ruff/);
+  assert.match(tool, /runProductChecks\(\)/);
   assert.match(workflow, /name: Start fresh review/);
   assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
@@ -179,7 +177,7 @@ test('usage workflow listens to the current Pi workflow names', () => {
 test('human-required PR exits before reviewer or repair model work', () => {
   for (const file of ['.github/workflows/pi-pr-review.yml', '.github/workflows/pi-pr-fix.yml']) {
     const workflow = fs.readFileSync(file, 'utf8');
-    assert.match(workflow, /id: load[\s\S]*?echo "skip=true" >> "\$GITHUB_OUTPUT"/);
+    assert.match(workflow, /id: load[\s\S]*?pi-common\/pr-guard\.mjs[\s\S]*?\.skip/);
     assert.match(workflow, /Create (?:review|PR) worktree\n\s+if: steps\.load\.outputs\.skip != 'true'/);
   }
 });
