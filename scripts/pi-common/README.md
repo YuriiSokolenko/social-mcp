@@ -25,6 +25,10 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `issue-context.mjs` — performs the Implementer's one fresh issue read and validates `open + pi:ready` before model work.
 - `issue-worktree.mjs` — creates/resumes/cleans the Implementer's latest-`dev` worktree without treating saved work as a base branch.
 - `issue-publication.mjs` — safely checkpoints and publishes verified issue work, upserts its PR, and hands the PR to Reviewer.
+- `pr-labels.mjs` — canonical pure helpers for clearing/applying the small `review:*` verdict family.
+- `review-state.mjs` — owns stale/human/HEAD rechecks, review verdict publication, comments, and Reviewer handoff dispatches.
+- `repair-publication.mjs` — owns safe PR Fix publication and the single handoff back to a fresh Reviewer.
+- `automation-control.mjs` — owns RUNNING/DRAINING/PAUSED variable mutation; RUNNING wakes only Dispatcher, never Reconciler.
 
 ## What does NOT belong here
 
