@@ -31,12 +31,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          API="https://api.github.com/repos/${REPO}"
-          LABELS="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/labels" | jq -c '[.[].name | select(startswith("review:") | not)]')"
-          curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" "${API}/issues/${PR}/labels" -d "$(jq -nc --argjson labels "$LABELS" '{labels:$labels}')" >/dev/null
-          echo "PR #${PR}: HEAD changed; stale review verdict cleared"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" invalidate "$PR"
 
   review:
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
@@ -109,53 +104,29 @@ jobs:
         run: |
           RESULT="$RUNNER_TEMP/review-result.json"
           VERDICT="$(jq -r '.verdict' "$RESULT")"
-          TEXT="$(jq -r '.text' "$RESULT")"
-          API="https://api.github.com/repos/${REPO}"
-          PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/pulls/${PR}")"
-          if jq -e '[.labels[].name] | index("pi:needs-human") != null' <<<"$PR_JSON" >/dev/null; then
-            echo "PR #${PR} became human-gated during review; discarding the automated verdict"
+          jq -r '.text' "$RESULT" > "$RUNNER_TEMP/review-comment.txt"
+          APPLIED="$(node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" apply "$PR" "$HEAD_SHA" "$VERDICT" "$RUNNER_TEMP/review-comment.txt")"
+          STATUS="$(jq -r '.status' <<<"$APPLIED")"
+          if [ "$STATUS" = "human" ]; then
+            echo "PR #$PR became human-gated during review; discarding the automated verdict"
             echo "HUMAN_GATED=true" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          CURRENT_HEAD="$(jq -r '.head.sha' <<<"$PR_JSON")"
-          if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
-            echo "PR changed during review; clearing stale verdict and scheduling a fresh review"
-            LABELS="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/labels" | jq -c '[.[].name | select(startswith("review:") | not)]')"
-            jq -n --argjson labels "$LABELS" '{labels:$labels}' | curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/labels" >/dev/null
+          elif [ "$STATUS" = "stale" ]; then
+            echo "PR #$PR changed during review; stale verdict cleared"
             echo "STALE_REVIEW=true" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          LABELS="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/labels" | jq -c '[.[].name | select(startswith("review:") | not)]')"
-          if [ "$VERDICT" = "PASS" ]; then
-            LABELS="$(jq -c '. + ["review:passed"]' <<<"$LABELS")"
           else
-            LABELS="$(jq -c '. + ["review:changes-requested"]' <<<"$LABELS")"
+            echo "VERDICT=$VERDICT" >> "$GITHUB_ENV"
           fi
-          jq -n --argjson labels "$LABELS" '{labels:$labels}' | curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/labels" >/dev/null
-          jq -n --arg body "$TEXT" '{body:$body}' | curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/comments" >/dev/null
-          echo "VERDICT=$VERDICT" >> "$GITHUB_ENV"
 
       - name: Start PR Fix after changes requested
         if: steps.load.outputs.skip != 'true' && (env.VERDICT == 'CHANGES_REQUESTED')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
-            --data '{"ref":"dev","inputs":{"pr_number":"'${PR}'"}}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-fix.yml/dispatches"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
 
       - name: Wake merge gate after PASS
         if: steps.load.outputs.skip != 'true' && (env.VERDICT == 'PASS')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" PASS
 
-      - name: Clean worktree
-        if: always()
-        run: |
-          set +e
-          [ -n "${JOB_DIR:-}" ] && [ -d "$JOB_DIR" ] && git worktree remove --force "$JOB_DIR"
-          git worktree prune
+
