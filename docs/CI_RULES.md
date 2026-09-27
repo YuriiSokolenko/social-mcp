@@ -57,6 +57,8 @@ Reviewer is independent from Implementer and does not edit files. It checks issu
 
 Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. Merge Gate requires `review:passed`, and only PASS wakes it. PR Fix addresses reviewer-requested code changes, integrates the latest `dev`, verifies the result, and always returns the changed PR to a fresh review before merge.
 
+If Merge Gate later discovers that an already-approved PR now conflicts with current `dev`, that approval is stale for the changed integration result. Merge Gate removes the old `review:*` verdict, dispatches PR Fix, and stops the queue. PR Fix resolves the conflict against current `dev` in its live agent session, runs deterministic checks, pushes the new PR HEAD, and sends it through a fresh Reviewer before Merge Gate may try again.
+
 PR Fix is not a hidden pre-merge integration engine.
 
 ## Merge Gate
