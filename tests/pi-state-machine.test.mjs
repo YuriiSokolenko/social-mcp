@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectIssueState, safeRemovals, validateIssueTransition } from '../scripts/pi-state-machine.mjs';
-import { replaceIssueState } from '../scripts/pi-github-state.mjs';
+import { inspectIssueState, safeRemovals, validateIssueTransition } from '../scripts/pi-common/state-machine.mjs';
+import { replaceIssueState } from '../scripts/pi-common/github-state.mjs';
 
 const issue = (state, labels) => ({ state, labels: labels.map(name => ({ name })) });
 
