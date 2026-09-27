@@ -2,16 +2,8 @@
 
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
+import { readPiJsonl } from "./pi-common/result-jsonl.mjs";
 
-function finalAssistantText(messages) {
-  if (!Array.isArray(messages)) return "";
-  const message = [...messages].reverse().find((candidate) => candidate?.role === "assistant");
-  if (!message || !Array.isArray(message.content)) return "";
-  return message.content
-    .filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("");
-}
 
 export function validateReviewResult(result) {
   if (!["PASS", "CHANGES_REQUESTED"].includes(result?.verdict) || typeof result.text !== "string" || !result.text.trim()) {
@@ -21,28 +13,7 @@ export function validateReviewResult(result) {
 }
 
 export function parseReviewResult(jsonl) {
-  let finalText = "";
-  let toolResult = null;
-  for (const line of jsonl.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let event;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (event.type === "entry_appended" && event.entry?.type === "custom" &&
-        event.entry?.customType === "review-result") {
-      toolResult = event.entry.data;
-    }
-    if (event.type === "message_end" && event.message?.role === "assistant") {
-      finalText = finalAssistantText([event.message]).trim();
-    }
-    if (event.type === "agent_end" && Array.isArray(event.messages)) {
-      const assistant = [...event.messages].reverse().find((message) => message?.role === "assistant");
-      if (assistant) finalText = finalAssistantText([assistant]).trim();
-    }
-  }
+  const { customResult: toolResult, finalText } = readPiJsonl(jsonl, { customType: "review-result" });
 
   // Prefer the structured result from the submit_result tool.
   // REVIEW_RESULT remains only as a parser-compatible diagnostic rendering;
