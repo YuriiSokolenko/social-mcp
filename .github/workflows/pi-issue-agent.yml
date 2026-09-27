@@ -70,7 +70,7 @@ jobs:
         run: |
           JOB_DIR="$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
-          CONTEXT="$(node scripts/pi-common/issue-worktree.mjs prepare "$ISSUE" "$JOB_DIR" "$RUNNER_TEMP")"
+          CONTEXT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-worktree.mjs" prepare "$ISSUE" "$JOB_DIR" "$RUNNER_TEMP")"
           echo "PI_IMPLEMENTER_START_COMMIT=$(jq -r '.start' <<<"$CONTEXT")" >> "$GITHUB_ENV"
           echo "PI_CHECKPOINT_EXPECTED=$(jq -r '.checkpointExpected' <<<"$CONTEXT")" >> "$GITHUB_ENV"
           echo "PI_ISSUE_BRANCH_EXPECTED=$(jq -r '.issueBranchExpected' <<<"$CONTEXT")" >> "$GITHUB_ENV"
@@ -262,5 +262,5 @@ jobs:
       - name: Clean temporary worktree
         if: always()
         run: |
-          node scripts/pi-common/issue-worktree.mjs clean "${JOB_DIR:-}" "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" "${PI_RESUME_PATCH:-}"
+          node "$GITHUB_WORKSPACE/scripts/pi-common/issue-worktree.mjs" clean "${JOB_DIR:-}" "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" "${PI_RESUME_PATCH:-}"
           echo "Temporary worktree removed: ${JOB_DIR:-}"
