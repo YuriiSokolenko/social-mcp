@@ -6,11 +6,11 @@ import { prLabelNames, withoutReviewLabels, withReviewVerdict } from './pr-label
 
 
 async function replaceReviewLabels(prNumber, target = null) {
-  const { api } = githubClient();
-  const pr = await api(`/pulls/${prNumber}`);
+  const { loadPullRequest, replaceLabels } = githubClient();
+  const pr = await loadPullRequest(prNumber);
   const keep = withoutReviewLabels(pr);
   const next = target ? [...keep, target] : keep;
-  await api(`/issues/${prNumber}/labels`, 'PUT', { labels: next });
+  await replaceLabels(prNumber, next);
   return pr;
 }
 
@@ -29,8 +29,8 @@ export async function invalidateReview(prNumber) {
  * cannot race a human takeover or a synchronize event.
  */
 export async function applyReview({ prNumber, reviewedHead, verdict, text }) {
-  const { api } = githubClient();
-  const pr = await api(`/pulls/${prNumber}`);
+  const { loadPullRequest, replaceLabels, comment } = githubClient();
+  const pr = await loadPullRequest(prNumber);
   const currentLabels = prLabelNames(pr);
   if (currentLabels.includes('pi:needs-human')) return { status: 'human' };
   if (pr.head.sha !== reviewedHead) {
@@ -38,18 +38,16 @@ export async function applyReview({ prNumber, reviewedHead, verdict, text }) {
     return { status: 'stale' };
   }
   const target = verdict === 'PASS' ? 'review:passed' : 'review:changes-requested';
-  await api(`/issues/${prNumber}/labels`, 'PUT', { labels: withReviewVerdict(currentLabels, target) });
-  await api(`/issues/${prNumber}/comments`, 'POST', { body: text });
+  await replaceLabels(prNumber, withReviewVerdict(currentLabels, target));
+  await comment(prNumber, text);
   return { status: 'applied', verdict };
 }
 
 export async function dispatchAfterReview(prNumber, verdict) {
-  const { api } = githubClient();
+  const { dispatchWorkflow } = githubClient();
   const workflow = verdict === 'PASS' ? 'pi-auto-merge.yml' : 'pi-pr-fix.yml';
-  const body = verdict === 'PASS'
-    ? { ref: 'dev' }
-    : { ref: 'dev', inputs: { pr_number: String(prNumber) } };
-  await api(`/actions/workflows/${workflow}/dispatches`, 'POST', body);
+  const inputs = verdict === 'PASS' ? undefined : { pr_number: String(prNumber) };
+  await dispatchWorkflow(workflow, inputs);
 }
 
 async function main() {
