@@ -74,7 +74,7 @@ It does not:
 
 The current PR head SHA may be read immediately before merge and supplied to GitHub as optimistic concurrency protection. That SHA is local operation data, not pipeline state.
 
-If GitHub reports a merge conflict, Merge Gate records the blocked condition and stops without crashing. Conflict resolution is separate from the merge decision. PRs modifying `.github/workflows/**` or `scripts/pi-*.mjs|sh` are not auto-merged.
+If GitHub reports a merge conflict, Merge Gate invalidates the stale review verdict, dispatches PR Fix, and stops the queue without crashing. Conflict resolution remains outside Merge Gate. PRs modifying `.github/workflows/**` or `scripts/pi-*.mjs|sh` are not auto-merged.
 
 ## Post-merge CI
 
