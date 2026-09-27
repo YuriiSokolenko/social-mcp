@@ -182,3 +182,12 @@ test('human-required PR exits before reviewer or repair model work', () => {
     assert.match(workflow, /Create (?:review|PR) worktree\n\s+if: steps\.load\.outputs\.skip != 'true'/);
   }
 });
+
+
+test('implementer checkpoint never commits unresolved replay conflicts', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const conflictCheck = workflow.indexOf('git diff --name-only --diff-filter=U');
+  const stage = workflow.indexOf('git add -A', conflictCheck);
+  assert.ok(conflictCheck >= 0 && stage > conflictCheck);
+  assert.match(workflow, /preserving the previous checkpoint instead of saving conflict markers/);
+});
