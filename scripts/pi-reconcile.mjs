@@ -113,13 +113,10 @@ for (const issue of issues) {
       }
     } else if (findings.some(x => x.code === 'orphaned-architect-state')) {
       await replaceStateLabels(issue.number, issue, 'dispatcher:ready', 'issue');
-      const dispatched = recoveryDispatchAllowed
-        ? await tryDispatchWorkflow('pi-dispatcher.yml', {}, `orphaned architect issue #${issue.number}`)
-        : false;
       recovery = {
         add: 'dispatcher:ready',
-        dispatch: dispatched ? 'dispatcher' : null,
-        reason: dispatched ? 'return orphaned architect ownership to dispatcher' : 'architect ownership disappeared; dispatcher:ready retained for retry',
+        dispatch: null,
+        reason: 'return orphaned architect ownership to dispatcher; label event owns the wake',
       };
     } else if (removals.length) {
       await replaceStateLabels(issue.number, issue, issueTargetAfterRemovals(issue, removals), 'issue');
