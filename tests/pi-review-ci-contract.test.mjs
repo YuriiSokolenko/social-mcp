@@ -453,14 +453,14 @@ test('all agent prompts document the shared response-budget contract', () => {
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
-  assert.match(workflow, /PI_ISSUE=.*\\.issue/);
+  assert.ok(workflow.includes('PI_ISSUE=$(jq -r \'.issue\' "$CONTEXT")'));
   assert.match(workflow, /use trivial for a tiny self-contained diff/);
   assert.match(workflow, /do not rerun pytest, Ruff, or git diff --check/);
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /Do not inspect repository history, ancestry/);
   assert.match(prompt, /Never load skills for trivial reviews/);
   assert.match(prompt, /\\*\\*Never rerun them\\.\\*\\*/);
-  assert.doesNotMatch(prompt, /Before reviewing, read \`docs\\/PROJECT_CONTEXT\\.md\`/);
+  assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
 
 
