@@ -12,11 +12,17 @@ test('global turn ceiling is independent of task complexity', () => {
   assert.equal(guard.checkToolCall('read', { path: 'b' }).block, true);
 });
 
-test('complexity must be declared before other tools when required', () => {
-  const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
-  assert.equal(guard.checkToolCall('read', { path: 'x' }).block, true);
+test('only the operating contract may be read before required complexity declaration', () => {
+  const guard = new LoopGuard({
+    repeatThreshold: 3,
+    requireComplexity: true,
+    preComplexityReadPaths: ['agents/implementer/AGENTS.md'],
+  });
+  assert.equal(guard.checkToolCall('read', { path: '/work/agents/implementer/AGENTS.md' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }).block, true);
+  assert.equal(guard.checkToolCall('bash', { command: 'ls' }).block, true);
   guard.setComplexity('trivial');
-  assert.equal(guard.checkToolCall('read', { path: 'x' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
 });
 
 test('complexity can escalate but cannot downgrade', () => {
