@@ -62,13 +62,15 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
 });
 
 
-test('implementer integrates latest dev before verification and starts review, not merge', () => {
+test('implementer resolves latest-dev integration inside the live agent session before publication', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const integrate = workflow.indexOf('name: Integrate latest dev before publication');
-  const verify = workflow.indexOf('name: Verify implementation before publication');
-  const publish = workflow.indexOf('name: Push verified issue branch');
-  assert.ok(integrate >= 0 && integrate < verify && verify < publish);
-  assert.match(workflow, /git fetch origin dev[\s\S]*git merge --no-edit origin\/dev/);
+  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  assert.doesNotMatch(workflow, /name: Integrate latest dev before publication/);
+  assert.match(tool, /fetch', 'origin', 'dev/);
+  assert.match(tool, /merge', '--no-edit', 'origin\/dev/);
+  assert.match(tool, /Merge conflicts are still unresolved|Latest dev conflicts with the implementation/);
+  assert.match(tool, /pytest/);
+  assert.match(tool, /ruff/);
   assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
