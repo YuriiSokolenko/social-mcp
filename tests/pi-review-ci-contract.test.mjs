@@ -41,6 +41,7 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
   const workflows = [
     'pi-architect.yml',
     'pi-auto-merge.yml',
+    'pi-automation-control.yml',
     'pi-dispatcher.yml',
     'pi-issue-agent.yml',
     'pi-pr-fix.yml',
@@ -95,7 +96,7 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(tool, /PR conflicts with current dev/);
   assert.match(tool, /runProductChecks\(\)/);
   assert.match(workflow, /name: Start fresh review/);
-  assert.match(fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8'), /pi-pr-review\.yml\/dispatches/);
+  assert.match(fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8'), /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
 
