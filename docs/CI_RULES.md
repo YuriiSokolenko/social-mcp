@@ -8,7 +8,7 @@ GitHub repository state is the source of truth. Workflow inputs and SHAs are not
 Issue -> Dispatcher -> Implementer -> checks -> PR -> Reviewer -> Merge Gate -> dev -> CI -> next PR
 ```
 
-Green post-merge CI accepts the merged result and wakes Merge Gate for the next PR. Red post-merge CI stops that merge sequence. Do not build a second pre-merge integration pipeline.
+Every green CI run on a `dev` push wakes Merge Gate, which reloads current PR state and either merges one eligible PR or exits. This avoids coupling queue progress to commit-message conventions. Red `dev` CI does not wake Merge Gate and therefore stops that merge sequence. Do not build a second pre-merge integration pipeline.
 
 ## Branches and trust
 
@@ -49,7 +49,7 @@ pytest
 ruff check .
 ```
 
-A checkpoint branch may exist for recovery; it is never a merge candidate. The published branch is `pi/issue-<number>`, its PR targets `dev`, and links the issue with `Closes #<number>`.
+A checkpoint branch may exist for recovery; it is never a merge candidate. Checkpoints are replayed onto the latest `dev`. If replay leaves unresolved conflicts, cancellation must preserve the previous good checkpoint rather than commit conflict markers. The published branch is `pi/issue-<number>`, its PR targets `dev`, and links the issue with `Closes #<number>`.
 
 ## Reviewer and PR Fix
 
@@ -58,6 +58,8 @@ Reviewer is independent from Implementer and does not edit files. It checks issu
 Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. The verdict applies only if the PR HEAD is still exactly the HEAD that was reviewed. If HEAD changed during review, the stale verdict is discarded and Reviewer is dispatched again for the current PR. Merge Gate requires `review:passed`, and only PASS wakes it. PR Fix addresses reviewer-requested code changes, integrates the latest `dev`, verifies the result, and always returns the changed PR to a fresh review before merge.
 
 If Merge Gate later discovers that an already-approved PR now conflicts with current `dev`, that approval is stale for the changed integration result. Merge Gate removes the old `review:*` verdict, dispatches PR Fix, and stops the queue. PR Fix resolves the conflict against current `dev` in its live agent session, runs deterministic checks, pushes the new PR HEAD, and sends it through a fresh Reviewer before Merge Gate may try again.
+
+`pi:needs-human` on a PR is a hard automation gate: Reviewer, PR Fix, and Merge Gate must skip that PR before model work or mutation. Removing the label is an explicit human decision to return the PR to automation.
 
 PR Fix is not a hidden pre-merge integration engine.
 
@@ -86,7 +88,7 @@ merge PR -> push dev -> CI
                      -> red: stop merge sequence
 ```
 
-Reconciler does not wake Merge Gate.
+Reconciler does not wake Merge Gate. Merge Gate must not infer a merge event from commit-message text.
 
 ## Inputs and SHA rule
 
@@ -110,16 +112,17 @@ Do not add `integration_base_sha`, `repair_base_sha`, captured dev SHA, exact-pa
 
 Reconciler is recovery infrastructure, not a scheduler. It may recover orphaned ownership, stranded `pi:ready` work, and obsolete checkpoints by returning work directly to its normal owner. It must not become another happy-path dispatcher and must not wake Merge Gate.
 
-Triage is an optional preparation step for issues not yet in the pipeline. It may validate readiness and set `dispatcher:ready`; it does not replace Dispatcher.
+Triage is an optional preparation step for issues not yet in the pipeline. It reads the same canonical `## Task metadata` from the GitHub issue body as Dispatcher and Architect; no `tasks/<id>.md` snapshot exists. It may validate readiness and set `dispatcher:ready`; it does not replace Dispatcher.
 
 ## Concurrency and failures
 
 Different issues may execute in parallel. Work for the same issue/PR follows its workflow concurrency rule. Dispatcher and Merge Gate are serialized queues. N150 autoscaling/model capacity limits actual trusted-agent concurrency.
 
+Cancellation is operational control, not failure. If Implementer or Architect is cancelled before publication, return the issue to `dispatcher:ready` without automatically dispatching it again. If a PR was already published, preserve PR-pipeline ownership. A genuine execution failure without a published PR may require `pi:needs-human`.
+
 Use explicit states:
-- implementation failure -> `pi:failed`
+- genuine implementation/architect execution failure before publication -> `pi:needs-human`
 - unclear/no actionable change -> `pi:needs-human`
-- review execution failure -> `review:failed`
 - reviewer requests changes -> `review:changes-requested`
 - reviewer passes -> `review:passed`
 - merge conflict -> stale review is removed, PR Fix is dispatched, and Merge Gate itself succeeds/stops the queue
