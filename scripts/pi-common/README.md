@@ -22,6 +22,9 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `bash-timeout-policy.mjs` / `loop-guard-policy.mjs` — reusable model tool safety limits.
 - `product-checks.mjs` — authoritative product-code deterministic checks used before publication/review.
 - `pr-guard.mjs` — loads the complete PR state/file list and enforces the pre-model human/control-plane gate.
+- `issue-context.mjs` — performs the Implementer's one fresh issue read and validates `open + pi:ready` before model work.
+- `issue-worktree.mjs` — creates/resumes/cleans the Implementer's latest-`dev` worktree without treating saved work as a base branch.
+- `issue-publication.mjs` — safely checkpoints and publishes verified issue work, upserts its PR, and hands the PR to Reviewer.
 
 ## What does NOT belong here
 
