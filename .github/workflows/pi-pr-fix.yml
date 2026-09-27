@@ -79,6 +79,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd "$JOB_DIR"
+          git fetch origin dev
+          git config user.name "social-mcp-pi"
+          git config user.email "social-mcp-pi@users.noreply.github.com"
+          git merge --no-edit origin/dev
           pytest
           ruff check .
           rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
@@ -93,11 +97,13 @@ jobs:
           [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved; refusing stale push" >&2; exit 1; }
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "HEAD:refs/heads/$HEAD_REF"
 
-      - name: Wake merge gate
+      - name: Start fresh review
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data '{"ref":"dev"}'             "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches"
+          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
+            --data '{"ref":"dev","inputs":{"pr_number":"'${PR}'"}}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-review.yml/dispatches"
 
       - name: Clean worktree
         if: always()
