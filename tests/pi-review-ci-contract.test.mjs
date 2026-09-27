@@ -473,7 +473,7 @@ test('implementer orients and plans before declaring complexity', () => {
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
   assert.match(workflow, /read AGENTS\.md, read this issue, inspect only directly relevant current-dev code, write a short execution plan of at most 1000 output tokens, then call declare_task_complexity/);
   assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
-  assert.match(workflow, /a complex classification still means you implement this same issue to completion/);
+  assert.match(workflow, /A complex classification still means you implement this same issue to completion\./);
   assert.match(agent, /Read `agents\/implementer\/AGENTS\.md`/);
   assert.match(agent, /Write a short execution plan/);
   assert.match(agent, /1000 output tokens/);
