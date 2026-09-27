@@ -349,7 +349,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue queued \
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue stopped \
             "Pi implementation run was cancelled. Saved checkpoint work, if any, will be replayed from latest dev on the next dispatch."
 
       - name: Summarize issue pipeline
