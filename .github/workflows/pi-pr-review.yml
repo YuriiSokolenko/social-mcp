@@ -110,7 +110,9 @@ jobs:
           PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/pulls/${PR}")"
           CURRENT_HEAD="$(jq -r '.head.sha' <<<"$PR_JSON")"
           if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
-            echo "PR changed during review; refusing stale verdict and scheduling a fresh review"
+            echo "PR changed during review; clearing stale verdict and scheduling a fresh review"
+            LABELS="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/labels" | jq -c '[.[].name | select(startswith("review:") | not)]')"
+            jq -n --argjson labels "$LABELS" '{labels:$labels}' | curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/labels" >/dev/null
             echo "STALE_REVIEW=true" >> "$GITHUB_ENV"
             exit 0
           fi
