@@ -13,21 +13,24 @@ import { githubClient } from './github-api.mjs';
  * Pipeline state is still GitHub labels; this file is not transported to any
  * other workflow and is never authoritative after this preparation step.
  */
-export async function loadReadyIssue(issue) {
+export async function loadIssue(issue) {
   if (!Number.isSafeInteger(issue) || issue < 1) throw new Error('issue must be a positive integer');
-  const { api } = githubClient();
-  const data = await api(`/issues/${issue}`);
-  const labels = (data.labels ?? []).map(x => x.name);
-  if (data.state !== 'open' || !labels.includes('pi:ready')) {
+  const data = await githubClient().loadIssue(issue);
+  return { number: data.number, title: data.title, body: data.body ?? '', state: data.state, labels: (data.labels ?? []).map(x => x.name) };
+}
+
+export async function loadReadyIssue(issue) {
+  const data = await loadIssue(issue);
+  if (data.state !== 'open' || !data.labels.includes('pi:ready')) {
     throw new Error(`Issue #${issue} is not an open pi:ready issue`);
   }
-  return { number: data.number, title: data.title, body: data.body ?? '' };
+  return { number: data.number, title: data.title, body: data.body };
 }
 async function main() {
-  const [raw, output] = process.argv.slice(2);
-  if (!output) throw new Error('usage: issue-context.mjs <issue> <output-json>');
-  const data = await loadReadyIssue(Number(raw));
+  const [raw, output, mode = 'ready'] = process.argv.slice(2);
+  if (!output || !['ready', 'plain'].includes(mode)) throw new Error('usage: issue-context.mjs <issue> <output-json> [ready|plain]');
+  const data = mode === 'ready' ? await loadReadyIssue(Number(raw)) : await loadIssue(Number(raw));
   fs.writeFileSync(output, JSON.stringify(data, null, 2));
-  console.log(`Loaded ready issue #${data.number}: ${data.title}`);
+  console.log(`Loaded ${mode === 'ready' ? 'ready ' : ''}issue #${data.number}: ${data.title}`);
 }
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main().catch(e=>{console.error(e);process.exitCode=1;});
