@@ -52,7 +52,7 @@ If `.env` defines `WORKFLOW_FILES`, add any newly introduced workflow file
 there too (e.g. `pi-triage.yml`); updating the tracked defaults does not
 override an existing host `.env`. Restart the autoscaler manager after
 changing its local environment.
-The tracked example and manager fallback default to two. The production N150 host may intentionally override this in its untracked `.env` (currently four); the local value is authoritative for that host.
+The tracked example and manager fallback default to four. A host may override this in its untracked `.env`; the local value is authoritative for that host.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
 Set `MODEL_STATUS_URL` in the N150 host's local `.env` to the active model
 server, reachable from the manager container. For a llama.cpp server, point it at that server's `/slots` endpoint. The endpoint returns the total slots and whether each is processing a request. Do not treat a historical host/port as part of the repository contract; `MODEL_STATUS_URL` must follow whichever model server is active on the N150 deployment. The manager
