@@ -160,8 +160,10 @@ test('pi:needs-human on a PR stops review, repair, and merge automation', () => 
 test('manual cancellation leaves unpublished agent work unowned instead of redispatching', () => {
   const implementer = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const architect = fs.readFileSync('.github/workflows/pi-architect.yml', 'utf8');
-  assert.match(implementer, /if: cancelled\(\) && steps\.pr\.outputs\.number == ''[\s\S]*?pi-transition\\.mjs" issue stopped/);
-  assert.match(architect, /if: cancelled\(\)[\s\S]*?pi-transition\\.mjs" issue stopped/);
+  assert.ok(implementer.includes("if: cancelled() && steps.pr.outputs.number == ''"));
+  assert.ok(implementer.includes('pi-transition.mjs" issue stopped'));
+  assert.ok(architect.includes('if: cancelled()'));
+  assert.ok(architect.includes('pi-transition.mjs" issue stopped'));
   assert.doesNotMatch(implementer, /if: cancelled\(\) && steps\.pr\.outputs\.number == ''[\s\S]{0,400}?issue needs-human/);
 });
 
