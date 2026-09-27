@@ -52,6 +52,8 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
     }
   }
   const loadPullRequest = prNumber => api(`/pulls/${prNumber}`);
+  const loadIssue = number => api(`/issues/${number}`);
+  const updateIssue = (number, body) => api(`/issues/${number}`, 'PATCH', body);
   const replaceLabels = (number, labels) => api(`/issues/${number}/labels`, 'PUT', { labels });
   const comment = (number, body) => api(`/issues/${number}/comments`, 'POST', { body });
   const dispatchWorkflow = (workflow, inputs) => api(
@@ -59,9 +61,25 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
     'POST',
     inputs === undefined ? { ref: 'dev' } : { ref: 'dev', inputs },
   );
+  async function workflowRuns(path) {
+    const all = [];
+    for (let page = 1; ; page++) {
+      const data = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+      const batch = data.workflow_runs ?? [];
+      all.push(...batch);
+      if (batch.length < 100) return all;
+    }
+  }
+  async function deleteRef(ref) {
+    try {
+      await api(`/git/refs/${ref}`, 'DELETE');
+    } catch (error) {
+      if (!/DELETE .*: 404 /.test(error.message)) throw error;
+    }
+  }
 
   return {
     api, pages, ensureLabel, repo,
-    loadPullRequest, replaceLabels, comment, dispatchWorkflow,
+    loadPullRequest, loadIssue, updateIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns, deleteRef,
   };
 }
