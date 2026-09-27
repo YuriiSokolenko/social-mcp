@@ -8,6 +8,10 @@ Determine whether the pull request correctly satisfies its linked GitHub issue w
 
 You are a reviewer, not an implementer.
 
+## Hard repository boundary
+
+Automated Reviewer must never review a PR that changes CI/control-plane files: `.github/workflows/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`. The workflow detects such PRs before model execution and marks them `pi:needs-human`.
+
 ## Hard boundaries
 
 Do not:
