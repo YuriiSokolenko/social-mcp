@@ -6,6 +6,7 @@ import { githubClient } from "./pi-common/github-api.mjs";
 import { replaceIssueState } from "./pi-common/github-state.mjs";
 import { validateIssueTransition } from "./pi-common/state-machine.mjs";
 import { taskMetadata } from "./pi-common/task-metadata.mjs";
+import { readPiJsonl } from "./pi-common/result-jsonl.mjs";
 
 const { api: request, pages, ensureLabel, repo, comment: postIssueComment } = githubClient();
 const api = (endpoint, options = {}) =>
@@ -148,22 +149,9 @@ export function validateTriage(result) {
 }
 
 export function triageFromJsonl(jsonl) {
-  let toolResult = null;
-  for (const line of jsonl.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let event;
-    try { event = JSON.parse(line); } catch { continue; }
-    if (event.type === "entry_appended" && event.entry?.type === "custom" &&
-        event.entry?.customType === "triage-result") {
-      toolResult = event.entry.data;
-    }
-  }
-  // Prefer the structured result from the submit_result tool
-  // (pi-triage-result-tool.mjs). The TRIAGE_RESULT text line is kept only as
-  // a fallback while that tool is still a prototype.
-  if (toolResult) return validateTriage(toolResult);
-  const text = finalText(jsonl);
-  const lines = text.split(/\r?\n/).filter(line => line.startsWith("TRIAGE_RESULT: "));
+  const { customResult, finalText: text } = readPiJsonl(jsonl, { customType: "triage-result" });
+  if (customResult) return validateTriage(customResult);
+  const lines = text.split(/\\r?\\n/).filter(line => line.startsWith("TRIAGE_RESULT: "));
   if (!lines.length) throw new Error("expected a TRIAGE_RESULT line");
   return validateTriage(JSON.parse(lines.at(-1).slice("TRIAGE_RESULT: ".length)));
 }
