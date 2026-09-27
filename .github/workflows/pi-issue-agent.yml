@@ -183,6 +183,11 @@ jobs:
           find . -type d -name '__pycache__' -prune -exec rm -rf {} +
           git config user.name "social-mcp-pi"
           git config user.email "social-mcp-pi@users.noreply.github.com"
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "Unresolved replay conflicts remain; preserving the previous checkpoint instead of saving conflict markers"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git add -A
           if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
             echo "Refusing to checkpoint a credential or runtime file" >&2
