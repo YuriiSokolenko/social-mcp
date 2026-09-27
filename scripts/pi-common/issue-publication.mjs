@@ -80,8 +80,8 @@ export async function upsertPullRequest({ issue, issueTitle, resultFile, owner }
 }
 
 export async function dispatchReviewer(prNumber) {
-  const { api } = githubClient();
-  await api('/actions/workflows/pi-pr-review.yml/dispatches','POST',{ref:'dev',inputs:{pr_number:String(prNumber)}});
+  const { dispatchWorkflow } = githubClient();
+  await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(prNumber) });
 }
 
 async function main() {
