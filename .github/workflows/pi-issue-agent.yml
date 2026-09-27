@@ -130,7 +130,7 @@ jobs:
           cd "$JOB_DIR"
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           pi \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-implementer-result-tool.mjs" \
             --provider hp-laguna \
