@@ -138,3 +138,10 @@ test('merge gate has permission for its late-conflict PR Fix dispatch', () => {
   assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
   assert.match(workflow, /permissions:\n(?:\s+.*\n)*?\s+actions: write/);
 });
+
+
+test('green dev CI wakes merge gate without parsing commit-message conventions', () => {
+  const workflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(workflow, /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/dev' && success\(\)/);
+  assert.doesNotMatch(workflow, /contains\(github\.event\.head_commit\.message/);
+});
