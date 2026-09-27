@@ -66,7 +66,7 @@ jobs:
           Call submit_result exactly once as your last action. Do not modify repository or GitHub state.
           EOF
           pi \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-dispatcher-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
