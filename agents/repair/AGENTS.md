@@ -33,3 +33,7 @@ If reviewer feedback is contradictory or stale, or a conflict cannot be resolved
 ## Completion
 
 The working tree must contain the repair and any required regression coverage. Completion requires a successful `submit_repair`, which means current `dev` is integrated and deterministic checks pass. Conflict-file edits belong to the agent; staging, merge commit, push, and GitHub mutations remain workflow-owned.
+
+## Response budget
+
+Keep each model response as small as the next step permits. The runtime starts at SHORT (2048 output tokens). Before a next response genuinely needs more room, call `set_response_budget` with the smallest sufficient level: SHORT (2048) for obvious navigation/status/search/tool selection; NORMAL (4096) for ordinary local reasoning or a small change; DEEP (8192) only for difficult debugging/synthesis, substantial code generation, or conflict resolution. Prefer SHORT, lower the budget again after a larger turn, and never use DEEP merely because the overall task is complex.
