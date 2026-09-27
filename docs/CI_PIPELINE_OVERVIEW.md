@@ -45,9 +45,9 @@ The actual merged `dev` commit is the integration test. There is no separate pre
 |---|---|
 | Dispatcher | Route currently eligible issues to Implementer or Architect |
 | Architect | Optional decomposition/planning; return tasks to Dispatcher |
-| Implementer | Change code/tests; workflow verifies and publishes PR |
-| Reviewer | Independently review PR and deterministic checks |
-| PR Fix | Address reviewer-requested code changes |
+| Implementer | Change code/tests; integrate latest dev in the live session; resolve conflicts; verify and publish PR |
+| Reviewer | Run deterministic checks on the exact PR HEAD, then independently review that same HEAD |
+| PR Fix | Address reviewer feedback or late dev conflicts; integrate current dev in the live repair session; re-review the new HEAD |
 | Merge Gate | Validate basic ownership/safety and attempt one squash merge |
 | CI | Test the real commit after it lands on `dev` |
 | Reconciler | Recover stranded/orphaned state; never schedule normal work |
@@ -58,7 +58,7 @@ The actual merged `dev` commit is the integration test. There is no separate pre
 
 Merge Gate is not an integration engine. It may read the current PR head SHA only for GitHub merge optimistic concurrency. It does not carry SHAs between workflows, synthesize dev+PR commits, update branches because `dev` moved, or maintain exact-pair review/CI state.
 
-A merge conflict blocks the queue without making Merge Gate itself fail. Protected CI/control-plane changes are not auto-merged.
+A late merge conflict invalidates the old review, dispatches PR Fix, and blocks the queue without making Merge Gate itself fail. PR Fix integrates current dev, resolves conflicts in its live agent session, validates and pushes the new HEAD, then starts a fresh Reviewer. Protected CI/control-plane changes are not auto-merged.
 
 Normal wake sources are deliberately narrow:
 - `dispatcher:ready` can wake Dispatcher;
