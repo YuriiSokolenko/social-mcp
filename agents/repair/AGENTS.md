@@ -95,6 +95,7 @@ Use `set_response_budget` only when needed and choose the smallest sufficient le
 
 Do not read skills for trivial/static repairs. For normal/complex work, load a skill only when the current blocker actually needs that expertise:
 
+- Issue/reviewer/check repair requiring diagnosis, expected-vs-actual reasoning, reproduction, or stale-test handling → `.agents/skills/issue-repair/SKILL.md`
 - Simplicity/readability decision or suspected accidental complexity → `.agents/skills/kiss/SKILL.md`
 - Speculative/future-proof scope or premature abstraction question → `.agents/skills/yagni/SKILL.md`
 - Concrete reuse/dependency/boilerplate question → `.agents/skills/minimalist/SKILL.md`
