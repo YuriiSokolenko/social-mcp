@@ -309,9 +309,10 @@ test('product agent workflows use one shared product-check contract and never ru
     const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
     assert.doesNotMatch(workflow, /node\s+--test|test_runner_autoscaler|tests\/[^^\s"']*\.test\.mjs/);
   }
-  for (const name of ['pi-issue-agent.yml', 'pi-pr-review.yml']) {
-    assert.match(fs.readFileSync(`.github/workflows/${name}`, 'utf8'), /pi-common\/product-checks\.mjs/);
-  }
+  // Reviewer validates in workflow. Implementer validates once inside its trusted
+  // terminal submit tool; publication must not rerun the same full product suite.
+  assert.match(fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
+  assert.doesNotMatch(fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
   const checks = fs.readFileSync('scripts/pi-common/product-checks.mjs', 'utf8');
   assert.match(checks, /git.*diff.*--check/s);
   assert.match(checks, /pytest/);
