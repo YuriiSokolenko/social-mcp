@@ -51,5 +51,17 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
       throw new Error(`Cannot ensure ${name} label: ${response.status} ${await response.text()}`);
     }
   }
-  return { api, pages, ensureLabel, repo };
+  const loadPullRequest = prNumber => api(`/pulls/${prNumber}`);
+  const replaceLabels = (number, labels) => api(`/issues/${number}/labels`, 'PUT', { labels });
+  const comment = (number, body) => api(`/issues/${number}/comments`, 'POST', { body });
+  const dispatchWorkflow = (workflow, inputs) => api(
+    `/actions/workflows/${workflow}/dispatches`,
+    'POST',
+    inputs === undefined ? { ref: 'dev' } : { ref: 'dev', inputs },
+  );
+
+  return {
+    api, pages, ensureLabel, repo,
+    loadPullRequest, replaceLabels, comment, dispatchWorkflow,
+  };
 }
