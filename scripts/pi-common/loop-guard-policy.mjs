@@ -46,12 +46,10 @@ export function toolCallSignature(toolName, input) {
 }
 
 export class LoopGuard {
-  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, reviewMode = false, reviewPathsJson = '[]' }) {
+  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false }) {
     this.defaultTurnLimit = turnBudget(turnLimit);
     this.repeatThreshold = repeatLimit(repeatThreshold);
     this.requireComplexity = requireComplexity;
-    this.reviewMode = reviewMode;
-    this.reviewPaths = new Set(JSON.parse(reviewPathsJson || '[]'));
     this.profile = requireComplexity ? null : { softTurns: this.defaultTurnLimit, hardTurns: this.defaultTurnLimit, toolCalls: Number.MAX_SAFE_INTEGER };
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
@@ -81,38 +79,10 @@ export class LoopGuard {
     return `Execution budget is nearing its limit for a ${this.complexity} task. Stop exploring, make only the smallest remaining change, and call submit_result as soon as the acceptance criteria are satisfied.`;
   }
 
-  checkTrivialReviewScope(toolName, input = {}) {
-    if (toolName === 'submit_result') return undefined;
-    if (toolName.startsWith('searxng_') || toolName.includes('web_') || toolName.includes('search')) {
-      return { block: true, reason: 'Trivial review is scoped to the linked issue, PR diff, and changed files; external or repository-wide search is not allowed.' };
-    }
-    if (toolName === 'read') {
-      const path = String(input.path ?? '');
-      if (path.endsWith('/agents/reviewer/AGENTS.md') || path === 'agents/reviewer/AGENTS.md') return undefined;
-      if ([...this.reviewPaths].some(changed => path === changed || path.endsWith('/' + changed))) return undefined;
-      return { block: true, reason: 'Trivial review may read only reviewer instructions and files changed by this PR.' };
-    }
-    if (toolName === 'bash') {
-      const command = String(input.command ?? '');
-      if (/git\s+(?:log|branch|config|remote|status|rev-parse)|(?:^|\s)(?:find|grep|rg|ls)(?:\s|$)|python(?:3)?\s+-c/.test(command)) {
-        return { block: true, reason: 'Trivial review does not allow repository/history/config enumeration or ad-hoc verification scripts. Inspect the PR diff and changed files only.' };
-      }
-      if (/git\s+(?:diff|show)(?:\s|$)/.test(command)) return undefined;
-      if (/gh\s+(?:issue|pr)\s+view(?:\s|$)/.test(command)) return undefined;
-      if ([...this.reviewPaths].some(changed => command.includes(changed)) && /(?:cat|head|tail|od)(?:\s|$)/.test(command)) return undefined;
-      return { block: true, reason: 'Trivial review bash is limited to the linked issue, PR diff, and changed-file inspection.' };
-    }
-    return { block: true, reason: 'This tool is outside the allowed scope of a trivial review. Use only the linked issue, PR diff, changed files, then submit_result.' };
-  }
-
   checkToolCall(toolName, input) {
     if (toolName === 'declare_task_complexity') return undefined;
     if (!this.profile) return { block: true, reason: 'Declare task complexity first with declare_task_complexity (trivial, normal, or complex) before using implementation tools.' };
 
-    if (this.reviewMode && this.complexity === 'trivial') {
-      const blocked = this.checkTrivialReviewScope(toolName, input);
-      if (blocked) return blocked;
-    }
     const phase = toolPhase(toolName, input);
     // Only exploration consumes the exploration budget. Implementation,
     // focused validation, and submission remain available so the task can
