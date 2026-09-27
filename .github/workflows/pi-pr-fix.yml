@@ -12,7 +12,7 @@ on:
 permissions:
   actions: write
   contents: write
-  issues: read
+  issues: write
   pull-requests: read
 
 concurrency:
@@ -59,6 +59,8 @@ jobs:
           echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
+          LABELS="$(jq -c '[.labels[].name | select(startswith("review:") | not)]' <<<"$PR_JSON")"
+          jq -n --argjson labels "$LABELS" '{labels:$labels}' | curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "https://api.github.com/repos/${REPO}/issues/${PR}/labels" >/dev/null
 
       - name: Create PR worktree
         if: steps.load.outputs.skip != 'true'
