@@ -108,6 +108,11 @@ jobs:
           TEXT="$(jq -r '.text' "$RESULT")"
           API="https://api.github.com/repos/${REPO}"
           PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/pulls/${PR}")"
+          if jq -e '[.labels[].name] | index("pi:needs-human") != null' <<<"$PR_JSON" >/dev/null; then
+            echo "PR #${PR} became human-gated during review; discarding the automated verdict"
+            echo "HUMAN_GATED=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
           CURRENT_HEAD="$(jq -r '.head.sha' <<<"$PR_JSON")"
           if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
             echo "PR changed during review; clearing stale verdict and scheduling a fresh review"
@@ -128,7 +133,7 @@ jobs:
           echo "VERDICT=$VERDICT" >> "$GITHUB_ENV"
 
       - name: Restart review after PR head changed
-        if: steps.load.outputs.skip != 'true' && (env.STALE_REVIEW == 'true')
+        if: steps.load.outputs.skip != 'true' && env.HUMAN_GATED != 'true' && (env.STALE_REVIEW == 'true')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
