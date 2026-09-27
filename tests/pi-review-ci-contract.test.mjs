@@ -71,7 +71,9 @@ test('implementer resolves latest-dev integration inside the live agent session 
   assert.match(tool, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /Merge conflicts are still unresolved|Latest dev conflicts with the implementation/);
   assert.match(tool, /runProductChecks\(\)/);
-  assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
+  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  assert.match(workflow, /issue-publication\.mjs" review/);
+  assert.match(publication, /pi-pr-review\.yml\/dispatches/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
 
