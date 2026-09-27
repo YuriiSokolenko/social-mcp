@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url';
 
-import { githubClient } from './github-api.mjs';
-import { controlPlanePaths } from './pi-control-plane-policy.mjs';
+import { githubClient } from './pi-common/github-api.mjs';
+import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
 
 const { api, pages, repo } = githubClient();
 
