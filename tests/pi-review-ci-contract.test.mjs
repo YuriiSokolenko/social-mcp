@@ -485,3 +485,15 @@ test('dispatcher stays a narrow scope classifier and does not treat complexity a
   assert.match(agent, /That classification is your entire job/);
   assert.doesNotMatch(agent, /Read `docs\/PROJECT_CONTEXT\.md`/);
 });
+
+
+test('architect decomposes only on real merge boundaries', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-architect.yml', 'utf8');
+  const agent = fs.readFileSync('agents/architect/AGENTS.md', 'utf8');
+  assert.ok(agent.includes('Size alone is not a reason to split.'));
+  assert.ok(agent.includes('Complexity alone is not a reason to split.'));
+  assert.ok(agent.includes('Create the **minimum number** of independently mergeable steps required.'));
+  assert.ok(agent.includes('Do not load planning skills for an obvious keep or simple revise.') || agent.includes('Do not load planning skills for an obvious `keep` or simple `revise`.'));
+  assert.ok(agent.includes('Do not perform a general repository audit.'));
+  assert.ok(!workflow.includes('agents/architect/AGENTS.md and docs/PROJECT_CONTEXT.md'));
+});
