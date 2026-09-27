@@ -465,9 +465,9 @@ test('agent prompts document their configured response-budget contract', () => {
   }
   const dispatcher = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
   assert.match(dispatcher, /set_response_budget/);
-  assert.match(dispatcher, /SHORT[\\s\\S]*2048/);
-  assert.match(dispatcher, /NORMAL[\\s\\S]*4096/);
-  assert.match(dispatcher, /DEEP[\\s\\S]*8192/);
+  assert.match(dispatcher, /SHORT[\s\S]*2048/);
+  assert.match(dispatcher, /NORMAL[\s\S]*4096/);
+  assert.match(dispatcher, /DEEP[\s\S]*8192/);
   const dispatcherWorkflow = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
   assert.doesNotMatch(dispatcherWorkflow, /PI_RESPONSE_BUDGET_(?:SHORT|NORMAL|DEEP)/);
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
