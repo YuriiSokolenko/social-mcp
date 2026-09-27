@@ -82,6 +82,7 @@ export const ISSUE_TRANSITIONS = Object.freeze({
   running: PIPELINE_LABELS.running,
   'mr-created': PIPELINE_LABELS.pr,
   'needs-human': PIPELINE_LABELS.needsHuman,
+  stopped: null,
 });
 export function issueStateLabels(issue) {
   const labels = names(issue);
@@ -89,11 +90,14 @@ export function issueStateLabels(issue) {
 }
 
 export function validateIssueTransition(issue, action) {
+  if (!(action in ISSUE_TRANSITIONS)) throw new Error(`unknown issue transition: ${action}`);
   const target = ISSUE_TRANSITIONS[action];
-  if (!target) throw new Error(`unknown issue transition: ${action}`);
   const labels = names(issue);
-  if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target}`);
-  if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target}`);
+  if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target ?? 'unowned'}`);
+  if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target ?? 'unowned'}`);
+  if (action === 'stopped' && !labels.has(PIPELINE_LABELS.running) && !labels.has(PIPELINE_LABELS.architectReady)) {
+    throw new Error('stopped requires pi:running or architect:ready');
+  }
   if (action === 'ready' && !labels.has(PIPELINE_LABELS.queued) && !labels.has(PIPELINE_LABELS.ready)) {
     throw new Error('ready requires dispatcher:ready or an idempotent pi:ready state');
   }
