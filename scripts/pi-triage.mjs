@@ -163,9 +163,12 @@ async function main() {
     await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
     await ensureLabel("pi:needs-human", "fbca04", "Pi finished without a usable repository change");
     const list = await candidates();
-    fs.writeFileSync(file, JSON.stringify({ candidates: list }, null, 2) + "\n");
-    console.log(`Triage: ${list.length} candidate issue(s)`);
-    for (const item of list) {
+    const batchSize = Number(process.env.PI_TRIAGE_BATCH_SIZE ?? 8);
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("PI_TRIAGE_BATCH_SIZE must be a positive integer");
+    const batch = list.slice(0, batchSize);
+    fs.writeFileSync(file, JSON.stringify({ candidates: batch }, null, 2) + "\n");
+    console.log(`Triage: ${batch.length} candidate issue(s)${list.length > batch.length ? ` of ${list.length} pending` : ""}`);
+    for (const item of batch) {
       console.log(`  #${item.issue}${item.reconsidering ? " (re-check after change)" : ""}`);
     }
     return;
@@ -181,7 +184,8 @@ async function main() {
   // Recompute eligibility now, at apply time, rather than trusting the
   // prepare-time snapshot: it is the source of truth for what must be
   // classified.
-  const current = await candidates();
+  const batchSize = Number(process.env.PI_TRIAGE_BATCH_SIZE ?? 8);
+  const current = (await candidates()).slice(0, batchSize);
   const currentNumbers = current.map(item => item.issue).sort((a, b) => a - b);
   const classifiedNumbers = [...classified].sort((a, b) => a - b);
   if (JSON.stringify(currentNumbers) !== JSON.stringify(classifiedNumbers)) {
