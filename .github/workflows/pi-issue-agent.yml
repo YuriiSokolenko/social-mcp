@@ -70,37 +70,11 @@ jobs:
         run: |
           JOB_DIR="$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
-          rm -rf "$JOB_DIR"
-          git fetch origin dev
-          START_COMMIT="$(git rev-parse origin/dev)"
-          CHECKPOINT="pi/issue-${ISSUE}-checkpoint"
-          CHECKPOINT_REMOTE="$(git ls-remote origin "refs/heads/${CHECKPOINT}" | awk '{print $1}')"
-          echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_REMOTE}" >> "$GITHUB_ENV"
-          ISSUE_BRANCH_REMOTE="$(git ls-remote origin "refs/heads/pi/issue-${ISSUE}" | awk '{print $1}')"
-          echo "PI_ISSUE_BRANCH_EXPECTED=${ISSUE_BRANCH_REMOTE}" >> "$GITHUB_ENV"
-          RESUME_REF=""
-          if [ -n "$CHECKPOINT_REMOTE" ]; then
-            git fetch origin "${CHECKPOINT}:refs/remotes/origin/${CHECKPOINT}"
-            RESUME_REF="refs/remotes/origin/${CHECKPOINT}"
-            echo "Replaying issue #${ISSUE} checkpoint onto latest dev"
-          elif [ -n "$ISSUE_BRANCH_REMOTE" ]; then
-            git fetch origin "pi/issue-${ISSUE}:refs/remotes/origin/pi/issue-${ISSUE}"
-            RESUME_REF="refs/remotes/origin/pi/issue-${ISSUE}"
-            echo "Replaying issue #${ISSUE} branch onto latest dev"
-          fi
-          echo "PI_IMPLEMENTER_START_COMMIT=${START_COMMIT}" >> "$GITHUB_ENV"
-          git worktree prune
-          git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" origin/dev
-          if [ -n "$RESUME_REF" ]; then
-            BASE="$(git merge-base origin/dev "$RESUME_REF")"
-            git diff --binary "$BASE" "$RESUME_REF" > "$RUNNER_TEMP/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch"
-            if [ -s "$RUNNER_TEMP/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch" ]; then
-              if ! git -C "$JOB_DIR" apply --3way "$RUNNER_TEMP/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch"; then
-                echo "Saved work does not apply cleanly to latest dev; leaving conflicts for the live Implementer session"
-              fi
-            fi
-          fi
-          echo "Temporary worktree from latest dev: $JOB_DIR"
+          CONTEXT="$(node scripts/pi-common/issue-worktree.mjs prepare "$ISSUE" "$JOB_DIR" "$RUNNER_TEMP")"
+          echo "PI_IMPLEMENTER_START_COMMIT=$(jq -r '.start' <<<"$CONTEXT")" >> "$GITHUB_ENV"
+          echo "PI_CHECKPOINT_EXPECTED=$(jq -r '.checkpointExpected' <<<"$CONTEXT")" >> "$GITHUB_ENV"
+          echo "PI_ISSUE_BRANCH_EXPECTED=$(jq -r '.issueBranchExpected' <<<"$CONTEXT")" >> "$GITHUB_ENV"
+          echo "PI_RESUME_PATCH=$(jq -r '.patch' <<<"$CONTEXT")" >> "$GITHUB_ENV"
 
       - name: Prepare Python environment
         run: |
@@ -180,40 +154,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd "$JOB_DIR"
-          rm -rf .pytest_cache .ruff_cache htmlcov build dist
-          rm -f .coverage coverage.xml
-          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-            echo "Unresolved replay conflicts remain; preserving the previous checkpoint instead of saving conflict markers"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" checkpoint "$ISSUE" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT" "$PI_CHECKPOINT_EXPECTED")"
+          CHANGED="$(jq -r '.changed' <<<"$RESULT")"
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+          if [ "$CHANGED" = "true" ]; then
+            COMMIT="$(jq -r '.commit' <<<"$RESULT")"
+            echo "PI_CHECKPOINT_EXPECTED=$COMMIT" >> "$GITHUB_ENV"
+            echo "PI_CHECKPOINT_PUBLISHED=$COMMIT" >> "$GITHUB_ENV"
           fi
-          git add -A
-          if git diff --cached --name-only | grep -Ei '(^|/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|/))' | grep -Ev '(^|/)\.env\.example$'; then
-            echo "Refusing to checkpoint a credential or runtime file" >&2
-            exit 1
-          fi
-          if ! git diff --cached --quiet; then
-            git commit -m "feat: implement issue #${ISSUE}"
-          fi
-          if git diff --quiet "${PI_IMPLEMENTER_START_COMMIT}"...HEAD; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Checkpoint exactly what the implementer produced.
-          START_BASE="${PI_IMPLEMENTER_START_COMMIT}"
-          if git diff --name-only "$START_BASE"...HEAD | grep -q '^\.github/workflows/'; then
-            echo "Implementer attempted to modify .github/workflows; refusing unsafe checkpoint" >&2
-            exit 1
-          fi
-          CHECKPOINT_COMMIT="$(git rev-parse HEAD)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_EXPECTED}" origin "${CHECKPOINT_COMMIT}:refs/heads/pi/issue-${ISSUE}-checkpoint"
-          echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
-          echo "PI_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify implementation before publication
         if: steps.checkpoint.outputs.changed == 'true'
@@ -226,61 +174,17 @@ jobs:
         if: steps.checkpoint.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          cd "$JOB_DIR"
-          rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
-          rm -f .coverage coverage.xml
-          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-          git diff --check
-          ISSUE_COMMIT="$(git rev-parse HEAD)"
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease="refs/heads/pi/issue-${ISSUE}:${PI_ISSUE_BRANCH_EXPECTED}" --set-upstream origin "${ISSUE_COMMIT}:refs/heads/pi/issue-${ISSUE}"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" push "$ISSUE" "$JOB_DIR" "$PI_ISSUE_BRANCH_EXPECTED"
 
       - name: Create or update pull request
         id: pr
         if: steps.checkpoint.outputs.changed == 'true'
         env:
-          ISSUE_TITLE: ${{ env.PI_ISSUE_TITLE }}
-          OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          API="https://api.github.com/repos/${REPO}"
-          AUTH=(
-            -H "Authorization: Bearer ${GH_TOKEN}"
-            -H "Accept: application/vnd.github+json"
-            -H "X-GitHub-Api-Version: 2022-11-28"
-          )
-
-          EXISTING="$(
-            curl -fsS "${AUTH[@]}"               "${API}/pulls?state=open&head=${OWNER}%3Api%2Fissue-${ISSUE}&base=dev"
-          )"
-
-          PR_NUMBER="$(jq -r '.[0].number // empty' <<<"$EXISTING")"
-          PR_URL="$(jq -r '.[0].html_url // empty' <<<"$EXISTING")"
-
-          RESULT_FILE="${PI_IMPLEMENTER_RESULT_FILE}"
-          if [ ! -s "$RESULT_FILE" ]; then
-            echo "Implementer PR metadata missing; using issue-based fallback"
-            jq -n --arg title "Pi: #${ISSUE} ${ISSUE_TITLE}" --arg summary "Implements issue #${ISSUE}." \
-              '{title:$title,summary:$summary,changes:[],security_notes:"",limitations:""}' > "$RESULT_FILE"
-          fi
-          TITLE="$(jq -r '.title' "$RESULT_FILE")"
-          SUMMARY="$(jq -r '.summary' "$RESULT_FILE")"
-          CHANGES="$(jq -r 'if (.changes // []) | length > 0 then (.changes | map("- " + .) | join("\n")) else "- See the diff for implementation details." end' "$RESULT_FILE")"
-          SECURITY="$(jq -r '.security_notes // ""' "$RESULT_FILE")"
-          LIMITATIONS="$(jq -r '.limitations // ""' "$RESULT_FILE")"
-          TESTS="- pytest: passed\n- ruff check .: passed\n- git diff --check: passed\n- The merged result is validated by the normal CI run on dev after merge."
-          BODY="$(printf '## Summary\n%s\n\n## Changes\n%b\n\n## Security\n%s\n\n## Validation\n%b\n\n## Known limitations\n%s\n\nCloses #%s\n' "$SUMMARY" "$CHANGES" "${SECURITY:-No special security impact identified.}" "$TESTS" "${LIMITATIONS:-None identified.}" "$ISSUE")"
-
-          if [ -z "$PR_NUMBER" ]; then
-            PR_JSON="$(jq -n --arg title "$TITLE" --arg head "pi/issue-${ISSUE}" --arg base "dev" --arg body "$BODY" '{title:$title,head:$head,base:$base,body:$body}' | curl -fsS -X POST "${AUTH[@]}" -H "Content-Type: application/json" --data-binary @- "${API}/pulls")"
-            PR_NUMBER="$(jq -r '.number' <<<"$PR_JSON")"
-            PR_URL="$(jq -r '.html_url' <<<"$PR_JSON")"
-          else
-            jq -n --arg title "$TITLE" --arg body "$BODY" '{title:$title,body:$body}' | curl -fsS -X PATCH "${AUTH[@]}" -H "Content-Type: application/json" --data-binary @- "${API}/pulls/${PR_NUMBER}" >/dev/null
-          fi
-
-          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_ISSUE_TITLE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}")"
+          echo "number=$(jq -r '.number' <<<"$PR")" >> "$GITHUB_OUTPUT"
+          echo "url=$(jq -r '.url' <<<"$PR")" >> "$GITHUB_OUTPUT"
 
       - name: Mark pull request created
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
@@ -293,15 +197,7 @@ jobs:
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          API="https://api.github.com/repos/${REPO}"
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev","inputs":{"pr_number":"${{ steps.pr.outputs.number }}"}}' \
-            "${API}/actions/workflows/pi-pr-review.yml/dispatches"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" review "${{ steps.pr.outputs.number }}"
 
       - name: Remove published checkpoint
         if: steps.pr.outputs.number != '' && env.PI_CHECKPOINT_PUBLISHED != ''
@@ -366,13 +262,5 @@ jobs:
       - name: Clean temporary worktree
         if: always()
         run: |
-          set +e
-          JOB_DIR="${JOB_DIR:-$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT}"
-          if [ -d "$JOB_DIR" ]; then
-            git worktree remove --force "$JOB_DIR"
-          fi
-          rm -rf "$JOB_DIR"
-          rm -f "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
-          rm -f "${RUNNER_TEMP}/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch"
-          git worktree prune
-          echo "Temporary worktree removed: $JOB_DIR"
+          node scripts/pi-common/issue-worktree.mjs clean "${JOB_DIR:-}" "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" "${PI_RESUME_PATCH:-}"
+          echo "Temporary worktree removed: ${JOB_DIR:-}"
