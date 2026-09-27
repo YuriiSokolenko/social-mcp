@@ -101,7 +101,7 @@ Unknown/missing mode fails closed.
 | `pi-architect.yml` | Optional decomposition/planning |
 | `pi-issue-agent.yml` | Implementation |
 | `pi-pr-review.yml` | Independent review |
-| `pi-pr-fix.yml` | Reviewer-requested repair |
+| `pi-pr-fix.yml` | Reviewer-requested repair or late merge-conflict recovery |
 | `pi-auto-merge.yml` | Serialized merge attempt |
 | `pi-reconcile.yml` | Recovery/audit |
 | `pi-triage.yml` | Optional issue preparation |
