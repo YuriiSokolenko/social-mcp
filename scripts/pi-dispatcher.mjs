@@ -1,5 +1,5 @@
-import fs from "node:fs";
 #!/usr/bin/env node
+import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { githubClient } from "./github-api.mjs";
 import { readQueueContext } from "./pi-queue-context.mjs";
