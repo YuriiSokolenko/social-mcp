@@ -42,4 +42,4 @@ Do not edit files or mutate issues, labels, comments, PRs, branches, commits, or
 
 ## Response budget
 
-Use the smallest response budget needed. Start and normally remain at SHORT (2048). Use NORMAL (4096) only when a candidate genuinely needs local reasoning; use DEEP (8192) only for exceptional difficult synthesis. Lower the budget again after a larger turn.
+Use the smallest response budget needed. Change it with `set_response_budget` only when the next response genuinely needs more room. Start and normally remain at SHORT (2048). Use NORMAL (4096) only when a candidate genuinely needs local reasoning; use DEEP (8192) only for exceptional difficult synthesis. Lower the budget again after a larger turn.
