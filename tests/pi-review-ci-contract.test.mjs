@@ -145,3 +145,13 @@ test('green dev CI wakes merge gate without parsing commit-message conventions',
   assert.match(workflow, /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/dev' && success\(\)/);
   assert.doesNotMatch(workflow, /contains\(github\.event\.head_commit\.message/);
 });
+
+
+test('pi:needs-human on a PR stops review, repair, and merge automation', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  const merge = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(review, /index\("pi:needs-human"\)/);
+  assert.match(repair, /index\("pi:needs-human"\)/);
+  assert.match(merge, /prLabels\.has\('pi:needs-human'\)/);
+});
