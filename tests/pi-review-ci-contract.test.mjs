@@ -206,10 +206,10 @@ test('review verdict exists only for the unchanged reviewed PR head', () => {
   assert.match(review, /PR #\$PR changed during review; stale verdict cleared/);
   assert.match(reviewState, /pr\.head\.sha !== reviewedHead/);
   assert.match(reviewState, /pi:needs-human/);
-  assert.match(reviewState, /filter\(x => !x\.startsWith\('review:'\)\)/);
+  assert.match(reviewState, /withReviewVerdict/);
   assert.match(repairPublication, /pi:needs-human/);
   assert.match(repairPublication, /expectedHead/);
-  assert.match(repairPublication, /filter\(x=>!x\.startsWith\('review:'\)\)/);
+  assert.match(repairPublication, /withoutReviewLabels/);
   assert.match(repair, /if: steps\.publish\.outputs\.published == 'true'/);
   assert.match(repair, /issues: write/);
 });
@@ -282,7 +282,7 @@ test('PR head changes invalidate verdict without creating a second review schedu
 
 test('late merge conflict leaves recoverable PR Fix ownership', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.match(gate, /nextLabels\.push\('review:changes-requested'\)/);
+  assert.match(gate, /withReviewVerdict\(\[\.\.\.prLabels\], 'review:changes-requested'\)/);
   assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /labels\.has\('review:changes-requested'\) \? 'pi-pr-fix\.yml' : 'pi-pr-review\.yml'/);
