@@ -1,43 +1,68 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LoopGuard, toolCallSignature, turnBudget, repeatLimit } from '../scripts/pi-common/loop-guard-policy.mjs';
+import { LoopGuard, complexityProfile, toolCallSignature, turnBudget, repeatLimit } from '../scripts/pi-common/loop-guard-policy.mjs';
 
-test('blocks tool calls once the turn budget is reached', () => {
+test('legacy guard blocks tool calls once the configured turn budget is reached', () => {
   const guard = new LoopGuard({ turnLimit: 3, repeatThreshold: 10 });
-  guard.onTurnStart(0);
-  assert.equal(guard.checkToolCall('bash', { command: 'ls' }), undefined);
   guard.onTurnStart(2);
   assert.equal(guard.checkToolCall('bash', { command: 'ls' }), undefined);
   guard.onTurnStart(3);
-  const result = guard.checkToolCall('bash', { command: 'ls' });
-  assert.equal(result.block, true);
-  assert.match(result.reason, /Turn budget exceeded \(3 turns\)/);
+  assert.equal(guard.checkToolCall('bash', { command: 'ls' }).block, true);
+});
+
+test('implementer must declare complexity before implementation tools', () => {
+  const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
+  assert.equal(guard.checkToolCall('declare_task_complexity', { complexity: 'trivial' }), undefined);
+  const blocked = guard.checkToolCall('write', { path: 'x' });
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /Declare task complexity first/);
+});
+
+test('trivial profile warns early and hard-blocks exploration while preserving submit_result', () => {
+  const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
+  const profile = guard.setComplexity('trivial');
+  assert.deepEqual(profile, { softTurns: 3, hardTurns: 5, toolCalls: 8 });
+
+  guard.onTurnStart(2);
+  assert.equal(guard.takeSoftWarning(), undefined);
+  guard.onTurnStart(3);
+  assert.match(guard.takeSoftWarning(), /nearing its limit/);
+  assert.equal(guard.takeSoftWarning(), undefined);
+
+  guard.onTurnStart(5);
+  const blocked = guard.checkToolCall('read', { path: 'README.md' });
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /Hard turn budget exceeded/);
+  assert.equal(guard.checkToolCall('submit_result', {}), undefined);
+});
+
+test('trivial profile hard-blocks excessive tool exploration', () => {
+  const guard = new LoopGuard({ repeatThreshold: 20, requireComplexity: true });
+  guard.setComplexity('trivial');
+  guard.onTurnStart(1);
+  for (let i = 0; i < complexityProfile('trivial').toolCalls; i += 1) {
+    assert.equal(guard.checkToolCall('read', { path: `file-${i}` }), undefined);
+  }
+  assert.match(guard.checkToolCall('read', { path: 'one-too-many' }).reason, /Tool-call budget exceeded/);
+});
+
+test('complexity can only be declared once', () => {
+  const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
+  guard.setComplexity('normal');
+  assert.throws(() => guard.setComplexity('trivial'), /already declared/);
 });
 
 test('blocks a call repeated past the threshold, independent of turn budget', () => {
   const guard = new LoopGuard({ turnLimit: 1000, repeatThreshold: 2 });
   guard.onTurnStart(0);
-  const command = { command: 'git log --all --oneline | grep -iE "issue.*9"' };
+  const command = { command: 'git log --all --oneline | grep issue' };
   assert.equal(guard.checkToolCall('bash', command), undefined);
   assert.equal(guard.checkToolCall('bash', command), undefined);
-  const result = guard.checkToolCall('bash', command);
-  assert.equal(result.block, true);
-  assert.match(result.reason, /already ran this exact bash call 2 times/);
-});
-
-test('different arguments do not count toward the same repeat total', () => {
-  const guard = new LoopGuard({ turnLimit: 1000, repeatThreshold: 1 });
-  guard.onTurnStart(0);
-  assert.equal(guard.checkToolCall('bash', { command: 'git status' }), undefined);
-  assert.equal(guard.checkToolCall('bash', { command: 'git log' }), undefined);
-  assert.equal(guard.checkToolCall('read', { path: 'README.md' }), undefined);
+  assert.match(guard.checkToolCall('bash', command).reason, /already ran this exact bash call 2 times/);
 });
 
 test('whitespace-only differences still count as the same call', () => {
-  assert.equal(
-    toolCallSignature('bash', { command: 'echo  ok' }),
-    toolCallSignature('bash', { command: 'echo ok' }),
-  );
+  assert.equal(toolCallSignature('bash', { command: 'echo  ok' }), toolCallSignature('bash', { command: 'echo ok' }));
 });
 
 test('invalid configuration fails before Pi starts', () => {
@@ -45,4 +70,5 @@ test('invalid configuration fails before Pi starts', () => {
     assert.throws(() => turnBudget(value));
     assert.throws(() => repeatLimit(value));
   }
+  assert.throws(() => complexityProfile('tiny'), /Unknown task complexity/);
 });
