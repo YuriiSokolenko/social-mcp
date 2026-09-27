@@ -37,7 +37,7 @@ Implementer Architect
  merge
 ```
 
-The actual merged `dev` commit is the integration test. There is no separate pre-merge dev-SHA/exact-pair integration state machine.
+The actual merged `dev` commit is the integration test. Product agents run product checks (`pytest`, Ruff, and relevant focused tests); only `ci.yml` runs CI/control-plane contracts such as Node workflow tests and runner-autoscaler checks. There is no separate pre-merge dev-SHA/exact-pair integration state machine.
 
 ## Responsibilities
 
@@ -49,7 +49,7 @@ The actual merged `dev` commit is the integration test. There is no separate pre
 | Reviewer | Run deterministic checks on the exact PR HEAD, then independently review that same HEAD; verdict is invalidated when HEAD changes |
 | PR Fix | Address reviewer feedback or late dev conflicts; integrate current dev in the live repair session; re-review the new HEAD |
 | Merge Gate | Validate basic ownership/safety and attempt one squash merge |
-| CI | Test the real commit after it lands on `dev` |
+| CI | Test the real commit after it lands on `dev`; exclusively own CI/control-plane contract tests |
 | Reconciler | Recover stranded/orphaned state after the PR recovery grace period; never schedule normal work |
 | Triage | Optional issue preparation before Dispatcher |
 | Usage | Diagnostics/metrics only |
