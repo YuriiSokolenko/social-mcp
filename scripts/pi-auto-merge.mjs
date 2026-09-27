@@ -60,10 +60,24 @@ async function processPR(prSummary) {
     return;
   }
 
-  const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
-  if (!merged.merged) throw new Error(`#${pr.number}: merge API did not confirm merge`);
-  console.log(`#${pr.number}: merged ${sha}; dev push CI now validates the merged result`);
-  return true;
+  try {
+    const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
+    if (!merged.merged) throw new Error(`merge API did not confirm merge`);
+    console.log(`#${pr.number}: merged ${sha}; dev push CI now validates the merged result`);
+    return true;
+  } catch (error) {
+    if (!/merge conflicts/i.test(error.message)) throw error;
+
+    const marker = `<!-- merge-gate:conflict-pr:${pr.number} -->`;
+    const comments = await pages(`/issues/${issue}/comments`);
+    if (!comments.some(comment => (comment.body ?? '').includes(marker))) {
+      await api(`/issues/${issue}/comments`, 'POST', {
+        body: `Merge Gate stopped at PR #${pr.number}: GitHub reports merge conflicts with dev. Update the PR branch with current dev, resolve the conflicts, and wake Merge Gate again.\n\n${marker}`,
+      });
+    }
+    console.log(`#${pr.number}: merge conflict; queue stopped without failing Merge Gate`);
+    return 'blocked';
+  }
 }
 
 export async function main() {
