@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 
 import { githubClient } from './github-api.mjs';
 import { controlPlanePaths } from './control-plane-policy.mjs';
+import { prLabelNames, withoutReviewLabels } from './pr-labels.mjs';
 
 function git(args, { cwd, allowFailure = false, token } = {}) {
   const prefix = token ? ['-c', `credential.helper=!f() { echo username=x-access-token; echo password="${token}"; }; f`] : [];
@@ -20,7 +21,7 @@ function git(args, { cwd, allowFailure = false, token } = {}) {
 export async function publishRepair({ prNumber, issue, cwd, headRef, expectedHead, token }) {
   const { api } = githubClient();
   const pr = await api(`/pulls/${prNumber}`);
-  const labels = (pr.labels ?? []).map(x=>x.name);
+  const labels = prLabelNames(pr);
   if (labels.includes('pi:needs-human')) return { published:false, reason:'human' };
   if (pr.head.sha !== expectedHead) throw new Error(`PR #${prNumber} HEAD moved during repair`);
 
@@ -48,7 +49,7 @@ export async function publishRepair({ prNumber, issue, cwd, headRef, expectedHea
 export async function handoffToReviewer(prNumber) {
   const { api } = githubClient();
   const pr = await api(`/pulls/${prNumber}`);
-  const labels = (pr.labels ?? []).map(x=>x.name).filter(x=>!x.startsWith('review:'));
+  const labels = withoutReviewLabels(pr);
   await api(`/issues/${prNumber}/labels`,'PUT',{labels});
   await api('/actions/workflows/pi-pr-review.yml/dispatches','POST',{ref:'dev',inputs:{pr_number:String(prNumber)}});
 }
