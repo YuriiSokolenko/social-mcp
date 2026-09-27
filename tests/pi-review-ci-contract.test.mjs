@@ -460,3 +460,15 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.match(prompt, /Stay on the fast path/);
   assert.match(prompt, /Do not rerun `git diff --check`, `pytest`, or `ruff check \.`/);
 });
+
+
+test('implementer declares complexity before reading its operating contract', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
+  const first = workflow.indexOf('Your first tool call MUST be declare_task_complexity');
+  const read = workflow.indexOf('read and follow agents/implementer/AGENTS.md');
+  assert.ok(first >= 0 && read > first);
+  assert.match(agent, /For \*\*trivial\*\* work, use the fast path/);
+  assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
+  assert.doesNotMatch(agent, /Before starting, read `docs\/PROJECT_CONTEXT\.md`/);
+});
