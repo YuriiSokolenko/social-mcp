@@ -168,7 +168,7 @@ async function main() {
       initial.candidates.some(candidate => !selected.includes(candidate.issue))) {
     throw new Error("classify every eligible issue exactly once");
   }
-  for (const { issue: number, title } of initial.candidates) {
+  for (const { issue: number } of initial.candidates) {
     const state = await snapshot();
 
     // A previous serialized dispatcher may already have assigned this issue.
@@ -192,7 +192,7 @@ async function main() {
       // architect/human work.
       try {
         await api("/actions/workflows/pi-architect.yml/dispatches", {
-          method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
+          method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
         });
       } catch (error) {
         try {
@@ -210,7 +210,7 @@ async function main() {
     try {
       await api("/actions/workflows/pi-issue-agent.yml/dispatches", {
         method: "POST",
-        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number), issue_title: title } }),
+        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
       });
     } catch (error) {
       try {
