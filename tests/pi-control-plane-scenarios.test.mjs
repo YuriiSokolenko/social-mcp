@@ -49,8 +49,10 @@ test('implementer checkpoint uses compare-and-swap lease and exact deletion', ()
 test('published PR state is durable before independent review starts', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   assert.ok(workflow.indexOf('- name: Mark pull request created') < workflow.indexOf('- name: Start independent PR review'));
-  assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
-  assert.doesNotMatch(workflow, /pi-auto-merge\.yml\/dispatches/);
+  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  assert.match(workflow, /issue-publication\.mjs" review/);
+  assert.match(publication, /pi-pr-review\.yml\/dispatches/);
+  assert.doesNotMatch(publication, /pi-auto-merge\.yml\/dispatches/);
   assert.match(workflow, /if: failure\(\) && steps\.pr\.outputs\.number == ''/);
 });
 
