@@ -1,4 +1,4 @@
-# Generated Dispatcher task snapshots
+# GitHub Issue task metadata
 
 GitHub Issues are the only source of truth for task priority, dependencies, scope, and acceptance criteria.
 
