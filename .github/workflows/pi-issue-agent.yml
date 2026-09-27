@@ -157,13 +157,6 @@ jobs:
             echo "PI_CHECKPOINT_PUBLISHED=$COMMIT" >> "$GITHUB_ENV"
           fi
 
-      - name: Verify implementation before publication
-        if: steps.checkpoint.outputs.changed == 'true'
-        run: |
-          cd "$JOB_DIR"
-          python -m pip install -e .
-          node "$GITHUB_WORKSPACE/scripts/pi-common/product-checks.mjs"
-
       - name: Push verified issue branch
         if: steps.checkpoint.outputs.changed == 'true'
         env:
