@@ -102,7 +102,9 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
 
 test('stale reviewer verdict is discarded without self-rescheduling', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  assert.match(workflow, /PR changed during review; clearing stale verdict/);
+  const state = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
+  assert.match(state, /pr\.head\.sha !== reviewedHead/);
+  assert.match(state, /status: 'stale'/);
   assert.match(workflow, /STALE_REVIEW=true/);
   assert.doesNotMatch(workflow, /name: Restart review after PR head changed/);
 });
@@ -147,11 +149,13 @@ test('green dev CI wakes merge gate without parsing commit-message conventions',
 
 
 test('pi:needs-human on a PR stops review, repair, and merge automation', () => {
-  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  const guard = fs.readFileSync('scripts/pi-common/pr-guard.mjs', 'utf8');
+  const reviewState = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
+  const repairPublication = fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8');
   const merge = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.match(review, /index\("pi:needs-human"\)/);
-  assert.match(repair, /index\("pi:needs-human"\)/);
+  assert.match(guard, /pi:needs-human/);
+  assert.match(reviewState, /pi:needs-human/);
+  assert.match(repairPublication, /pi:needs-human/);
   assert.match(merge, /prLabels\.has\('pi:needs-human'\)/);
 });
 
