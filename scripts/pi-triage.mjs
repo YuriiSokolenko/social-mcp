@@ -217,7 +217,7 @@ async function main() {
   }
 
   if (result.skipped.length) {
-    console.log(`Triage skipped ${result.skipped.length} blocked or not-ready candidate(s)`);
+    console.log(`Skipped: [${result.skipped.map(item => item.issue).join(", ")}]`);
   }
   if (!classified.length) console.log("Triage found no candidate issues");
 }
