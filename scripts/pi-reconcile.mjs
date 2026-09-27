@@ -74,12 +74,18 @@ const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.r
 
 const liveImplementers = new Set();
 const liveArchitects = new Set();
+const liveReviews = new Set();
+const liveFixes = new Set();
 for (const run of runs) {
   if (!liveStatuses.includes(run.status)) continue;
   const implement = /^🤖 Implement #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (implement) liveImplementers.add(Number(implement[1]));
   const architect = /^🏗 Architect #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (architect) liveArchitects.add(Number(architect[1]));
+  const review = /^🔬 Review PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
+  if (review) liveReviews.add(Number(review[1]));
+  const fix = /^🔧 (?:Repair|Fix) PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
+  if (fix) liveFixes.add(Number(fix[1]));
 }
 const checkpoints = new Set(refs.map(ref => Number(ref.ref.match(/^refs\/heads\/pi\/issue-(\d+)-checkpoint$/)?.[1])).filter(Number.isSafeInteger));
 const report = [];
@@ -132,6 +138,31 @@ for (const issue of issues) {
     };
   }
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
+}
+
+if (apply && recoveryDispatchAllowed) {
+  for (const pr of prs) {
+    if (pr.state !== 'open' || pr.draft || pr.base.ref !== 'dev' || pr.head.repo?.full_name !== repo ||
+        !/^pi\/issue-[1-9]\d*$/.test(pr.head.ref ?? '')) continue;
+    const labels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
+    if (labels.has('pi:needs-human') || labels.has('review:passed') ||
+        liveReviews.has(pr.number) || liveFixes.has(pr.number)) continue;
+    const workflow = labels.has('review:changes-requested') ? 'pi-pr-fix.yml' : 'pi-pr-review.yml';
+    const owner = workflow === 'pi-pr-fix.yml' ? 'PR Fix' : 'Reviewer';
+    const dispatched = await tryDispatchWorkflow(workflow, { pr_number: String(pr.number) }, `PR #${pr.number}`);
+    report.push({
+      type: 'pr',
+      number: pr.number,
+      title: pr.title,
+      findings: [{ code: 'orphaned-pr-pipeline', severity: 'repair' }],
+      removals: [],
+      recovery: {
+        add: labels.has('review:changes-requested') ? 'review:changes-requested' : 'unreviewed',
+        dispatch: dispatched ? owner : null,
+        reason: dispatched ? `restart stranded ${owner}` : `${owner} recovery dispatch failed`,
+      },
+    });
+  }
 }
 
 if (apply) {
