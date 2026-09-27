@@ -16,8 +16,11 @@ You must never create, edit, delete, rename, or move CI/control-plane files: `.g
 
 Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundaries. Read `docs/CI_RULES.md` for workflow responsibilities.
 
-1. Read the issue title, body, acceptance criteria, existing code, and relevant tests before editing.
-2. Inspect the surrounding architecture before introducing new abstractions.
+1. Read the issue title, body, and acceptance criteria first. Classify the work informally as trivial, normal, or complex; this is a reasoning aid, not pipeline state.
+   - **Trivial**: an exact small edit with an explicit path/content and no product behavior or architecture change. Use the fast path: inspect only the target and immediately relevant context, make the smallest requested edit, run a focused check only if it adds signal, then call `submit_result`.
+   - **Normal/complex**: inspect the existing code and relevant tests needed to understand the behavior. Expand exploration only when the issue actually requires it.
+   Do not inspect Git internals, broad repository structure, unrelated configuration, or skills merely to be thorough.
+2. Inspect surrounding architecture only before introducing or changing an abstraction.
 3. Implement the smallest complete change that satisfies the issue.
    Identify what already exists in `dev`, what remains, and what a related issue
    owns. Do not reimplement completed work or pull future issue scope forward.
@@ -25,14 +28,14 @@ Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundar
    do not spend the run repeatedly revising a plan without editing. If the
    issue is genuinely ambiguous, report the conflicting criteria and the
    smallest decision needed instead of inventing scope.
-4. For changed Python behavior, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant pytest guidance. Load its references only when a specific testing pattern needs them.
-5. Add or update tests for every behavior changed by the issue, including important edge cases.
-6. Run the relevant product test suite and Ruff. Do not run CI/control-plane contract tests (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests); `ci.yml` owns those checks before finishing.
-7. Call `submit_result` as the final validation step. The tool fetches and merges the latest `dev` into the current issue branch and runs `git diff --check`, `pytest`, and `ruff check .`.
+4. Only when Python behavior or Python tests actually change, read `.agents/skills/python-testing-patterns/SKILL.md` and apply the relevant pytest guidance. Do not load testing/design/style skills for static data, fixture-only, documentation, or other exact edits that do not need them.
+5. Add or update tests for product behavior changed by the issue. Do not invent tests for static artifacts or exact-content edits when the acceptance criteria can be validated directly and no executable behavior changed.
+6. Before submission, run only focused validation that is useful while editing. Do not run the full `pytest` suite or full-repository Ruff merely as a ritual: `submit_result` owns the final deterministic `git diff --check`, full `pytest`, and `ruff check .`. Do not run CI/control-plane contract tests; `ci.yml` owns those checks.
+7. Call `submit_result` as soon as the implementation is ready. It fetches and merges the latest `dev` and performs the one authoritative final product validation.
 8. If `submit_result` reports merge conflicts, stay in the same agent session: inspect and resolve the conflicted files, preserve both the issue intent and current `dev` behavior, run relevant tests, and call `submit_result` again. Repeat until the merge and all checks succeed. Do not abandon a resolvable conflict merely because `dev` changed.
 9. Only a successful `submit_result` means implementation is complete. Its metadata becomes the pull request title and description, so describe the code that actually exists in the final merged working tree. Do not claim tests in this metadata—the workflow records deterministic validation itself.
 
-Do not consider an implementation complete without appropriate automated tests.
+Do not broaden scope to manufacture tests or abstractions. Automated tests are required when behavior changes and should be omitted when they would only restate an exact static artifact.
 
 ## Engineering rules
 
@@ -84,16 +87,11 @@ These skills provide guidance for the repository's existing tools. Do not instal
 
 ## Verification
 
-Use the upstream Python testing skill for test design. Follow this repository's security rules when selecting fixtures and test doubles: mock external HTTP/API boundaries and never call production social APIs. Do not add optional example dependencies unless the issue needs them.
+Use the upstream Python testing skill only when test design is actually part of the issue. Follow this repository's security rules when selecting fixtures and test doubles: mock external HTTP/API boundaries and never call production social APIs. Do not add optional example dependencies unless the issue needs them.
 
-Before finishing, run at minimum:
+While editing, use the smallest focused check that can catch mistakes. Do not pre-run the complete deterministic validation just before submission. `submit_result` is the authoritative final validation and runs `git diff --check`, full `pytest`, and `ruff check .` after integrating latest `dev`.
 
-```bash
-pytest
-ruff check .
-```
-
-Fix failures before finishing. The workflow independently repeats these checks.
+After a successful `submit_result`, stop immediately. Do not inspect more files, rerun commands, or produce another implementation recap; the structured submit metadata is the result consumed by the workflow.
 
 ## Git/GitHub boundary
 
