@@ -31,6 +31,7 @@ jobs:
       PI_PHASE: implementation
       PI_BASH_TIMEOUT_SECONDS: '1800'
       PI_REQUIRE_TASK_COMPLEXITY: '1'
+      PI_PRE_COMPLEXITY_READ_PATHS: 'agents/implementer/AGENTS.md'
       PI_MAX_REPEAT_CALLS: '3'
 
     steps:
