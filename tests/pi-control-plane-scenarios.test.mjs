@@ -45,10 +45,11 @@ test('implementer checkpoint uses compare-and-swap lease and exact deletion', ()
   assert.match(workflow, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}-checkpoint:\$\{PI_CHECKPOINT_PUBLISHED\}"/);
 });
 
-test('published PR state is durable before merge-gate wake', () => {
+test('published PR state is durable before independent review starts', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  assert.ok(workflow.indexOf('- name: Mark pull request created') < workflow.indexOf('- name: Wake merge gate'));
-  assert.match(workflow, /Merge Gate wake failed/);
+  assert.ok(workflow.indexOf('- name: Mark pull request created') < workflow.indexOf('- name: Start independent PR review'));
+  assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
+  assert.doesNotMatch(workflow, /pi-auto-merge\.yml\/dispatches/);
   assert.match(workflow, /if: failure\(\) && steps\.pr\.outputs\.number == ''/);
 });
 
