@@ -74,14 +74,21 @@ async function processPR(prSummary) {
   } catch (error) {
     if (!/merge conflicts/i.test(error.message)) throw error;
 
-    const marker = `<!-- merge-gate:conflict-pr:${pr.number} -->`;
+    const marker = `<!-- merge-gate:conflict-pr:${pr.number}:${sha} -->`;
     const comments = await pages(`/issues/${issue}/comments`);
     if (!comments.some(comment => (comment.body ?? '').includes(marker))) {
       await api(`/issues/${issue}/comments`, 'POST', {
-        body: `Merge Gate stopped at PR #${pr.number}: GitHub reports merge conflicts with dev. Update the PR branch with current dev, resolve the conflicts, and wake Merge Gate again.\n\n${marker}`,
+        body: `Merge Gate found that PR #${pr.number} conflicts with current dev. The approved HEAD can no longer be merged unchanged, so the old review is invalidated and PR Fix will integrate current dev, resolve conflicts, validate the result, and send the new HEAD through Reviewer again.\n\n${marker}`,
       });
     }
-    console.log(`#${pr.number}: merge conflict; queue stopped without failing Merge Gate`);
+
+    const nextLabels = [...prLabels].filter(label => !label.startsWith('review:'));
+    await api(`/issues/${pr.number}/labels`, 'PUT', { labels: nextLabels });
+    await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', {
+      ref: 'dev',
+      inputs: { pr_number: String(pr.number) },
+    });
+    console.log(`#${pr.number}: merge conflict; cleared stale review and dispatched PR Fix`);
     return 'blocked';
   }
 }
