@@ -8,7 +8,7 @@ const token = process.env.GH_TOKEN;
 const apply = process.argv.includes('--apply');
 const automationMode = process.env.PI_AUTOMATION_MODE ?? 'PAUSED';
 const recoveryDispatchAllowed = automationMode === 'RUNNING';
-const PR_RECOVERY_GRACE_MS = 10 * 60 * 1000;
+const RECOVERY_GRACE_MS = 10 * 60 * 1000;
 if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GH_TOKEN are required');
 
 const base = `https://api.github.com/repos/${repo}`;
@@ -98,7 +98,10 @@ for (const issue of issues) {
     hasCheckpoint: checkpoints.has(issue.number),
   });
   const issueLabels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
-  const retryReadyImplementer = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:ready') && !liveImplementers.has(issue.number) && !openPiPrIssues.has(issue.number);
+  const issueAgeMs = Date.now() - Date.parse(issue.updated_at ?? issue.created_at);
+  const retryReadyImplementer = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:ready') &&
+    Number.isFinite(issueAgeMs) && issueAgeMs >= RECOVERY_GRACE_MS &&
+    !liveImplementers.has(issue.number) && !openPiPrIssues.has(issue.number);
   if (!findings.length && !retryReadyImplementer) continue;
   const removals = safeRemovals(findings);
   let recovery = null;
@@ -144,7 +147,7 @@ if (apply && recoveryDispatchAllowed) {
         !/^pi\/issue-[1-9]\d*$/.test(pr.head.ref ?? '')) continue;
     const labels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
     const prAgeMs = Date.now() - Date.parse(pr.updated_at ?? pr.created_at);
-    if (!Number.isFinite(prAgeMs) || prAgeMs < PR_RECOVERY_GRACE_MS) continue;
+    if (!Number.isFinite(prAgeMs) || prAgeMs < RECOVERY_GRACE_MS) continue;
     if (labels.has('pi:needs-human') || labels.has('review:passed') ||
         liveReviews.has(pr.number) || liveFixes.has(pr.number)) continue;
     const workflow = labels.has('review:changes-requested') ? 'pi-pr-fix.yml' : 'pi-pr-review.yml';
