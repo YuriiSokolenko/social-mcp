@@ -69,7 +69,7 @@ jobs:
           ISSUE_CONTEXT="$RUNNER_TEMP/pi-repair-issue-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.md"
           gh issue view "$ISSUE" --repo "$REPO" --json number,title,body --jq '"# Issue #\(.number): \(.title)\n\n\(.body)"' > "$ISSUE_CONTEXT"
           echo "ISSUE_CONTEXT=$ISSUE_CONTEXT" >> "$GITHUB_ENV"
-          node --input-type=module -e 'import { integrateLatestDev } from process.argv[1]; const result = integrateLatestDev({ allowConflicts: true, conflictMessage: files => files.join(", ") }); if (result.conflicts.length) console.log("Preflight merge conflicts: " + result.conflicts.join(", ")); else console.log("Latest dev integrated.");' "$GITHUB_WORKSPACE/scripts/pi-common/finalize-product-tree.mjs"
+          node --input-type=module -e 'const { integrateLatestDev } = await import(process.argv[1]); const result = integrateLatestDev({ allowConflicts: true, conflictMessage: files => files.join(", ") }); if (result.conflicts.length) console.log("Preflight merge conflicts: " + result.conflicts.join(", ")); else console.log("Latest dev integrated.");' "$GITHUB_WORKSPACE/scripts/pi-common/finalize-product-tree.mjs"
 
       - name: Prepare environment
         if: steps.load.outputs.skip != 'true'
