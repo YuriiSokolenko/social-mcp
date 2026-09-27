@@ -39,11 +39,14 @@ Follow this startup sequence exactly:
    - The plan is a work checklist, not an architecture document or code/schema/function/class draft.
    - Include only work required by the current issue: changes, focused tests, and documentation where relevant.
    - Do not refine the top-level plan in another response unless later repository evidence materially invalidates it.
+   - The plan response is a hard phase boundary. After emitting it, the very next action must be `declare_task_complexity`. Do not call `read`, `bash`, search, skills, or spend another response reconsidering the plan before declaring complexity.
 5. Call `declare_task_complexity` based on the issue, relevant code, and execution plan. Choose the smallest correct class:
    - **trivial** — exact tiny edit with explicit content/path and no behavior, architecture, dependency, or security decision.
    - **normal** — ordinary implementation requiring local code/test context.
    - **complex** — broad multi-part, architectural, conflict-heavy, or security-sensitive work.
 6. Immediately execute the first plan item. Complexity is descriptive metadata, not permission to keep planning.
+   - Treat a successful `declare_task_complexity` call as the end of planning. Do not restate, reconsider, redesign, or rehearse the plan afterward.
+   - The next repository-changing action should happen in the same execution phase. If the first item is not complex, make its first `edit`/`write` before any further exploratory `read`/`bash`. If one exact missing fact makes the edit impossible, inspect only that fact and then edit immediately.
    - **trivial item** — execute directly; no subplan.
    - **normal item** — execute directly from the top-level plan. Use brief local reasoning only when needed for the next concrete action; do not create a formal subplan.
    - **complex item** — before editing that item, create exactly one short local subplan for that item only: at most 5 concrete sub-items and at most 500 output tokens. Then immediately execute its first sub-item.
