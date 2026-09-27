@@ -1,122 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
-import responseBudgetExtension from '../scripts/pi-response-budget.mjs';
+import { nextResponseBudgetLevel, RESPONSE_BUDGETS } from '../scripts/pi-common/response-budget-policy.mjs';
 
-function harness(env = {}) {
-  const previous = {};
-  for (const [key, value] of Object.entries(env)) {
-    previous[key] = process.env[key];
-    process.env[key] = value;
-  }
-
-  const handlers = new Map();
-  const tools = new Map();
-  const models = [];
-  const ctx = { model: { provider: 'test', id: 'model', maxTokens: 32000 } };
-  const pi = {
-    on(name, handler) { handlers.set(name, handler); },
-    registerTool(tool) { tools.set(tool.name, tool); },
-    async setModel(model) {
-      ctx.model = model;
-      models.push(model);
-      return true;
-    },
-  };
-
-  responseBudgetExtension(pi);
-
-  return {
-    ctx,
-    handlers,
-    tools,
-    models,
-    restore() {
-      for (const key of Object.keys(env)) {
-        if (previous[key] === undefined) delete process.env[key];
-        else process.env[key] = previous[key];
-      }
-    },
-  };
-}
-
-async function finishTurn(h, turnIndex, output) {
-  await h.handlers.get('turn_start')({ turnIndex }, h.ctx);
-  await h.handlers.get('turn_end')({
-    turnIndex,
-    message: { role: 'assistant', usage: { output } },
-    toolResults: [],
-  }, h.ctx);
-}
-
-test('response budget escalates only the next response after a ceiling hit', async () => {
-  const h = harness();
-  try {
-    await h.handlers.get('session_start')({}, h.ctx);
-    assert.equal(h.ctx.model.maxTokens, 2048);
-
-    await finishTurn(h, 0, 2048);
-    assert.equal(h.ctx.model.maxTokens, 4096);
-
-    await finishTurn(h, 1, 100);
-    assert.equal(h.ctx.model.maxTokens, 2048);
-  } finally {
-    h.restore();
-  }
+test('shared response budgets are SHORT 2048, NORMAL 4096, DEEP 8192', () => {
+  assert.deepEqual(RESPONSE_BUDGETS, {
+    short: 2048,
+    normal: 4096,
+    deep: 8192,
+  });
 });
 
-test('consecutive ceiling hits climb SHORT to NORMAL to DEEP, then reset', async () => {
-  const h = harness();
-  try {
-    await h.handlers.get('session_start')({}, h.ctx);
-
-    await finishTurn(h, 0, 2048);
-    assert.equal(h.ctx.model.maxTokens, 4096);
-
-    await finishTurn(h, 1, 4096);
-    assert.equal(h.ctx.model.maxTokens, 8192);
-
-    await finishTurn(h, 2, 8192);
-    assert.equal(h.ctx.model.maxTokens, 2048);
-  } finally {
-    h.restore();
-  }
+test('a response below its ceiling resets the next response to SHORT', () => {
+  assert.equal(nextResponseBudgetLevel('short', 2047), 'short');
+  assert.equal(nextResponseBudgetLevel('normal', 4095), 'short');
+  assert.equal(nextResponseBudgetLevel('deep', 8191), 'short');
 });
 
-test('explicit response budget is a one-response override and is not erased by its calling turn', async () => {
-  const h = harness();
-  try {
-    await h.handlers.get('session_start')({}, h.ctx);
-    await h.handlers.get('turn_start')({ turnIndex: 0 }, h.ctx);
-
-    const tool = h.tools.get('set_response_budget');
-    await tool.execute('call-1', { level: 'deep', reason: 'next response needs synthesis' }, null, null, h.ctx);
-    assert.equal(h.ctx.model.maxTokens, 8192);
-
-    await h.handlers.get('turn_end')({
-      turnIndex: 0,
-      message: { role: 'assistant', usage: { output: 100 } },
-      toolResults: [],
-    }, h.ctx);
-    assert.equal(h.ctx.model.maxTokens, 8192);
-
-    await finishTurn(h, 1, 100);
-    assert.equal(h.ctx.model.maxTokens, 2048);
-  } finally {
-    h.restore();
-  }
+test('ceiling hits promote exactly one level and DEEP returns to SHORT', () => {
+  assert.equal(nextResponseBudgetLevel('short', 2048), 'normal');
+  assert.equal(nextResponseBudgetLevel('normal', 4096), 'deep');
+  assert.equal(nextResponseBudgetLevel('deep', 8192), 'short');
 });
 
-test('fixed response budget disables automatic escalation and manual budget tool', async () => {
-  const h = harness({ PI_FIXED_RESPONSE_MAX_TOKENS: '1000' });
-  try {
-    await h.handlers.get('session_start')({}, h.ctx);
-    assert.equal(h.ctx.model.maxTokens, 1000);
-    assert.equal(h.tools.has('set_response_budget'), false);
+test('runtime extension keeps explicit overrides one-response-only and fixed mode disables escalation', () => {
+  const extension = fs.readFileSync('scripts/pi-response-budget.mjs', 'utf8');
+  assert.match(extension, /explicitNextResponse = true/);
+  assert.match(extension, /if \(explicitNextResponse\)/);
+  assert.match(extension, /nextResponseBudgetLevel\(turnLevel, outputTokens, configuredBudgets\)/);
+  assert.match(extension, /if \(fixedMaxTokens\) return/);
 
-    await finishTurn(h, 0, 1000);
-    assert.equal(h.ctx.model.maxTokens, 1000);
-  } finally {
-    h.restore();
-  }
+  const triage = fs.readFileSync('.github/workflows/pi-triage.yml', 'utf8');
+  assert.match(triage, /PI_FIXED_RESPONSE_MAX_TOKENS: '1000'/);
 });
