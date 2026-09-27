@@ -5,21 +5,24 @@ import { RESPONSE_BUDGETS, withResponseBudget } from './pi-common/response-budge
 // Shared per-turn verbosity control for every Pi agent. This is deliberately
 // independent from task-complexity/loop-guard policy.
 export default function (pi) {
+  const fixedMaxTokens = Number(process.env.PI_FIXED_RESPONSE_MAX_TOKENS || 0);
+  if (fixedMaxTokens && (!Number.isSafeInteger(fixedMaxTokens) || fixedMaxTokens < 1)) throw new Error('PI_FIXED_RESPONSE_MAX_TOKENS must be a positive integer');
   let level = 'short';
 
   async function apply(nextLevel, ctx) {
     if (!ctx.model) throw new Error('No active model is available for response budgeting');
-    const changed = await pi.setModel(withResponseBudget(ctx.model, nextLevel));
+    const model = fixedMaxTokens ? { ...ctx.model, maxTokens: fixedMaxTokens } : withResponseBudget(ctx.model, nextLevel);
+    const changed = await pi.setModel(model);
     if (!changed) throw new Error(`Failed to apply ${nextLevel} response budget`);
     level = nextLevel;
-    return RESPONSE_BUDGETS[nextLevel];
+    return fixedMaxTokens || RESPONSE_BUDGETS[nextLevel];
   }
 
   pi.on('session_start', async (_event, ctx) => {
     await apply('short', ctx);
   });
 
-  pi.registerTool({
+  if (!fixedMaxTokens) pi.registerTool({
     name: 'set_response_budget',
     label: 'Set response budget',
     description: 'Set the maximum output for the NEXT model response. Use short (2048) for obvious navigation/status/listing/simple tool selection, normal (4096) for ordinary local reasoning or a small edit, and deep (8192) only for genuinely difficult debugging, synthesis, substantial code generation, or conflict resolution. Prefer the smallest sufficient level; 8192 is the absolute maximum.',
@@ -37,6 +40,6 @@ export default function (pi) {
   });
 
   pi.on('turn_start', (event) => {
-    console.log(`PI_BUDGET ${JSON.stringify({ turn: event.turnIndex, budget: level, maxTokens: RESPONSE_BUDGETS[level] })}`);
+    console.log(`PI_BUDGET ${JSON.stringify({ turn: event.turnIndex, budget: fixedMaxTokens ? 'fixed' : level, maxTokens: fixedMaxTokens || RESPONSE_BUDGETS[level] })}`);
   });
 }
