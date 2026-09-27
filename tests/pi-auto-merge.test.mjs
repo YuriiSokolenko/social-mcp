@@ -64,3 +64,12 @@ test('merge gate merges at most one PR per dev CI cycle', () => {
   assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
   assert.match(ci, /pi-auto-merge\.yml\/dispatches/);
 });
+
+
+test('merge conflict blocks the queue without failing merge gate', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(gate, /merge conflicts/i);
+  assert.match(gate, /merge-gate:conflict-pr/);
+  assert.match(gate, /return 'blocked'/);
+  assert.match(gate, /if \(await processPR\(pr\)\) break/);
+});
