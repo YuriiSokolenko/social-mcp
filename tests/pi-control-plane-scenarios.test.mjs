@@ -29,8 +29,8 @@ test('RUNNING control wakes only the normal Dispatcher scheduler', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-automation-control.yml', 'utf8');
   const control = fs.readFileSync('scripts/pi-common/automation-control.mjs', 'utf8');
   assert.match(workflow, /automation-control\.mjs" resume/);
-  assert.match(control, /pi-dispatcher\.yml\/dispatches/);
-  assert.doesNotMatch(control, /pi-reconcile\.yml\/dispatches/);
+  assert.match(control, /dispatchWorkflow\('pi-dispatcher\.yml'\)/);
+  assert.doesNotMatch(control, /dispatchWorkflow\('pi-reconcile\.yml'\)/);
 });
 
 test('agent concurrency never cancels active work', () => {
