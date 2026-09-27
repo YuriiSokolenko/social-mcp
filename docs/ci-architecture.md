@@ -95,6 +95,10 @@ control plane -> trusted dev checkout
 tested application code -> triggering commit
 ```
 
+## Concurrency rule
+
+Use only GitHub Actions' supported concurrency contract: a stable `concurrency.group` and `cancel-in-progress: false` where active work must not be cancelled. Never add `concurrency.queue` / `queue: max`. Serialization comes from the concurrency group; application/model capacity comes from the N150 autoscaler and model-slot limits.
+
 ## Recovery rule
 
 Recovery must be smaller than the normal pipeline. Prefer returning stranded work directly to its normal owner. Do not reproduce the happy path inside Reconciler, and do not add recovery-specific copies of merge/review/dispatch logic.
