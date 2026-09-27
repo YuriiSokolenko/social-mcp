@@ -46,11 +46,11 @@ The actual merged `dev` commit is the integration test. There is no separate pre
 | Dispatcher | Route currently eligible issues to Implementer or Architect |
 | Architect | Optional decomposition/planning; return tasks to Dispatcher |
 | Implementer | Change code/tests; integrate latest dev in the live session; resolve conflicts; verify and publish PR |
-| Reviewer | Run deterministic checks on the exact PR HEAD, then independently review that same HEAD |
+| Reviewer | Run deterministic checks on the exact PR HEAD, then independently review that same HEAD; verdict is invalidated when HEAD changes |
 | PR Fix | Address reviewer feedback or late dev conflicts; integrate current dev in the live repair session; re-review the new HEAD |
 | Merge Gate | Validate basic ownership/safety and attempt one squash merge |
 | CI | Test the real commit after it lands on `dev` |
-| Reconciler | Recover stranded/orphaned state; never schedule normal work |
+| Reconciler | Recover stranded/orphaned state after the PR recovery grace period; never schedule normal work |
 | Triage | Optional issue preparation before Dispatcher |
 | Usage | Diagnostics/metrics only |
 
@@ -65,6 +65,8 @@ Normal wake sources are deliberately narrow:
 - successful review can wake Merge Gate;
 - successful CI on a `dev` push wakes Merge Gate, which reloads current PR state;
 - explicit/manual control can wake the relevant owner.
+
+Any PR HEAD change emits `pull_request:synchronize`; that handler removes stale `review:*` labels and does nothing else. It never dispatches Reviewer. Implementer/PR Fix own the normal fresh-review handoff after current-`dev` integration and deterministic checks succeed. If the handoff is genuinely abandoned, Reconciler may recover it only after a 10-minute grace period from the PR's latest update; this grace period never delays the happy path.
 
 Reconciler does not wake Merge Gate. A wake carries no authoritative task state; the receiver reloads GitHub state. `pi:needs-human` on a PR is a hard stop for Reviewer, PR Fix, and Merge Gate.
 
