@@ -6,6 +6,7 @@ import { readQueueContext } from "./pi-common/queue-context.mjs";
 import { replaceIssueState } from "./pi-common/github-state.mjs";
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-common/state-machine.mjs";
 import { taskMetadata } from "./pi-common/task-metadata.mjs";
+import { readPiJsonl } from "./pi-common/result-jsonl.mjs";
 
 const { api: request, pages, ensureLabel, repo, dispatchWorkflow } = githubClient();
 const api = (endpoint, options = {}) =>
@@ -78,17 +79,7 @@ async function snapshot(includeQueue = false) {
   return result;
 }
 export function finalText(jsonl) {
-  let result = "";
-  for (const line of jsonl.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let event;
-    try { event = JSON.parse(line); } catch { continue; }
-    if (event.type !== "agent_end" || !Array.isArray(event.messages)) continue;
-    const assistant = [...event.messages].reverse().find(message => message?.role === "assistant");
-    const text = assistant?.content?.filter(part => part?.type === "text").map(part => part.text).join("");
-    if (text?.trim()) result = text.trim();
-  }
-  return result;
+  return readPiJsonl(jsonl).finalText;
 }
 export function validateDispatch(result) {
   if (!Array.isArray(result.classifications) ||
@@ -108,22 +99,9 @@ export function classificationLists(result) {
   };
 }
 export function dispatchFromJsonl(jsonl) {
-  let toolResult = null;
-  for (const line of jsonl.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let event;
-    try { event = JSON.parse(line); } catch { continue; }
-    if (event.type === "entry_appended" && event.entry?.type === "custom" &&
-        event.entry?.customType === "dispatcher-result") {
-      toolResult = event.entry.data;
-    }
-  }
-  // Prefer the structured result from the submit_result tool
-  // (pi-dispatcher-result-tool.mjs). The DISPATCH_RESULT text line is kept
-  // only as a fallback while that tool is still a prototype.
-  if (toolResult) return validateDispatch(toolResult);
-  const text = finalText(jsonl);
-  const lines = text.split(/\r?\n/).filter(line => line.startsWith("DISPATCH_RESULT: "));
+  const { customResult, finalText: text } = readPiJsonl(jsonl, { customType: "dispatcher-result" });
+  if (customResult) return validateDispatch(customResult);
+  const lines = text.split(/\\r?\\n/).filter(line => line.startsWith("DISPATCH_RESULT: "));
   if (!lines.length) throw new Error("expected a DISPATCH_RESULT line");
   return validateDispatch(JSON.parse(lines.at(-1).slice("DISPATCH_RESULT: ".length)));
 }
