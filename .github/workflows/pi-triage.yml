@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   triage:
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING'
     # Manual runs always triage. Issue-close events only wake triage when an
     # ordinary issue (not a PR) closed; prepare remains the source of truth
     # and will exit without invoking Pi when no candidates exist.
