@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 
 import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
+import { runGit as git } from './git.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -24,13 +24,6 @@ import { githubClient } from './github-api.mjs';
  * Implementer + product-checks own that. This helper publishes an already
  * validated tree.
  */
-function git(args, { cwd, allowFailure = false, token } = {}) {
-  const prefix = token ? ['-c', `credential.helper=!f() { echo username=x-access-token; echo password="${token}"; }; f`] : [];
-  const r = spawnSync('git', [...prefix, ...args], { cwd, encoding: 'utf8', env: process.env });
-  if (r.error) throw r.error;
-  if (!allowFailure && r.status !== 0) throw new Error((r.stderr || r.stdout || 'git failed').trim());
-  return { status: r.status ?? 1, out: (r.stdout ?? '').trim() };
-}
 const lines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 
 export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) {
