@@ -2,51 +2,21 @@
 import { issueTargetAfterRemovals, replaceIssueState } from './pi-common/github-state.mjs';
 import { inspectIssueState, safeRemovals } from './pi-common/state-machine.mjs';
 import { checkpointGcDecision, recoveryForIssue } from './pi-common/recovery-policy.mjs';
+import { githubClient } from './pi-common/github-api.mjs';
 
-const repo = process.env.GITHUB_REPOSITORY;
-const token = process.env.GH_TOKEN;
 const apply = process.argv.includes('--apply');
 const automationMode = process.env.PI_AUTOMATION_MODE ?? 'PAUSED';
 const recoveryDispatchAllowed = automationMode === 'RUNNING';
 const RECOVERY_GRACE_MS = 10 * 60 * 1000;
-if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GH_TOKEN are required');
+const { api, pages, repo, dispatchWorkflow, workflowRuns, deleteRef } = githubClient();
 
-const base = `https://api.github.com/repos/${repo}`;
-const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
-  'X-GitHub-Api-Version': '2022-11-28' };
-
-async function api(path, options = {}) {
-  const response = await fetch(base + path, { ...options, headers: { ...headers, ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
-  if (!response.ok) throw new Error(`GitHub ${response.status} ${path}: ${await response.text()}`);
-  return response.status === 204 ? null : response.json();
-}
-async function pages(path) {
-  const all = [];
-  for (let page = 1; ; page++) {
-    const batch = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
-    all.push(...batch);
-    if (batch.length < 100) return all;
-  }
-}
-async function workflowRunPages(path) {
-  const all = [];
-  for (let page = 1; ; page++) {
-    const data = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
-    const batch = data.workflow_runs ?? [];
-    all.push(...batch);
-    if (batch.length < 100) return all;
-  }
-}
 async function replaceStateLabels(number, expected, target, kind) {
   if (kind !== 'issue') throw new Error(`unsupported reconciliation state kind: ${kind}`);
   await replaceIssueState({
     number, expected, target, context: 'reconciliation',
     load: n => api(`/issues/${n}`),
-    patch: (n, labels) => api(`/issues/${n}`, { method: 'PATCH', body: JSON.stringify({ labels }) }),
+    patch: (n, labels) => api(`/issues/${n}`, 'PATCH', { labels }),
   });
-}
-async function dispatchWorkflow(workflow, inputs = {}) {
-  await api(`/actions/workflows/${workflow}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: 'dev', inputs }) });
 }
 async function tryDispatchWorkflow(workflow, inputs, context) {
   try {
@@ -57,15 +27,11 @@ async function tryDispatchWorkflow(workflow, inputs, context) {
     return false;
   }
 }
-async function deleteRef(ref) {
-  const response = await fetch(`${base}/git/refs/${ref}`, { method: 'DELETE', headers });
-  if (![204, 404].includes(response.status)) throw new Error(`Cannot delete ref ${ref}: ${response.status} ${await response.text()}`);
-}
 const liveStatuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
 const [allIssues, prs, runGroups, refs] = await Promise.all([
   pages('/issues?state=all'),
   pages('/pulls?state=all'),
-  Promise.all(liveStatuses.map(status => workflowRunPages(`/actions/runs?exclude_pull_requests=true&status=${status}`))),
+  Promise.all(liveStatuses.map(status => workflowRuns(`/actions/runs?exclude_pull_requests=true&status=${status}`))),
   pages('/git/matching-refs/heads/pi/'),
 ]);
 const runs = runGroups.flat();
