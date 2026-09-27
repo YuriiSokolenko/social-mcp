@@ -24,7 +24,7 @@ Never expose credentials or tokens, weaken authentication/authorization/validati
 
 ## Execution
 
-The runtime requires `declare_task_complexity` before any other work. **Your first assistant response must contain exactly one tool call: `declare_task_complexity`. Do not batch a read, bash, search, edit, or any other tool call into that same response.** After that tool succeeds, read this file.
+Read `agents/repair/AGENTS.md` before declaring repair complexity. Reading this instruction file is the only action allowed before complexity declaration. Before declaring complexity, do not inspect repository code, run bash/search, load skills, edit files, or begin the repair. After reading this file, call `declare_task_complexity` before any other work.
 
 Classify the repair itself, not the size of the original issue:
 
