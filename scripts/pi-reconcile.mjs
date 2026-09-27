@@ -8,6 +8,7 @@ const token = process.env.GH_TOKEN;
 const apply = process.argv.includes('--apply');
 const automationMode = process.env.PI_AUTOMATION_MODE ?? 'PAUSED';
 const recoveryDispatchAllowed = automationMode === 'RUNNING';
+const PR_RECOVERY_GRACE_MS = 10 * 60 * 1000;
 if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GH_TOKEN are required');
 
 const base = `https://api.github.com/repos/${repo}`;
@@ -142,6 +143,8 @@ if (apply && recoveryDispatchAllowed) {
     if (pr.state !== 'open' || pr.draft || pr.base.ref !== 'dev' || pr.head.repo?.full_name !== repo ||
         !/^pi\/issue-[1-9]\d*$/.test(pr.head.ref ?? '')) continue;
     const labels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
+    const prAgeMs = Date.now() - Date.parse(pr.updated_at ?? pr.created_at);
+    if (!Number.isFinite(prAgeMs) || prAgeMs < PR_RECOVERY_GRACE_MS) continue;
     if (labels.has('pi:needs-human') || labels.has('review:passed') ||
         liveReviews.has(pr.number) || liveFixes.has(pr.number)) continue;
     const workflow = labels.has('review:changes-requested') ? 'pi-pr-fix.yml' : 'pi-pr-review.yml';
