@@ -12,6 +12,17 @@ test('global turn ceiling is independent of task complexity', () => {
   assert.equal(guard.checkToolCall('read', { path: 'b' }).block, true);
 });
 
+test('required operating contract is the first tool read when configured', () => {
+  const guard = new LoopGuard({
+    repeatThreshold: 3,
+    requiredFirstReadPath: 'agents/triage/AGENTS.md',
+  });
+  assert.equal(guard.checkToolCall('read', { path: '/work/pi-triage-context.json' }).block, true);
+  assert.equal(guard.checkToolCall('bash', { command: 'cat context.json' }).block, true);
+  assert.equal(guard.checkToolCall('read', { path: '/work/agents/triage/AGENTS.md' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: '/work/pi-triage-context.json' }), undefined);
+});
+
 test('bounded orientation is allowed before required complexity declaration', () => {
   const guard = new LoopGuard({
     repeatThreshold: 3,
