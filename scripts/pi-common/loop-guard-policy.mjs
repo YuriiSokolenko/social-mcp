@@ -29,13 +29,18 @@ export function toolCallSignature(toolName, input) {
 }
 
 export class LoopGuard {
-  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false }) {
+  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityAllowedTools = [], requiredFirstReadPath = null }) {
     this.turnLimit = turnBudget(turnLimit);
     this.repeatThreshold = repeatLimit(repeatThreshold);
     this.requireComplexity = requireComplexity;
+    this.preComplexityAllowedTools = new Set(preComplexityAllowedTools);
+    this.requiredFirstReadPath = requiredFirstReadPath;
+    this.requiredFirstReadDone = !requiredFirstReadPath;
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
     this.seen = new Map();
+    this.postComplexityInspectionCount = 0;
+    this.repositoryEditSeen = false;
   }
 
   setComplexity(name) {
@@ -54,9 +59,27 @@ export class LoopGuard {
   onTurnStart(turnIndex) { this.absoluteTurn = turnIndex; }
 
   checkToolCall(toolName, input) {
+    if (!this.requiredFirstReadDone) {
+      const requestedPath = typeof input?.path === 'string' ? input.path : '';
+      const allowed = toolName === 'read' && (requestedPath === this.requiredFirstReadPath || requestedPath.endsWith(`/${this.requiredFirstReadPath}`));
+      if (!allowed) return { block: true, reason: `First read the required operating contract: ${this.requiredFirstReadPath}` };
+      this.requiredFirstReadDone = true;
+    }
     if (toolName === 'declare_task_complexity') return undefined;
+    if (this.requireComplexity && this.complexity && this.complexity !== 'default' && !this.repositoryEditSeen) {
+      if (toolName === 'edit' || toolName === 'write') {
+        this.repositoryEditSeen = true;
+      } else if (toolName === 'read' || toolName === 'bash') {
+        this.postComplexityInspectionCount += 1;
+        if (this.postComplexityInspectionCount > 2) {
+          return { block: true, reason: 'Complexity is declared and the execution plan is fixed. The two-turn implementation-orientation allowance is exhausted: make the first repository edit now. Do not restart broad analysis or redesign.' };
+        }
+      }
+    }
     if (this.requireComplexity && !this.complexity) {
-      return { block: true, reason: 'Declare task complexity first with declare_task_complexity (trivial, normal, or complex) before using other tools.' };
+      if (!this.preComplexityAllowedTools.has(toolName)) {
+        return { block: true, reason: 'Before complexity declaration, finish the required startup orientation and plan using only the allowed inspection tools. Repository edits, skills, submission, and other work require declare_task_complexity first.' };
+      }
     }
     if (this.absoluteTurn >= this.turnLimit) {
       return { block: true, reason: `Global execution limit reached (${this.turnLimit} turns). Stop investigating and finish with the available evidence.` };

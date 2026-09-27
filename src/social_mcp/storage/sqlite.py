@@ -1,6 +1,16 @@
+"""SQLite storage for the connected-account table.
+
+Every public method owns one short-lived connection through
+:meth:`SQLiteAccountStore._connection`: successful writes are committed, failed
+writes are rolled back, and the connection is closed whether the operation
+succeeded or not. The ``with sqlite3.connect(...)`` form alone would only
+commit or roll back and leave the open file handle to the garbage collector.
+"""
+
 import json
 import sqlite3
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -8,12 +18,16 @@ from social_mcp.storage.models import ConnectedAccount, SocialPlatform
 
 
 class SQLiteAccountStore:
+    """Connected-account store backed by a single SQLite database file."""
+
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = Path(database_path)
 
     def initialize(self) -> None:
+        """Create the database file and account table, if either is missing."""
+
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS connected_accounts (
@@ -44,7 +58,15 @@ class SQLiteAccountStore:
             connection.execute("SELECT 1 FROM connected_accounts LIMIT 1").fetchone()
 
     def save(self, account: ConnectedAccount) -> ConnectedAccount:
-        with self._connect() as connection:
+        """Insert or update an account and return the stored row.
+
+        Raises:
+            sqlite3.Error: when the account cannot be written. The failed
+                transaction is rolled back before the error reaches the caller.
+            RuntimeError: when the account cannot be read back after the write.
+        """
+
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO connected_accounts (
@@ -90,7 +112,7 @@ class SQLiteAccountStore:
         platform: SocialPlatform,
         external_account_id: str,
     ) -> ConnectedAccount | None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT *
@@ -103,7 +125,7 @@ class SQLiteAccountStore:
         return self._to_model(row) if row is not None else None
 
     def list_accounts(self) -> list[ConnectedAccount]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT *
@@ -114,7 +136,39 @@ class SQLiteAccountStore:
 
         return [self._to_model(row) for row in rows]
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Own one connection for a single store operation.
+
+        Statements run on the yielded connection are committed when the body
+        finishes and rolled back when it raises, so a failed write never leaves
+        a partial transaction pending. The connection is then closed whichever
+        way the operation ended, which the ``with sqlite3.connect(...)`` form
+        never does: it only commits or rolls back and leaves the open file
+        handle to the garbage collector.
+
+        Raises:
+            sqlite3.Error: when the database cannot be opened or written.
+        """
+
+        connection = self._connect()
+        try:
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _connect(self) -> sqlite3.Connection:
+        """Open one connection to the account database.
+
+        The connection is handed over unowned so that :meth:`_connection`
+        manages its whole lifecycle. Rows are read by column name and closing
+        is an explicit act rather than the interpreter's.
+        """
+
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         return connection

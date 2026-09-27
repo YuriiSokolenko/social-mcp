@@ -31,6 +31,7 @@ jobs:
       PI_PHASE: implementation
       PI_BASH_TIMEOUT_SECONDS: '1800'
       PI_REQUIRE_TASK_COMPLEXITY: '1'
+      PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
       PI_MAX_REPEAT_CALLS: '3'
 
     steps:
@@ -47,6 +48,7 @@ jobs:
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue
+        id: preflight
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -99,7 +101,7 @@ jobs:
           ISSUE_BODY="$(jq -r '.body' "$PI_ISSUE_CONTEXT")"
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
-          Your first assistant response MUST contain exactly one tool call: declare_task_complexity. Do not call read, bash, search, edit, or any other tool in that same response. Classify the supplied issue as trivial for an exact tiny edit with no behavior/design decision; normal for ordinary implementation; complex for broad architectural or multi-part work. After that declaration succeeds, read and follow agents/implementer/AGENTS.md.
+          Follow the startup sequence in agents/implementer/AGENTS.md exactly: read AGENTS.md, read this issue, inspect only directly relevant current-dev code, write a short execution plan of at most 1000 output tokens, then call declare_task_complexity before any repository modification or implementation work. A complex classification still means you implement this same issue to completion.
 
           You are implementing GitHub issue #${ISSUE_NUMBER} in the current repository.
 
@@ -114,7 +116,7 @@ jobs:
           Implement the issue completely with the smallest scope that satisfies its acceptance criteria.
           For an exact trivial edit, use the fast path from AGENTS.md: inspect only the target/relevant context, edit promptly, avoid unrelated skills/configuration/tests, and submit.
           Inspect broader code, architecture, and tests only when the issue's behavior or ambiguity requires it.
-          If replayed checkpoint work left merge conflicts in the worktree, resolve those conflicts first against the current dev code; do not abandon current dev or inspect main as a replacement base.
+          If replayed checkpoint work left merge conflicts, follow the AGENTS.md startup sequence: inspect only the conflicting files and current-dev counterparts during orientation, make conflict resolution the first plan item, declare task complexity, then resolve that item immediately against current dev. Do not abandon current dev or inspect main as a replacement base.
           Add or update tests when executable behavior changes; do not manufacture tests merely to restate an exact static artifact.
           Before submission run only useful focused checks. Do not run full pytest or full Ruff just before submit_result.
           submit_result owns the authoritative final git diff --check, full pytest, and Ruff validation after integrating latest dev.
@@ -210,7 +212,7 @@ jobs:
             "Pi published PR #${{ steps.pr.outputs.number }} before a later workflow step failed: ${{ steps.pr.outputs.url }}. Merge Gate/reconciler will continue from the published PR."
 
       - name: Mark failed result
-        if: failure() && steps.pr.outputs.number == ''
+        if: failure() && steps.preflight.outcome == 'success' && steps.pr.outputs.number == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

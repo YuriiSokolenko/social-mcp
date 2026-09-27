@@ -60,7 +60,9 @@ jobs:
           TASK_FILE="$RUNNER_TEMP/pi-dispatcher-task.txt"
           cat > "$TASK_FILE" <<EOF
           Read and follow agents/dispatcher/AGENTS.md.
-          Read $RUNNER_TEMP/pi-dispatcher-context.json; each candidate already contains the current GitHub issue metadata and scope needed for classification.
+          Read the project documentation once, before reading dispatcher candidates, to understand the project's architecture, conventions, component boundaries, and terminology.
+          Then read $RUNNER_TEMP/pi-dispatcher-context.json; each candidate already contains the current GitHub issue metadata and scope needed for classification.
+          After the documentation and dispatcher context are loaded, choose the smallest sufficient response budget for the classification work.
           The candidates list is authoritative: do not re-check eligibility, dependencies, priority, ordering or capacity.
           For every candidate decide only IMPLEMENT or ARCHITECT based on scope.
           Call submit_result exactly once as your last action. Do not modify repository or GitHub state.

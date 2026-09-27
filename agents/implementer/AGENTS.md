@@ -22,26 +22,59 @@ Never expose credentials or tokens, weaken authentication/authorization, commit 
 
 ## Execution
 
-The runtime requires `declare_task_complexity` before any other work. **Your first assistant response must contain exactly one tool call: `declare_task_complexity`. Do not batch a read, bash, search, edit, or any other tool call into that same response.** After that tool succeeds, read this file.
+Follow this startup sequence exactly:
 
-Choose the smallest correct class:
+1. Read this `agents/implementer/AGENTS.md`.
+2. Read the supplied GitHub issue and identify its concrete acceptance criteria.
+3. Inspect only the current `dev` code directly relevant to those criteria. This is a bounded orientation pass: locate the affected implementation, its immediate collaborators, and existing focused tests only when needed to understand the change. If replayed checkpoint work is present, also detect whether it left merge conflicts; inspect only the conflicting files, their current-`dev` versions, and the checkpoint sides needed to understand the reconciliation. Do not resolve conflicts yet.
+   - Do not edit/write files yet.
+   - Do not load skills yet.
+   - Do not inspect broad repository structure merely for orientation.
+   - Do not inspect Git history, dependency branches, abandoned branches, `pi/issue-*` branches, or old implementation commits.
+   - Dependencies are prerequisites, not implementation scope. If a required dependency is not present in current `dev`, treat that as a concrete blocker instead of researching, reconstructing, or implementing the dependency.
+4. Write a short execution plan based on the issue and the code you just inspected.
+   - The entire plan response must stay within **1000 output tokens**.
+   - Use an ordered list of concrete implementation actions.
+   - Assign each plan item its own complexity: **trivial**, **normal**, or **complex**, using the same definitions as task complexity below.
+   - The plan is a work checklist, not an architecture document or code/schema/function/class draft.
+   - Include only work required by the current issue: changes, focused tests, and documentation where relevant.
+   - If replayed checkpoint conflicts exist, make resolving those conflicts against current `dev` the first implementation plan item. Preserve compatible current-`dev` work and checkpoint work required by this issue; do not treat either side as automatically authoritative.
+   - Do not refine the top-level plan in another response unless later repository evidence materially invalidates it.
+   - The plan response is a hard phase boundary. After emitting it, the very next action must be `declare_task_complexity`. Do not call `read`, `bash`, search, skills, or spend another response reconsidering the plan before declaring complexity.
+5. Call `declare_task_complexity` based on the issue, relevant code, and execution plan. Choose the smallest correct class:
+   - **trivial** — exact tiny edit with explicit content/path and no behavior, architecture, dependency, or security decision.
+   - **normal** — ordinary implementation requiring local code/test context.
+   - **complex** — broad multi-part, architectural, conflict-heavy, or security-sensitive work.
+6. Immediately execute the first plan item. Complexity is descriptive metadata, not permission to keep planning.
+   - Treat a successful `declare_task_complexity` call as the end of planning. Do not restate, reconsider, redesign, or rehearse the plan afterward.
+   - The next repository-changing action should happen in the same execution phase. If the first item is not complex, make its first `edit`/`write` before any further exploratory `read`/`bash`. If one exact missing fact makes the edit impossible, inspect only that fact and then edit immediately.
+   - **trivial item** — execute directly; no subplan.
+   - **normal item** — execute directly from the top-level plan. Use brief local reasoning only when needed for the next concrete action; do not create a formal subplan.
+   - **complex item** — before editing that item, create exactly one short local subplan for that item only: at most 5 concrete sub-items and at most 500 output tokens. Then immediately execute its first sub-item.
+   - Subplans have no further complexity classification and must never be recursively decomposed. There is only one allowed hierarchy: issue → plan item → optional complex-item subplan.
 
-- **trivial** — exact tiny edit with explicit content/path and no behavior, architecture, dependency, or security decision.
-- **normal** — ordinary implementation requiring local code/test context.
-- **complex** — broad multi-part, architectural, conflict-heavy, or security-sensitive work.
+Do not modify repository files or perform implementation work before step 5 is complete.
 
-Then follow this sequence:
+Complexity is a description of **this issue**, not a routing decision. If the issue is **complex**, you still own and implement **this same issue** to completion. Do not switch into an architect/planning-only role, stop after producing a design, defer implementation merely because it is complex, or substitute a breakdown for repository changes.
 
-1. Read the issue and identify its concrete acceptance criteria.
-2. Inspect only the context needed to make the next implementation decision.
-3. Make the first relevant edit promptly. Do not keep exploring once the required change is clear.
-4. Add/update tests only when executable behavior changes. Do not manufacture tests for exact static artifacts.
-5. Run only focused checks that add useful signal while editing.
-6. Call `submit_result` as soon as the implementation is ready.
+During execution:
 
-For **trivial** work, use the fast path: inspect the target/immediate context once, make the exact change, optionally perform one focused check if useful, then submit. Do not inspect broad repository structure, Git history/internals, unrelated configuration, documentation, or skills merely for thoroughness.
+- Replayed checkpoint conflicts follow the same startup sequence; they never bypass plan or complexity declaration. Once complexity is declared, resolve the conflict plan item immediately instead of restarting investigation of Git history, merge bases, branches, or provenance.
+- Work on exactly one top-level plan item at a time. Its assigned complexity controls only whether it gets a local subplan.
+- For a complex item, create its subplan only when that item becomes current, never upfront for later items. Do not revise or regenerate the subplan unless new repository evidence makes it impossible to execute.
+- Every sub-item must describe a concrete implementation or verification action, not open-ended research, architecture exploration, or another planning step.
+- Inspect only the context needed for the current plan item and next implementation decision.
+- Make the first relevant edit promptly. The moment you can describe a concrete code change, file addition, function, class, schema, or test, stop drafting it in reasoning and use `edit`/`write`.
+- Do not rehearse implementation code in prose. Brief reasoning chooses the next action; repository edits express implementation.
+- After two consecutive inspection/reasoning turns without a repository edit, either identify one specific missing fact and inspect only that fact, or edit now. Do not restart or repeat the design.
+- Complete the current plan item, then move directly to the next one.
+- Add/update tests only when executable behavior changes; do not manufacture tests for exact static artifacts.
+- Run only focused checks that add useful signal while implementing.
+- When every required plan item is complete, call `submit_result` promptly.
 
-For normal/complex work, expand context only as required by an actual implementation decision. Prefer existing project patterns and completed work in `dev`; do not pull future or related issue scope into the current task.
+For an exact trivial task, the startup sequence still applies, but the plan can be a single concise action. After complexity declaration, inspect only any remaining immediate context, make the exact change, optionally perform one focused check, then submit.
+
+The plan controls execution but does not grant permission for broad exploration. Prefer existing project patterns and completed work already present in current `dev`; do not pull future or related issue scope into the current task.
 
 If the issue is ambiguous or internally contradictory, do not invent scope. Use the smallest interpretation supported by the acceptance criteria; if no safe interpretation exists, report the concrete blocker through the result path.
 
@@ -62,13 +95,13 @@ After successful `submit_result`, **stop immediately**. Do not inspect more file
 
 ## Response budget
 
-Every session starts at **SHORT (2048)**. Keep it unless the next response genuinely needs more room.
+Every session starts at **SHORT (2048)**. Keep it unless the next response genuinely needs more room. Never increase the response budget merely to continue planning before the first edit; use repository edits to express implementation code instead of generating long prose/code drafts.
 
 - **SHORT / 2048** — navigation, inspection, tool selection, simple checks, trivial work.
 - **NORMAL / 4096** — ordinary local reasoning, diagnosis, or a modest implementation decision.
 - **DEEP / 8192** — difficult debugging/synthesis, substantial code generation, or conflict resolution.
 
-Use `set_response_budget` only when needed and choose the smallest sufficient level. Task complexity does not imply response size. DEEP is an absolute ceiling, not a default for complex tasks.
+Use `set_response_budget` only when needed and choose the smallest sufficient level. Task complexity does not imply response size. DEEP is an absolute ceiling, not a default for complex tasks. If a response reaches its full token ceiling, the shared runtime promotes exactly the next response one level (SHORT → NORMAL → DEEP). Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.
 
 ## Engineering constraints
 

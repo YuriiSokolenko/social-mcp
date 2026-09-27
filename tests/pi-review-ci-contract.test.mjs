@@ -303,6 +303,14 @@ test('issue publication safely replaces only the branch head observed at run sta
   assert.doesNotMatch(publication, /push --set-upstream origin/);
 });
 
+test('issue publication attributes only changes beyond integrated latest dev to the Implementer', () => {
+  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  assert.match(publication, /merge-base','--is-ancestor','origin\/dev','HEAD'/);
+  assert.match(publication, /return integrated \? 'origin\/dev' : startCommit/);
+  assert.match(publication, /diff','--name-only',base,'HEAD'/);
+  assert.doesNotMatch(publication, /diff','--name-only',startCommit,'HEAD'/);
+});
+
 test('issue agent workflow contains no escaped newline artifacts', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   assert.equal(workflow.includes('\\\\n'), false);
@@ -406,6 +414,14 @@ test('Pi result tools reuse the shared submit-nudge primitive', () => {
   }
 });
 
+test('Triage submission is terminal and avoids a post-submit model turn', () => {
+  const source = fs.readFileSync('scripts/pi-triage-result-tool.mjs', 'utf8');
+  const agent = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
+  assert.match(source, /terminalResult\('Result recorded\.'/);
+  assert.match(agent, /do not narrate internal debate or print a prose classification list/i);
+  assert.match(agent, /put the classifications directly in its arguments/i);
+});
+
 test('Pi result parsers reuse the shared tolerant JSONL reader', () => {
   for (const name of ['pi-architect.mjs', 'pi-dispatcher.mjs', 'pi-review-result.mjs', 'pi-triage.mjs']) {
     assert.match(fs.readFileSync(`scripts/${name}`, 'utf8'), /result-jsonl\.mjs/);
@@ -432,21 +448,32 @@ test('every model-driven workflow wires the shared safety extensions exactly onc
 });
 
 test('loop guard is limited to stages that need exploration/task-complexity control', () => {
-  const guarded = new Set(['pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml']);
+  const guarded = new Set(['pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']);
   for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']) {
     const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
     assert.equal(source.includes('pi-loop-guard.mjs'), guarded.has(name), `${name}: unexpected loop-guard wiring`);
   }
 });
 
-test('all agent prompts document the shared response-budget contract', () => {
-  for (const name of ['architect', 'dispatcher', 'implementer', 'repair', 'reviewer', 'triage']) {
+test('agent prompts document their configured response-budget contract', () => {
+  for (const name of ['architect', 'implementer', 'repair', 'reviewer']) {
     const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
     assert.match(source, /set_response_budget/);
     assert.match(source, /SHORT[\s\S]*2048/);
     assert.match(source, /NORMAL[\s\S]*4096/);
     assert.match(source, /DEEP[\s\S]*8192/);
   }
+  const dispatcher = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
+  assert.match(dispatcher, /set_response_budget/);
+  assert.match(dispatcher, /SHORT[\s\S]*2048/);
+  assert.match(dispatcher, /NORMAL[\s\S]*4096/);
+  assert.match(dispatcher, /DEEP[\s\S]*8192/);
+  const dispatcherWorkflow = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
+  assert.doesNotMatch(dispatcherWorkflow, /PI_RESPONSE_BUDGET_(?:SHORT|NORMAL|DEEP)/);
+  const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
+  assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
+  assert.match(triage, /`set_response_budget` is intentionally unavailable/);
+  assert.match(fs.readFileSync('.github/workflows/pi-triage.yml', 'utf8'), /PI_FIXED_RESPONSE_MAX_TOKENS: '1000'/);
 });
 
 
@@ -454,7 +481,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.ok(workflow.includes('PI_ISSUE=$(jq -r \'.issue\' "$CONTEXT")'));
-  assert.match(workflow, /trivial for a tiny self-contained diff/);
+  assert.match(prompt, /\*\*trivial\*\* — tiny self-contained diff/);
   assert.match(workflow, /do not rerun pytest, Ruff, or git diff --check/);
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /History or prior attempts are valid when they materially answer a concrete question/);
@@ -464,27 +491,91 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
 });
 
 
-test('implementer declares complexity before reading its operating contract', () => {
+test('implementer orients and plans before declaring complexity', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  const first = workflow.indexOf('Your first assistant response MUST contain exactly one tool call: declare_task_complexity');
-  const read = workflow.indexOf('read and follow agents/implementer/AGENTS.md');
-  assert.match(workflow, /Do not call read, bash, search, edit, or any other tool in that same response/);
-  assert.ok(first >= 0 && read > first);
-  assert.match(agent, /For \*\*trivial\*\* work, use the fast path/);
+
+  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
+  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
+
+  const contract = [
+    'Read this `agents/implementer/AGENTS.md`',
+    'Read the supplied GitHub issue',
+    'Inspect only the current `dev` code directly relevant',
+    'Write a short execution plan',
+    '1000 output tokens',
+    'Call `declare_task_complexity`',
+    'Immediately execute the first plan item',
+  ];
+  let previous = -1;
+  for (const marker of contract) {
+    const position = agent.indexOf(marker);
+    assert.ok(position > previous, `implementer startup marker missing or out of order: ${marker}`);
+    previous = position;
+  }
+
+  assert.match(agent, /Do not modify repository files or perform implementation work before step 5 is complete/);
+  assert.match(agent, /complex[\s\S]*implement[\s\S]*same issue[\s\S]*completion/i);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   assert.doesNotMatch(agent, /Before starting, read `docs\/PROJECT_CONTEXT\.md`/);
 });
 
+test('reviewer orients and plans before declaring complexity', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const agent = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
+  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
+  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
+  const contract = [
+    'Read `agents/reviewer/AGENTS.md`',
+    'Read the linked issue',
+    'Inspect the complete PR diff',
+    'Write a concise review plan',
+    '1000 tokens',
+    'Call `declare_task_complexity`',
+    'Continue the semantic review',
+  ];
+  let previous = -1;
+  for (const value of contract) {
+    const position = agent.indexOf(value);
+    assert.ok(position > previous, `reviewer startup marker missing or out of order: ${value}`);
+    previous = position;
+  }
+  assert.doesNotMatch(workflow, /first assistant response MUST contain exactly one tool call/i);
+});
+
+test('repair orients and plans before declaring complexity', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  const agent = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
+  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
+  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
+  assert.match(workflow, /pi-loop-guard\.mjs/);
+  const contract = [
+    'Read `agents/repair/AGENTS.md`',
+    'Read the concrete blocking Reviewer finding',
+    'Inspect the PR diff',
+    'Write a short repair plan',
+    '1000 output tokens',
+    'Call `declare_task_complexity`',
+    'Immediately execute the first plan item',
+  ];
+  let previous = -1;
+  for (const value of contract) {
+    const position = agent.indexOf(value);
+    assert.ok(position > previous, `repair startup marker missing or out of order: ${value}`);
+    previous = position;
+  }
+  assert.match(agent, /Do not edit files[\s\S]*before step 5 is complete/);
+});
 
 test('dispatcher stays a narrow scope classifier and does not treat complexity as decomposition', () => {
   const agent = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
   assert.match(agent, /candidates.*authoritative/is);
   assert.match(agent, /Size alone is not a reason for ARCHITECT/);
   assert.match(agent, /Complexity alone is not a reason for ARCHITECT/);
-  assert.match(agent, /Do not inspect repository code, project documentation, Git history/);
+  assert.match(agent, /Read the project documentation once, before reading the dispatcher candidates/);
+  assert.match(agent, /Do not repeatedly reread project documentation for each candidate/);
+  assert.match(agent, /Do not inspect repository code, Git history, queue state/);
   assert.match(agent, /That classification is your entire job/);
-  assert.doesNotMatch(agent, /Read `docs\/PROJECT_CONTEXT\.md`/);
 });
 
 
@@ -497,4 +588,15 @@ test('architect decomposes only on real merge boundaries', () => {
   assert.ok(agent.includes('Do not load planning skills for an obvious keep or simple revise.') || agent.includes('Do not load planning skills for an obvious `keep` or simple `revise`.'));
   assert.ok(agent.includes('Do not perform a general repository audit.'));
   assert.ok(!workflow.includes('agents/architect/AGENTS.md and docs/PROJECT_CONTEXT.md'));
+});
+
+
+test('repair preserves current dev behavior when a PR test is stale', () => {
+  const repair = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
+  assert.match(repair, /Current `dev` wins for behavior outside the repaired issue's scope/);
+  assert.match(repair, /test carried by the PR expects behavior that contradicts confirmed current-`dev` behavior/);
+  assert.match(repair, /treat the PR test expectation as stale/);
+  assert.match(repair, /Preserve current-`dev` behavior/);
+  assert.match(repair, /next tool call `edit` or `write`/i);
+  assert.match(repair, /Do not redesign current `dev`, debate which side should win, or repeatedly reread the same evidence/);
 });

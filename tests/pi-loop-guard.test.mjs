@@ -12,11 +12,48 @@ test('global turn ceiling is independent of task complexity', () => {
   assert.equal(guard.checkToolCall('read', { path: 'b' }).block, true);
 });
 
-test('complexity must be declared before other tools when required', () => {
-  const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
-  assert.equal(guard.checkToolCall('read', { path: 'x' }).block, true);
+test('required operating contract is the first tool read when configured', () => {
+  const guard = new LoopGuard({
+    repeatThreshold: 3,
+    requiredFirstReadPath: 'agents/triage/AGENTS.md',
+  });
+  assert.equal(guard.checkToolCall('read', { path: '/work/pi-triage-context.json' }).block, true);
+  assert.equal(guard.checkToolCall('bash', { command: 'cat context.json' }).block, true);
+  assert.equal(guard.checkToolCall('read', { path: '/work/agents/triage/AGENTS.md' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: '/work/pi-triage-context.json' }), undefined);
+});
+
+test('bounded orientation is allowed before required complexity declaration', () => {
+  const guard = new LoopGuard({
+    repeatThreshold: 3,
+    requireComplexity: true,
+    preComplexityAllowedTools: ['read', 'bash'],
+  });
+  assert.equal(guard.checkToolCall('read', { path: '/work/agents/implementer/AGENTS.md' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
+  assert.equal(guard.checkToolCall('bash', { command: 'ls' }), undefined);
+  assert.equal(guard.checkToolCall('edit', { path: '/work/src/social_mcp/storage/sqlite.py' }).block, true);
+  assert.equal(guard.checkToolCall('write', { path: '/work/new.py' }).block, true);
+  assert.equal(guard.checkToolCall('submit_result', {}).block, true);
   guard.setComplexity('trivial');
-  assert.equal(guard.checkToolCall('read', { path: 'x' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
+});
+
+test('required complexity forces implementation after two post-plan inspections', () => {
+  const guard = new LoopGuard({
+    turnLimit: 100,
+    repeatThreshold: 3,
+    requireComplexity: true,
+    preComplexityAllowedTools: ['read', 'bash'],
+  });
+  guard.setComplexity('normal');
+  assert.equal(guard.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  assert.equal(guard.checkToolCall('bash', { command: 'grep -n target src/b.py' }), undefined);
+  const blocked = guard.checkToolCall('read', { path: 'src/c.py' });
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /make the first repository edit now/);
+  assert.equal(guard.checkToolCall('edit', { path: 'src/a.py' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: 'src/c.py' }), undefined);
 });
 
 test('complexity can escalate but cannot downgrade', () => {
@@ -27,10 +64,11 @@ test('complexity can escalate but cannot downgrade', () => {
   assert.throws(() => guard.setComplexity('normal'), /cannot be downgraded/);
 });
 
-test('complexity does not impose tool-call quotas', () => {
+test('complexity does not impose quotas after implementation starts', () => {
   const guard = new LoopGuard({ turnLimit: 100, repeatThreshold: 3, requireComplexity: true });
   guard.setComplexity('trivial');
   guard.onTurnStart(1);
+  assert.equal(guard.checkToolCall('edit', { path: 'file-0' }), undefined);
   for (let i = 0; i < 20; i += 1) {
     assert.equal(guard.checkToolCall('read', { path: `file-${i}` }), undefined);
   }

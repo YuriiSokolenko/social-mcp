@@ -55,7 +55,7 @@ test('published PR state is durable before independent review starts', () => {
   assert.match(workflow, /issue-publication\.mjs" review/);
   assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(publication, /dispatchWorkflow\('pi-auto-merge\.yml'/);
-  assert.match(workflow, /if: failure\(\) && steps\.pr\.outputs\.number == ''/);
+  assert.match(workflow, /if: failure\(\) && steps\.preflight\.outcome == 'success' && steps\.pr\.outputs\.number == ''/);
 });
 
 

@@ -22,7 +22,16 @@ Never expose credentials/tokens, invoke production write operations, or make des
 
 ## Execution
 
-The runtime requires `declare_task_complexity` before any other work. **Your first assistant response must contain exactly one tool call: `declare_task_complexity`. Do not batch a read, bash, search, or any other tool call into that same response.** After that tool succeeds, read this file.
+Use this order. Complexity must be based on evidence from the actual review target, never guessed before seeing the task and changed code.
+
+1. Read `agents/reviewer/AGENTS.md`.
+2. Read the linked issue and identify its concrete acceptance criteria.
+3. Inspect the complete PR diff against `origin/dev` and the changed code needed to understand that diff.
+4. Write a concise review plan for yourself, at most 1000 tokens, focused on the acceptance criteria and concrete risk areas visible in the change.
+5. Call `declare_task_complexity` based on the issue, diff, changed code, and plan.
+6. Continue the semantic review using the evidence-driven loop below.
+
+Before `declare_task_complexity`, stay within initial orientation: the agent instructions, linked issue, PR diff, changed code, and the short plan. Do not expand into repository history, unrelated code, broad searches, optional skills, or speculative investigation until complexity has been declared.
 
 Choose complexity from the review scope:
 
@@ -30,13 +39,11 @@ Choose complexity from the review scope:
 - **normal** — ordinary code/test change requiring local semantic context.
 - **complex** — broad multi-component, architectural, conflict-heavy, or security-sensitive change requiring substantial synthesis.
 
-Then follow this evidence-driven sequence:
+After complexity is declared, follow this evidence-driven loop:
 
-1. Read the linked issue and identify its concrete acceptance criteria.
-2. Inspect the complete PR diff against `origin/dev`.
-3. Ask: **can every acceptance criterion and relevant correctness concern already be judged from the issue and diff?**
-4. If yes, decide the verdict immediately and call `submit_result`.
-5. If no, state the specific unresolved review question to yourself, inspect only the context needed to answer that question, then return to step 3.
+1. Ask: **can every acceptance criterion and relevant correctness concern already be judged from the issue, diff, and changed code already inspected?**
+2. If yes, decide the verdict immediately and call `submit_result`.
+3. If no, state the specific unresolved review question to yourself, inspect only the context needed to answer that question, then return to step 1.
 
 Additional investigation is allowed whenever it answers a concrete review question. This can include repository history, prior implementations/PRs, surrounding code, tests, configuration, documentation, or a relevant skill. Reused training/test issues may legitimately require history to distinguish the current change from earlier attempts.
 
@@ -141,4 +148,4 @@ Every session starts at **SHORT (2048)**.
 - **NORMAL / 4096** — ordinary local semantic reasoning.
 - **DEEP / 8192** — difficult debugging/synthesis or broad architectural/security reasoning.
 
-Use `set_response_budget` only when the next response genuinely needs more room and choose the smallest sufficient level. Review complexity does not imply response size. DEEP is an absolute ceiling, not the default for complex reviews.
+Use `set_response_budget` only when the next response genuinely needs more room and choose the smallest sufficient level. Review complexity does not imply response size. DEEP is an absolute ceiling, not the default for complex reviews. If a response reaches its full token ceiling, the shared runtime promotes exactly the next response one level (SHORT → NORMAL → DEEP). Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.
