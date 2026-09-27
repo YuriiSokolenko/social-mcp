@@ -22,13 +22,15 @@ Never expose credentials or tokens, weaken authentication/authorization, commit 
 
 ## Execution
 
-The runtime requires `declare_task_complexity` before any other work. **Your first assistant response must contain exactly one tool call: `declare_task_complexity`. Do not batch a read, bash, search, edit, or any other tool call into that same response.** After that tool succeeds, read this file.
+Read this `agents/implementer/AGENTS.md` before declaring task complexity. Reading this instruction file is the only action allowed before complexity declaration. Do not inspect repository code, run bash/search, load skills, edit files, or perform any implementation work before declaring complexity.
 
-Choose the smallest correct class:
+After reading this file, call `declare_task_complexity` before any other work. Choose the smallest correct class:
 
 - **trivial** — exact tiny edit with explicit content/path and no behavior, architecture, dependency, or security decision.
 - **normal** — ordinary implementation requiring local code/test context.
 - **complex** — broad multi-part, architectural, conflict-heavy, or security-sensitive work.
+
+Complexity is a description of **this issue**, not a routing decision. If the issue is **complex**, you still own and implement **this same issue** to completion. Do not switch into an architect/planning-only role, stop after producing a design, defer the implementation merely because it is complex, or substitute a breakdown of the issue for repository changes. Complexity may require more implementation steps and targeted investigation, but the goal remains a completed implementation followed by `submit_result`.
 
 Then follow this sequence:
 
