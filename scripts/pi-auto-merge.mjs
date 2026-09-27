@@ -28,6 +28,12 @@ async function processPR(prSummary) {
   const issue = issueNumber(pr, repo);
   if (!issue) return;
 
+  const prLabels = new Set((pr.labels ?? []).map(label => label.name));
+  if (prLabels.has('pi:needs-human')) {
+    console.log(`#${pr.number}: PR requires human attention; automation skipped`);
+    return;
+  }
+
   const issueData = await api(`/issues/${issue}`);
   const labels = new Set(issueData.labels.map(label => label.name));
   if (issueData.state !== 'open' || !labels.has('pi:mr-created') || labels.has('pi:needs-human')) {
@@ -35,7 +41,6 @@ async function processPR(prSummary) {
     return;
   }
 
-  const prLabels = new Set((pr.labels ?? []).map(label => label.name));
   if (!prLabels.has('review:passed')) {
     console.log(`#${pr.number}: waiting for independent review PASS`);
     return;
