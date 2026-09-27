@@ -1,6 +1,7 @@
 import { pathToFileURL } from 'node:url';
 
 import { githubClient } from './github-api.mjs';
+import { controlPlanePaths } from './pi-control-plane-policy.mjs';
 
 const { api, pages, repo } = githubClient();
 
@@ -18,9 +19,8 @@ export function issueNumber(pr, repository) {
 }
 
 export function allowedFiles(files, changedCount) {
-  return files.length === changedCount &&
-    files.every(file => [file.filename, file.previous_filename].filter(Boolean).every(name =>
-      !name.startsWith('.github/workflows/') && !/^scripts\/pi-[^/]+\.(?:mjs|sh)$/.test(name)));
+  const paths = files.flatMap(file => [file.filename, file.previous_filename].filter(Boolean));
+  return files.length === changedCount && controlPlanePaths(paths).length === 0;
 }
 
 async function processPR(prSummary) {
