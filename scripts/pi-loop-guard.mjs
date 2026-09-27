@@ -2,10 +2,9 @@ import { Type } from 'typebox';
 
 import { LoopGuard } from './pi-common/loop-guard-policy.mjs';
 
-// Runtime execution budget. Implementer runs require an explicit complexity
-// declaration from the model before any implementation tool can be used.
-// The declaration selects real turn/tool budgets instead of merely asking the
-// model in prose to "be brief".
+// Runtime loop/stall guard. Complexity is declared before work so agents can
+// choose an appropriate strategy and may escalate it if broader scope emerges.
+// Complexity does not impose turn or tool-call quotas.
 export default function (pi) {
   const guard = new LoopGuard({
     turnLimit: Number(process.env.PI_MAX_TURNS ?? 100),
@@ -16,7 +15,7 @@ export default function (pi) {
   pi.registerTool({
     name: 'declare_task_complexity',
     label: 'Declare task complexity',
-    description: 'REQUIRED FIRST ACTION. Classify the current task once: trivial for an exact tiny scope with no behavior/design work; normal for ordinary work; complex for broad architectural or multi-part work. This selects the runtime execution budget.',
+    description: 'REQUIRED FIRST ACTION. Classify the current task: trivial for an exact tiny scope with no behavior/design work; normal for ordinary work; complex for broad architectural or multi-part work. You may later escalate complexity if investigation reveals broader scope, but never downgrade it.',
     parameters: Type.Object({
       complexity: Type.Union([
         Type.Literal('trivial'),
@@ -26,21 +25,21 @@ export default function (pi) {
       reason: Type.String({ description: 'One short sentence explaining the classification' }),
     }),
     async execute(_toolCallId, params) {
-      const profile = guard.setComplexity(params.complexity);
+      const result = guard.setComplexity(params.complexity);
       return {
         content: [{
           type: 'text',
-          text: `Complexity locked to ${params.complexity}. Runtime budget: soft warning at turn ${profile.softTurns}, hard stop at turn ${profile.hardTurns}, up to ${profile.toolCalls} implementation tool calls. Proceed within that budget.`,
+          text: result.changed
+            ? `Complexity set to ${result.complexity}. It may be escalated later if broader scope emerges, but complexity does not limit tool calls or turns.`
+            : `Complexity remains ${result.complexity}.`,
         }],
-        details: { complexity: params.complexity, reason: params.reason, ...profile },
+        details: { ...result, reason: params.reason },
       };
     },
   });
 
-  pi.on('turn_start', async (event) => {
+  pi.on('turn_start', (event) => {
     guard.onTurnStart(event.turnIndex);
-    const warning = guard.takeSoftWarning();
-    if (warning) await pi.sendUserMessage(warning, { deliverAs: 'steer' });
   });
 
   pi.on('tool_call', (event) => guard.checkToolCall(event.toolName, event.input));
