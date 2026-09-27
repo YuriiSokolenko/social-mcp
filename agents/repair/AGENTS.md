@@ -91,7 +91,7 @@ Every session starts at **SHORT (2048)**. Keep it unless the next response genui
 - **NORMAL / 4096** — ordinary localized diagnosis or repair decisions.
 - **DEEP / 8192** — difficult debugging/synthesis or substantial conflict resolution.
 
-Use `set_response_budget` only when needed and choose the smallest sufficient level. Repair complexity does not imply response size. DEEP is an absolute ceiling, not a default for complex repairs.
+Use `set_response_budget` only when needed and choose the smallest sufficient level. Repair complexity does not imply response size. DEEP is an absolute ceiling, not a default for complex repairs. If a response reaches its full token ceiling, the shared runtime promotes exactly the next response one level (SHORT → NORMAL → DEEP). Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.
 
 ## Skills: load only when needed
 
