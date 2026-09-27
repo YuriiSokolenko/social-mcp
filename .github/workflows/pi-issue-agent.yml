@@ -166,7 +166,7 @@ jobs:
         if: steps.checkpoint.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" push "$ISSUE" "$JOB_DIR" "$PI_ISSUE_BRANCH_EXPECTED"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" push "$ISSUE" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT" "$PI_ISSUE_BRANCH_EXPECTED"
 
       - name: Create or update pull request
         id: pr
