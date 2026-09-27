@@ -64,10 +64,11 @@ test('complexity can escalate but cannot downgrade', () => {
   assert.throws(() => guard.setComplexity('normal'), /cannot be downgraded/);
 });
 
-test('complexity does not impose tool-call quotas', () => {
+test('complexity does not impose quotas after implementation starts', () => {
   const guard = new LoopGuard({ turnLimit: 100, repeatThreshold: 3, requireComplexity: true });
   guard.setComplexity('trivial');
   guard.onTurnStart(1);
+  assert.equal(guard.checkToolCall('edit', { path: 'file-0' }), undefined);
   for (let i = 0; i < 20; i += 1) {
     assert.equal(guard.checkToolCall('read', { path: `file-${i}` }), undefined);
   }
