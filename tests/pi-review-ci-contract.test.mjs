@@ -589,3 +589,14 @@ test('architect decomposes only on real merge boundaries', () => {
   assert.ok(agent.includes('Do not perform a general repository audit.'));
   assert.ok(!workflow.includes('agents/architect/AGENTS.md and docs/PROJECT_CONTEXT.md'));
 });
+
+
+test('repair preserves current dev behavior when a PR test is stale', () => {
+  const repair = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
+  assert.match(repair, /Current `dev` wins for behavior outside the repaired issue's scope/);
+  assert.match(repair, /test carried by the PR expects behavior that contradicts confirmed current-`dev` behavior/);
+  assert.match(repair, /treat the PR test expectation as stale/);
+  assert.match(repair, /Preserve current-`dev` behavior/);
+  assert.match(repair, /next tool call `edit` or `write`/i);
+  assert.match(repair, /Do not redesign current `dev`, debate which side should win, or repeatedly reread the same evidence/);
+});
