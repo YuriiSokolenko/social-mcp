@@ -396,3 +396,26 @@ test('response-budget policy has one hard 8k ceiling and is independent of loop 
   assert.match(extension, /session_start/);
   assert.doesNotMatch(guard, /set_response_budget|RESPONSE_BUDGETS|withResponseBudget/);
 });
+
+
+test('Pi result tools reuse the shared submit-nudge primitive', () => {
+  for (const name of ['pi-architect-result-tool.mjs', 'pi-dispatcher-result-tool.mjs', 'pi-implementer-result-tool.mjs', 'pi-repair-result-tool.mjs', 'pi-reviewer-result-tool.mjs', 'pi-triage-result-tool.mjs']) {
+    const source = fs.readFileSync(`scripts/${name}`, 'utf8');
+    assert.match(source, /registerSubmitNudge/);
+    assert.doesNotMatch(source, /pi\.on\(['"]agent_before_settle/);
+  }
+});
+
+test('Pi result parsers reuse the shared tolerant JSONL reader', () => {
+  for (const name of ['pi-architect.mjs', 'pi-dispatcher.mjs', 'pi-review-result.mjs', 'pi-triage.mjs']) {
+    assert.match(fs.readFileSync(`scripts/${name}`, 'utf8'), /result-jsonl\.mjs/);
+  }
+});
+
+test('publication helpers reuse one trusted git runner', () => {
+  for (const name of ['issue-publication.mjs', 'repair-publication.mjs']) {
+    const source = fs.readFileSync(`scripts/pi-common/${name}`, 'utf8');
+    assert.match(source, /\.\/git\.mjs/);
+    assert.doesNotMatch(source, /function git\(/);
+  }
+});
