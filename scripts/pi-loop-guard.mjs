@@ -1,4 +1,4 @@
-import { LoopGuard } from './pi-loop-guard-policy.mjs';
+import { LoopGuard } from './pi-common/loop-guard-policy.mjs';
 
 // Loaded explicitly from the trusted dev checkout by Pi workflows that want a
 // hard stop on runaway exploration. Distinct from pi-bash-timeout.mjs, which
