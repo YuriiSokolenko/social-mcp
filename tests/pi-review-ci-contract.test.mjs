@@ -247,9 +247,9 @@ test('reviewer rechecks the human gate before publishing a verdict', () => {
 
 test('reconciler gives normal PR handoffs a grace period before recovery dispatch', () => {
   const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(source, /PR_RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
+  assert.match(source, /RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
   assert.match(source, /pr\.updated_at \?\? pr\.created_at/);
-  assert.match(source, /prAgeMs < PR_RECOVERY_GRACE_MS/);
+  assert.match(source, /prAgeMs < RECOVERY_GRACE_MS/);
 });
 
 
