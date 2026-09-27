@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { inspectIssueState, safeRemovals, validateIssueTransition } from '../scripts/pi-state-machine.mjs';
+import { replaceIssueState } from '../scripts/pi-github-state.mjs';
 
 const issue = (state, labels) => ({ state, labels: labels.map(name => ({ name })) });
 
@@ -114,4 +115,24 @@ test('needs-human transition is idempotent for non-PR terminal issues', () => {
 
 test('queued transition cannot steal a live implementer state', () => {
   assert.throws(() => validateIssueTransition(issue('open', ['pi:running']), 'queued'), /queued requires/);
+});
+
+
+test('stopped transition removes pipeline ownership and preserves unrelated labels', async () => {
+  const running = issue('open', ['pi:running', 'keep-me']);
+  assert.equal(validateIssueTransition(running, 'stopped'), null);
+  let patched;
+  const result = await replaceIssueState({
+    number: 25,
+    expected: running,
+    target: null,
+    load: async () => running,
+    patch: async (_number, labels) => { patched = labels; },
+  });
+  assert.deepEqual(patched, ['keep-me']);
+  assert.deepEqual(result.labels, ['keep-me']);
+
+  assert.equal(validateIssueTransition(issue('open', ['architect:ready']), 'stopped'), null);
+  assert.throws(() => validateIssueTransition(issue('open', []), 'stopped'), /pi:running or architect:ready/);
+  assert.throws(() => validateIssueTransition(issue('open', ['dispatcher:ready']), 'stopped'), /pi:running or architect:ready/);
 });
