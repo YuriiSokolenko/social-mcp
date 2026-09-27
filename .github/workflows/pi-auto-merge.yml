@@ -9,7 +9,6 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
-  statuses: read
 
 concurrency:
   group: pi-auto-merge
@@ -26,7 +25,6 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      statuses: write
     steps:
       - name: Checkout trusted dev
         uses: actions/checkout@v5
