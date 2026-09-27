@@ -61,7 +61,7 @@ jobs:
           TASK_FILE="$RUNNER_TEMP/pi-dispatcher-task.txt"
           cat > "$TASK_FILE" <<EOF
           Read and follow agents/dispatcher/AGENTS.md.
-          Read $RUNNER_TEMP/pi-dispatcher-context.json and the task file for each entry in candidates.
+          Read $RUNNER_TEMP/pi-dispatcher-context.json; each candidate already contains the current GitHub issue metadata and scope needed for classification.
           The candidates list is authoritative: do not re-check eligibility, dependencies, priority, ordering or capacity.
           For every candidate decide only IMPLEMENT or ARCHITECT based on scope.
           Call submit_result exactly once as your last action. Do not modify repository or GitHub state.
