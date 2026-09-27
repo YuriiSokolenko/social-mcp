@@ -63,13 +63,19 @@ async function processPR(prSummary) {
   const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
   if (!merged.merged) throw new Error(`#${pr.number}: merge API did not confirm merge`);
   console.log(`#${pr.number}: merged ${sha}; dev push CI now validates the merged result`);
+  return true;
 }
 
 export async function main() {
   const prs = await pages('/pulls?state=open&base=dev');
   for (const pr of prs) {
-    try { await processPR(pr); }
-    catch (error) { console.error(`#${pr.number}: ${error.message}`); process.exitCode = 1; }
+    try {
+      if (await processPR(pr)) break;
+    } catch (error) {
+      console.error(`#${pr.number}: ${error.message}`);
+      process.exitCode = 1;
+      break;
+    }
   }
 }
 
