@@ -74,6 +74,10 @@ If the tool is unavailable, emit one final line:
 
 ## Response budget
 
-The session starts at **SHORT (1024)**. Dispatcher classification should normally remain SHORT.
+The session starts at **SHORT (2048)**. Dispatcher classification should normally remain SHORT.
 
-After reading the project documentation and prepared dispatcher context, choose the smallest sufficient budget for the remaining classification work. Use `set_response_budget` only if the next response genuinely requires more room. NORMAL (2048) is available for unusually dense multi-candidate scope reasoning; DEEP (4096) should almost never be necessary for dispatch classification.
+- **SHORT / 2048**
+- **NORMAL / 4096**
+- **DEEP / 8192**
+
+If a response reaches its full token ceiling, the shared runtime promotes exactly the next response one level (SHORT → NORMAL → DEEP). A response below its ceiling resets the following response to SHORT; DEEP also returns to SHORT after its one response. Use `set_response_budget` only to request a larger next response proactively; that override is one-response only.
