@@ -79,42 +79,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/pulls/${PR}")"
-          if jq -e '[.labels[].name] | index("pi:needs-human") != null' <<<"$PR_JSON" >/dev/null; then
-            echo "PR #${PR} became human-gated during repair; refusing publication"
-            echo "published=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          cd "$JOB_DIR"
-          git diff --check
-          rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
-          rm -f .coverage coverage.xml
-          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet && { echo "No repair change produced"; exit 1; }
-          git commit -m "fix: repair issue #${ISSUE}"
-          CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
-          [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved; refusing stale push" >&2; exit 1; }
-          git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "HEAD:refs/heads/$HEAD_REF"
-          echo "published=true" >> "$GITHUB_OUTPUT"
+          RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/repair-publication.mjs" publish "$PR" "$ISSUE" "$JOB_DIR" "$HEAD_REF" "$HEAD_SHA")"
+          echo "published=$(jq -r '.published' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
 
       - name: Start fresh review
         if: steps.publish.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/pulls/${PR}")"
-          LABELS="$(jq -c '[.labels[].name | select(startswith("review:") | not)]' <<<"$PR_JSON")"
-          jq -n --argjson labels "$LABELS" '{labels:$labels}' | curl --retry 3 --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "https://api.github.com/repos/${REPO}/issues/${PR}/labels" >/dev/null
-          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
-            --data '{"ref":"dev","inputs":{"pr_number":"'${PR}'"}}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-review.yml/dispatches"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/repair-publication.mjs" review "$PR"
 
-      - name: Clean worktree
-        if: always()
-        run: |
-          set +e
-          [ -n "${JOB_DIR:-}" ] && [ -d "$JOB_DIR" ] && git worktree remove --force "$JOB_DIR"
-          git worktree prune
+
