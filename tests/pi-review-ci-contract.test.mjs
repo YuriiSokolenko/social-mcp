@@ -419,3 +419,32 @@ test('publication helpers reuse one trusted git runner', () => {
     assert.doesNotMatch(source, /function git\(/);
   }
 });
+
+
+test('every model-driven workflow wires the shared safety extensions exactly once', () => {
+  const workflows = ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml'];
+  for (const name of workflows) {
+    const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    for (const extension of ['pi-bash-timeout.mjs', 'pi-response-budget.mjs']) {
+      assert.equal(source.split(extension).length - 1, 1, `${name}: expected exactly one ${extension}`);
+    }
+  }
+});
+
+test('loop guard is limited to stages that need exploration/task-complexity control', () => {
+  const guarded = new Set(['pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml']);
+  for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']) {
+    const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.equal(source.includes('pi-loop-guard.mjs'), guarded.has(name), `${name}: unexpected loop-guard wiring`);
+  }
+});
+
+test('all agent prompts document the shared response-budget contract', () => {
+  for (const name of ['architect', 'dispatcher', 'implementer', 'repair', 'reviewer', 'triage']) {
+    const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
+    assert.match(source, /set_response_budget/);
+    assert.match(source, /SHORT[\s\S]*2048/);
+    assert.match(source, /NORMAL[\s\S]*4096/);
+    assert.match(source, /DEEP[\s\S]*8192/);
+  }
+});
