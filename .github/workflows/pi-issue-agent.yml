@@ -48,6 +48,7 @@ jobs:
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue
+        id: preflight
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -115,7 +116,7 @@ jobs:
           Implement the issue completely with the smallest scope that satisfies its acceptance criteria.
           For an exact trivial edit, use the fast path from AGENTS.md: inspect only the target/relevant context, edit promptly, avoid unrelated skills/configuration/tests, and submit.
           Inspect broader code, architecture, and tests only when the issue's behavior or ambiguity requires it.
-          If replayed checkpoint work left merge conflicts in the worktree, resolve those conflicts first against the current dev code; do not abandon current dev or inspect main as a replacement base.
+          If replayed checkpoint work left merge conflicts, follow the AGENTS.md startup sequence: inspect only the conflicting files and current-dev counterparts during orientation, make conflict resolution the first plan item, declare task complexity, then resolve that item immediately against current dev. Do not abandon current dev or inspect main as a replacement base.
           Add or update tests when executable behavior changes; do not manufacture tests merely to restate an exact static artifact.
           Before submission run only useful focused checks. Do not run full pytest or full Ruff just before submit_result.
           submit_result owns the authoritative final git diff --check, full pytest, and Ruff validation after integrating latest dev.
@@ -211,7 +212,7 @@ jobs:
             "Pi published PR #${{ steps.pr.outputs.number }} before a later workflow step failed: ${{ steps.pr.outputs.url }}. Merge Gate/reconciler will continue from the published PR."
 
       - name: Mark failed result
-        if: failure() && steps.pr.outputs.number == ''
+        if: failure() && steps.preflight.outcome == 'success' && steps.pr.outputs.number == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

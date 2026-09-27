@@ -456,13 +456,20 @@ test('loop guard is limited to stages that need exploration/task-complexity cont
 });
 
 test('agent prompts document their configured response-budget contract', () => {
-  for (const name of ['architect', 'dispatcher', 'implementer', 'repair', 'reviewer']) {
+  for (const name of ['architect', 'implementer', 'repair', 'reviewer']) {
     const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
     assert.match(source, /set_response_budget/);
     assert.match(source, /SHORT[\s\S]*2048/);
     assert.match(source, /NORMAL[\s\S]*4096/);
     assert.match(source, /DEEP[\s\S]*8192/);
   }
+  const dispatcher = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
+  assert.match(dispatcher, /set_response_budget/);
+  assert.match(dispatcher, /SHORT[\s\S]*2048/);
+  assert.match(dispatcher, /NORMAL[\s\S]*4096/);
+  assert.match(dispatcher, /DEEP[\s\S]*8192/);
+  const dispatcherWorkflow = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
+  assert.doesNotMatch(dispatcherWorkflow, /PI_RESPONSE_BUDGET_(?:SHORT|NORMAL|DEEP)/);
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
   assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
   assert.match(triage, /`set_response_budget` is intentionally unavailable/);
@@ -565,9 +572,10 @@ test('dispatcher stays a narrow scope classifier and does not treat complexity a
   assert.match(agent, /candidates.*authoritative/is);
   assert.match(agent, /Size alone is not a reason for ARCHITECT/);
   assert.match(agent, /Complexity alone is not a reason for ARCHITECT/);
-  assert.match(agent, /Do not inspect repository code, project documentation, Git history/);
+  assert.match(agent, /Read the project documentation once, before reading the dispatcher candidates/);
+  assert.match(agent, /Do not repeatedly reread project documentation for each candidate/);
+  assert.match(agent, /Do not inspect repository code, Git history, queue state/);
   assert.match(agent, /That classification is your entire job/);
-  assert.doesNotMatch(agent, /Read `docs\/PROJECT_CONTEXT\.md`/);
 });
 
 
@@ -580,4 +588,24 @@ test('architect decomposes only on real merge boundaries', () => {
   assert.ok(agent.includes('Do not load planning skills for an obvious keep or simple revise.') || agent.includes('Do not load planning skills for an obvious `keep` or simple `revise`.'));
   assert.ok(agent.includes('Do not perform a general repository audit.'));
   assert.ok(!workflow.includes('agents/architect/AGENTS.md and docs/PROJECT_CONTEXT.md'));
+});
+
+
+test('repair preserves current dev behavior when a PR test is stale', () => {
+  const repair = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
+  assert.match(repair, /Current `dev` wins for behavior outside the repaired issue's scope/);
+  assert.match(repair, /test carried by the PR expects behavior that contradicts confirmed current-`dev` behavior/);
+  assert.match(repair, /treat the PR test expectation as stale/);
+  assert.match(repair, /Preserve current-`dev` behavior/);
+  assert.match(repair, /next tool call `edit` or `write`/i);
+  assert.match(repair, /Do not redesign current `dev`, debate which side should win, or repeatedly reread the same evidence/);
+});
+
+
+test('deterministic review failure routes directly to PR Fix instead of stopping the pipeline', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(workflow, /name: Run deterministic review checks[\s\S]*?id: checks[\s\S]*?continue-on-error: true/);
+  assert.match(workflow, /name: Mark deterministic check failure for repair[\s\S]*?steps\.checks\.outcome == 'failure'[\s\S]*?review-state\.mjs" dispatch "\$PR" CHANGES_REQUESTED/);
+  assert.match(workflow, /name: Run independent review\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
+  assert.match(workflow, /name: Apply review result\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
 });

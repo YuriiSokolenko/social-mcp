@@ -88,6 +88,29 @@ ID -> fresh GitHub state -> action
 
 Do not use workflow inputs as a message bus or state store.
 
+## Model response budgets
+
+All model-driven stages use the shared `scripts/pi-response-budget.mjs` extension. Architect, Dispatcher, Implementer, Reviewer, and PR Fix use the same default ladder:
+
+```text
+SHORT 2048
+  ├─ response below 2048 -> SHORT 2048
+  └─ response reaches 2048 -> next response NORMAL 4096
+
+NORMAL 4096
+  ├─ response below 4096 -> SHORT 2048
+  └─ response reaches 4096 -> next response DEEP 8192
+
+DEEP 8192
+  └─ next response -> SHORT 2048
+```
+
+Promotion is one-response only; it does not put the rest of the session into a larger budget. `set_response_budget` is a proactive one-response override and then the same automatic policy resumes. Task complexity and response size remain independent.
+
+Triage is the deliberate exception: `PI_FIXED_RESPONSE_MAX_TOKENS=1000` keeps every Triage response fixed at 1000 tokens, disables automatic promotion, and does not expose `set_response_budget`.
+
+Each model call logs its active limit as `PI_BUDGET`; the automatic decision for the following call is logged as `PI_BUDGET_NEXT`.
+
 ## Automation modes
 
 | Mode | Behavior |

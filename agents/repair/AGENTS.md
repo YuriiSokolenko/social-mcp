@@ -47,6 +47,7 @@ After complexity is declared:
 
 - Make the first relevant repair promptly. The moment you can describe a concrete code/test change that addresses the blocker, make it with `edit`/`write` rather than drafting implementation code in prose.
 - **Diagnosis is a one-way gate to implementation.** Once you have identified the concrete blocking cause and can state the smallest correct change, exploration and reconsideration are finished. The **next tool call must be `edit` or `write`** applying that change. Do not compare alternative fixes, re-derive the diagnosis, inspect more history, or spend another reasoning turn asking what to change.
+- **Current `dev` wins for behavior outside the repaired issue's scope.** If a test carried by the PR expects behavior that contradicts confirmed current-`dev` behavior, and the linked issue does not explicitly require changing that behavior, treat the PR test expectation as stale. Preserve current-`dev` behavior and make the **next tool call `edit` or `write`** to update/remove only the stale expectation needed to reconcile the PR. Do not redesign current `dev`, debate which side should win, or repeatedly reread the same evidence.
 - If a later focused check disproves that diagnosis, inspect only the new concrete failure, update the diagnosis once, and again make `edit`/`write` the next tool call.
 - Before a concrete diagnosis exists, after two consecutive inspection/reasoning turns without a repository edit, identify one specific missing fact that blocks the repair and inspect only that fact, or make the first edit now.
 - Add or adjust focused regression coverage only when behavior changed or the reported failure needs protection.
@@ -91,7 +92,7 @@ Every session starts at **SHORT (2048)**. Keep it unless the next response genui
 - **NORMAL / 4096** — ordinary localized diagnosis or repair decisions.
 - **DEEP / 8192** — difficult debugging/synthesis or substantial conflict resolution.
 
-Use `set_response_budget` only when needed and choose the smallest sufficient level. Repair complexity does not imply response size. DEEP is an absolute ceiling, not a default for complex repairs.
+Use `set_response_budget` only when needed and choose the smallest sufficient level. Repair complexity does not imply response size. DEEP is an absolute ceiling, not a default for complex repairs. If a response reaches its full token ceiling, the shared runtime promotes exactly the next response one level (SHORT → NORMAL → DEEP). Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.
 
 ## Skills: load only when needed
 
