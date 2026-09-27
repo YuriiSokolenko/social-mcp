@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 
 import { githubClient } from './pi-common/github-api.mjs';
 import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
+import { withoutReviewLabels, withReviewVerdict } from './pi-common/pr-labels.mjs';
 
 const { api, pages, repo } = githubClient();
 
@@ -49,7 +50,7 @@ async function processPR(prSummary) {
   const files = await pages(`/pulls/${pr.number}/files`);
   if (!allowedFiles(files, pr.changed_files)) {
     console.log(`#${pr.number}: changed control files or incomplete file list; human review required`);
-    const nextLabels = [...prLabels].filter(label => !label.startsWith('review:'));
+    const nextLabels = withoutReviewLabels([...prLabels]);
     if (!nextLabels.includes('pi:needs-human')) nextLabels.push('pi:needs-human');
     await api(`/issues/${pr.number}/labels`, 'PUT', { labels: nextLabels });
     const marker = `<!-- merge-gate:unsafe-pr:${pr.number} -->`;
@@ -90,8 +91,7 @@ async function processPR(prSummary) {
       });
     }
 
-    const nextLabels = [...prLabels].filter(label => !label.startsWith('review:'));
-    nextLabels.push('review:changes-requested');
+    const nextLabels = withReviewVerdict([...prLabels], 'review:changes-requested');
     await api(`/issues/${pr.number}/labels`, 'PUT', { labels: nextLabels });
     await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', {
       ref: 'dev',
