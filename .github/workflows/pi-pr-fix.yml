@@ -1,36 +1,18 @@
-name: Pi PR Fix
-run-name: "🔧 Repair PR #${{ inputs.pr_number }} ${{ inputs.pr_title && format('· {0}', inputs.pr_title) || '' }}"
+name: Pi PR Fix (manual)
+run-name: "🔧 Manual repair PR #${{ inputs.pr_number }}"
 
 on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Pull request number to repair
+        description: Pull request number to repair manually
         required: true
         type: string
-      pr_title:
-        description: Automatically resolved from the GitHub pull request by the launcher
-        required: false
-        type: string
-      repair_base_sha:
-        description: Exact dev SHA whose status authorized this repair
-        required: true
-        type: string
-      reason:
-        description: Why this repair was requested
-        required: false
-        type: choice
-        options:
-          - review
-          - conflict
-          - integration
-        default: review
 
 permissions:
-  actions: write
   contents: write
-  issues: write
-  pull-requests: write
+  issues: read
+  pull-requests: read
 
 concurrency:
   group: pi-pr-fix-${{ inputs.pr_number }}
@@ -45,357 +27,81 @@ jobs:
     env:
       PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
-      REASON: ${{ inputs.reason || 'review' }}
       PI_PHASE: repair
       PI_BASH_TIMEOUT_SECONDS: '1200'
-      PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS: '3600'
-      PI_REPAIR_MODEL_IDLE_TIMEOUT_SECONDS: '300'
-      PI_REPAIR_STALL_TIMEOUT_SECONDS: '1800'
-      PI_REPAIR_WATCHDOG_POLL_SECONDS: '30'
-      REPAIR_BASE_SHA: ${{ inputs.repair_base_sha }}
     steps:
-      - name: Checkout dev control repository
+      - name: Checkout trusted control repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
           ref: dev
 
-      - name: Initialize Pi usage
-        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
-
-      - name: Load PR metadata
-        id: metadata
+      - name: Load PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          API="https://api.github.com/repos/${REPO}"
-          PR_JSON="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/pulls/${PR}")"
-          BASE_REF="$(jq -r '.base.ref' <<<"$PR_JSON")"
+          PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/pulls/${PR}")"
+          [ "$(jq -r '.state' <<<"$PR_JSON")" = "open" ]
+          [ "$(jq -r '.base.ref' <<<"$PR_JSON")" = "dev" ]
+          [ "$(jq -r '.head.repo.full_name' <<<"$PR_JSON")" = "$REPO" ]
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
           HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
-          BASE_SHA="$REPAIR_BASE_SHA"
-          CURRENT_BASE_SHA="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/git/ref/heads/dev" | jq -r '.object.sha')"
-          if [ "$BASE_SHA" != "$CURRENT_BASE_SHA" ]; then
-            echo "Requested repair base $BASE_SHA is stale; current dev is $CURRENT_BASE_SHA."
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          [[ "$BASE_REF" == "dev" ]]
           [[ "$HEAD_REF" == pi/issue-* ]]
           ISSUE="${HEAD_REF#pi/issue-}"
-          echo "PI_ISSUE=$ISSUE" >> "$GITHUB_ENV"
           echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
-          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
-          if [ "$REASON" = "review" ]; then
-            REVIEW_STATE="$(for page in {1..10}; do batch="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"; printf '%s\n' "$batch"; [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break; done | jq -s -r --arg context "social-mcp/pi-review/${BASE_SHA:0:12}" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
-            if [ "$REVIEW_STATE" != "failure" ]; then
-              echo "PR #${PR} head ${HEAD_SHA} no longer has a failing review status; duplicate repair exits."
-              echo "needed=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          elif [ "$REASON" = "integration" ]; then
-            INTEGRATION_STATE="$(for page in {1..10}; do batch="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"; printf '%s\n' "$batch"; [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break; done | jq -s -r --arg context "social-mcp/integration/${BASE_SHA:0:12}" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
-            if [ "$INTEGRATION_STATE" != "failure" ]; then
-              echo "PR #${PR} no longer has failing integration checks; duplicate repair exits."
-              echo "needed=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          elif [ "$REASON" = "conflict" ]; then
-            CONFLICT_STATE="$(for page in {1..10}; do batch="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"; printf '%s\n' "$batch"; [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break; done | jq -s -r --arg context "social-mcp/integration-conflict/${BASE_SHA:0:12}" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
-            if [ "$CONFLICT_STATE" != "failure" ]; then
-              echo "PR #${PR} no longer has an integration conflict; duplicate repair exits."
-              echo "needed=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          echo "needed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Load review feedback
-        if: steps.metadata.outputs.needed == 'true' && env.REASON == 'review'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          API="https://api.github.com/repos/${REPO}"
-          COMMENTS="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/comments?per_page=100")"
-          FEEDBACK="$(jq -r '[.[] | select(.user.login == "github-actions[bot]") | select((.body // "" | split("\n") | any(.[]; test("^[[:blank:]]*(?:#{1,6}[[:blank:]]+)?REVIEW_RESULT: CHANGES_REQUESTED[[:blank:]]*$"))))] | last | .body // empty' <<<"$COMMENTS")"
-          [ -n "$FEEDBACK" ]
-          printf '%s\n' "$FEEDBACK" > "$RUNNER_TEMP/review-feedback.txt"
-
       - name: Create PR worktree
-        if: steps.metadata.outputs.needed == 'true'
         run: |
           JOB_DIR="$RUNNER_TEMP/social-mcp-fix-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
           git fetch origin "$HEAD_REF"
-          START_REF="$HEAD_SHA"
-          git worktree prune
-          git worktree add -B "$HEAD_REF" "$JOB_DIR" "$START_REF"
+          git worktree add -B "$HEAD_REF" "$JOB_DIR" "$HEAD_SHA"
 
-      - name: Rebase branch onto latest dev
-        if: steps.metadata.outputs.needed == 'true' && env.REASON == 'conflict'
-        id: rebase
-        run: |
-          cd "$JOB_DIR"
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          git fetch origin "$BASE_SHA"
-          test "$(git rev-parse "$BASE_SHA")" = "$BASE_SHA"
-          set +e
-          GIT_EDITOR=true git rebase "$BASE_SHA"
-          status=$?
-          set -e
-          if [ "$status" -eq 0 ]; then
-            echo "conflicted=false" >> "$GITHUB_OUTPUT"
-          else
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicted-files.txt"
-            echo "conflicted=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Prepare Python environment
-        if: steps.metadata.outputs.needed == 'true'
+      - name: Prepare environment
         run: |
           cd "$JOB_DIR"
           python -m venv .venv
           . .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install -e .
-          python -m pip install pytest pytest-asyncio ruff
+          pip install -e . pytest pytest-asyncio ruff
           echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
 
-      - name: Run Pi repair with live progress
-        if: steps.metadata.outputs.needed == 'true' && env.REASON != 'conflict'
+      - name: Run manual repair agent
         run: |
           set -o pipefail
           cd "$JOB_DIR"
+          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session             "Read agents/repair/AGENTS.md. Repair PR #${PR} for issue #${ISSUE}. Work only from the PR branch and current repository evidence. Do not depend on a captured dev SHA, exact-pair status, or pre-merge integration state. Make the smallest correct change, run relevant tests and Ruff, and do not push or modify GitHub state yourself."             | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
-          progress_signature() {
-            {
-              git status --porcelain=v1 --untracked-files=all
-              git diff --no-ext-diff --binary
-              git diff --cached --no-ext-diff --binary
-            } | git hash-object --stdin
-          }
-
-          initial_signature="$(progress_signature)"
-          last_signature="$initial_signature"
-          started_at="$(date +%s)"
-          last_progress_at="$started_at"
-          watchdog_reason_file="$RUNNER_TEMP/pi-repair-watchdog-reason.txt"
-          activity_file="$RUNNER_TEMP/pi-repair-activity.jsonl"
-          : > "$activity_file"
-          rm -f "$watchdog_reason_file"
-
-          (
-            while true; do
-              sleep "$PI_REPAIR_WATCHDOG_POLL_SECONDS"
-              now="$(date +%s)"
-              signature="$(progress_signature)"
-              if [ "$signature" != "$last_signature" ]; then
-                last_signature="$signature"
-                last_progress_at="$now"
-              fi
-
-              active_tool_started_at="$(jq -rs '[.[] | select(.kind == "tool_start")] | last | .at // 0' "$activity_file")"
-              active_tool_ended_at="$(jq -rs '[.[] | select(.kind == "tool_end")] | last | .at // 0' "$activity_file")"
-              last_model_delta_at="$(jq -rs '[.[] | select(.kind == "model_delta")] | last | .at // 0' "$activity_file")"
-              model_is_live=false
-              if [ "$last_model_delta_at" -gt 0 ] && [ $((now * 1000 - last_model_delta_at)) -lt $((PI_REPAIR_MODEL_IDLE_TIMEOUT_SECONDS * 1000)) ]; then
-                model_is_live=true
-              fi
-              tool_is_active=false
-              if [ "$active_tool_started_at" -gt "$active_tool_ended_at" ]; then
-                tool_is_active=true
-              fi
-
-              if [ "$signature" = "$initial_signature" ] && [ $((now - started_at)) -ge "$PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS" ]; then
-                if [ "$model_is_live" = true ] || [ "$tool_is_active" = true ]; then
-                  continue
-                fi
-                printf 'Repair agent made no worktree change within %ss and has no live model/tool activity; stopping likely research loop.\n' "$PI_REPAIR_INITIAL_EDIT_TIMEOUT_SECONDS" > "$watchdog_reason_file"
-                kill -TERM "$PPID" 2>/dev/null || true
-                exit 0
-              fi
-
-              if [ "$signature" != "$initial_signature" ] && [ $((now - last_progress_at)) -ge "$PI_REPAIR_STALL_TIMEOUT_SECONDS" ]; then
-                if [ "$model_is_live" = true ] || [ "$tool_is_active" = true ]; then
-                  continue
-                fi
-                printf 'Repair worktree stopped changing for %ss with no live model/tool activity; stopping stalled agent.\n' "$PI_REPAIR_STALL_TIMEOUT_SECONDS" > "$watchdog_reason_file"
-                kill -TERM "$PPID" 2>/dev/null || true
-                exit 0
-              fi
-            done
-          ) &
-          watchdog_pid=$!
-
-          set +e
-          if [ "$REASON" = "integration" ]; then
-            REPAIR_TASK="Read and follow agents/repair/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. The exact integration of PR head ${HEAD_SHA} with dev base ${BASE_SHA} merges cleanly, but deterministic Integration CI failed. Reproduce the failing repository checks locally (pytest, Ruff, Docker/build checks as relevant), diagnose the actual failure, and make the smallest repository change that makes the exact integration pass. Do not commit, push, or modify GitHub state yourself."
-          else
-            REPAIR_TASK="Read and follow agents/repair/AGENTS.md. You are repairing PR #${PR} for issue #${ISSUE}. Address the blocking reviewer feedback below in the existing working tree. Do not commit, push, or modify GitHub state yourself.
-
-          Reviewer feedback:
-
-          $(cat "$RUNNER_TEMP/review-feedback.txt")"
-          fi
-          PI_ACTIVITY_FILE="$activity_file" pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "$REPAIR_TASK" \
-          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
-          pi_status=${PIPESTATUS[0]}
-          set -e
-
-          kill "$watchdog_pid" 2>/dev/null || true
-          wait "$watchdog_pid" 2>/dev/null || true
-          if [ -s "$watchdog_reason_file" ]; then
-            cat "$watchdog_reason_file" >&2
-            exit 124
-          fi
-          [ "$pi_status" -eq 0 ] || exit "$pi_status"
-          printf '\n'
-
-      - name: Run Pi conflict resolution
-        if: steps.metadata.outputs.needed == 'true' && env.REASON == 'conflict' && steps.rebase.outputs.conflicted == 'true'
-        run: |
-          set -o pipefail
-          cd "$JOB_DIR"
-          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "Read and follow agents/implementer/AGENTS.md. You are rebasing PR #${PR} for issue #${ISSUE} onto the exact integration base ${BASE_SHA} to resolve an actual integration conflict. The rebase left unresolved Git conflicts in these files:
-
-          $(cat "$RUNNER_TEMP/conflicted-files.txt")
-
-          Open each file and resolve every conflict marker so the result compiles and preserves the intent of both this PR's own change and the incoming dev change; do not discard either side wholesale. Stage the resolved files with git add, then continue the rebase with GIT_EDITOR=true git rebase --continue. If another rebase conflict appears, resolve it the same way and continue until the rebase completes. Then run the relevant tests and Ruff. Do not push or modify GitHub state yourself." \
-          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
-          printf '\n'
-
-      - name: Verify repair
-        if: steps.metadata.outputs.needed == 'true'
-        run: |
-          cd "$JOB_DIR"
-          if git grep -Il '^<<<<<<< ' -- . > /dev/null 2>&1; then
-            echo "Unresolved conflict markers remain" >&2
-            exit 1
-          fi
-          if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
-            echo "Rebase is still in progress" >&2
-            exit 1
-          fi
-          if [ "$REASON" = "conflict" ]; then
-            git merge-base --is-ancestor $BASE_SHA HEAD
-            git diff --check $BASE_SHA...HEAD
-          else
-            git diff --check
-          fi
-          pytest
-          ruff check .
-
-      - name: Commit and push repair
-        if: steps.metadata.outputs.needed == 'true'
-        id: changes
+      - name: Verify and publish repair
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd "$JOB_DIR"
+          pytest
+          ruff check .
           rm -rf .venv .pytest_cache .ruff_cache htmlcov build dist
           rm -f .coverage coverage.xml
           find . -type d -name '__pycache__' -prune -exec rm -rf {} +
           git config user.name "social-mcp-pi"
           git config user.email "social-mcp-pi@users.noreply.github.com"
           git add -A
-          if ! git diff --cached --quiet; then
-            if [ "$REASON" = "conflict" ]; then
-              git commit -m "fix: integrate latest dev for issue #${ISSUE}"
-            else
-              if [ "$REASON" = "integration" ]; then
-                git commit -m "fix: repair integration for issue #${ISSUE}"
-              else
-                git commit -m "fix: address review for issue #${ISSUE}"
-              fi
-            fi
-          fi
-          NEW_HEAD="$(git rev-parse HEAD)"
-          if [ "$NEW_HEAD" = "$HEAD_SHA" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          git diff --cached --quiet && { echo "No repair change produced"; exit 1; }
+          git commit -m "fix: repair issue #${ISSUE}"
           CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
-          [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
-          git fetch origin dev
-          CURRENT_BASE="$(git rev-parse origin/dev)"
-          if [ "$CURRENT_BASE" != "$BASE_SHA" ]; then
-            echo "dev moved during repair; refusing to publish work for stale base $BASE_SHA" >&2
-            exit 1
-          fi
-          if [ "$REASON" = "conflict" ]; then
-            git merge-base --is-ancestor "$BASE_SHA" HEAD
-          fi
-          git diff --check
+          [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved; refusing stale push" >&2; exit 1; }
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "HEAD:refs/heads/$HEAD_REF"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Wake merge gate after published repair
-        if: steps.metadata.outputs.needed == 'true' && steps.changes.outputs.changed == 'true'
+      - name: Wake merge gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
-              echo "::warning::Repair was published; reconciler can wake Merge Gate later."
-              exit 0
-            }
-
-      - name: Mark no-change review repair terminal
-        if: steps.metadata.outputs.needed == 'true' && steps.changes.outputs.changed == 'false' && env.REASON == 'review'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair completed without producing a repository change. Human attention is required. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-
-      - name: Report review repair failure
-        if: failure() && steps.metadata.outputs.needed == 'true' && steps.changes.outputs.changed != 'true' && env.REASON == 'review'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed "Automated Pi repair (reason: ${REASON}) did not produce a mergeable, passing PR. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-
-      - name: Finalize repair status
-        if: always() && env.HEAD_SHA != '' && steps.metadata.outputs.needed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          CONTEXT="social-mcp/repair-${REASON}/${BASE_SHA:0:12}"
-          if [ "${{ steps.changes.outputs.changed }}" = "true" ]; then
-            STATE=success
-            DESCRIPTION="Repair produced a new PR head"
-          elif [ "${{ job.status }}" = "success" ]; then
-            STATE=failure
-            DESCRIPTION="Repair produced no repository change"
-          else
-            STATE=error
-            DESCRIPTION="Repair workflow failed"
-          fi
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data "$(jq -nc --arg state "$STATE" --arg context "$CONTEXT" --arg description "$DESCRIPTION" '{state:$state,context:$context,description:$description}')" \
-            "https://api.github.com/repos/${REPO}/statuses/${HEAD_SHA}"
-
-      - name: Summarize Pi usage
-        if: always()
-        run: node "$GITHUB_WORKSPACE/scripts/pi-usage-summary.mjs"
+          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data '{"ref":"dev"}'             "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches"
 
       - name: Clean worktree
         if: always()
         run: |
           set +e
           [ -n "${JOB_DIR:-}" ] && [ -d "$JOB_DIR" ] && git worktree remove --force "$JOB_DIR"
-          rm -f "$RUNNER_TEMP/review-feedback.txt" "$RUNNER_TEMP/conflicted-files.txt"
           git worktree prune
