@@ -17,3 +17,20 @@ In particular, the merge decision must not depend on a captured dev SHA, `integr
 A PR head SHA may still be supplied to GitHub's merge API as normal optimistic concurrency protection. That is not pipeline state.
 
 Prefer GitHub's own merge operation and the ordinary CI run on `dev` over custom synchronization/state. If a new requirement appears, first try to express it as a post-merge `dev` CI check or a simple issue/PR state instead of adding another orchestration layer.
+
+
+## Workflow input rule
+
+Keep `workflow_dispatch` inputs minimal.
+
+A workflow may receive only:
+- the minimal identifier of the object it must operate on, such as `issue_number`, `pr_number`, or a completed `run_id`; or
+- a real user command that cannot be derived from repository state, such as the automation `mode`.
+
+Do not pass derived or duplicated GitHub data between workflows. In particular, do not add titles, branch/base/head SHAs, reasons, labels, status/state snapshots, URLs, or other metadata as workflow inputs when the workflow can load the current value from GitHub using the object identifier.
+
+Prefer this contract:
+
+`object ID / command → workflow loads current GitHub state → workflow acts`
+
+Do not use workflow inputs as a transport layer or as hidden pipeline state. Before adding a new input, first prove that the value cannot be derived safely from GitHub state inside the receiving workflow.
