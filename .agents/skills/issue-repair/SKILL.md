@@ -9,11 +9,12 @@ Use this skill for localized repair work inside an existing PR. Git/GitHub publi
 
 ## Repair loop
 
-1. **State the contract.** Extract only:
+1. **Read the original issue and state the contract.** Treat its title, description, acceptance criteria, and explicit scope as the source of intended behavior. Extract only:
    - expected behavior;
    - actual failing behavior;
    - concrete blocker/error;
-   - affected PR change and directly relevant current `dev` behavior.
+   - directly relevant current `dev` behavior.
+   Inspect the PR diff only if a concrete diagnostic question requires knowing what the PR changed.
 
 2. **Confirm the failure with the cheapest useful evidence.**
    - Prefer an already failing focused test/check or the supplied reviewer/CI evidence.
