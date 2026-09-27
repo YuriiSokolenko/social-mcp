@@ -22,37 +22,46 @@ Never expose credentials or tokens, weaken authentication/authorization, commit 
 
 ## Execution
 
-Read this `agents/implementer/AGENTS.md` before declaring task complexity. Reading this instruction file is the only action allowed before complexity declaration. Do not inspect repository code, run bash/search, load skills, edit files, or perform any implementation work before declaring complexity.
+Follow this startup sequence exactly:
 
-After reading this file, call `declare_task_complexity` before any other work. Choose the smallest correct class:
+1. Read this `agents/implementer/AGENTS.md`.
+2. Read the supplied GitHub issue and identify its concrete acceptance criteria.
+3. Inspect only the current `dev` code directly relevant to those criteria. This is a bounded orientation pass: locate the affected implementation, its immediate collaborators, and existing focused tests only when needed to understand the change.
+   - Do not edit/write files yet.
+   - Do not load skills yet.
+   - Do not inspect broad repository structure merely for orientation.
+   - Do not inspect Git history, dependency branches, abandoned branches, `pi/issue-*` branches, or old implementation commits.
+   - Dependencies are prerequisites, not implementation scope. If a required dependency is not present in current `dev`, treat that as a concrete blocker instead of researching, reconstructing, or implementing the dependency.
+4. Write a short execution plan based on the issue and the code you just inspected.
+   - The entire plan response must stay within **1000 output tokens**.
+   - Use an ordered list of concrete implementation actions.
+   - The plan is a work checklist, not an architecture document or code/schema/function/class draft.
+   - Include only work required by the current issue: changes, focused tests, and documentation where relevant.
+   - Do not refine the plan in another response unless later repository evidence materially invalidates it.
+5. Call `declare_task_complexity` based on the issue, relevant code, and execution plan. Choose the smallest correct class:
+   - **trivial** — exact tiny edit with explicit content/path and no behavior, architecture, dependency, or security decision.
+   - **normal** — ordinary implementation requiring local code/test context.
+   - **complex** — broad multi-part, architectural, conflict-heavy, or security-sensitive work.
+6. Immediately execute the first plan item. Complexity is descriptive metadata, not permission to keep planning.
 
-- **trivial** — exact tiny edit with explicit content/path and no behavior, architecture, dependency, or security decision.
-- **normal** — ordinary implementation requiring local code/test context.
-- **complex** — broad multi-part, architectural, conflict-heavy, or security-sensitive work.
+Do not modify repository files or perform implementation work before step 5 is complete.
 
-Complexity is a description of **this issue**, not a routing decision. If the issue is **complex**, you still own and implement **this same issue** to completion. Do not switch into an architect/planning-only role, stop after producing a design, defer the implementation merely because it is complex, or substitute a breakdown of the issue for repository changes. Complexity may require more implementation steps and targeted investigation, but the goal remains a completed implementation followed by `submit_result`.
+Complexity is a description of **this issue**, not a routing decision. If the issue is **complex**, you still own and implement **this same issue** to completion. Do not switch into an architect/planning-only role, stop after producing a design, defer implementation merely because it is complex, or substitute a breakdown for repository changes.
 
-Then follow this sequence:
+During execution:
 
-1. Read the issue and identify its concrete acceptance criteria.
-2. For **normal** and **complex** work, create a short execution plan as an ordered list of concrete actions needed to complete this issue. The number of steps should follow the task naturally; do not force an arbitrary minimum or maximum.
-   - The plan is a work checklist, not an architecture document or implementation draft.
-   - State what must be inspected, changed, tested, and documented where relevant, but do not design functions/classes/schema/code in prose.
-   - Every plan item must contribute directly to completing the current issue.
-   - After writing the plan, immediately begin executing the first item. Do not spend another response refining or explaining the plan.
-   - Update the remaining plan only when repository evidence materially changes what must be done. Do not restart planning from scratch.
-3. Inspect only the context needed for the current plan item and next implementation decision.
-4. Make the first relevant edit promptly. Do not keep exploring once the required change is clear.
-   - The moment you can describe a concrete code change, file addition, function, class, schema, or test you intend to implement, stop drafting it in reasoning and make that change with `edit`/`write` in the next tool action.
-   - Do not spend a response designing implementation code in prose that could instead be written to the repository. Brief reasoning is for choosing the next action, not for rehearsing the change.
-   - After two consecutive inspection/reasoning turns without a repository edit, explicitly decide either (a) what one specific missing fact blocks the current plan item and inspect only that fact, or (b) make the edit now. Do not restart or repeat the design.
-5. Complete the plan item, then move directly to the next one. Add/update tests only when executable behavior changes; do not manufacture tests for exact static artifacts.
-6. Run only focused checks that add useful signal while implementing.
-7. When every required plan item is complete, call `submit_result` as soon as the implementation is ready.
+- Inspect only the context needed for the current plan item and next implementation decision.
+- Make the first relevant edit promptly. The moment you can describe a concrete code change, file addition, function, class, schema, or test, stop drafting it in reasoning and use `edit`/`write`.
+- Do not rehearse implementation code in prose. Brief reasoning chooses the next action; repository edits express implementation.
+- After two consecutive inspection/reasoning turns without a repository edit, either identify one specific missing fact and inspect only that fact, or edit now. Do not restart or repeat the design.
+- Complete the current plan item, then move directly to the next one.
+- Add/update tests only when executable behavior changes; do not manufacture tests for exact static artifacts.
+- Run only focused checks that add useful signal while implementing.
+- When every required plan item is complete, call `submit_result` promptly.
 
-For **trivial** work, skip the explicit plan and use the fast path: inspect the target/immediate context once, make the exact change, optionally perform one focused check if useful, then submit. Do not inspect broad repository structure, Git history/internals, unrelated configuration, documentation, or skills merely for thoroughness.
+For an exact trivial task, the startup sequence still applies, but the plan can be a single concise action. After complexity declaration, inspect only any remaining immediate context, make the exact change, optionally perform one focused check, then submit.
 
-For normal/complex work, the plan controls execution but does not grant permission for broad exploration. Expand context only as required by the current plan item and an actual implementation decision. Prefer existing project patterns and completed work in `dev`; do not pull future or related issue scope into the current task.
+The plan controls execution but does not grant permission for broad exploration. Prefer existing project patterns and completed work already present in current `dev`; do not pull future or related issue scope into the current task.
 
 If the issue is ambiguous or internally contradictory, do not invent scope. Use the smallest interpretation supported by the acceptance criteria; if no safe interpretation exists, report the concrete blocker through the result path.
 
