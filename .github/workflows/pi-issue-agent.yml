@@ -74,22 +74,22 @@ jobs:
           rm -rf "$JOB_DIR"
           git fetch origin dev
           START_REF=origin/dev
-          BASE_SHA="$(git rev-parse origin/dev)"
+          START_COMMIT="$(git rev-parse origin/dev)"
           CHECKPOINT="pi/issue-${ISSUE}-checkpoint"
           CHECKPOINT_REMOTE="$(git ls-remote origin "refs/heads/${CHECKPOINT}" | awk '{print $1}')"
           echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_REMOTE}" >> "$GITHUB_ENV"
           if [ -n "$CHECKPOINT_REMOTE" ]; then
             git fetch origin "${CHECKPOINT}:refs/remotes/origin/${CHECKPOINT}"
             START_REF="refs/remotes/origin/${CHECKPOINT}"
-            BASE_SHA="$(git rev-parse "${START_REF}^")"
+            START_COMMIT="$(git rev-parse "${START_REF}^")"
             echo "Resuming issue #${ISSUE} from its checkpoint"
           elif git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}" >/dev/null; then
             git fetch origin "pi/issue-${ISSUE}:refs/remotes/origin/pi/issue-${ISSUE}"
             START_REF="refs/remotes/origin/pi/issue-${ISSUE}"
-            BASE_SHA="$(git rev-parse "${START_REF}^")"
+            START_COMMIT="$(git rev-parse "${START_REF}^")"
             echo "Resuming issue #${ISSUE} from its PR branch"
           fi
-          echo "PI_IMPLEMENTER_BASE_SHA=${BASE_SHA}" >> "$GITHUB_ENV"
+          echo "PI_IMPLEMENTER_START_COMMIT=${START_COMMIT}" >> "$GITHUB_ENV"
           git worktree prune
           git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" "$START_REF"
           echo "Temporary worktree: $JOB_DIR"
@@ -182,13 +182,12 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "feat: implement issue #${ISSUE}"
           fi
-          if git diff --quiet "${PI_IMPLEMENTER_BASE_SHA}"...HEAD; then
+          if git diff --quiet "${PI_IMPLEMENTER_START_COMMIT}"...HEAD; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Checkpoint exactly what the implementer produced. Do not integrate
-          # latest dev here; the merge gate validates the eventual dev+PR tree.
-          START_BASE="${PI_IMPLEMENTER_BASE_SHA}"
+          # Checkpoint exactly what the implementer produced.
+          START_BASE="${PI_IMPLEMENTER_START_COMMIT}"
           if git diff --name-only "$START_BASE"...HEAD | grep -q '^\.github/workflows/'; then
             echo "Implementer attempted to modify .github/workflows; refusing unsafe checkpoint" >&2
             exit 1
@@ -254,7 +253,7 @@ jobs:
           CHANGES="$(jq -r 'if (.changes // []) | length > 0 then (.changes | map("- " + .) | join("\n")) else "- See the diff for implementation details." end' "$RESULT_FILE")"
           SECURITY="$(jq -r '.security_notes // ""' "$RESULT_FILE")"
           LIMITATIONS="$(jq -r '.limitations // ""' "$RESULT_FILE")"
-          TESTS="- pytest: passed\n- ruff check .: passed\n- git diff --check: passed\n- Final dev+PR integration is validated separately by Merge Gate CI before merge."
+          TESTS="- pytest: passed\n- ruff check .: passed\n- git diff --check: passed\n- The merged result is validated by the normal CI run on dev after merge."
           BODY="$(printf '## Summary\n%s\n\n## Changes\n%b\n\n## Security\n%s\n\n## Validation\n%b\n\n## Known limitations\n%s\n\nCloses #%s\n' "$SUMMARY" "$CHANGES" "${SECURITY:-No special security impact identified.}" "$TESTS" "${LIMITATIONS:-None identified.}" "$ISSUE")"
 
           if [ -z "$PR_NUMBER" ]; then
