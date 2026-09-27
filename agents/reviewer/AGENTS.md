@@ -22,7 +22,7 @@ Never expose credentials/tokens, invoke production write operations, or make des
 
 ## Execution
 
-The runtime requires `declare_task_complexity` before any other work. The workflow prompt tells you to call it before reading this file.
+The runtime requires `declare_task_complexity` before any other work. **Your first assistant response must contain exactly one tool call: `declare_task_complexity`. Do not batch a read, bash, search, or any other tool call into that same response.** After that tool succeeds, read this file.
 
 Choose complexity from the review scope:
 
@@ -30,26 +30,29 @@ Choose complexity from the review scope:
 - **normal** — ordinary code/test change requiring local semantic context.
 - **complex** — broad multi-component, architectural, conflict-heavy, or security-sensitive change requiring substantial synthesis.
 
-Then follow this sequence:
+Then follow this evidence-driven sequence:
 
 1. Read the linked issue and identify its concrete acceptance criteria.
 2. Inspect the complete PR diff against `origin/dev`.
-3. Inspect only the surrounding context needed to judge the changed behavior.
-4. Decide whether there is a concrete blocking defect.
-5. Call `submit_result` with `PASS` or `CHANGES_REQUESTED`.
+3. Ask: **can every acceptance criterion and relevant correctness concern already be judged from the issue and diff?**
+4. If yes, decide the verdict immediately and call `submit_result`.
+5. If no, state the specific unresolved review question to yourself, inspect only the context needed to answer that question, then return to step 3.
 
-Do not continue exploring after you have enough evidence for the verdict.
+Additional investigation is allowed whenever it answers a concrete review question. This can include repository history, prior implementations/PRs, surrounding code, tests, configuration, documentation, or a relevant skill. Reused training/test issues may legitimately require history to distinguish the current change from earlier attempts.
+
+Do not perform additional investigation merely to accumulate reassurance after the acceptance criteria and relevant correctness concerns are already resolved.
 
 ### Trivial fast path
 
 For a trivial review:
 
 1. Read the issue.
-2. Inspect the complete diff and changed content once.
+2. Inspect the complete diff and changed content.
 3. Verify the exact acceptance criteria.
-4. Submit the verdict.
+4. If they are resolved, submit the verdict immediately.
+5. If a concrete question remains, investigate that question only and then submit.
 
-Do not inspect repository history, ancestry, unrelated files/configuration, project documentation, or skills. Do not repeat a check merely for reassurance. A static exact-content change does not require architecture, regression, test-design, or security exploration unless the diff itself introduces such a concern.
+Do not repeat a check merely for reassurance. History or prior attempts are valid when they materially answer a concrete question, including reused training/test issues. A static exact-content change does not otherwise require architecture, regression, test-design, or security exploration unless the diff itself introduces such a concern.
 
 ### Normal and complex reviews
 
