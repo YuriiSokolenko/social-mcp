@@ -29,10 +29,11 @@ export function toolCallSignature(toolName, input) {
 }
 
 export class LoopGuard {
-  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false }) {
+  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityReadPaths = [] }) {
     this.turnLimit = turnBudget(turnLimit);
     this.repeatThreshold = repeatLimit(repeatThreshold);
     this.requireComplexity = requireComplexity;
+    this.preComplexityReadPaths = new Set(preComplexityReadPaths);
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
     this.seen = new Map();
@@ -56,7 +57,12 @@ export class LoopGuard {
   checkToolCall(toolName, input) {
     if (toolName === 'declare_task_complexity') return undefined;
     if (this.requireComplexity && !this.complexity) {
-      return { block: true, reason: 'Declare task complexity first with declare_task_complexity (trivial, normal, or complex) before using other tools.' };
+      const requestedPath = typeof input?.path === 'string' ? input.path : '';
+      const allowedContractRead = toolName === 'read'
+        && [...this.preComplexityReadPaths].some((allowedPath) => requestedPath === allowedPath || requestedPath.endsWith(`/${allowedPath}`));
+      if (!allowedContractRead) {
+        return { block: true, reason: 'Read the allowed operating contract, then declare task complexity with declare_task_complexity (trivial, normal, or complex) before using other tools.' };
+      }
     }
     if (this.absoluteTurn >= this.turnLimit) {
       return { block: true, reason: `Global execution limit reached (${this.turnLimit} turns). Stop investigating and finish with the available evidence.` };
