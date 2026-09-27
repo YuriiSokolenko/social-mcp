@@ -1,5 +1,5 @@
 name: Pi PR Review
-run-name: "🔬 Review PR #${{ inputs.pr_number }}"
+run-name: "🔬 Review PR #${{ inputs.pr_number || github.event.pull_request.number }}"
 
 on:
   workflow_dispatch:
@@ -149,15 +149,6 @@ jobs:
           jq -n --argjson labels "$LABELS" '{labels:$labels}' | curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/labels" >/dev/null
           jq -n --arg body "$TEXT" '{body:$body}' | curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/comments" >/dev/null
           echo "VERDICT=$VERDICT" >> "$GITHUB_ENV"
-
-      - name: Restart review after PR head changed
-        if: steps.load.outputs.skip != 'true' && env.HUMAN_GATED != 'true' && (env.STALE_REVIEW == 'true')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
-            --data '{"ref":"dev","inputs":{"pr_number":"'${PR}'"}}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-review.yml/dispatches"
 
       - name: Start PR Fix after changes requested
         if: steps.load.outputs.skip != 'true' && (env.VERDICT == 'CHANGES_REQUESTED')
