@@ -130,3 +130,11 @@ test('Pi usage is isolated from dev and metrics pushes do not run project CI', (
   assert.doesNotMatch(collector, /ref=dev/);
   assert.match(ci, /push:\n\s+branches: \[dev\]/);
 });
+
+
+test('merge gate has permission for its late-conflict PR Fix dispatch', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  assert.match(workflow, /permissions:\n(?:\s+.*\n)*?\s+actions: write/);
+});
