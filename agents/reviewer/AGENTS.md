@@ -148,4 +148,4 @@ Every session starts at **SHORT (2048)**.
 - **NORMAL / 4096** — ordinary local semantic reasoning.
 - **DEEP / 8192** — difficult debugging/synthesis or broad architectural/security reasoning.
 
-Use `set_response_budget` only when the next response genuinely needs more room and choose the smallest sufficient level. Review complexity does not imply response size. DEEP is an absolute ceiling, not the default for complex reviews.
+Use `set_response_budget` only when the next response genuinely needs more room and choose the smallest sufficient level. Review complexity does not imply response size. DEEP is an absolute ceiling, not the default for complex reviews. If a response reaches its full token ceiling, the shared runtime promotes exactly the next response one level (SHORT → NORMAL → DEEP). Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.
