@@ -1,3 +1,11 @@
+/**
+ * Shared deterministic timeout policy for model-issued shell commands.
+ *
+ * This is safety/operational policy, not agent reasoning. Centralizing it keeps
+ * every model stage under the same command-time budget and avoids prompt-only
+ * enforcement.
+ */
+
 // Pi's bash tool has an optional timeout, but no default. Always supply a
 // bounded value, even when the model omits it or requests a longer one.
 export function bashTimeout(requested, limit) {
