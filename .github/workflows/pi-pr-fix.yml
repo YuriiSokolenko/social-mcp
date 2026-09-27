@@ -12,6 +12,10 @@ on:
         description: Automatically resolved from the GitHub pull request by the launcher
         required: false
         type: string
+      repair_base_sha:
+        description: Exact dev SHA whose status authorized this repair
+        required: true
+        type: string
       reason:
         description: Why this repair was requested
         required: false
@@ -30,7 +34,6 @@ permissions:
 
 concurrency:
   group: pi-pr-fix-${{ inputs.pr_number }}
-  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -48,6 +51,7 @@ jobs:
       PI_REPAIR_MODEL_IDLE_TIMEOUT_SECONDS: '300'
       PI_REPAIR_STALL_TIMEOUT_SECONDS: '1800'
       PI_REPAIR_WATCHDOG_POLL_SECONDS: '30'
+      REPAIR_BASE_SHA: ${{ inputs.repair_base_sha }}
     steps:
       - name: Checkout dev control repository
         uses: actions/checkout@v5
@@ -69,7 +73,13 @@ jobs:
           BASE_REF="$(jq -r '.base.ref' <<<"$PR_JSON")"
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
           HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
-          BASE_SHA="$(jq -r '.base.sha' <<<"$PR_JSON")"
+          BASE_SHA="$REPAIR_BASE_SHA"
+          CURRENT_BASE_SHA="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/git/ref/heads/dev" | jq -r '.object.sha')"
+          if [ "$BASE_SHA" != "$CURRENT_BASE_SHA" ]; then
+            echo "Requested repair base $BASE_SHA is stale; current dev is $CURRENT_BASE_SHA."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           [[ "$BASE_REF" == "dev" ]]
           [[ "$HEAD_REF" == pi/issue-* ]]
           ISSUE="${HEAD_REF#pi/issue-}"
