@@ -52,30 +52,11 @@ test('published PR state is durable before merge-gate wake', () => {
   assert.match(workflow, /if: failure\(\) && steps\.pr\.outputs\.number == ''/);
 });
 
-test('merge gate owns exact-pair integration, review, repair, and merge scheduling', () => {
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.match(gate, /social-mcp\/integration\//);
-  assert.match(gate, /'pi-pr-review\.yml'/);
-  assert.match(gate, /'pi-pr-fix\.yml'/);
-  assert.match(gate, /\/pulls\/\$\{pr\.number\}\/merge/);
-});
 
-test('review state is SHA/base-bound commit status, not review labels', () => {
-  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
-  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  assert.match(transition, /social-mcp\/pi-review\/\$\{baseSha\.slice\(0, 12\)\}/);
-  assert.match(review, /social-mcp\/pi-review\/\$\{BASE_SHA:0:12\}/);
-  assert.doesNotMatch(review, /review:(?:ready|running|passed|changes-requested|failed)/);
-});
 
-test('repair keeps PR ownership and records terminal outcome in pair-bound statuses', () => {
-  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  assert.match(repair, /Mark no-change review repair terminal/);
-  assert.doesNotMatch(repair, /pi-transition\.mjs" issue needs-human/);
-  assert.match(repair, /steps\.changes\.outputs\.changed == 'false'/);
-  assert.match(repair, /social-mcp\/repair-\$\{REASON\}/);
-  assert.match(repair, /pi-auto-merge\.yml\/dispatches/);
-});
+
+
+
 
 test('issue state family is intentionally small', () => {
   const source = fs.readFileSync('scripts/pi-state-machine.mjs', 'utf8');
@@ -86,11 +67,7 @@ test('issue state family is intentionally small', () => {
 });
 
 
-test('non-review repair failures cannot overwrite review status', () => {
-  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  assert.match(repair, /name: Report review repair failure[\s\S]*env\.REASON == 'review'/);
-  assert.match(repair, /social-mcp\/repair-\$\{REASON\}/);
-});
+
 
 
 test('architect and reconciler contain no removed terminal-state machinery', () => {
@@ -101,27 +78,13 @@ test('architect and reconciler contain no removed terminal-state machinery', () 
 });
 
 
-test('stale repair dispatch exits without mutating pair status or running repair stages', () => {
-  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  assert.match(repair, /id: metadata/);
-  assert.match(repair, /needed=false/);
-  assert.match(repair, /Finalize repair status[\s\S]*steps\.metadata\.outputs\.needed == 'true'/);
-  assert.match(repair, /Commit and push repair[\s\S]*steps\.metadata\.outputs\.needed == 'true'/);
-});
 
 
-test('conflict repair validates the exact SHA/base conflict status before work', () => {
-  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  assert.match(repair, /social-mcp\/integration-conflict\/\$\{BASE_SHA:0:12\}/);
-  assert.match(repair, /no longer has an integration conflict/);
-});
 
 
-test('conflict repair never publishes a rebase against a dev base that moved', () => {
-  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  assert.match(repair, /CURRENT_BASE=.*origin\/dev/s);
-  assert.match(repair, /dev moved during conflict repair; refusing to publish a stale rebase/);
-});
+
+
+
 
 
 test('reconciler coalesces merge-gate wake when a gate run is already live', () => {
@@ -163,4 +126,18 @@ test('implementer structured result requires at least one concrete change', () =
 test('reconciler never redispatches a ready implementer when its PR already exists', () => {
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /retryReadyImplementer[\s\S]*!openPiPrIssues\.has\(issue\.number\)/);
+});
+
+
+test('merge gate owns only eligibility and merge; dev CI owns validation', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(gate, /merge_method: 'squash'/);
+  assert.doesNotMatch(gate, /pi-pr-review|pi-pr-fix|social-mcp\/integration|social-mcp\/pi-review|statuses/);
+});
+
+test('manual review and repair contain no captured dev-base state', () => {
+  for (const file of ['pi-pr-review.yml', 'pi-pr-fix.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${file}`, 'utf8');
+    assert.doesNotMatch(workflow, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\/integration/);
+  }
 });
