@@ -98,7 +98,7 @@ test('mr-created is only published from running implementation state', () => {
 });
 
 test('PR-owned issue cannot be overwritten by needs-human state', () => {
-  assert.throws(() => validateIssueTransition(issue('open', ['pi:mr-created']), 'needs-human'), /SHA-bound statuses/);
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:mr-created']), 'needs-human'), /published PR ownership/);
   assert.equal(validateIssueTransition(issue('open', ['pi:running']), 'needs-human'), 'pi:needs-human');
 });
 
