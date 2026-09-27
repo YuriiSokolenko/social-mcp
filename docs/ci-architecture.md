@@ -3,8 +3,8 @@
 The control plane intentionally uses a simple contract:
 
 1. Dispatcher routes eligible work.
-2. Implementer produces a verified PR.
-3. Reviewer independently approves it or requests changes.
+2. Implementer integrates the latest `dev` in its live session, resolves conflicts, validates the result, and produces a verified PR.
+3. Reviewer runs deterministic checks on the exact PR HEAD and independently approves that same HEAD or requests changes.
 4. Merge Gate validates basic ownership/safety and attempts a GitHub squash merge.
 5. Ordinary `push` CI tests the resulting `dev` commit.
 6. Green post-merge CI wakes Merge Gate for the next ready PR; red CI stops the merge sequence.
@@ -38,9 +38,9 @@ Normal wake sources are readiness change -> Dispatcher, successful review -> Mer
 
 ## Merge conflict rule
 
-Merge Gate simply attempts the merge. If GitHub reports a conflict, record the blocked condition and stop the queue without failing Merge Gate.
+Merge Gate simply attempts the merge. If GitHub reports a late conflict, it removes the now-stale `review:*` verdict, dispatches PR Fix, and stops the queue without failing Merge Gate.
 
-Do not add mergeability polling, dev-SHA synchronization, synthetic integration, or branch-update machinery to Merge Gate. Conflict resolution, when requested, belongs outside the merge decision itself.
+PR Fix—not Merge Gate—integrates current `dev`. Its live repair session resolves any content conflicts, runs deterministic checks, pushes the new PR HEAD, and starts a fresh Reviewer. Do not add mergeability polling, transported dev SHAs, synthetic integration, or conflict-solving code to Merge Gate.
 
 ## Post-merge CI rule
 
