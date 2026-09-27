@@ -80,6 +80,10 @@ Allowed: `workflow -> read current SHA -> use locally for one atomic operation`.
 
 Once that operation finishes, the SHA has no orchestration meaning.
 
+## Agent control-plane boundary
+
+The CI control plane is not agent-editable. No Pi agent may create, edit, delete, rename, review, repair, or auto-merge changes under `.github/workflows/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`. Trusted tooling enforces this independently of prompts. Control-plane maintenance is performed only through the trusted human/direct-`dev` path.
+
 ## Trusted control-plane rule
 
 All control-plane workflows execute orchestration scripts from an explicit trusted checkout of `dev`, including Architect, Merge Gate, Dispatcher, Implementer, PR Fix, PR Review, Reconciler, Triage, and Usage collection.
