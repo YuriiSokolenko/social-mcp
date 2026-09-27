@@ -1,5 +1,5 @@
 import { createBashTool } from '@earendil-works/pi-coding-agent';
-import { bashTimeout, registerTimedBash } from './pi-bash-timeout-policy.mjs';
+import { bashTimeout, registerTimedBash } from './pi-common/bash-timeout-policy.mjs';
 
 // Loaded explicitly from the trusted dev checkout by each Pi workflow.
 // The built-in bash executor already kills its entire process tree on timeout.
