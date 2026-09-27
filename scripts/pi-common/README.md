@@ -12,7 +12,7 @@ Keeping those rules here gives us one implementation to test and one place to ex
 
 A module belongs here only when the same trusted rule is useful to more than one pipeline stage and has no agent-specific decision logic.
 
-- `github-api.mjs` — authenticated repository API + complete pagination + tiny shared PR/label/comment/workflow-dispatch primitives; this is the only place that should spell those repeated REST routes.
+- `github-api.mjs` — authenticated repository API + complete pagination + tiny shared issue/PR/label/comment/workflow-dispatch/workflow-run/ref primitives; this is the only place that should spell those repeated REST routes.
 - `github-state.mjs` — compare-and-swap style label/state replacement.
 - `state-machine.mjs` — canonical issue pipeline labels and legal transitions.
 - `task-metadata.mjs` — canonical GitHub issue task metadata parser/writer.
@@ -29,6 +29,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `review-state.mjs` — owns stale/human/HEAD rechecks, review verdict publication, comments, and Reviewer handoff dispatches.
 - `repair-publication.mjs` — owns safe PR Fix publication and the single handoff back to a fresh Reviewer.
 - `automation-control.mjs` — owns RUNNING/DRAINING/PAUSED variable mutation; RUNNING wakes only Dispatcher, never Reconciler.
+- `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow wakes; it keeps authenticated REST and the trusted `dev` ref out of YAML.
 
 ## What does NOT belong here
 
@@ -39,5 +40,3 @@ Dispatcher classification, Architect decomposition, Reviewer verdict parsing, re
 These files are part of the CI control plane. Pi agents have no permission to modify them. They are protected by `control-plane-policy.mjs` through the `scripts/pi-*` boundary because this directory itself is under `scripts/pi-common/**`.
 
 Prefer a small explicit helper with comments and tests over copying shell/API logic into multiple workflows.
-
-- `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow dispatches; keeps authenticated REST and the trusted `dev` ref out of YAML.
