@@ -454,7 +454,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.ok(workflow.includes('PI_ISSUE=$(jq -r \'.issue\' "$CONTEXT")'));
-  assert.match(workflow, /use trivial for a tiny self-contained diff/);
+  assert.match(workflow, /trivial for a tiny self-contained diff/);
   assert.match(workflow, /do not rerun pytest, Ruff, or git diff --check/);
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /History or prior attempts are valid when they materially answer a concrete question/);
