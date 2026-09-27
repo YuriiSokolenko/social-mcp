@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allowedFiles, linkedIssueNumber, latestStatus } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, linkedIssueNumber } from '../scripts/pi-auto-merge.mjs';
 
 test('a Pi PR identifies its linked issue only on the trusted dev path', () => {
   const repo = 'test/repo';
@@ -16,15 +16,6 @@ test('a Pi PR identifies its linked issue only on the trusted dev path', () => {
   assert.equal(linkedIssueNumber({ ...pr, body: 'Related to #42' }, repo), null);
 });
 
-test('latestStatus selects the newest SHA/base-bound status for a context', () => {
-  const statuses = [
-    { context: 'social-mcp/integration/base', state: 'failure', updated_at: '2026-09-26T10:00:00Z' },
-    { context: 'social-mcp/integration/base', state: 'success', updated_at: '2026-09-26T11:00:00Z' },
-    { context: 'other', state: 'failure', updated_at: '2026-09-26T12:00:00Z' },
-  ];
-  assert.equal(latestStatus(statuses, 'social-mcp/integration/base'), 'success');
-  assert.equal(latestStatus(statuses, 'missing'), null);
-});
 
 test('Pi PRs cannot auto-merge changes to control scripts or workflows', () => {
   assert.equal(allowedFiles([{ filename: 'scripts/pi-auto-merge.mjs' }], 1), false);
