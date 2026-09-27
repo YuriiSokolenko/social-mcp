@@ -259,8 +259,10 @@ test('PR head changes invalidate verdict without creating a second review schedu
   assert.match(review, /pull_request:[\s\S]*types: \[synchronize\]/);
   assert.match(review, /Invalidate stale review verdict[\s\S]*select\(startswith\("review:"\) \| not\)/);
   assert.match(review, /review:\n    if: github\.event_name == 'workflow_dispatch'/);
+  assert.match(review, /run-name: "🔬 Review PR #\$\{\{ inputs\.pr_number \|\| github\.event\.pull_request\.number \}\}"/);
   const invalidate = review.slice(review.indexOf('  invalidate:'), review.indexOf('  review:'));
   assert.doesNotMatch(invalidate, /pi-pr-review\.yml\/dispatches/);
+  assert.doesNotMatch(review, /Restart review after PR head changed/);
 });
 
 
