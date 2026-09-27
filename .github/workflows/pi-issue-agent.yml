@@ -99,7 +99,7 @@ jobs:
           ISSUE_BODY="$(jq -r '.body' "$PI_ISSUE_CONTEXT")"
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
-          Your first assistant response MUST contain exactly one tool call: declare_task_complexity. Do not call read, bash, search, edit, or any other tool in that same response. Classify the supplied issue as trivial for an exact tiny edit with no behavior/design decision; normal for ordinary implementation; complex for broad architectural or multi-part work. After that declaration succeeds, read and follow agents/implementer/AGENTS.md.
+          First read and follow agents/implementer/AGENTS.md. Reading that operating contract is the only action allowed before complexity declaration. After reading it, call declare_task_complexity before any repository inspection or implementation work. Classify and execute the supplied issue according to AGENTS.md; a complex classification still means you implement this same issue to completion.
 
           You are implementing GitHub issue #${ISSUE_NUMBER} in the current repository.
 
