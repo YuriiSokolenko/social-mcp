@@ -7,7 +7,7 @@ import { replaceIssueState } from "./pi-common/github-state.mjs";
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-common/state-machine.mjs";
 import { taskMetadata } from "./pi-common/task-metadata.mjs";
 
-const { api: request, pages, ensureLabel, repo } = githubClient();
+const { api: request, pages, ensureLabel, repo, dispatchWorkflow } = githubClient();
 const api = (endpoint, options = {}) =>
   request(endpoint, options.method ?? "GET", options.body ? JSON.parse(options.body) : undefined);
 function usage() {
@@ -174,9 +174,7 @@ async function main() {
       // dispatcher instead of misclassifying an infrastructure failure as
       // architect/human work.
       try {
-        await api("/actions/workflows/pi-architect.yml/dispatches", {
-          method: "POST", body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
-        });
+        await dispatchWorkflow("pi-architect.yml", { issue_number: String(number) });
       } catch (error) {
         try {
           await transitionIssue(number, "queued");
@@ -191,10 +189,7 @@ async function main() {
 
     await transitionIssue(number, "ready");
     try {
-      await api("/actions/workflows/pi-issue-agent.yml/dispatches", {
-        method: "POST",
-        body: JSON.stringify({ ref: "dev", inputs: { issue_number: String(number) } }),
-      });
+      await dispatchWorkflow("pi-issue-agent.yml", { issue_number: String(number) });
     } catch (error) {
       try {
         await transitionIssue(number, "queued");
