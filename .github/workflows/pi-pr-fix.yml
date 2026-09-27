@@ -39,6 +39,7 @@ jobs:
           ref: dev
 
       - name: Load PR
+        id: load
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -48,6 +49,7 @@ jobs:
           [ "$(jq -r '.head.repo.full_name' <<<"$PR_JSON")" = "$REPO" ]
           if jq -e '[.labels[].name] | index("pi:needs-human") != null' <<<"$PR_JSON" >/dev/null; then
             echo "PR #${PR} requires human attention; skipping automation"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
@@ -59,6 +61,7 @@ jobs:
           echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
       - name: Create PR worktree
+        if: steps.load.outputs.skip != 'true'
         run: |
           JOB_DIR="$RUNNER_TEMP/social-mcp-fix-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
@@ -66,6 +69,7 @@ jobs:
           git worktree add -B "$HEAD_REF" "$JOB_DIR" "$HEAD_SHA"
 
       - name: Prepare environment
+        if: steps.load.outputs.skip != 'true'
         run: |
           cd "$JOB_DIR"
           python -m venv .venv
@@ -74,12 +78,14 @@ jobs:
           echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run repair agent
+        if: steps.load.outputs.skip != 'true'
         run: |
           set -o pipefail
           cd "$JOB_DIR"
           pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-repair-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session             "Read agents/repair/AGENTS.md. Repair PR #${PR} for issue #${ISSUE}. Work only from the PR branch and current repository evidence. Make the smallest correct change. Finish by calling submit_repair; it integrates current dev and validates the final tree. If it reports merge conflicts or failing checks, resolve them in this same session and retry submit_repair until it succeeds. Do not push or modify GitHub state yourself."             | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
       - name: Verify and publish repair
+        if: steps.load.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -98,6 +104,7 @@ jobs:
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' push --force-with-lease=refs/heads/$HEAD_REF:$HEAD_SHA origin "HEAD:refs/heads/$HEAD_REF"
 
       - name: Start fresh review
+        if: steps.load.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
