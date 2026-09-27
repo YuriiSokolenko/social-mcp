@@ -1,11 +1,11 @@
-name: Pi PR Fix (manual)
-run-name: "🔧 Manual repair PR #${{ inputs.pr_number }}"
+name: Pi PR Fix
+run-name: "🔧 Repair PR #${{ inputs.pr_number }}"
 
 on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Pull request number to repair manually
+        description: Pull request number to repair
         required: true
         type: number
 
@@ -69,7 +69,7 @@ jobs:
           pip install -e . pytest pytest-asyncio ruff
           echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
 
-      - name: Run manual repair agent
+      - name: Run repair agent
         run: |
           set -o pipefail
           cd "$JOB_DIR"
