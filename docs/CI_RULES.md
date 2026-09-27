@@ -88,7 +88,7 @@ If GitHub reports a merge conflict, Merge Gate invalidates the stale review verd
 
 ## Post-merge CI
 
-The authoritative integration check is CI on the actual merged `dev` commit.
+The authoritative integration check is CI on the actual merged `dev` commit. That CI runs Ruff, pytest, Node control-plane contract tests, runner-autoscaler tests, and an isolated Docker Compose integration test before the merge queue may continue.
 
 ```text
 merge PR -> push dev -> CI
@@ -148,7 +148,7 @@ Do not add complexity solely for a hypothetical race that GitHub's atomic API op
 
 ## Shared trusted CI helpers
 
-Reusable control-plane primitives live in `scripts/pi-common/`. Workflow YAML is orchestration only: checkout trusted `dev`, invoke a stage/helper, run the model when required, publish, and clean up. Do not duplicate GitHub REST pagination, pipeline-state mutation, control-plane path policy, PR pre-model gates, product validation, or reusable safety policy in multiple workflows.
+Reusable control-plane primitives live in `scripts/pi-common/`. Workflow YAML is orchestration only: checkout trusted `dev`, invoke a stage/helper, run the model when required, publish, and clean up. Do not duplicate GitHub REST pagination, pipeline-state mutation, control-plane path policy, PR pre-model gates, product validation, or reusable safety policy in multiple workflows. Repeated GitHub REST routes belong in `github-api.mjs`; YAML must not implement them with inline `curl`. No-input workflow wakes use `workflow-dispatch.mjs`, which always dispatches the trusted `dev` workflow definition.
 
 `scripts/pi-common/README.md` documents every shared helper and the boundary for adding new ones. Stage-specific decisions remain in their existing `scripts/pi-*.mjs` files; the common directory must not become a generic framework.
 
