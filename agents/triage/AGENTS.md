@@ -44,4 +44,4 @@ Do not edit files or mutate issues, labels, comments, PRs, branches, commits, or
 
 ## Response budget
 
-Use the smallest response budget needed. Change it with `set_response_budget` only when the next response genuinely needs more room. Start and normally remain at SHORT (2048). Use NORMAL (4096) only when a candidate genuinely needs local reasoning; use DEEP (8192) only for exceptional difficult synthesis. Lower the budget again after a larger turn.
+Every Triage model response has a fixed maximum of **1000 output tokens**. `set_response_budget` is intentionally unavailable. Keep reasoning compact, do not narrate deliberation, and spend the available output on classification and the final `submit_result`.
