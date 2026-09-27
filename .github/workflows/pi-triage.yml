@@ -26,6 +26,7 @@ jobs:
       REPO: ${{ github.repository }}
       PI_BASH_TIMEOUT_SECONDS: '600'
       PI_TRIAGE_BATCH_SIZE: '8'
+      PI_REQUIRED_FIRST_READ_PATH: 'agents/triage/AGENTS.md'
 
     steps:
       - name: Checkout trusted dev
@@ -64,6 +65,7 @@ jobs:
           EOF
           pi \
             --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-triage-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
