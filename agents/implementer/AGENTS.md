@@ -35,14 +35,19 @@ Follow this startup sequence exactly:
 4. Write a short execution plan based on the issue and the code you just inspected.
    - The entire plan response must stay within **1000 output tokens**.
    - Use an ordered list of concrete implementation actions.
+   - Assign each plan item its own complexity: **trivial**, **normal**, or **complex**, using the same definitions as task complexity below.
    - The plan is a work checklist, not an architecture document or code/schema/function/class draft.
    - Include only work required by the current issue: changes, focused tests, and documentation where relevant.
-   - Do not refine the plan in another response unless later repository evidence materially invalidates it.
+   - Do not refine the top-level plan in another response unless later repository evidence materially invalidates it.
 5. Call `declare_task_complexity` based on the issue, relevant code, and execution plan. Choose the smallest correct class:
    - **trivial** — exact tiny edit with explicit content/path and no behavior, architecture, dependency, or security decision.
    - **normal** — ordinary implementation requiring local code/test context.
    - **complex** — broad multi-part, architectural, conflict-heavy, or security-sensitive work.
 6. Immediately execute the first plan item. Complexity is descriptive metadata, not permission to keep planning.
+   - **trivial item** — execute directly; no subplan.
+   - **normal item** — execute directly from the top-level plan. Use brief local reasoning only when needed for the next concrete action; do not create a formal subplan.
+   - **complex item** — before editing that item, create exactly one short local subplan for that item only: at most 5 concrete sub-items and at most 500 output tokens. Then immediately execute its first sub-item.
+   - Subplans have no further complexity classification and must never be recursively decomposed. There is only one allowed hierarchy: issue → plan item → optional complex-item subplan.
 
 Do not modify repository files or perform implementation work before step 5 is complete.
 
@@ -50,6 +55,9 @@ Complexity is a description of **this issue**, not a routing decision. If the is
 
 During execution:
 
+- Work on exactly one top-level plan item at a time. Its assigned complexity controls only whether it gets a local subplan.
+- For a complex item, create its subplan only when that item becomes current, never upfront for later items. Do not revise or regenerate the subplan unless new repository evidence makes it impossible to execute.
+- Every sub-item must describe a concrete implementation or verification action, not open-ended research, architecture exploration, or another planning step.
 - Inspect only the context needed for the current plan item and next implementation decision.
 - Make the first relevant edit promptly. The moment you can describe a concrete code change, file addition, function, class, schema, or test, stop drafting it in reasoning and use `edit`/`write`.
 - Do not rehearse implementation code in prose. Brief reasoning chooses the next action; repository edits express implementation.
