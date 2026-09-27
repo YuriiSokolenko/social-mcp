@@ -432,21 +432,25 @@ test('every model-driven workflow wires the shared safety extensions exactly onc
 });
 
 test('loop guard is limited to stages that need exploration/task-complexity control', () => {
-  const guarded = new Set(['pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml']);
+  const guarded = new Set(['pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml', 'pi-triage.yml']);
   for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']) {
     const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
     assert.equal(source.includes('pi-loop-guard.mjs'), guarded.has(name), `${name}: unexpected loop-guard wiring`);
   }
 });
 
-test('all agent prompts document the shared response-budget contract', () => {
-  for (const name of ['architect', 'dispatcher', 'implementer', 'repair', 'reviewer', 'triage']) {
+test('agent prompts document their configured response-budget contract', () => {
+  for (const name of ['architect', 'dispatcher', 'implementer', 'repair', 'reviewer']) {
     const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
     assert.match(source, /set_response_budget/);
     assert.match(source, /SHORT[\s\S]*2048/);
     assert.match(source, /NORMAL[\s\S]*4096/);
     assert.match(source, /DEEP[\s\S]*8192/);
   }
+  const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
+  assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
+  assert.match(triage, /`set_response_budget` is intentionally unavailable/);
+  assert.match(fs.readFileSync('.github/workflows/pi-triage.yml', 'utf8'), /PI_FIXED_RESPONSE_MAX_TOKENS: '1000'/);
 });
 
 
@@ -464,19 +468,19 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
 });
 
 
-test('implementer reads its operating contract before declaring complexity', () => {
+test('implementer orients and plans before declaring complexity', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  const read = workflow.indexOf('First read and follow agents/implementer/AGENTS.md');
-  const declare = workflow.indexOf('After reading it, call declare_task_complexity');
-  assert.ok(read >= 0 && declare > read);
-  assert.match(workflow, /Reading that operating contract is the only action allowed before complexity declaration/);
+  assert.match(workflow, /read AGENTS\.md, read this issue, inspect only directly relevant current-dev code, write a short execution plan of at most 1000 output tokens, then call declare_task_complexity/);
+  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
   assert.match(workflow, /a complex classification still means you implement this same issue to completion/);
-  assert.match(agent, /For \*\*trivial\*\* work, skip the explicit plan and use the fast path/);
+  assert.match(agent, /Read `agents\/implementer\/AGENTS\.md`/);
+  assert.match(agent, /Write a short execution plan/);
+  assert.match(agent, /1000 output tokens/);
+  assert.match(agent, /declare_task_complexity/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   assert.doesNotMatch(agent, /Before starting, read `docs\/PROJECT_CONTEXT\.md`/);
 });
-
 
 test('dispatcher stays a narrow scope classifier and does not treat complexity as decomposition', () => {
   const agent = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
