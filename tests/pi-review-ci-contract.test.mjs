@@ -80,3 +80,13 @@ test('review is explicitly bound to the exact dev SHA authorized by merge gate',
   assert.doesNotMatch(review, /BASE_SHA="\$\(jq -r '\.base\.sha'/);
   assert.match(gate, /integration_base_sha: base\.object\.sha/);
 });
+
+
+test('successful direct dev CI wakes merge gate for the new base', () => {
+  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(ci, /wake-merge-gate-after-dev:/);
+  assert.match(ci, /github\.event_name == 'push'/);
+  assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
+  assert.match(ci, /needs\.test\.result == 'success'/);
+  assert.match(ci, /needs\.docker\.result == 'success'/);
+});
