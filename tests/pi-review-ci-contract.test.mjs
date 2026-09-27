@@ -155,3 +155,12 @@ test('pi:needs-human on a PR stops review, repair, and merge automation', () => 
   assert.match(repair, /index\("pi:needs-human"\)/);
   assert.match(merge, /prLabels\.has\('pi:needs-human'\)/);
 });
+
+
+test('manual cancellation returns unpublished agent work to dispatcher instead of needs-human', () => {
+  const implementer = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const architect = fs.readFileSync('.github/workflows/pi-architect.yml', 'utf8');
+  assert.match(implementer, /if: cancelled\(\) && steps\.pr\.outputs\.number == ''[\s\S]*?pi-transition\.mjs" issue queued/);
+  assert.match(architect, /if: cancelled\(\)[\s\S]*?pi-transition\.mjs" issue queued/);
+  assert.doesNotMatch(implementer, /if: cancelled\(\) && steps\.pr\.outputs\.number == ''[\s\S]{0,400}?issue needs-human/);
+});
