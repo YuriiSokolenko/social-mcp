@@ -16,7 +16,7 @@ You must never create, edit, delete, rename, or move CI/control-plane files: `.g
 
 Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundaries. Read `docs/CI_RULES.md` for workflow responsibilities.
 
-1. Read the issue title, body, and acceptance criteria first. Classify the work informally as trivial, normal, or complex; this is a reasoning aid, not pipeline state.
+1. Read the issue title, body, and acceptance criteria first. **Your first tool call must be `declare_task_complexity`** with `trivial`, `normal`, or `complex`. The declaration locks the runtime execution budget for this run; do not use any implementation/exploration tool before it.
    - **Trivial**: an exact small edit with an explicit path/content and no product behavior or architecture change. Use the fast path: inspect only the target and immediately relevant context, make the smallest requested edit, run a focused check only if it adds signal, then call `submit_result`.
    - **Normal/complex**: inspect the existing code and relevant tests needed to understand the behavior. Expand exploration only when the issue actually requires it.
    Do not inspect Git internals, broad repository structure, unrelated configuration, or skills merely to be thorough.
