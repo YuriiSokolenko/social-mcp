@@ -70,7 +70,7 @@ test('late merge conflict invalidates review, dispatches PR Fix, and blocks the 
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /merge conflicts/i);
   assert.match(gate, /merge-gate:conflict-pr:\$\{pr\.number\}:\$\{sha\}/);
-  assert.match(gate, /filter\(label => !label\.startsWith\('review:'\)\)/);
+  assert.match(gate, /withoutReviewLabels/);
   assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
   assert.match(gate, /return 'blocked'/);
   assert.match(gate, /if \(await processPR\(pr\)\) break/);
