@@ -35,18 +35,24 @@ Complexity is a description of **this issue**, not a routing decision. If the is
 Then follow this sequence:
 
 1. Read the issue and identify its concrete acceptance criteria.
-2. Inspect only the context needed to make the next implementation decision.
-3. Make the first relevant edit promptly. Do not keep exploring once the required change is clear.
+2. For **normal** and **complex** work, create a short execution plan as an ordered list of concrete actions needed to complete this issue. The number of steps should follow the task naturally; do not force an arbitrary minimum or maximum.
+   - The plan is a work checklist, not an architecture document or implementation draft.
+   - State what must be inspected, changed, tested, and documented where relevant, but do not design functions/classes/schema/code in prose.
+   - Every plan item must contribute directly to completing the current issue.
+   - After writing the plan, immediately begin executing the first item. Do not spend another response refining or explaining the plan.
+   - Update the remaining plan only when repository evidence materially changes what must be done. Do not restart planning from scratch.
+3. Inspect only the context needed for the current plan item and next implementation decision.
+4. Make the first relevant edit promptly. Do not keep exploring once the required change is clear.
    - The moment you can describe a concrete code change, file addition, function, class, schema, or test you intend to implement, stop drafting it in reasoning and make that change with `edit`/`write` in the next tool action.
-   - Do not spend a response designing implementation code in prose that could instead be written to the repository. Brief reasoning is for choosing the next change, not for rehearsing the change.
-   - After two consecutive inspection/reasoning turns without a repository edit, explicitly decide either (a) what specific missing fact blocks editing and inspect only that fact, or (b) make the first edit now. Do not restart or repeat the design.
-4. Add/update tests only when executable behavior changes. Do not manufacture tests for exact static artifacts.
-5. Run only focused checks that add useful signal while editing.
-6. Call `submit_result` as soon as the implementation is ready.
+   - Do not spend a response designing implementation code in prose that could instead be written to the repository. Brief reasoning is for choosing the next action, not for rehearsing the change.
+   - After two consecutive inspection/reasoning turns without a repository edit, explicitly decide either (a) what one specific missing fact blocks the current plan item and inspect only that fact, or (b) make the edit now. Do not restart or repeat the design.
+5. Complete the plan item, then move directly to the next one. Add/update tests only when executable behavior changes; do not manufacture tests for exact static artifacts.
+6. Run only focused checks that add useful signal while implementing.
+7. When every required plan item is complete, call `submit_result` as soon as the implementation is ready.
 
-For **trivial** work, use the fast path: inspect the target/immediate context once, make the exact change, optionally perform one focused check if useful, then submit. Do not inspect broad repository structure, Git history/internals, unrelated configuration, documentation, or skills merely for thoroughness.
+For **trivial** work, skip the explicit plan and use the fast path: inspect the target/immediate context once, make the exact change, optionally perform one focused check if useful, then submit. Do not inspect broad repository structure, Git history/internals, unrelated configuration, documentation, or skills merely for thoroughness.
 
-For normal/complex work, expand context only as required by an actual implementation decision. Prefer existing project patterns and completed work in `dev`; do not pull future or related issue scope into the current task.
+For normal/complex work, the plan controls execution but does not grant permission for broad exploration. Expand context only as required by the current plan item and an actual implementation decision. Prefer existing project patterns and completed work in `dev`; do not pull future or related issue scope into the current task.
 
 If the issue is ambiguous or internally contradictory, do not invent scope. Use the smallest interpretation supported by the acceptance criteria; if no safe interpretation exists, report the concrete blocker through the result path.
 
