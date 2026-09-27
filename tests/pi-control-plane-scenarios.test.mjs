@@ -139,11 +139,10 @@ test('implementer preserves PR ownership when a post-publication step fails or i
 });
 
 
-test('serialized control workflows do not cancel a running execution', () => {
+test('serialized control workflows preserve pending bursts instead of replacing them', () => {
   for (const file of ['pi-auto-merge.yml', 'pi-dispatcher.yml', 'pi-triage.yml', 'pi-reconcile.yml', 'pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml']) {
     const workflow = fs.readFileSync(`.github/workflows/${file}`, 'utf8');
-    assert.match(workflow, /concurrency:[\s\S]*?cancel-in-progress: false/);
-    assert.doesNotMatch(workflow, /^\s*queue:/m);
+    assert.match(workflow, /concurrency:[\s\S]*?queue: max[\s\S]*?cancel-in-progress: false/);
   }
 });
 
