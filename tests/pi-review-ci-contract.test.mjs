@@ -84,9 +84,15 @@ test('review PASS is required before merge gate can merge', () => {
   assert.match(gate, /review:passed/);
 });
 
-test('PR fix integrates latest dev and returns to fresh review', () => {
+test('PR fix resolves current-dev conflicts in the live repair session and returns to fresh review', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  assert.match(workflow, /git fetch origin dev[\s\S]*git merge --no-edit origin\/dev/);
+  const tool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
+  assert.match(workflow, /pi-repair-result-tool\.mjs/);
+  assert.match(tool, /fetch', 'origin', 'dev/);
+  assert.match(tool, /merge', '--no-edit', 'origin\/dev/);
+  assert.match(tool, /PR conflicts with current dev/);
+  assert.match(tool, /pytest/);
+  assert.match(tool, /ruff/);
   assert.match(workflow, /name: Start fresh review/);
   assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
