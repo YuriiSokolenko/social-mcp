@@ -59,8 +59,8 @@ export class LoopGuard {
   checkToolCall(toolName, input) {
     if (!this.requiredFirstReadDone) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
-      const allowed = toolName === 'read' && (requestedPath === this.requiredFirstReadPath || requestedPath.endsWith(`/\${this.requiredFirstReadPath}`));
-      if (!allowed) return { block: true, reason: `First read the required operating contract: \${this.requiredFirstReadPath}` };
+      const allowed = toolName === 'read' && (requestedPath === this.requiredFirstReadPath || requestedPath.endsWith(`/${this.requiredFirstReadPath}`));
+      if (!allowed) return { block: true, reason: `First read the required operating contract: ${this.requiredFirstReadPath}` };
       this.requiredFirstReadDone = true;
     }
     if (toolName === 'declare_task_complexity') return undefined;
