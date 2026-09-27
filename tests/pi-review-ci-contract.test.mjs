@@ -303,6 +303,14 @@ test('issue publication safely replaces only the branch head observed at run sta
   assert.doesNotMatch(publication, /push --set-upstream origin/);
 });
 
+test('issue publication attributes only changes beyond integrated latest dev to the Implementer', () => {
+  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  assert.match(publication, /merge-base','--is-ancestor','origin\/dev','HEAD'/);
+  assert.match(publication, /return integrated \? 'origin\/dev' : startCommit/);
+  assert.match(publication, /diff','--name-only',base,'HEAD'/);
+  assert.doesNotMatch(publication, /diff','--name-only',startCommit,'HEAD'/);
+});
+
 test('issue agent workflow contains no escaped newline artifacts', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   assert.equal(workflow.includes('\\\\n'), false);
