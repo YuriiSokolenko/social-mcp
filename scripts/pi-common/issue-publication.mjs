@@ -52,8 +52,11 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   return { changed:true, commit };
 }
 
-export function pushIssueBranch({ issue, cwd, expectedSha, token }) {
+export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token }) {
   git(['diff','--check'], { cwd });
+  const changed = lines(git(['diff','--name-only',startCommit,'HEAD'], { cwd }).out);
+  const forbidden = controlPlanePaths(changed);
+  if (forbidden.length) throw new Error(`Refusing to publish protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
   git(['push',`--force-with-lease=refs/heads/pi/issue-${issue}:${expectedSha ?? ''}`,'--set-upstream','origin',`${commit}:refs/heads/pi/issue-${issue}`], { cwd, token });
   return { commit };
@@ -84,7 +87,7 @@ export async function dispatchReviewer(prNumber) {
 async function main() {
   const [cmd, ...a] = process.argv.slice(2);
   if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
-  if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],expectedSha:a[2],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
+  if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),issueTitle:a[1],resultFile:a[2],owner:a[3]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
   throw new Error('unknown publication command');
