@@ -20,23 +20,28 @@ test('implementer must declare complexity before implementation tools', () => {
 
 test('trivial profile warns early and hard-blocks exploration while preserving submit_result', () => {
   const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
-  const profile = guard.setComplexity('trivial');
+  const profile = complexityProfile('trivial');
   assert.deepEqual(profile, { softTurns: 3, hardTurns: 5, toolCalls: 8 });
 
-  guard.onTurnStart(2);
+  // Turns before declaration do not consume the selected profile.
+  guard.onTurnStart(9);
+  guard.setComplexity('trivial');
+  guard.onTurnStart(11);
   assert.equal(guard.takeSoftWarning(), undefined);
-  guard.onTurnStart(3);
+  guard.onTurnStart(12);
   assert.match(guard.takeSoftWarning(), /nearing its limit/);
   assert.equal(guard.takeSoftWarning(), undefined);
 
-  guard.onTurnStart(5);
+  guard.onTurnStart(14);
   const blocked = guard.checkToolCall('read', { path: 'README.md' });
   assert.equal(blocked.block, true);
-  assert.match(blocked.reason, /Hard turn budget exceeded/);
+  assert.match(blocked.reason, /Exploration budget exhausted/);
+  assert.equal(guard.checkToolCall('write', { path: 'result.txt' }), undefined);
+  assert.equal(guard.checkToolCall('edit', { path: 'result.txt' }), undefined);
   assert.equal(guard.checkToolCall('submit_result', {}), undefined);
 });
 
-test('trivial profile hard-blocks excessive tool exploration', () => {
+test('trivial profile hard-blocks excessive exploration while preserving completion tools', () => {
   const guard = new LoopGuard({ repeatThreshold: 20, requireComplexity: true });
   guard.setComplexity('trivial');
   guard.onTurnStart(1);
