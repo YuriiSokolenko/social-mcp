@@ -328,8 +328,10 @@ test('all Pi agents are hard-blocked from CI control-plane changes', () => {
 
   const implementerTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
   const repairTool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
-  assert.match(implementerTool, /controlPlanePaths\(changed\)/);
-  assert.match(repairTool, /controlPlanePaths\(changed\)/);
+  assert.match(implementerTool, /forbiddenAgentPaths\(base\)/);
+  assert.match(repairTool, /forbiddenAgentPaths\(base\)/);
+  const agentChanges = fs.readFileSync('scripts/pi-common/agent-change-policy.mjs', 'utf8');
+  for (const check of ["diff','--name-only", "diff','--cached','--name-only", "ls-files','--others','--exclude-standard"]) assert.ok(agentChanges.includes(check));
   assert.match(implementerTool, /Agent changes to CI\/control-plane files are forbidden/);
   assert.match(repairTool, /Agent changes to CI\/control-plane files are forbidden/);
 
