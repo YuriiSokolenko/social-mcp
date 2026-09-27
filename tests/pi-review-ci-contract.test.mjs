@@ -201,3 +201,13 @@ test('review verdict exists only for the unchanged reviewed PR head', () => {
   assert.match(repair, /Load PR[\s\S]*?select\(startswith\("review:"\) \| not\)/);
   assert.match(repair, /issues: write/);
 });
+
+
+test('reconciler recovers stranded PR pipeline without touching human-gated PRs', () => {
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconcile, /liveReviews/);
+  assert.match(reconcile, /liveFixes/);
+  assert.match(reconcile, /labels\.has\('pi:needs-human'\)/);
+  assert.match(reconcile, /labels\.has\('review:passed'\)/);
+  assert.match(reconcile, /labels\.has\('review:changes-requested'\) \? 'pi-pr-fix\.yml' : 'pi-pr-review\.yml'/);
+});
