@@ -12,15 +12,18 @@ test('global turn ceiling is independent of task complexity', () => {
   assert.equal(guard.checkToolCall('read', { path: 'b' }).block, true);
 });
 
-test('only the operating contract may be read before required complexity declaration', () => {
+test('bounded orientation is allowed before required complexity declaration', () => {
   const guard = new LoopGuard({
     repeatThreshold: 3,
     requireComplexity: true,
-    preComplexityReadPaths: ['agents/implementer/AGENTS.md'],
+    preComplexityAllowedTools: ['read', 'bash'],
   });
   assert.equal(guard.checkToolCall('read', { path: '/work/agents/implementer/AGENTS.md' }), undefined);
-  assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }).block, true);
-  assert.equal(guard.checkToolCall('bash', { command: 'ls' }).block, true);
+  assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
+  assert.equal(guard.checkToolCall('bash', { command: 'ls' }), undefined);
+  assert.equal(guard.checkToolCall('edit', { path: '/work/src/social_mcp/storage/sqlite.py' }).block, true);
+  assert.equal(guard.checkToolCall('write', { path: '/work/new.py' }).block, true);
+  assert.equal(guard.checkToolCall('submit_result', {}).block, true);
   guard.setComplexity('trivial');
   assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
 });
