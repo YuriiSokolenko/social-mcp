@@ -99,7 +99,7 @@ jobs:
           ISSUE_BODY="$(jq -r '.body' "$PI_ISSUE_CONTEXT")"
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
-          Read and follow agents/implementer/AGENTS.md before doing any work.
+          Your first tool call MUST be declare_task_complexity. Classify the supplied issue before any read, bash, search, edit, or other tool call: trivial for an exact tiny edit with no behavior/design decision; normal for ordinary implementation; complex for broad architectural or multi-part work. After declaring complexity, read and follow agents/implementer/AGENTS.md.
 
           You are implementing GitHub issue #${ISSUE_NUMBER} in the current repository.
 
