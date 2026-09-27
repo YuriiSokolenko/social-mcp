@@ -88,13 +88,16 @@ Do not include workflow-owned `<!-- architect-* -->` markers.
 
 Do not load planning skills for an obvious `keep` or simple `revise`.
 
-For a genuine decomposition question, load only the skill that helps answer it:
+For a genuine decomposition or design-boundary question, load only the skill that helps answer it:
+
+- simplest sufficient structure / avoiding accidental complexity → `.agents/skills/kiss/SKILL.md`
+- module/interface/dependency boundary → `.agents/skills/solid/SKILL.md`
 
 - shared architectural boundary/interface → `.agents/skills/breakdown-epic-arch/SKILL.md`
 - independently verifiable implementation plan → `.agents/skills/writing-plans/SKILL.md`
 - genuinely separate test-first stage → `.agents/skills/breakdown-test/SKILL.md`
 
-Skills are planning guidance, not permission to create extra scope or required document sets.
+KISS and SOLID are heuristics, not reasons to manufacture layers, interfaces, or child issues. Prefer the simplest coherent boundary that satisfies the actual issue. Skills are planning guidance, not permission to create extra scope or required document sets.
 
 ## Boundary
 
