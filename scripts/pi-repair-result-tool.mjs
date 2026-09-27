@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 
 import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
+import { runProductChecks } from './pi-common/product-checks.mjs';
 
 function run(command, args, { allowFailure = false } = {}) {
   const result = spawnSync(command, args, { cwd: process.cwd(), encoding: 'utf8', env: process.env });
@@ -63,9 +64,7 @@ export default function (pi) {
       const changed = run('git', ['diff', '--name-only', base, 'HEAD']).output.split('\n').filter(Boolean);
       const forbidden = controlPlanePaths(changed);
       if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
-      run('git', ['diff', '--check']);
-      run('pytest', []);
-      run('ruff', ['check', '.']);
+      runProductChecks();
       submitted = true;
       return { content: [{ type: 'text', text: 'Current dev is integrated and git diff --check, pytest, and Ruff all pass.' }] };
     },
