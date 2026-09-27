@@ -67,7 +67,7 @@ jobs:
         run: |
           cd "$JOB_DIR"
           ISSUE_CONTEXT="$RUNNER_TEMP/pi-repair-issue-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.md"
-          gh issue view "$ISSUE" --repo "$REPO" --json number,title,body --jq '"# Issue #\(.number): \(.title)\n\n\(.body)"' > "$ISSUE_CONTEXT"
+          node --input-type=module -e 'import fs from "node:fs"; const { githubClient } = await import(process.argv[1]); const issue = await githubClient().loadIssue(Number(process.env.ISSUE)); fs.writeFileSync(process.argv[2], "# Issue #" + issue.number + ": " + issue.title + "\\n\\n" + (issue.body ?? ""));' "$GITHUB_WORKSPACE/scripts/pi-common/github-api.mjs" "$ISSUE_CONTEXT"
           echo "ISSUE_CONTEXT=$ISSUE_CONTEXT" >> "$GITHUB_ENV"
           node --input-type=module -e 'const { integrateLatestDev } = await import(process.argv[1]); const result = integrateLatestDev({ allowConflicts: true, conflictMessage: files => files.join(", ") }); if (result.conflicts.length) console.log("Preflight merge conflicts: " + result.conflicts.join(", ")); else console.log("Latest dev integrated.");' "$GITHUB_WORKSPACE/scripts/pi-common/finalize-product-tree.mjs"
 
