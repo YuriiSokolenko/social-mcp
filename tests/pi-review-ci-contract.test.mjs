@@ -100,12 +100,11 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
 });
 
 
-test('stale reviewer verdict is discarded and current PR head is reviewed again', () => {
+test('stale reviewer verdict is discarded without self-rescheduling', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  assert.match(workflow, /PR changed during review; clearing stale verdict and scheduling a fresh review/);
+  assert.match(workflow, /PR changed during review; clearing stale verdict/);
   assert.match(workflow, /STALE_REVIEW=true/);
-  assert.match(workflow, /name: Restart review after PR head changed/);
-  assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
+  assert.doesNotMatch(workflow, /name: Restart review after PR head changed/);
 });
 
 
@@ -242,7 +241,7 @@ test('merge gate coalesces redundant wakes instead of queueing every scan', () =
 test('reviewer rechecks the human gate before publishing a verdict', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   assert.match(review, /Apply review result[\s\S]*?PR_JSON=.*pulls\/\$\{PR\}[\s\S]*?pi:needs-human[\s\S]*?HUMAN_GATED=true[\s\S]*?exit 0/);
-  assert.match(review, /Restart review after PR head changed[\s\S]*?env\.HUMAN_GATED != 'true'/);
+  assert.doesNotMatch(review, /Restart review after PR head changed/);
 });
 
 
