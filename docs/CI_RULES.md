@@ -48,7 +48,7 @@ Implementer edits code and tests in an isolated worktree. It does not commit, pu
 
 Before the Implementer session may finish successfully, its trusted `submit_result` tool fetches the latest `dev` and merges `origin/dev` into the issue branch. If that merge conflicts, the same live Implementer session must resolve the conflicted files and retry `submit_result`; a resolvable conflict is not a successful terminal state. Trusted tooling owns staging and the merge commit, while the agent owns the content-level conflict resolution.
 
-Only after latest `dev` is integrated do product deterministic checks run, and they must pass before the result is accepted for publication, including at least:
+Only after latest `dev` is integrated does trusted submit tooling run the authoritative product deterministic checks, and they must pass before publication, including at least:
 
 ```bash
 pytest
@@ -61,11 +61,11 @@ A checkpoint branch may exist for recovery; it is never a merge candidate. Check
 
 ## Reviewer and PR Fix
 
-Reviewer is independent from Implementer and does not edit files. It checks issue compliance, correctness, regressions, tests, architecture, security-sensitive changes, and accidental artifacts. A failing deterministic check cannot be treated as PASS.
+Reviewer is independent from Implementer and does not edit files. Before model review, trusted workflow code validates the exact PR HEAD with centralized deterministic product checks. The model then reviews issue compliance and semantic correctness at the depth warranted by the diff; it does not rerun those full checks. A failing deterministic check never reaches a model PASS.
 
 Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. A review verdict is valid only for the PR HEAD that was reviewed. If the HEAD changes for any reason, the `pull_request:synchronize` handler removes every stale `review:*` label. That handler is an invalidator only: it does not dispatch Reviewer or become another scheduler. Normal Implementer/PR Fix handoff starts the fresh Reviewer after latest-`dev` integration and deterministic checks pass; if that handoff is lost, Reconciler may recover it after the PR recovery grace period. Merge Gate requires a fresh `review:passed`, and only PASS wakes it.
 
-If Merge Gate later discovers that an already-approved PR now conflicts with current `dev`, that approval is stale for the changed integration result. Merge Gate replaces the old review verdict with `review:changes-requested`, dispatches PR Fix, and stops the queue. `review:changes-requested` is also the durable ownership marker for this recovery path: if the direct PR Fix dispatch is lost, Reconciler recovers PR Fix rather than incorrectly starting Reviewer. PR Fix resolves the conflict against current `dev` in its live agent session, runs deterministic checks, pushes the new PR HEAD, and sends it through a fresh Reviewer before Merge Gate may try again.
+If Merge Gate later discovers that an already-approved PR now conflicts with current `dev`, that approval is stale for the changed integration result. Merge Gate replaces the old review verdict with `review:changes-requested`, dispatches PR Fix, and stops the queue. `review:changes-requested` is also the durable ownership marker for this recovery path: if the direct PR Fix dispatch is lost, Reconciler recovers PR Fix rather than incorrectly starting Reviewer. PR Fix resolves content conflicts against current `dev` in its live session; trusted `submit_repair` integrates and validates the result, publishes the new PR HEAD, and sends it through a fresh Reviewer before Merge Gate may try again.
 
 `pi:needs-human` on a PR is a hard automation gate: Reviewer, PR Fix, and Merge Gate must skip that PR before model work or mutation. Removing the label is an explicit human decision to return the PR to automation.
 
@@ -152,7 +152,7 @@ Reusable control-plane primitives live in `scripts/pi-common/`. Workflow YAML is
 
 `scripts/pi-common/README.md` documents every shared helper and the boundary for adding new ones. Stage-specific decisions remain in their existing `scripts/pi-*.mjs` files; the common directory must not become a generic framework.
 
-Reviewer and PR Fix share `pr-guard.mjs` for complete PR loading, human gating, and control-plane gating. Product validation is centralized in `product-checks.mjs`; Implementer, Reviewer, and PR Fix must use that contract rather than maintaining separate pytest/Ruff command lists.
+Reviewer and PR Fix share `pr-guard.mjs` for complete PR loading, human gating, and control-plane gating. Authoritative product validation is centralized in `product-checks.mjs` and invoked by trusted workflow/submit tooling; agent prompts must not maintain or require duplicate full pytest/Ruff rituals.
 
 ## Security
 
