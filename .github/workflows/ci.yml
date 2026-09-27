@@ -204,3 +204,23 @@ jobs:
               echo "::warning::Integration status is durable; reconciler can wake Merge Gate later."
               exit 0
             }
+
+
+  wake-merge-gate-after-dev:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success'
+    needs: [test, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake merge gate for new dev base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data '{"ref":"dev"}' \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pi-auto-merge.yml/dispatches" || {
+              echo "::warning::Reconciler can wake Merge Gate later."
+              exit 0
+            }
