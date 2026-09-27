@@ -1,3 +1,13 @@
+/**
+ * Builds a read-only snapshot of currently active Pi work.
+ *
+ * WHY: Dispatcher/Architect need the same view of open PRs and active workflow
+ * runs without transporting state between workflows. Every caller still makes
+ * decisions from fresh GitHub data; this snapshot is context, never authority.
+ *
+ * Actions lookup failures are surfaced as runs_incomplete rather than hidden.
+ */
+
 import { ISSUE_ACTIVE, PIPELINE_LABELS } from './state-machine.mjs';
 const phases = new Map([
   ['pi-issue-agent.yml', 'implementation'],
