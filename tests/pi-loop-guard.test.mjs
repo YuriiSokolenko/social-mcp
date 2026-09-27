@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LoopGuard, toolCallSignature, turnBudget, repeatLimit } from '../scripts/pi-loop-guard-policy.mjs';
+import { LoopGuard, toolCallSignature, turnBudget, repeatLimit } from '../scripts/pi-common/loop-guard-policy.mjs';
 
 test('blocks tool calls once the turn budget is reached', () => {
   const guard = new LoopGuard({ turnLimit: 3, repeatThreshold: 10 });
