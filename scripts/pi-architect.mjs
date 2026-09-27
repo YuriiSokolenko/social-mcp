@@ -105,7 +105,7 @@ export function taskMetadataFromBody(number, body) {
   return { priority, dependencies: raw.trim() ? raw.split(',').map(value => Number(value.trim().replace(/^#/, ''))) : [] };
 }
 
-function withTaskMetadata(body, priority, dependencies) {
+export function withTaskMetadata(body, priority, dependencies) {
   const block = `## Task metadata\nPriority: ${priority}\nDepends on: [${dependencies.map(number => `#${number}`).join(', ')}]\n\n`;
   const source = body ?? '';
   if (/^## Task metadata/m.test(source)) return source.replace(/^## Task metadata\s*\r?\n[\s\S]*?(?=^##\s|(?![\s\S]))/m, block);
