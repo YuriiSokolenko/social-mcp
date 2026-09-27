@@ -140,9 +140,11 @@ jobs:
           Cover the acceptance criteria and important edge cases.
           Do not consider the implementation complete without appropriate automated tests.
           Run the relevant test suite and Ruff before finishing.
-          Do not commit, push, create a pull request, or modify GitHub issue labels.
+          Your final submit_result call integrates the latest dev and reruns deterministic validation.
+          If submit_result reports merge conflicts, resolve them in this same agent session, rerun relevant tests, and call submit_result again until it succeeds.
+          Do not commit, push, create a pull request, or modify GitHub issue labels; trusted workflow tooling owns those Git operations.
           Do not access production credentials or external social APIs.
-          Finish only after the repository is in a state ready for CI.
+          Finish only after submit_result succeeds.
           EOF
 
       - name: Run Pi with live progress
@@ -197,15 +199,6 @@ jobs:
           echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
           echo "PI_CHECKPOINT_PUBLISHED=${CHECKPOINT_COMMIT}" >> "$GITHUB_ENV"
           echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Integrate latest dev before publication
-        if: steps.checkpoint.outputs.changed == 'true'
-        run: |
-          cd "$JOB_DIR"
-          git fetch origin dev
-          git config user.name "social-mcp-pi"
-          git config user.email "social-mcp-pi@users.noreply.github.com"
-          git merge --no-edit origin/dev
 
       - name: Verify implementation before publication
         if: steps.checkpoint.outputs.changed == 'true'
