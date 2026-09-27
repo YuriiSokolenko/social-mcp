@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { registerSubmitNudge, terminalResult } from './pi-common/terminal-result.mjs';
 
 import { forbiddenAgentPaths } from './pi-common/agent-change-policy.mjs';
 import { runProductChecks } from './pi-common/product-checks.mjs';
@@ -51,7 +52,6 @@ function integrateLatestDev() {
 
 export default function (pi) {
   let submitted = false;
-  let nudged = false;
 
   pi.registerTool({
     name: 'submit_repair',
@@ -65,21 +65,13 @@ export default function (pi) {
       if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
       runProductChecks();
       submitted = true;
-      return { content: [{ type: 'text', text: 'Current dev is integrated and git diff --check, pytest, and Ruff all pass.' }] };
+      return terminalResult('Current dev is integrated and git diff --check, pytest, and Ruff all pass. Repair is complete; stop now.', undefined);
     },
   });
 
-  pi.on('agent_before_settle', () => {
-    if (submitted || nudged) return undefined;
-    nudged = true;
-    return {
-      continue: true,
-      entries: [{
-        type: 'custom_message',
-        customType: 'pi-repair-result-nudge',
-        content: 'Before finishing, call submit_repair. If it reports merge conflicts or failing checks, fix them in this same session and retry until it succeeds.',
-        display: true,
-      }],
-    };
+  registerSubmitNudge(pi, {
+    isSubmitted: () => submitted,
+    customType: 'pi-repair-result-nudge',
+    content: 'Before finishing, call submit_repair. If it reports merge conflicts or failing checks, fix them in this same session and retry until it succeeds.',
   });
 }
