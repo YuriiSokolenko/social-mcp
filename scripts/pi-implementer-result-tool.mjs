@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { Type } from 'typebox';
 
-import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
+import { forbiddenAgentPaths } from './pi-common/agent-change-policy.mjs';
 import { runProductChecks } from './pi-common/product-checks.mjs';
 
 function run(command, args, { allowFailure = false } = {}) {
@@ -62,8 +62,7 @@ function integrateLatestDev() {
 
 function validateFinalTree() {
   const base = run('git', ['merge-base', 'origin/dev', 'HEAD']).output;
-  const changed = run('git', ['diff', '--name-only', base, 'HEAD']).output.split('\n').filter(Boolean);
-  const forbidden = controlPlanePaths(changed);
+  const forbidden = forbiddenAgentPaths(base);
   if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
   runProductChecks();
 }
