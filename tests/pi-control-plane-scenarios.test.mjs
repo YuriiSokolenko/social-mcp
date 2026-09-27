@@ -131,7 +131,8 @@ test('reconciler never redispatches a ready implementer when its PR already exis
 test('merge gate owns only eligibility and merge; dev CI owns validation', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /merge_method: 'squash'/);
-  assert.doesNotMatch(gate, /pi-pr-review|pi-pr-fix|social-mcp\/integration|social-mcp\/pi-review|statuses/);
+  assert.doesNotMatch(gate, /pi-pr-review|social-mcp\/integration|social-mcp\/pi-review|statuses/);
+  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
 });
 
 test('manual review and repair contain no captured dev-base state', () => {
