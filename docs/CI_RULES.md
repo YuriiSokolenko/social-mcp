@@ -1,0 +1,135 @@
+# CI and Agent Workflow Rules
+
+GitHub repository state is the source of truth. Workflow inputs and SHAs are not pipeline state.
+
+## Core flow
+
+```text
+Issue -> Dispatcher -> Implementer -> checks -> PR -> Reviewer -> Merge Gate -> dev -> CI -> next PR
+```
+
+Green post-merge CI accepts the merged result and wakes Merge Gate for the next PR. Red post-merge CI stops that merge sequence. Do not build a second pre-merge integration pipeline.
+
+## Branches and trust
+
+- `dev` is the default development/integration branch. Routine development, task metadata, Pi workflows, and control-plane scripts live there.
+- Pi PRs target `dev`; `main` is reserved for releases.
+- Control-plane workflows explicitly check out trusted `dev` before running `scripts/pi-*`.
+- Normal CI tests the triggering commit.
+- Trusted Pi agents run on N150 self-hosted runners. Never execute arbitrary external PR code there.
+- Models do not own GitHub mutations. Workflows/scripts own commits, pushes, labels, comments, dispatches, and merges.
+
+## Automation mode
+
+`PI_AUTOMATION_MODE` supports:
+- `RUNNING`: start new work and continue in-flight work.
+- `DRAINING`: do not start new issues; existing PR work may finish.
+- `PAUSED`: do not start new automated stages.
+
+Missing or unknown values fail closed.
+
+## Dispatcher and Architect
+
+An open issue with `dispatcher:ready` and valid `tasks/<issue>.md` metadata is eligible for Dispatcher. Dispatcher decides only whether eligible work goes to Implementer or Architect. Eligibility, dependencies, priority, and repository state are deterministic workflow concerns.
+
+When an issue becomes `dispatcher:ready`, Dispatcher may be woken directly. Wake events are signals only; Dispatcher reloads current GitHub state.
+
+Architect is optional and exists only for work needing decomposition or task-plan correction. Validated child/revised issues return to Dispatcher.
+
+## Implementer
+
+Implementer edits code and tests in an isolated worktree. It does not commit, push, create PRs, merge, or mutate GitHub directly.
+
+Workflow-owned checks must pass before publication, including at least:
+
+```bash
+pytest
+ruff check .
+```
+
+A checkpoint branch may exist for recovery; it is never a merge candidate. The published branch is `pi/issue-<number>`, its PR targets `dev`, and links the issue with `Closes #<number>`.
+
+## Reviewer and PR Fix
+
+Reviewer is independent from Implementer and does not edit files. It checks issue compliance, correctness, regressions, tests, architecture, security-sensitive changes, and accidental artifacts. A failing deterministic check cannot be treated as PASS.
+
+Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. PASS wakes Merge Gate. PR Fix addresses reviewer-requested code changes, verifies the result, and returns the PR to review.
+
+PR Fix is not a hidden pre-merge integration engine.
+
+## Merge Gate
+
+Merge Gate is deliberately small. It validates stable ownership/safety requirements and attempts the GitHub squash merge.
+
+It does not:
+- run synthetic dev+PR integration;
+- transport or compare captured dev SHAs;
+- require a custom exact-pair status;
+- update a PR branch merely because `dev` moved;
+- recreate review/base synchronization state.
+
+The current PR head SHA may be read immediately before merge and supplied to GitHub as optimistic concurrency protection. That SHA is local operation data, not pipeline state.
+
+If GitHub reports a merge conflict, Merge Gate records the blocked condition and stops without crashing. Conflict resolution is separate from the merge decision. PRs modifying `.github/workflows/**` or `scripts/pi-*.mjs|sh` are not auto-merged.
+
+## Post-merge CI
+
+The authoritative integration check is CI on the actual merged `dev` commit.
+
+```text
+merge PR -> push dev -> CI
+                     -> green: wake Merge Gate for next PR
+                     -> red: stop merge sequence
+```
+
+Reconciler does not wake Merge Gate.
+
+## Inputs and SHA rule
+
+Keep workflow inputs minimal: object identifiers such as `issue_number`, `pr_number`, or `run_id`, plus genuine user commands such as automation `mode`.
+
+Do not pass titles, labels, URLs, reasons, state snapshots, branches, or base/head SHAs when the receiver can load current GitHub state.
+
+```text
+object ID / command -> load current GitHub state -> act
+```
+
+A SHA is not cross-workflow pipeline state.
+
+Forbidden: `workflow A -> SHA -> workflow B`.
+
+Allowed: `workflow -> read current SHA -> use locally for one atomic merge/lease operation`.
+
+Do not add `integration_base_sha`, `repair_base_sha`, captured dev SHA, exact-pair state, or equivalent orchestration.
+
+## Reconciler and Triage
+
+Reconciler is recovery infrastructure, not a scheduler. It may recover orphaned ownership, stranded `pi:ready` work, and obsolete checkpoints by returning work directly to its normal owner. It must not become another happy-path dispatcher and must not wake Merge Gate.
+
+Triage is an optional preparation step for issues not yet in the pipeline. It may validate readiness and set `dispatcher:ready`; it does not replace Dispatcher.
+
+## Concurrency and failures
+
+Different issues may execute in parallel. Work for the same issue/PR follows its workflow concurrency rule. Dispatcher and Merge Gate are serialized queues. N150 autoscaling/model capacity limits actual trusted-agent concurrency.
+
+Use explicit states:
+- implementation failure -> `pi:failed`
+- unclear/no actionable change -> `pi:needs-human`
+- review execution failure -> `review:failed`
+- reviewer requests changes -> `review:changes-requested`
+- reviewer passes -> `review:passed`
+- merge conflict -> blocked merge condition; Merge Gate itself succeeds/stops
+
+Do not silently substitute another task when selected work fails.
+
+## Complexity guard
+
+Before adding a workflow, input, status, SHA field, synchronization step, or recovery path, ask whether fresh GitHub state plus the existing owner can solve the problem.
+
+Prefer current GitHub state over transported state, IDs over metadata payloads, direct ownership over relay workflows, ordinary `dev` CI over synthetic integration, one wake owner over duplicate wake sources, and explicit failure/blocking over hidden repair.
+
+Do not add complexity solely for a hypothetical race that GitHub's atomic API operation or a later fresh-state check already handles.
+
+## Security
+
+Never commit credentials, PATs, OAuth tokens, client secrets, encryption keys, authorization headers, cookies, local `.env` files, or production credentials. Repository rulesets/branch protection remain an independent security boundary; agent prompts are not one.
