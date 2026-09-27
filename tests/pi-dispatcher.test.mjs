@@ -72,9 +72,7 @@ test('reads priority and dependencies from the issue Task metadata header', () =
     { priority: 'P2', dependencies: [] });
 });
 
-test('defaults missing task metadata but rejects malformed explicit metadata', () => {
-  assert.deepEqual(issueMetadata({ number: 42, body: '## Goal\nNo metadata' }),
-    { priority: 'P1', dependencies: [] });
+test('rejects missing or invalid issue dependency metadata', () => {
+  assert.throws(() => issueMetadata({ number: 42, body: '## Goal\nNo metadata' }), /missing Task metadata/);
   assert.throws(() => issueMetadata({ number: 42, body: '## Task metadata\nPriority: P1\nDepends on: [#42]\n' }), /depends on itself/);
-  assert.throws(() => issueMetadata({ number: 42, body: '## Task metadata\nPriority: urgent\nDepends on: []\n' }), /Priority must be P0, P1, or P2/);
 });
