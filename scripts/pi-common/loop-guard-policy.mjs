@@ -1,3 +1,11 @@
+/**
+ * Shared loop/stall policy for long-running Pi model sessions.
+ *
+ * The guard defines deterministic operational limits used by wrappers around
+ * model execution. It exists to stop runaway/stalled sessions consistently,
+ * not to decide whether an agent's product result is correct.
+ */
+
 // Pi's small self-hosted model has no built-in turn budget and can repeat an
 // identical failing or exploratory tool call dozens of times without noticing.
 // This policy blocks tool calls once a run exceeds a turn budget or repeats
