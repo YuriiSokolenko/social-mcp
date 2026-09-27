@@ -12,6 +12,7 @@ export default function (pi) {
     repeatThreshold: Number(process.env.PI_MAX_REPEAT_CALLS ?? 3),
     requireComplexity: process.env.PI_REQUIRE_TASK_COMPLEXITY === '1',
     reviewMode: process.env.PI_LOOP_GUARD_MODE === 'review',
+    reviewPathsJson: process.env.PI_REVIEW_PATHS,
   });
 
   pi.registerTool({
