@@ -42,12 +42,14 @@ Implementer edits code and tests in an isolated worktree. It does not commit, pu
 
 Before the Implementer session may finish successfully, its trusted `submit_result` tool fetches the latest `dev` and merges `origin/dev` into the issue branch. If that merge conflicts, the same live Implementer session must resolve the conflicted files and retry `submit_result`; a resolvable conflict is not a successful terminal state. Trusted tooling owns staging and the merge commit, while the agent owns the content-level conflict resolution.
 
-Only after latest `dev` is integrated do deterministic checks run, and they must pass before the result is accepted for publication, including at least:
+Only after latest `dev` is integrated do product deterministic checks run, and they must pass before the result is accepted for publication, including at least:
 
 ```bash
 pytest
 ruff check .
 ```
+
+Product agents (Implementer, Reviewer, PR Fix) do not run CI/control-plane contract suites such as `node --test tests/*.test.mjs`, runner-autoscaler checks, or workflow self-tests. Those belong exclusively to `ci.yml`. Product-agent validation covers application behavior; `ci.yml` validates both product code and the CI/control plane.
 
 A checkpoint branch may exist for recovery; it is never a merge candidate. Checkpoints are replayed onto the latest `dev`. If replay leaves unresolved conflicts, cancellation must preserve the previous good checkpoint rather than commit conflict markers. The published branch is `pi/issue-<number>`, its PR targets `dev`, and links the issue with `Closes #<number>`.
 
