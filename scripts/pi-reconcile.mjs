@@ -83,7 +83,6 @@ for (const run of runs) {
 }
 const checkpoints = new Set(refs.map(ref => Number(ref.ref.match(/^refs\/heads\/pi\/issue-(\d+)-checkpoint$/)?.[1])).filter(Number.isSafeInteger));
 const report = [];
-let mergeGateWakeNeeded = false;
 for (const issue of issues) {
   const findings = inspectIssueState(issue, {
     hasOpenPiPr: openPiPrIssues.has(issue.number),
@@ -93,8 +92,7 @@ for (const issue of issues) {
   });
   const issueLabels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   const retryReadyImplementer = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:ready') && !liveImplementers.has(issue.number) && !openPiPrIssues.has(issue.number);
-  const retryMergeGateForPr = apply && recoveryDispatchAllowed && issue.state === 'open' && issueLabels.has('pi:mr-created') && openPiPrIssues.has(issue.number);
-  if (!findings.length && !retryReadyImplementer && !retryMergeGateForPr) continue;
+  if (!findings.length && !retryReadyImplementer) continue;
   const removals = safeRemovals(findings);
   let recovery = null;
   if (apply) {
@@ -121,7 +119,6 @@ for (const issue of issues) {
       await replaceStateLabels(issue.number, issue, issueTargetAfterRemovals(issue, removals), 'issue');
     }
   }
-  if (retryMergeGateForPr) mergeGateWakeNeeded = true;
   if (retryReadyImplementer && !recovery) {
     const dispatched = await tryDispatchWorkflow(
       'pi-issue-agent.yml',
@@ -135,16 +132,6 @@ for (const issue of issues) {
     };
   }
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
-}
-
-if (apply && recoveryDispatchAllowed && mergeGateWakeNeeded) {
-  const gateAlreadyLive = runs.some(run =>
-    run.path === '.github/workflows/pi-auto-merge.yml' && liveStatuses.includes(run.status));
-  if (gateAlreadyLive) {
-    console.log('Merge Gate is already queued/running; skipping duplicate reconciler wake');
-  } else {
-    await tryDispatchWorkflow('pi-auto-merge.yml', {}, 'ready PR state');
-  }
 }
 
 if (apply) {
