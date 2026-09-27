@@ -57,7 +57,7 @@ jobs:
           cat > "$TASK_FILE" <<EOF
           Read and follow agents/triage/AGENTS.md and docs/PROJECT_CONTEXT.md.
           The candidate issues to review are at $RUNNER_TEMP/pi-triage-context.json.
-          Read the snapshot and, for each candidate, the referenced tasks/<issue-number>.md file when it exists.
+          The snapshot contains the current GitHub issue body, Task metadata, labels, dependency states, and relevant comments for every candidate.
           Classify every candidate as ready for the dispatcher, needing a person, or skipped, per your role rules.
           Call submit_result exactly once, as your last action, with your classification.
           Do not modify the repository or GitHub state.
