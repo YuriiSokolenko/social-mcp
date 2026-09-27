@@ -34,9 +34,9 @@ Before reviewing, read `docs/PROJECT_CONTEXT.md` for the product goal and bounda
 6. Consider realistic edge cases and regressions.
 7. Check for unrelated changes or generated/local artifacts.
 8. Check security-sensitive behavior.
-9. Use the SHA-bound GitHub-hosted CI result supplied by the workflow. Do not rerun pytest, Ruff, Node tests, autoscaler tests, Docker Compose, or other deterministic CI checks on the N150 reviewer runner.
+9. The Reviewer workflow has already run `git diff --check`, `pytest`, and `ruff check .` on the exact PR HEAD being reviewed. Treat those deterministic checks as a prerequisite and focus your model review on semantic correctness, issue compliance, regressions, test quality, architecture, and security.
 
-A failing deterministic CI run can never receive PASS. Semantic inspection remains your responsibility even when CI passes.
+A failing deterministic review check prevents the model review from running. Semantic inspection remains your responsibility even when those checks pass.
 
 ## What to verify
 
@@ -55,7 +55,7 @@ A failing deterministic CI run can never receive PASS. Semantic inspection remai
 
 ### Tests
 
-For changes to Python behavior or tests, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant guidance to judge whether tests verify behavior and important failure paths. Do not run optional tools or add dependencies merely because the skill shows examples. The workflow's SHA-bound CI result remains mandatory; judge test quality from the code without rerunning the deterministic suite.
+For changes to Python behavior or tests, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant guidance to judge whether tests verify behavior and important failure paths. Do not run optional tools or add dependencies merely because the skill shows examples. The workflow's deterministic checks on the exact PR HEAD are mandatory; judge test quality from the code without rerunning the suite yourself.
 
 ### MCP protocol
 
