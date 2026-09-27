@@ -94,19 +94,22 @@ export function validatePlan(plan, parent) {
   return plan;
 }
 
-export function taskMetadata(number) {
-  const filename = path.join('tasks', `${number}.md`);
-  if (!fs.existsSync(filename)) return { priority: 'P1', dependencies: [] };
-  const source = fs.readFileSync(filename, 'utf8');
-  const priority = /^priority:\s*(P[012])\s*$/m.exec(source)?.[1];
-  const raw = /^depends_on:\s*\[([^\]]*)\]\s*$/m.exec(source)?.[1];
-  if (!priority || raw === undefined || (raw.trim() && !/^\d+(?:\s*,\s*\d+)*$/.test(raw.trim()))) {
-    throw new Error(`Invalid metadata in ${filename}`);
+export function taskMetadataFromBody(number, body) {
+  const header = (body ?? '').match(/^## Task metadata\s*\r?\n([\s\S]*?)(?=\r?\n##\s|$)/);
+  if (!header) return { priority: 'P1', dependencies: [] };
+  const priority = /^Priority:\s*(P[012])\s*$/mi.exec(header[1])?.[1]?.toUpperCase();
+  const raw = /^Depends on:\s*\[([^\]]*)\]\s*$/mi.exec(header[1])?.[1];
+  if (!priority || raw === undefined || (raw.trim() && !/^#?\d+(?:\s*,\s*#?\d+)*$/.test(raw.trim()))) {
+    throw new Error(`Invalid Task metadata in issue #${number}`);
   }
-  return {
-    priority,
-    dependencies: raw.trim() ? raw.split(',').map(value => Number(value.trim())) : [],
-  };
+  return { priority, dependencies: raw.trim() ? raw.split(',').map(value => Number(value.trim().replace(/^#/, ''))) : [] };
+}
+
+function withTaskMetadata(body, priority, dependencies) {
+  const block = `## Task metadata\nPriority: ${priority}\nDepends on: [${dependencies.map(number => `#${number}`).join(', ')}]\n\n`;
+  const source = body ?? '';
+  if (/^## Task metadata/m.test(source)) return source.replace(/^## Task metadata\s*\r?\n[\s\S]*?(?=^##\s|\z)/m, block);
+  return block + source;
 }
 
 async function allIssues() {
@@ -128,36 +131,6 @@ async function transitionIssue(issue, action) {
     context: 'Architect',
     load: number => api(`/issues/${number}`),
     patch: (number, labels) => api(`/issues/${number}`, 'PATCH', { labels }),
-  });
-}
-
-async function ensureTask(number, title, priority, dependencies, body) {
-  const filename = `tasks/${number}.md`;
-  const content = `---\nissue: ${number}\npriority: ${priority}\ndepends_on: [${dependencies.join(', ')}]\n---\n\n# ${title}\n\n## Scope and acceptance\n${body}\n`;
-  const existing = await api(`/contents/${filename}?ref=dev`);
-  if (existing) {
-    if (Buffer.from(existing.content.replace(/\s/g, ''), 'base64').toString('utf8') !== content) {
-      throw new Error(`${filename} already exists with different content`);
-    }
-    return;
-  }
-  await api(`/contents/${filename}`, 'PUT', {
-    message: `Add architect task for issue #${number}`,
-    content: Buffer.from(content).toString('base64'),
-    branch: 'dev',
-  });
-}
-
-async function reviseTask(number, plan) {
-  const filename = `tasks/${number}.md`;
-  const content = `---\nissue: ${number}\npriority: ${plan.priority}\ndepends_on: [${plan.depends_on.join(', ')}]\n---\n\n# ${plan.title}\n\n## Scope and acceptance\n${plan.body}\n`;
-  const existing = await api(`/contents/${filename}?ref=dev`);
-  if (existing && Buffer.from(existing.content.replace(/\s/g, ''), 'base64').toString('utf8') === content) return;
-  await api(`/contents/${filename}`, 'PUT', {
-    message: `Refine architect-reviewed task for issue #${number}`,
-    content: Buffer.from(content).toString('base64'),
-    ...(existing ? { sha: existing.sha } : {}),
-    branch: 'dev',
   });
 }
 
@@ -194,7 +167,7 @@ async function prepare(issue, filename) {
   fs.writeFileSync(filename, JSON.stringify({
     number: issue, title: parent.title, body: parent.body,
     was_dispatcher_ready: wasDispatcherReady,
-    metadata: taskMetadata(issue), open_issues: known, queue,
+    metadata: taskMetadataFromBody(issue.number ?? issue, issue.body ?? ''), open_issues: known, queue,
   }, null, 2));
 }
 
@@ -208,7 +181,7 @@ async function publish(issue, jsonl, contextFile) {
   const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
   if (context.number !== issue || context.title !== parent.title || context.body !== parent.body ||
       typeof context.was_dispatcher_ready !== 'boolean' ||
-      JSON.stringify(context.metadata) !== JSON.stringify(taskMetadata(issue))) {
+      JSON.stringify(context.metadata) !== JSON.stringify(taskMetadataFromBody(issue.number ?? issue, issue.body ?? ''))) {
     throw new Error('Source issue changed while Architect was planning');
   }
   const plan = planFromJsonl(fs.readFileSync(jsonl, 'utf8'), issue);
@@ -217,8 +190,7 @@ async function publish(issue, jsonl, contextFile) {
   if (plan.action === 'keep' || plan.action === 'revise') {
     if (childNumbers(parent.body).length) throw new Error('Cannot revise an already split issue');
     if (plan.action === 'revise') {
-      await reviseTask(issue, plan);
-      const marker = /<!-- architect-parent:\d+; architect-key:[a-z][a-z0-9-]* -->/.exec(parent.body ?? '')?.[0];
+            const marker = /<!-- architect-parent:\d+; architect-key:[a-z][a-z0-9-]* -->/.exec(parent.body ?? '')?.[0];
       const body = marker ? `${plan.body}\n\n${marker}` : plan.body;
       if (parent.title !== plan.title || parent.body !== body) {
         await api(`/issues/${issue}`, 'PATCH', { title: plan.title, body });
@@ -236,7 +208,7 @@ async function publish(issue, jsonl, contextFile) {
     console.log(`Reviewed #${issue}: ${plan.action}`);
     return;
   }
-  const inherited = taskMetadata(issue).dependencies;
+  const inherited = taskMetadataFromBody(issue.number ?? issue, issue.body ?? '').dependencies;
   const existing = backlog;
   const created = new Map();
   for (const step of plan.steps) {
@@ -252,8 +224,7 @@ async function publish(issue, jsonl, contextFile) {
     const dependencies = [...new Set([
       ...inherited, ...step.depends_on.map(key => created.get(key)),
     ])];
-    await ensureTask(task.number, step.title, step.priority, dependencies, step.body);
-    created.set(step.key, task.number);
+        created.set(step.key, task.number);
     console.log(`${step.key}: #${task.number} after [${dependencies.join(', ')}]`);
   }
   const children = [...created.values()];
