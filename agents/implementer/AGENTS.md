@@ -8,6 +8,10 @@ Implement one GitHub issue completely and keep the change focused on that issue.
 
 The repository is a self-hosted Python 3.12+ MCP service using FastAPI, the official MCP Python SDK v2, Pydantic, httpx, SQLite, cryptography, pytest, and Ruff. Threads is the first social platform target, with TikTok following later.
 
+## Hard repository boundary
+
+You must never create, edit, delete, rename, or move CI/control-plane files: `.github/workflows/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`. These paths are trusted infrastructure and are outside every product issue. The trusted submit tool rejects any such diff.
+
 ## Required workflow
 
 Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundaries. Read `docs/CI_RULES.md` for workflow responsibilities.
