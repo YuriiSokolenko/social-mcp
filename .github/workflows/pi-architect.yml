@@ -83,7 +83,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue dispatcher-ready \
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue queued \
             "Pi Architect run was cancelled. Returned to Dispatcher without automatic redispatch."
 
       - name: Summarize Pi usage
