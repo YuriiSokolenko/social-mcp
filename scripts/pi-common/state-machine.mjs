@@ -1,3 +1,13 @@
+/**
+ * Canonical issue pipeline state machine.
+ *
+ * WHY: every stage must agree on the small set of ownership labels and legal
+ * transitions. Keeping the rules here prevents Dispatcher, Implementer,
+ * Architect and Reconciler from inventing slightly different state semantics.
+ *
+ * This module is deterministic and has no GitHub/network side effects.
+ */
+
 export const PIPELINE_LABELS = Object.freeze({
   queued: 'dispatcher:ready',
   ready: 'pi:ready',
