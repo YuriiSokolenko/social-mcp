@@ -39,6 +39,23 @@ test('bounded orientation is allowed before required complexity declaration', ()
   assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
 });
 
+test('required complexity forces implementation after two post-plan inspections', () => {
+  const guard = new LoopGuard({
+    turnLimit: 100,
+    repeatThreshold: 3,
+    requireComplexity: true,
+    preComplexityAllowedTools: ['read', 'bash'],
+  });
+  guard.setComplexity('normal');
+  assert.equal(guard.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  assert.equal(guard.checkToolCall('bash', { command: 'grep -n target src/b.py' }), undefined);
+  const blocked = guard.checkToolCall('read', { path: 'src/c.py' });
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /make the first repository edit now/);
+  assert.equal(guard.checkToolCall('edit', { path: 'src/a.py' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: 'src/c.py' }), undefined);
+});
+
 test('complexity can escalate but cannot downgrade', () => {
   const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
   assert.equal(guard.setComplexity('trivial').complexity, 'trivial');
