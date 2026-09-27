@@ -27,32 +27,38 @@ async function transitionIssue(number, action) {
 const activeLabels = [...ISSUE_ACTIVE].filter(label => label !== PIPELINE_LABELS.architectReady);
 const blockedLabels = [...ISSUE_TERMINAL, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic];
 
-function task(number) {
-  const filename = path.join("tasks", `${number}.md`);
-  if (!fs.existsSync(filename)) throw new Error(`missing ${filename}`);
-  const contents = fs.readFileSync(filename, "utf8");
-  const match = contents.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!match) throw new Error("missing YAML front matter");
-  const field = name => match[1].match(new RegExp(`^${name}:\\s*(.*?)\\s*$`, "m"))?.[1];
-  if (Number(field("issue")) !== number) throw new Error("task issue number does not match filename");
-  const priority = field("priority");
-  if (!["P0", "P1", "P2"].includes(priority)) throw new Error("invalid priority");
-  const raw = field("depends_on");
-  if (!raw || !/^\[(?:\s*\d+\s*(?:,\s*\d+\s*)*)?\]$/.test(raw)) {
-    throw new Error("depends_on must be an inline list of issue numbers");
+export function issueMetadata(issue) {
+  const body = issue.body ?? "";
+  const header = body.match(/^## Task metadata\s*\r?\n([\s\S]*?)(?=\r?\n##\s|$)/);
+  if (!header) throw new Error("missing Task metadata section");
+  const priority = /^Priority:\s*(P[012])\s*$/mi.exec(header[1])?.[1]?.toUpperCase();
+  const raw = /^Depends on:\s*\[([^\]]*)\]\s*$/mi.exec(header[1])?.[1];
+  if (!priority) throw new Error("Task metadata Priority must be P0, P1, or P2");
+  if (raw === undefined || (raw.trim() && !/^#?\d+(?:\s*,\s*#?\d+)*$/.test(raw.trim()))) {
+    throw new Error("Task metadata Depends on must be an inline issue list, for example [#12, #18] or []");
   }
-  const dependencies = raw.slice(1, -1).trim()
-    ? raw.slice(1, -1).split(",").map(value => Number(value.trim()))
-    : [];
-  if (dependencies.includes(number)) throw new Error("task depends on itself");
+  const dependencies = raw.trim() ? raw.split(",").map(value => Number(value.trim().replace(/^#/, ""))) : [];
+  if (dependencies.includes(issue.number)) throw new Error("task depends on itself");
   return { priority, dependencies };
+}
+
+function writeTaskSnapshot(issue, metadata) {
+  fs.mkdirSync("tasks", { recursive: true });
+  fs.writeFileSync(path.join("tasks", `${issue.number}.md`),
+    `---\nissue: ${issue.number}\npriority: ${metadata.priority}\ndepends_on: [${metadata.dependencies.join(", ")}]\n---\n\n# ${issue.title}\n\n${issue.body ?? ""}\n`);
 }
 async function snapshot(includeQueue = false) {
   const [issues, prs] = await Promise.all([
     pages("/issues?state=open"),
     pages("/pulls?state=open"),
   ]);
-  const openIssues = issues.filter(issue => !issue.pull_request);
+  const allIssues = issues.filter(issue => !issue.pull_request);
+  const openIssues = allIssues.filter(issue => issue.state === "open");
+  fs.rmSync("tasks", { recursive: true, force: true });
+  fs.mkdirSync("tasks", { recursive: true });
+  for (const issue of allIssues) {
+    try { writeTaskSnapshot(issue, issueMetadata(issue)); } catch {}
+  }
   const openPrIssues = new Set();
   for (const pr of prs) {
     if (pr.head.repo?.full_name !== repo || pr.base.ref !== "dev") continue;
@@ -73,8 +79,10 @@ async function snapshot(includeQueue = false) {
     else if (blockedLabels.some(label => labels(issue).has(label))) reason = "owned by a non-dispatchable pipeline state";
     let metadata;
     if (!reason) {
-      try { metadata = task(issue.number); }
-      catch (error) { reason = error.message; }
+      try {
+        metadata = issueMetadata(issue);
+        writeTaskSnapshot(issue, metadata);
+      } catch (error) { reason = error.message; }
     }
     if (!reason) {
       for (const number of metadata.dependencies) {
