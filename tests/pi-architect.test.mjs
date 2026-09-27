@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { childNumbers, parentOf, planFromJsonl, validatePlan } from '../scripts/pi-architect.mjs';
+import { childNumbers, parentOf, planFromJsonl, taskMetadataFromBody, validatePlan } from '../scripts/pi-architect.mjs';
 
 const body = '## Goal\nSpecify the shared contract.\n\n## Acceptance criteria\nDefine the stable schema and cover compatibility with focused tests.\n\n## Out of scope\nNo business logic.';
 const step = (key, kind, depends_on = []) => ({
@@ -70,4 +70,10 @@ test('only explicit architect markers link parent and child issues', () => {
   assert.deepEqual(childNumbers('<!-- architect-children:61,62 -->'), [61, 62]);
   assert.equal(parentOf('Part of #42.'), null);
   assert.deepEqual(childNumbers('No children'), []);
+});
+
+
+test('reads architect metadata from canonical issue body header', () => {
+  assert.deepEqual(taskMetadataFromBody(42, '## Task metadata\nPriority: P0\nDepends on: [#14, #18]\n\n## Goal\nX'),
+    { priority: 'P0', dependencies: [14, 18] });
 });
