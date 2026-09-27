@@ -22,7 +22,7 @@ Never expose credentials/tokens, invoke production write operations, or make des
 
 ## Execution
 
-The runtime requires `declare_task_complexity` before any other work. **Your first assistant response must contain exactly one tool call: `declare_task_complexity`. Do not batch a read, bash, search, or any other tool call into that same response.** After that tool succeeds, read this file.
+Read `agents/reviewer/AGENTS.md` before declaring review complexity. Reading this instruction file is the only action allowed before complexity declaration. Before declaring complexity, do not inspect the linked issue, PR diff, repository code, history, run bash/search, load skills, or begin the review. After reading this file, call `declare_task_complexity` as the only action in that response before any other work.
 
 Choose complexity from the review scope:
 
