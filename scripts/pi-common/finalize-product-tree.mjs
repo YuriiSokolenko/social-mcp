@@ -20,7 +20,7 @@ function mergeInProgress() {
   return run('git', ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], { allowFailure: true }).status === 0;
 }
 
-export function integrateLatestDev({ conflictMessage }) {
+export function integrateLatestDev({ conflictMessage, allowConflicts = false }) {
   run('git', ['config', 'user.name', 'social-mcp-pi']);
   run('git', ['config', 'user.email', 'social-mcp-pi@users.noreply.github.com']);
 
@@ -40,9 +40,13 @@ export function integrateLatestDev({ conflictMessage }) {
   const merge = run('git', ['merge', '--no-edit', 'origin/dev'], { allowFailure: true });
   if (merge.status !== 0) {
     const conflicts = conflictedFiles();
-    if (conflicts.length) throw new Error(conflictMessage(conflicts));
+    if (conflicts.length) {
+      if (allowConflicts) return { conflicts };
+      throw new Error(conflictMessage(conflicts));
+    }
     throw new Error(merge.output || 'Failed to merge latest dev');
   }
+  return { conflicts: [] };
 }
 
 export function validateFinalProductTree() {
