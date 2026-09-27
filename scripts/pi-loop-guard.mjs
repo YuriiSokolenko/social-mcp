@@ -10,6 +10,7 @@ export default function (pi) {
     turnLimit: Number(process.env.PI_MAX_TURNS ?? 100),
     repeatThreshold: Number(process.env.PI_MAX_REPEAT_CALLS ?? 3),
     requireComplexity: process.env.PI_REQUIRE_TASK_COMPLEXITY === '1',
+    requiredFirstReadPath: process.env.PI_REQUIRED_FIRST_READ_PATH || null,
     preComplexityAllowedTools: (process.env.PI_PRE_COMPLEXITY_ALLOWED_TOOLS ?? '')
       .split(',')
       .map((tool) => tool.trim())
