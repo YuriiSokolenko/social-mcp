@@ -73,26 +73,33 @@ jobs:
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
           rm -rf "$JOB_DIR"
           git fetch origin dev
-          START_REF=origin/dev
           START_COMMIT="$(git rev-parse origin/dev)"
           CHECKPOINT="pi/issue-${ISSUE}-checkpoint"
           CHECKPOINT_REMOTE="$(git ls-remote origin "refs/heads/${CHECKPOINT}" | awk '{print $1}')"
           echo "PI_CHECKPOINT_EXPECTED=${CHECKPOINT_REMOTE}" >> "$GITHUB_ENV"
+          RESUME_REF=""
           if [ -n "$CHECKPOINT_REMOTE" ]; then
             git fetch origin "${CHECKPOINT}:refs/remotes/origin/${CHECKPOINT}"
-            START_REF="refs/remotes/origin/${CHECKPOINT}"
-            START_COMMIT="$(git rev-parse "${START_REF}^")"
-            echo "Resuming issue #${ISSUE} from its checkpoint"
+            RESUME_REF="refs/remotes/origin/${CHECKPOINT}"
+            echo "Replaying issue #${ISSUE} checkpoint onto latest dev"
           elif git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}" >/dev/null; then
             git fetch origin "pi/issue-${ISSUE}:refs/remotes/origin/pi/issue-${ISSUE}"
-            START_REF="refs/remotes/origin/pi/issue-${ISSUE}"
-            START_COMMIT="$(git rev-parse "${START_REF}^")"
-            echo "Resuming issue #${ISSUE} from its PR branch"
+            RESUME_REF="refs/remotes/origin/pi/issue-${ISSUE}"
+            echo "Replaying issue #${ISSUE} branch onto latest dev"
           fi
           echo "PI_IMPLEMENTER_START_COMMIT=${START_COMMIT}" >> "$GITHUB_ENV"
           git worktree prune
-          git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" "$START_REF"
-          echo "Temporary worktree: $JOB_DIR"
+          git worktree add -B "pi/issue-${ISSUE}" "$JOB_DIR" origin/dev
+          if [ -n "$RESUME_REF" ]; then
+            BASE="$(git merge-base origin/dev "$RESUME_REF")"
+            git diff --binary "$BASE" "$RESUME_REF" > "$RUNNER_TEMP/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch"
+            if [ -s "$RUNNER_TEMP/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch" ]; then
+              if ! git -C "$JOB_DIR" apply --3way "$RUNNER_TEMP/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch"; then
+                echo "Saved work does not apply cleanly to latest dev; leaving conflicts for the live Implementer session"
+              fi
+            fi
+          fi
+          echo "Temporary worktree from latest dev: $JOB_DIR"
 
       - name: Prepare Python environment
         run: |
@@ -133,7 +140,7 @@ jobs:
           Issue body:
           ${ISSUE_BODY}
 
-          Work directly in the checked-out repository.
+          Work directly in the checked-out repository.\n          The checked-out worktree is always based on the latest dev branch. dev is the only development base; never switch to, compare against, or treat main as an alternative source tree.
           Implement the issue completely, keeping the change focused.
           Inspect existing code and tests before editing.
           Add or update unit tests for every behavior changed by this issue.
@@ -166,7 +173,7 @@ jobs:
 
       - name: Save implementation checkpoint
         id: checkpoint
-        if: always() && steps.worktree.outcome == 'success'
+        if: (success() || cancelled()) && steps.worktree.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -358,6 +365,6 @@ jobs:
             git worktree remove --force "$JOB_DIR"
           fi
           rm -rf "$JOB_DIR"
-          rm -f "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          rm -f "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"\n          rm -f "${RUNNER_TEMP}/pi-resume-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.patch"
           git worktree prune
           echo "Temporary worktree removed: $JOB_DIR"
