@@ -67,7 +67,7 @@ jobs:
         run: |
           cd "$JOB_DIR"
           ISSUE_CONTEXT="$RUNNER_TEMP/pi-repair-issue-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.md"
-          node --input-type=module -e 'import fs from "node:fs"; const { githubClient } = await import(process.argv[1]); const issue = await githubClient().loadIssue(Number(process.env.ISSUE)); fs.writeFileSync(process.argv[2], "# Issue #" + issue.number + ": " + issue.title + "\\n\\n" + (issue.body ?? ""));' "$GITHUB_WORKSPACE/scripts/pi-common/github-api.mjs" "$ISSUE_CONTEXT"
+          node "$GITHUB_WORKSPACE/scripts/pi-common/issue-context.mjs" "$ISSUE" "$ISSUE_CONTEXT" plain
           echo "ISSUE_CONTEXT=$ISSUE_CONTEXT" >> "$GITHUB_ENV"
           node --input-type=module -e 'const { integrateLatestDev } = await import(process.argv[1]); const result = integrateLatestDev({ allowConflicts: true, conflictMessage: files => files.join(", ") }); if (result.conflicts.length) console.log("Preflight merge conflicts: " + result.conflicts.join(", ")); else console.log("Latest dev integrated.");' "$GITHUB_WORKSPACE/scripts/pi-common/finalize-product-tree.mjs"
 
@@ -85,7 +85,7 @@ jobs:
         run: |
           set -o pipefail
           cd "$JOB_DIR"
-          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-repair-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session             "Read agents/repair/AGENTS.md, then read the complete original issue from ${ISSUE_CONTEXT}. Repair PR #${PR} for issue #${ISSUE}. The worktree was preflight-synced with current dev; if merge conflicts remain, resolve them first. Work only from the PR branch and current repository evidence. Make the smallest correct change. Finish by calling submit_repair; it integrates current dev and validates the final tree. If it reports merge conflicts or failing checks, resolve them in this same session and retry submit_repair until it succeeds. Do not push or modify GitHub state yourself."             | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-repair-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session             "Read agents/repair/AGENTS.md, then read the complete original issue JSON from ${ISSUE_CONTEXT}. Repair PR #${PR} for issue #${ISSUE}. The worktree was preflight-synced with current dev; if merge conflicts remain, resolve them first. Work only from the PR branch and current repository evidence. Make the smallest correct change. Finish by calling submit_repair; it integrates current dev and validates the final tree. If it reports merge conflicts or failing checks, resolve them in this same session and retry submit_repair until it succeeds. Do not push or modify GitHub state yourself."             | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
       - name: Verify and publish repair
         id: publish
