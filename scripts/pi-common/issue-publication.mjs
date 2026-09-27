@@ -26,6 +26,19 @@ import { runGit as git } from './git.mjs';
  */
 const lines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 
+/**
+ * After submit_result succeeds, origin/dev is an ancestor of HEAD because the
+ * finalizer has integrated the latest dev. Compare publication content against
+ * that integrated dev, not the older run-start SHA; otherwise control-plane
+ * commits that landed on dev while the agent was running are falsely attributed
+ * to the Implementer. Cancelled/pre-submit runs have not necessarily integrated
+ * latest dev, so they keep using the run-start commit for checkpoint recovery.
+ */
+function publicationBase(cwd, startCommit) {
+  const integrated = git(['merge-base','--is-ancestor','origin/dev','HEAD'], { cwd, allowFailure:true }).status === 0;
+  return integrated ? 'origin/dev' : startCommit;
+}
+
 export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) {
   for (const p of ['.pytest_cache','.ruff_cache','htmlcov','build','dist']) fs.rmSync(`${cwd}/${p}`, { recursive: true, force: true });
   for (const p of ['.coverage','coverage.xml']) fs.rmSync(`${cwd}/${p}`, { force: true });
@@ -36,8 +49,9 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   const sensitive = staged.filter(p => /(^|\/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|\/))/.test(p) && !/(^|\/)\.env\.example$/.test(p));
   if (sensitive.length) throw new Error(`Refusing to checkpoint credential/runtime files: ${sensitive.join(', ')}`);
   if (git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0) git(['commit','-m',`feat: implement issue #${issue}`], { cwd });
-  if (git(['diff','--quiet',`${startCommit}...HEAD`], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
-  const changed = lines(git(['diff','--name-only',startCommit,'HEAD'], { cwd }).out);
+  const base = publicationBase(cwd, startCommit);
+  if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
+  const changed = lines(git(['diff','--name-only',base,'HEAD'], { cwd }).out);
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Implementer attempted to modify protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
@@ -47,7 +61,8 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
 
 export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token }) {
   git(['diff','--check'], { cwd });
-  const changed = lines(git(['diff','--name-only',startCommit,'HEAD'], { cwd }).out);
+  const base = publicationBase(cwd, startCommit);
+  const changed = lines(git(['diff','--name-only',base,'HEAD'], { cwd }).out);
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Refusing to publish protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
