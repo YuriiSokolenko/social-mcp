@@ -457,7 +457,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.match(workflow, /use trivial for a tiny self-contained diff/);
   assert.match(workflow, /do not rerun pytest, Ruff, or git diff --check/);
   assert.match(prompt, /### Trivial fast path/);
-  assert.match(prompt, /Do not inspect repository history, ancestry/);
+  assert.match(prompt, /History or prior attempts are valid when they materially answer a concrete question/);
   assert.match(prompt, /Never load skills for trivial reviews/);
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
@@ -467,8 +467,9 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
 test('implementer declares complexity before reading its operating contract', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  const first = workflow.indexOf('Your first tool call MUST be declare_task_complexity');
+  const first = workflow.indexOf('Your first assistant response MUST contain exactly one tool call: declare_task_complexity');
   const read = workflow.indexOf('read and follow agents/implementer/AGENTS.md');
+  assert.match(workflow, /Do not call read, bash, search, edit, or any other tool in that same response/);
   assert.ok(first >= 0 && read > first);
   assert.match(agent, /For \*\*trivial\*\* work, use the fast path/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
