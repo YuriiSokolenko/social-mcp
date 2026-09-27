@@ -12,7 +12,7 @@ Green post-merge CI accepts the merged result and wakes Merge Gate for the next 
 
 ## Branches and trust
 
-- `dev` is the default development/integration branch. Routine development, task metadata, Pi workflows, and control-plane scripts live there.
+- `dev` is the default development/integration branch. Routine development, Pi workflows, and control-plane scripts live there. Task metadata lives in GitHub issues.
 - Pi PRs target `dev`; `main` is reserved for releases.
 - Control-plane workflows explicitly check out trusted `dev` before running `scripts/pi-*`.
 - Normal CI tests the triggering commit.
@@ -30,7 +30,7 @@ Missing or unknown values fail closed.
 
 ## Dispatcher and Architect
 
-An open issue with `dispatcher:ready` and valid `tasks/<issue>.md` metadata is eligible for Dispatcher. Dispatcher decides only whether eligible work goes to Implementer or Architect. Eligibility, dependencies, priority, and repository state are deterministic workflow concerns.
+An open issue with `dispatcher:ready` and a valid top-level `## Task metadata` section is eligible for Dispatcher. The issue body is the source of truth: `Priority: P0|P1|P2` and `Depends on: [#12, #18]` (or `[]`). On every run Dispatcher reloads issues from GitHub and rebuilds local `tasks/*.md` snapshots; those generated files are not pipeline state and are never committed. Dispatcher decides only whether eligible work goes to Implementer or Architect. Eligibility, dependencies, priority, and repository state are deterministic workflow concerns.
 
 When an issue becomes `dispatcher:ready`, Dispatcher may be woken directly. Wake events are signals only; Dispatcher reloads current GitHub state.
 
