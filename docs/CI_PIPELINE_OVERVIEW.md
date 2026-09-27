@@ -92,7 +92,7 @@ Do not use workflow inputs as a message bus or state store.
 
 Unknown/missing mode fails closed.
 
-Manual cancellation is not a failure state. Before PR publication, cancelled Implementer/Architect work returns to `dispatcher:ready` without automatic redispatch; Implementer checkpoint work is retained when safe. Unresolved replay conflicts are never checkpointed over the previous good checkpoint.
+Manual cancellation is not a failure state. Before PR publication, cancelled Implementer/Architect work becomes unowned without adding `dispatcher:ready` or triggering automatic redispatch; Implementer checkpoint work is retained when safe. Unresolved replay conflicts are never checkpointed over the previous good checkpoint.
 
 ## Main workflows
 
