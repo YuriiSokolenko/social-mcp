@@ -27,6 +27,12 @@ jobs:
     if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'pi/issue-')
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout trusted dev
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: dev
+
       - name: Invalidate stale review verdict
         env:
           GH_TOKEN: ${{ github.token }}
