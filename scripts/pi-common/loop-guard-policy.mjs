@@ -46,10 +46,11 @@ export function toolCallSignature(toolName, input) {
 }
 
 export class LoopGuard {
-  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false }) {
+  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, reviewMode = false }) {
     this.defaultTurnLimit = turnBudget(turnLimit);
     this.repeatThreshold = repeatLimit(repeatThreshold);
     this.requireComplexity = requireComplexity;
+    this.reviewMode = reviewMode;
     this.profile = requireComplexity ? null : { softTurns: this.defaultTurnLimit, hardTurns: this.defaultTurnLimit, toolCalls: Number.MAX_SAFE_INTEGER };
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
@@ -83,7 +84,7 @@ export class LoopGuard {
     if (toolName === 'declare_task_complexity') return undefined;
     if (!this.profile) return { block: true, reason: 'Declare task complexity first with declare_task_complexity (trivial, normal, or complex) before using implementation tools.' };
 
-    const phase = toolPhase(toolName, input);
+    const phase = this.reviewMode && toolName !== 'submit_result' ? 'explore' : toolPhase(toolName, input);
     // Only exploration consumes the exploration budget. Implementation,
     // focused validation, and submission remain available so the task can
     // converge after the context-gathering budget is exhausted.
@@ -92,8 +93,9 @@ export class LoopGuard {
     if (this.budgetTurn() >= this.profile.hardTurns) {
       return { block: true, reason: `Exploration budget exhausted for ${this.complexity} task (${this.profile.hardTurns} turns after complexity declaration). Do not inspect more context. Implement/validate only what is already known, then call submit_result.` };
     }
-    if (this.explorationCalls >= this.profile.toolCalls) {
-      return { block: true, reason: `Exploration tool-call budget exhausted for ${this.complexity} task (${this.profile.toolCalls} calls). Implement/validate only what is already known, then call submit_result.` };
+    const toolCallLimit = this.reviewMode && this.complexity === 'trivial' ? 3 : this.profile.toolCalls;
+    if (this.explorationCalls >= toolCallLimit) {
+      return { block: true, reason: `Exploration tool-call budget exhausted for ${this.complexity} task (${toolCallLimit} calls). Implement/validate only what is already known, then call submit_result.` };
     }
     this.explorationCalls += 1;
 
