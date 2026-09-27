@@ -216,8 +216,8 @@ async function main() {
     console.log(`Flagged #${number} pi:needs-human`);
   }
 
-  for (const { issue: number, reason } of result.skipped) {
-    console.log(`Skipped #${number}: ${reason}`);
+  if (result.skipped.length) {
+    console.log(`Triage skipped ${result.skipped.length} blocked or not-ready candidate(s)`);
   }
   if (!classified.length) console.log("Triage found no candidate issues");
 }
