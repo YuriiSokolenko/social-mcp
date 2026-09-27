@@ -29,11 +29,11 @@ export function toolCallSignature(toolName, input) {
 }
 
 export class LoopGuard {
-  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityReadPaths = [] }) {
+  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityAllowedTools = [] }) {
     this.turnLimit = turnBudget(turnLimit);
     this.repeatThreshold = repeatLimit(repeatThreshold);
     this.requireComplexity = requireComplexity;
-    this.preComplexityReadPaths = new Set(preComplexityReadPaths);
+    this.preComplexityAllowedTools = new Set(preComplexityAllowedTools);
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
     this.seen = new Map();
@@ -57,11 +57,8 @@ export class LoopGuard {
   checkToolCall(toolName, input) {
     if (toolName === 'declare_task_complexity') return undefined;
     if (this.requireComplexity && !this.complexity) {
-      const requestedPath = typeof input?.path === 'string' ? input.path : '';
-      const allowedContractRead = toolName === 'read'
-        && [...this.preComplexityReadPaths].some((allowedPath) => requestedPath === allowedPath || requestedPath.endsWith(`/${allowedPath}`));
-      if (!allowedContractRead) {
-        return { block: true, reason: 'Read the allowed operating contract, then declare task complexity with declare_task_complexity (trivial, normal, or complex) before using other tools.' };
+      if (!this.preComplexityAllowedTools.has(toolName)) {
+        return { block: true, reason: 'Before complexity declaration, finish the required startup orientation and plan using only the allowed inspection tools. Repository edits, skills, submission, and other work require declare_task_complexity first.' };
       }
     }
     if (this.absoluteTurn >= this.turnLimit) {
