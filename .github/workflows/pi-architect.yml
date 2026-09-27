@@ -51,7 +51,7 @@ jobs:
         run: |
           set -o pipefail
           pi \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-architect-result-tool.mjs" \
             --provider hp-laguna \
