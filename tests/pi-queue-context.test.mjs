@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readQueueContext, summarizeQueue } from '../scripts/pi-queue-context.mjs';
+import { readQueueContext, summarizeQueue } from '../scripts/pi-common/queue-context.mjs';
 
 const repo = 'owner/social-mcp';
 const issues = [
