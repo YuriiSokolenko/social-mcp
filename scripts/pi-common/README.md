@@ -39,3 +39,5 @@ Dispatcher classification, Architect decomposition, Reviewer verdict parsing, re
 These files are part of the CI control plane. Pi agents have no permission to modify them. They are protected by `control-plane-policy.mjs` through the `scripts/pi-*` boundary because this directory itself is under `scripts/pi-common/**`.
 
 Prefer a small explicit helper with comments and tests over copying shell/API logic into multiple workflows.
+
+- `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow dispatches; keeps authenticated REST and the trusted `dev` ref out of YAML.
