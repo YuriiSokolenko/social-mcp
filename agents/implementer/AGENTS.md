@@ -22,7 +22,7 @@ Never expose credentials or tokens, weaken authentication/authorization, commit 
 
 ## Execution
 
-The runtime requires `declare_task_complexity` before any other work. The workflow prompt tells you to call it before reading this file.
+The runtime requires `declare_task_complexity` before any other work. **Your first assistant response must contain exactly one tool call: `declare_task_complexity`. Do not batch a read, bash, search, edit, or any other tool call into that same response.** After that tool succeeds, read this file.
 
 Choose the smallest correct class:
 
