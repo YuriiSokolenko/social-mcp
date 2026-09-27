@@ -173,3 +173,12 @@ test('usage workflow listens to the current Pi workflow names', () => {
   }
   assert.doesNotMatch(usage, /manual diagnostic|PR Fix \(manual\)/);
 });
+
+
+test('human-required PR exits before reviewer or repair model work', () => {
+  for (const file of ['.github/workflows/pi-pr-review.yml', '.github/workflows/pi-pr-fix.yml']) {
+    const workflow = fs.readFileSync(file, 'utf8');
+    assert.match(workflow, /id: load[\s\S]*?echo "skip=true" >> "\$GITHUB_OUTPUT"/);
+    assert.match(workflow, /Create (?:review|PR) worktree\n\s+if: steps\.load\.outputs\.skip != 'true'/);
+  }
+});
