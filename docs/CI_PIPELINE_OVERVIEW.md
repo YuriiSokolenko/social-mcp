@@ -70,6 +70,10 @@ Any PR HEAD change emits `pull_request:synchronize`; that handler removes stale 
 
 Reconciler does not wake Merge Gate. A wake carries no authoritative task state; the receiver reloads GitHub state. `pi:needs-human` on a PR is a hard stop for Reviewer, PR Fix, and Merge Gate.
 
+## Agent control-plane boundary
+
+Pi agents have no control-plane write/review/repair authority. `.github/workflows/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
+
 ## Branch, trust, and inputs
 
 `dev` is the default/development branch; `main` is reserved for releases. Control-plane workflows/scripts execute from trusted `dev`; normal CI tests the triggering commit.
