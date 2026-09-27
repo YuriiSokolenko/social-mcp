@@ -44,7 +44,9 @@ Classify the repair itself, not the size of the original issue:
 After complexity is declared:
 
 - Make the first relevant repair promptly. The moment you can describe a concrete code/test change that addresses the blocker, make it with `edit`/`write` rather than drafting implementation code in prose.
-- After two consecutive inspection/reasoning turns without a repository edit, identify one specific missing fact that blocks the repair and inspect only that fact, or make the first edit now.
+- **Diagnosis is a one-way gate to implementation.** Once you have identified the concrete blocking cause and can state the smallest correct change, exploration and reconsideration are finished. The **next tool call must be `edit` or `write`** applying that change. Do not compare alternative fixes, re-derive the diagnosis, inspect more history, or spend another reasoning turn asking what to change.
+- If a later focused check disproves that diagnosis, inspect only the new concrete failure, update the diagnosis once, and again make `edit`/`write` the next tool call.
+- Before a concrete diagnosis exists, after two consecutive inspection/reasoning turns without a repository edit, identify one specific missing fact that blocks the repair and inspect only that fact, or make the first edit now.
 - Add or adjust focused regression coverage only when behavior changed or the reported failure needs protection.
 - Run only focused checks that add useful signal while repairing.
 - Call `submit_repair` as soon as the repair is ready.
