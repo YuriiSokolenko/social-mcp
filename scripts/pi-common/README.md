@@ -12,7 +12,7 @@ Keeping those rules here gives us one implementation to test and one place to ex
 
 A module belongs here only when the same trusted rule is useful to more than one pipeline stage and has no agent-specific decision logic.
 
-- `github-api.mjs` — authenticated repository API + complete pagination.
+- `github-api.mjs` — authenticated repository API + complete pagination + tiny shared PR/label/comment/workflow-dispatch primitives; this is the only place that should spell those repeated REST routes.
 - `github-state.mjs` — compare-and-swap style label/state replacement.
 - `state-machine.mjs` — canonical issue pipeline labels and legal transitions.
 - `task-metadata.mjs` — canonical GitHub issue task metadata parser/writer.
