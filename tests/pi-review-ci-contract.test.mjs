@@ -285,3 +285,17 @@ test('issue agent workflow contains no escaped newline artifacts', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   assert.equal(workflow.includes('\\\\n'), false);
 });
+
+
+test('product agent workflows never run control-plane contract suites', () => {
+  for (const name of ['pi-issue-agent.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.doesNotMatch(workflow, /node\s+--test|test_runner_autoscaler|tests\/[^\s"']*\.test\.mjs/);
+    assert.match(workflow, /pytest/);
+    assert.match(workflow, /ruff/);
+  }
+
+  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(ci, /node --test tests\/\*\.test\.mjs/);
+  assert.match(ci, /tests\/test_runner_autoscaler\.sh/);
+});
