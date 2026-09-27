@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { githubClient } from './github-api.mjs';
+import { githubClient } from './pi-common/github-api.mjs';
 
 const [kind] = process.argv.slice(2);
 if (kind !== 'issue') throw new Error('usage: pi-labels.mjs issue');
