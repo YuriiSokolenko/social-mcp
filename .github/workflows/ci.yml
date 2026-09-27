@@ -1,37 +1,16 @@
 name: CI
-run-name: "🧪 CI · ${{ inputs.target_sha && inputs.integration_base_sha && format('target:{0} ref:{1} base:{2}', inputs.target_sha, inputs.target_ref, inputs.integration_base_sha) || inputs.target_sha && format('target:{0} ref:{1}', inputs.target_sha, inputs.target_ref) || github.event.pull_request.title || github.event.head_commit.message || github.ref_name }}"
+run-name: "🧪 CI · ${{ github.event.head_commit.message || github.ref_name }}"
 
 on:
   workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number associated with this CI run
-        required: false
-        type: string
-      target_sha:
-        description: Exact commit SHA to test using the trusted dev workflow definition
-        required: false
-        type: string
-      target_ref:
-        description: Branch name associated with target_sha
-        required: false
-        type: string
-      integration_base_sha:
-        description: Exact dev SHA to merge with target_sha before testing
-        required: false
-        type: string
-  # Pi PRs are checked through SHA-bound workflow_dispatch runs from trusted dev.
-  # Do not use pull_request here: PRs created by GITHUB_TOKEN are authored by
-  # github-actions[bot] and GitHub approval-gates those runs before any job exists.
   push:
 
 permissions:
   actions: write
   contents: read
-  statuses: write
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ inputs.target_sha || github.sha }}-${{ inputs.integration_base_sha || 'direct' }}
+  group: ci-${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -43,47 +22,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.integration_base_sha || inputs.target_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Build exact integration result
-        if: inputs.integration_base_sha != ''
-        env:
-          TARGET_SHA: ${{ inputs.target_sha }}
-          BASE_SHA: ${{ inputs.integration_base_sha }}
-        run: |
-          git fetch origin "$TARGET_SHA"
-          test "$(git rev-parse HEAD)" = "$BASE_SHA"
-          git config user.name "social-mcp-ci"
-          git config user.email "social-mcp-ci@users.noreply.github.com"
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data "$(jq -nc --arg context "social-mcp/integration/${BASE_SHA:0:12}" '{state:"pending",context:$context,description:"Exact dev+PR integration CI is running"}')" \
-            "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
-
-          set +e
-          git merge --no-ff --no-edit "$TARGET_SHA"
-          merge_status=$?
-          set -e
-          if [ "$merge_status" -ne 0 ]; then
-            curl --fail-with-body -sS -X POST \
-              -H "Authorization: Bearer ${{ github.token }}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Content-Type: application/json" \
-              --data "$(jq -nc --arg context "social-mcp/integration-conflict/${BASE_SHA:0:12}" '{state:"failure",context:$context,description:"Exact dev+PR integration has merge conflicts"}')" \
-              "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
-            exit "$merge_status"
-          fi
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data "$(jq -nc --arg context "social-mcp/integration-conflict/${BASE_SHA:0:12}" '{state:"success",context:$context,description:"Exact dev+PR integration merges cleanly"}')" \
-            "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
-          echo "Tested integration: base=$BASE_SHA head=$TARGET_SHA result=$(git rev-parse HEAD)"
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -116,21 +57,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.integration_base_sha || inputs.target_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Build exact integration result
-        if: inputs.integration_base_sha != ''
-        env:
-          TARGET_SHA: ${{ inputs.target_sha }}
-          BASE_SHA: ${{ inputs.integration_base_sha }}
-        run: |
-          git fetch origin "$TARGET_SHA"
-          test "$(git rev-parse HEAD)" = "$BASE_SHA"
-          git config user.name "social-mcp-ci"
-          git config user.email "social-mcp-ci@users.noreply.github.com"
-          git merge --no-ff --no-edit "$TARGET_SHA"
 
       - name: Generate ephemeral test encryption key
         shell: bash
@@ -164,63 +93,4 @@ jobs:
         if: always()
         run: docker compose down --volumes --remove-orphans
 
-  integration-result:
-    if: always() && inputs.integration_base_sha != ''
-    needs: [test, docker]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish exact-pair integration result
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ inputs.target_sha }}
-          BASE_SHA: ${{ inputs.integration_base_sha }}
-          TEST_RESULT: ${{ needs.test.result }}
-          DOCKER_RESULT: ${{ needs.docker.result }}
-        run: |
-          if [ "$TEST_RESULT" = "success" ] && [ "$DOCKER_RESULT" = "success" ]; then
-            STATE=success
-            DESCRIPTION="Exact dev+PR integration CI passed"
-          else
-            STATE=failure
-            DESCRIPTION="Exact dev+PR integration CI failed"
-          fi
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data "$(jq -nc --arg state "$STATE" --arg context "social-mcp/integration/${BASE_SHA:0:12}" --arg description "$DESCRIPTION" '{state:$state,context:$context,description:$description}')" \
-            "https://api.github.com/repos/${{ github.repository }}/statuses/${TARGET_SHA}"
 
-      - name: Wake merge gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pi-auto-merge.yml/dispatches" || {
-              echo "::warning::Integration status is durable; reconciler can wake Merge Gate later."
-              exit 0
-            }
-
-
-  wake-merge-gate-after-dev:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success'
-    needs: [test, docker]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wake merge gate for new dev base
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pi-auto-merge.yml/dispatches" || {
-              echo "::warning::Reconciler can wake Merge Gate later."
-              exit 0
-            }
