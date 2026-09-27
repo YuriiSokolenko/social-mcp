@@ -87,7 +87,7 @@ async function processPR(prSummary) {
     }
     if (!conflictRepair || conflictRepair === 'error') {
       await reserveAndDispatch(sha, `social-mcp/repair-conflict/${base.object.sha.slice(0, 12)}`, 'Conflict repair dispatched', 'pi-pr-fix.yml',
-        { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict' });
+        { pr_number: String(pr.number), pr_title: pr.title, reason: 'conflict', repair_base_sha: base.object.sha });
       console.log(`#${pr.number}: exact integration has a merge conflict; dispatched conflict repair`);
     }
     return;
@@ -100,7 +100,7 @@ async function processPR(prSummary) {
     }
     if (!integrationRepair || integrationRepair === 'error') {
       await reserveAndDispatch(sha, `social-mcp/repair-integration/${base.object.sha.slice(0, 12)}`, 'Integration repair dispatched', 'pi-pr-fix.yml',
-        { pr_number: String(pr.number), pr_title: pr.title, reason: 'integration' });
+        { pr_number: String(pr.number), pr_title: pr.title, reason: 'integration', repair_base_sha: base.object.sha });
       console.log(`#${pr.number}: integration checks failed; dispatched integration repair`);
     }
     return;
@@ -114,7 +114,7 @@ async function processPR(prSummary) {
     }
     if (!reviewRepair || reviewRepair === 'error') {
       await reserveAndDispatch(sha, `social-mcp/repair-review/${base.object.sha.slice(0, 12)}`, 'Review repair dispatched', 'pi-pr-fix.yml',
-        { pr_number: String(pr.number), pr_title: pr.title, reason: 'review' });
+        { pr_number: String(pr.number), pr_title: pr.title, reason: 'review', repair_base_sha: base.object.sha });
       console.log(`#${pr.number}: dispatched review repair for exact pair`);
     }
     return;
