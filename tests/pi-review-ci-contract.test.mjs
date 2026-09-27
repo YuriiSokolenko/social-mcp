@@ -448,7 +448,7 @@ test('every model-driven workflow wires the shared safety extensions exactly onc
 });
 
 test('loop guard is limited to stages that need exploration/task-complexity control', () => {
-  const guarded = new Set(['pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml', 'pi-triage.yml']);
+  const guarded = new Set(['pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']);
   for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']) {
     const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
     assert.equal(source.includes('pi-loop-guard.mjs'), guarded.has(name), `${name}: unexpected loop-guard wiring`);
@@ -474,7 +474,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.ok(workflow.includes('PI_ISSUE=$(jq -r \'.issue\' "$CONTEXT")'));
-  assert.match(workflow, /trivial for a tiny self-contained diff/);
+  assert.match(prompt, /\*\*trivial\*\* — tiny self-contained diff/);
   assert.match(workflow, /do not rerun pytest, Ruff, or git diff --check/);
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /History or prior attempts are valid when they materially answer a concrete question/);
