@@ -50,3 +50,20 @@ The distinction is intentional:
 - allowed: `workflow → read current SHA from GitHub → use it locally for merge/lease protection`.
 
 Once that local operation finishes, the SHA has no orchestration meaning. GitHub repository state is the source of truth.
+
+
+## Trusted control-plane rule
+
+All control-plane workflows must execute orchestration scripts from an explicit trusted checkout of `dev`.
+
+This includes Architect, Merge Gate, Dispatcher, Implementer, PR Fix, PR Review, Reconciler, Triage, and Usage collection. Their checkout must explicitly use `ref: dev`, and control-plane scripts/extensions must be invoked from that trusted checkout (normally through `$GITHUB_WORKSPACE/scripts/...`).
+
+Do not execute `scripts/pi-*` from a PR branch, issue branch, event commit, worktree being modified by an agent, or any other untrusted/ref-dependent checkout.
+
+The normal CI workflow is intentionally different: it checks out and tests the commit that triggered CI. It must not execute control-plane `scripts/pi-*` from that tested commit.
+
+In short:
+
+`control plane → trusted dev checkout`
+
+`tested application code → triggering commit`
