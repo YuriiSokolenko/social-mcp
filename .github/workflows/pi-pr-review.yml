@@ -88,9 +88,7 @@ jobs:
         if: steps.load.outputs.skip != 'true'
         run: |
           cd "$JOB_DIR"
-          git diff --check
-          pytest
-          ruff check .
+          node "$GITHUB_WORKSPACE/scripts/pi-common/product-checks.mjs"
 
       - name: Run independent review
         if: steps.load.outputs.skip != 'true'
