@@ -1,5 +1,5 @@
 name: Pi PR Fix
-run-name: "🔧 Repair PR #${{ inputs.pr_number }}"
+run-name: "🔧 Fix PR #${{ inputs.pr_number }}"
 
 on:
   workflow_dispatch:
