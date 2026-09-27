@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { Type } from 'typebox';
 
-import { controlPlanePaths } from './pi-control-plane-policy.mjs';
+import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
 
 function run(command, args, { allowFailure = false } = {}) {
   const result = spawnSync(command, args, {
