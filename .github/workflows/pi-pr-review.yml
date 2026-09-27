@@ -93,7 +93,7 @@ jobs:
           set -o pipefail
           cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
-          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
+          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
             "First call declare_task_complexity based on the review scope, then read agents/reviewer/AGENTS.md. Review PR #${PR} against issue #${ISSUE}. Do not modify files or GitHub state. The deterministic checks already passed. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action." \
             | tee "$RAW" | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
