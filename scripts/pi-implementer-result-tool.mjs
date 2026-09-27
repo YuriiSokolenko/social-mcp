@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { registerSubmitNudge, terminalResult } from './pi-common/terminal-result.mjs';
 import { writeFileSync } from 'node:fs';
 import { Type } from 'typebox';
 
@@ -69,7 +70,6 @@ function validateFinalTree() {
 
 export default function (pi) {
   let submitted = false;
-  let nudged = false;
 
   pi.registerTool({
     name: 'submit_result',
@@ -100,31 +100,16 @@ export default function (pi) {
       writeFileSync(path, JSON.stringify(result, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
       pi.appendEntry('implementer-result', result);
       submitted = true;
-      return {
-        content: [{
-          type: 'text',
-          text: 'SUCCESS. Latest dev is integrated and final git diff --check, pytest, and Ruff all pass. Implementation result recorded. Stop now; do not call more tools or produce another recap.',
-        }],
-        details: undefined,
-        // Pi >=0.69: terminal tool result suppresses the automatic follow-up
-        // model turn. Failed submissions throw before reaching this point, so
-        // conflict/test-failure repair remains in the same agent session.
-        terminate: true,
-      };
+      return terminalResult(
+        'SUCCESS. Latest dev is integrated and final git diff --check, pytest, and Ruff all pass. Implementation result recorded. Stop now; do not call more tools or produce another recap.',
+        undefined,
+      );
     },
   });
 
-  pi.on('agent_before_settle', () => {
-    if (submitted || nudged) return undefined;
-    nudged = true;
-    return {
-      continue: true,
-      entries: [{
-        type: 'custom_message',
-        customType: 'pi-result-nudge',
-        content: 'Before finishing, call submit_result. It will integrate latest dev and validate the final tree. If it reports merge conflicts or failing checks, fix them in this same session and call submit_result again until it succeeds.',
-        display: true,
-      }],
-    };
+  registerSubmitNudge(pi, {
+    isSubmitted: () => submitted,
+    customType: 'pi-result-nudge',
+    content: 'Before finishing, call submit_result. It will integrate latest dev and validate the final tree. If it reports merge conflicts or failing checks, fix them in this same session and call submit_result again until it succeeds.',
   });
 }
