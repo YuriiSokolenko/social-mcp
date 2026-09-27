@@ -101,14 +101,12 @@ test('implementer preserves PR ownership when a post-publication step fails or i
 });
 
 
-test('stateful control workflows preserve pending bursts while merge gate coalesces scans', () => {
-  for (const file of ['pi-dispatcher.yml', 'pi-triage.yml', 'pi-reconcile.yml', 'pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml']) {
+test('stateful control workflows serialize without cancelling active work', () => {
+  for (const file of ['pi-dispatcher.yml', 'pi-triage.yml', 'pi-reconcile.yml', 'pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-auto-merge.yml']) {
     const workflow = fs.readFileSync(`.github/workflows/${file}`, 'utf8');
-    assert.match(workflow, /concurrency:[\s\S]*?queue: max[\s\S]*?cancel-in-progress: false/);
+    assert.match(workflow, /concurrency:[\s\S]*?group:[^\n]+[\s\S]*?cancel-in-progress: false/);
+    assert.doesNotMatch(workflow, /^\s+queue:\s*/m);
   }
-  const mergeGate = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
-  assert.match(mergeGate, /concurrency:[\s\S]*?group: pi-auto-merge[\s\S]*?cancel-in-progress: false/);
-  assert.doesNotMatch(mergeGate, /queue: max/);
 });
 
 
