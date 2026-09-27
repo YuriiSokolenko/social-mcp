@@ -513,6 +513,53 @@ test('implementer orients and plans before declaring complexity', () => {
   assert.doesNotMatch(agent, /Before starting, read `docs\/PROJECT_CONTEXT\.md`/);
 });
 
+test('reviewer orients and plans before declaring complexity', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const agent = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
+  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
+  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
+  const contract = [
+    'Read `agents/reviewer/AGENTS.md`',
+    'Read the linked issue',
+    'Inspect the complete PR diff',
+    'Write a concise review plan',
+    '1000 tokens',
+    'Call `declare_task_complexity`',
+    'Continue the semantic review',
+  ];
+  let previous = -1;
+  for (const value of contract) {
+    const position = agent.indexOf(value);
+    assert.ok(position > previous, `reviewer startup marker missing or out of order: ${value}`);
+    previous = position;
+  }
+  assert.doesNotMatch(workflow, /first assistant response MUST contain exactly one tool call/i);
+});
+
+test('repair orients and plans before declaring complexity', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  const agent = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
+  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
+  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
+  assert.match(workflow, /pi-loop-guard\.mjs/);
+  const contract = [
+    'Read `agents/repair/AGENTS.md`',
+    'Read the concrete blocking Reviewer finding',
+    'Inspect the PR diff',
+    'Write a short repair plan',
+    '1000 output tokens',
+    'Call `declare_task_complexity`',
+    'Immediately execute the first plan item',
+  ];
+  let previous = -1;
+  for (const value of contract) {
+    const position = agent.indexOf(value);
+    assert.ok(position > previous, `repair startup marker missing or out of order: ${value}`);
+    previous = position;
+  }
+  assert.match(agent, /Do not edit files[\s\S]*before step 5 is complete/);
+});
+
 test('dispatcher stays a narrow scope classifier and does not treat complexity as decomposition', () => {
   const agent = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
   assert.match(agent, /candidates.*authoritative/is);
