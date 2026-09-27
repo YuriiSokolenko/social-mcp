@@ -27,13 +27,15 @@ Never expose credentials or tokens, weaken authentication/authorization/validati
 Use this order. Complexity must be based on the actual repair target and changed code, never guessed before seeing them.
 
 1. Read `agents/repair/AGENTS.md`.
-2. Read the concrete blocking Reviewer finding, failing product check, or merge conflict. Treat it as the repair target.
-3. Inspect the PR diff and only the affected files, symbols, tests, and immediate code context needed to understand that target.
-4. Write a short repair plan for yourself, at most **1000 output tokens**, describing the smallest complete change needed.
-5. Call `declare_task_complexity` based on the blocker, PR diff, relevant code, and plan.
-6. Immediately execute the first plan item and continue the repair.
+2. Read the original issue completely: title, description, acceptance criteria, and explicit scope. Treat it as the source of intended behavior.
+3. Read the concrete blocking Reviewer finding, failing product check, or merge conflict. Treat it as the repair target.
+4. Confirm the worktree already contains latest `dev`. If preflight left merge conflicts, resolve those conflicts first while preserving both the issue intent and valid current `dev` behavior.
+5. Inspect only the affected files, symbols, tests, and immediate code context needed to understand the target. Inspect the PR diff only when a concrete diagnostic question requires knowing what the PR changed.
+6. Write a short repair plan for yourself, at most **1000 output tokens**, describing the smallest complete change needed.
+7. Call `declare_task_complexity` based on the issue, blocker, current code, and plan.
+8. Immediately execute the first plan item and continue the repair.
 
-Before `declare_task_complexity`, stay within initial orientation: these agent instructions, the concrete repair target, PR diff, directly relevant changed code, and the short plan. Do not edit files, load skills, expand into repository history or unrelated code, or begin implementation before step 5 is complete.
+Before `declare_task_complexity`, stay within initial orientation: these agent instructions, the original issue, the concrete repair target, preflight conflict state, directly relevant code/tests, and the short plan. Do not edit files, load skills, expand into repository history or unrelated code, or begin implementation before step 5 is complete.
 
 Classify the repair itself, not the size of the original issue:
 
