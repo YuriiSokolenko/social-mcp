@@ -74,7 +74,7 @@ export default function (pi) {
   pi.registerTool({
     name: 'submit_result',
     label: 'Sync, validate, and submit implementation result',
-    description: 'As the final action, integrate latest dev, resolve any reported conflicts in this same session, and retry until merge, tests, lint, and diff checks pass. Records PR metadata only after validation succeeds.',
+    description: 'TERMINAL ACTION. Integrate latest dev and run the authoritative final diff, pytest, and Ruff validation. On success the implementation is complete: do not call tools or produce another recap. On conflict/failure, fix only the reported problem and retry.',
     parameters: Type.Object({
       title: Type.String({ description: 'Concise conventional PR title describing the actual implementation' }),
       summary: Type.String({ description: 'Self-contained 1-3 sentence summary of what was implemented and why' }),
@@ -103,7 +103,7 @@ export default function (pi) {
       return {
         content: [{
           type: 'text',
-          text: 'Latest dev is integrated and git diff --check, pytest, and Ruff all pass. Implementation result recorded.',
+          text: 'SUCCESS. Latest dev is integrated and final git diff --check, pytest, and Ruff all pass. Implementation result recorded. Stop now; do not call more tools or produce another recap.',
         }],
         details: undefined,
       };
