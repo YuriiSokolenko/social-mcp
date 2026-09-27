@@ -119,3 +119,14 @@ test('implementer resume always rebases saved work onto latest dev and never use
   assert.doesNotMatch(workflow, /git rev-parse "\$\{START_REF\}\^"/);
   assert.match(workflow, /dev is the only development base/);
 });
+
+
+test('Pi usage is isolated from dev and metrics pushes do not run project CI', () => {
+  const collector = fs.readFileSync('scripts/pi-usage-collect.mjs', 'utf8');
+  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(collector, /const metricsBranch = "pi-metrics"/);
+  assert.match(collector, /ref=\$\{metricsBranch\}/);
+  assert.match(collector, /branch: metricsBranch/);
+  assert.doesNotMatch(collector, /ref=dev/);
+  assert.match(ci, /push:\n\s+branches: \[dev\]/);
+});
