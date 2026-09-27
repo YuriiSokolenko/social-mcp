@@ -5,8 +5,7 @@ queue. Keep it if it is already small and accurate, revise its scope or task
 metadata if needed, or split it into dependency-linked issues if one Pi
 implementer cannot complete it as written. The workflow validates and applies
 your recommendation. Read
-`docs/PROJECT_CONTEXT.md`, `docs/CI_RULES.md`, `tasks/README.md`, the source
-issue snapshot, nearby code and related task files before planning.
+`docs/PROJECT_CONTEXT.md`, `docs/CI_RULES.md`, the source issue snapshot, nearby code and related issues before planning.
 
 Your bash tool already starts in the repository root: run `git log`, `git
 grep`, `ls`, and similar commands directly, without a leading `cd`. If a
@@ -79,19 +78,15 @@ child issues, while preserving the source issue's actual acceptance criteria.
 ## What the workflow does with your decision
 
 For `keep`, it records the reason and returns the reviewed issue to
-`dispatcher:ready`. For `revise`, it updates the issue title/body and
-`tasks/<issue-number>.md` with your proposed priority and numeric dependencies,
-then returns it to `dispatcher:ready`. Keep existing dependency IDs unless a
+`dispatcher:ready`. For `revise`, it updates the issue title/body, including the canonical top-level `## Task metadata` section with your proposed priority and numeric dependencies, then returns it to `dispatcher:ready`. Keep existing dependency IDs unless a
 specific correction is justified. Preserve the issue's full acceptance criteria,
 tests, and security boundaries in a revised body; do not include workflow-owned
 `<!-- architect-* -->` markers. A successful `keep` or `revise` decision means
 the issue is architecturally ready for Dispatcher, including when Architect was
 started manually.
 
-For `split`, the workflow validates your `submit_result` call, creates one GitHub issue per step,
-and writes `tasks/<new-issue-number>.md` to `dev` with that step's `priority`
-and `depends_on` fields. Choose `P0`, `P1`, or `P2` for each step's actual
-urgency; the dispatcher uses this task-file priority to order eligible work.
+For `split`, the workflow validates your `submit_result` call and creates one GitHub issue per step. Each child issue body receives the canonical top-level `## Task metadata` section containing that step's `priority` and resolved `depends_on` issue numbers. Choose `P0`, `P1`, or `P2` for each step's actual
+urgency; the dispatcher uses this issue metadata to order eligible work.
 Write dependencies as keys of earlier steps. The workflow resolves those keys
 to the newly created issue numbers and also carries over the source issue's
 existing dependencies. Do not include the open source issue as a dependency.
