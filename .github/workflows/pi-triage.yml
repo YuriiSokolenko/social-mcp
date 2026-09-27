@@ -25,6 +25,7 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       PI_BASH_TIMEOUT_SECONDS: '600'
+      PI_TRIAGE_BATCH_SIZE: '8'
 
     steps:
       - name: Checkout trusted dev
@@ -54,10 +55,10 @@ jobs:
           set -o pipefail
           TASK_FILE="$RUNNER_TEMP/pi-triage-task.txt"
           cat > "$TASK_FILE" <<EOF
-          Read and follow agents/triage/AGENTS.md and docs/PROJECT_CONTEXT.md.
+          Read and follow agents/triage/AGENTS.md. Do not read docs/PROJECT_CONTEXT.md unless one specific candidate genuinely requires product context to resolve an ambiguity.
           The candidate issues to review are at $RUNNER_TEMP/pi-triage-context.json.
           The snapshot contains the current GitHub issue body, Task metadata, labels, dependency states, and relevant comments for every candidate.
-          Classify every candidate as ready for the dispatcher, needing a person, or skipped, per your role rules.
+          Classify every candidate exactly once as ready for the dispatcher, needing a person, or skipped, per your role rules. Previous workflow failures and pipeline labels are not unresolved product decisions by themselves. Do not reconsider a decided candidate; move directly to the next one.
           Call submit_result exactly once, as your last action, with your classification.
           Do not modify the repository or GitHub state.
           EOF
