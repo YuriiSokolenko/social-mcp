@@ -231,10 +231,13 @@ test('global automation mode gates issue-producing agent stages', () => {
 });
 
 
-test('merge gate coalesces redundant wakes instead of queueing every scan', () => {
-  const workflow = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
-  assert.match(workflow, /concurrency:\n\s+group: pi-auto-merge\n\s+cancel-in-progress: false/);
-  assert.doesNotMatch(workflow, /queue: max/);
+test('workflow concurrency uses only supported GitHub Actions keys', () => {
+  for (const name of fs.readdirSync('.github/workflows').filter(name => name.endsWith('.yml'))) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.doesNotMatch(workflow, /^\s+queue:\s*/m, `${name}: unsupported concurrency.queue must not return`);
+  }
+  const mergeGate = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
+  assert.match(mergeGate, /concurrency:\n\s+group: pi-auto-merge\n\s+cancel-in-progress: false/);
 });
 
 
