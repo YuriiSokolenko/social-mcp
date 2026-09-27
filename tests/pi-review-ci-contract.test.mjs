@@ -211,3 +211,10 @@ test('reconciler recovers stranded PR pipeline without touching human-gated PRs'
   assert.match(reconcile, /labels\.has\('review:passed'\)/);
   assert.match(reconcile, /labels\.has\('review:changes-requested'\) \? 'pi-pr-fix\.yml' : 'pi-pr-review\.yml'/);
 });
+
+
+test('merge gate coalesces redundant wakes instead of queueing every scan', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
+  assert.match(workflow, /concurrency:\n\s+group: pi-auto-merge\n\s+cancel-in-progress: false/);
+  assert.doesNotMatch(workflow, /concurrency:[\s\S]*?group: pi-auto-merge[\s\S]{0,100}?queue: max/);
+});
