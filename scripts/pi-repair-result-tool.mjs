@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process';
 
+import { controlPlanePaths } from './pi-control-plane-policy.mjs';
+
 function run(command, args, { allowFailure = false } = {}) {
   const result = spawnSync(command, args, { cwd: process.cwd(), encoding: 'utf8', env: process.env });
   const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
@@ -57,6 +59,10 @@ export default function (pi) {
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     async execute() {
       integrateLatestDev();
+      const base = run('git', ['merge-base', 'origin/dev', 'HEAD']).output;
+      const changed = run('git', ['diff', '--name-only', base, 'HEAD']).output.split('\n').filter(Boolean);
+      const forbidden = controlPlanePaths(changed);
+      if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
       run('git', ['diff', '--check']);
       run('pytest', []);
       run('ruff', ['check', '.']);
