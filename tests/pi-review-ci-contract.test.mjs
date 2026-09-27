@@ -218,3 +218,15 @@ test('merge gate coalesces redundant wakes instead of queueing every scan', () =
   assert.match(workflow, /concurrency:\n\s+group: pi-auto-merge\n\s+cancel-in-progress: false/);
   assert.doesNotMatch(workflow, /concurrency:[\s\S]*?group: pi-auto-merge[\s\S]{0,100}?queue: max/);
 });
+
+
+test('global automation mode gates issue-producing agent stages', () => {
+  for (const file of ['pi-dispatcher.yml', 'pi-architect.yml', 'pi-issue-agent.yml', 'pi-triage.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${file}`, 'utf8');
+    assert.match(workflow, /vars\.PI_AUTOMATION_MODE == 'RUNNING'/, `${file} must stop outside RUNNING`);
+  }
+  for (const file of ['pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-auto-merge.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${file}`, 'utf8');
+    assert.match(workflow, /\["RUNNING","DRAINING"\]/, `${file} must allow draining in-flight PR work`);
+  }
+});
