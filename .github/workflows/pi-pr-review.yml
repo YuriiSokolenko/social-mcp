@@ -90,13 +90,21 @@ jobs:
           echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run deterministic review checks
+        id: checks
         if: steps.load.outputs.skip != 'true'
+        continue-on-error: true
         run: |
           cd "$JOB_DIR"
           node "$GITHUB_WORKSPACE/scripts/pi-common/product-checks.mjs"
 
+      - name: Mark deterministic check failure for repair
+        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
+
       - name: Run independent review
-        if: steps.load.outputs.skip != 'true'
+        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
         run: |
           set -o pipefail
           cd "$JOB_DIR"
@@ -108,7 +116,7 @@ jobs:
           jq -r '.text' "$RUNNER_TEMP/review-result.json"
 
       - name: Apply review result
-        if: steps.load.outputs.skip != 'true'
+        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

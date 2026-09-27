@@ -600,3 +600,12 @@ test('repair preserves current dev behavior when a PR test is stale', () => {
   assert.match(repair, /next tool call `edit` or `write`/i);
   assert.match(repair, /Do not redesign current `dev`, debate which side should win, or repeatedly reread the same evidence/);
 });
+
+
+test('deterministic review failure routes directly to PR Fix instead of stopping the pipeline', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(workflow, /name: Run deterministic review checks[\s\S]*?id: checks[\s\S]*?continue-on-error: true/);
+  assert.match(workflow, /name: Mark deterministic check failure for repair[\s\S]*?steps\.checks\.outcome == 'failure'[\s\S]*?review-state\.mjs" dispatch "\$PR" CHANGES_REQUESTED/);
+  assert.match(workflow, /name: Run independent review\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
+  assert.match(workflow, /name: Apply review result\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
+});
