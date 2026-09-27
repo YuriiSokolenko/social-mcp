@@ -102,7 +102,7 @@ test('repair is explicitly bound to the exact dev SHA authorized by merge gate',
 });
 
 test('workflow concurrency uses only supported GitHub Actions keys', () => {
-  for (const file of ['.github/workflows/pi-auto-merge.yml', '.github/workflows/pi-pr-review.yml', '.github/workflows/pi-pr-fix.yml']) {
+  for (const file of fs.readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).map(name => `.github/workflows/${name}`)) {
     const workflow = fs.readFileSync(file, 'utf8');
     assert.doesNotMatch(workflow, /^\s*queue:\s*max\s*$/m);
   }
