@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { githubClient } from "./github-api.mjs";
 import { replaceIssueState } from "./pi-github-state.mjs";
 import { validateIssueTransition } from "./pi-state-machine.mjs";
+import { taskMetadata } from "./pi-task-metadata.mjs";
 
 const { api: request, pages, ensureLabel, repo } = githubClient();
 const api = (endpoint, options = {}) =>
@@ -50,21 +51,9 @@ function hashFor(body) {
 }
 
 function issueMetadata(issue) {
-  const body = issue.body ?? "";
-  const header = body.match(/^## Task metadata\s*\r?\n([\s\S]*?)(?=\r?\n##\s|$)/);
-  if (!header) return { valid: false, errors: ["missing Task metadata section"], priority: null, dependencies: [] };
-  const priority = /^Priority:\s*(P[012])\s*$/mi.exec(header[1])?.[1]?.toUpperCase();
-  const raw = /^Depends on:\s*\[([^\]]*)\]\s*$/mi.exec(header[1])?.[1];
-  const errors = [];
-  if (!priority) errors.push("invalid or missing priority");
-  const validDependencies = raw !== undefined && (!raw.trim() || /^#?\d+(?:\s*,\s*#?\d+)*$/.test(raw.trim()));
-  if (!validDependencies) errors.push("Depends on must be an inline issue list");
-  const dependencies = validDependencies && raw.trim()
-    ? raw.split(",").map(value => Number(value.trim().replace(/^#/, "")))
-    : [];
-  if (dependencies.includes(issue.number)) errors.push("task depends on itself");
-  return { valid: errors.length === 0, errors, priority: priority ?? null, dependencies };
+  return taskMetadata(issue, { required: false });
 }
+
 function lastTriageHash(comments) {
   for (const comment of [...comments].reverse()) {
     const match = /<!-- pi-triage:hash:([0-9a-f]{16}) -->/.exec(comment.body ?? "");
