@@ -55,7 +55,7 @@ A checkpoint branch may exist for recovery; it is never a merge candidate. Check
 
 Reviewer is independent from Implementer and does not edit files. It checks issue compliance, correctness, regressions, tests, architecture, security-sensitive changes, and accidental artifacts. A failing deterministic check cannot be treated as PASS.
 
-Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. The verdict applies only if the PR HEAD is still exactly the HEAD that was reviewed. If HEAD changed during review, the stale verdict is discarded and Reviewer is dispatched again for the current PR. Merge Gate requires `review:passed`, and only PASS wakes it. PR Fix addresses reviewer-requested code changes, integrates the latest `dev`, verifies the result, and always returns the changed PR to a fresh review before merge.
+Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. A review verdict is valid only for the PR HEAD that was reviewed. If the HEAD changes for any reason, the `pull_request:synchronize` handler removes every stale `review:*` label. That handler is an invalidator only: it does not dispatch Reviewer or become another scheduler. Normal Implementer/PR Fix handoff starts the fresh Reviewer after latest-`dev` integration and deterministic checks pass; if that handoff is lost, Reconciler may recover it after the PR recovery grace period. Merge Gate requires a fresh `review:passed`, and only PASS wakes it.
 
 If Merge Gate later discovers that an already-approved PR now conflicts with current `dev`, that approval is stale for the changed integration result. Merge Gate removes the old `review:*` verdict, dispatches PR Fix, and stops the queue. PR Fix resolves the conflict against current `dev` in its live agent session, runs deterministic checks, pushes the new PR HEAD, and sends it through a fresh Reviewer before Merge Gate may try again.
 
@@ -110,7 +110,7 @@ Do not add `integration_base_sha`, `repair_base_sha`, captured dev SHA, exact-pa
 
 ## Reconciler and Triage
 
-Reconciler is recovery infrastructure, not a scheduler. It may recover orphaned ownership, stranded `pi:ready` work, and obsolete checkpoints by returning work directly to its normal owner. It must not become another happy-path dispatcher and must not wake Merge Gate.
+Reconciler is recovery infrastructure, not a scheduler. It may recover orphaned ownership, stranded `pi:ready` work, abandoned PR review/fix handoffs, and obsolete checkpoints by returning work directly to its normal owner. PR recovery has a 10-minute grace period measured from the PR's latest `updated_at` (falling back to `created_at`): fresh PR creation, pushes, labels, or other updates belong to the normal owner during that window. The grace period does not delay normal CI; it only prevents Reconciler from racing a normal handoff. Reconciler must not become another happy-path dispatcher and must not wake Merge Gate.
 
 Triage is an optional preparation step for issues not yet in the pipeline. It reads the same canonical `## Task metadata` from the GitHub issue body as Dispatcher and Architect; no `tasks/<id>.md` snapshot exists. It may validate readiness and set `dispatcher:ready`; it does not replace Dispatcher.
 
