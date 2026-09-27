@@ -10,7 +10,6 @@ const api = (path, options = {}) =>
   request(path, options.method ?? 'GET', options.body ? JSON.parse(options.body) : undefined);
 const number = kind === 'issue' ? process.env.ISSUE : process.env.PR;
 const headSha = process.env.HEAD_SHA ?? '';
-const baseSha = process.env.BASE_SHA ?? '';
 if (!['issue', 'review'].includes(kind) || !action || !number) {
   throw new Error('usage: pi-transition.mjs <issue|review> <action> [comment]');
 }
@@ -33,9 +32,9 @@ async function postComment() {
   await api(`/issues/${number}/comments`, { method: 'POST', body: JSON.stringify({ body: comment }) });
 }
 async function markCommit(state, description) {
-  if (!headSha || !baseSha) throw new Error('HEAD_SHA and BASE_SHA are required for review status');
+  if (!headSha) throw new Error('HEAD_SHA is required for review status');
   await api(`/statuses/${headSha}`, { method: 'POST', body: JSON.stringify({
-    state, context: `social-mcp/pi-review/${baseSha.slice(0, 12)}`, description,
+    state, context: 'social-mcp/pi-review', description,
   }) });
 }
 
