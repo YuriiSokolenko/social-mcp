@@ -1,11 +1,11 @@
 import { Type } from 'typebox';
+import { registerSubmitNudge } from './pi-common/terminal-result.mjs';
 import { validateDispatch } from './pi-dispatcher.mjs';
 
 // Same prototype as pi-architect-result-tool.mjs, adapted for the dispatcher's
 // classification shape. See that file and docs/CI_RULES.md for the rationale.
 export default function (pi) {
   let submitted = false;
-  let nudged = false;
 
   pi.registerTool({
     name: 'submit_result',
@@ -25,17 +25,9 @@ export default function (pi) {
     },
   });
 
-  pi.on('agent_before_settle', () => {
-    if (submitted || nudged) return undefined;
-    nudged = true;
-    return {
-      continue: true,
-      entries: [{
-        type: 'custom_message',
-        customType: 'pi-result-nudge',
-        content: 'You finished without calling submit_result. Call it now, classifying every prepared candidate exactly once.',
-        display: true,
-      }],
-    };
+  registerSubmitNudge(pi, {
+    isSubmitted: () => submitted,
+    customType: 'pi-result-nudge',
+    content: 'You finished without calling submit_result. Call it now, classifying every prepared candidate exactly once.',
   });
 }
