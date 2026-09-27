@@ -87,11 +87,9 @@ test('architect and reconciler contain no removed terminal-state machinery', () 
 
 
 
-test('reconciler coalesces merge-gate wake when a gate run is already live', () => {
+test('reconciler never owns merge-gate wakeups', () => {
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(reconcile, /gateAlreadyLive/);
-  assert.match(reconcile, /pi-auto-merge\.yml/);
-  assert.match(reconcile, /skipping duplicate reconciler wake/);
+  assert.doesNotMatch(reconcile, /pi-auto-merge\.yml|mergeGateWakeNeeded|gateAlreadyLive/);
 });
 
 
