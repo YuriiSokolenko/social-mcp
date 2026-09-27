@@ -1,6 +1,6 @@
 import { Type } from 'typebox';
 
-import { RESPONSE_BUDGETS, withResponseBudget } from './pi-common/response-budget-policy.mjs';
+import { nextResponseBudgetLevel, RESPONSE_BUDGETS, withResponseBudget } from './pi-common/response-budget-policy.mjs';
 
 // Shared per-turn verbosity control for every Pi agent. This is deliberately
 // independent from task-complexity/loop-guard policy.
@@ -34,13 +34,6 @@ export default function (pi) {
     if (!changed) throw new Error(`Failed to apply ${nextLevel} response budget`);
     level = nextLevel;
     return fixedMaxTokens || configuredBudgets[nextLevel];
-  }
-
-  function automaticNextLevel(currentLevel, outputTokens) {
-    if (outputTokens < configuredBudgets[currentLevel]) return 'short';
-    if (currentLevel === 'short') return 'normal';
-    if (currentLevel === 'normal') return 'deep';
-    return 'short';
   }
 
   pi.on('session_start', async (_event, ctx) => {
@@ -78,7 +71,7 @@ export default function (pi) {
     }
 
     const outputTokens = Number(event.message?.usage?.output || 0);
-    const nextLevel = automaticNextLevel(turnLevel, outputTokens);
+    const nextLevel = nextResponseBudgetLevel(turnLevel, outputTokens, configuredBudgets);
     await apply(nextLevel, ctx);
     console.log(`PI_BUDGET_NEXT ${JSON.stringify({ afterTurn: event.turnIndex, outputTokens, previousBudget: turnLevel, nextBudget: nextLevel, maxTokens: configuredBudgets[nextLevel] })}`);
   });
