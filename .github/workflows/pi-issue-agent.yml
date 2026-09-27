@@ -31,7 +31,7 @@ jobs:
       PI_PHASE: implementation
       PI_BASH_TIMEOUT_SECONDS: '1800'
       PI_REQUIRE_TASK_COMPLEXITY: '1'
-      PI_PRE_COMPLEXITY_READ_PATHS: 'agents/implementer/AGENTS.md'
+      PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
       PI_MAX_REPEAT_CALLS: '3'
 
     steps:
@@ -100,7 +100,7 @@ jobs:
           ISSUE_BODY="$(jq -r '.body' "$PI_ISSUE_CONTEXT")"
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
-          First read and follow agents/implementer/AGENTS.md. Reading that operating contract is the only action allowed before complexity declaration. After reading it, call declare_task_complexity before any repository inspection or implementation work. Classify and execute the supplied issue according to AGENTS.md; a complex classification still means you implement this same issue to completion.
+          Follow the startup sequence in agents/implementer/AGENTS.md exactly: read AGENTS.md, read this issue, inspect only directly relevant current-dev code, write a short execution plan of at most 1000 output tokens, then call declare_task_complexity before any repository modification or implementation work. A complex classification still means you implement this same issue to completion.
 
           You are implementing GitHub issue #${ISSUE_NUMBER} in the current repository.
 
