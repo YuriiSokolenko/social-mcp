@@ -4,6 +4,7 @@ import { githubClient } from "./github-api.mjs";
 import { readQueueContext } from "./pi-queue-context.mjs";
 import { replaceIssueState } from "./pi-github-state.mjs";
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-state-machine.mjs";
+import { taskMetadata } from "./pi-task-metadata.mjs";
 
 const { api: request, pages, ensureLabel, repo } = githubClient();
 const api = (endpoint, options = {}) =>
@@ -25,21 +26,7 @@ async function transitionIssue(number, action) {
 const activeLabels = [...ISSUE_ACTIVE].filter(label => label !== PIPELINE_LABELS.architectReady);
 const blockedLabels = [...ISSUE_TERMINAL, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic];
 
-export function issueMetadata(issue) {
-  const body = issue.body ?? "";
-  const header = body.match(/^## Task metadata\s*\r?\n([\s\S]*?)(?=\r?\n##\s|$)/);
-  if (!header) throw new Error("missing Task metadata section");
-  const priority = /^Priority:\s*(P[012])\s*$/mi.exec(header[1])?.[1]?.toUpperCase();
-  const raw = /^Depends on:\s*\[([^\]]*)\]\s*$/mi.exec(header[1])?.[1];
-  if (!priority) throw new Error("Task metadata Priority must be P0, P1, or P2");
-  if (raw === undefined || (raw.trim() && !/^#?\d+(?:\s*,\s*#?\d+)*$/.test(raw.trim()))) {
-    throw new Error("Task metadata Depends on must be an inline issue list, for example [#12, #18] or []");
-  }
-  const dependencies = raw.trim() ? raw.split(",").map(value => Number(value.trim().replace(/^#/, ""))) : [];
-  if (dependencies.includes(issue.number)) throw new Error("task depends on itself");
-  return { priority, dependencies };
-}
-
+export const issueMetadata = issue => { const metadata = taskMetadata(issue); return { priority: metadata.priority, dependencies: metadata.dependencies }; };
 async function snapshot(includeQueue = false) {
   const [issues, prs] = await Promise.all([
     pages("/issues?state=open"),
