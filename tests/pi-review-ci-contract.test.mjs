@@ -262,3 +262,12 @@ test('PR head changes invalidate verdict without creating a second review schedu
   const invalidate = review.slice(review.indexOf('  invalidate:'), review.indexOf('  review:'));
   assert.doesNotMatch(invalidate, /pi-pr-review\.yml\/dispatches/);
 });
+
+
+test('late merge conflict leaves recoverable PR Fix ownership', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(gate, /nextLabels\.push\('review:changes-requested'\)/);
+  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconcile, /labels\.has\('review:changes-requested'\) \? 'pi-pr-fix\.yml' : 'pi-pr-review\.yml'/);
+});
