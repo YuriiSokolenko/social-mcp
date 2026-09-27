@@ -44,13 +44,9 @@ export function parseReviewResult(jsonl) {
     }
   }
 
-  // Prefer the structured result from the submit_result tool
-  // (pi-reviewer-result-tool.mjs). The REVIEW_RESULT text line is kept only
-  // as a fallback while that tool is still a prototype. The posted PR comment
-  // still needs a leading REVIEW_RESULT line: pi-pr-fix.yml finds the most
-  // recent "changes requested" review by scanning past comment bodies for
-  // that exact marker, so it is reconstructed deterministically here rather
-  // than asked of the model.
+  // Prefer the structured result from the submit_result tool.
+  // REVIEW_RESULT remains only as a parser-compatible diagnostic rendering;
+  // it is not pipeline state and no other workflow consumes it.
   if (toolResult) {
     const validated = validateReviewResult(toolResult);
     return { verdict: validated.verdict, text: `REVIEW_RESULT: ${validated.verdict}\n\n${validated.text}` };
