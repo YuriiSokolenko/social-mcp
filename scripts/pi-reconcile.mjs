@@ -137,32 +137,6 @@ for (const issue of issues) {
   }
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
 }
-for (const pr of prs) {
-  if (pr.state !== 'open') continue;
-  const issueNumber = Number(pr.head?.ref?.match(/^pi\/issue-(\d+)$/)?.[1]);
-  if (!Number.isSafeInteger(issueNumber)) continue;
-
-  const issue = issues.find(item => item.number === issueNumber);
-  const issueLabels = new Set((issue?.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
-  if (!issue || issue.state !== 'open' || !issueLabels.has('pi:mr-created') || issueLabels.has('pi:needs-human')) continue;
-
-  // Review/integration/repair progress is SHA+base-bound commit status owned by
-  // the merge gate. Reconciliation only needs to wake that scheduler; it must
-  // not recreate the removed review:* label state machine.
-  if (apply && recoveryDispatchAllowed) mergeGateWakeNeeded = true;
-  report.push({
-    type: 'pr',
-    number: pr.number,
-    title: pr.title,
-    findings: [],
-    removals: [],
-    recovery: apply ? {
-      add: null,
-      dispatch: recoveryDispatchAllowed ? 'merge-gate' : null,
-      reason: recoveryDispatchAllowed ? 'resume durable PR pipeline through merge gate' : 'PR recovery deferred until RUNNING',
-    } : null,
-  });
-}
 
 if (apply && recoveryDispatchAllowed && mergeGateWakeNeeded) {
   const gateAlreadyLive = runs.some(run =>
@@ -170,7 +144,7 @@ if (apply && recoveryDispatchAllowed && mergeGateWakeNeeded) {
   if (gateAlreadyLive) {
     console.log('Merge Gate is already queued/running; skipping duplicate reconciler wake');
   } else {
-    await tryDispatchWorkflow('pi-auto-merge.yml', {}, 'saved PR/review state');
+    await tryDispatchWorkflow('pi-auto-merge.yml', {}, 'ready PR state');
   }
 }
 
