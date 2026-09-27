@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { childNumbers, parentOf } from './pi-architect.mjs';
-import { githubClient } from './github-api.mjs';
+import { githubClient } from './pi-common/github-api.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
