@@ -24,7 +24,16 @@ Never expose credentials or tokens, weaken authentication/authorization/validati
 
 ## Execution
 
-Read `agents/repair/AGENTS.md` before declaring repair complexity. Reading this instruction file is the only action allowed before complexity declaration. Before declaring complexity, do not inspect repository code, run bash/search, load skills, edit files, or begin the repair. After reading this file, call `declare_task_complexity` before any other work.
+Use this order. Complexity must be based on the actual repair target and changed code, never guessed before seeing them.
+
+1. Read `agents/repair/AGENTS.md`.
+2. Read the concrete blocking Reviewer finding, failing product check, or merge conflict. Treat it as the repair target.
+3. Inspect the PR diff and only the affected files, symbols, tests, and immediate code context needed to understand that target.
+4. Write a short repair plan for yourself, at most **1000 output tokens**, describing the smallest complete change needed.
+5. Call `declare_task_complexity` based on the blocker, PR diff, relevant code, and plan.
+6. Immediately execute the first plan item and continue the repair.
+
+Before `declare_task_complexity`, stay within initial orientation: these agent instructions, the concrete repair target, PR diff, directly relevant changed code, and the short plan. Do not edit files, load skills, expand into repository history or unrelated code, or begin implementation before step 5 is complete.
 
 Classify the repair itself, not the size of the original issue:
 
@@ -32,19 +41,15 @@ Classify the repair itself, not the size of the original issue:
 - **normal** — ordinary localized debugging or repair requiring PR/code/test context.
 - **complex** — conflict-heavy, security-sensitive, cross-cutting, or genuinely ambiguous repair work.
 
-Then follow this sequence:
+After complexity is declared:
 
-1. Start from the concrete blocking Reviewer finding, failing check, or merge conflict. Treat it as the repair target.
-2. Inspect the PR diff and only the affected files, symbols, tests, and immediate context needed to decide the next repair action.
-3. Make the first relevant repair promptly.
-   - The moment you can describe a concrete code/test change that addresses the blocker, stop drafting it in reasoning and make it with `edit`/`write` in the next tool action.
-   - Do not write a proposed patch or implementation code in prose when it can be written directly to the repository.
-   - After two consecutive inspection/reasoning turns without a repository edit, explicitly identify one specific missing fact that blocks the repair and inspect only that fact, or make the first edit now. Do not restart the diagnosis or re-plan the original issue.
-4. Add or adjust focused regression coverage only when behavior changed or the reported failure needs protection.
-5. Run only focused checks that add useful signal while repairing.
-6. Call `submit_repair` as soon as the repair is ready.
+- Make the first relevant repair promptly. The moment you can describe a concrete code/test change that addresses the blocker, make it with `edit`/`write` rather than drafting implementation code in prose.
+- After two consecutive inspection/reasoning turns without a repository edit, identify one specific missing fact that blocks the repair and inspect only that fact, or make the first edit now.
+- Add or adjust focused regression coverage only when behavior changed or the reported failure needs protection.
+- Run only focused checks that add useful signal while repairing.
+- Call `submit_repair` as soon as the repair is ready.
 
-For **trivial** repairs, use the fast path: inspect the target/immediate context once, make the exact repair, optionally run one focused check if useful, then submit.
+For **trivial** repairs, use the fast path: after the required orientation and complexity declaration, make the exact repair, optionally run one focused check if useful, then submit.
 
 For normal/complex repairs, expand context only when required by a concrete repair decision. Prefer the existing PR implementation and current `dev` patterns. Do not investigate optional Reviewer suggestions, unrelated architecture, or future issue scope.
 
