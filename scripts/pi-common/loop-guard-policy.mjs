@@ -29,11 +29,13 @@ export function toolCallSignature(toolName, input) {
 }
 
 export class LoopGuard {
-  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityAllowedTools = [] }) {
+  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityAllowedTools = [], requiredFirstReadPath = null }) {
     this.turnLimit = turnBudget(turnLimit);
     this.repeatThreshold = repeatLimit(repeatThreshold);
     this.requireComplexity = requireComplexity;
     this.preComplexityAllowedTools = new Set(preComplexityAllowedTools);
+    this.requiredFirstReadPath = requiredFirstReadPath;
+    this.requiredFirstReadDone = !requiredFirstReadPath;
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
     this.seen = new Map();
@@ -55,6 +57,12 @@ export class LoopGuard {
   onTurnStart(turnIndex) { this.absoluteTurn = turnIndex; }
 
   checkToolCall(toolName, input) {
+    if (!this.requiredFirstReadDone) {
+      const requestedPath = typeof input?.path === 'string' ? input.path : '';
+      const allowed = toolName === 'read' && (requestedPath === this.requiredFirstReadPath || requestedPath.endsWith(`/\${this.requiredFirstReadPath}`));
+      if (!allowed) return { block: true, reason: `First read the required operating contract: \${this.requiredFirstReadPath}` };
+      this.requiredFirstReadDone = true;
+    }
     if (toolName === 'declare_task_complexity') return undefined;
     if (this.requireComplexity && !this.complexity) {
       if (!this.preComplexityAllowedTools.has(toolName)) {
