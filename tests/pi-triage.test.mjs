@@ -57,3 +57,10 @@ test('finalText uses the last non-empty assistant message across agent_end event
   ].join('\n');
   assert.equal(finalText(jsonl), 'second');
 });
+
+
+test('triage no longer depends on deleted task files', () => {
+  const source = fs.readFileSync('scripts/pi-triage.mjs', 'utf8');
+  assert.doesNotMatch(source, /readTask\s*\(/);
+  assert.match(source, /taskMetadata\(issue, \{ required: false \}\)/);
+});
