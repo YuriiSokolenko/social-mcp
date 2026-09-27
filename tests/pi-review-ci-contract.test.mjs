@@ -49,6 +49,7 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
     'pi-reconcile.yml',
     'pi-triage.yml',
     'pi-usage.yml',
+    'ci.yml',
   ];
   for (const name of workflows) {
     const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
@@ -58,9 +59,6 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
       `${name}: control-plane checkout must be pinned to dev`,
     );
   }
-
-  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
-  assert.doesNotMatch(ci, /GITHUB_WORKSPACE\/scripts\/pi-|(?:node|bash)\s+scripts\/pi-/);
 });
 
 
