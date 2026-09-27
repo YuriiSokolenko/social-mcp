@@ -191,3 +191,13 @@ test('implementer checkpoint never commits unresolved replay conflicts', () => {
   assert.ok(conflictCheck >= 0 && stage > conflictCheck);
   assert.match(workflow, /preserving the previous checkpoint instead of saving conflict markers/);
 });
+
+
+test('review verdict exists only for the unchanged reviewed PR head', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(review, /PR changed during review; clearing stale verdict/);
+  assert.match(review, /CURRENT_HEAD[\s\S]*?select\(startswith\("review:"\) \| not\)/);
+  assert.match(repair, /Load PR[\s\S]*?select\(startswith\("review:"\) \| not\)/);
+  assert.match(repair, /issues: write/);
+});
