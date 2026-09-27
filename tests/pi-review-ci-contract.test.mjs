@@ -13,7 +13,7 @@ test('merge gate never waits for pre-merge CI, review, repair, or a dev SHA', ()
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.doesNotMatch(gate, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\/integration|social-mcp\/pi-review/i);
   assert.doesNotMatch(gate, /pi-pr-review|statuses|social-mcp\/integration|social-mcp\/pi-review/);
-  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
   assert.match(gate, /merge_method: 'squash'/);
 });
 
@@ -74,7 +74,7 @@ test('implementer resolves latest-dev integration inside the live agent session 
   assert.match(tool, /runProductChecks\(\)/);
   const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /issue-publication\.mjs" review/);
-  assert.match(publication, /pi-pr-review\.yml\/dispatches/);
+  assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
 
@@ -137,7 +137,7 @@ test('Pi usage is isolated from dev and metrics pushes do not run project CI', (
 test('merge gate has permission for its late-conflict PR Fix dispatch', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
   assert.match(workflow, /permissions:\n(?:\s+.*\n)*?\s+actions: write/);
 });
 
@@ -284,7 +284,7 @@ test('PR head changes invalidate verdict without creating a second review schedu
 test('late merge conflict leaves recoverable PR Fix ownership', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /withReviewVerdict\(\[\.\.\.prLabels\], 'review:changes-requested'\)/);
-  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /labels\.has\('review:changes-requested'\) \? 'pi-pr-fix\.yml' : 'pi-pr-review\.yml'/);
 });
