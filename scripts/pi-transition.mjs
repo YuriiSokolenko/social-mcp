@@ -5,9 +5,7 @@ import { githubClient } from './pi-common/github-api.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
 const comment = commentParts.join(' ');
-const { api: request } = githubClient();
-const api = (path, options = {}) =>
-  request(path, options.method ?? 'GET', options.body ? JSON.parse(options.body) : undefined);
+const { api, comment: postIssueComment } = githubClient();
 const number = process.env.ISSUE;
 if (kind !== 'issue' || !action || !number) {
   throw new Error('usage: pi-transition.mjs issue <action> [comment]');
@@ -24,12 +22,12 @@ async function replaceIssueLabels(expected, target, transition) {
     target,
     load,
     validateCurrent: current => validateIssueTransition(current, transition),
-    patch: async (_number, labels) => api(`/issues/${number}`, { method: 'PATCH', body: JSON.stringify({ labels }) }),
+    patch: async (_number, labels) => api(`/issues/${number}`, 'PATCH', { labels }),
   });
 }
 async function postComment() {
   if (!comment) return;
-  await api(`/issues/${number}/comments`, { method: 'POST', body: JSON.stringify({ body: comment }) });
+  await postIssueComment(number, comment);
 }
 
 const item = await load();
