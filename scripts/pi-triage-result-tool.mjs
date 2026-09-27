@@ -1,5 +1,5 @@
 import { Type } from 'typebox';
-import { registerSubmitNudge } from './pi-common/terminal-result.mjs';
+import { registerSubmitNudge, terminalResult } from './pi-common/terminal-result.mjs';
 import { validateTriage } from './pi-triage.mjs';
 
 // Same prototype as pi-architect-result-tool.mjs, adapted for the triage
@@ -26,7 +26,7 @@ export default function (pi) {
       const result = validateTriage(params);
       pi.appendEntry('triage-result', result);
       submitted = true;
-      return { content: [{ type: 'text', text: 'Result recorded.' }], details: undefined };
+      return terminalResult('Result recorded.', undefined);
     },
   });
 
