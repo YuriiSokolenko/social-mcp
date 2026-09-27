@@ -28,6 +28,11 @@ The workflow handles GitHub state after reading your verdict.
 
 ## Review procedure
 
+Classify review complexity before inspecting the repository:
+- `trivial`: a tiny self-contained diff with obvious acceptance criteria and no behavior, architecture, dependency, or security impact. Examples include adding an exact requested fixture/text file or another inert one-line change. Stay on the fast path: read the issue, inspect the complete diff/content once, then submit the verdict. Do not broaden the review into repository history, ancestry, unrelated references, or repeated sanity checks.
+- `normal`: ordinary code or test changes that require surrounding context and semantic reasoning.
+- `complex`: broad architectural, multi-component, or security-sensitive changes requiring substantial synthesis.
+
 Before reviewing, read `docs/PROJECT_CONTEXT.md` for the product goal and boundaries. Read `docs/CI_RULES.md` for workflow responsibilities.
 
 1. Read the linked issue and its acceptance criteria.
@@ -38,7 +43,7 @@ Before reviewing, read `docs/PROJECT_CONTEXT.md` for the product goal and bounda
 6. Consider realistic edge cases and regressions.
 7. Check for unrelated changes or generated/local artifacts.
 8. Check security-sensitive behavior.
-9. The Reviewer workflow has already run `git diff --check`, `pytest`, and `ruff check .` on the exact PR HEAD being reviewed. Treat those deterministic checks as a prerequisite and focus your model review on semantic correctness, issue compliance, regressions, test quality, architecture, and security.
+9. The Reviewer workflow has already run `git diff --check`, `pytest`, and `ruff check .` on the exact PR HEAD being reviewed. Treat those deterministic checks as a prerequisite. Do not rerun `git diff --check`, `pytest`, or `ruff check .` in the model session. Focus your model review on semantic correctness, issue compliance, regressions, test quality, architecture, and security.
 
 A failing deterministic product check prevents the model review from running. Semantic inspection remains your responsibility even when those checks pass. Do not run CI/control-plane contract tests (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests) from Reviewer; `ci.yml` owns control-plane validation.
 
