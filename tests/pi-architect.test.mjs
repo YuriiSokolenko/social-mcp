@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { childNumbers, parentOf, planFromJsonl, taskMetadataFromBody, validatePlan } from '../scripts/pi-architect.mjs';
+import { childNumbers, parentOf, planFromJsonl, taskMetadataFromBody, validatePlan, withTaskMetadata } from '../scripts/pi-architect.mjs';
 
 const body = '## Goal\nSpecify the shared contract.\n\n## Acceptance criteria\nDefine the stable schema and cover compatibility with focused tests.\n\n## Out of scope\nNo business logic.';
 const step = (key, kind, depends_on = []) => ({
@@ -76,4 +76,16 @@ test('only explicit architect markers link parent and child issues', () => {
 test('reads architect metadata from canonical issue body header', () => {
   assert.deepEqual(taskMetadataFromBody(42, '## Task metadata\nPriority: P0\nDepends on: [#14, #18]\n\n## Goal\nX'),
     { priority: 'P0', dependencies: [14, 18] });
+});
+
+
+test('rewrites Task metadata without consuming issue content', () => {
+  assert.equal(
+    withTaskMetadata('## Task metadata\nPriority: P2\nDepends on: []\n\n## Goal\nKeep this.', 'P0', [12]),
+    '## Task metadata\nPriority: P0\nDepends on: [#12]\n\n## Goal\nKeep this.',
+  );
+  assert.equal(
+    withTaskMetadata('## Task metadata\nPriority: P2\nDepends on: []\n', 'P1', [7, 8]),
+    '## Task metadata\nPriority: P1\nDepends on: [#7, #8]\n\n',
+  );
 });
