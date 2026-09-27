@@ -7,7 +7,7 @@ on:
       issue_number:
         description: Issue number to implement
         required: true
-        type: string
+        type: number
 
 permissions:
   actions: write
