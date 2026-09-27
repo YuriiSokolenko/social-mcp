@@ -34,3 +34,29 @@ test('workflow dispatch inputs stay minimal identifiers or real commands', () =>
     }
   }
 });
+
+
+test('control-plane scripts always execute from trusted dev checkout', () => {
+  const workflows = [
+    'pi-architect.yml',
+    'pi-auto-merge.yml',
+    'pi-dispatcher.yml',
+    'pi-issue-agent.yml',
+    'pi-pr-fix.yml',
+    'pi-pr-review.yml',
+    'pi-reconcile.yml',
+    'pi-triage.yml',
+    'pi-usage.yml',
+  ];
+  for (const name of workflows) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.match(
+      workflow,
+      /uses:\s*actions\/checkout@v\d+[\s\S]*?with:[\s\S]*?ref:\s*dev/,
+      `${name}: control-plane checkout must be pinned to dev`,
+    );
+  }
+
+  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.doesNotMatch(ci, /GITHUB_WORKSPACE\/scripts\/pi-|(?:node|bash)\s+scripts\/pi-/);
+});
