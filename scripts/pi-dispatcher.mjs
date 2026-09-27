@@ -27,14 +27,7 @@ async function transitionIssue(number, action) {
 const activeLabels = [...ISSUE_ACTIVE].filter(label => label !== PIPELINE_LABELS.architectReady);
 const blockedLabels = [...ISSUE_TERMINAL, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic];
 
-export const issueMetadata = issue => {
-  const metadata = taskMetadata(issue, { required: false });
-  if (metadata.errors.length === 1 && metadata.errors[0] === "missing Task metadata section") {
-    return { priority: "P1", dependencies: [] };
-  }
-  if (!metadata.valid) throw new Error(metadata.errors.join("; "));
-  return { priority: metadata.priority, dependencies: metadata.dependencies };
-};
+export const issueMetadata = issue => { const metadata = taskMetadata(issue); return { priority: metadata.priority, dependencies: metadata.dependencies }; };
 async function snapshot(includeQueue = false) {
   const [issues, prs] = await Promise.all([
     pages("/issues?state=open"),
