@@ -58,7 +58,7 @@ The actual merged `dev` commit is the integration test. There is no separate pre
 
 Merge Gate is not an integration engine. It may read the current PR head SHA only for GitHub merge optimistic concurrency. It does not carry SHAs between workflows, synthesize dev+PR commits, update branches because `dev` moved, or maintain exact-pair review/CI state.
 
-A late merge conflict invalidates the old review, dispatches PR Fix, and blocks the queue without making Merge Gate itself fail. PR Fix integrates current dev, resolves conflicts in its live agent session, validates and pushes the new HEAD, then starts a fresh Reviewer. Protected CI/control-plane changes are not auto-merged.
+A late merge conflict invalidates the old PASS, sets `review:changes-requested` as durable PR Fix ownership, dispatches PR Fix, and blocks the queue without making Merge Gate itself fail. If that dispatch is lost, Reconciler therefore recovers PR Fix rather than Reviewer. PR Fix integrates current dev, resolves conflicts in its live agent session, validates and pushes the new HEAD, then starts a fresh Reviewer. Protected CI/control-plane changes are not auto-merged.
 
 Normal wake sources are deliberately narrow:
 - `dispatcher:ready` can wake Dispatcher;
