@@ -10,13 +10,12 @@ from __future__ import annotations
 import pytest
 
 from social_mcp.platforms.mapping import (
+    AdminError,
     normalize_error,
     normalize_http_status,
     redact_message,
     to_admin_error,
     to_mcp_error,
-    AdminError,
-    NormalizedError,
 )
 from social_mcp.platforms.reliability import (
     PlatformHttpError,
@@ -24,15 +23,15 @@ from social_mcp.platforms.reliability import (
     TransientError,
 )
 from social_mcp.server.errors import (
-    SUPPORTED_CATEGORIES,
-    McpError,
-    PLATFORM_ERROR,
-    TEMPORARY_FAILURE,
-    RATE_LIMITED,
     AUTHENTICATION_REQUIRED,
-    PERMISSION_REQUIRED,
-    NOT_FOUND,
     INVALID_REQUEST,
+    NOT_FOUND,
+    PERMISSION_REQUIRED,
+    PLATFORM_ERROR,
+    RATE_LIMITED,
+    SUPPORTED_CATEGORIES,
+    TEMPORARY_FAILURE,
+    McpError,
 )
 
 

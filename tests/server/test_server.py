@@ -28,7 +28,6 @@ from social_mcp.server.capabilities import (
 )
 from social_mcp.server.errors import (
     AUTHENTICATION_REQUIRED,
-    McpError,
     PLATFORM_ERROR,
 )
 from social_mcp.server.server import (

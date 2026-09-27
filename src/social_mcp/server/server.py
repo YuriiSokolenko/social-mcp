@@ -24,6 +24,7 @@ from social_mcp.server.capabilities import (
     resolve_threads_capabilities,
 )
 from social_mcp.server.errors import (
+    McpError,
     authentication_required,
 )
 from social_mcp.storage.models import ConnectedAccount, SocialPlatform
