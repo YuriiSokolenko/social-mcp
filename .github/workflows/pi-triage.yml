@@ -27,6 +27,7 @@ jobs:
       PI_BASH_TIMEOUT_SECONDS: '600'
       PI_TRIAGE_BATCH_SIZE: '8'
       PI_REQUIRED_FIRST_READ_PATH: 'agents/triage/AGENTS.md'
+      PI_FIXED_RESPONSE_MAX_TOKENS: '1000'
 
     steps:
       - name: Checkout trusted dev
