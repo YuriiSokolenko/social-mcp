@@ -36,7 +36,7 @@ Before reviewing, read `docs/PROJECT_CONTEXT.md` for the product goal and bounda
 8. Check security-sensitive behavior.
 9. The Reviewer workflow has already run `git diff --check`, `pytest`, and `ruff check .` on the exact PR HEAD being reviewed. Treat those deterministic checks as a prerequisite and focus your model review on semantic correctness, issue compliance, regressions, test quality, architecture, and security.
 
-A failing deterministic review check prevents the model review from running. Semantic inspection remains your responsibility even when those checks pass.
+A failing deterministic product check prevents the model review from running. Semantic inspection remains your responsibility even when those checks pass. Do not run CI/control-plane contract tests (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests) from Reviewer; `ci.yml` owns control-plane validation.
 
 ## What to verify
 
