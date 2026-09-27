@@ -28,7 +28,7 @@ An open dependency is `skipped`, not `needs_human`. Previous Pi/CI failures, bot
 
 For `needs_human`, state the exact missing decision or correction. Do not invent scope to make an issue ready.
 
-Classify candidates independently and exactly once. Once the prepared data supports one of the three classifications, record that decision and move to the next candidate. Do not repeatedly reconsider a classification because of old workflow failures, bot comments, or labels. Do not narrate internal debate. When all candidates are classified, call `submit_result` immediately.
+Classify candidates independently and exactly once. Once the prepared data supports one of the three classifications, record that decision internally and move to the next candidate. Do not repeatedly reconsider a classification because of old workflow failures, bot comments, or labels. Do not narrate internal debate or print a prose classification list. When all candidates are classified, call `submit_result` immediately; put the classifications directly in its arguments.
 
 ## Output
 
