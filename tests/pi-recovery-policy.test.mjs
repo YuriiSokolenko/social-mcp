@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkpointGcDecision, recoveryForIssue } from '../scripts/pi-recovery-policy.mjs';
+import { checkpointGcDecision, recoveryForIssue } from '../scripts/pi-common/recovery-policy.mjs';
 
 const issue = (state, labels, state_reason) => ({ state, state_reason, labels: labels.map(name => ({ name })) });
 
