@@ -25,10 +25,12 @@ test('completed issue makes checkpoint garbage collectable', () => {
   assert.equal(checkpointGcDecision({ state: 'closed', state_reason: 'completed', labels: [] }).remove, true);
 });
 
-test('RUNNING control wakes dispatcher and reconciler', () => {
+test('RUNNING control wakes only the normal Dispatcher scheduler', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-automation-control.yml', 'utf8');
-  assert.match(workflow, /pi-dispatcher\.yml\/dispatches/);
-  assert.match(workflow, /pi-reconcile\.yml\/dispatches/);
+  const control = fs.readFileSync('scripts/pi-common/automation-control.mjs', 'utf8');
+  assert.match(workflow, /automation-control\.mjs" resume/);
+  assert.match(control, /pi-dispatcher\.yml\/dispatches/);
+  assert.doesNotMatch(control, /pi-reconcile\.yml\/dispatches/);
 });
 
 test('agent concurrency never cancels active work', () => {
