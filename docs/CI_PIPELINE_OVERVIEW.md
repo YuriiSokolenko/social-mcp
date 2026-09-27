@@ -72,7 +72,7 @@ Reconciler does not wake Merge Gate. A wake carries no authoritative task state;
 
 ## Agent control-plane boundary
 
-Pi agents have no control-plane write/review/repair authority. `.github/workflows/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
+Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
 
 ## Branch, trust, and inputs
 
@@ -115,6 +115,10 @@ Manual cancellation is not a failure state. Before PR publication, cancelled Imp
 | `pi-triage.yml` | Optional issue preparation |
 | `pi-automation-control.yml` | RUNNING/DRAINING/PAUSED control |
 | `pi-usage.yml` | Usage diagnostics |
+
+## Concurrency
+
+Stateful workflows serialize related work with standard GitHub Actions `concurrency.group` and `cancel-in-progress: false`. `queue: max` / `concurrency.queue` is not part of the design and must not be reintroduced.
 
 ## Design rule
 
