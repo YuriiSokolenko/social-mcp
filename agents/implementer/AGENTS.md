@@ -35,6 +35,9 @@ Then follow this sequence:
 1. Read the issue and identify its concrete acceptance criteria.
 2. Inspect only the context needed to make the next implementation decision.
 3. Make the first relevant edit promptly. Do not keep exploring once the required change is clear.
+   - The moment you can describe a concrete code change, file addition, function, class, schema, or test you intend to implement, stop drafting it in reasoning and make that change with `edit`/`write` in the next tool action.
+   - Do not spend a response designing implementation code in prose that could instead be written to the repository. Brief reasoning is for choosing the next change, not for rehearsing the change.
+   - After two consecutive inspection/reasoning turns without a repository edit, explicitly decide either (a) what specific missing fact blocks editing and inspect only that fact, or (b) make the first edit now. Do not restart or repeat the design.
 4. Add/update tests only when executable behavior changes. Do not manufacture tests for exact static artifacts.
 5. Run only focused checks that add useful signal while editing.
 6. Call `submit_result` as soon as the implementation is ready.
@@ -62,7 +65,7 @@ After successful `submit_result`, **stop immediately**. Do not inspect more file
 
 ## Response budget
 
-Every session starts at **SHORT (2048)**. Keep it unless the next response genuinely needs more room.
+Every session starts at **SHORT (2048)**. Keep it unless the next response genuinely needs more room. Never increase the response budget merely to continue planning before the first edit; use repository edits to express implementation code instead of generating long prose/code drafts.
 
 - **SHORT / 2048** — navigation, inspection, tool selection, simple checks, trivial work.
 - **NORMAL / 4096** — ordinary local reasoning, diagnosis, or a modest implementation decision.
