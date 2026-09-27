@@ -8,6 +8,9 @@ on:
         description: Pull request number to review
         required: true
         type: number
+  pull_request:
+    types: [synchronize]
+    branches: [dev]
 
 permissions:
   actions: write
@@ -21,8 +24,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  invalidate:
+    if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'pi/issue-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invalidate stale review verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          API="https://api.github.com/repos/${REPO}"
+          LABELS="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/labels" | jq -c '[.[].name | select(startswith("review:") | not)]')"
+          curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" "${API}/issues/${PR}/labels" -d "$(jq -nc --argjson labels "$LABELS" '{labels:$labels}')" >/dev/null
+          echo "PR #${PR}: HEAD changed; stale review verdict cleared"
+
   review:
-    if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
     env:
