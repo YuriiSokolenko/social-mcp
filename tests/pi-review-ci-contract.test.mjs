@@ -272,3 +272,16 @@ test('late merge conflict leaves recoverable PR Fix ownership', () => {
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /labels\.has\('review:changes-requested'\) \? 'pi-pr-fix\.yml' : 'pi-pr-review\.yml'/);
 });
+
+
+test('issue publication safely replaces only the branch head observed at run start', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.match(workflow, /PI_ISSUE_BRANCH_EXPECTED=\$\{ISSUE_BRANCH_REMOTE\}/);
+  assert.match(workflow, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}:\$\{PI_ISSUE_BRANCH_EXPECTED\}"/);
+  assert.doesNotMatch(workflow, /push --set-upstream origin "\$\{ISSUE_COMMIT\}:refs\/heads\/pi\/issue-\$\{ISSUE\}"/);
+});
+
+test('issue agent workflow contains no escaped newline artifacts', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.equal(workflow.includes('\\\\n'), false);
+});
