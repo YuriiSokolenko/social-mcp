@@ -456,13 +456,22 @@ test('loop guard is limited to stages that need exploration/task-complexity cont
 });
 
 test('agent prompts document their configured response-budget contract', () => {
-  for (const name of ['architect', 'dispatcher', 'implementer', 'repair', 'reviewer']) {
+  for (const name of ['architect', 'implementer', 'repair', 'reviewer']) {
     const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
     assert.match(source, /set_response_budget/);
     assert.match(source, /SHORT[\s\S]*2048/);
     assert.match(source, /NORMAL[\s\S]*4096/);
     assert.match(source, /DEEP[\s\S]*8192/);
   }
+  const dispatcher = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
+  assert.match(dispatcher, /set_response_budget/);
+  assert.match(dispatcher, /SHORT[\s\S]*1024/);
+  assert.match(dispatcher, /NORMAL[\s\S]*2048/);
+  assert.match(dispatcher, /DEEP[\s\S]*4096/);
+  const dispatcherWorkflow = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
+  assert.match(dispatcherWorkflow, /PI_RESPONSE_BUDGET_SHORT: '1024'/);
+  assert.match(dispatcherWorkflow, /PI_RESPONSE_BUDGET_NORMAL: '2048'/);
+  assert.match(dispatcherWorkflow, /PI_RESPONSE_BUDGET_DEEP: '4096'/);
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
   assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
   assert.match(triage, /`set_response_budget` is intentionally unavailable/);
@@ -565,9 +574,10 @@ test('dispatcher stays a narrow scope classifier and does not treat complexity a
   assert.match(agent, /candidates.*authoritative/is);
   assert.match(agent, /Size alone is not a reason for ARCHITECT/);
   assert.match(agent, /Complexity alone is not a reason for ARCHITECT/);
-  assert.match(agent, /Do not inspect repository code, project documentation, Git history/);
+  assert.match(agent, /Read the project documentation once, before reading the dispatcher candidates/);
+  assert.match(agent, /Do not repeatedly reread project documentation for each candidate/);
+  assert.match(agent, /Do not inspect repository code, Git history, queue state/);
   assert.match(agent, /That classification is your entire job/);
-  assert.doesNotMatch(agent, /Read `docs\/PROJECT_CONTEXT\.md`/);
 });
 
 
