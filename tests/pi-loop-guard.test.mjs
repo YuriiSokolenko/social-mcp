@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LoopGuard, complexityProfile, toolCallSignature, toolPhase, turnBudget, repeatLimit } from '../scripts/pi-common/loop-guard-policy.mjs';
+import { RESPONSE_BUDGETS, responseBudget, withResponseBudget } from '../scripts/pi-common/response-budget-policy.mjs';
 
 test('legacy guard blocks tool calls once the configured turn budget is reached', () => {
   const guard = new LoopGuard({ turnLimit: 3, repeatThreshold: 10 });
@@ -97,4 +98,20 @@ test('invalid configuration fails before Pi starts', () => {
     assert.throws(() => repeatLimit(value));
   }
   assert.throws(() => complexityProfile('tiny'), /Unknown task complexity/);
+});
+
+
+test('response budgets are intentionally capped at 2k, 4k, and 8k', () => {
+  assert.deepEqual(RESPONSE_BUDGETS, { short: 2048, normal: 4096, deep: 8192 });
+  assert.equal(responseBudget('short'), 2048);
+  assert.equal(responseBudget('normal'), 4096);
+  assert.equal(responseBudget('deep'), 8192);
+  assert.throws(() => responseBudget('unbounded'), /Unknown response budget/);
+});
+
+test('response budget changes only maxTokens on the active model definition', () => {
+  const model = { provider: 'hp-laguna', id: 'qwen3.8-flash-next', contextWindow: 262144, maxTokens: 32000 };
+  const budgeted = withResponseBudget(model, 'normal');
+  assert.deepEqual(budgeted, { ...model, maxTokens: 4096 });
+  assert.equal(model.maxTokens, 32000);
 });
