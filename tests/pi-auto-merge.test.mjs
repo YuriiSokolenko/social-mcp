@@ -62,7 +62,7 @@ test('merge gate merges at most one PR per dev CI cycle', () => {
   assert.match(gate, /if \(await processPR\(pr\)\) break/);
   assert.match(ci, /needs: \[test, docker\]/);
   assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
-  assert.match(ci, /pi-auto-merge\.yml\/dispatches/);
+  assert.match(ci, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
 });
 
 
@@ -71,7 +71,7 @@ test('late merge conflict invalidates review, dispatches PR Fix, and blocks the 
   assert.match(gate, /merge conflicts/i);
   assert.match(gate, /merge-gate:conflict-pr:\$\{pr\.number\}:\$\{sha\}/);
   assert.match(gate, /withoutReviewLabels/);
-  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
   assert.match(gate, /return 'blocked'/);
   assert.match(gate, /if \(await processPR\(pr\)\) break/);
 });
