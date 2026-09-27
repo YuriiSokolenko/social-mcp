@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LoopGuard, complexityProfile, toolCallSignature, turnBudget, repeatLimit } from '../scripts/pi-common/loop-guard-policy.mjs';
+import { LoopGuard, complexityProfile, toolCallSignature, toolPhase, turnBudget, repeatLimit } from '../scripts/pi-common/loop-guard-policy.mjs';
 
 test('legacy guard blocks tool calls once the configured turn budget is reached', () => {
   const guard = new LoopGuard({ turnLimit: 3, repeatThreshold: 10 });
@@ -49,6 +49,27 @@ test('trivial profile hard-blocks excessive exploration while preserving complet
     assert.equal(guard.checkToolCall('read', { path: `file-${i}` }), undefined);
   }
   assert.match(guard.checkToolCall('read', { path: 'one-too-many' }).reason, /Exploration tool-call budget exhausted/);
+});
+
+test('tool phases separate exploration from implementation and validation', () => {
+  assert.equal(toolPhase('read', { path: 'x' }), 'explore');
+  assert.equal(toolPhase('bash', { command: 'git status --short' }), 'explore');
+  assert.equal(toolPhase('write', { path: 'x' }), 'implement');
+  assert.equal(toolPhase('edit', { path: 'x' }), 'implement');
+  assert.equal(toolPhase('bash', { command: 'mkdir -p tests/fixtures' }), 'implement');
+  assert.equal(toolPhase('bash', { command: 'pytest tests/foo.py -q' }), 'validate');
+  assert.equal(toolPhase('bash', { command: 'ruff check tests/foo.py' }), 'validate');
+  assert.equal(toolPhase('submit_result', {}), 'submit');
+});
+
+test('hard exploration limit still permits implementation bash and validation', () => {
+  const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
+  guard.setComplexity('trivial');
+  guard.onTurnStart(5);
+  assert.equal(guard.checkToolCall('bash', { command: 'mkdir -p tests/fixtures' }), undefined);
+  assert.equal(guard.checkToolCall('bash', { command: 'pytest tests/foo.py -q' }), undefined);
+  assert.equal(guard.checkToolCall('bash', { command: 'ruff check tests/foo.py' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: 'more-context.py' }).block, true);
 });
 
 test('complexity can only be declared once', () => {
