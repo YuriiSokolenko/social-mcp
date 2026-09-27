@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { replaceIssueState } from './pi-github-state.mjs';
-import { validateIssueTransition } from './pi-state-machine.mjs';
-import { githubClient } from './github-api.mjs';
+import { replaceIssueState } from './pi-common/github-state.mjs';
+import { validateIssueTransition } from './pi-common/state-machine.mjs';
+import { githubClient } from './pi-common/github-api.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
 const comment = commentParts.join(' ');
