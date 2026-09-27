@@ -60,3 +60,32 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.doesNotMatch(ci, /GITHUB_WORKSPACE\/scripts\/pi-|(?:node|bash)\s+scripts\/pi-/);
 });
+
+
+test('implementer integrates latest dev before verification and starts review, not merge', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const integrate = workflow.indexOf('name: Integrate latest dev before publication');
+  const verify = workflow.indexOf('name: Verify implementation before publication');
+  const publish = workflow.indexOf('name: Push verified issue branch');
+  assert.ok(integrate >= 0 && integrate < verify && verify < publish);
+  assert.match(workflow, /git fetch origin dev[\s\S]*git merge --no-edit origin\/dev/);
+  assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
+  assert.doesNotMatch(workflow, /name: Wake merge gate/);
+});
+
+test('review PASS is required before merge gate can merge', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(review, /Run deterministic review checks/);
+  assert.match(review, /review:passed/);
+  assert.match(review, /Wake merge gate after PASS/);
+  assert.match(gate, /review:passed/);
+});
+
+test('PR fix integrates latest dev and returns to fresh review', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  assert.match(workflow, /git fetch origin dev[\s\S]*git merge --no-edit origin\/dev/);
+  assert.match(workflow, /name: Start fresh review/);
+  assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
+  assert.doesNotMatch(workflow, /name: Wake merge gate/);
+});
