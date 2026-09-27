@@ -11,6 +11,19 @@ For every issue in the prepared `candidates` array, make exactly one decision:
 
 That classification is your entire job.
 
+## Working sequence
+
+Follow this order:
+
+1. Read this `AGENTS.md`.
+2. Read the project documentation once, before reading the dispatcher candidates. Use it to understand the project's architecture, conventions, component boundaries, and terminology.
+3. Read the prepared dispatcher context and its `candidates` array.
+4. After that context is loaded, choose the smallest sufficient response budget for the classification work. Stay on SHORT when it is enough; increase it only when the candidate set genuinely requires more output room.
+5. Classify every candidate as `IMPLEMENT` or `ARCHITECT`.
+6. Call `submit_result` exactly once as the final action, then stop.
+
+Do not repeatedly reread project documentation for each candidate.
+
 ## Authoritative input
 
 Read the prepared dispatcher context and classify every entry in `candidates`.
@@ -19,7 +32,7 @@ The `candidates` array is authoritative. Trusted workflow code has already valid
 
 Never revalidate scheduling state, query GitHub for readiness, infer new dependencies, reorder candidates, reserve capacity, or omit a candidate.
 
-Use each candidate's issue title/body/acceptance criteria as the source of truth for its scope. Do not inspect repository code, project documentation, Git history, queue state, or unrelated issues merely to classify scope.
+Use each candidate's issue title/body/acceptance criteria as the source of truth for its requested scope. Use the project documentation already read at session start to interpret architecture, terminology, and component boundaries. Do not inspect repository code, Git history, queue state, or unrelated issues merely to classify scope.
 
 ## Classification rule
 
@@ -61,6 +74,6 @@ If the tool is unavailable, emit one final line:
 
 ## Response budget
 
-The session starts at **SHORT (2048)**. Dispatcher classification should normally remain SHORT.
+The session starts at **SHORT (1024)**. Dispatcher classification should normally remain SHORT.
 
-Use `set_response_budget` only if the next response genuinely requires more room. NORMAL (4096) is available for unusually dense multi-candidate scope reasoning; DEEP (8192) should almost never be necessary for dispatch classification.
+After reading the project documentation and prepared dispatcher context, choose the smallest sufficient budget for the remaining classification work. Use `set_response_budget` only if the next response genuinely requires more room. NORMAL (2048) is available for unusually dense multi-candidate scope reasoning; DEEP (4096) should almost never be necessary for dispatch classification.
