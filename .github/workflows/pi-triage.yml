@@ -62,7 +62,7 @@ jobs:
           Do not modify the repository or GitHub state.
           EOF
           pi \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
+            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" \
             --extension "$GITHUB_WORKSPACE/scripts/pi-triage-result-tool.mjs" \
             --provider hp-laguna \
             --model qwen3.8-flash-next \
