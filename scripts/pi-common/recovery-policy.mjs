@@ -1,3 +1,11 @@
+/**
+ * Small deterministic recovery decisions shared by reconciliation code.
+ *
+ * Recovery is intentionally smaller than the happy path: preserve checkpoints,
+ * prefer an already-published PR, and return orphaned work to its normal owner.
+ * No GitHub calls or dispatches belong in this policy module.
+ */
+
 export function recoveryForIssue(issue, { hasCheckpoint = false, hasOpenPiPr = false } = {}) {
   const labels = new Set((issue.labels ?? []).map(x => typeof x === 'string' ? x : x.name));
   if (issue.state !== 'open' || !labels.has('pi:running')) return null;
