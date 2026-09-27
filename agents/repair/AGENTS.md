@@ -38,4 +38,4 @@ Completion means `submit_repair` succeeded: current `dev` was integrated and tru
 
 ## Response budget
 
-Use the smallest response budget needed. Start at SHORT (2048). NORMAL (4096) is for ordinary repair reasoning; DEEP (8192) is only for genuinely difficult debugging, synthesis, or conflict resolution. Lower the budget again after a larger turn.
+Use the smallest response budget needed. Change it with `set_response_budget` only when the next response genuinely needs more room. Start at SHORT (2048). NORMAL (4096) is for ordinary repair reasoning; DEEP (8192) is only for genuinely difficult debugging, synthesis, or conflict resolution. Lower the budget again after a larger turn.
