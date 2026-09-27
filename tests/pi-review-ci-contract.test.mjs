@@ -448,3 +448,15 @@ test('all agent prompts document the shared response-budget contract', () => {
     assert.match(source, /DEEP[\s\S]*8192/);
   }
 });
+
+
+test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
+  assert.match(workflow, /PI_ISSUE=.*\.issue/);
+  assert.match(workflow, /use trivial for a tiny self-contained diff/);
+  assert.match(workflow, /do not rerun pytest, Ruff, or git diff --check/);
+  assert.match(prompt, /trivial.*tiny self-contained diff/is);
+  assert.match(prompt, /Stay on the fast path/);
+  assert.match(prompt, /Do not rerun `git diff --check`, `pytest`, or `ruff check \.`/);
+});
