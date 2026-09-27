@@ -244,3 +244,11 @@ test('reviewer rechecks the human gate before publishing a verdict', () => {
   assert.match(review, /Apply review result[\s\S]*?PR_JSON=.*pulls\/\$\{PR\}[\s\S]*?pi:needs-human[\s\S]*?HUMAN_GATED=true[\s\S]*?exit 0/);
   assert.match(review, /Restart review after PR head changed[\s\S]*?env\.HUMAN_GATED != 'true'/);
 });
+
+
+test('reconciler gives normal PR handoffs a grace period before recovery dispatch', () => {
+  const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(source, /PR_RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
+  assert.match(source, /pr\.updated_at \?\? pr\.created_at/);
+  assert.match(source, /prAgeMs < PR_RECOVERY_GRACE_MS/);
+});
