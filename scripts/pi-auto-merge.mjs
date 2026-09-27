@@ -49,6 +49,9 @@ async function processPR(prSummary) {
   const files = await pages(`/pulls/${pr.number}/files`);
   if (!allowedFiles(files, pr.changed_files)) {
     console.log(`#${pr.number}: changed control files or incomplete file list; human review required`);
+    const nextLabels = [...prLabels].filter(label => !label.startsWith('review:'));
+    if (!nextLabels.includes('pi:needs-human')) nextLabels.push('pi:needs-human');
+    await api(`/issues/${pr.number}/labels`, 'PUT', { labels: nextLabels });
     const marker = `<!-- merge-gate:unsafe-pr:${pr.number} -->`;
     const comments = await pages(`/issues/${issue}/comments`);
     if (!comments.some(comment => (comment.body ?? '').includes(marker))) {
