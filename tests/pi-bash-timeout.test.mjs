@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bashTimeout, registerTimedBash } from '../scripts/pi-bash-timeout-policy.mjs';
+import { bashTimeout, registerTimedBash } from '../scripts/pi-common/bash-timeout-policy.mjs';
 
 test('every bash call receives a timeout that cannot exceed the role limit', async () => {
   const received = [];
