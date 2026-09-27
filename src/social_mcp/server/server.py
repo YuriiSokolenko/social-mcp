@@ -98,7 +98,18 @@ def create_mcp_server(
         structured_output=True,
     )
     async def threads_capabilities() -> dict[str, Any]:
-        account = await accounts_provider()
+        try:
+            account = await accounts_provider()
+        except McpError:
+            # An upstream layer already raised a normalized error.
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            # Normalize unexpected account-provider/platform failures into a
+            # stable MCP error so they never crash the call or leak secrets.
+            # Imported lazily to avoid a circular import with the mapping layer.
+            from social_mcp.platforms.mapping import to_mcp_error
+
+            raise to_mcp_error(exc)
         resolved = resolve_threads_capabilities(
             _find_connected_account([account]) if account is not None else None
         )
@@ -106,8 +117,7 @@ def create_mcp_server(
         if not resolved.connected:
             # No account is connected: the capability set already states this,
             # but a normalized error lets clients branch without inspecting it.
-            raise authentication_required(
-                "No Threads account is connected. Connect one through the Web Admin."
+            raise authentication_required("No Threads account is connected. Connect one through the Web Admin."
             )
 
         # ``platform`` is always reported; ``connected`` is True here; each
