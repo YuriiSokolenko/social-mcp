@@ -9,6 +9,7 @@ const token = process.env.GITHUB_TOKEN;
 const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
 let run = event.workflow_run;
 const path = "reports/pi-usage.csv";
+const metricsBranch = "pi-metrics";
 const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "url"];
 const api = `https://api.github.com/repos/${repo}`;
 
@@ -127,7 +128,7 @@ if (!newRows.length) {
 }
 
 for (let retry = 0; retry < 8; retry++) {
-  const current = await request(`${api}/contents/${path}?ref=dev`);
+  const current = await request(`${api}/contents/${path}?ref=${metricsBranch}`);
   if (!current.ok && current.status !== 404) throw new Error(`Failed to read usage CSV: ${current.status}`);
   const body = current.ok ? await current.json() : null;
   const oldRows = body ? parseCsv(Buffer.from(body.content, "base64").toString("utf8")) : [];
@@ -152,7 +153,7 @@ for (let retry = 0; retry < 8; retry++) {
   const payload = {
     message: `chore: update Pi usage for run ${run.id} attempt ${run.run_attempt}`,
     content: Buffer.from(csv([...sortedIssues, ...sortedAttempts])).toString("base64"),
-    branch: "dev",
+    branch: metricsBranch,
     ...(body ? { sha: body.sha } : {}),
   };
   const update = await request(`${api}/contents/${path}`, {
