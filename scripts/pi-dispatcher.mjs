@@ -101,7 +101,7 @@ export function classificationLists(result) {
 export function dispatchFromJsonl(jsonl) {
   const { customResult, finalText: text } = readPiJsonl(jsonl, { customType: "dispatcher-result" });
   if (customResult) return validateDispatch(customResult);
-  const lines = text.split(/\\r?\\n/).filter(line => line.startsWith("DISPATCH_RESULT: "));
+  const lines = text.split(/\r?\n/).filter(line => line.startsWith("DISPATCH_RESULT: "));
   if (!lines.length) throw new Error("expected a DISPATCH_RESULT line");
   return validateDispatch(JSON.parse(lines.at(-1).slice("DISPATCH_RESULT: ".length)));
 }
