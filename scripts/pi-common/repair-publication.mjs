@@ -19,8 +19,8 @@ function git(args, { cwd, allowFailure = false, token } = {}) {
  * repair session started from. The exact-ref lease is the final race guard.
  */
 export async function publishRepair({ prNumber, issue, cwd, headRef, expectedHead, token }) {
-  const { api } = githubClient();
-  const pr = await api(`/pulls/${prNumber}`);
+  const { loadPullRequest } = githubClient();
+  const pr = await loadPullRequest(prNumber);
   const labels = prLabelNames(pr);
   if (labels.includes('pi:needs-human')) return { published:false, reason:'human' };
   if (pr.head.sha !== expectedHead) throw new Error(`PR #${prNumber} HEAD moved during repair`);
@@ -47,11 +47,11 @@ export async function publishRepair({ prNumber, issue, cwd, headRef, expectedHea
  * Reviewer run.
  */
 export async function handoffToReviewer(prNumber) {
-  const { api } = githubClient();
-  const pr = await api(`/pulls/${prNumber}`);
+  const { loadPullRequest, replaceLabels, dispatchWorkflow } = githubClient();
+  const pr = await loadPullRequest(prNumber);
   const labels = withoutReviewLabels(pr);
-  await api(`/issues/${prNumber}/labels`,'PUT',{labels});
-  await api('/actions/workflows/pi-pr-review.yml/dispatches','POST',{ref:'dev',inputs:{pr_number:String(prNumber)}});
+  await replaceLabels(prNumber, labels);
+  await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(prNumber) });
 }
 async function main(){
  const [cmd,...a]=process.argv.slice(2);
