@@ -4,7 +4,7 @@ The control plane intentionally uses a simple contract:
 
 1. Dispatcher routes eligible work.
 2. Implementer integrates the latest `dev` in its live session, resolves conflicts, validates the result, and produces a verified PR.
-3. Reviewer runs deterministic checks on the exact PR HEAD and independently approves that same HEAD or requests changes.
+3. Trusted review tooling runs deterministic checks on the exact PR HEAD; Reviewer then independently approves that same HEAD or requests changes.
 4. Merge Gate validates basic ownership/safety and attempts a GitHub squash merge.
 5. Ordinary `push` CI tests the resulting `dev` commit.
 6. Green post-merge CI wakes Merge Gate for the next ready PR; red CI stops the merge sequence.
@@ -13,7 +13,7 @@ The actual merged `dev` commit is the integration truth.
 
 ## Test ownership rule
 
-Implementer, Reviewer, and PR Fix validate product behavior only: focused product tests as needed, full `pytest`, Ruff, and diff checks. They do not run CI/control-plane contract suites (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests). `ci.yml` exclusively owns those control-plane checks and runs them on the triggering `dev` commit, together with an isolated Docker Compose integration test. This keeps product agents focused and prevents CI from recursively testing itself inside agent workflows.
+Agents use focused product tests when useful for implementation or reasoning. Authoritative full `pytest`, Ruff, and diff checks belong to trusted product-stage workflow/submit tooling and are not duplicated by the model merely as a completion ritual. Agents do not run CI/control-plane contract suites (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests). `ci.yml` exclusively owns those control-plane checks and runs them on the triggering `dev` commit, together with an isolated Docker Compose integration test.
 
 ## Complexity guard
 
@@ -44,7 +44,7 @@ Normal wake sources are readiness change -> Dispatcher, successful review -> Mer
 
 Merge Gate simply attempts the merge. If GitHub reports a late conflict, it removes the now-stale `review:*` verdict, dispatches PR Fix, and stops the queue without failing Merge Gate.
 
-PR Fix—not Merge Gate—integrates current `dev`. Its live repair session resolves any content conflicts, runs deterministic checks, pushes the new PR HEAD, and starts a fresh Reviewer. Do not add mergeability polling, transported dev SHAs, synthetic integration, or conflict-solving code to Merge Gate.
+PR Fix—not Merge Gate—owns content-level repair against current `dev`. Trusted repair tooling performs integration, authoritative deterministic checks, publication of the new PR HEAD, and the handoff to a fresh Reviewer. Do not add mergeability polling, transported dev SHAs, synthetic integration, or conflict-solving code to Merge Gate.
 
 ## Post-merge CI rule
 
