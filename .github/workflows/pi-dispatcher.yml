@@ -24,9 +24,6 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       PI_BASH_TIMEOUT_SECONDS: '600'
-      PI_RESPONSE_BUDGET_SHORT: '1024'
-      PI_RESPONSE_BUDGET_NORMAL: '2048'
-      PI_RESPONSE_BUDGET_DEEP: '4096'
 
     steps:
       - name: Checkout trusted dev
