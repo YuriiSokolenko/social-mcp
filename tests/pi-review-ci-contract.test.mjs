@@ -22,3 +22,15 @@ test('architecture guard documents that complexity must not return', () => {
   assert.match(guard, /Do not reintroduce/i);
   assert.match(guard, /dev SHA|exact-pair/i);
 });
+
+
+test('workflow dispatch inputs stay minimal identifiers or real commands', () => {
+  const allowed = new Set(['issue_number', 'pr_number', 'run_id', 'mode']);
+  for (const name of fs.readdirSync('.github/workflows').filter(name => name.endsWith('.yml'))) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    const dispatch = workflow.match(/workflow_dispatch:\n([\s\S]*?)(?=\n  [a-zA-Z_][\\w-]*:|\npermissions:|\nconcurrency:|\njobs:|$)/)?.[1] ?? '';
+    for (const match of dispatch.matchAll(/^      ([a-zA-Z_][\\w-]*):\n        description:/gm)) {
+      assert.ok(allowed.has(match[1]), `${name}: redundant workflow input ${match[1]}`);
+    }
+  }
+});
