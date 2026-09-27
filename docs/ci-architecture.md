@@ -11,6 +11,10 @@ The control plane intentionally uses a simple contract:
 
 The actual merged `dev` commit is the integration truth.
 
+## Test ownership rule
+
+Implementer, Reviewer, and PR Fix validate product behavior only: focused product tests as needed, full `pytest`, Ruff, and diff checks. They do not run CI/control-plane contract suites (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests). `ci.yml` exclusively owns those control-plane checks and runs them on the triggering `dev` commit. This keeps product agents focused and prevents CI from recursively testing itself inside agent workflows.
+
 ## Complexity guard
 
 Do not reintroduce pre-merge exact-pair orchestration. The merge decision must not depend on captured dev SHAs, `integration_base_sha`, `repair_base_sha`, synthetic dev+PR merge commits, SHA/base-bound status contexts, or a custom pre-merge CI/review/repair state machine.
