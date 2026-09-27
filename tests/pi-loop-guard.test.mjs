@@ -73,6 +73,20 @@ test('hard exploration limit still permits implementation bash and validation', 
   assert.equal(guard.checkToolCall('read', { path: 'more-context.py' }).block, true);
 });
 
+
+test('review mode gives trivial reviews only three exploration calls and treats bash as exploration', () => {
+  const guard = new LoopGuard({ repeatThreshold: 20, requireComplexity: true, reviewMode: true });
+  guard.setComplexity('trivial');
+  guard.onTurnStart(1);
+  assert.equal(guard.checkToolCall('read', { path: 'agents/reviewer/AGENTS.md' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: 'issue' }), undefined);
+  assert.equal(guard.checkToolCall('bash', { command: 'python -c "print(1)"' }), undefined);
+  const blocked = guard.checkToolCall('read', { path: 'unrelated.py' });
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /3 calls/);
+  assert.equal(guard.checkToolCall('submit_result', {}), undefined);
+});
+
 test('complexity can only be declared once', () => {
   const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
   guard.setComplexity('normal');
