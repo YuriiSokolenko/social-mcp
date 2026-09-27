@@ -90,3 +90,20 @@ test('successful direct dev CI wakes merge gate for the new base', () => {
   assert.match(ci, /needs\.test\.result == 'success'/);
   assert.match(ci, /needs\.docker\.result == 'success'/);
 });
+
+
+test('repair is explicitly bound to the exact dev SHA authorized by merge gate', () => {
+  const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(repair, /repair_base_sha:/);
+  assert.match(repair, /BASE_SHA="\$REPAIR_BASE_SHA"/);
+  assert.doesNotMatch(repair, /BASE_SHA="\$\(jq -r '\.base\.sha'/);
+  assert.match(gate, /repair_base_sha: base\.object\.sha/);
+});
+
+test('workflow concurrency uses only supported GitHub Actions keys', () => {
+  for (const file of ['.github/workflows/pi-auto-merge.yml', '.github/workflows/pi-pr-review.yml', '.github/workflows/pi-pr-fix.yml']) {
+    const workflow = fs.readFileSync(file, 'utf8');
+    assert.doesNotMatch(workflow, /^\s*queue:\s*max\s*$/m);
+  }
+});
