@@ -3,7 +3,7 @@
 This directory runs a small Docker-based autoscaler for the N150 host.
 
 It watches queued runs of `.github/workflows/pi-issue-agent.yml`,
-`.github/workflows/pi-pr-review.yml`, `.github/workflows/pi-dispatcher.yml`,
+`.github/workflows/pi-pr-review.yml`, `.github/workflows/pi-pr-fix.yml`, `.github/workflows/pi-dispatcher.yml`,
 `.github/workflows/pi-architect.yml`, and `.github/workflows/pi-triage.yml`,
 and keeps up to `MAX_RUNNERS` ephemeral self-hosted runner containers alive. Each worker registers
 with GitHub using `--ephemeral`, accepts one job, and is removed after the job.
@@ -52,12 +52,10 @@ If `.env` defines `WORKFLOW_FILES`, add any newly introduced workflow file
 there too (e.g. `pi-triage.yml`); updating the tracked defaults does not
 override an existing host `.env`. Restart the autoscaler manager after
 changing its local environment.
-The example defaults to two; a local value such as three takes precedence.
+The tracked example and manager fallback default to two. The production N150 host may intentionally override this in its untracked `.env` (currently four); the local value is authoritative for that host.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
 Set `MODEL_STATUS_URL` in the N150 host's local `.env` to the active model
-server, reachable from the manager container. For the Laguna GGUF server on
-the Nano, use `http://192.168.8.210:3009/slots`. The llama.cpp endpoint
-returns the total slots and whether each is processing a request. The manager
+server, reachable from the manager container. For a llama.cpp server, point it at that server's `/slots` endpoint. The endpoint returns the total slots and whether each is processing a request. Do not treat a historical host/port as part of the repository contract; `MODEL_STATUS_URL` must follow whichever model server is active on the N150 deployment. The manager
 reserves one slot per active runner, including pauses between Pi's model calls.
 It also counts any occupied slots beyond those reservations as other load.
 The server does not identify which client owns a slot, so this is an estimate.
