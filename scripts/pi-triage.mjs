@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { githubClient } from "./github-api.mjs";
@@ -43,38 +42,29 @@ const pipelineLabels = [
 function hash(value) {
   return crypto.createHash("sha1").update(value).digest("hex").slice(0, 16);
 }
-function markerFor(body, taskText) {
-  return `<!-- pi-triage:hash:${hash(`${body ?? ""}\u0000${taskText ?? ""}`)} -->`;
+function markerFor(body) {
+  return `<!-- pi-triage:hash:${hash(body ?? "")} -->`;
 }
-function hashFor(body, taskText) {
-  return hash(`${body ?? ""}\u0000${taskText ?? ""}`);
+function hashFor(body) {
+  return hash(body ?? "");
 }
 
-function readTask(number) {
-  const filename = path.join("tasks", `${number}.md`);
-  if (!fs.existsSync(filename)) return { exists: false };
-  const contents = fs.readFileSync(filename, "utf8");
-  const match = contents.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!match) return { exists: true, text: contents, valid: false, errors: ["missing YAML front matter"] };
-  const field = name => match[1].match(new RegExp(`^${name}:\\s*(.*?)\\s*$`, "m"))?.[1];
-  const issueField = field("issue");
-  const priority = field("priority");
-  const raw = field("depends_on");
+function issueMetadata(issue) {
+  const body = issue.body ?? "";
+  const header = body.match(/^## Task metadata\s*\r?\n([\s\S]*?)(?=\r?\n##\s|$)/);
+  if (!header) return { valid: false, errors: ["missing Task metadata section"], priority: null, dependencies: [] };
+  const priority = /^Priority:\s*(P[012])\s*$/mi.exec(header[1])?.[1]?.toUpperCase();
+  const raw = /^Depends on:\s*\[([^\]]*)\]\s*$/mi.exec(header[1])?.[1];
   const errors = [];
-  if (Number(issueField) !== number) errors.push("task issue number does not match filename");
-  if (!["P0", "P1", "P2"].includes(priority)) errors.push("invalid or missing priority");
-  const dependsOnValid = !!raw && /^\[(?:\s*\d+\s*(?:,\s*\d+\s*)*)?\]$/.test(raw);
-  if (!dependsOnValid) errors.push("depends_on must be an inline list of issue numbers");
-  const dependencies = dependsOnValid && raw.slice(1, -1).trim()
-    ? raw.slice(1, -1).split(",").map(value => Number(value.trim()))
+  if (!priority) errors.push("invalid or missing priority");
+  const validDependencies = raw !== undefined && (!raw.trim() || /^#?\d+(?:\s*,\s*#?\d+)*$/.test(raw.trim()));
+  if (!validDependencies) errors.push("Depends on must be an inline issue list");
+  const dependencies = validDependencies && raw.trim()
+    ? raw.split(",").map(value => Number(value.trim().replace(/^#/, "")))
     : [];
-  if (dependsOnValid && dependencies.includes(number)) errors.push("task depends on itself");
-  return {
-    exists: true, text: contents, valid: errors.length === 0, errors,
-    priority: priority ?? null, dependencies,
-  };
+  if (dependencies.includes(issue.number)) errors.push("task depends on itself");
+  return { valid: errors.length === 0, errors, priority: priority ?? null, dependencies };
 }
-
 function lastTriageHash(comments) {
   for (const comment of [...comments].reverse()) {
     const match = /<!-- pi-triage:hash:([0-9a-f]{16}) -->/.exec(comment.body ?? "");
@@ -106,12 +96,12 @@ async function candidates() {
     const owned = labelsOf(issue);
     if (pipelineLabels.some(label => owned.has(label))) continue;
     const needsHuman = owned.has("pi:needs-human");
-    const task = readTask(issue.number);
+    const task = issueMetadata(issue);
     let comments = [];
     if (needsHuman) {
       comments = await pages(`/issues/${issue.number}/comments`);
       const previousHash = lastTriageHash(comments);
-      const currentHash = hashFor(issue.body, task.exists ? task.text : "");
+      const currentHash = hashFor(issue.body);
       if (previousHash === currentHash) continue; // nothing changed since last review
     }
     const dependencies = task.valid
@@ -240,7 +230,7 @@ async function main() {
       continue;
     }
     const task = readTask(number);
-    const marker = markerFor(issue.body, task.exists ? task.text : "");
+    const marker = markerFor(issue.body);
     if (!owned.has("pi:needs-human")) await transitionIssue(number, "needs-human");
     await api(`/issues/${number}/comments`, {
       method: "POST",
