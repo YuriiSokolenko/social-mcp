@@ -40,7 +40,9 @@ Architect is optional and exists only for work needing decomposition or task-pla
 
 Implementer edits code and tests in an isolated worktree. It does not commit, push, create PRs, merge, or mutate GitHub directly.
 
-Workflow-owned checks must pass before publication, including at least:
+After the model finishes, the workflow fetches the latest `dev` and merges `origin/dev` into the issue branch. Only that updated tree may be verified and published. A merge conflict fails publication explicitly; do not hide it behind SHA orchestration.
+
+Workflow-owned checks then run on the branch containing the latest `dev` and must pass before publication, including at least:
 
 ```bash
 pytest
@@ -53,7 +55,7 @@ A checkpoint branch may exist for recovery; it is never a merge candidate. The p
 
 Reviewer is independent from Implementer and does not edit files. It checks issue compliance, correctness, regressions, tests, architecture, security-sensitive changes, and accidental artifacts. A failing deterministic check cannot be treated as PASS.
 
-Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. PASS wakes Merge Gate. PR Fix addresses reviewer-requested code changes, verifies the result, and returns the PR to review.
+Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. Merge Gate requires `review:passed`, and only PASS wakes it. PR Fix addresses reviewer-requested code changes, integrates the latest `dev`, verifies the result, and always returns the changed PR to a fresh review before merge.
 
 PR Fix is not a hidden pre-merge integration engine.
 
