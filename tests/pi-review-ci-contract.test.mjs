@@ -198,7 +198,10 @@ test('review verdict exists only for the unchanged reviewed PR head', () => {
   const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
   assert.match(review, /PR changed during review; clearing stale verdict/);
   assert.match(review, /CURRENT_HEAD[\s\S]*?select\(startswith\("review:"\) \| not\)/);
-  assert.match(repair, /Load PR[\s\S]*?select\(startswith\("review:"\) \| not\)/);
+  assert.doesNotMatch(repair, /Load PR[\s\S]{0,1200}?select\(startswith\("review:"\) \| not\)/);
+  assert.match(repair, /Start fresh review[\s\S]*?select\(startswith\("review:"\) \| not\)/);
+  assert.match(repair, /id: publish[\s\S]*?pi:needs-human[\s\S]*?published=false[\s\S]*?published=true/);
+  assert.match(repair, /if: steps\.publish\.outputs\.published == 'true'/);
   assert.match(repair, /issues: write/);
 });
 
