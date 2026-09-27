@@ -1,3 +1,15 @@
+/**
+ * Shared optimistic state mutation primitives for GitHub labels.
+ *
+ * WHY: pipeline ownership is encoded in labels, so a stale workflow must not
+ * silently overwrite a newer owner's state. replaceStateLabels() reloads the
+ * object immediately before mutation and compares the state-label snapshot.
+ *
+ * GUARANTEE: concurrent ownership changes fail instead of being lost.
+ *
+ * NOT FOR: deciding which transition is legal; state-machine.mjs owns that.
+ */
+
 import { ISSUE_STATE_LABELS, issueStateLabels } from './state-machine.mjs';
 
 export function labelNames(item) {
