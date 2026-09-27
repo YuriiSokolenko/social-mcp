@@ -106,6 +106,10 @@ export default function (pi) {
           text: 'SUCCESS. Latest dev is integrated and final git diff --check, pytest, and Ruff all pass. Implementation result recorded. Stop now; do not call more tools or produce another recap.',
         }],
         details: undefined,
+        // Pi >=0.69: terminal tool result suppresses the automatic follow-up
+        // model turn. Failed submissions throw before reaching this point, so
+        // conflict/test-failure repair remains in the same agent session.
+        terminate: true,
       };
     },
   });
