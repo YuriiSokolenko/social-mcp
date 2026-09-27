@@ -91,10 +91,13 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
   const tool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
   assert.match(workflow, /pi-repair-result-tool\.mjs/);
-  assert.match(tool, /fetch', 'origin', 'dev/);
-  assert.match(tool, /merge', '--no-edit', 'origin\/dev/);
+  const finalizer = fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
+  assert.match(tool, /integrateLatestDev/);
+  assert.match(tool, /validateFinalProductTree/);
+  assert.match(finalizer, /fetch', 'origin', 'dev/);
+  assert.match(finalizer, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /PR conflicts with current dev/);
-  assert.match(tool, /runProductChecks\(\)/);
+  assert.match(finalizer, /runProductChecks\(\)/);
   assert.match(workflow, /name: Start fresh review/);
   assert.match(fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8'), /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
