@@ -12,6 +12,10 @@ on:
         description: Automatically resolved from the GitHub pull request by the launcher
         required: false
         type: string
+      integration_base_sha:
+        description: Exact dev SHA whose integration status authorized this review
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -39,6 +43,7 @@ jobs:
       REPO: ${{ github.repository }}
       PI_PHASE: review
       PI_BASH_TIMEOUT_SECONDS: '600'
+      INTEGRATION_BASE_SHA: ${{ inputs.integration_base_sha }}
 
     steps:
       - name: Checkout dev control repository
@@ -67,7 +72,12 @@ jobs:
           BASE_REF="$(jq -r '.base.ref' <<<"$PR_JSON")"
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
           HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
-          BASE_SHA="$(jq -r '.base.sha' <<<"$PR_JSON")"
+          BASE_SHA="$INTEGRATION_BASE_SHA"
+          CURRENT_BASE_SHA="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/git/ref/heads/dev" | jq -r '.object.sha')"
+          if [ "$BASE_SHA" != "$CURRENT_BASE_SHA" ]; then
+            echo "Requested review base $BASE_SHA is stale; current dev is $CURRENT_BASE_SHA." >&2
+            exit 1
+          fi
 
           if [ "$BASE_REF" != "dev" ]; then
             echo "Pull request #${PR} does not target dev; refusing self-hosted review." >&2
@@ -249,7 +259,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${REPO}/pulls/${PR}")"
           CURRENT_HEAD="$(jq -r '.head.sha' <<<"$CURRENT_PR")"
-          CURRENT_BASE="$(jq -r '.base.sha' <<<"$CURRENT_PR")"
+          CURRENT_BASE="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/git/ref/heads/dev" | jq -r '.object.sha')"
           if [ "$CURRENT_HEAD" = "$HEAD_SHA" ]; then
             echo "head_same=true" >> "$GITHUB_OUTPUT"
           else
