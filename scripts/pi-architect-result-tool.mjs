@@ -1,4 +1,5 @@
 import { Type } from 'typebox';
+import { registerSubmitNudge } from './pi-common/terminal-result.mjs';
 import { validatePlan } from './pi-architect.mjs';
 
 // Prototype replacement for the ARCHITECT_RESULT text-line protocol: the
@@ -12,7 +13,6 @@ import { validatePlan } from './pi-architect.mjs';
 export default function (pi) {
   const parent = Number(process.env.PI_ISSUE);
   let submitted = false;
-  let nudged = false;
 
   const Step = Type.Object({
     key: Type.String({ description: 'Unique lowercase slug for this step' }),
@@ -44,17 +44,9 @@ export default function (pi) {
     },
   });
 
-  pi.on('agent_before_settle', () => {
-    if (submitted || nudged) return undefined;
-    nudged = true;
-    return {
-      continue: true,
-      entries: [{
-        type: 'custom_message',
-        customType: 'pi-result-nudge',
-        content: 'You finished without calling submit_result. Call it now with your final decision.',
-        display: true,
-      }],
-    };
+  registerSubmitNudge(pi, {
+    isSubmitted: () => submitted,
+    customType: 'pi-result-nudge',
+    content: 'You finished without calling submit_result. Call it now with your final decision.',
   });
 }
