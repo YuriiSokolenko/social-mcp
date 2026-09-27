@@ -1,0 +1,81 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/**
+ * Prepare and clean the isolated Implementer worktree.
+ *
+ * WHY: worktree creation/resume used to be a large shell block in YAML. This
+ * helper makes the resume rule explicit and testable: every attempt starts from
+ * current origin/dev, then replays saved issue work as a patch. A checkpoint is
+ * preferred over the published issue branch because it may contain newer work.
+ *
+ * IMPORTANT: saved work is CONTENT only. It is never treated as a base branch
+ * or as authoritative pipeline state. If 3-way apply leaves conflicts, the live
+ * Implementer resolves them against current dev.
+ */
+function git(args, { cwd, allowFailure = false } = {}) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: process.env });
+  if (r.error) throw r.error;
+  if (!allowFailure && r.status !== 0) throw new Error((r.stderr || r.stdout || 'git failed').trim());
+  return { status: r.status ?? 1, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
+}
+
+export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
+  if (!Number.isSafeInteger(issue) || issue < 1) throw new Error('issue must be a positive integer');
+  if (!jobDir || !tempDir) throw new Error('jobDir and tempDir are required');
+  fs.rmSync(jobDir, { recursive: true, force: true });
+  git(['fetch', 'origin', 'dev']);
+  const start = git(['rev-parse', 'origin/dev']).out;
+  const checkpoint = `pi/issue-${issue}-checkpoint`;
+  const issueBranch = `pi/issue-${issue}`;
+  const remoteSha = (ref) => git(['ls-remote', 'origin', `refs/heads/${ref}`]).out.split(/\s+/)[0] ?? '';
+  const checkpointExpected = remoteSha(checkpoint);
+  const issueBranchExpected = remoteSha(issueBranch);
+
+  let resumeRef = '';
+  if (checkpointExpected) {
+    git(['fetch', 'origin', `${checkpoint}:refs/remotes/origin/${checkpoint}`]);
+    resumeRef = `refs/remotes/origin/${checkpoint}`;
+  } else if (issueBranchExpected) {
+    git(['fetch', 'origin', `${issueBranch}:refs/remotes/origin/${issueBranch}`]);
+    resumeRef = `refs/remotes/origin/${issueBranch}`;
+  }
+
+  git(['worktree', 'prune']);
+  git(['worktree', 'add', '-B', issueBranch, jobDir, 'origin/dev']);
+  const patch = path.join(tempDir, `pi-resume-${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}.patch`);
+  if (resumeRef) {
+    const base = git(['merge-base', 'origin/dev', resumeRef]).out;
+    const diff = git(['diff', '--binary', base, resumeRef]).out;
+    fs.writeFileSync(patch, diff ? diff + '\n' : '');
+    if (diff) {
+      const applied = git(['apply', '--3way', patch], { cwd: jobDir, allowFailure: true });
+      if (applied.status !== 0) console.log('Saved work does not apply cleanly to latest dev; conflicts are left for the live Implementer session');
+    }
+  }
+  return { start, checkpointExpected, issueBranchExpected, patch };
+}
+
+export function cleanIssueWorktree({ jobDir, taskFile, patchFile }) {
+  if (jobDir && fs.existsSync(jobDir)) git(['worktree', 'remove', '--force', jobDir], { allowFailure: true });
+  if (jobDir) fs.rmSync(jobDir, { recursive: true, force: true });
+  for (const file of [taskFile, patchFile].filter(Boolean)) fs.rmSync(file, { force: true });
+  git(['worktree', 'prune'], { allowFailure: true });
+}
+
+async function main() {
+  const [command, rawIssue, jobDir, tempDir] = process.argv.slice(2);
+  if (command === 'prepare') {
+    const result = prepareIssueWorktree({ issue: Number(rawIssue), jobDir, tempDir });
+    process.stdout.write(JSON.stringify(result));
+    return;
+  }
+  if (command === 'clean') {
+    cleanIssueWorktree({ jobDir: rawIssue, taskFile: jobDir, patchFile: tempDir });
+    return;
+  }
+  throw new Error('usage: issue-worktree.mjs prepare <issue> <job-dir> <temp-dir> | clean <job-dir> [task-file] [patch-file]');
+}
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main().catch(e => { console.error(e); process.exitCode = 1; });
