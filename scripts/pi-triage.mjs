@@ -218,7 +218,6 @@ async function main() {
       console.log(`Skipped #${number}: no longer an eligible candidate`);
       continue;
     }
-    const task = readTask(number);
     const marker = markerFor(issue.body);
     if (!owned.has("pi:needs-human")) await transitionIssue(number, "needs-human");
     await api(`/issues/${number}/comments`, {
