@@ -54,7 +54,7 @@ export async function preparePr(prNumber) {
     };
   }
 
-  return { skip: false, pr: prNumber, issue: Number(match[1]), head: pr.head.sha, branch };
+  return { skip: false, pr: prNumber, issue: Number(match[1]), head: pr.head.sha, branch, paths: [...new Set(paths)] };
 }
 
 async function main() {
