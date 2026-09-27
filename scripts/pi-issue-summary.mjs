@@ -11,24 +11,11 @@ const { api, pages } = githubClient({ repo, token });
 const issue = await api(`/issues/${issueNumber}`);
 const prs = await pages('/pulls?state=all&base=dev');
 const pr = prs.find(item => item.head.repo?.full_name === repo && item.head.ref === `pi/issue-${issueNumber}`) ?? null;
-let integration = null;
-let statuses = [];
-let base = null;
-if (pr) {
-  [base, statuses] = await Promise.all([
-    api('/git/ref/heads/dev'),
-    pages(`/commits/${pr.head.sha}/statuses`),
-  ]);
-  const integrationContext = `social-mcp/integration/${base.object.sha.slice(0, 12)}`;
-  integration = statuses.filter(status => status.context === integrationContext)
-    .sort((a, b) => new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0))[0]?.state ?? null;
-}
 const labelNames = issue.labels.map(label => label.name);
-const reviewContext = `social-mcp/pi-review/${base?.object?.sha?.slice(0, 12) ?? ''}`;
-const review = statuses.filter(status => status.context === reviewContext)
-  .sort((a, b) => new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0))[0]?.state ?? null;
+
 const stage = issue.state === 'closed' && issue.state_reason === 'completed' ? 'COMPLETED'
-  : labelNames.includes('pi:mr-created') ? (integration !== 'success' ? 'CI' : review === 'success' ? 'MERGE GATE' : 'REVIEW')
+  : pr?.merged_at ? 'MERGED / DEV CI'
+  : labelNames.includes('pi:mr-created') ? 'READY TO MERGE'
   : labelNames.includes('pi:running') ? 'IMPLEMENTING'
   : labelNames.includes('pi:ready') ? 'READY'
   : labelNames.includes('architect:ready') ? 'ARCHITECTING'
@@ -48,9 +35,8 @@ const lines = [
   `| Dispatch | ${labelNames.includes('dispatcher:ready') ? 'queued' : '—'} | labels: ${labelNames.join(', ') || 'none'} |`,
   `| Implement | ${labelNames.includes('pi:running') ? 'running' : labelNames.includes('pi:mr-created') || issue.state === 'closed' ? 'done' : '—'} | branch: \`pi/issue-${issueNumber}\` |`,
   `| Pull request | ${pr ? pr.state : '—'} | ${pr ? `#${pr.number} · ${pr.title} · \`${pr.head.sha.slice(0,12)}\`` : 'not created'} |`,
-  `| Review | ${review ?? '—'} | SHA-bound status |`,
-  `| CI | ${integration ?? '—'} | exact dev+PR pair status |`,
-  `| Merge | ${pr?.merged_at ? 'merged' : stage === 'MERGE GATE' ? 'ready for gate' : '—'} | ${pr?.merged_at ?? ''} |`,
+  `| Merge | ${pr?.merged_at ? 'merged' : labelNames.includes('pi:mr-created') ? 'ready' : '—'} | ${pr?.merged_at ?? ''} |`,
+  `| Dev CI | ${pr?.merged_at ? 'runs on merged dev push' : 'after merge'} | no pre-merge dev-SHA gate |`,
   '',
 ];
 const output = lines.join('\n');
