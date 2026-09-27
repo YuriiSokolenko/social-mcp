@@ -145,6 +145,15 @@ Prefer current GitHub state over transported state, IDs over metadata payloads, 
 
 Do not add complexity solely for a hypothetical race that GitHub's atomic API operation or a later fresh-state check already handles.
 
+
+## Shared trusted CI helpers
+
+Reusable control-plane primitives live in `scripts/pi-common/`. Workflow YAML is orchestration only: checkout trusted `dev`, invoke a stage/helper, run the model when required, publish, and clean up. Do not duplicate GitHub REST pagination, pipeline-state mutation, control-plane path policy, PR pre-model gates, product validation, or reusable safety policy in multiple workflows.
+
+`scripts/pi-common/README.md` documents every shared helper and the boundary for adding new ones. Stage-specific decisions remain in their existing `scripts/pi-*.mjs` files; the common directory must not become a generic framework.
+
+Reviewer and PR Fix share `pr-guard.mjs` for complete PR loading, human gating, and control-plane gating. Product validation is centralized in `product-checks.mjs`; Implementer, Reviewer, and PR Fix must use that contract rather than maintaining separate pytest/Ruff command lists.
+
 ## Security
 
 Never commit credentials, PATs, OAuth tokens, client secrets, encryption keys, authorization headers, cookies, local `.env` files, or production credentials. Repository rulesets/branch protection remain an independent security boundary; agent prompts are not one.
