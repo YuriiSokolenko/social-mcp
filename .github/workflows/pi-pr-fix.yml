@@ -29,6 +29,9 @@ jobs:
       REPO: ${{ github.repository }}
       PI_PHASE: repair
       PI_BASH_TIMEOUT_SECONDS: '1200'
+      PI_REQUIRE_TASK_COMPLEXITY: '1'
+      PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
+      PI_MAX_REPEAT_CALLS: '3'
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5
@@ -71,7 +74,7 @@ jobs:
         run: |
           set -o pipefail
           cd "$JOB_DIR"
-          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-repair-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session             "Read agents/repair/AGENTS.md. Repair PR #${PR} for issue #${ISSUE}. Work only from the PR branch and current repository evidence. Make the smallest correct change. Finish by calling submit_repair; it integrates current dev and validates the final tree. If it reports merge conflicts or failing checks, resolve them in this same session and retry submit_repair until it succeeds. Do not push or modify GitHub state yourself."             | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-repair-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session             "Read agents/repair/AGENTS.md. Repair PR #${PR} for issue #${ISSUE}. Work only from the PR branch and current repository evidence. Make the smallest correct change. Finish by calling submit_repair; it integrates current dev and validates the final tree. If it reports merge conflicts or failing checks, resolve them in this same session and retry submit_repair until it succeeds. Do not push or modify GitHub state yourself."             | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
 
       - name: Verify and publish repair
         id: publish
