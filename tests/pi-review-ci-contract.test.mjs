@@ -459,7 +459,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /Do not inspect repository history, ancestry/);
   assert.match(prompt, /Never load skills for trivial reviews/);
-  assert.match(prompt, /\\*\\*Never rerun them\\.\\*\\*/);
+  assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
 
