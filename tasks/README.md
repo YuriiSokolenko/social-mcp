@@ -12,6 +12,6 @@ Depends on: [#12, #18]
 
 Use `Depends on: []` when there are no prerequisites. Priority is exactly `P0`, `P1`, or `P2`.
 
-Dispatcher reloads GitHub issues on every run and recreates `tasks/*.md` locally in the runner workspace. These files are compatibility snapshots for agents; they must not be maintained by humans, treated as pipeline state, or committed as dependency truth.
+Dispatcher reloads GitHub issues on every run and reads this metadata directly. No per-issue task files are generated or maintained.
 
 The canonical authoring template is `.github/ISSUE_TEMPLATE/task.md`.
