@@ -83,8 +83,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human \
-            "Pi Architect workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue dispatcher-ready \
+            "Pi Architect run was cancelled. Returned to Dispatcher without automatic redispatch."
 
       - name: Summarize Pi usage
         if: always()
