@@ -26,7 +26,7 @@ Follow this startup sequence exactly:
 
 1. Read this `agents/implementer/AGENTS.md`.
 2. Read the supplied GitHub issue and identify its concrete acceptance criteria.
-3. Inspect only the current `dev` code directly relevant to those criteria. This is a bounded orientation pass: locate the affected implementation, its immediate collaborators, and existing focused tests only when needed to understand the change.
+3. Inspect only the current `dev` code directly relevant to those criteria. This is a bounded orientation pass: locate the affected implementation, its immediate collaborators, and existing focused tests only when needed to understand the change. If replayed checkpoint work is present, also detect whether it left merge conflicts; inspect only the conflicting files, their current-`dev` versions, and the checkpoint sides needed to understand the reconciliation. Do not resolve conflicts yet.
    - Do not edit/write files yet.
    - Do not load skills yet.
    - Do not inspect broad repository structure merely for orientation.
@@ -38,6 +38,7 @@ Follow this startup sequence exactly:
    - Assign each plan item its own complexity: **trivial**, **normal**, or **complex**, using the same definitions as task complexity below.
    - The plan is a work checklist, not an architecture document or code/schema/function/class draft.
    - Include only work required by the current issue: changes, focused tests, and documentation where relevant.
+   - If replayed checkpoint conflicts exist, make resolving those conflicts against current `dev` the first implementation plan item. Preserve compatible current-`dev` work and checkpoint work required by this issue; do not treat either side as automatically authoritative.
    - Do not refine the top-level plan in another response unless later repository evidence materially invalidates it.
    - The plan response is a hard phase boundary. After emitting it, the very next action must be `declare_task_complexity`. Do not call `read`, `bash`, search, skills, or spend another response reconsidering the plan before declaring complexity.
 5. Call `declare_task_complexity` based on the issue, relevant code, and execution plan. Choose the smallest correct class:
@@ -58,6 +59,7 @@ Complexity is a description of **this issue**, not a routing decision. If the is
 
 During execution:
 
+- Replayed checkpoint conflicts follow the same startup sequence; they never bypass plan or complexity declaration. Once complexity is declared, resolve the conflict plan item immediately instead of restarting investigation of Git history, merge bases, branches, or provenance.
 - Work on exactly one top-level plan item at a time. Its assigned complexity controls only whether it gets a local subplan.
 - For a complex item, create its subplan only when that item becomes current, never upfront for later items. Do not revise or regenerate the subplan unless new repository evidence makes it impossible to execute.
 - Every sub-item must describe a concrete implementation or verification action, not open-ended research, architecture exploration, or another planning step.
