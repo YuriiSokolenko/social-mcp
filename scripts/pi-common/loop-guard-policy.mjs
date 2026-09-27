@@ -11,7 +11,21 @@ const PROFILES = Object.freeze({
   normal: Object.freeze({ softTurns: 30, hardTurns: 60, toolCalls: 120 }),
   complex: Object.freeze({ softTurns: 60, hardTurns: 100, toolCalls: 240 }),
 });
-const COMPLETION_TOOLS = new Set(['write', 'edit', 'submit_result']);
+const WRITE_TOOLS = new Set(['write', 'edit']);
+const READ_ONLY_BASH = /^\s*(?:pwd|ls(?:\s|$)|find(?:\s|$)|grep(?:\s|$)|rg(?:\s|$)|git\s+(?:log|status|show|diff|branch|rev-parse)(?:\s|$)|cat(?:\s|$)|head(?:\s|$)|tail(?:\s|$))/;
+const VALIDATION_BASH = /(?:^|\s)(?:pytest|ruff|mypy|pyright|npm\s+test|npm\s+run\s+(?:test|lint|check)|gradle\w*\s+test|\.\/gradlew\s+\S*test)(?:\s|$)/;
+
+export function toolPhase(toolName, input = {}) {
+  if (toolName === 'submit_result') return 'submit';
+  if (WRITE_TOOLS.has(toolName)) return 'implement';
+  if (toolName === 'bash') {
+    const command = String(input.command ?? '').trim();
+    if (VALIDATION_BASH.test(command)) return 'validate';
+    if (READ_ONLY_BASH.test(command)) return 'explore';
+    return 'implement';
+  }
+  return 'explore';
+}
 
 export function turnBudget(limit) {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('PI_MAX_TURNS must be a positive integer');
@@ -69,15 +83,17 @@ export class LoopGuard {
     if (toolName === 'declare_task_complexity') return undefined;
     if (!this.profile) return { block: true, reason: 'Declare task complexity first with declare_task_complexity (trivial, normal, or complex) before using implementation tools.' };
 
-    // Hard budget ends exploration, not completion. The agent must always be
-    // able to make/fix the requested edit and submit the result.
-    if (COMPLETION_TOOLS.has(toolName)) return undefined;
+    const phase = toolPhase(toolName, input);
+    // Only exploration consumes the exploration budget. Implementation,
+    // focused validation, and submission remain available so the task can
+    // converge after the context-gathering budget is exhausted.
+    if (phase !== 'explore') return undefined;
 
     if (this.budgetTurn() >= this.profile.hardTurns) {
-      return { block: true, reason: `Exploration budget exhausted for ${this.complexity} task (${this.profile.hardTurns} turns after complexity declaration). Do not inspect more context. Finish with write/edit if needed, then call submit_result.` };
+      return { block: true, reason: `Exploration budget exhausted for ${this.complexity} task (${this.profile.hardTurns} turns after complexity declaration). Do not inspect more context. Implement/validate only what is already known, then call submit_result.` };
     }
     if (this.explorationCalls >= this.profile.toolCalls) {
-      return { block: true, reason: `Exploration tool-call budget exhausted for ${this.complexity} task (${this.profile.toolCalls} calls). Finish with write/edit if needed, then call submit_result.` };
+      return { block: true, reason: `Exploration tool-call budget exhausted for ${this.complexity} task (${this.profile.toolCalls} calls). Implement/validate only what is already known, then call submit_result.` };
     }
     this.explorationCalls += 1;
 
