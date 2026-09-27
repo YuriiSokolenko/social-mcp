@@ -464,14 +464,15 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
 });
 
 
-test('implementer declares complexity before reading its operating contract', () => {
+test('implementer reads its operating contract before declaring complexity', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  const first = workflow.indexOf('Your first assistant response MUST contain exactly one tool call: declare_task_complexity');
-  const read = workflow.indexOf('read and follow agents/implementer/AGENTS.md');
-  assert.match(workflow, /Do not call read, bash, search, edit, or any other tool in that same response/);
-  assert.ok(first >= 0 && read > first);
-  assert.match(agent, /For \*\*trivial\*\* work, use the fast path/);
+  const read = workflow.indexOf('First read and follow agents/implementer/AGENTS.md');
+  const declare = workflow.indexOf('After reading it, call declare_task_complexity');
+  assert.ok(read >= 0 && declare > read);
+  assert.match(workflow, /Reading that operating contract is the only action allowed before complexity declaration/);
+  assert.match(workflow, /a complex classification still means you implement this same issue to completion/);
+  assert.match(agent, /For \*\*trivial\*\* work, skip the explicit plan and use the fast path/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   assert.doesNotMatch(agent, /Before starting, read `docs\/PROJECT_CONTEXT\.md`/);
 });
