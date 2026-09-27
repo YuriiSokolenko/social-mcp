@@ -406,6 +406,14 @@ test('Pi result tools reuse the shared submit-nudge primitive', () => {
   }
 });
 
+test('Triage submission is terminal and avoids a post-submit model turn', () => {
+  const source = fs.readFileSync('scripts/pi-triage-result-tool.mjs', 'utf8');
+  const agent = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
+  assert.match(source, /terminalResult\('Result recorded\.'/);
+  assert.match(agent, /do not narrate internal debate or print a prose classification list/i);
+  assert.match(agent, /put the classifications directly in its arguments/i);
+});
+
 test('Pi result parsers reuse the shared tolerant JSONL reader', () => {
   for (const name of ['pi-architect.mjs', 'pi-dispatcher.mjs', 'pi-review-result.mjs', 'pi-triage.mjs']) {
     assert.match(fs.readFileSync(`scripts/${name}`, 'utf8'), /result-jsonl\.mjs/);
