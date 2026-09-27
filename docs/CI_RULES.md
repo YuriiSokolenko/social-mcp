@@ -118,7 +118,7 @@ Triage is an optional preparation step for issues not yet in the pipeline. It re
 
 Different issues may execute in parallel. Work for the same issue/PR follows its workflow concurrency rule. Dispatcher and Merge Gate are serialized queues. N150 autoscaling/model capacity limits actual trusted-agent concurrency.
 
-Cancellation is operational control, not failure. If Implementer or Architect is cancelled before publication, return the issue to `dispatcher:ready` without automatically dispatching it again. If a PR was already published, preserve PR-pipeline ownership. A genuine execution failure without a published PR may require `pi:needs-human`.
+Cancellation is operational control, not failure. If Implementer or Architect is cancelled before publication, remove its active pipeline ownership and leave the issue unowned. Do not add `dispatcher:ready` or dispatch another workflow automatically. If a PR was already published, preserve PR-pipeline ownership. A genuine execution failure without a published PR may require `pi:needs-human`.
 
 Use explicit states:
 - genuine implementation/architect execution failure before publication -> `pi:needs-human`
