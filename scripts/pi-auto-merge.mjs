@@ -125,7 +125,7 @@ async function processPR(prSummary) {
   }
   if (!review || review === 'error') {
     await reserveAndDispatch(sha, `social-mcp/pi-review/${base.object.sha.slice(0, 12)}`, 'Automated review dispatched',
-      'pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title });
+      'pi-pr-review.yml', { pr_number: String(pr.number), pr_title: pr.title, integration_base_sha: base.object.sha });
     console.log(`#${pr.number}: dispatched review for exact pair`);
     return;
   }
