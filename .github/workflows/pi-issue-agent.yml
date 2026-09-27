@@ -142,7 +142,7 @@ jobs:
 
           Work directly in the checked-out repository.\n          The checked-out worktree is always based on the latest dev branch. dev is the only development base; never switch to, compare against, or treat main as an alternative source tree.
           Implement the issue completely, keeping the change focused.
-          Inspect existing code and tests before editing.
+          Inspect existing code and tests before editing.\n          If replayed checkpoint work left merge conflicts in the worktree, resolve those conflicts first against the current dev code; do not abandon current dev or inspect main as a replacement base.
           Add or update unit tests for every behavior changed by this issue.
           Cover the acceptance criteria and important edge cases.
           Do not consider the implementation complete without appropriate automated tests.
