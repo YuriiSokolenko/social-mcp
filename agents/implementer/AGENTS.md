@@ -20,6 +20,11 @@ Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundar
    - **Trivial**: an exact small edit with an explicit path/content and no product behavior or architecture change. Use the fast path: inspect only the target and immediately relevant context, make the smallest requested edit, run a focused check only if it adds signal, then call `submit_result`.
    - **Normal/complex**: inspect the existing code and relevant tests needed to understand the behavior. Expand exploration only when the issue actually requires it.
    Do not inspect Git internals, broad repository structure, unrelated configuration, or skills merely to be thorough.
+   Response size is a separate decision from task complexity. Every session starts with the SHORT response budget (2048 output tokens). Before a next model turn genuinely needs more room, call `set_response_budget` with the smallest sufficient level:
+   - **SHORT / 2048**: obvious next action, file/status/listing/search inspection, simple tool selection, or a concise check.
+   - **NORMAL / 4096**: ordinary local reasoning, diagnosis, or a small implementation decision/edit.
+   - **DEEP / 8192**: difficult debugging or synthesis, substantial code generation, or conflict resolution.
+   Prefer SHORT; raise the budget only for the next response that needs it, and lower it again afterward. DEEP is the absolute maximum and must not be used merely because the overall task is complex.
 2. Inspect surrounding architecture only before introducing or changing an abstraction.
 3. Implement the smallest complete change that satisfies the issue.
    Identify what already exists in `dev`, what remains, and what a related issue
