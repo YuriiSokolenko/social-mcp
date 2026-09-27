@@ -4,7 +4,7 @@ run-name: "🚦 Dispatcher · queue scan"
 on:
   workflow_dispatch:
   issues:
-    types: [closed]
+    types: [labeled, closed]
 
 permissions:
   actions: write
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   dispatcher:
-    if: vars.PI_AUTOMATION_MODE == 'RUNNING'
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name != 'issues' || github.event.action == 'closed' || github.event.label.name == 'dispatcher:ready')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
     env:
