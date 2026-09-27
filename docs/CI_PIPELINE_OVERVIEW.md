@@ -37,7 +37,7 @@ Implementer Architect
  merge
 ```
 
-The actual merged `dev` commit is the integration test. Product agents run product checks (`pytest`, Ruff, and relevant focused tests); only `ci.yml` runs CI/control-plane contracts such as Node workflow tests and runner-autoscaler checks. There is no separate pre-merge dev-SHA/exact-pair integration state machine.
+The actual merged `dev` commit is the integration truth. Product agents run product checks (`git diff --check`, `pytest`, Ruff, and relevant focused tests). `ci.yml` then validates the merged commit with Ruff, pytest, Node CI/control-plane contract tests, runner-autoscaler checks, and an isolated Docker Compose integration test. There is no separate pre-merge dev-SHA/exact-pair integration state machine.
 
 ## Responsibilities
 
@@ -80,7 +80,7 @@ Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-mer
 
 Trusted Pi work runs on N150 self-hosted runners. External/untrusted PR code must not execute there.
 
-Workflows receive the minimum identifier they need and load titles, labels, branches, SHAs, and current status from GitHub.
+Workflows receive the minimum identifier they need and load titles, labels, branches, SHAs, and current status from GitHub. Reusable GitHub REST routes live in `scripts/pi-common/github-api.mjs`; workflow YAML must not duplicate them with inline `curl`. No-input workflow wakes use `scripts/pi-common/workflow-dispatch.mjs`.
 
 ```text
 ID -> fresh GitHub state -> action
@@ -104,7 +104,7 @@ Manual cancellation is not a failure state. Before PR publication, cancelled Imp
 
 | Workflow | Purpose |
 |---|---|
-| `ci.yml` | Test triggering commit; green merged-`dev` CI continues merge queue |
+| `ci.yml` | Test the merged `dev` commit: product checks, control-plane contracts, autoscaler tests, Docker integration; green CI continues the merge queue |
 | `pi-dispatcher.yml` | Queue routing |
 | `pi-architect.yml` | Optional decomposition/planning |
 | `pi-issue-agent.yml` | Implementation |
