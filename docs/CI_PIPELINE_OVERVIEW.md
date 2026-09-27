@@ -37,7 +37,7 @@ Implementer Architect
  merge
 ```
 
-The actual merged `dev` commit is the integration truth. Product agents run product checks (`git diff --check`, `pytest`, Ruff, and relevant focused tests). `ci.yml` then validates the merged commit with Ruff, pytest, Node CI/control-plane contract tests, runner-autoscaler checks, and an isolated Docker Compose integration test. There is no separate pre-merge dev-SHA/exact-pair integration state machine.
+The actual merged `dev` commit is the integration truth. Trusted product-stage tooling runs the authoritative pre-publication/review checks (`git diff --check`, `pytest`, Ruff); agents may run focused tests while developing or reasoning, but do not duplicate full deterministic suites as a ritual. `ci.yml` then validates the merged commit with Ruff, pytest, Node CI/control-plane contract tests, runner-autoscaler checks, and an isolated Docker Compose integration test. There is no separate pre-merge dev-SHA/exact-pair integration state machine.
 
 ## Responsibilities
 
@@ -46,8 +46,8 @@ The actual merged `dev` commit is the integration truth. Product agents run prod
 | Dispatcher | Route currently eligible issues to Implementer or Architect |
 | Architect | Optional decomposition/planning; return tasks to Dispatcher |
 | Implementer | Change code/tests; integrate latest dev in the live session; resolve conflicts; verify and publish PR |
-| Reviewer | Run deterministic checks on the exact PR HEAD, then independently review that same HEAD; verdict is invalidated when HEAD changes |
-| PR Fix | Address reviewer feedback or late dev conflicts; integrate current dev in the live repair session; re-review the new HEAD |
+| Reviewer | Independently review the exact PR HEAD after trusted deterministic checks pass; verdict is invalidated when HEAD changes |
+| PR Fix | Address reviewer feedback or late dev conflicts; trusted submit tooling integrates current dev and validates the repaired HEAD before re-review |
 | Merge Gate | Validate basic ownership/safety and attempt one squash merge |
 | CI | Test the real commit after it lands on `dev`; exclusively own CI/control-plane contract tests |
 | Reconciler | Recover stranded/orphaned state after the PR recovery grace period; never schedule normal work |
