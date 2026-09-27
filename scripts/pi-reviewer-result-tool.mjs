@@ -1,4 +1,5 @@
 import { Type } from 'typebox';
+import { registerSubmitNudge, terminalResult } from './pi-common/terminal-result.mjs';
 import { validateReviewResult } from './pi-review-result.mjs';
 
 // Same prototype as pi-architect-result-tool.mjs, adapted for the reviewer's
@@ -7,7 +8,6 @@ import { validateReviewResult } from './pi-review-result.mjs';
 // pi-architect-result-tool.mjs and docs/CI_RULES.md for the rationale.
 export default function (pi) {
   let submitted = false;
-  let nudged = false;
 
   pi.registerTool({
     name: 'submit_result',
@@ -21,21 +21,13 @@ export default function (pi) {
       const result = validateReviewResult({ verdict: params.verdict, text: params.summary });
       pi.appendEntry('review-result', result);
       submitted = true;
-      return { content: [{ type: 'text', text: 'Result recorded.' }], details: undefined };
+      return terminalResult('Result recorded. Review is complete; stop now.', undefined);
     },
   });
 
-  pi.on('agent_before_settle', () => {
-    if (submitted || nudged) return undefined;
-    nudged = true;
-    return {
-      continue: true,
-      entries: [{
-        type: 'custom_message',
-        customType: 'pi-result-nudge',
-        content: 'You finished without calling submit_result. Call it now with your final verdict.',
-        display: true,
-      }],
-    };
+  registerSubmitNudge(pi, {
+    isSubmitted: () => submitted,
+    customType: 'pi-result-nudge',
+    content: 'You finished without calling submit_result. Call it now with your final verdict.',
   });
 }
