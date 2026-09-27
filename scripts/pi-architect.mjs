@@ -7,6 +7,7 @@ import { replaceIssueState } from './pi-github-state.mjs';
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-state-machine.mjs';
 import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
 import { githubClient } from './github-api.mjs';
+import { taskMetadata, withTaskMetadata } from './pi-task-metadata.mjs';
 
 const { api, pages, ensureLabel, repo } = githubClient();
 
@@ -95,22 +96,11 @@ export function validatePlan(plan, parent) {
 }
 
 export function taskMetadataFromBody(number, body) {
-  const header = (body ?? '').match(/^## Task metadata\s*\r?\n([\s\S]*?)(?=\r?\n##\s|$)/);
-  if (!header) return { priority: 'P1', dependencies: [] };
-  const priority = /^Priority:\s*(P[012])\s*$/mi.exec(header[1])?.[1]?.toUpperCase();
-  const raw = /^Depends on:\s*\[([^\]]*)\]\s*$/mi.exec(header[1])?.[1];
-  if (!priority || raw === undefined || (raw.trim() && !/^#?\d+(?:\s*,\s*#?\d+)*$/.test(raw.trim()))) {
-    throw new Error(`Invalid Task metadata in issue #${number}`);
-  }
-  return { priority, dependencies: raw.trim() ? raw.split(',').map(value => Number(value.trim().replace(/^#/, ''))) : [] };
+  const metadata = taskMetadata({ number, body });
+  return { priority: metadata.priority, dependencies: metadata.dependencies };
 }
 
-export function withTaskMetadata(body, priority, dependencies) {
-  const block = `## Task metadata\nPriority: ${priority}\nDepends on: [${dependencies.map(number => `#${number}`).join(', ')}]\n\n`;
-  const source = body ?? '';
-  if (/^## Task metadata/m.test(source)) return source.replace(/^## Task metadata\s*\r?\n[\s\S]*?(?=^##\s|(?![\s\S]))/m, block);
-  return block + source;
-}
+export { withTaskMetadata };
 
 async function allIssues() {
   const items = [];
