@@ -471,13 +471,28 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
 test('implementer orients and plans before declaring complexity', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  assert.match(workflow, /read AGENTS\.md, read this issue, inspect only directly relevant current-dev code, write a short execution plan of at most 1000 output tokens, then call declare_task_complexity/);
+
+  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
   assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
-  assert.match(workflow, /A complex classification still means you implement this same issue to completion\./);
-  assert.match(agent, /Read `agents\/implementer\/AGENTS\.md`/);
-  assert.match(agent, /Write a short execution plan/);
-  assert.match(agent, /1000 output tokens/);
-  assert.match(agent, /declare_task_complexity/);
+
+  const contract = [
+    'Read this `agents/implementer/AGENTS.md`',
+    'Read the supplied GitHub issue',
+    'Inspect only the current `dev` code directly relevant',
+    'Write a short execution plan',
+    '1000 output tokens',
+    'Call `declare_task_complexity`',
+    'Immediately execute the first plan item',
+  ];
+  let previous = -1;
+  for (const marker of contract) {
+    const position = agent.indexOf(marker);
+    assert.ok(position > previous, `implementer startup marker missing or out of order: ${marker}`);
+    previous = position;
+  }
+
+  assert.match(agent, /Do not modify repository files or perform implementation work before step 5 is complete/);
+  assert.match(agent, /complex[\s\S]*implement[\s\S]*same issue[\s\S]*completion/i);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   assert.doesNotMatch(agent, /Before starting, read `docs\/PROJECT_CONTEXT\.md`/);
 });
