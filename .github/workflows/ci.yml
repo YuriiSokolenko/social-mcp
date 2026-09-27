@@ -102,15 +102,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - name: Checkout trusted control repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: dev
+
       - name: Continue merge queue after green dev CI
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pi-common/workflow-dispatch.mjs pi-auto-merge.yml
