@@ -3,12 +3,6 @@ run-name: "🧭 Reconcile pipeline state"
 
 on:
   workflow_dispatch:
-    inputs:
-      apply_safe_repairs:
-        description: Remove only labels proven impossible by the state-machine invariants
-        required: true
-        default: true
-        type: boolean
   schedule:
     - cron: '17 * * * *'
 
@@ -38,9 +32,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PI_AUTOMATION_MODE: ${{ vars.PI_AUTOMATION_MODE }}
-        run: |
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.apply_safe_repairs }}" = "true" ]; then
-            node scripts/pi-reconcile.mjs --apply
-          else
-            node scripts/pi-reconcile.mjs
-          fi
+        run: node scripts/pi-reconcile.mjs --apply
