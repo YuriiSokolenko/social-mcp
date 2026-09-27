@@ -2,12 +2,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readQueueContext } from './pi-queue-context.mjs';
-import { replaceIssueState } from './pi-github-state.mjs';
-import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-state-machine.mjs';
+import { readQueueContext } from './pi-common/queue-context.mjs';
+import { replaceIssueState } from './pi-common/github-state.mjs';
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-common/state-machine.mjs';
 import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
-import { githubClient } from './github-api.mjs';
-import { taskMetadata, withTaskMetadata } from './pi-task-metadata.mjs';
+import { githubClient } from './pi-common/github-api.mjs';
+import { taskMetadata, withTaskMetadata } from './pi-common/task-metadata.mjs';
 
 const { api, pages, ensureLabel, repo } = githubClient();
 
