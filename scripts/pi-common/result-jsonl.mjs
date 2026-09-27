@@ -26,14 +26,14 @@ export function readPiJsonl(jsonl, { customType } = {}) {
       const text = assistantText(event.message);
       if (text.trim()) finalText = text.trim();
     }
-    if (event.type === 'agent_end') {
-      // agent_end is authoritative for the completed turn. If it carries no
-      // assistant message, do not leak a quoted/intermediate message_end from
-      // an earlier turn into result parsing.
-      const messages = Array.isArray(event.messages) ? event.messages : [];
-      const assistant = [...messages].reverse().find(message => message?.role === 'assistant');
-      const text = assistantText(assistant);
-      finalText = text.trim();
+    if (event.type === 'agent_end' && Array.isArray(event.messages) && event.messages.length) {
+      // A non-empty agent_end is authoritative for the completed turn. An
+      // assistant tool-call with no text intentionally clears an earlier
+      // message_end, so quoted/intermediate result markers cannot leak through.
+      // An empty messages array carries no replacement payload, so keep the
+      // completed message_end Pi emitted immediately before it.
+      const assistant = [...event.messages].reverse().find(message => message?.role === 'assistant');
+      finalText = assistant ? assistantText(assistant).trim() : '';
     }
   }
 
