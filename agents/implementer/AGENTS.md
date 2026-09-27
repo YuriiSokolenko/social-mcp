@@ -23,7 +23,7 @@ Before starting, read `docs/PROJECT_CONTEXT.md` for the product goal and boundar
    smallest decision needed instead of inventing scope.
 4. For changed Python behavior, read `.agents/skills/python-testing-patterns/SKILL.md` and apply its relevant pytest guidance. Load its references only when a specific testing pattern needs them.
 5. Add or update tests for every behavior changed by the issue, including important edge cases.
-6. Run the relevant test suite and Ruff before finishing.
+6. Run the relevant product test suite and Ruff. Do not run CI/control-plane contract tests (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests); `ci.yml` owns those checks before finishing.
 7. Call `submit_result` as the final validation step. The tool fetches and merges the latest `dev` into the current issue branch and runs `git diff --check`, `pytest`, and `ruff check .`.
 8. If `submit_result` reports merge conflicts, stay in the same agent session: inspect and resolve the conflicted files, preserve both the issue intent and current `dev` behavior, run relevant tests, and call `submit_result` again. Repeat until the merge and all checks succeed. Do not abandon a resolvable conflict merely because `dev` changed.
 9. Only a successful `submit_result` means implementation is complete. Its metadata becomes the pull request title and description, so describe the code that actually exists in the final merged working tree. Do not claim tests in this metadata—the workflow records deterministic validation itself.
