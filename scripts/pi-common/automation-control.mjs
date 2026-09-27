@@ -21,8 +21,8 @@ export async function setAutomationMode(mode) {
  * recovery/audit only and must not become a second queue owner.
  */
 export async function resumeDispatcher() {
-  const { api } = githubClient();
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches','POST',{ref:'dev'});
+  const { dispatchWorkflow } = githubClient();
+  await dispatchWorkflow('pi-dispatcher.yml');
 }
 
 async function main(){
