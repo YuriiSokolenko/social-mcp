@@ -46,6 +46,10 @@ jobs:
           [ "$(jq -r '.state' <<<"$PR_JSON")" = "open" ]
           [ "$(jq -r '.base.ref' <<<"$PR_JSON")" = "dev" ]
           [ "$(jq -r '.head.repo.full_name' <<<"$PR_JSON")" = "$REPO" ]
+          if jq -e '[.labels[].name] | index("pi:needs-human") != null' <<<"$PR_JSON" >/dev/null; then
+            echo "PR #${PR} requires human attention; skipping automation"
+            exit 0
+          fi
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
           HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
           [[ "$HEAD_REF" == pi/issue-* ]]
