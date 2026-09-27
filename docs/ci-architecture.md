@@ -34,3 +34,19 @@ Prefer this contract:
 `object ID / command → workflow loads current GitHub state → workflow acts`
 
 Do not use workflow inputs as a transport layer or as hidden pipeline state. Before adding a new input, first prove that the value cannot be derived safely from GitHub state inside the receiving workflow.
+
+
+## SHA rule
+
+A SHA is not pipeline state and must not be transported between workflows.
+
+Do not pass a SHA from workflow A to workflow B, store it as orchestration state, or use it to create a custom cross-workflow state machine.
+
+A workflow may read the current SHA directly from GitHub and use it locally for one atomic operation where optimistic concurrency is required. Examples include supplying the current PR head SHA to the GitHub merge API or using the current remote SHA with `--force-with-lease`.
+
+The distinction is intentional:
+
+- forbidden: `workflow A → SHA → workflow B`;
+- allowed: `workflow → read current SHA from GitHub → use it locally for merge/lease protection`.
+
+Once that local operation finishes, the SHA has no orchestration meaning. GitHub repository state is the source of truth.
