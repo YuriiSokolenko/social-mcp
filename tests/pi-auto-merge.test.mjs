@@ -54,3 +54,13 @@ test('agent workflows execute control scripts only from fresh GITHUB_WORKSPACE c
     assert.match(source, /GITHUB_WORKSPACE\/scripts\//, name);
   }
 });
+
+
+test('merge gate merges at most one PR per dev CI cycle', () => {
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(gate, /if \(await processPR\(pr\)\) break/);
+  assert.match(ci, /needs: \[test, docker\]/);
+  assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
+  assert.match(ci, /pi-auto-merge\.yml\/dispatches/);
+});
