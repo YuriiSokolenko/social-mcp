@@ -41,6 +41,7 @@ jobs:
       PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
+      PI_ISSUE: ${{ env.ISSUE }}
       PI_BASH_TIMEOUT_SECONDS: '600'
       PI_REQUIRE_TASK_COMPLEXITY: '1'
       PI_MAX_REPEAT_CALLS: '3'
@@ -94,7 +95,7 @@ jobs:
           cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
           pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "First call declare_task_complexity based on the review scope, then read agents/reviewer/AGENTS.md. Review PR #${PR} against issue #${ISSUE}. Do not modify files or GitHub state. The deterministic checks already passed. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action." \
+            "First call declare_task_complexity based on the review scope: use trivial for a tiny self-contained diff with obvious acceptance criteria and no behavior, architecture, dependency, or security impact; normal for ordinary code review; complex only for broad architectural or security-sensitive review. Then read agents/reviewer/AGENTS.md. Review PR #${PR} against issue #${ISSUE}. Do not modify files or GitHub state. The deterministic checks already passed; do not rerun pytest, Ruff, or git diff --check. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action." \
             | tee "$RAW" | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
           jq -r '.text' "$RUNNER_TEMP/review-result.json"
