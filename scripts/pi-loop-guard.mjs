@@ -2,24 +2,24 @@ import { Type } from 'typebox';
 
 import { LoopGuard } from './pi-common/loop-guard-policy.mjs';
 
-// Runtime loop/stall guard. Complexity is declared before work so agents can
-// choose an appropriate strategy and may escalate it if broader scope emerges.
+// Runtime loop/stall guard. Agents may perform bounded read-only orientation
+// before declaring complexity; repository-changing work remains blocked until then.
 // Complexity does not impose turn or tool-call quotas.
 export default function (pi) {
   const guard = new LoopGuard({
     turnLimit: Number(process.env.PI_MAX_TURNS ?? 100),
     repeatThreshold: Number(process.env.PI_MAX_REPEAT_CALLS ?? 3),
     requireComplexity: process.env.PI_REQUIRE_TASK_COMPLEXITY === '1',
-    preComplexityReadPaths: (process.env.PI_PRE_COMPLEXITY_READ_PATHS ?? '')
+    preComplexityAllowedTools: (process.env.PI_PRE_COMPLEXITY_ALLOWED_TOOLS ?? '')
       .split(',')
-      .map((path) => path.trim())
+      .map((tool) => tool.trim())
       .filter(Boolean),
   });
 
   pi.registerTool({
     name: 'declare_task_complexity',
     label: 'Declare task complexity',
-    description: 'REQUIRED FIRST ACTION. Classify the current task: trivial for an exact tiny scope with no behavior/design work; normal for ordinary work; complex for broad architectural or multi-part work. You may later escalate complexity if investigation reveals broader scope, but never downgrade it.',
+    description: 'REQUIRED BEFORE IMPLEMENTATION. After the prescribed issue/code orientation and short execution plan, classify the current task: trivial for an exact tiny scope with no behavior/design work; normal for ordinary work; complex for broad architectural or multi-part work. You may later escalate complexity if investigation reveals broader scope, but never downgrade it.',
     parameters: Type.Object({
       complexity: Type.Union([
         Type.Literal('trivial'),
