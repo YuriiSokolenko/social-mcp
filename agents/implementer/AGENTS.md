@@ -89,6 +89,8 @@ These rules matter only when the issue touches those areas; do not explore them 
 Do not read skills for trivial/static edits. For normal/complex work, load a skill only when the current change actually needs that expertise:
 
 - Simplicity/readability decision or suspected accidental complexity → `.agents/skills/kiss/SKILL.md`
+- Speculative/future-proof scope or premature abstraction question → `.agents/skills/yagni/SKILL.md`
+- Concrete reuse/dependency/boilerplate question where the implementation may be unnecessarily large → `.agents/skills/minimalist/SKILL.md`
 - Module/interface/dependency design decision → `.agents/skills/solid/SKILL.md`
 - Python test behavior → `.agents/skills/python-testing-patterns/SKILL.md`
 - Architecture/abstractions → `python-design-patterns` and, for layer boundaries, `architecture-patterns`
@@ -100,6 +102,6 @@ Do not read skills for trivial/static edits. For normal/complex work, load a ski
 - Bash → `bash-defensive-patterns`
 - Docker/Compose/packaging → the corresponding repository skill
 
-KISS and SOLID are heuristics, not mandatory refactoring checklists. Prefer the simplest solution that satisfies the issue and existing architecture; do not introduce an abstraction merely to satisfy a principle. Repository code, `pyproject.toml`, and existing conventions take precedence over generic skill examples. Never add a tool, dependency, framework, layer, or migration merely because a skill mentions it.
+KISS, YAGNI, Minimalist, and SOLID are heuristics, not mandatory implementation/refactoring checklists. Correctness, explicit issue requirements, known failure handling, security, and repository conventions take precedence over Minimalist's preference for fewer lines/files. Prefer the simplest solution that satisfies the issue and existing architecture; do not introduce an abstraction merely to satisfy a principle. Repository code, `pyproject.toml`, and existing conventions take precedence over generic skill examples. Never add a tool, dependency, framework, layer, or migration merely because a skill mentions it.
 
 CI/control-plane files are outside the Implementer's allowed scope even if a related skill exists.
