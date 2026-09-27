@@ -11,7 +11,7 @@ test('CI validates the committed dev state without synthetic PR integration inpu
 
 test('merge gate never waits for pre-merge CI, review, repair, or a dev SHA', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.doesNotMatch(gate, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\\/integration|social-mcp\\/pi-review/i);
+  assert.doesNotMatch(gate, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\/integration|social-mcp\/pi-review/i);
   assert.doesNotMatch(gate, /pi-pr-review|pi-pr-fix|statuses|social-mcp\/integration|social-mcp\/pi-review/);
   assert.match(gate, /merge_method: 'squash'/);
 });
