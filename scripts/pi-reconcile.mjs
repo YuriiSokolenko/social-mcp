@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { issueTargetAfterRemovals, replaceIssueState } from './pi-github-state.mjs';
-import { inspectIssueState, safeRemovals } from './pi-state-machine.mjs';
-import { checkpointGcDecision, recoveryForIssue } from './pi-recovery-policy.mjs';
+import { issueTargetAfterRemovals, replaceIssueState } from './pi-common/github-state.mjs';
+import { inspectIssueState, safeRemovals } from './pi-common/state-machine.mjs';
+import { checkpointGcDecision, recoveryForIssue } from './pi-common/recovery-policy.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN;
