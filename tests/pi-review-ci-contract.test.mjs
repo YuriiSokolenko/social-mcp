@@ -108,12 +108,12 @@ test('stale reviewer verdict is discarded without self-rescheduling', () => {
 
 test('implementer resume always rebases saved work onto latest dev and never uses main as a base', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  assert.match(workflow, /git worktree add -B "pi\/issue-\$\{ISSUE\}" "\$JOB_DIR" origin\/dev/);
-  assert.match(workflow, /git merge-base origin\/dev "\$RESUME_REF"/);
-  assert.match(workflow, /git diff --binary "\$BASE" "\$RESUME_REF"/);
-  assert.match(workflow, /git -C "\$JOB_DIR" apply --3way/);
-  assert.doesNotMatch(workflow, /START_REF="refs\/remotes\/origin\/\$\{CHECKPOINT\}"/);
-  assert.doesNotMatch(workflow, /git rev-parse "\$\{START_REF\}\^"/);
+  const worktree = fs.readFileSync('scripts/pi-common/issue-worktree.mjs', 'utf8');
+  assert.match(worktree, /worktree', 'add', '-B'.*origin\/dev/s);
+  assert.match(worktree, /merge-base', 'origin\/dev', resumeRef/);
+  assert.match(worktree, /diff', '--binary', base, resumeRef/);
+  assert.match(worktree, /apply', '--3way', patch/);
+  assert.match(worktree, /checkpointExpected[\s\S]*issueBranchExpected/);
   assert.match(workflow, /dev is the only development base/);
 });
 
@@ -184,11 +184,11 @@ test('human-required PR exits before reviewer or repair model work', () => {
 
 
 test('implementer checkpoint never commits unresolved replay conflicts', () => {
-  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const conflictCheck = workflow.indexOf('git diff --name-only --diff-filter=U');
-  const stage = workflow.indexOf('git add -A', conflictCheck);
+  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const conflictCheck = publication.indexOf("'diff','--name-only','--diff-filter=U'");
+  const stage = publication.indexOf("'add','-A'", conflictCheck);
   assert.ok(conflictCheck >= 0 && stage > conflictCheck);
-  assert.match(workflow, /preserving the previous checkpoint instead of saving conflict markers/);
+  assert.match(publication, /reason:'conflicts'/);
 });
 
 
@@ -277,9 +277,10 @@ test('late merge conflict leaves recoverable PR Fix ownership', () => {
 
 test('issue publication safely replaces only the branch head observed at run start', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  assert.match(workflow, /PI_ISSUE_BRANCH_EXPECTED=\$\{ISSUE_BRANCH_REMOTE\}/);
-  assert.match(workflow, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}:\$\{PI_ISSUE_BRANCH_EXPECTED\}"/);
-  assert.doesNotMatch(workflow, /push --set-upstream origin "\$\{ISSUE_COMMIT\}:refs\/heads\/pi\/issue-\$\{ISSUE\}"/);
+  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  assert.match(workflow, /PI_ISSUE_BRANCH_EXPECTED/);
+  assert.match(publication, /--force-with-lease=refs\/heads\/pi\/issue-\$\{issue\}:\$\{expectedSha/);
+  assert.doesNotMatch(publication, /push --set-upstream origin/);
 });
 
 test('issue agent workflow contains no escaped newline artifacts', () => {
