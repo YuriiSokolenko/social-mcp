@@ -37,44 +37,17 @@ jobs:
           persist-credentials: false
           ref: dev
 
-      - name: Load PR
+      - name: Load and guard PR
         id: load
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/pulls/${PR}")"
-          [ "$(jq -r '.state' <<<"$PR_JSON")" = "open" ]
-          [ "$(jq -r '.base.ref' <<<"$PR_JSON")" = "dev" ]
-          [ "$(jq -r '.head.repo.full_name' <<<"$PR_JSON")" = "$REPO" ]
-          if jq -e '[.labels[].name] | index("pi:needs-human") != null' <<<"$PR_JSON" >/dev/null; then
-            echo "PR #${PR} requires human attention; skipping automation"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
-          HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
-          [[ "$HEAD_REF" == pi/issue-* ]]
-
-          FILES=""
-          PAGE=1
-          while :; do
-            PAGE_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/pulls/${PR}/files?per_page=100&page=${PAGE}")"
-            COUNT="$(jq 'length' <<<"$PAGE_JSON")"
-            FILES="${FILES}$(jq -r '.[].filename' <<<"$PAGE_JSON")"$'\n'
-            [ "$COUNT" -lt 100 ] && break
-            PAGE=$((PAGE + 1))
-          done
-          if printf '%s' "$FILES" | node "$GITHUB_WORKSPACE/scripts/pi-control-plane-policy.mjs" --stdin; then
-            echo "PR #${PR} changes CI/control-plane files; agent automation is forbidden"
-            LABELS="$(jq -c '[.labels[].name | select(startswith("review:") | not)] + ["pi:needs-human"] | unique' <<<"$PR_JSON")"
-            jq -n --argjson labels "$LABELS" '{labels:$labels}' | curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "https://api.github.com/repos/${REPO}/issues/${PR}/labels" >/dev/null
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          ISSUE="${HEAD_REF#pi/issue-}"
-          echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
-          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
-          echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
+          CONTEXT="$RUNNER_TEMP/pi-pr-context.json"
+          node "$GITHUB_WORKSPACE/scripts/pi-common/pr-guard.mjs" "$PR" "$CONTEXT"
+          echo "skip=$(jq -r '.skip' "$CONTEXT")" >> "$GITHUB_OUTPUT"
+          echo "ISSUE=$(jq -r '.issue' "$CONTEXT")" >> "$GITHUB_ENV"
+          echo "HEAD_REF=$(jq -r '.branch' "$CONTEXT")" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$(jq -r '.head' "$CONTEXT")" >> "$GITHUB_ENV"
 
       - name: Create PR worktree
         if: steps.load.outputs.skip != 'true'
