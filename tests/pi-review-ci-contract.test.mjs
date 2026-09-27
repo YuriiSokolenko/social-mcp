@@ -376,3 +376,23 @@ test('Reviewer, PR Fix, and Automation Control contain no inline GitHub REST imp
     assert.doesNotMatch(workflow, /api\.github\.com/, name);
   }
 });
+
+
+test('every model-driven Pi workflow uses the shared response-budget extension', () => {
+  for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.match(workflow, /pi-response-budget\.mjs/, `${name}: missing shared response-budget extension`);
+  }
+});
+
+test('response-budget policy has one hard 8k ceiling and is independent of loop guard', () => {
+  const extension = fs.readFileSync('scripts/pi-response-budget.mjs', 'utf8');
+  const policy = fs.readFileSync('scripts/pi-common/response-budget-policy.mjs', 'utf8');
+  const guard = fs.readFileSync('scripts/pi-loop-guard.mjs', 'utf8');
+  assert.match(policy, /short:\s*2048/);
+  assert.match(policy, /normal:\s*4096/);
+  assert.match(policy, /deep:\s*8192/);
+  assert.match(extension, /set_response_budget/);
+  assert.match(extension, /session_start/);
+  assert.doesNotMatch(guard, /set_response_budget|RESPONSE_BUDGETS|withResponseBudget/);
+});
