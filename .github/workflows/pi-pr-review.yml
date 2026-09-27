@@ -41,7 +41,6 @@ jobs:
       PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
-      PI_ISSUE: ${{ env.ISSUE }}
       PI_BASH_TIMEOUT_SECONDS: '600'
       PI_REQUIRE_TASK_COMPLEXITY: '1'
       PI_MAX_REPEAT_CALLS: '3'
@@ -62,6 +61,7 @@ jobs:
           node "$GITHUB_WORKSPACE/scripts/pi-common/pr-guard.mjs" "$PR" "$CONTEXT"
           echo "skip=$(jq -r '.skip' "$CONTEXT")" >> "$GITHUB_OUTPUT"
           echo "ISSUE=$(jq -r '.issue' "$CONTEXT")" >> "$GITHUB_ENV"
+          echo "PI_ISSUE=$(jq -r '.issue' "$CONTEXT")" >> "$GITHUB_ENV"
           echo "HEAD_REF=$(jq -r '.branch' "$CONTEXT")" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$(jq -r '.head' "$CONTEXT")" >> "$GITHUB_ENV"
 
