@@ -109,18 +109,17 @@ jobs:
 
           Work directly in the checked-out repository.
           The checked-out worktree is always based on the latest dev branch. dev is the only development base; never switch to, compare against, or treat main as an alternative source tree.
-          Implement the issue completely, keeping the change focused.
-          Inspect existing code and tests before editing.
+          Implement the issue completely with the smallest scope that satisfies its acceptance criteria.
+          For an exact trivial edit, use the fast path from AGENTS.md: inspect only the target/relevant context, edit promptly, avoid unrelated skills/configuration/tests, and submit.
+          Inspect broader code, architecture, and tests only when the issue's behavior or ambiguity requires it.
           If replayed checkpoint work left merge conflicts in the worktree, resolve those conflicts first against the current dev code; do not abandon current dev or inspect main as a replacement base.
-          Add or update unit tests for every behavior changed by this issue.
-          Cover the acceptance criteria and important edge cases.
-          Do not consider the implementation complete without appropriate automated tests.
-          Run the relevant test suite and Ruff before finishing.
-          Your final submit_result call integrates the latest dev and reruns deterministic validation.
+          Add or update tests when executable behavior changes; do not manufacture tests merely to restate an exact static artifact.
+          Before submission run only useful focused checks. Do not run full pytest or full Ruff just before submit_result.
+          submit_result owns the authoritative final git diff --check, full pytest, and Ruff validation after integrating latest dev.
           If submit_result reports merge conflicts, resolve them in this same agent session, rerun relevant tests, and call submit_result again until it succeeds.
           Do not commit, push, create a pull request, or modify GitHub issue labels; trusted workflow tooling owns those Git operations.
           Do not access production credentials or external social APIs.
-          Finish only after submit_result succeeds.
+          A successful submit_result is terminal: stop immediately and do not perform more tool calls or write another implementation recap.
           EOF
 
       - name: Run Pi with live progress
