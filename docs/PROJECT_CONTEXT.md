@@ -1,45 +1,40 @@
-# Project Context for Agents
+# Project Context
 
-Read this document before planning, implementing, reviewing, or dispatching work in this repository. It describes the product goal and the boundaries that should guide decisions. Consult `README.md` for the fuller product and architecture plan, `docs/threads-tool-contract.md` for the Threads MCP contract, and `docs/CI_RULES.md` for the current CI and agent workflow. A GitHub issue supplies the acceptance criteria for a particular change.
+This is **on-demand product context**, not a mandatory startup document for every agent turn. The GitHub issue defines the requested change. Read this file only when product scope, architecture, security, or platform intent is relevant to a concrete decision. CI behavior belongs in `docs/CI_RULES.md`; detailed product/API contracts belong in their dedicated documents.
 
-## Why this project exists
+## Product goal
 
-Social MCP is a self-hostable service that gives AI assistants a direct, controlled connection to social networks through their official APIs. Its intended clients include ChatGPT, Pi, and Codex. The project aims to let a person inspect accounts, posts, replies, and available insights, and eventually perform explicitly requested publishing and account actions, without depending on a paid analytics middleware service or copying social-network tokens into agent prompts.
+Social MCP is a self-hostable service that connects AI assistants to official social-network APIs without paid analytics middleware or copying platform tokens into prompts.
 
-## Product scope
+Target direction:
+- Threads first: OAuth, authorized profile/content/replies/insights, then permitted write operations.
+- TikTok next: Login Kit, permitted profile/video/statistics, then publishing capabilities only when granted.
+- Instagram later if product needs justify another adapter.
+- Web Admin manages account connections, capability/token status, service status, and operational diagnostics without revealing secrets.
+- MCP exposes separate read/write tools backed by the same application core.
 
-- **Threads first:** connect a Threads account through Meta OAuth; expose authorized profile, content, replies, insights, and other permitted read capabilities; later support publishing and reply management where granted.
-- **TikTok next:** connect through TikTok Login Kit; expose permitted profile, video, and statistics data; add draft upload and Direct Post only when the application and account have the required access and any necessary review.
-- **Instagram later:** consider an independent adapter when the initial platforms are working and the product needs it.
-- **Web Admin:** authenticate the administrator, connect or reconnect accounts, display granted capabilities and token status without revealing secrets, and show service status and useful logs.
-- **MCP interface:** provide AI clients with separate read and write tools backed by the same application core as Web Admin.
+These are targets, not proof that a capability is currently implemented or platform-approved. Current code, tests, issues, and granted permissions are authoritative for current capability.
 
-These are product targets, not a claim that every capability is implemented or approved by the platforms. Check current code, tests, issues, and granted API permissions before describing a capability as available.
+## Architecture
 
-## Architecture and operation
+The service uses Python, FastAPI for HTTP/admin, MCP for AI clients, platform-specific adapters, and SQLite for initial persistence. Keep transport/admin layers thin, shared application logic central, and OAuth/token handling in auth/storage boundaries. Initial deployment is one Docker workload with persistent data outside the disposable container.
 
-The service uses Python, FastAPI for the HTTP/admin surface, an MCP interface for AI clients, platform-specific adapters for external APIs, and SQLite for initial persistent state. Transport and admin handlers should call shared application logic; OAuth and token handling belong in the authentication/storage layers. The initial deployment target is one Docker workload on the N150 host, with persistent data outside the disposable container filesystem.
+`dev` is the default development/integration branch. `main` is reserved for future human-reviewed releases.
 
-The repository also contains the Pi CI pipeline described in `docs/CI_RULES.md`. Product agents may change and review product code only. They have no authority to create, edit, delete, rename, review, repair, or auto-merge CI/control-plane files (`.github/workflows/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`). Trusted workflow tooling owns commits, pushes, PRs, labels, dispatches, and merges. Implementer, Reviewer, and PR Fix run product validation only; `ci.yml` exclusively owns CI/control-plane contract tests. Do not infer product capability from a passing CI job.
+## Product invariants
 
-`dev` is the GitHub default and day-to-day integration branch: Pi issue branches start there and reviewed implementation PRs merge there. `main` is held for future releases; a release promotion is a separate CI-checked, human-reviewed PR from `dev` to `main` merged with a merge commit. Do not send routine task PRs to `main`.
-
-## Non-negotiable product rules
-
-1. Use official platform APIs and expose only operations authorized for the connected account and application.
+1. Use official platform APIs and expose only authorized capabilities.
 2. Never commit, reveal, or log OAuth tokens, client secrets, encryption keys, cookies, or authorization headers.
-3. Keep persisted tokens encrypted at rest, with the encryption key outside the database and Git.
-4. Require explicit user intent for external writes: publishing, replying, reposting, deleting, or changing account state. A connected account alone does not authorize such actions.
-5. Keep platform adapters independent and keep the MCP and HTTP layers thin.
-6. Use mocked API boundaries in automated tests; tests must not publish content or call production social-network APIs.
-7. Treat GitHub issues as the request for a specific change. This document guides interpretation but does not add unrequested scope to an issue.
+3. Persist tokens encrypted at rest with keys outside the database and Git.
+4. Require explicit user intent for external writes such as publishing, replying, reposting, deleting, or account-state changes.
+5. Keep platform adapters independent and MCP/HTTP layers thin.
+6. Mock external API boundaries in automated tests; never publish content or call production social APIs from tests.
+7. The issue defines requested scope. Product context constrains implementation; it does not authorize extra roadmap work.
 
-## How agents should use this document
+## When to consult more context
 
-- **Implementer:** read it before the issue; preserve the product boundaries while implementing the issue and its tests.
-- **Reviewer:** read it before reviewing the issue and diff; use it to identify product, architecture, and security regressions.
-- **Dispatcher:** read it before classifying eligible issues for implementation or decomposition; use task descriptions and issue state for priority and eligibility, and do not reinterpret the roadmap as permission to launch unrequested work.
-- **Architect:** read it before breaking an explicitly queued broad issue into independently reviewable tasks, then return them to the dispatcher with dependencies.
-- **Triage:** read it before deciding whether an open issue is complete and clear enough to enter the dispatcher queue; when it is not, explain the gap in a comment rather than guessing at the missing scope.
+Use `README.md` for the broader product/architecture overview, `docs/threads-tool-contract.md` for the Threads MCP contract, `docs/oauth.md` for OAuth/token behavior, and `docs/CI_RULES.md` for pipeline/control-plane rules.
 
-If this document disagrees with current executable code or a platform's granted capabilities, investigate and report the discrepancy. If a product decision changes, update this document and the more detailed source documents together.
+Agents should load only the documents relevant to the decision at hand. Dispatcher/Triage normally need issue/queue data, not product architecture. Implementer/Reviewer/Repair need product context only when the changed behavior touches those boundaries. Architect needs it only when decomposition depends on product or architectural constraints.
+
+If documentation conflicts with executable behavior or granted platform capability, do not silently assume the document is current; resolve or report the discrepancy.
