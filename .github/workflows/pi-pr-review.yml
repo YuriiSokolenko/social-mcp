@@ -97,7 +97,12 @@ jobs:
           TEXT="$(jq -r '.text' "$RESULT")"
           API="https://api.github.com/repos/${REPO}"
           PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/pulls/${PR}")"
-          [ "$(jq -r '.head.sha' <<<"$PR_JSON")" = "$HEAD_SHA" ] || { echo "PR changed during review; refusing stale verdict"; exit 1; }
+          CURRENT_HEAD="$(jq -r '.head.sha' <<<"$PR_JSON")"
+          if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
+            echo "PR changed during review; refusing stale verdict and scheduling a fresh review"
+            echo "STALE_REVIEW=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
 
           LABELS="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/issues/${PR}/labels" | jq -c '[.[].name | select(startswith("review:") | not)]')"
           if [ "$VERDICT" = "PASS" ]; then
@@ -108,6 +113,15 @@ jobs:
           jq -n --argjson labels "$LABELS" '{labels:$labels}' | curl --fail-with-body -sS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/labels" >/dev/null
           jq -n --arg body "$TEXT" '{body:$body}' | curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/comments" >/dev/null
           echo "VERDICT=$VERDICT" >> "$GITHUB_ENV"
+
+      - name: Restart review after PR head changed
+        if: env.STALE_REVIEW == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
+            --data '{"ref":"dev","inputs":{"pr_number":"'${PR}'"}}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-review.yml/dispatches"
 
       - name: Start PR Fix after changes requested
         if: env.VERDICT == 'CHANGES_REQUESTED'
