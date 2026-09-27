@@ -299,3 +299,32 @@ test('product agent workflows never run control-plane contract suites', () => {
   assert.match(ci, /node --test tests\/\*\.test\.mjs/);
   assert.match(ci, /tests\/test_runner_autoscaler\.sh/);
 });
+
+
+test('all Pi agents are hard-blocked from CI control-plane changes', () => {
+  const policy = fs.readFileSync('scripts/pi-control-plane-policy.mjs', 'utf8');
+  for (const fragment of [
+    ".github/workflows/",
+    "scripts\\/pi-",
+    "tests\\/[^/]+\\.test\\.mjs",
+    "tests/test_runner_autoscaler.sh",
+    "infra/github-runner-autoscaler/",
+  ]) assert.ok(policy.includes(fragment), `missing protected control-plane path: ${fragment}`);
+
+  const implementerTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const repairTool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
+  assert.match(implementerTool, /controlPlanePaths\(changed\)/);
+  assert.match(repairTool, /controlPlanePaths\(changed\)/);
+  assert.match(implementerTool, /Agent changes to CI\/control-plane files are forbidden/);
+  assert.match(repairTool, /Agent changes to CI\/control-plane files are forbidden/);
+
+  for (const name of ['pi-pr-review.yml', 'pi-pr-fix.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.match(workflow, /pi-control-plane-policy\.mjs" --stdin/);
+    assert.match(workflow, /pi:needs-human/);
+    assert.match(workflow, /per_page=100&page=\$\{PAGE\}/);
+  }
+
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(gate, /controlPlanePaths\(paths\)/);
+});
