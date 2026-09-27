@@ -55,7 +55,7 @@ A checkpoint branch may exist for recovery; it is never a merge candidate. The p
 
 Reviewer is independent from Implementer and does not edit files. It checks issue compliance, correctness, regressions, tests, architecture, security-sensitive changes, and accidental artifacts. A failing deterministic check cannot be treated as PASS.
 
-Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. Merge Gate requires `review:passed`, and only PASS wakes it. PR Fix addresses reviewer-requested code changes, integrates the latest `dev`, verifies the result, and always returns the changed PR to a fresh review before merge.
+Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. The verdict applies only if the PR HEAD is still exactly the HEAD that was reviewed. If HEAD changed during review, the stale verdict is discarded and Reviewer is dispatched again for the current PR. Merge Gate requires `review:passed`, and only PASS wakes it. PR Fix addresses reviewer-requested code changes, integrates the latest `dev`, verifies the result, and always returns the changed PR to a fresh review before merge.
 
 If Merge Gate later discovers that an already-approved PR now conflicts with current `dev`, that approval is stale for the changed integration result. Merge Gate removes the old `review:*` verdict, dispatches PR Fix, and stops the queue. PR Fix resolves the conflict against current `dev` in its live agent session, runs deterministic checks, pushes the new PR HEAD, and sends it through a fresh Reviewer before Merge Gate may try again.
 
@@ -122,7 +122,7 @@ Use explicit states:
 - review execution failure -> `review:failed`
 - reviewer requests changes -> `review:changes-requested`
 - reviewer passes -> `review:passed`
-- merge conflict -> blocked merge condition; Merge Gate itself succeeds/stops
+- merge conflict -> stale review is removed, PR Fix is dispatched, and Merge Gate itself succeeds/stops the queue
 
 Do not silently substitute another task when selected work fails.
 
