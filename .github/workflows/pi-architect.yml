@@ -20,7 +20,6 @@ permissions:
 
 concurrency:
   group: pi-architect
-  queue: max
   cancel-in-progress: false
 
 jobs:
