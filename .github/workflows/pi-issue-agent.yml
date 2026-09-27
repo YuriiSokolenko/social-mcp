@@ -44,16 +44,14 @@ jobs:
           echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
-      - name: Validate dispatched issue
+      - name: Validate and load dispatched issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]]
-          issue_json="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/issues/${ISSUE}")"
-          jq -e '.state == "open" and (([.labels[].name] | index("pi:ready")) != null)' <<<"$issue_json" >/dev/null
+          ISSUE_CONTEXT="$RUNNER_TEMP/pi-issue-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          node "$GITHUB_WORKSPACE/scripts/pi-common/issue-context.mjs" "$ISSUE" "$ISSUE_CONTEXT"
+          echo "PI_ISSUE_CONTEXT=$ISSUE_CONTEXT" >> "$GITHUB_ENV"
+          echo "PI_ISSUE_TITLE=$(jq -r '.title' "$ISSUE_CONTEXT")" >> "$GITHUB_ENV"
 
       - name: Ensure workflow labels
         env:
@@ -95,14 +93,8 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          ISSUE_JSON="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}")"
-          ISSUE_TITLE="$(jq -r '.title' <<<"$ISSUE_JSON")"
-          ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
-          printf 'PI_ISSUE_TITLE=%s\n' "$ISSUE_TITLE" >> "$GITHUB_ENV"
-
+          ISSUE_TITLE="$(jq -r '.title' "$PI_ISSUE_CONTEXT")"
+          ISSUE_BODY="$(jq -r '.body' "$PI_ISSUE_CONTEXT")"
           TASK_FILE="${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
           cat > "$TASK_FILE" <<EOF
           Read and follow agents/implementer/AGENTS.md before doing any work.
