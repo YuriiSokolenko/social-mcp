@@ -23,11 +23,11 @@ import { prLabelNames, withoutReviewLabels } from './pr-labels.mjs';
  * pi:needs-human (for control-plane changes) and returns {skip:true}; this is a
  * normal automation stop, not an execution failure.
  */
-const { api, pages, repo } = githubClient();
+const { loadPullRequest, replaceLabels, pages, repo } = githubClient();
 
 export async function preparePr(prNumber) {
   if (!Number.isSafeInteger(prNumber) || prNumber < 1) throw new Error('PR number must be a positive integer');
-  const pr = await api(`/pulls/${prNumber}`);
+  const pr = await loadPullRequest(prNumber);
   const branch = pr.head?.ref ?? '';
   const match = /^pi\/issue-([1-9]\d*)$/.exec(branch);
   if (pr.state !== 'open' || pr.base?.ref !== 'dev' ||
@@ -47,7 +47,7 @@ export async function preparePr(prNumber) {
     // Remove stale review verdicts and make human ownership durable.
     const next = withoutReviewLabels(labels);
     if (!next.includes('pi:needs-human')) next.push('pi:needs-human');
-    await api(`/issues/${prNumber}/labels`, 'PUT', { labels: next });
+    await replaceLabels(prNumber, next);
     return {
       skip: true, reason: 'control-plane', pr: prNumber, issue: Number(match[1]),
       head: pr.head.sha, branch, forbidden,
