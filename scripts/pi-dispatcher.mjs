@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
-import { githubClient } from "./github-api.mjs";
-import { readQueueContext } from "./pi-queue-context.mjs";
-import { replaceIssueState } from "./pi-github-state.mjs";
-import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-state-machine.mjs";
-import { taskMetadata } from "./pi-task-metadata.mjs";
+import { githubClient } from "./pi-common/github-api.mjs";
+import { readQueueContext } from "./pi-common/queue-context.mjs";
+import { replaceIssueState } from "./pi-common/github-state.mjs";
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-common/state-machine.mjs";
+import { taskMetadata } from "./pi-common/task-metadata.mjs";
 
 const { api: request, pages, ensureLabel, repo } = githubClient();
 const api = (endpoint, options = {}) =>
