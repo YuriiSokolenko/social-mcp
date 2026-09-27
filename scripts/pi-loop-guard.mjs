@@ -10,6 +10,10 @@ export default function (pi) {
     turnLimit: Number(process.env.PI_MAX_TURNS ?? 100),
     repeatThreshold: Number(process.env.PI_MAX_REPEAT_CALLS ?? 3),
     requireComplexity: process.env.PI_REQUIRE_TASK_COMPLEXITY === '1',
+    preComplexityReadPaths: (process.env.PI_PRE_COMPLEXITY_READ_PATHS ?? '')
+      .split(',')
+      .map((path) => path.trim())
+      .filter(Boolean),
   });
 
   pi.registerTool({
