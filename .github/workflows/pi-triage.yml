@@ -17,11 +17,10 @@ concurrency:
 
 jobs:
   triage:
-    if: vars.PI_AUTOMATION_MODE == 'RUNNING'
     # Manual runs always triage. Issue-close events only wake triage when an
     # ordinary issue (not a PR) closed; prepare remains the source of truth
     # and will exit without invoking Pi when no candidates exist.
-    if: github.event_name == 'workflow_dispatch' || github.event.issue.pull_request == null
+    if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name == 'workflow_dispatch' || github.event.issue.pull_request == null)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
