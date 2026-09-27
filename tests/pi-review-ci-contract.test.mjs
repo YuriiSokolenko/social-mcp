@@ -107,3 +107,15 @@ test('stale reviewer verdict is discarded and current PR head is reviewed again'
   assert.match(workflow, /name: Restart review after PR head changed/);
   assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
 });
+
+
+test('implementer resume always rebases saved work onto latest dev and never uses main as a base', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.match(workflow, /git worktree add -B "pi\/issue-\$\{ISSUE\}" "\$JOB_DIR" origin\/dev/);
+  assert.match(workflow, /git merge-base origin\/dev "\$RESUME_REF"/);
+  assert.match(workflow, /git diff --binary "\$BASE" "\$RESUME_REF"/);
+  assert.match(workflow, /git -C "\$JOB_DIR" apply --3way/);
+  assert.doesNotMatch(workflow, /START_REF="refs\/remotes\/origin\/\$\{CHECKPOINT\}"/);
+  assert.doesNotMatch(workflow, /git rev-parse "\$\{START_REF\}\^"/);
+  assert.match(workflow, /dev is the only development base/);
+});
