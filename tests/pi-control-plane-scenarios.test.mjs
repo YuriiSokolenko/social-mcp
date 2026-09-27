@@ -53,8 +53,8 @@ test('published PR state is durable before independent review starts', () => {
   assert.ok(workflow.indexOf('- name: Mark pull request created') < workflow.indexOf('- name: Start independent PR review'));
   const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /issue-publication\.mjs" review/);
-  assert.match(publication, /pi-pr-review\.yml\/dispatches/);
-  assert.doesNotMatch(publication, /pi-auto-merge\.yml\/dispatches/);
+  assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
+  assert.doesNotMatch(publication, /dispatchWorkflow\('pi-auto-merge\.yml'/);
   assert.match(workflow, /if: failure\(\) && steps\.pr\.outputs\.number == ''/);
 });
 
@@ -139,7 +139,7 @@ test('merge gate owns only eligibility and merge; dev CI owns validation', () =>
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /merge_method: 'squash'/);
   assert.doesNotMatch(gate, /pi-pr-review|social-mcp\/integration|social-mcp\/pi-review|statuses/);
-  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
+  assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
 });
 
 test('manual review and repair contain no captured dev-base state', () => {
@@ -161,5 +161,5 @@ test('dispatcher-ready label event is the only normal wake after architect publi
   const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
   const dispatcher = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
   assert.match(dispatcher, /github\.event\.label\.name == 'dispatcher:ready'/);
-  assert.doesNotMatch(architect, /pi-dispatcher\.yml\/dispatches/);
+  assert.doesNotMatch(architect, /dispatchWorkflow\('pi-dispatcher\.yml'/);
 });
