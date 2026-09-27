@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ISSUE_ACTIVE, PIPELINE_LABELS } from './pi-state-machine.mjs';
+import { ISSUE_ACTIVE, PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
 if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are required');
