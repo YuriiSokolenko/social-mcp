@@ -322,13 +322,13 @@ jobs:
           fi
           CURRENT_REMOTE="$(git ls-remote origin "refs/heads/$HEAD_REF" | awk '{print $1}')"
           [ "$CURRENT_REMOTE" = "$HEAD_SHA" ] || { echo "PR head moved during repair; refusing stale push" >&2; exit 1; }
+          git fetch origin dev
+          CURRENT_BASE="$(git rev-parse origin/dev)"
+          if [ "$CURRENT_BASE" != "$BASE_SHA" ]; then
+            echo "dev moved during repair; refusing to publish work for stale base $BASE_SHA" >&2
+            exit 1
+          fi
           if [ "$REASON" = "conflict" ]; then
-            git fetch origin dev
-            CURRENT_BASE="$(git rev-parse origin/dev)"
-            if [ "$CURRENT_BASE" != "$BASE_SHA" ]; then
-              echo "dev moved during conflict repair; refusing to publish a stale rebase" >&2
-              exit 1
-            fi
             git merge-base --is-ancestor "$BASE_SHA" HEAD
           fi
           git diff --check
