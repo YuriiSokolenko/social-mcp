@@ -52,8 +52,6 @@ from social_mcp.container import (
     TokenCipherUnavailableError,
 )
 from social_mcp.diagnostics import DiagnosticLevel, current_request_id
-from social_mcp.platforms.tiktok import TikTokLoginKitAdapter, resolve_tiktok_capabilities
-from social_mcp.platforms.tiktok.oauth import TikTokOAuthError
 from social_mcp.platforms.threads import (
     ThreadsLoginAdapter,
     ThreadsOAuthError,
@@ -67,6 +65,8 @@ from social_mcp.platforms.threads.constants import (
     SCOPE_THREADS_BASIC,
 )
 from social_mcp.platforms.threads.oauth import ThreadsAccountState
+from social_mcp.platforms.tiktok import TikTokLoginKitAdapter, resolve_tiktok_capabilities
+from social_mcp.platforms.tiktok.oauth import TikTokOAuthError
 from social_mcp.storage.models import ConnectedAccount, SocialPlatform
 
 logger = logging.getLogger(__name__)

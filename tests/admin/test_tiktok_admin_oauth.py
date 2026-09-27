@@ -175,8 +175,11 @@ def test_accounts_page_shows_tiktok_connect_when_configured_and_unconnected(
     assert "Connect TikTok" in body
     assert 'action="/admin/connect/tiktok"' in body
     assert 'name="csrf_token"' in body
-    # Threads remains a future placeholder (out of scope for this issue).
-    assert "Connect Threads (coming soon)" in body
+    # Threads remains out of scope for this issue: with Threads credentials
+    # unconfigured, the accounts page shows the Threads configure notice
+    # rather than a connect form (current admin behavior).
+    assert "to connect Threads" in body
+    assert 'action="/admin/connect/threads"' not in body
 
 
 def test_accounts_page_shows_reconnect_when_tiktok_connected(
