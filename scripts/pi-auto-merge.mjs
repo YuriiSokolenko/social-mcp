@@ -35,6 +35,12 @@ async function processPR(prSummary) {
     return;
   }
 
+  const prLabels = new Set((pr.labels ?? []).map(label => label.name));
+  if (!prLabels.has('review:passed')) {
+    console.log(`#${pr.number}: waiting for independent review PASS`);
+    return;
+  }
+
   const files = await pages(`/pulls/${pr.number}/files`);
   if (!allowedFiles(files, pr.changed_files)) {
     console.log(`#${pr.number}: changed control files or incomplete file list; human review required`);
