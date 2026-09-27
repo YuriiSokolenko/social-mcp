@@ -88,12 +88,13 @@ async function processPR(prSummary) {
     }
 
     const nextLabels = [...prLabels].filter(label => !label.startsWith('review:'));
+    nextLabels.push('review:changes-requested');
     await api(`/issues/${pr.number}/labels`, 'PUT', { labels: nextLabels });
     await api('/actions/workflows/pi-pr-fix.yml/dispatches', 'POST', {
       ref: 'dev',
       inputs: { pr_number: String(pr.number) },
     });
-    console.log(`#${pr.number}: merge conflict; cleared stale review and dispatched PR Fix`);
+    console.log(`#${pr.number}: merge conflict; assigned review:changes-requested ownership and dispatched PR Fix`);
     return 'blocked';
   }
 }
