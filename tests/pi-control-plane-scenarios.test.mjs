@@ -141,3 +141,10 @@ test('manual review and repair contain no captured dev-base state', () => {
     assert.doesNotMatch(workflow, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\/integration/);
   }
 });
+
+
+test('reconciler restarts stranded ready work without another dispatcher round trip', () => {
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconcile, /retryReadyImplementer[\s\S]*pi-issue-agent\.yml/);
+  assert.doesNotMatch(reconcile, /retryReadyImplementer[\s\S]{0,500}pi-dispatcher\.yml/);
+});
