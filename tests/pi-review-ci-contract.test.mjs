@@ -474,3 +474,14 @@ test('implementer declares complexity before reading its operating contract', ()
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   assert.doesNotMatch(agent, /Before starting, read `docs\/PROJECT_CONTEXT\.md`/);
 });
+
+
+test('dispatcher stays a narrow scope classifier and does not treat complexity as decomposition', () => {
+  const agent = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
+  assert.match(agent, /candidates.*authoritative/is);
+  assert.match(agent, /Size alone is not a reason for ARCHITECT/);
+  assert.match(agent, /Complexity alone is not a reason for ARCHITECT/);
+  assert.match(agent, /Do not inspect repository code, project documentation, Git history/);
+  assert.match(agent, /That classification is your entire job/);
+  assert.doesNotMatch(agent, /Read `docs\/PROJECT_CONTEXT\.md`/);
+});
