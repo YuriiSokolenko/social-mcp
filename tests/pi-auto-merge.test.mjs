@@ -31,7 +31,7 @@ test('merge gate follows the simple merge-then-test contract', () => {
   assert.match(source, /dev push CI now validates the merged result/);
   assert.doesNotMatch(source, /integration_base_sha|repair_base_sha|BASE_SHA|base\.object\.sha/);
   assert.doesNotMatch(source, /social-mcp\/(?:integration|integration-conflict|pi-review|repair-)/);
-  assert.doesNotMatch(source, /pi-pr-review\.yml|pi-pr-fix\.yml|ci\.yml/);
+  assert.doesNotMatch(source, /pi-pr-review\.yml|ci\.yml/);
   assert.doesNotMatch(source, /statuses|reserveAndDispatch|latestStatus/);
 });
 
@@ -66,10 +66,12 @@ test('merge gate merges at most one PR per dev CI cycle', () => {
 });
 
 
-test('merge conflict blocks the queue without failing merge gate', () => {
+test('late merge conflict invalidates review, dispatches PR Fix, and blocks the queue', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /merge conflicts/i);
-  assert.match(gate, /merge-gate:conflict-pr/);
+  assert.match(gate, /merge-gate:conflict-pr:\$\{pr\.number\}:\$\{sha\}/);
+  assert.match(gate, /filter\(label => !label\.startsWith\('review:'\)\)/);
+  assert.match(gate, /pi-pr-fix\.yml\/dispatches/);
   assert.match(gate, /return 'blocked'/);
   assert.match(gate, /if \(await processPR\(pr\)\) break/);
 });
