@@ -344,7 +344,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human             "Pi workflow was cancelled. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue dispatcher-ready \
+            "Pi implementation run was cancelled. Saved checkpoint work, if any, will be replayed from latest dev on the next dispatch."
 
       - name: Summarize issue pipeline
         if: always()
