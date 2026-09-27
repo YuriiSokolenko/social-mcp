@@ -225,3 +225,10 @@ test('global automation mode gates issue-producing agent stages', () => {
     assert.match(workflow, /\["RUNNING","DRAINING"\]/, `${file} must allow draining in-flight PR work`);
   }
 });
+
+
+test('merge gate coalesces redundant wakes instead of queueing every scan', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
+  assert.match(workflow, /concurrency:\n\s+group: pi-auto-merge\n\s+cancel-in-progress: false/);
+  assert.doesNotMatch(workflow, /queue: max/);
+});
