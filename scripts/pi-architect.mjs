@@ -195,7 +195,6 @@ async function publish(issue, jsonl, contextFile) {
     // may not have existed before Architect temporarily claimed the issue.
     await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
     await transitionIssue(issue, 'queued');
-    await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
     console.log(`Reviewed #${issue}: ${plan.action}`);
     return;
   }
@@ -264,7 +263,6 @@ async function publish(issue, jsonl, contextFile) {
       patch: (childNumber, labels) => api(`/issues/${childNumber}`, 'PATCH', { labels }),
     });
   }
-  await api('/actions/workflows/pi-dispatcher.yml/dispatches', 'POST', { ref: 'dev' });
   console.log(`Split #${issue} into ${children.map(n => `#${n}`).join(', ')}`);
 }
 
