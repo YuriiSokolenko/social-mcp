@@ -81,7 +81,7 @@ test('review PASS is required before merge gate can merge', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(review, /Run deterministic review checks/);
-  assert.match(review, /review:passed/);
+  assert.match(fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8'), /review:passed/);
   assert.match(review, /Wake merge gate after PASS/);
   assert.match(gate, /review:passed/);
 });
@@ -95,7 +95,7 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(tool, /PR conflicts with current dev/);
   assert.match(tool, /runProductChecks\(\)/);
   assert.match(workflow, /name: Start fresh review/);
-  assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
+  assert.match(fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8'), /pi-pr-review\.yml\/dispatches/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
 
@@ -197,11 +197,15 @@ test('implementer checkpoint never commits unresolved replay conflicts', () => {
 test('review verdict exists only for the unchanged reviewed PR head', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  assert.match(review, /PR changed during review; clearing stale verdict/);
-  assert.match(review, /CURRENT_HEAD[\s\S]*?select\(startswith\("review:"\) \| not\)/);
-  assert.doesNotMatch(repair, /Load PR[\s\S]{0,1200}?select\(startswith\("review:"\) \| not\)/);
-  assert.match(repair, /Start fresh review[\s\S]*?select\(startswith\("review:"\) \| not\)/);
-  assert.match(repair, /id: publish[\s\S]*?pi:needs-human[\s\S]*?published=false[\s\S]*?published=true/);
+  const reviewState = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
+  const repairPublication = fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8');
+  assert.match(review, /PR #\$PR changed during review; stale verdict cleared/);
+  assert.match(reviewState, /pr\.head\.sha !== reviewedHead/);
+  assert.match(reviewState, /pi:needs-human/);
+  assert.match(reviewState, /filter\(x => !x\.startsWith\('review:'\)\)/);
+  assert.match(repairPublication, /pi:needs-human/);
+  assert.match(repairPublication, /expectedHead/);
+  assert.match(repairPublication, /filter\(x=>!x\.startsWith\('review:'\)\)/);
   assert.match(repair, /if: steps\.publish\.outputs\.published == 'true'/);
   assert.match(repair, /issues: write/);
 });
@@ -243,7 +247,10 @@ test('workflow concurrency uses only supported GitHub Actions keys', () => {
 
 test('reviewer rechecks the human gate before publishing a verdict', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  assert.match(review, /Apply review result[\s\S]*?PR_JSON=.*pulls\/\$\{PR\}[\s\S]*?pi:needs-human[\s\S]*?HUMAN_GATED=true[\s\S]*?exit 0/);
+  const state = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
+  assert.match(review, /review-state\.mjs" apply/);
+  assert.match(state, /pi:needs-human/);
+  assert.match(state, /pr\.head\.sha !== reviewedHead/);
   assert.doesNotMatch(review, /Restart review after PR head changed/);
 });
 
@@ -258,12 +265,13 @@ test('reconciler gives normal PR handoffs a grace period before recovery dispatc
 
 test('PR head changes invalidate verdict without creating a second review scheduler', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const state = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
   assert.match(review, /pull_request:[\s\S]*types: \[synchronize\]/);
-  assert.match(review, /Invalidate stale review verdict[\s\S]*select\(startswith\("review:"\) \| not\)/);
+  assert.match(review, /review-state\.mjs" invalidate/);
+  assert.match(state, /replaceReviewLabels\(prNumber\)/);
   assert.match(review, /review:\n    if: github\.event_name == 'workflow_dispatch'/);
-  assert.match(review, /run-name: "🔬 Review PR #\$\{\{ inputs\.pr_number \|\| github\.event\.pull_request\.number \}\}"/);
   const invalidate = review.slice(review.indexOf('  invalidate:'), review.indexOf('  review:'));
-  assert.doesNotMatch(invalidate, /pi-pr-review\.yml\/dispatches/);
+  assert.doesNotMatch(invalidate, /dispatch/);
   assert.doesNotMatch(review, /Restart review after PR head changed/);
 });
 
@@ -347,4 +355,13 @@ test('all Pi agents are hard-blocked from CI control-plane changes', () => {
 
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /controlPlanePaths\(paths\)/);
+});
+
+
+test('Reviewer, PR Fix, and Automation Control contain no inline GitHub REST implementation', () => {
+  for (const name of ['pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-automation-control.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.doesNotMatch(workflow, /\bcurl\b/, name);
+    assert.doesNotMatch(workflow, /api\.github\.com/, name);
+  }
 });
