@@ -252,3 +252,13 @@ test('reconciler gives normal PR handoffs a grace period before recovery dispatc
   assert.match(source, /pr\.updated_at \?\? pr\.created_at/);
   assert.match(source, /prAgeMs < PR_RECOVERY_GRACE_MS/);
 });
+
+
+test('PR head changes invalidate verdict without creating a second review scheduler', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(review, /pull_request:[\s\S]*types: \[synchronize\]/);
+  assert.match(review, /Invalidate stale review verdict[\s\S]*select\(startswith\("review:"\) \| not\)/);
+  assert.match(review, /review:\n    if: github\.event_name == 'workflow_dispatch'/);
+  const invalidate = review.slice(review.indexOf('  invalidate:'), review.indexOf('  review:'));
+  assert.doesNotMatch(invalidate, /pi-pr-review\.yml\/dispatches/);
+});
