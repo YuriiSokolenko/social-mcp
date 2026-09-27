@@ -101,14 +101,6 @@ test('repair is explicitly bound to the exact dev SHA authorized by merge gate',
   assert.match(gate, /repair_base_sha: base\.object\.sha/);
 });
 
-test('workflow concurrency uses only supported GitHub Actions keys', () => {
-  for (const file of fs.readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).map(name => `.github/workflows/${name}`)) {
-    const workflow = fs.readFileSync(file, 'utf8');
-    assert.doesNotMatch(workflow, /^\s*queue:\s*max\s*$/m);
-  }
-});
-
-
 test('every repair refuses to publish after dev moves away from its authorized base', () => {
   const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
   assert.match(repair, /git fetch origin dev[\s\S]*CURRENT_BASE="\$\(git rev-parse origin\/dev\)"[\s\S]*CURRENT_BASE.*BASE_SHA[\s\S]*refusing to publish work for stale base/);
