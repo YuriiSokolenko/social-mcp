@@ -1,5 +1,5 @@
 name: Pi Issue Agent
-run-name: "🤖 Implement #${{ inputs.issue_number }} ${{ inputs.issue_title && format('· {0}', inputs.issue_title) || '' }}"
+run-name: "🤖 Implement #${{ inputs.issue_number }}"
 
 on:
   workflow_dispatch:
@@ -7,10 +7,6 @@ on:
       issue_number:
         description: Issue number to implement
         required: true
-        type: string
-      issue_title:
-        description: Automatically resolved from the GitHub issue by the launcher
-        required: false
         type: string
 
 permissions:
