@@ -12,6 +12,7 @@ permissions:
 
 concurrency:
   group: pi-triage
+  queue: max
   cancel-in-progress: false
 
 jobs:
