@@ -39,8 +39,9 @@ test('agent concurrency never cancels active work', () => {
 
 test('implementer checkpoint uses compare-and-swap lease and exact deletion', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /PI_CHECKPOINT_EXPECTED/);
-  assert.match(workflow, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}-checkpoint:\$\{PI_CHECKPOINT_EXPECTED\}"/);
+  assert.match(publication, /--force-with-lease=refs\/heads\/pi\/issue-\$\{issue\}-checkpoint:\$\{expectedSha/);
   assert.match(workflow, /PI_CHECKPOINT_PUBLISHED/);
   assert.match(workflow, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}-checkpoint:\$\{PI_CHECKPOINT_PUBLISHED\}"/);
 });
