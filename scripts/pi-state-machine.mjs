@@ -118,7 +118,7 @@ export function validateIssueTransition(issue, action) {
     throw new Error('mr-created requires pi:running or an idempotent pi:mr-created state');
   }
   if (action === 'needs-human' && labels.has(PIPELINE_LABELS.pr)) {
-    throw new Error('needs-human cannot replace pi:mr-created; PR failures are tracked by SHA-bound statuses');
+    throw new Error('needs-human cannot replace pi:mr-created; published PR ownership remains with the PR pipeline');
   }
   return target;
 }
