@@ -40,9 +40,9 @@ Architect is optional and exists only for work needing decomposition or task-pla
 
 Implementer edits code and tests in an isolated worktree. It does not commit, push, create PRs, merge, or mutate GitHub directly.
 
-After the model finishes, the workflow fetches the latest `dev` and merges `origin/dev` into the issue branch. Only that updated tree may be verified and published. A merge conflict fails publication explicitly; do not hide it behind SHA orchestration.
+Before the Implementer session may finish successfully, its trusted `submit_result` tool fetches the latest `dev` and merges `origin/dev` into the issue branch. If that merge conflicts, the same live Implementer session must resolve the conflicted files and retry `submit_result`; a resolvable conflict is not a successful terminal state. Trusted tooling owns staging and the merge commit, while the agent owns the content-level conflict resolution.
 
-Workflow-owned checks then run on the branch containing the latest `dev` and must pass before publication, including at least:
+Only after latest `dev` is integrated do deterministic checks run, and they must pass before the result is accepted for publication, including at least:
 
 ```bash
 pytest
