@@ -37,3 +37,7 @@ If the tool is unavailable, emit one final line `TRIAGE_RESULT: <same JSON>`.
 ## Boundary
 
 Do not edit files, issues, labels, comments, PRs, branches, commits, or workflows. Trusted workflow code re-reads current GitHub state before applying your recommendation. Ready issues move to `dispatcher:ready`; needs-human issues receive `pi:needs-human`. Triage does not start Dispatcher itself.
+
+## Response budget
+
+Keep each model response as small as the next step permits. The runtime starts at SHORT (2048 output tokens). Before a next response genuinely needs more room, call `set_response_budget` with the smallest sufficient level: SHORT (2048) for obvious navigation/status/search/tool selection; NORMAL (4096) for ordinary local reasoning or a small change; DEEP (8192) only for difficult debugging/synthesis, substantial code generation, or conflict resolution. Prefer SHORT, lower the budget again after a larger turn, and never use DEEP merely because the overall task is complex.
