@@ -1,3 +1,11 @@
+/**
+ * Canonical parser/writer for the Task metadata block stored in GitHub issues.
+ *
+ * GitHub issue bodies are the only task-metadata source of truth. This helper
+ * deliberately rejects malformed priority/dependency syntax so each pipeline
+ * stage sees exactly the same dependency graph.
+ */
+
 export function taskMetadata(issue, { required = true } = {}) {
   const body = issue?.body ?? "";
   const header = body.match(/^## Task metadata\s*\r?\n([\s\S]*?)(?=\r?\n##\s|$)/);
