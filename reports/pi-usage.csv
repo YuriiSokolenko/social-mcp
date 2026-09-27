@@ -78,3 +78,4 @@ attempt,47,implementation,36346190044,1,failure,7,20662,6861,104543,0,132066,403
 attempt,0,triage,36346472476,1,success,3,3935,1855,28201,0,33991,137.1,157,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36346472476/attempts/1
 attempt,47,implementation,36348073875,1,success,13,27987,8094,264732,0,300813,431.4,507,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36348073875/attempts/1
 attempt,0,triage,36349948211,1,success,3,3935,1982,28207,0,34124,172.0,192,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36349948211/attempts/1
+attempt,0,dispatcher,36351060343,1,success,3,9615,1314,18903,0,29832,76.2,103,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36351060343/attempts/1
