@@ -10,6 +10,7 @@ on:
         type: number
 
 permissions:
+  actions: write
   contents: write
   issues: read
   pull-requests: read
