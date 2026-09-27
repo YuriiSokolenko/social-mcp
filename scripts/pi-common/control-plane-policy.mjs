@@ -1,3 +1,14 @@
+/**
+ * Single path-security boundary separating product changes from CI control plane.
+ *
+ * Every trusted publication/review/merge guard must use this policy. Pi agents
+ * are forbidden from changing, reviewing, repairing or auto-merging matching
+ * paths. Keeping one matcher prevents a path from being protected in Reviewer
+ * but accidentally allowed by Implementer or Merge Gate.
+ *
+ * IMPORTANT: scripts/pi-common/** is intentionally protected by scripts/pi-*.
+ */
+
 export function isControlPlanePath(path) {
   return path.startsWith('.github/workflows/') ||
     /^scripts\/pi-(?:[^/]+\.(?:mjs|sh)|[^/]+\/)/.test(path) ||
