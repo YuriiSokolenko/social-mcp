@@ -164,3 +164,12 @@ test('manual cancellation returns unpublished agent work to dispatcher instead o
   assert.match(architect, /if: cancelled\(\)[\s\S]*?pi-transition\.mjs" issue queued/);
   assert.doesNotMatch(implementer, /if: cancelled\(\) && steps\.pr\.outputs\.number == ''[\s\S]{0,400}?issue needs-human/);
 });
+
+
+test('usage workflow listens to the current Pi workflow names', () => {
+  const usage = fs.readFileSync('.github/workflows/pi-usage.yml', 'utf8');
+  for (const name of ['Pi Issue Agent', 'Pi PR Review', 'Pi PR Fix', 'Pi Architect', 'Pi Dispatcher', 'Pi Triage']) {
+    assert.ok(usage.includes(name), `missing usage trigger for ${name}`);
+  }
+  assert.doesNotMatch(usage, /manual diagnostic|PR Fix \(manual\)/);
+});
