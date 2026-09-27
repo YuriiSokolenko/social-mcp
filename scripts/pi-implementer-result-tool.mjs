@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { Type } from 'typebox';
 
 import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
+import { runProductChecks } from './pi-common/product-checks.mjs';
 
 function run(command, args, { allowFailure = false } = {}) {
   const result = spawnSync(command, args, {
@@ -64,9 +65,7 @@ function validateFinalTree() {
   const changed = run('git', ['diff', '--name-only', base, 'HEAD']).output.split('\n').filter(Boolean);
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
-  run('git', ['diff', '--check']);
-  run('pytest', []);
-  run('ruff', ['check', '.']);
+  runProductChecks();
 }
 
 export default function (pi) {
