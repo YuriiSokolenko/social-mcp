@@ -48,7 +48,7 @@ test('trivial profile hard-blocks excessive exploration while preserving complet
   for (let i = 0; i < complexityProfile('trivial').toolCalls; i += 1) {
     assert.equal(guard.checkToolCall('read', { path: `file-${i}` }), undefined);
   }
-  assert.match(guard.checkToolCall('read', { path: 'one-too-many' }).reason, /Tool-call budget exceeded/);
+  assert.match(guard.checkToolCall('read', { path: 'one-too-many' }).reason, /Exploration tool-call budget exhausted/);
 });
 
 test('complexity can only be declared once', () => {
