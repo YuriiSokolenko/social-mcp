@@ -97,3 +97,12 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
+
+
+test('stale reviewer verdict is discarded and current PR head is reviewed again', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(workflow, /PR changed during review; refusing stale verdict and scheduling a fresh review/);
+  assert.match(workflow, /STALE_REVIEW=true/);
+  assert.match(workflow, /name: Restart review after PR head changed/);
+  assert.match(workflow, /pi-pr-review\.yml\/dispatches/);
+});
