@@ -2,14 +2,13 @@
 import fs from 'node:fs';
 
 import { githubClient } from './github-api.mjs';
+import { prLabelNames, withoutReviewLabels, withReviewVerdict } from './pr-labels.mjs';
 
-const REVIEW = new Set(['review:passed', 'review:changes-requested']);
-const labels = pr => (pr.labels ?? []).map(x => x.name);
 
 async function replaceReviewLabels(prNumber, target = null) {
   const { api } = githubClient();
   const pr = await api(`/pulls/${prNumber}`);
-  const keep = labels(pr).filter(x => !x.startsWith('review:'));
+  const keep = withoutReviewLabels(pr);
   const next = target ? [...keep, target] : keep;
   await api(`/issues/${prNumber}/labels`, 'PUT', { labels: next });
   return pr;
@@ -32,16 +31,14 @@ export async function invalidateReview(prNumber) {
 export async function applyReview({ prNumber, reviewedHead, verdict, text }) {
   const { api } = githubClient();
   const pr = await api(`/pulls/${prNumber}`);
-  const currentLabels = labels(pr);
+  const currentLabels = prLabelNames(pr);
   if (currentLabels.includes('pi:needs-human')) return { status: 'human' };
   if (pr.head.sha !== reviewedHead) {
     await replaceReviewLabels(prNumber);
     return { status: 'stale' };
   }
   const target = verdict === 'PASS' ? 'review:passed' : 'review:changes-requested';
-  if (!REVIEW.has(target)) throw new Error(`unsupported review verdict: ${verdict}`);
-  const keep = currentLabels.filter(x => !x.startsWith('review:'));
-  await api(`/issues/${prNumber}/labels`, 'PUT', { labels: [...keep, target] });
+  await api(`/issues/${prNumber}/labels`, 'PUT', { labels: withReviewVerdict(currentLabels, target) });
   await api(`/issues/${prNumber}/comments`, 'POST', { body: text });
   return { status: 'applied', verdict };
 }
