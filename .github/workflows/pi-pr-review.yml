@@ -1,29 +1,21 @@
-name: Pi PR Review
-run-name: "🔬 Review PR #${{ inputs.pr_number }} ${{ inputs.pr_title && format('· {0}', inputs.pr_title) || '' }}"
+name: Pi PR Review (manual diagnostic)
+run-name: "🔬 Diagnostic review PR #${{ inputs.pr_number }}"
 
 on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Pull request number to review
+        description: Pull request number to inspect
         required: true
         type: number
-      pr_title:
-        description: Automatically resolved from the GitHub pull request by the launcher
-        required: false
-        type: string
-      integration_base_sha:
-        description: Exact dev SHA whose integration status authorized this review
-        required: true
-        type: string
 
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
+  issues: read
+  pull-requests: read
 
 concurrency:
-  group: pi-pr-review-${{ inputs.pr_number || github.run_id }}
+  group: pi-pr-review-${{ inputs.pr_number }}
   queue: max
   cancel-in-progress: false
 
@@ -32,329 +24,54 @@ jobs:
     if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      statuses: write
-      actions: write
     env:
       PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
       PI_BASH_TIMEOUT_SECONDS: '600'
-      INTEGRATION_BASE_SHA: ${{ inputs.integration_base_sha }}
-
     steps:
-      - name: Checkout dev control repository
+      - name: Checkout trusted control repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
           ref: dev
 
-      - name: Initialize Pi usage
-        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
-
-      - name: Load pull request metadata
+      - name: Load PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          API="https://api.github.com/repos/${REPO}"
-          PR_JSON="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${API}/pulls/${PR}")"
-
-          DRAFT="$(jq -r '.draft' <<<"$PR_JSON")"
-          HEAD_REPO="$(jq -r '.head.repo.full_name' <<<"$PR_JSON")"
-          BASE_REF="$(jq -r '.base.ref' <<<"$PR_JSON")"
+          PR_JSON="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/pulls/${PR}")"
+          [ "$(jq -r '.state' <<<"$PR_JSON")" = "open" ]
+          [ "$(jq -r '.draft' <<<"$PR_JSON")" = "false" ]
+          [ "$(jq -r '.base.ref' <<<"$PR_JSON")" = "dev" ]
+          [ "$(jq -r '.head.repo.full_name' <<<"$PR_JSON")" = "$REPO" ]
           HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
           HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
-          BASE_SHA="$INTEGRATION_BASE_SHA"
-          CURRENT_BASE_SHA="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/git/ref/heads/dev" | jq -r '.object.sha')"
-          if [ "$BASE_SHA" != "$CURRENT_BASE_SHA" ]; then
-            echo "Requested review base $BASE_SHA is stale; current dev is $CURRENT_BASE_SHA." >&2
-            exit 1
-          fi
-
-          if [ "$BASE_REF" != "dev" ]; then
-            echo "Pull request #${PR} does not target dev; refusing self-hosted review." >&2
-            exit 1
-          fi
-          if [ "$DRAFT" = "true" ]; then
-            echo "Pull request #${PR} is draft; skipping review." >&2
-            exit 1
-          fi
-          if [ "$HEAD_REPO" != "$REPO" ]; then
-            echo "Pull request #${PR} comes from another repository; refusing self-hosted review." >&2
-            exit 1
-          fi
-          case "$HEAD_REF" in
-            pi/issue-*) ;;
-            *)
-              echo "Pull request #${PR} head '$HEAD_REF' is not a pi/issue-* branch." >&2
-              exit 1
-              ;;
-          esac
-
+          [[ "$HEAD_REF" == pi/issue-* ]]
+          ISSUE="${HEAD_REF#pi/issue-}"
           echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
-          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
 
-          REVIEW_STATE="$(for page in {1..10}; do
-            batch="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"
-            printf '%s\n' "$batch"
-            [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break
-          done | jq -s -r --arg context "social-mcp/pi-review/${BASE_SHA:0:12}" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
-          if [[ "$REVIEW_STATE" == "success" || "$REVIEW_STATE" == "failure" ]]; then
-            echo "Review for ${HEAD_SHA} already has final state ${REVIEW_STATE}; duplicate dispatch exits without model work."
-            exit 0
-          fi
-
-      - name: Mark review running
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review running \
-            "Automated Pi review started for \`${HEAD_SHA:0:12}\`."
-
-      - name: Create temporary PR worktree
+      - name: Create review worktree
         run: |
           JOB_DIR="$RUNNER_TEMP/social-mcp-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
-          rm -rf "$JOB_DIR"
           git fetch origin "$HEAD_REF"
-          git worktree prune
           git worktree add --detach "$JOB_DIR" "$HEAD_SHA"
-          echo "Temporary review worktree: $JOB_DIR"
 
-      - name: Verify exact integration CI passed
-        id: checks
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          API="https://api.github.com/repos/${REPO}"
-          CONTEXT="social-mcp/integration/${BASE_SHA:0:12}"
-          STATE="$(for page in {1..10}; do
-            batch="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${API}/commits/${HEAD_SHA}/statuses?per_page=100&page=${page}")"
-            printf '%s\n' "$batch"
-            [ "$(jq 'length' <<<"$batch")" -lt 100 ] && break
-          done | jq -s -r --arg context "$CONTEXT" 'add | [.[] | select(.context == $context)] | sort_by(.id) | last | .state // empty')"
-          [ "$STATE" = "success" ] || { echo "Exact integration CI has not passed." >&2; exit 1; }
-          echo "ci_passed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Build review context
-        if: steps.checks.outputs.ci_passed == 'true'
-        env:
-          CI_PASSED: ${{ steps.checks.outputs.ci_passed }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ISSUE="${HEAD_REF#pi/issue-}"
-          echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
-          echo "PI_ISSUE=$ISSUE" >> "$GITHUB_ENV"
-
-          API="https://api.github.com/repos/${REPO}"
-          ISSUE_JSON="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${API}/issues/${ISSUE}")"
-          PR_JSON="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${API}/pulls/${PR}")"
-
-          ISSUE_TITLE="$(jq -r '.title // ""' <<<"$ISSUE_JSON")"
-          ISSUE_BODY="$(jq -r '.body // ""' <<<"$ISSUE_JSON")"
-          PR_TITLE="$(jq -r '.title // ""' <<<"$PR_JSON")"
-          PR_BODY="$(jq -r '.body // ""' <<<"$PR_JSON")"
-
-          TASK_FILE="$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
-          cat > "$TASK_FILE" <<EOF
-          Read and follow agents/reviewer/AGENTS.md before reviewing.
-          
-          You are reviewing pull request #${PR} against its linked GitHub issue #${ISSUE}.
-          
-          Do not modify files.
-          Do not commit or push.
-          Do not create or edit GitHub comments, reviews, labels, issues, or pull requests.
-          Review only the checked-out code and local repository history/diff.
-          
-          Issue title:
-          ${ISSUE_TITLE}
-          
-          Issue body:
-          ${ISSUE_BODY}
-          
-          Pull request title:
-          ${PR_TITLE}
-          
-          Pull request body:
-          ${PR_BODY}
-          
-          Deterministic integration CI for exact dev/PR pair ${BASE_SHA}/${HEAD_SHA}: ${CI_PASSED}.
-          Do not rerun pytest or Ruff; GitHub-hosted CI is authoritative for deterministic checks.
-          
-          Inspect the PR diff against the exact reviewed base commit ${BASE_SHA} and relevant surrounding code. Do not silently switch to a newer origin/dev during this review.
-
-          Call submit_result exactly once, as your last action, with your verdict.
-          EOF
-
-          echo "TASK_FILE=$TASK_FILE" >> "$GITHUB_ENV"
-
-      - name: Run Pi reviewer with live progress
-        if: steps.checks.outputs.ci_passed == 'true'
+      - name: Run semantic diagnostic review
         run: |
           set -o pipefail
           cd "$JOB_DIR"
-          RAW="$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
-          echo "REVIEW_RAW=$RAW" >> "$GITHUB_ENV"
+          RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
+          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session             "Read agents/reviewer/AGENTS.md. Review PR #${PR} against issue #${ISSUE}. This is diagnostic only: do not modify files or GitHub state. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action."             | tee "$RAW" | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+          node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" | jq -r '.text'
 
-          pi \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" \
-            --provider hp-laguna \
-            --model qwen3.8-flash-next \
-            --mode json \
-            --no-session \
-            "$(cat "$TASK_FILE")" \
-          | tee "$RAW" \
-          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
-
-          printf '\n'
-
-      - name: Parse review result
-        if: steps.checks.outputs.ci_passed == 'true'
-        id: result
-        run: |
-          if RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$REVIEW_RAW")"; then
-            echo "Pi supplied a valid review result"
-          else
-            result_exit=$?
-            if [ "$result_exit" -ne 3 ] && [ "$result_exit" -ne 4 ]; then exit "$result_exit"; fi
-            echo "Pi did not supply a valid verdict; retrying this review once"
-            cd "$JOB_DIR"
-            set -o pipefail
-            RETRY_RAW="$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
-            pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-              "Read agents/reviewer/AGENTS.md. Independently review PR #${PR} against issue #${ISSUE} and the exact base commit ${BASE_SHA}. The first review did not produce a usable final verdict. Do not modify files or GitHub state. Deterministic integration CI for exact dev/PR pair ${BASE_SHA}/${HEAD_SHA} has already run; do not rerun pytest or Ruff. Call submit_result exactly once, as your last action, with your verdict and evidence." \
-              | tee "$RETRY_RAW" | PI_CALL=retry node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
-            RESULT_JSON="$(node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RETRY_RAW")"
-          fi
-          VERDICT="$(jq -r '.verdict' <<<"$RESULT_JSON")"
-          jq -r '.text' <<<"$RESULT_JSON" > "$RUNNER_TEMP/pi-review-comment.txt"
-          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
-
-      - name: Verify reviewed head is still current
-        if: always() && steps.checks.outcome == 'success'
-        id: freshness
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          CURRENT_PR="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/pulls/${PR}")"
-          CURRENT_HEAD="$(jq -r '.head.sha' <<<"$CURRENT_PR")"
-          CURRENT_BASE="$(curl --fail-with-body -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/git/ref/heads/dev" | jq -r '.object.sha')"
-          if [ "$CURRENT_HEAD" = "$HEAD_SHA" ]; then
-            echo "head_same=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "head_same=false" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "$CURRENT_HEAD" = "$HEAD_SHA" ] && [ "$CURRENT_BASE" = "$BASE_SHA" ]; then
-            echo "current=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "current=false" >> "$GITHUB_OUTPUT"
-            echo "Reviewed head/base $HEAD_SHA/$BASE_SHA is stale; current pair is $CURRENT_HEAD/$CURRENT_BASE. Verdict will not mutate PR state."
-          fi
-
-      - name: Mark review passed
-        id: passed
-        if: steps.freshness.outputs.current == 'true' && steps.result.outputs.verdict == 'PASS' && steps.checks.outputs.ci_passed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review passed "$COMMENT"
-
-      - name: Mark changes requested
-        id: changes_requested
-        if: steps.freshness.outputs.current == 'true' && (steps.result.outputs.verdict == 'CHANGES_REQUESTED' || steps.checks.outputs.ci_passed != 'true')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -f "$RUNNER_TEMP/pi-review-comment.txt" ]; then
-            COMMENT="$(cat "$RUNNER_TEMP/pi-review-comment.txt")"
-          else
-            COMMENT="Deterministic GitHub-hosted CI failed for the reviewed SHA. Semantic review was skipped because deterministic checks are authoritative."
-          fi
-          if [ "${{ steps.checks.outputs.ci_passed }}" != 'true' ] && [[ "$COMMENT" != Deterministic* ]]; then
-            COMMENT="Deterministic GitHub-hosted CI failed for the reviewed SHA.\n\n${COMMENT}"
-          fi
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review changes-requested "$COMMENT"
-
-      - name: Mark review failed
-        if: failure() && steps.changes_requested.outcome != 'success' && steps.passed.outcome != 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          CURRENT_HEAD="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/pulls/${PR}" | jq -r '.head.sha')"
-          CURRENT_BASE="$(curl --fail-with-body -sS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/git/ref/heads/dev" | jq -r '.object.sha')"
-          if [ "${HEAD_SHA:-}" != "$CURRENT_HEAD" ] || [ "${BASE_SHA:-}" != "$CURRENT_BASE" ]; then
-            echo "Review is stale; not marking the current PR/base pair as failed"
-            exit 0
-          fi
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" review failed \
-            "Automated Pi review workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-
-      - name: Wake merge gate after current review result
-        if: always() && steps.freshness.outputs.current == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data '{"ref":"dev"}' \
-            "https://api.github.com/repos/${REPO}/actions/workflows/pi-auto-merge.yml/dispatches" || {
-              echo "::warning::Review status is durable; reconciler can wake Merge Gate later."
-              exit 0
-            }
-
-      - name: Summarize issue pipeline
-        if: always() && env.ISSUE != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-issue-summary.mjs" "$ISSUE"
-
-      - name: Summarize Pi usage
-        if: always()
-        run: node "$GITHUB_WORKSPACE/scripts/pi-usage-summary.mjs"
-
-      - name: Clean temporary review worktree
+      - name: Clean worktree
         if: always()
         run: |
           set +e
-          JOB_DIR="${JOB_DIR:-$RUNNER_TEMP/social-mcp-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT}"
-          if [ -d "$JOB_DIR" ]; then
-            git worktree remove --force "$JOB_DIR"
-          fi
-          rm -rf "$JOB_DIR"
-          rm -f \
-            "$RUNNER_TEMP/pi-ci-result.json" \
-            "$RUNNER_TEMP/pi-review-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" \
-            "$RUNNER_TEMP/pi-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" \
-            "$RUNNER_TEMP/pi-review-retry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" \
-            "$RUNNER_TEMP/pi-review-comment.txt"
+          [ -n "${JOB_DIR:-}" ] && [ -d "$JOB_DIR" ] && git worktree remove --force "$JOB_DIR"
           git worktree prune
