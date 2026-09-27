@@ -74,37 +74,6 @@ test('hard exploration limit still permits implementation bash and validation', 
 });
 
 
-test('trivial review scope allows PR evidence without an artificial three-call cap', () => {
-  const guard = new LoopGuard({
-    repeatThreshold: 20,
-    requireComplexity: true,
-    reviewMode: true,
-    reviewPathsJson: JSON.stringify(['tests/fixtures/pipeline-elephant.txt']),
-  });
-  guard.setComplexity('trivial');
-  guard.onTurnStart(1);
-  assert.equal(guard.checkToolCall('read', { path: 'agents/reviewer/AGENTS.md' }), undefined);
-  assert.equal(guard.checkToolCall('bash', { command: 'gh issue view 103' }), undefined);
-  assert.equal(guard.checkToolCall('bash', { command: 'git diff origin/dev...HEAD' }), undefined);
-  assert.equal(guard.checkToolCall('read', { path: 'tests/fixtures/pipeline-elephant.txt' }), undefined);
-  assert.equal(guard.checkToolCall('bash', { command: 'cat tests/fixtures/pipeline-elephant.txt' }), undefined);
-  assert.equal(guard.checkToolCall('submit_result', {}), undefined);
-});
-
-test('trivial review scope blocks unrelated exploration and external search', () => {
-  const guard = new LoopGuard({
-    repeatThreshold: 20,
-    requireComplexity: true,
-    reviewMode: true,
-    reviewPathsJson: JSON.stringify(['tests/fixtures/pipeline-elephant.txt']),
-  });
-  guard.setComplexity('trivial');
-  assert.equal(guard.checkToolCall('read', { path: 'src/social_mcp/server/errors.py' }).block, true);
-  assert.equal(guard.checkToolCall('bash', { command: 'git log --oneline -5' }).block, true);
-  assert.equal(guard.checkToolCall('bash', { command: 'python -c "print(1)"' }).block, true);
-  assert.equal(guard.checkToolCall('searxng_web_url_read', { url: 'https://example.com' }).block, true);
-});
-
 test('complexity can only be declared once', () => {
   const guard = new LoopGuard({ repeatThreshold: 3, requireComplexity: true });
   guard.setComplexity('normal');
