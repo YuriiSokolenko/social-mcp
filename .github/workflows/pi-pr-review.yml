@@ -109,6 +109,15 @@ jobs:
           jq -n --arg body "$TEXT" '{body:$body}' | curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @- "${API}/issues/${PR}/comments" >/dev/null
           echo "VERDICT=$VERDICT" >> "$GITHUB_ENV"
 
+      - name: Start PR Fix after changes requested
+        if: env.VERDICT == 'CHANGES_REQUESTED'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
+            --data '{"ref":"dev","inputs":{"pr_number":"'${PR}'"}}' \
+            "https://api.github.com/repos/${REPO}/actions/workflows/pi-pr-fix.yml/dispatches"
+
       - name: Wake merge gate after PASS
         if: env.VERDICT == 'PASS'
         env:
