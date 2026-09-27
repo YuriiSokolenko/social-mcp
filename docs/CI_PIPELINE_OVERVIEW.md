@@ -5,7 +5,7 @@ This is the short map of the current pipeline. `CI_RULES.md` contains the rules;
 ## Happy path
 
 ```text
-Issue + tasks/<n>.md
+Issue + Task metadata
         |
         v
    Dispatcher
@@ -63,10 +63,10 @@ A late merge conflict invalidates the old review, dispatches PR Fix, and blocks 
 Normal wake sources are deliberately narrow:
 - `dispatcher:ready` can wake Dispatcher;
 - successful review can wake Merge Gate;
-- successful post-merge CI on `dev` can wake Merge Gate for the next PR;
+- successful CI on a `dev` push wakes Merge Gate, which reloads current PR state;
 - explicit/manual control can wake the relevant owner.
 
-Reconciler does not wake Merge Gate. A wake carries no authoritative task state; the receiver reloads GitHub state.
+Reconciler does not wake Merge Gate. A wake carries no authoritative task state; the receiver reloads GitHub state. `pi:needs-human` on a PR is a hard stop for Reviewer, PR Fix, and Merge Gate.
 
 ## Branch, trust, and inputs
 
@@ -91,6 +91,8 @@ Do not use workflow inputs as a message bus or state store.
 | `PAUSED` | Do not start new automated stages |
 
 Unknown/missing mode fails closed.
+
+Manual cancellation is not a failure state. Before PR publication, cancelled Implementer/Architect work returns to `dispatcher:ready` without automatic redispatch; Implementer checkpoint work is retained when safe. Unresolved replay conflicts are never checkpointed over the previous good checkpoint.
 
 ## Main workflows
 
