@@ -13,7 +13,7 @@ The actual merged `dev` commit is the integration truth.
 
 ## Test ownership rule
 
-Implementer, Reviewer, and PR Fix validate product behavior only: focused product tests as needed, full `pytest`, Ruff, and diff checks. They do not run CI/control-plane contract suites (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests). `ci.yml` exclusively owns those control-plane checks and runs them on the triggering `dev` commit. This keeps product agents focused and prevents CI from recursively testing itself inside agent workflows.
+Implementer, Reviewer, and PR Fix validate product behavior only: focused product tests as needed, full `pytest`, Ruff, and diff checks. They do not run CI/control-plane contract suites (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests). `ci.yml` exclusively owns those control-plane checks and runs them on the triggering `dev` commit, together with an isolated Docker Compose integration test. This keeps product agents focused and prevents CI from recursively testing itself inside agent workflows.
 
 ## Complexity guard
 
@@ -102,7 +102,7 @@ Use only GitHub Actions' supported concurrency contract: a stable `concurrency.g
 
 ## Shared-helper rule
 
-Trusted reusable pipeline policy belongs in `scripts/pi-common/`, with its purpose and non-goals documented in `scripts/pi-common/README.md`. YAML should express stage order, conditions, permissions, and environment wiring—not copies of GitHub API clients, pagination loops, security gates, state-machine logic, or deterministic product-check implementations.
+Trusted reusable pipeline policy belongs in `scripts/pi-common/`, with its purpose and non-goals documented in `scripts/pi-common/README.md`. YAML should express stage order, conditions, permissions, and environment wiring—not copies of GitHub API clients, pagination loops, security gates, state-machine logic, or deterministic product-check implementations. Repeated GitHub REST routes are centralized in `github-api.mjs`; workflow YAML must not use inline `curl` for them. `workflow-dispatch.mjs` is the small adapter for no-input workflow wakes and pins those wakes to trusted `dev`.
 
 Keep stage-specific orchestration outside the common directory. A helper is common only when multiple stages need the same deterministic rule.
 
