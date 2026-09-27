@@ -69,3 +69,14 @@ test('review and repair freshness checks paginate commit statuses', () => {
   assert.doesNotMatch(review, /statuses\?per_page=100" \|/);
   assert.doesNotMatch(repair, /statuses\?per_page=100" \|/);
 });
+
+
+test('review is explicitly bound to the exact dev SHA authorized by merge gate', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(review, /integration_base_sha:/);
+  assert.match(review, /BASE_SHA="\$INTEGRATION_BASE_SHA"/);
+  assert.match(review, /git\/ref\/heads\/dev/);
+  assert.doesNotMatch(review, /BASE_SHA="\$\(jq -r '\.base\.sha'/);
+  assert.match(gate, /integration_base_sha: base\.object\.sha/);
+});
