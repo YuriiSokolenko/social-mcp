@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { githubClient } from "./github-api.mjs";
 import { readQueueContext } from "./pi-queue-context.mjs";
@@ -42,11 +40,6 @@ export function issueMetadata(issue) {
   return { priority, dependencies };
 }
 
-function writeTaskSnapshot(issue, metadata) {
-  fs.mkdirSync("tasks", { recursive: true });
-  fs.writeFileSync(path.join("tasks", `${issue.number}.md`),
-    `---\nissue: ${issue.number}\npriority: ${metadata.priority}\ndepends_on: [${metadata.dependencies.join(", ")}]\n---\n\n# ${issue.title}\n\n${issue.body ?? ""}\n`);
-}
 async function snapshot(includeQueue = false) {
   const [issues, prs] = await Promise.all([
     pages("/issues?state=open"),
@@ -54,11 +47,6 @@ async function snapshot(includeQueue = false) {
   ]);
   const allIssues = issues.filter(issue => !issue.pull_request);
   const openIssues = allIssues.filter(issue => issue.state === "open");
-  fs.rmSync("tasks", { recursive: true, force: true });
-  fs.mkdirSync("tasks", { recursive: true });
-  for (const issue of allIssues) {
-    try { writeTaskSnapshot(issue, issueMetadata(issue)); } catch {}
-  }
   const openPrIssues = new Set();
   for (const pr of prs) {
     if (pr.head.repo?.full_name !== repo || pr.base.ref !== "dev") continue;
@@ -81,7 +69,6 @@ async function snapshot(includeQueue = false) {
     if (!reason) {
       try {
         metadata = issueMetadata(issue);
-        writeTaskSnapshot(issue, metadata);
       } catch (error) { reason = error.message; }
     }
     if (!reason) {
