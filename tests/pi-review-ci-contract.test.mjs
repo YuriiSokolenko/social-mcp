@@ -282,6 +282,8 @@ test('issue publication safely replaces only the branch head observed at run sta
   const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /PI_ISSUE_BRANCH_EXPECTED/);
   assert.match(publication, /--force-with-lease=refs\/heads\/pi\/issue-\$\{issue\}:\$\{expectedSha/);
+  assert.match(publication, /Refusing to publish protected control-plane files/);
+  assert.match(workflow, /PI_IMPLEMENTER_START_COMMIT.*PI_ISSUE_BRANCH_EXPECTED/);
   assert.doesNotMatch(publication, /push --set-upstream origin/);
 });
 
@@ -317,6 +319,7 @@ test('all Pi agents are hard-blocked from CI control-plane changes', () => {
   const policy = fs.readFileSync('scripts/pi-common/control-plane-policy.mjs', 'utf8');
   for (const fragment of [
     ".github/workflows/",
+    "agents/",
     "scripts\\/pi-",
     "tests\\/[^/]+\\.test\\.mjs",
     "tests/test_runner_autoscaler.sh",
