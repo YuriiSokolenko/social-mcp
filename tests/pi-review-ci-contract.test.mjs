@@ -66,10 +66,12 @@ test('implementer resolves latest-dev integration inside the live agent session 
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
   assert.doesNotMatch(workflow, /name: Integrate latest dev before publication/);
-  assert.match(tool, /fetch', 'origin', 'dev/);
-  assert.match(tool, /merge', '--no-edit', 'origin\/dev/);
+  const finalizer = fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
+  assert.match(tool, /integrateLatestDev/);
+  assert.match(finalizer, /fetch', 'origin', 'dev/);
+  assert.match(finalizer, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /Merge conflicts are still unresolved|Latest dev conflicts with the implementation/);
-  assert.match(tool, /runProductChecks\(\)/);
+  assert.match(tool, /validateFinalProductTree\(\)/);
   const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /issue-publication\.mjs" review/);
   assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
@@ -319,8 +321,9 @@ test('product agent workflows use one shared product-check contract and never ru
   assert.match(checks, /ruff/);
   const repairTool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
   const implementerTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
-  assert.match(repairTool, /runProductChecks\(\)/);
-  assert.match(implementerTool, /runProductChecks\(\)/);
+  assert.match(repairTool, /validateFinalProductTree\(\)/);
+  assert.match(implementerTool, /validateFinalProductTree\(\)/);
+  assert.match(fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\)/);
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(ci, /node --test tests\/\*\.test\.mjs/);
   assert.match(ci, /tests\/test_runner_autoscaler\.sh/);
@@ -340,12 +343,13 @@ test('all Pi agents are hard-blocked from CI control-plane changes', () => {
 
   const implementerTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
   const repairTool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
-  assert.match(implementerTool, /forbiddenAgentPaths\(base\)/);
-  assert.match(repairTool, /forbiddenAgentPaths\(base\)/);
+  assert.match(implementerTool, /validateFinalProductTree\(\)/);
+  assert.match(repairTool, /validateFinalProductTree\(\)/);
+  const finalizer = fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
+  assert.match(finalizer, /forbiddenAgentPaths\(base\)/);
   const agentChanges = fs.readFileSync('scripts/pi-common/agent-change-policy.mjs', 'utf8');
   for (const check of ["diff','--name-only", "diff','--cached','--name-only", "ls-files','--others','--exclude-standard"]) assert.ok(agentChanges.includes(check));
-  assert.match(implementerTool, /Agent changes to CI\/control-plane files are forbidden/);
-  assert.match(repairTool, /Agent changes to CI\/control-plane files are forbidden/);
+  assert.match(finalizer, /Agent changes to CI\/control-plane files are forbidden/);
 
   for (const name of ['pi-pr-review.yml', 'pi-pr-fix.yml']) {
     const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
