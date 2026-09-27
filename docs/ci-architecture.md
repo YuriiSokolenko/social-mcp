@@ -2,70 +2,102 @@
 
 The control plane intentionally uses a simple contract:
 
-1. An implementation agent finishes an issue and publishes a PR.
-2. Merge Gate validates only that the PR belongs to the expected issue/repository, is not a draft, and does not modify protected control-plane files.
-3. Merge Gate squash-merges at most one PR into `dev` per run.
-4. The normal `push` CI runs on the resulting merged `dev` commit.
-5. Green CI means the merged result is accepted and wakes Merge Gate for the next ready PR. Red CI stops the merge sequence and must not be converted into a pre-merge state machine.
+1. Dispatcher routes eligible work.
+2. Implementer produces a verified PR.
+3. Reviewer independently approves it or requests changes.
+4. Merge Gate validates basic ownership/safety and attempts a GitHub squash merge.
+5. Ordinary `push` CI tests the resulting `dev` commit.
+6. Green post-merge CI wakes Merge Gate for the next ready PR; red CI stops the merge sequence.
 
-Merge Gate has exactly two normal wake sources: an Implementer/manual Fix after publishing or updating a PR, and successful `dev` push CI when continuing the serialized queue. Reconciler must not wake Merge Gate; it is recovery for agent ownership/checkpoints, not a second queue scheduler.
+The actual merged `dev` commit is the integration truth.
 
 ## Complexity guard
 
-Do not reintroduce pre-merge exact-pair orchestration.
+Do not reintroduce pre-merge exact-pair orchestration. The merge decision must not depend on captured dev SHAs, `integration_base_sha`, `repair_base_sha`, synthetic dev+PR merge commits, SHA/base-bound status contexts, or a custom pre-merge CI/review/repair state machine.
 
-In particular, the merge decision must not depend on a captured dev SHA, `integration_base_sha`, `repair_base_sha`, synthetic dev+PR merge commits, SHA/base-bound status contexts, or a pre-merge CI/review/repair chain.
+A PR head SHA may be read immediately before GitHub's merge call and supplied as optimistic concurrency protection. That is local operation data, not pipeline state. Prefer GitHub's atomic repository operations and fresh-state reads over custom synchronization.
 
-A PR head SHA may still be supplied to GitHub's merge API as normal optimistic concurrency protection. That is not pipeline state.
+## Ownership rule
 
-Prefer GitHub's own merge operation and the ordinary CI run on `dev` over custom synchronization/state. If a new requirement appears, first try to express it as a post-merge `dev` CI check or a simple issue/PR state instead of adding another orchestration layer.
+Every normal transition has one obvious owner:
+- Dispatcher owns queue routing.
+- Architect owns optional decomposition.
+- Implementer workflow owns publication of implementation PRs.
+- Reviewer/PR Fix own review and requested changes.
+- Merge Gate owns merge attempts.
+- CI owns validation of the merged `dev` result.
+- Reconciler owns recovery only.
 
+Do not make Reconciler, Usage, or another diagnostic workflow a second scheduler.
+
+## Wake rule
+
+A wake event means only: "re-check your current work." It must not carry authoritative pipeline state.
+
+Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler must not wake Merge Gate.
+
+## Merge conflict rule
+
+Merge Gate simply attempts the merge. If GitHub reports a conflict, record the blocked condition and stop the queue without failing Merge Gate.
+
+Do not add mergeability polling, dev-SHA synchronization, synthetic integration, or branch-update machinery to Merge Gate. Conflict resolution, when requested, belongs outside the merge decision itself.
+
+## Post-merge CI rule
+
+```text
+PR -> merge into dev -> CI on actual dev commit
+                         |
+                   +-----+-----+
+                   |           |
+                 green         red
+                   |           |
+             next merge      stop
+```
+
+Do not duplicate this with a pre-merge approximation.
 
 ## Workflow input rule
 
-Keep `workflow_dispatch` inputs minimal.
+Keep dispatch payloads minimal: an object identifier such as `issue_number`, `pr_number`, or `run_id`, or a genuine user command such as automation `mode`.
 
-A workflow may receive only:
-- the minimal identifier of the object it must operate on, such as `issue_number`, `pr_number`, or a completed `run_id`; or
-- a real user command that cannot be derived from repository state, such as the automation `mode`.
+Do not pass titles, labels, branch/base/head SHAs, URLs, reasons, or state snapshots when the receiver can load current GitHub state.
 
-Do not pass derived or duplicated GitHub data between workflows. In particular, do not add titles, branch/base/head SHAs, reasons, labels, status/state snapshots, URLs, or other metadata as workflow inputs when the workflow can load the current value from GitHub using the object identifier.
-
-Prefer this contract:
-
-`object ID / command → workflow loads current GitHub state → workflow acts`
-
-Do not use workflow inputs as a transport layer or as hidden pipeline state. Before adding a new input, first prove that the value cannot be derived safely from GitHub state inside the receiving workflow.
-
+```text
+object ID / command -> load current GitHub state -> act
+```
 
 ## SHA rule
 
-A SHA is not pipeline state and must not be transported between workflows.
+A SHA is not cross-workflow pipeline state.
 
-Do not pass a SHA from workflow A to workflow B, store it as orchestration state, or use it to create a custom cross-workflow state machine.
+Forbidden: `workflow A -> SHA -> workflow B`.
 
-A workflow may read the current SHA directly from GitHub and use it locally for one atomic operation where optimistic concurrency is required. Examples include supplying the current PR head SHA to the GitHub merge API or using the current remote SHA with `--force-with-lease`.
+Allowed: `workflow -> read current SHA -> use locally for one atomic operation`.
 
-The distinction is intentional:
-
-- forbidden: `workflow A → SHA → workflow B`;
-- allowed: `workflow → read current SHA from GitHub → use it locally for merge/lease protection`.
-
-Once that local operation finishes, the SHA has no orchestration meaning. GitHub repository state is the source of truth.
-
+Once that operation finishes, the SHA has no orchestration meaning.
 
 ## Trusted control-plane rule
 
-All control-plane workflows must execute orchestration scripts from an explicit trusted checkout of `dev`.
+All control-plane workflows execute orchestration scripts from an explicit trusted checkout of `dev`, including Architect, Merge Gate, Dispatcher, Implementer, PR Fix, PR Review, Reconciler, Triage, and Usage collection.
 
-This includes Architect, Merge Gate, Dispatcher, Implementer, PR Fix, PR Review, Reconciler, Triage, and Usage collection. Their checkout must explicitly use `ref: dev`, and control-plane scripts/extensions must be invoked from that trusted checkout (normally through `$GITHUB_WORKSPACE/scripts/...`).
+Do not execute `scripts/pi-*` from a PR branch, issue branch, event commit, agent worktree, or another ref-dependent checkout. Normal CI is intentionally different: it checks out and tests the triggering commit.
 
-Do not execute `scripts/pi-*` from a PR branch, issue branch, event commit, worktree being modified by an agent, or any other untrusted/ref-dependent checkout.
+```text
+control plane -> trusted dev checkout
+tested application code -> triggering commit
+```
 
-The normal CI workflow is intentionally different: it checks out and tests the commit that triggered CI. It must not execute control-plane `scripts/pi-*` from that tested commit.
+## Recovery rule
 
-In short:
+Recovery must be smaller than the normal pipeline. Prefer returning stranded work directly to its normal owner. Do not reproduce the happy path inside Reconciler, and do not add recovery-specific copies of merge/review/dispatch logic.
 
-`control plane → trusted dev checkout`
+## Change test
 
-`tested application code → triggering commit`
+Before adding CI machinery, ask:
+1. Can the receiver read this value from GitHub instead of receiving it?
+2. Can one existing owner perform this transition directly?
+3. Can ordinary post-merge `dev` CI validate this instead?
+4. Can GitHub's atomic API operation handle the race?
+5. Does this belong to recovery rather than the happy path?
+
+If yes, use the simpler path.
