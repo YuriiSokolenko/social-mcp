@@ -12,6 +12,7 @@ permissions:
 
 concurrency:
   group: pi-auto-merge
+  queue: max
   cancel-in-progress: false
 
 jobs:
