@@ -235,3 +235,10 @@ test('merge gate coalesces redundant wakes instead of queueing every scan', () =
   assert.match(workflow, /concurrency:\n\s+group: pi-auto-merge\n\s+cancel-in-progress: false/);
   assert.doesNotMatch(workflow, /queue: max/);
 });
+
+
+test('reviewer rechecks the human gate before publishing a verdict', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  assert.match(review, /Apply review result[\s\S]*?PR_JSON=.*pulls\/\$\{PR\}[\s\S]*?pi:needs-human[\s\S]*?HUMAN_GATED=true[\s\S]*?exit 0/);
+  assert.match(review, /Restart review after PR head changed[\s\S]*?env\.HUMAN_GATED != 'true'/);
+});
