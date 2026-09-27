@@ -8,6 +8,8 @@ The control plane intentionally uses a simple contract:
 4. The normal `push` CI runs on the resulting merged `dev` commit.
 5. Green CI means the merged result is accepted and wakes Merge Gate for the next ready PR. Red CI stops the merge sequence and must not be converted into a pre-merge state machine.
 
+Merge Gate has exactly two normal wake sources: an Implementer/manual Fix after publishing or updating a PR, and successful `dev` push CI when continuing the serialized queue. Reconciler must not wake Merge Gate; it is recovery for agent ownership/checkpoints, not a second queue scheduler.
+
 ## Complexity guard
 
 Do not reintroduce pre-merge exact-pair orchestration.
