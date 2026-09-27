@@ -4,9 +4,9 @@ The control plane intentionally uses a simple contract:
 
 1. An implementation agent finishes an issue and publishes a PR.
 2. Merge Gate validates only that the PR belongs to the expected issue/repository, is not a draft, and does not modify protected control-plane files.
-3. Merge Gate squash-merges the PR into `dev`.
+3. Merge Gate squash-merges at most one PR into `dev` per run.
 4. The normal `push` CI runs on the resulting merged `dev` commit.
-5. Green CI means the merged result is accepted. A red CI is handled as a post-merge failure; it must not be converted into a pre-merge state machine.
+5. Green CI means the merged result is accepted and wakes Merge Gate for the next ready PR. Red CI stops the merge sequence and must not be converted into a pre-merge state machine.
 
 ## Complexity guard
 
