@@ -3,6 +3,7 @@ import fs from 'node:fs';
 
 import { githubClient } from './github-api.mjs';
 import { controlPlanePaths } from './control-plane-policy.mjs';
+import { prLabelNames, withoutReviewLabels } from './pr-labels.mjs';
 
 /**
  * Shared PRE-MODEL gate for PR-based Pi stages.
@@ -34,7 +35,7 @@ export async function preparePr(prNumber) {
     throw new Error(`PR #${prNumber} is not an open same-repository pi/issue-N PR targeting dev`);
   }
 
-  const labels = (pr.labels ?? []).map(label => label.name);
+  const labels = prLabelNames(pr);
   if (labels.includes('pi:needs-human')) {
     return { skip: true, reason: 'needs-human', pr: prNumber, issue: Number(match[1]), head: pr.head.sha, branch };
   }
@@ -44,7 +45,7 @@ export async function preparePr(prNumber) {
   const forbidden = controlPlanePaths(paths);
   if (forbidden.length) {
     // Remove stale review verdicts and make human ownership durable.
-    const next = labels.filter(label => !label.startsWith('review:'));
+    const next = withoutReviewLabels(labels);
     if (!next.includes('pi:needs-human')) next.push('pi:needs-human');
     await api(`/issues/${prNumber}/labels`, 'PUT', { labels: next });
     return {
