@@ -220,9 +220,7 @@ jobs:
         run: |
           cd "$JOB_DIR"
           python -m pip install -e .
-          git diff --check
-          pytest
-          ruff check .
+          node "$GITHUB_WORKSPACE/scripts/pi-common/product-checks.mjs"
 
       - name: Push verified issue branch
         if: steps.checkpoint.outputs.changed == 'true'
