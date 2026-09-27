@@ -26,10 +26,14 @@ export function readPiJsonl(jsonl, { customType } = {}) {
       const text = assistantText(event.message);
       if (text.trim()) finalText = text.trim();
     }
-    if (event.type === 'agent_end' && Array.isArray(event.messages)) {
-      const assistant = [...event.messages].reverse().find(message => message?.role === 'assistant');
+    if (event.type === 'agent_end') {
+      // agent_end is authoritative for the completed turn. If it carries no
+      // assistant message, do not leak a quoted/intermediate message_end from
+      // an earlier turn into result parsing.
+      const messages = Array.isArray(event.messages) ? event.messages : [];
+      const assistant = [...messages].reverse().find(message => message?.role === 'assistant');
       const text = assistantText(assistant);
-      if (text.trim()) finalText = text.trim();
+      finalText = text.trim();
     }
   }
 
