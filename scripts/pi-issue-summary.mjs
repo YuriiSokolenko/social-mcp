@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import { githubClient } from './github-api.mjs';
+import { githubClient } from './pi-common/github-api.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY ?? process.env.REPO;
 const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
