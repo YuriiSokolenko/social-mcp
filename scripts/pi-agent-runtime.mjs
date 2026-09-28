@@ -105,7 +105,7 @@ async function runStructuredComplexityClassifier(pi, ctx, config, plan, signal) 
       context: 'fresh',
       cwd: ctx.cwd,
       timeoutMs,
-      toolBudget: { hard: 0, block: '*' },
+      toolBudget: { hard: 1 },
       intercomBridge: { mode: 'off' },
       result: { kind: 'structured', schema: COMPLEXITY_SCHEMA },
     });
@@ -147,7 +147,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'classify_task_complexity',
       label: 'Classify task complexity',
-      description: 'Classify task complexity through a runtime-owned, zero-tool pi-subagents child. Pass only the short parent execution plan. The runtime validates the structured result and records complexity automatically; no raw child output is returned.',
+      description: 'Classify task complexity through a runtime-owned pi-subagents child with no repository tools. One child tool call is reserved for structured_output so the schema-validated result can be returned. Pass only the short parent execution plan; no raw child output is returned.',
       parameters: Type.Object({
         plan: Type.String({
           minLength: 1,
