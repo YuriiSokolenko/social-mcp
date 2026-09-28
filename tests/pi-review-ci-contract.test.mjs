@@ -509,6 +509,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
 test('implementer prepares plan and complexity before tiny known-path work', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const classifier = fs.readFileSync('.pi/agents/complexity-classifier.md', 'utf8');
 
@@ -534,7 +535,12 @@ test('implementer prepares plan and complexity before tiny known-path work', () 
   assert.match(agent, /limit <= 200/);
   assert.match(agent, /first sufficient/i);
   assert.match(agent, /Do not use repeated guessed reads as a substitute for search/);
-  assert.match(agent, /`grep`, `find`, and `ls` are runtime-blocked/);
+  assert.match(agent, /`grep`, `find`, and `ls` remain runtime-blocked/);
+  assert.match(agent, /trivial_repo_lookup/);
+  assert.match(runtime, /name: 'trivial_repo_lookup'/);
+  assert.match(runtime, /controller\.complexity !== 'trivial'/);
+  assert.match(runtime, /trivialLookupUsed/);
+  assert.match(runtime, /git', \['ls-files', '-z'\]/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /1–8 ordered concrete steps/);
   assert.match(planner, /do not classify complexity/i);
