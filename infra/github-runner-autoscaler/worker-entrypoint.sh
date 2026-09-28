@@ -4,6 +4,7 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${RUNNER_TOKEN:?RUNNER_TOKEN is required}"
 : "${RUNNER_NAME:?RUNNER_NAME is required}"
+: "${RUNNER_LABELS:=n150,pi-agent}"
 
 # Pi needs writable state for lock files and refreshed auth/model metadata.
 # Seed a private copy from the host-mounted read-only configuration.
@@ -19,7 +20,7 @@ cd /home/runner/actions-runner
   --url "https://github.com/${GITHUB_REPOSITORY}" \
   --token "${RUNNER_TOKEN}" \
   --name "${RUNNER_NAME}" \
-  --labels "n150,pi-agent" \
+  --labels "${RUNNER_LABELS}" \
   --work "_work" \
   --ephemeral \
   --unattended \

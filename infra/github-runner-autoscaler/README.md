@@ -1,12 +1,23 @@
-# GitHub Pi runner autoscaler
+# GitHub runner autoscaler
 
-This directory runs a small Docker-based autoscaler for the N150 host.
+This directory runs a small Docker-based autoscaler for the N150 host, as two
+independent pools -- each its own manager instance (see `compose.yaml`) so one
+pool's stuck loop can never block the other's:
 
-It watches queued runs of `.github/workflows/pi-issue-agent.yml`,
-`.github/workflows/pi-pr-review.yml`, `.github/workflows/pi-pr-fix.yml`, `.github/workflows/pi-dispatcher.yml`,
-`.github/workflows/pi-architect.yml`, and `.github/workflows/pi-triage.yml`,
-and keeps up to `MAX_RUNNERS` ephemeral self-hosted runner containers alive. Each worker registers
-with GitHub using `--ephemeral`, accepts one job, and is removed after the job.
+- **`pi-runner-manager`** (pool label `pi-agent`) watches queued runs of
+  `.github/workflows/pi-issue-agent.yml`, `.github/workflows/pi-pr-review.yml`,
+  `.github/workflows/pi-pr-fix.yml`, `.github/workflows/pi-dispatcher.yml`,
+  `.github/workflows/pi-architect.yml`, and `.github/workflows/pi-triage.yml` --
+  jobs that call the Pi/LLM agent, gated by `MODEL_STATUS_URL` capacity.
+- **`general-runner-manager`** (pool label `general`) watches queued runs of
+  `.github/workflows/ci.yml` -- plain Ruff/pytest/Node/Compose CI with no
+  Pi/LLM agent involved, so it has no model gate; `MAX_RUNNERS` is the only cap.
+
+Each pool keeps up to its own `MAX_RUNNERS` ephemeral self-hosted runner
+containers alive. Each worker registers with GitHub using `--ephemeral`,
+accepts one job, and is removed after the job. Running each CI job on its own
+disposable runner is also what lets several queued runs execute in parallel
+instead of serializing behind a single persistent runner.
 
 ## Security model
 
@@ -19,14 +30,24 @@ For a fine-grained personal access token, grant this repository:
 - Administration: Read and write
 - Actions: Read
 
-The N150 Pi configuration is mounted read-only at `/pi-config-ro` and copied into each ephemeral worker's private writable `/home/runner/.pi/agent` directory at startup. This avoids Pi lock-file errors and prevents parallel workers from sharing mutable Pi state. Because the manager controls the host Docker daemon through `/var/run/docker.sock`, the source configured by `PI_HOME_HOST` must be a real host path.
+The N150 Pi configuration is mounted read-only at `/pi-config-ro` and copied into each ephemeral worker's private writable `/home/runner/.pi/agent` directory at startup, only for the `pi-agent` pool (`MOUNT_PI_CONFIG=true`). This avoids Pi lock-file errors and prevents parallel workers from sharing mutable Pi state. Because the manager controls the host Docker daemon through `/var/run/docker.sock`, the source configured by `PI_HOME_HOST` must be a real host path.
+
+The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
+(`worker-general.Dockerfile`) adds the Docker CLI and Compose plugin over the
+same base runner image, and the host's `/var/run/docker.sock` is bind-mounted
+into each ephemeral worker (sibling-container pattern) so `ci.yml`'s `docker`
+job can run `docker compose up/down` itself. This means anything with access
+to that pool's ephemeral runner also has Docker-socket-level access to the
+host -- keep `ci.yml`'s `docker` job restricted to trusted, already-checked-out
+repository code, same trust boundary as the `pi-agent` pool.
 
 ## N150 setup
 
-Build the ephemeral worker image first:
+Build both ephemeral worker images first:
 
 ```bash
-docker build   -f infra/github-runner-autoscaler/worker.Dockerfile   -t n150/github-pi-runner-ephemeral:0.87.1 .
+docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.87.1 .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.1 .
 ```
 
 Create the local manager environment:
@@ -37,21 +58,27 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Put the GitHub token into `.env`, then start the manager:
+Put the GitHub token into `.env`, then start both managers:
 
 ```bash
 docker compose --env-file .env up -d --build
-docker compose logs -f pi-runner-manager
+docker compose logs -f pi-runner-manager general-runner-manager
 ```
 
-Before enabling the manager, stop the old persistent `github-pi-runner` container so
-it cannot consume jobs in parallel with the ephemeral pool.
+Before enabling `general-runner-manager`, stop and remove the old persistent
+`github-general-runner` container/registration (and, for `pi-runner-manager`,
+the old persistent `github-pi-runner` container) so neither consumes jobs in
+parallel with its ephemeral pool.
 
-Set `MAX_RUNNERS` in the N150 host's local `.env` to the desired pool capacity.
-If `.env` defines `WORKFLOW_FILES`, add any newly introduced workflow file
-there too (e.g. `pi-triage.yml`); updating the tracked defaults does not
-override an existing host `.env`. Restart the autoscaler manager after
-changing its local environment.
+Set `MAX_RUNNERS` (`pi-agent` pool) and `GENERAL_MAX_RUNNERS` (`general` pool)
+in the N150 host's local `.env` to each pool's desired capacity. The two pools
+share the same 4-core/14 GiB host and the same Docker daemon, so their totals
+compete for the same real CPU/RAM -- raise either past its documented default
+only after watching actual headroom under concurrent load, not by guessing.
+If `.env` defines `WORKFLOW_FILES` (or, for the `general` pool, `GENERAL_WORKFLOW_FILES`),
+add any newly introduced workflow file there too (e.g. `pi-triage.yml`);
+updating the tracked defaults does not override an existing host `.env`.
+Restart the autoscaler manager after changing its local environment.
 The tracked example and manager fallback default to four. A host may override this in its untracked `.env`; the local value is authoritative for that host.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
 Set `MODEL_STATUS_URL` in the N150 host's local `.env` to the active model
@@ -68,9 +95,11 @@ to `/metrics`; a waiting-request backlog defers new runners. An unavailable
 endpoint or invalid status defers new runners and logs a warning. An unset URL
 preserves the previous queue-only behavior. Recreate the manager after changing
 the URL or switching model servers.
-When no Pi workflows are queued, the manager stops surplus online idle runners
-after checking that GitHub still marks each one as not busy. This prevents an
-already registered spare runner from taking a later job before the model check.
+When none of a pool's watched workflows are queued, its manager stops surplus
+online idle runners after checking that GitHub still marks each one as not
+busy. This prevents an already registered spare runner from taking a later
+job before the model check (the `pi-agent` pool's gate; the `general` pool has
+no model check to race).
 The manager counts both `queued` and `pending` GitHub workflow runs. When GitHub
 or Docker state cannot be read, it skips that poll instead of treating the failed
 request as an empty queue or an empty runner pool.
