@@ -5,7 +5,7 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
 MAX_RUNNERS="${MAX_RUNNERS:-4}"
-POLL_SECONDS="${POLL_SECONDS:-10}"
+POLL_SECONDS="${POLL_SECONDS:-6}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
 RUNNER_LABELS="${RUNNER_LABELS:-n150,pi-agent}"
@@ -48,6 +48,11 @@ log() {
   printf '[manager] %s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
 
+# Consecutive-idle-poll counts per runner name, for retire_idle_runners'
+# debounce below. Lives for the process's lifetime (main's while loop), not
+# per-call -- that's what makes "two consecutive polls" mean anything.
+declare -A IDLE_STREAK=()
+
 # Runs "$@" with a hard deadline. Uses a background job + watchdog instead of
 # the external `timeout` binary so a test's shell-function override of the
 # wrapped command (docker, curl, ...) still applies -- `timeout` would exec a
@@ -81,19 +86,33 @@ registration_token() {
 }
 
 queued_jobs() {
-  local total=0 workflow status count
-  IFS=',' read -ra workflows <<< "${WORKFLOW_FILES}"
-  for workflow in "${workflows[@]}"; do
-    workflow="$(printf '%s' "$workflow" | xargs)"
-    [ -z "$workflow" ] && continue
-    for status in queued pending; do
-      count="$(api_get "${API}/actions/workflows/${workflow}/runs?status=${status}&per_page=100" | jq -er '.total_count | if type == "number" and . >= 0 and floor == . then . else error("invalid count") end')" || return 1
-      if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
-        log "warning: invalid run count for workflow=$workflow status=$status"
-        return 1
-      fi
-      total=$((total + count))
-    done
+  # One repo-wide request per status instead of one per watched workflow file
+  # (was 2*N GitHub API calls every poll -- with 6-7 watched files per pool
+  # that alone was pushing close to the 5,000/hour token budget at
+  # POLL_SECONDS=10, which is what let POLL_SECONDS come down safely).
+  # total_count here is repo-wide (every workflow, not just ours), so we
+  # filter workflow_runs by path ourselves rather than trusting it directly;
+  # guard against a truncated page (unlikely for queued/pending, but silent
+  # under-counting would be worse than skipping the poll).
+  local total=0 status count
+  for status in queued pending; do
+    count="$(api_get "${API}/actions/runs?status=${status}&per_page=100" | jq -er --arg wf "${WORKFLOW_FILES}" '
+      ($wf | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $watched
+      | if (.workflow_runs | type) != "array" then error("missing workflow_runs")
+        else
+          (.total_count) as $total
+          | (.workflow_runs | length) as $got
+          | if ($total | type) != "number" or $total < 0 or ($total | floor) != $total or $total > $got
+            then error("queued run list truncated or invalid total_count")
+            else [.workflow_runs[] | select((.path // "" | split("/") | last) as $base | ($watched | index($base)) != null)] | length
+            end
+        end
+    ')" || return 1
+    if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      log "warning: invalid queued-run count for status=$status"
+      return 1
+    fi
+    total=$((total + count))
   done
   printf '%s\n' "$total"
 }
@@ -141,6 +160,16 @@ retire_idle_runners() {
       map(select((.name | type) == "string" and (.name | startswith($prefix))
         and .status == "online" and .busy == false)) | map(.name) | join("\n")
     end')" || return 1
+
+  # A runner that isn't idle this poll (picked up a job, went offline, ...)
+  # gets its streak dropped, so a later idle spell starts counting from zero
+  # again rather than inheriting stale history.
+  if [ "${#IDLE_STREAK[@]}" -gt 0 ]; then
+    for name in "${!IDLE_STREAK[@]}"; do
+      printf '%s\n' "$names" | grep -Fxq -- "$name" || unset 'IDLE_STREAK[$name]'
+    done
+  fi
+
   [ -n "$names" ] || return 0
   containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
   while IFS= read -r name; do
@@ -148,6 +177,17 @@ retire_idle_runners() {
     printf '%s\n' "$containers" | grep -Fxq -- "$name" || continue
     current_queue="$(queued_jobs)" || return 1
     [ "$current_queue" -eq 0 ] || return 0
+
+    # Debounce: only retire a runner idle on two consecutive polls. A runner
+    # can go online-and-idle for one snapshot right as GitHub is mid-assigning
+    # it a job; requiring a second confirmation (a full POLL_SECONDS apart)
+    # makes that race much less likely to catch a runner GitHub is about to
+    # use, without meaningfully delaying retirement of a genuinely idle one.
+    IDLE_STREAK["$name"]=$(( ${IDLE_STREAK["$name"]:-0} + 1 ))
+    if [ "${IDLE_STREAK[$name]}" -lt 2 ]; then
+      continue
+    fi
+
     # Check once more immediately before stopping; never stop a known busy runner.
     still_idle="$(api_get "${API}/actions/runners?per_page=100" | jq -r --arg name "$name" '
       .runners | if type != "array" then error("missing runners") else
@@ -156,6 +196,7 @@ retire_idle_runners() {
     [ "$still_idle" == true ] || continue
     log "stopping surplus idle runner $name"
     run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker stop "$name" >/dev/null || return 1
+    unset 'IDLE_STREAK[$name]'
   done <<< "$names"
 }
 

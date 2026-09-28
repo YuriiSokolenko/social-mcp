@@ -106,10 +106,20 @@ When none of a pool's watched workflows are queued, its manager stops surplus
 online idle runners after checking that GitHub still marks each one as not
 busy. This prevents an already registered spare runner from taking a later
 job before the model check (the `pi-agent` pool's gate; the `general` pool has
-no model check to race).
-The manager counts both `queued` and `pending` GitHub workflow runs. When GitHub
-or Docker state cannot be read, it skips that poll instead of treating the failed
-request as an empty queue or an empty runner pool.
+no model check to race). A runner must show up idle on two consecutive polls
+before it's stopped: GitHub can assign a job in the instant between one poll's
+snapshot and the next, and killing a runner mid-assignment orphans that job
+until it times out and gets re-queued -- requiring a second confirmation,
+a full `POLL_SECONDS` apart, makes catching a runner in that window far less
+likely without meaningfully delaying retirement of a genuinely idle one.
+The manager counts both `queued` and `pending` GitHub workflow runs, in one
+repo-wide request per status (filtered to the watched workflow files
+client-side) rather than one request per watched file -- with 6-7 files per
+pool that's the difference between roughly 30 GitHub API calls per poll and
+2, which is what lets `POLL_SECONDS` sit as low as it does without
+threatening the token's 5,000/hour budget. When GitHub or Docker state cannot
+be read, the manager skips that poll instead of treating the failed request
+as an empty queue or an empty runner pool.
 
 The manager loop has no external supervisor for a hang: `restart: unless-stopped`
 only restarts a crashed process, never one that is alive but stuck waiting on a
