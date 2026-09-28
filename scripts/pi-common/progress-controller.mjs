@@ -56,11 +56,11 @@ export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
 }
 
-export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, { madeProgress = false } = {}) {
+export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS) {
   const ceiling = budgets[currentLevel];
   if (!ceiling) throw new Error(`Unknown response budget: ${currentLevel}`);
   if (!Number.isFinite(outputTokens) || outputTokens < 0) throw new Error('outputTokens must be a non-negative number');
-  if (outputTokens < ceiling || !madeProgress) return 'short';
+  if (outputTokens < ceiling) return 'short';
   if (currentLevel === 'short') return 'normal';
   if (currentLevel === 'normal') return 'deep';
   return 'short';
@@ -220,7 +220,7 @@ export class ProgressController {
       this.explicitNextResponse = false;
       return { changed: false, level: this.level, maxTokens: this.budgets[this.level], explicit: true };
     }
-    const next = nextResponseBudgetLevel(this.turnLevel, outputTokens, this.budgets, { madeProgress: this.turnMadeProgress });
+    const next = nextResponseBudgetLevel(this.turnLevel, outputTokens, this.budgets);
     this.level = next;
     return { changed: true, level: next, maxTokens: this.budgets[next], madeProgress: this.turnMadeProgress };
   }
