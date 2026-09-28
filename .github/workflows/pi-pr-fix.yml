@@ -27,7 +27,6 @@ jobs:
     env:
       PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
-      PI_PHASE: repair
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5

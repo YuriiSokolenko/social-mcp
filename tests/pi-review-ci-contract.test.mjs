@@ -475,9 +475,12 @@ test('agent prompts document the shared response-budget contract', () => {
 
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
   const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
-  assert.ok(workflow.includes('PI_ISSUE=$(jq -r \'\.issue\' "$CONTEXT")'));
+  assert.ok(workflow.includes('ISSUE=$(jq -r \'\.issue\' "$CONTEXT")'));
+  assert.match(runner, /PI_ISSUE: env\.PI_ISSUE \?\? env\.ISSUE \?\? ''/);
+  assert.match(runner, /writeGithubEnv\(env, 'PI_ISSUE', childEnv\.PI_ISSUE\)/);
   assert.match(prompt, /\*\*trivial\*\* — tiny self-contained diff/);
   assert.match(stageConfig, /do not rerun pytest, Ruff, or git diff --check/);
   assert.match(prompt, /### Trivial fast path/);
@@ -666,4 +669,20 @@ test('log rendering finalizes after continuations and redacts generic secret fie
   assert.match(source, /lastAgentEndSeen/);
   assert.match(source, /reportFinal\(lastAgentEndSeen \? "completed" : "interrupted"\)/);
   assert.match(source, /private\[_-\]\?key/);
+});
+
+
+test('stage runner owns model phase and issue metadata', () => {
+  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  assert.match(runner, /PI_PHASE: env\.PI_PHASE \?\? config\.phase \?\? stage/);
+  assert.match(runner, /writeGithubEnv\(env, 'PI_PHASE', childEnv\.PI_PHASE\)/);
+  for (const phase of ['architect', 'dispatcher', 'triage', 'review', 'repair', 'implementation']) {
+    assert.ok(config.includes(`phase: '${phase}'`));
+  }
+  for (const name of ['pi-architect.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-issue-agent.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.doesNotMatch(workflow, /^\s+PI_PHASE:/m);
+    assert.doesNotMatch(workflow, /^\s+PI_ISSUE:/m);
+  }
 });

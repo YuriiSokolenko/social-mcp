@@ -27,8 +27,6 @@ jobs:
     env:
       ISSUE: ${{ inputs.issue_number }}
       REPO: ${{ github.repository }}
-      PI_ISSUE: ${{ inputs.issue_number }}
-      PI_PHASE: implementation
 
     steps:
       - name: Checkout dev control repository

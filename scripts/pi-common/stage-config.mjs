@@ -74,6 +74,7 @@ A successful submit_result is terminal: stop immediately and do not perform more
 export const STAGES = Object.freeze({
   architect: {
     resultTool: 'pi-architect-result-tool.mjs',
+    phase: 'architect',
     bashTimeoutSeconds: 600,
     maxTurns: 100,
     repeatThreshold: 3,
@@ -83,6 +84,7 @@ export const STAGES = Object.freeze({
   },
   dispatcher: {
     resultTool: 'pi-dispatcher-result-tool.mjs',
+    phase: 'dispatcher',
     bashTimeoutSeconds: 600,
     maxTurns: 30,
     repeatThreshold: 3,
@@ -92,6 +94,7 @@ export const STAGES = Object.freeze({
   },
   triage: {
     resultTool: 'pi-triage-result-tool.mjs',
+    phase: 'triage',
     bashTimeoutSeconds: 600,
     maxTurns: 100,
     repeatThreshold: 3,
@@ -102,6 +105,7 @@ export const STAGES = Object.freeze({
   },
   reviewer: {
     resultTool: 'pi-reviewer-result-tool.mjs',
+    phase: 'review',
     bashTimeoutSeconds: 600,
     maxTurns: 100,
     repeatThreshold: 3,
@@ -113,6 +117,7 @@ export const STAGES = Object.freeze({
   },
   repair: {
     resultTool: 'pi-repair-result-tool.mjs',
+    phase: 'repair',
     bashTimeoutSeconds: 1200,
     maxTurns: 100,
     repeatThreshold: 3,
@@ -124,6 +129,7 @@ export const STAGES = Object.freeze({
   },
   implementer: {
     resultTool: 'pi-implementer-result-tool.mjs',
+    phase: 'implementation',
     bashTimeoutSeconds: 1800,
     maxTurns: 100,
     repeatThreshold: 3,

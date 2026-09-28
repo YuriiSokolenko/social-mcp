@@ -21,8 +21,8 @@ function parseArgs(argv) {
   return options;
 }
 
-function writeGithubEnv(name, value) {
-  if (process.env.GITHUB_ENV) fs.appendFileSync(process.env.GITHUB_ENV, `${name}=${value}\n`);
+function writeGithubEnv(env, name, value) {
+  if (env.GITHUB_ENV) fs.appendFileSync(env.GITHUB_ENV, `${name}=${value}\n`);
 }
 
 function wait(child, name) {
@@ -45,13 +45,15 @@ export async function runStage({ stage, promptFile = null, raw = null }, env = p
   const childEnv = {
     ...env,
     PI_STAGE: stage,
-    PI_PHASE: env.PI_PHASE ?? stage,
+    PI_PHASE: env.PI_PHASE ?? config.phase ?? stage,
     PI_ISSUE: env.PI_ISSUE ?? env.ISSUE ?? '',
     PI_BASH_TIMEOUT_SECONDS: env.PI_BASH_TIMEOUT_SECONDS ?? String(config.bashTimeoutSeconds),
     PI_TERMINAL_RESULT_FILE: env.PI_TERMINAL_RESULT_FILE ?? path.join(runnerTemp, `pi-terminal-${suffix}`),
     PI_METRICS_FILE: env.PI_METRICS_FILE ?? path.join(runnerTemp, `pi-usage-${suffix}.jsonl`),
   };
-  writeGithubEnv('PI_METRICS_FILE', childEnv.PI_METRICS_FILE);
+  writeGithubEnv(env, 'PI_METRICS_FILE', childEnv.PI_METRICS_FILE);
+  writeGithubEnv(env, 'PI_PHASE', childEnv.PI_PHASE);
+  if (childEnv.PI_ISSUE) writeGithubEnv(env, 'PI_ISSUE', childEnv.PI_ISSUE);
   fs.rmSync(childEnv.PI_TERMINAL_RESULT_FILE, { force: true });
 
   const workspace = env.GITHUB_WORKSPACE || path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
