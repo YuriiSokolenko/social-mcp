@@ -43,7 +43,10 @@ Call submit_result exactly once as your last action. Do not modify repository or
 
   reviewer(env) {
     if (!env.ISSUE || !env.PR) throw new Error('ISSUE and PR are required for Reviewer');
-    return `Read agents/reviewer/AGENTS.md first. Then read issue #${env.ISSUE}, inspect the complete PR diff and directly relevant changed code, and write a short review plan of at most 1000 output tokens. Only then call declare_task_complexity based on that evidence. Review PR #${env.PR} against issue #${env.ISSUE}. Do not modify files or GitHub state. The deterministic checks already passed; do not rerun pytest, Ruff, or git diff --check. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action.`;
+    const reviewContext = env.REVIEW_CONTEXT
+      ? `Read the trusted prepared review context at ${env.REVIEW_CONTEXT}; it contains the linked issue title/body and PR metadata.`
+      : `Read issue #${env.ISSUE} directly.`;
+    return `Read agents/reviewer/AGENTS.md first. ${reviewContext} Then inspect the complete PR diff against origin/dev and directly relevant changed code exactly once, and write a short review plan of at most 1000 output tokens. Do not inspect repository structure, git history, branches, PR body, or issue comments before classification unless the prepared issue and diff leave one concrete ambiguity. Once issue + diff + plan are available, call declare_task_complexity immediately and do not repeatedly reconsider the classification. Review PR #${env.PR} against issue #${env.ISSUE}. A blocked or failed tool call did not execute; never count it as completed. Do not modify files or GitHub state. The deterministic checks already passed; do not rerun pytest, Ruff, or git diff --check. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action.`;
   },
 
   repair(env) {
@@ -149,6 +152,7 @@ export const STAGES = Object.freeze({
     requireComplexity: true,
     preComplexityTurnLimit: 8,
     preComplexityAllowedTools: ['read', 'bash'],
+    preComplexityTransitionTools: ['declare_task_complexity'],
     prompt: promptBuilders.reviewer,
   },
   repair: {
@@ -161,6 +165,7 @@ export const STAGES = Object.freeze({
     requireComplexity: true,
     preComplexityTurnLimit: 8,
     preComplexityAllowedTools: ['read', 'bash'],
+    preComplexityTransitionTools: ['declare_task_complexity'],
     prompt: promptBuilders.repair,
   },
   implementer: {
@@ -179,6 +184,7 @@ export const STAGES = Object.freeze({
     complexityClassifierTimeoutMs: 120000,
     preComplexityTurnLimit: 4,
     preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     directReadMaxLines: 200,

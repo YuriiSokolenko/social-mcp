@@ -25,13 +25,15 @@ Never expose credentials/tokens, invoke production write operations, or make des
 Use this order. Complexity must be based on evidence from the actual review target, never guessed before seeing the task and changed code.
 
 1. Read `agents/reviewer/AGENTS.md`.
-2. Read the linked issue and identify its concrete acceptance criteria.
-3. Inspect the complete PR diff against `origin/dev` and the changed code needed to understand that diff.
+2. Read the linked issue from the trusted prepared review context when the prompt supplies one; otherwise fetch the issue directly. Identify its concrete acceptance criteria.
+3. Inspect the complete PR diff against `origin/dev` and only the changed code needed to understand that diff.
 4. Write a concise review plan for yourself, at most 1000 tokens, focused on the acceptance criteria and concrete risk areas visible in the change.
-5. Call `declare_task_complexity` based on the issue, diff, changed code, and plan.
+5. Call `declare_task_complexity` immediately based on the issue, diff, changed code, and plan. Do not repeatedly reconsider the classification once that evidence is available.
 6. Continue the semantic review using the evidence-driven loop below.
 
-Before `declare_task_complexity`, stay within initial orientation: the agent instructions, linked issue, PR diff, changed code, and the short plan. Do not expand into repository history, unrelated code, broad searches, optional skills, or speculative investigation until complexity has been declared.
+Before `declare_task_complexity`, stay within initial orientation: the agent instructions, linked issue, PR diff, changed code, and the short plan. Do not inspect repository structure, git history, branches, PR body, issue comments, unrelated code, optional skills, or speculative context unless the issue + diff leave one concrete ambiguity that prevents classification.
+
+A blocked or failed tool call **did not execute**. Never mark it as completed, never claim its state transition happened, and never proceed as though it succeeded. Follow the returned error and retry only an allowed classification or terminal action.
 
 Choose complexity from the review scope:
 

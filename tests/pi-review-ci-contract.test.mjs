@@ -494,8 +494,12 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
   const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const guard = fs.readFileSync('scripts/pi-common/pr-guard.mjs', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.ok(workflow.includes('ISSUE=$(jq -r \'\.issue\' "$CONTEXT")'));
+  assert.ok(workflow.includes('REVIEW_CONTEXT=$CONTEXT'));
+  assert.match(guard, /loadIssue\(issueNumber\)/);
+  assert.match(guard, /review:[\s\S]*issue:[\s\S]*changedFiles/);
   assert.match(runner, /PI_ISSUE: env\.PI_ISSUE \?\? env\.ISSUE \?\? ''/);
   assert.match(runner, /writeGithubEnv\(env, 'PI_ISSUE', childEnv\.PI_ISSUE\)/);
   assert.match(prompt, /\*\*trivial\*\* — tiny self-contained diff/);
@@ -503,6 +507,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /History or prior attempts are valid when they materially answer a concrete question/);
   assert.match(prompt, /Never load skills for trivial reviews/);
+  assert.match(prompt, /blocked or failed tool call \*\*did not execute\*\*/i);
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
