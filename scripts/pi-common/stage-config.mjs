@@ -71,6 +71,18 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const startupInstruction = resumed
       ? 'This is restored work. Skip startup planning/classification and validate the restored implementation first with \`submit_result\`.'
       : 'This is fresh work. Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity.';
+    const executionGuidance = resumed
+      ? `Restored work path:
+- \`submit_result\` is both validation and submission; call it before inspecting restored files.
+- If it reports a concrete failure, fix only that failure and retry.
+- Never use \`already_satisfied\` for restored work.`
+      : `For fresh work after preparation:
+- If one small target file is already known, the main agent may read it directly once with \`limit <= 200\`.
+- The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
+- If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
+- Delegate to \`scout\` only when the evidence already available is insufficient to know the next safe action: unknown targets, genuine multi-file comparison/search, logs/diagnostics, or broader command output. Complexity alone never requires delegation.
+- \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
+- For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.`;
     return `Read and follow agents/implementer/AGENTS.md first. Do not write a competing startup plan.
 
 ${startupInstruction}
@@ -84,13 +96,8 @@ Issue body:
 ${body}
 
 ${resumeNotice}Work directly in the checked-out repository, always based on latest dev. dev is the only development base; never treat main as an alternative source tree.
-For fresh work after preparation:
-- If one small target file is already known, the main agent may read it directly once with \`limit <= 200\`.
-- The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
-- If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
-- Delegate to \`scout\` only when the evidence already available is insufficient to know the next safe action: unknown targets, genuine multi-file comparison/search, logs/diagnostics, or broader command output. Complexity alone never requires delegation.
-- \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
-- For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.
+
+${executionGuidance}
 
 Main owns execution decisions, \`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Planning and task-level complexity belong to the fresh-work startup subagents. If evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`. Never use \`already_satisfied\` for restored work.
 
