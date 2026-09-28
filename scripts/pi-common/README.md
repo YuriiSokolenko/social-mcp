@@ -12,14 +12,16 @@ Keeping those rules here gives us one implementation to test and one place to ex
 
 A module belongs here only when the same trusted rule is useful to more than one pipeline stage and has no agent-specific decision logic.
 
-- `github-api.mjs` — authenticated repository API + complete pagination + tiny shared issue/PR/label/comment/workflow-dispatch/workflow-run/ref primitives; this is the only place that should spell those repeated REST routes.
+- `github-api.mjs` — authenticated repository API + complete pagination + bounded HTTP requests + tiny shared issue/PR/label/comment/workflow-dispatch/workflow-run/ref primitives; this is the only place that should spell those repeated REST routes.
+- `process.mjs` — one bounded synchronous subprocess runner for trusted control-plane helpers.
+- `git.mjs` — one bounded Git adapter; authentication is carried in child-process environment configuration, never command-line arguments.
 - `github-state.mjs` — compare-and-swap style label/state replacement.
 - `state-machine.mjs` — canonical issue pipeline labels and legal transitions.
 - `task-metadata.mjs` — canonical GitHub issue task metadata parser/writer.
 - `queue-context.mjs` — shared read-only queue snapshot construction.
 - `recovery-policy.mjs` — small deterministic recovery decisions.
 - `control-plane-policy.mjs` — single security boundary for files Pi agents must never change/review/repair/auto-merge.
-- `bash-timeout-policy.mjs` / `loop-guard-policy.mjs` — reusable model tool safety limits.
+- `bash-timeout-policy.mjs` / `loop-guard-policy.mjs` — reusable model tool safety limits; turn ceilings close exploration without blocking final edit/write/submit operations.
 - `product-checks.mjs` — authoritative product-code deterministic checks used before publication/review.
 - `pr-guard.mjs` — loads the complete PR state/file list and enforces the pre-model human/control-plane gate.
 - `issue-context.mjs` — performs the Implementer's one fresh issue read and validates `open + pi:ready` before model work.
@@ -30,6 +32,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `repair-publication.mjs` — owns safe PR Fix publication and the single handoff back to a fresh Reviewer.
 - `automation-control.mjs` — owns RUNNING/DRAINING/PAUSED variable mutation; RUNNING wakes only Dispatcher, never Reconciler.
 - `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow wakes; it keeps authenticated REST and the trusted `dev` ref out of YAML.
+- `terminal-result.mjs` / `result-jsonl.mjs` — shared machine-checkable terminal-result and Pi JSONL primitives; free-text result markers are not pipeline state.
 
 ## What does NOT belong here
 

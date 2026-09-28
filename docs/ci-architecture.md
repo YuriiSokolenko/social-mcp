@@ -38,7 +38,7 @@ Do not make Reconciler, Usage, or another diagnostic workflow a second scheduler
 
 A wake event means only: "re-check your current work." It must not carry authoritative pipeline state.
 
-Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler must not wake Merge Gate.
+Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler is not a normal Merge Gate scheduler; it may issue one recovery wake only when an already-`review:passed` PR outlives the PR recovery grace period without its normal PASS handoff.
 
 ## Merge conflict rule
 
@@ -106,9 +106,11 @@ Trusted reusable pipeline policy belongs in `scripts/pi-common/`, with its purpo
 
 Keep stage-specific orchestration outside the common directory. A helper is common only when multiple stages need the same deterministic rule.
 
+All model-driven stages use the shared loop guard. The global turn ceiling closes exploration but must leave `edit`, `write`, and terminal submission available so the guard itself cannot prevent completion. Successful repository mutation—not an attempted tool call—is what advances the implementation phase. Model prose or a process exit is never accepted as a substitute for a trusted terminal result artifact.
+
 ## Recovery rule
 
-Recovery must be smaller than the normal pipeline. Prefer returning stranded work directly to its normal owner. Do not reproduce the happy path inside Reconciler, and do not add recovery-specific copies of merge/review/dispatch logic.
+Recovery must be smaller than the normal pipeline. Prefer returning stranded work directly to its normal owner. Do not reproduce the happy path inside Reconciler, and do not add recovery-specific copies of merge/review/dispatch logic. `DRAINING` disables creation/recreation of issue-ready states while preserving recovery for already-published PRs. A durable Architect parent marker makes partial child publication idempotently recoverable without rerunning model planning.
 
 ## Change test
 

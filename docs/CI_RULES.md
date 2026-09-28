@@ -96,7 +96,7 @@ merge PR -> push dev -> CI
                      -> red: stop merge sequence
 ```
 
-Reconciler does not wake Merge Gate. Merge Gate must not infer a merge event from commit-message text.
+Normal queue progress does not rely on Reconciler. The one recovery exception is a PR that already has durable `review:passed` but lost its direct PASS -> Merge Gate dispatch: after the PR recovery grace period Reconciler may wake the shared Merge Gate scan. This is recovery of an existing handoff, not a second happy-path scheduler. Merge Gate must never infer a merge event from commit-message text.
 
 ## Inputs and SHA rule
 
@@ -118,9 +118,13 @@ Do not add `integration_base_sha`, `repair_base_sha`, captured dev SHA, exact-pa
 
 ## Reconciler and Triage
 
-Reconciler is recovery infrastructure, not a scheduler. It may recover orphaned ownership, stranded `pi:ready` work, abandoned PR review/fix handoffs, and obsolete checkpoints by returning work directly to its normal owner. PR recovery has a 10-minute grace period measured from the PR's latest `updated_at` (falling back to `created_at`): fresh PR creation, pushes, labels, or other updates belong to the normal owner during that window. The grace period does not delay normal CI; it only prevents Reconciler from racing a normal handoff. Reconciler must not become another happy-path dispatcher and must not wake Merge Gate.
+Reconciler is recovery infrastructure, not a scheduler. In `RUNNING`, it may recover orphaned issue ownership, stranded `pi:ready` work, interrupted Architect child publication, abandoned PR review/fix handoffs, lost PASS -> Merge Gate wakes, and obsolete checkpoints by returning work directly to its normal owner. In `DRAINING`, issue recovery must not create `dispatcher:ready`, `architect:ready`, or `pi:ready`; orphaned issue ownership is cleared instead, while already-published PR review/fix/merge recovery remains enabled so in-flight PR work can finish. PR recovery has a 10-minute grace period measured from the PR's latest `updated_at` (falling back to `created_at`): fresh PR creation, pushes, labels, or other updates belong to the normal owner during that window. The grace period does not delay normal CI; it only prevents Reconciler from racing a normal handoff. Reconciler must not become another happy-path dispatcher.
 
 Triage is an optional preparation step for issues not yet in the pipeline. It reads the same canonical `## Task metadata` from the GitHub issue body as Dispatcher and Architect; no `tasks/<id>.md` snapshot exists. It may validate readiness and set `dispatcher:ready`; it does not replace Dispatcher.
+
+## Terminal-result contract
+
+Model prose is never pipeline state. Architect, Dispatcher, Triage, Reviewer, PR Fix, and Implementer must finish through their trusted terminal tool. The workflow verifies the terminal marker/result artifact before applying or publishing state; a zero Pi process exit without that artifact is a workflow failure. Legacy free-text `*_RESULT:` markers are not accepted as fallback success.
 
 ## Concurrency and failures
 
