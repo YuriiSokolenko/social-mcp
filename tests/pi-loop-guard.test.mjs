@@ -6,10 +6,11 @@ import { RESPONSE_BUDGETS, responseBudget, withResponseBudget } from '../scripts
 test('global turn ceiling is independent of task complexity', () => {
   const guard = new LoopGuard({ turnLimit: 3, repeatThreshold: 10, requireComplexity: true });
   guard.setComplexity('trivial');
+  assert.equal(guard.checkToolCall('edit', { path: 'a' }), undefined);
   guard.onTurnStart(2);
-  assert.equal(guard.checkToolCall('read', { path: 'a' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: 'b' }), undefined);
   guard.onTurnStart(3);
-  assert.equal(guard.checkToolCall('read', { path: 'b' }).block, true);
+  assert.equal(guard.checkToolCall('read', { path: 'c' }).block, true);
 });
 
 test('required operating contract is the first tool read when configured', () => {
@@ -36,6 +37,7 @@ test('bounded orientation is allowed before required complexity declaration', ()
   assert.equal(guard.checkToolCall('write', { path: '/work/new.py' }).block, true);
   assert.equal(guard.checkToolCall('submit_result', {}).block, true);
   guard.setComplexity('trivial');
+  assert.equal(guard.checkToolCall('edit', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
   assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
 });
 
