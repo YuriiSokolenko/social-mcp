@@ -165,15 +165,32 @@ async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, tim
 }
 
 async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
-  const response = await runStructuredSubagent(pi, ctx, {
+  const request = {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
     task: plannerTask(),
     schema: IMPLEMENTATION_PLAN_SCHEMA,
     timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
-    maxTokens: Number(config.implementationPlannerMaxTokens ?? 480),
+    maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
     toolBudget: { hard: 3 },
-  }, signal);
+  };
+  const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
+  let response;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      response = await runStructuredSubagent(pi, ctx, request, signal);
+      break;
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      const retryable = message.includes('Missing structured_output call');
+      if (!retryable || attempt >= retries) throw error;
+      console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
+        agent: config.implementationPlannerAgent,
+        reason: 'missing_structured_output',
+        attempt: attempt + 1,
+      })}`);
+    }
+  }
   return {
     ...validateImplementationPlan(response.result.value),
     usage: response.usage ?? null,
