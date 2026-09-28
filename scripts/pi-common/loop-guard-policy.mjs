@@ -29,10 +29,11 @@ export function toolCallSignature(toolName, input) {
 }
 
 export class LoopGuard {
-  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityAllowedTools = [], requiredFirstReadPath = null }) {
+  constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityAllowedTools = [], preComplexityTurnLimit = 8, requiredFirstReadPath = null }) {
     this.turnLimit = turnBudget(turnLimit);
     this.repeatThreshold = repeatLimit(repeatThreshold);
     this.requireComplexity = requireComplexity;
+    this.preComplexityTurnLimit = turnBudget(preComplexityTurnLimit);
     this.preComplexityAllowedTools = new Set(preComplexityAllowedTools);
     this.requiredFirstReadPath = requiredFirstReadPath;
     this.requiredFirstReadDone = !requiredFirstReadPath;
@@ -73,6 +74,9 @@ export class LoopGuard {
       }
     }
     if (this.requireComplexity && !this.complexity) {
+      if (this.absoluteTurn >= this.preComplexityTurnLimit) {
+        return { block: true, reason: `Startup orientation has already used ${this.preComplexityTurnLimit} model turns. Stop inspecting or reconsidering. Use the evidence already collected, state the short plan if needed, and call declare_task_complexity now.` };
+      }
       if (!this.preComplexityAllowedTools.has(toolName)) {
         return { block: true, reason: 'Before complexity declaration, finish the required startup orientation and plan using only the allowed inspection tools. Repository edits, skills, submission, and other work require declare_task_complexity first.' };
       }

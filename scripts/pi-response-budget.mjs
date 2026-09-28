@@ -5,12 +5,13 @@ import { nextResponseBudgetLevel, RESPONSE_BUDGETS, withResponseBudget } from '.
 // Shared per-turn verbosity control for every Pi agent. This is deliberately
 // independent from task-complexity/loop-guard policy.
 //
-// Normal sessions start at SHORT. If a response consumes its entire budget,
-// exactly the next response is promoted one level (SHORT -> NORMAL -> DEEP).
-// A response that does not hit its ceiling resets the following response to
-// SHORT. DEEP always falls back to SHORT after that response. Explicit
-// set_response_budget calls are also one-response overrides and take priority
-// over the automatic decision made from the turn in which the tool was called.
+// Normal sessions start at SHORT. A ceiling hit alone does not promote the next
+// response: Laguna can spend the entire extra budget reconsidering the same
+// decision. Automatic SHORT -> NORMAL -> DEEP escalation is allowed only when
+// the same turn also completed a concrete action (edit/write/submit). A response
+// below its ceiling, or a ceiling hit without action progress, resets the next
+// response to SHORT. DEEP always falls back to SHORT after that response.
+// Explicit set_response_budget calls remain one-response overrides.
 export default function (pi) {
   const fixedMaxTokens = Number(process.env.PI_FIXED_RESPONSE_MAX_TOKENS || 0);
   if (fixedMaxTokens && (!Number.isSafeInteger(fixedMaxTokens) || fixedMaxTokens < 1)) throw new Error('PI_FIXED_RESPONSE_MAX_TOKENS must be a positive integer');
@@ -26,6 +27,8 @@ export default function (pi) {
   let level = 'short';
   let turnLevel = 'short';
   let explicitNextResponse = false;
+  let turnMadeProgress = false;
+  const progressTools = new Set(['edit', 'write', 'submit_result', 'submit_repair']);
 
   async function apply(nextLevel, ctx) {
     if (!ctx.model) throw new Error('No active model is available for response budgeting');
@@ -60,7 +63,12 @@ export default function (pi) {
 
   pi.on('turn_start', (event) => {
     turnLevel = level;
+    turnMadeProgress = false;
     console.log(`PI_BUDGET ${JSON.stringify({ turn: event.turnIndex, budget: fixedMaxTokens ? 'fixed' : turnLevel, maxTokens: fixedMaxTokens || configuredBudgets[turnLevel] })}`);
+  });
+
+  pi.on('tool_execution_end', (event) => {
+    if (!event.isError && progressTools.has(event.toolName)) turnMadeProgress = true;
   });
 
   pi.on('turn_end', async (event, ctx) => {
@@ -71,8 +79,8 @@ export default function (pi) {
     }
 
     const outputTokens = Number(event.message?.usage?.output || 0);
-    const nextLevel = nextResponseBudgetLevel(turnLevel, outputTokens, configuredBudgets);
+    const nextLevel = nextResponseBudgetLevel(turnLevel, outputTokens, configuredBudgets, { madeProgress: turnMadeProgress });
     await apply(nextLevel, ctx);
-    console.log(`PI_BUDGET_NEXT ${JSON.stringify({ afterTurn: event.turnIndex, outputTokens, previousBudget: turnLevel, nextBudget: nextLevel, maxTokens: configuredBudgets[nextLevel] })}`);
+    console.log(`PI_BUDGET_NEXT ${JSON.stringify({ afterTurn: event.turnIndex, outputTokens, madeProgress: turnMadeProgress, previousBudget: turnLevel, nextBudget: nextLevel, maxTokens: configuredBudgets[nextLevel] })}`);
   });
 }

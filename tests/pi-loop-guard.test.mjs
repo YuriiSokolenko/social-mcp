@@ -29,6 +29,7 @@ test('bounded orientation is allowed before required complexity declaration', ()
     repeatThreshold: 3,
     requireComplexity: true,
     preComplexityAllowedTools: ['read', 'bash'],
+    preComplexityTurnLimit: 8,
   });
   assert.equal(guard.checkToolCall('read', { path: '/work/agents/implementer/AGENTS.md' }), undefined);
   assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
@@ -39,6 +40,24 @@ test('bounded orientation is allowed before required complexity declaration', ()
   guard.setComplexity('trivial');
   assert.equal(guard.checkToolCall('edit', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
   assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
+});
+
+test('pre-complexity orientation stops after the configured turn budget', () => {
+  const guard = new LoopGuard({
+    repeatThreshold: 10,
+    requireComplexity: true,
+    preComplexityAllowedTools: ['read', 'bash'],
+    preComplexityTurnLimit: 2,
+  });
+  guard.onTurnStart(0);
+  assert.equal(guard.checkToolCall('read', { path: 'agents/implementer/AGENTS.md' }), undefined);
+  guard.onTurnStart(1);
+  assert.equal(guard.checkToolCall('bash', { command: 'grep target src/a.py' }), undefined);
+  guard.onTurnStart(2);
+  const blocked = guard.checkToolCall('read', { path: 'src/b.py' });
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /call declare_task_complexity now/);
+  assert.equal(guard.checkToolCall('declare_task_complexity', { complexity: 'normal' }), undefined);
 });
 
 test('required complexity makes the first post-plan tool call an edit', () => {

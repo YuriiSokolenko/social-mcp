@@ -31,6 +31,7 @@ jobs:
       PI_BASH_TIMEOUT_SECONDS: '1200'
       PI_REQUIRE_TASK_COMPLEXITY: '1'
       PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
+      PI_MAX_PRE_COMPLEXITY_TURNS: '8'
       PI_MAX_REPEAT_CALLS: '3'
     steps:
       - name: Checkout trusted control repository

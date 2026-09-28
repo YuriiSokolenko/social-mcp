@@ -15,6 +15,7 @@ export default function (pi) {
       .split(',')
       .map((tool) => tool.trim())
       .filter(Boolean),
+    preComplexityTurnLimit: Number(process.env.PI_MAX_PRE_COMPLEXITY_TURNS ?? 8),
   });
 
   pi.registerTool({

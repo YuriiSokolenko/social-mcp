@@ -48,6 +48,6 @@ export default function (pi) {
   registerSubmitNudge(pi, {
     isSubmitted: () => submitted,
     customType: 'pi-result-nudge',
-    content: 'Before finishing, call submit_result. It will integrate latest dev and validate the final tree. If it reports merge conflicts or failing checks, fix them in this same session and call submit_result again until it succeeds.',
+    content: 'Repository state is authoritative. No successful submit_result has been recorded yet. Do not treat code written only in reasoning, a plan, or a compaction summary as implemented. Check the actual working tree: if there is no real diff, continue implementation and make the required edit; if complexity is not yet declared, declare it first. Finish only by calling submit_result, fixing any reported conflict/check failure, and retrying until it succeeds.',
   });
 }

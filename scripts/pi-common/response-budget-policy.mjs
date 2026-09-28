@@ -12,12 +12,18 @@ export function responseBudget(level) {
   return maxTokens;
 }
 
-export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS) {
+export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, { madeProgress = false } = {}) {
   const ceiling = budgets[currentLevel];
   if (!ceiling) throw new Error(`Unknown response budget: ${currentLevel}`);
   if (!Number.isFinite(outputTokens) || outputTokens < 0) throw new Error('outputTokens must be a non-negative number');
 
   if (outputTokens < ceiling) return 'short';
+  // A ceiling hit by itself is not evidence that the model needs more room.
+  // Laguna can consume every extra token while reconsidering the same decision.
+  // Automatic escalation is therefore earned only by a turn that also made a
+  // successful repository-changing/terminal action. The model can still use
+  // set_response_budget explicitly when a genuinely larger next response is needed.
+  if (!madeProgress) return 'short';
   if (currentLevel === 'short') return 'normal';
   if (currentLevel === 'normal') return 'deep';
   return 'short';

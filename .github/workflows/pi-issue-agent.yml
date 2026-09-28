@@ -32,6 +32,7 @@ jobs:
       PI_BASH_TIMEOUT_SECONDS: '1800'
       PI_REQUIRE_TASK_COMPLEXITY: '1'
       PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
+      PI_MAX_PRE_COMPLEXITY_TURNS: '8'
       PI_MAX_REPEAT_CALLS: '3'
 
     steps:
@@ -159,6 +160,14 @@ jobs:
             echo "PI_CHECKPOINT_PUBLISHED=$COMMIT" >> "$GITHUB_ENV"
           fi
 
+      - name: Require terminal implementation result
+        if: steps.worktree.outcome == 'success' && !cancelled()
+        run: |
+          if [ ! -s "$PI_IMPLEMENTER_RESULT_FILE" ]; then
+            echo "::error::Pi exited without a successful submit_result. A plan/reasoning trace is not an implementation result."
+            exit 1
+          fi
+
       - name: Push verified issue branch
         if: steps.checkpoint.outputs.changed == 'true'
         env:
@@ -197,11 +206,13 @@ jobs:
             push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_PUBLISHED}" origin ":refs/heads/pi/issue-${ISSUE}-checkpoint"
 
       - name: Mark no-change result
-        if: steps.checkpoint.outputs.changed == 'false'
+        if: always() && !cancelled() && steps.checkpoint.outputs.changed == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human             "Pi completed the task but produced no repository changes. Human review is required."
+          echo "::error::Implementation completed without repository changes."
+          exit 1
 
       - name: Recover publication state after failure
         if: failure() && steps.pr.outputs.number != ''
@@ -212,7 +223,7 @@ jobs:
             "Pi published PR #${{ steps.pr.outputs.number }} before a later workflow step failed: ${{ steps.pr.outputs.url }}. Merge Gate/reconciler will continue from the published PR."
 
       - name: Mark failed result
-        if: failure() && steps.preflight.outcome == 'success' && steps.pr.outputs.number == ''
+        if: failure() && steps.preflight.outcome == 'success' && steps.checkpoint.outputs.changed != 'false' && steps.pr.outputs.number == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
