@@ -511,7 +511,7 @@ test('implementer delegates complexity but keeps tiny known-path operations loca
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
   const classifier = fs.readFileSync('.pi/agents/complexity-classifier.md', 'utf8');
 
-  assert.match(config, /implementer:[\s\S]*requireDelegatedComplexity: true[\s\S]*preComplexityAllowedTools: \['subagents_enable', 'subagent'\][\s\S]*preComplexitySubagentAgent: 'complexity-classifier'/);
+  assert.match(config, /implementer:[\s\S]*complexityClassifierAgent: 'complexity-classifier'[\s\S]*preComplexityAllowedTools: \['classify_task_complexity'\]/);
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
   assert.match(config, /directReadMaxLines: 200[\s\S]*directReadCalls: 1[\s\S]*boundedDirectBash: true/);
 
@@ -519,8 +519,7 @@ test('implementer delegates complexity but keeps tiny known-path operations loca
     'Read this `agents/implementer/AGENTS.md`',
     'Use the issue title/body already supplied in the prompt',
     'Write one short top-level execution plan',
-    'Delegate **task-level complexity** to `complexity-classifier`',
-    'Immediately call `declare_task_complexity`',
+    'Call `classify_task_complexity` once with the short plan',
     'Execute the first plan item',
   ];
   let previous = -1;
@@ -538,9 +537,14 @@ test('implementer delegates complexity but keeps tiny known-path operations loca
   assert.match(agent, /`grep`, `find`, and `ls` are runtime-blocked/);
   assert.match(classifier, /tools:\n/);
   assert.match(classifier, /inheritProjectContext: false/);
-  assert.match(classifier, /Return exactly two lines/);
+  assert.match(classifier, /Return only the requested structured result/);
+  assert.match(classifier, /rewrite or execute the plan/);
   assert.match(classifier, /trivial[\s\S]*normal[\s\S]*complex/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /toolBudget: \{ hard: 0, block: '\*' \}/);
+  assert.match(runtime, /result: \{ kind: 'structured', schema: COMPLEXITY_SCHEMA \}/);
+  assert.doesNotMatch(agent, /call `subagent` with `agent: "complexity-classifier"`/);
 });
 
 test('implementer has an explicit already-satisfied terminal path without duplicate edits', () => {
