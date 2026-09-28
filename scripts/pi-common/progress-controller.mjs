@@ -151,7 +151,7 @@ export class ProgressController {
     if (this.requireComplexity && !this.complexity) {
       const preComplexityTurns = Math.max(0, this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn));
       if (preComplexityTurns >= this.preComplexityTurnLimit) {
-        return { block: true, reason: `Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Finish the delegated complexity classification and call declare_task_complexity now.` };
+        return { block: true, reason: `Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Finish the configured preparation/classification action now.` };
       }
       if (!this.preComplexityAllowedTools.has(toolName)) {
         return { block: true, reason: 'Before complexity is recorded, finish the required orientation and use only the configured complexity action.' };
