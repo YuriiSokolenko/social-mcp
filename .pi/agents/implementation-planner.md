@@ -19,7 +19,8 @@ Use the inherited skill guidance as planning heuristics. Prefer KISS/YAGNI/SOLID
 Plan rules:
 - 1–8 ordered concrete steps; usually 2–6.
 - Keep each step short and action-oriented.
-- Mention a specific path/module/symbol only when the issue itself makes it known; otherwise say what evidence the Implementer should locate.
+- Mention a specific path/module/symbol only when the issue itself makes it known; otherwise describe the evidence/target the Implementer should locate.
+- Describe repository evidence and intended edits, never the tool or routing used to obtain them: do not say scout, subagent, direct read, grep, find, ls, bash, or trivial_repo_lookup.
 - Include the smallest relevant verification in the plan when useful.
 - Keep implementation and tests together unless the issue explicitly requires a separate boundary.
 - Do not include complexity labels, rationale essays, alternatives, or speculative future work.
