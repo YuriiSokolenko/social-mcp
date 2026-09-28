@@ -12,3 +12,4 @@ control what the agent may do. Each directory includes the upstream MIT license.
 
 When updating a skill, pin a new commit, review its instructions against the
 repository's trust and CI rules, and keep the license and this index current.
+Subagent edit-ready delegation test passed.
