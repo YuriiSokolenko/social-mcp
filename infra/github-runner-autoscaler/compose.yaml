@@ -23,8 +23,11 @@ services:
       CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
       CURL_MAX_TIME_SECONDS: ${CURL_MAX_TIME_SECONDS:-15}
       DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
+      API_CACHE_DIR: /var/cache/runner-manager
+      API_CACHE_TTL_SECONDS: ${API_CACHE_TTL_SECONDS:-10}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - runner-manager-api-cache:/var/cache/runner-manager
 
   # Independent pool for regular CI jobs; it shares the manager image but
   # keeps its own queue, limits, runner labels, and Docker access settings.
@@ -52,5 +55,11 @@ services:
       CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
       CURL_MAX_TIME_SECONDS: ${CURL_MAX_TIME_SECONDS:-15}
       DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
+      API_CACHE_DIR: /var/cache/runner-manager
+      API_CACHE_TTL_SECONDS: ${API_CACHE_TTL_SECONDS:-10}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - runner-manager-api-cache:/var/cache/runner-manager
+
+volumes:
+  runner-manager-api-cache:

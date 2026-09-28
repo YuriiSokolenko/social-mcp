@@ -28,6 +28,8 @@ MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
 DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
+API_CACHE_DIR="${API_CACHE_DIR:-/var/cache/runner-manager}"
+API_CACHE_TTL_SECONDS="${API_CACHE_TTL_SECONDS:-10}"
 CURL_TIMEOUT_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS")
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
@@ -74,7 +76,75 @@ run_with_timeout() {
 }
 
 api_get() {
-  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) "${AUTH[@]}" "$1"
+  local url="$1" mode="${2:-cached}" key cache lock now cached_at attempt response tmp
+  if [ "$mode" == uncached ]; then
+    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) "${AUTH[@]}" "$url"
+    return
+  fi
+  # Both pool managers share this short-lived cache. The lock makes matching
+  # reads collapse into one GitHub request when their polling cycles overlap.
+  # A bounded wait preserves progress if another manager exits while holding it.
+  if [[ ! "$API_CACHE_TTL_SECONDS" =~ ^[0-9]+$ ]] || [ ! -d "$API_CACHE_DIR" ]; then
+    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) "${AUTH[@]}" "$url"
+    return
+  fi
+  key="$(printf '%s' "$url" | sha256sum | awk '{print $1}')"
+  cache="${API_CACHE_DIR}/${key}.response"
+  lock="${API_CACHE_DIR}/${key}.lock"
+
+  cache_is_fresh() {
+    [ -f "$cache" ] || return 1
+    cached_at="$(head -n 1 "$cache")"
+    [[ "$cached_at" =~ ^[0-9]+$ ]] || return 1
+    now="$(date +%s)"
+    (( now - cached_at <= API_CACHE_TTL_SECONDS ))
+  }
+
+  if cache_is_fresh; then
+    tail -n +2 "$cache"
+    return
+  fi
+
+  for attempt in $(seq 1 200); do
+    if mkdir "$lock" 2>/dev/null; then
+      # Recheck after acquiring the lock: another manager may have refreshed it.
+      if cache_is_fresh; then
+        rmdir "$lock" 2>/dev/null || true
+        tail -n +2 "$cache"
+        return
+      fi
+      if response="$(curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) "${AUTH[@]}" "$url")"; then
+        tmp="${cache}.${BASHPID}.tmp"
+        if printf '%s\n%s' "$(date +%s)" "$response" > "$tmp"; then
+          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp"
+        fi
+        rmdir "$lock" 2>/dev/null || true
+        printf '%s' "$response"
+        return 0
+      fi
+      rmdir "$lock" 2>/dev/null || true
+      return 1
+    fi
+    if [ -d "$lock" ]; then
+      local lock_at lock_age
+      lock_at="$(stat -c %Y "$lock" 2>/dev/null || printf '0')"
+      now="$(date +%s)"
+      if [[ "$lock_at" =~ ^[0-9]+$ ]] && (( now - lock_at > CURL_MAX_TIME_SECONDS + 10 )); then
+        # Recover the tiny lock directory if its owner was killed mid-request.
+        rmdir "$lock" 2>/dev/null || true
+        continue
+      fi
+    fi
+    if cache_is_fresh; then
+      tail -n +2 "$cache"
+      return
+    fi
+    sleep 0.1
+  done
+
+  # The cache owner may have died or stalled. Fall back to a bounded direct
+  # request rather than holding up this pool indefinitely.
+  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) "${AUTH[@]}" "$url"
 }
 
 registration_token() {
@@ -82,11 +152,11 @@ registration_token() {
 }
 
 queued_jobs() {
-  local total=0 status count
+  local total=0 status count mode="${1:-cached}"
   # Query all repository workflows in two requests instead of making two
   # requests per configured workflow. queued and pending are disjoint states.
   for status in queued pending; do
-    count="$(api_get "${API}/actions/runs?status=${status}&per_page=100" | jq -er '.total_count | if type == "number" and . >= 0 and floor == . then . else error("invalid count") end')" || return 1
+    count="$(api_get "${API}/actions/runs?status=${status}&per_page=100" "$mode" | jq -er '.total_count | if type == "number" and . >= 0 and floor == . then . else error("invalid count") end')" || return 1
     if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
       log "warning: invalid run count for status=$status"
       return 1
@@ -146,10 +216,10 @@ retire_idle_runners() {
     [ -n "$name" ] || continue
     [ "$stopped" -lt "$max_to_stop" ] || break
     printf '%s\n' "$containers" | grep -Fxq -- "$name" || continue
-    current_queue="$(queued_jobs)" || return 1
+    current_queue="$(queued_jobs uncached)" || return 1
     [ "$current_queue" -eq 0 ] || return 0
     # Check once more immediately before stopping; never stop a known busy runner.
-    still_idle="$(api_get "${API}/actions/runners?per_page=100" | jq -r --arg name "$name" '
+    still_idle="$(api_get "${API}/actions/runners?per_page=100" uncached | jq -r --arg name "$name" '
       .runners | if type != "array" then error("missing runners") else
         any(.[]; .name == $name and .status == "online" and .busy == false)
       end')" || return 1

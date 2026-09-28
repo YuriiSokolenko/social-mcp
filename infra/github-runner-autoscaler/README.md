@@ -6,6 +6,13 @@ It watches queued and pending runs across all repository workflows using one
 API request per status, and keeps up to `MAX_RUNNERS` ephemeral self-hosted runner containers alive. Each worker registers
 with GitHub using `--ephemeral`, accepts one job, and is removed after the job.
 
+The Pi and general managers share a short-lived cache for identical GitHub
+GET requests. When their polling cycles overlap, the first manager makes the
+request and the other reuses its response instead of issuing a duplicate.
+`API_CACHE_TTL_SECONDS` controls the cache lifetime (default 10 seconds). This
+reduces duplicate API traffic; GitHub still assigns jobs directly to individual
+online runners according to their labels.
+
 ## Security model
 
 The manager needs access to the Docker socket and a GitHub token capable of creating
