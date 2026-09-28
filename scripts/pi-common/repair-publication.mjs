@@ -24,7 +24,9 @@ export async function publishRepair({ prNumber, issue, cwd, headRef, expectedHea
   for (const p of ['.coverage','coverage.xml']) spawnSync('rm',['-f',p],{cwd});
   git(['config','user.name','social-mcp-pi'],{cwd}); git(['config','user.email','social-mcp-pi@users.noreply.github.com'],{cwd});
   git(['add','-A'],{cwd});
-  if (git(['diff','--cached','--quiet'],{cwd,allowFailure:true}).status === 0) throw new Error('No repair change produced');
+  if (git(['diff','--cached','--quiet'],{cwd,allowFailure:true}).status === 0) {
+    return { published:false, needsReview:true, reason:'already-fixed' };
+  }
   const changed = git(['diff','--cached','--name-only'],{cwd}).out.split(/\r?\n/).filter(Boolean);
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Refusing to publish protected control-plane files: ${forbidden.join(', ')}`);
@@ -32,7 +34,7 @@ export async function publishRepair({ prNumber, issue, cwd, headRef, expectedHea
   const remote = git(['ls-remote','origin',`refs/heads/${headRef}`],{cwd}).out.split(/\s+/)[0] ?? '';
   if (remote !== expectedHead) throw new Error('PR head moved; refusing stale push');
   git(['push',`--force-with-lease=refs/heads/${headRef}:${expectedHead}`,'origin',`HEAD:refs/heads/${headRef}`],{cwd,token});
-  return { published:true };
+  return { published:true, needsReview:true };
 }
 
 /**
