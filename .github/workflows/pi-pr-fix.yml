@@ -95,9 +95,10 @@ jobs:
         run: |
           RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/repair-publication.mjs" publish "$PR" "$ISSUE" "$JOB_DIR" "$HEAD_REF" "$HEAD_SHA")"
           echo "published=$(jq -r '.published' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "needs_review=$(jq -r '.needsReview // false' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
 
       - name: Start fresh review
-        if: steps.publish.outputs.published == 'true'
+        if: steps.publish.outputs.needs_review == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/repair-publication.mjs" review "$PR"
