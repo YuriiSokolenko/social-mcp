@@ -249,6 +249,23 @@ test('ceiling hits escalate even when the turn made no edit progress', () => {
   assert.equal(state.afterTurn(100).level, 'short');
 });
 
+test('elevated budget survives a short intermediate tool turn', () => {
+  const state = controller();
+  state.onTurnStart(0);
+  assert.equal(state.afterTurn(2048).level, 'normal');
+
+  state.onTurnStart(1);
+  assert.equal(state.checkToolCall('read', { path: 'examples/new.py' }), undefined);
+  const afterRead = state.afterTurn(347);
+  assert.equal(afterRead.level, 'normal');
+  assert.equal(afterRead.preservedForToolTurn, true);
+
+  state.onTurnStart(2);
+  const afterReasoning = state.afterTurn(347);
+  assert.equal(afterReasoning.level, 'short');
+  assert.equal(afterReasoning.preservedForToolTurn, false);
+});
+
 test('explicit response budget applies to one next response', () => {
   const state = controller();
   state.onTurnStart(0);
