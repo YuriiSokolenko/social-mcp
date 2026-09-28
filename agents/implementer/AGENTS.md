@@ -27,20 +27,18 @@ Never expose credentials or tokens, weaken authentication/authorization, commit 
 Follow this sequence exactly:
 
 1. Read this `agents/implementer/AGENTS.md`. This mandatory contract read is not part of the normal direct-read budget.
-2. Use the issue title/body already supplied in the prompt to identify acceptance criteria. Do not inspect repository files yet.
-3. Write one short top-level execution plan, at most **1000 output tokens**.
-   - Ordered concrete actions only.
-   - Do **not** assign complexity labels to plan items.
-   - Do not draft implementation code in prose.
-4. Call `classify_task_complexity` once with the short plan.
-   - The runtime delegates to the project `complexity-classifier` through pi-subagents structured delegation.
-   - The child has no repository tools; its single allowed tool call is reserved for the injected `structured_output` return path. It receives only the issue title/body plus the short plan.
-   - The runtime schema-validates `{ complexity, reason }`, records the complexity itself, and returns only that compact result.
-   - Do **not** call `subagents_enable`, `subagent`, or `declare_task_complexity` for task-level classification.
-5. Execute the first plan item.
+2. Use the issue title/body already supplied in the prompt as the authoritative requested outcome. Do not inspect repository files and do not write a competing execution plan.
+3. Call `prepare_implementation` exactly once.
+   - The runtime sends only issue title/body to the permanent project `implementation-planner` subagent.
+   - The planner starts with its own planning contract plus inherited skill guidance; its response ceiling is **480 output tokens**.
+   - The runtime schema-validates the ordered plan.
+   - The runtime then sends issue title/body plus that plan to the separate `complexity-classifier` and schema-validates `{ complexity, reason }`.
+   - The main agent receives only the prepared plan and complexity. Do not call either child manually and do not re-run task-level classification.
+4. Execute plan step 1 immediately.
 
-Do not modify repository files before step 5 completes.
+Do not modify repository files before step 4.
 
+The initial prompt already contains the relevant subagent catalog. Do not call `subagent(action:"list")`. If later delegation is actually needed and the generic tool is hidden, call `subagents_enable` once and then call the named agent directly.
 ## Repository access routing
 
 Use direct main-agent tools when the operation is cheaper than launching a child. Delegate exploration.
@@ -85,29 +83,28 @@ A second pre-edit scout is justified only if the first cannot produce a safe anc
 
 ## Ownership and execution
 
-Main always owns:
+The startup `implementation-planner` owns the top-level plan. The `complexity-classifier` owns the task-level classification. Main owns:
 
-- issue interpretation and acceptance criteria;
-- the execution plan;
-- implementation/architecture decisions;
+- issue acceptance as the authoritative goal;
+- executing and locally adapting prepared plan steps when repository evidence requires it;
+- implementation/architecture decisions discovered during execution;
 - `edit` / `write`;
 - conflict-resolution mutations;
 - `submit_result`.
 
-The runtime-owned `classify_task_complexity` action is the only task-level classification path. The `complexity-classifier` only classifies and has no repository tools; the runtime permits only its structured-result return call. `scout` only gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
+Do not discard and rewrite the whole prepared plan merely because a local detail changes. Delegate only the exploratory parts that would otherwise grow the main context.
+
+`scout` gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
 
 If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. Call `submit_result` with `already_satisfied: true` and `changes: []`.
 
 For a tiny task with a known target, prefer:
 
-`AGENTS.md → plan → classify_task_complexity → one bounded read → edit → bounded git diff → submit_result`
+`AGENTS.md → prepare_implementation → one bounded read → edit → bounded git diff → submit_result`
 
 If the target is unknown:
 
-`AGENTS.md → plan → classify_task_complexity → one compact edit-ready scout → edit → bounded git diff → submit_result`
-
-For normal/complex work, delegate only the exploratory parts that would otherwise grow the main context. Do not launch a subagent for a fact already present in the main context.
-
+`AGENTS.md → prepare_implementation → one compact edit-ready scout → edit → bounded git diff → submit_result`
 ## Validation and submission
 
 Do not run full pytest, full-repository Ruff, or CI/control-plane suites before submission as a ritual.
@@ -133,7 +130,7 @@ Every session starts at **SHORT (2048)**.
 
 Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Any response below its ceiling resets the following response to SHORT; a ceiling hit only promotes when that turn also made concrete action progress.
 
-Selected child agents mirror the main agent's current response ceiling.
+Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 480 output tokens.
 
 ## Engineering constraints
 
