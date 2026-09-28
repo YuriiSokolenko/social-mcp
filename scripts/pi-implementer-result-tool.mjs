@@ -8,7 +8,7 @@ import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
 export default function (pi) {
   registerTerminalTool(pi, {
     label: 'Sync, validate, and submit implementation result',
-    description: 'TERMINAL ACTION. Integrate latest dev and run the authoritative final validation. On failure, fix only the reported problem and retry.',
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. On failure, fix only the reported problem and retry.',
     parameters: Type.Object({
       title: Type.String(),
       summary: Type.String(),
@@ -18,7 +18,7 @@ export default function (pi) {
       limitations: Type.String(),
     }),
     customType: 'implementer-result',
-    nudgeText: 'Repository state is authoritative. If the exact requested end state already exists in latest dev, do not duplicate it or deliberate further. Call submit_result immediately with already_satisfied: true and changes: []. Otherwise implement the smallest real diff, then call submit_result.',
+    nudgeText: 'Repository state is authoritative. Resumed checkpoint/worktree changes are local in-progress work, not evidence about latest dev. submit_result preserves current changes and merges latest dev into them; it does not reset them away. If the exact requested end state exists in latest dev, call submit_result immediately with already_satisfied: true and changes: []. Otherwise implement or validate the smallest real diff, then call submit_result.',
     successText: 'SUCCESS. Latest dev is integrated and final checks pass. Implementation result recorded. Stop now.',
     execute: async (params) => {
       integrateLatestDev({
