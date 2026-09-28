@@ -93,8 +93,7 @@ jobs:
           fi
 
       - name: Validate and start selected issues
-        if: vars.PI_AUTOMATION_MODE == 'RUNNING'
-        if: steps.prepare.outputs.run == 'true'
+        if: vars.PI_AUTOMATION_MODE == 'RUNNING' && steps.prepare.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-dispatcher.mjs" apply "$RUNNER_TEMP/pi-dispatcher-result.jsonl"

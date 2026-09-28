@@ -95,9 +95,11 @@ test('architect and reconciler contain no removed terminal-state machinery', () 
 
 
 
-test('reconciler never owns merge-gate wakeups', () => {
+test('reconciler may recover a lost PASS-to-merge-gate handoff without becoming the normal scheduler', () => {
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.doesNotMatch(reconcile, /pi-auto-merge\.yml|mergeGateWakeNeeded|gateAlreadyLive/);
+  assert.match(reconcile, /passed-pr-needs-merge-gate/);
+  assert.match(reconcile, /tryDispatchWorkflow\('pi-auto-merge\.yml'/);
+  assert.match(reconcile, /RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
 });
 
 

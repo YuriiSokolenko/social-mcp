@@ -7,6 +7,7 @@ test('global turn ceiling is independent of task complexity', () => {
   const guard = new LoopGuard({ turnLimit: 3, repeatThreshold: 10, requireComplexity: true });
   guard.setComplexity('trivial');
   assert.equal(guard.checkToolCall('edit', { path: 'a' }), undefined);
+  guard.onToolExecutionEnd('edit', false);
   guard.onTurnStart(2);
   assert.equal(guard.checkToolCall('read', { path: 'b' }), undefined);
   guard.onTurnStart(3);
@@ -92,7 +93,7 @@ test('required complexity makes the first post-plan tool call an edit', () => {
   ]) {
     const blocked = guard.checkToolCall(toolName, input);
     assert.equal(blocked.block, true);
-    assert.match(blocked.reason, /next tool call must make the first repository edit/);
+    assert.match(blocked.reason, /next tool call must make the first successful repository edit/);
   }
   assert.equal(guard.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   assert.equal(guard.checkToolCall('read', { path: 'src/c.py' }).block, true);
@@ -115,6 +116,7 @@ test('complexity does not impose quotas after implementation starts', () => {
   guard.setComplexity('trivial');
   guard.onTurnStart(1);
   assert.equal(guard.checkToolCall('edit', { path: 'file-0' }), undefined);
+  guard.onToolExecutionEnd('edit', false);
   for (let i = 0; i < 20; i += 1) {
     assert.equal(guard.checkToolCall('read', { path: `file-${i}` }), undefined);
   }
