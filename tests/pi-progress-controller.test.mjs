@@ -12,7 +12,7 @@ import {
   nextResponseBudgetLevel,
   toolCallSignature,
 } from '../scripts/pi-common/progress-controller.mjs';
-import { trivialRepoLookup } from '../scripts/pi-agent-runtime.mjs';
+import { trivialRepoLookup } from '../scripts/pi-common/trivial-repo-lookup.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
 import subagentResponseBudget from '../scripts/pi-subagent-response-budget.mjs';
 
