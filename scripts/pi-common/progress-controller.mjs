@@ -64,11 +64,11 @@ export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
 }
 
-export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS) {
+export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, madeProgress = true) {
   const ceiling = budgets[currentLevel];
   if (!ceiling) throw new Error(`Unknown response budget: ${currentLevel}`);
   if (!Number.isFinite(outputTokens) || outputTokens < 0) throw new Error('outputTokens must be a non-negative number');
-  if (outputTokens < ceiling) return 'short';
+  if (outputTokens < ceiling || !madeProgress) return 'short';
   if (currentLevel === 'short') return 'normal';
   if (currentLevel === 'normal') return 'deep';
   return 'short';
@@ -84,6 +84,11 @@ export class ProgressController {
       env.PI_PRE_COMPLEXITY_ALLOWED_TOOLS != null
         ? env.PI_PRE_COMPLEXITY_ALLOWED_TOOLS.split(',').map(x => x.trim()).filter(Boolean)
         : (config.preComplexityAllowedTools ?? []),
+    );
+    this.preComplexityTransitionTools = new Set(
+      env.PI_PRE_COMPLEXITY_TRANSITION_TOOLS != null
+        ? env.PI_PRE_COMPLEXITY_TRANSITION_TOOLS.split(',').map(x => x.trim()).filter(Boolean)
+        : (config.preComplexityTransitionTools ?? []),
     );
     this.requiredFirstReadPath = env.PI_REQUIRED_FIRST_READ_PATH || config.requiredFirstReadPath || null;
     this.requiredFirstReadDone = !this.requiredFirstReadPath;
@@ -159,13 +164,25 @@ export class ProgressController {
       return undefined;
     }
 
+    const pendingComplexityTransition =
+      this.requireComplexity &&
+      !this.complexity &&
+      this.preComplexityTransitionTools.has(toolName);
+    const finishTool = FINISH_TOOLS.has(toolName);
+
     if (this.requireComplexity && !this.complexity) {
       const preComplexityTurns = Math.max(0, this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn));
-      if (preComplexityTurns >= this.preComplexityTurnLimit) {
-        return { block: true, reason: `Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Finish the configured preparation/classification action now.` };
+      if (preComplexityTurns >= this.preComplexityTurnLimit && !pendingComplexityTransition && !finishTool) {
+        return {
+          block: true,
+          reason: `BLOCKED: ${toolName} did not execute. Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Use only the configured preparation/classification action or terminal submit tool now.`,
+        };
       }
-      if (!this.preComplexityAllowedTools.has(toolName)) {
-        return { block: true, reason: 'Before complexity is recorded, finish the required orientation and use only the configured complexity action.' };
+      if (!pendingComplexityTransition && !finishTool && !this.preComplexityAllowedTools.has(toolName)) {
+        return {
+          block: true,
+          reason: `BLOCKED: ${toolName} did not execute. Before complexity is recorded, use only initial-orientation tools, the configured preparation/classification action, or the terminal submit tool.`,
+        };
       }
     }
 
@@ -188,8 +205,11 @@ export class ProgressController {
       return { block: true, reason: `The main agent must not use ${toolName} directly. Delegate repository inspection, search, diagnostics, and verification through ${this.delegationTool}.` };
     }
 
-    if (this.absoluteTurn >= this.turnLimit && !FINISH_TOOLS.has(toolName)) {
-      return { block: true, reason: `Global execution limit reached (${this.turnLimit} turns). Exploration is closed; use only edit/write and the terminal submit tool to finish.` };
+    if (this.absoluteTurn >= this.turnLimit && !finishTool && !pendingComplexityTransition) {
+      return {
+        block: true,
+        reason: `BLOCKED: ${toolName} did not execute. Global execution limit reached (${this.turnLimit} turns). Exploration is closed; use only the pending preparation/classification action or terminal submit tool to finish.`,
+      };
     }
 
     const signature = toolCallSignature(toolName, input);
@@ -207,7 +227,9 @@ export class ProgressController {
 
   onToolExecutionEnd(toolName, isError) {
     if (toolName === 'read' && isError && this.directReadCount > 0) this.directReadCount -= 1;
-    if (!isError && PROGRESS_TOOLS.has(toolName)) this.turnMadeProgress = true;
+    if (!isError && (PROGRESS_TOOLS.has(toolName) || this.preComplexityTransitionTools.has(toolName))) {
+      this.turnMadeProgress = true;
+    }
   }
 
   currentMaxTokens() {
@@ -239,7 +261,7 @@ export class ProgressController {
       this.turnUsedTool;
     const next = preserveElevatedToolTurn
       ? this.turnLevel
-      : nextResponseBudgetLevel(this.turnLevel, outputTokens, this.budgets);
+      : nextResponseBudgetLevel(this.turnLevel, outputTokens, this.budgets, this.turnMadeProgress);
     this.level = next;
     return {
       changed: next !== this.turnLevel,
