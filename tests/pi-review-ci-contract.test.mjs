@@ -512,7 +512,7 @@ test('implementer prepares plan and complexity before tiny known-path work', () 
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const classifier = fs.readFileSync('.pi/agents/complexity-classifier.md', 'utf8');
 
-  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 480[\s\S]*complexityClassifierAgent: 'complexity-classifier'[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
+  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*complexityClassifierAgent: 'complexity-classifier'[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
   assert.match(config, /directReadMaxLines: 200[\s\S]*directReadCalls: 1[\s\S]*boundedDirectBash: true/);
 
@@ -545,7 +545,7 @@ test('implementer prepares plan and complexity before tiny known-path work', () 
   assert.match(classifier, /trivial[\s\S]*normal[\s\S]*complex/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 480[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /result: \{ kind: 'structured', schema \}/);
   assert.doesNotMatch(agent, /call `subagent` with `agent: "complexity-classifier"`/);

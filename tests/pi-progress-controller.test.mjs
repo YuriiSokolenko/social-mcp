@@ -78,9 +78,9 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /prompt-template:subagent:response/);
   assert.match(runtime, /name: 'prepare_implementation'/);
   assert.match(runtime, /IMPLEMENTATION_PLAN_SCHEMA/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 480/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768/);
   assert.match(runtime, /runStructuredImplementationPlanner[\s\S]*runStructuredComplexityClassifier/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 480[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
   assert.match(planner, /inheritSkills: true/);
@@ -231,7 +231,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   for (const name of ['reviewer', 'repair']) assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
   assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['prepare_implementation']);
   assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
-  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 480);
+  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 768);
   assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 120000);
   assert.equal(stageConfig('implementer').complexityClassifierAgent, 'complexity-classifier');
   assert.equal(stageConfig('implementer').complexityClassifierTimeoutMs, 120000);
@@ -270,7 +270,7 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('implementer', env), /prepare_implementation[\s\S]*implementation-planner[\s\S]*complexity-classifier/);
     assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
     assert.match(stagePrompt('implementer', env), /do not call subagent\(action:"list"\)/i);
-    assert.match(stagePrompt('implementer', env), /480 max output tokens/);
+    assert.match(stagePrompt('implementer', env), /768 max output tokens/);
     assert.match(stagePrompt('implementer', env), /limit <= 200/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
