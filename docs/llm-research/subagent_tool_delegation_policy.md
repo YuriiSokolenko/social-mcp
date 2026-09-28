@@ -18,10 +18,11 @@ Task-level complexity is delegated before repository inspection.
 
 - Main reads `agents/implementer/AGENTS.md`, derives acceptance criteria from the supplied issue, and writes a short plan.
 - Main activates `pi-subagents` if needed.
-- A project `complexity-classifier` child receives only the issue title/body plus the short plan.
+- Main calls one runtime-owned `classify_task_complexity` action with only its short plan.
+- Runtime invokes the project `complexity-classifier` through pi-subagents structured delegation; the child receives only the issue title/body plus that plan.
 - The classifier has no tools, no inherited project/global context, and no skills catalog.
 - It returns exactly `trivial|normal|complex` plus one short reason.
-- Main records that result through `declare_task_complexity` without re-arguing it.
+- Runtime schema-validates `{ complexity, reason }` and records the result directly; raw child output never enters the main context.
 
 The classifier rubric lives in `.pi/agents/complexity-classifier.md`, so the main Implementer prompt does not carry the detailed rubric.
 
@@ -83,7 +84,7 @@ Main retains:
 For Implementer:
 
 - mandatory first read remains `agents/implementer/AGENTS.md`;
-- before `declare_task_complexity`, runtime allows only `subagents_enable` and the `complexity-classifier` subagent;
+- before complexity is recorded, runtime allows only `classify_task_complexity`; direct `subagents_enable` / `subagent` classification is not exposed to main;
 - a failed classifier may be retried; a successful classification is single-shot;
 - after declaration, one bounded direct file read is allowed;
 - direct shell access is restricted to bounded one-path Git diff/status commands;
@@ -110,8 +111,8 @@ Known target:
 AGENTS.md
   -> issue acceptance criteria
   -> short plan
-  -> complexity-classifier
-  -> declare_task_complexity
+  -> classify_task_complexity
+     -> runtime structured complexity-classifier
   -> one bounded direct read
   -> edit/write
   -> bounded direct git diff
@@ -124,8 +125,8 @@ Unknown target:
 AGENTS.md
   -> issue acceptance criteria
   -> short plan
-  -> complexity-classifier
-  -> declare_task_complexity
+  -> classify_task_complexity
+     -> runtime structured complexity-classifier
   -> compact scout exploration
   -> edit/write
   -> bounded direct git diff
