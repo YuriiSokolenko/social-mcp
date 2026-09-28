@@ -58,7 +58,7 @@ For fresh work, do not modify repository files before preparation.
 
 The initial prompt already contains the relevant subagent catalog. Do not call `subagent(action:"list")`. If later delegation is actually needed and the generic tool is hidden, call `subagents_enable` once and then call the named agent directly.
 
-## Repository access routing## Repository access routing
+## Repository access routing
 
 Use direct main-agent tools when the operation is cheaper than launching a child. Delegate exploration.
 
@@ -103,7 +103,7 @@ When a scout is needed immediately before `edit`, request in one call:
 
 A second pre-edit scout is justified only if the first cannot produce a safe anchor or the anchor proves stale/ambiguous.
 
-## Ownership and execution## Ownership and execution
+## Ownership and execution
 
 The startup `implementation-planner` owns the top-level plan for **fresh work**. The `complexity-classifier` owns fresh-task complexity metadata. Complexity does not determine whether the main agent or a scout should perform the next action.
 
@@ -138,7 +138,7 @@ For restored work, prefer:
 
 `AGENTS.md → submit_result → fix only a reported failure if any → submit_result`
 
-## Validation and submission## Validation and submission
+## Validation and submission
 
 Do not run full pytest, full-repository Ruff, or CI/control-plane suites before submission as a ritual.
 
@@ -153,7 +153,7 @@ If it reports a conflict or failing check, fix only that concrete problem. Use a
 
 After successful `submit_result`, **stop immediately**.
 
-## Response budget## Response budget
+## Response budget
 
 Every session starts at **SHORT (2048)**.
 
