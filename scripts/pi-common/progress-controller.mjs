@@ -17,20 +17,28 @@ export function isBoundedDirectBash(command) {
 
   if (parts[0] !== 'git') return false;
 
-  if (parts[1] === 'diff') {
+  let index = 1;
+  if (parts[index] === '-C') {
+    if (!safePathToken(parts[index + 1])) return false;
+    index += 2;
+  }
+  if (parts[index] === '--no-pager') index += 1;
+
+  const commandName = parts[index];
+  if (commandName === 'diff') {
     const separator = parts.lastIndexOf('--');
-    if (separator < 2 || separator !== parts.length - 2 || !safePathToken(parts[separator + 1])) return false;
+    if (separator <= index || separator !== parts.length - 2 || !safePathToken(parts[separator + 1])) return false;
     const allowed = new Set(['--check', '--name-only', '--stat', '--numstat', '--cached', '--staged']);
-    return parts.slice(2, separator).every(part =>
+    return parts.slice(index + 1, separator).every(part =>
       allowed.has(part) || /^-U\d+$/.test(part) || /^--unified=\d+$/.test(part)
     );
   }
 
-  if (parts[1] === 'status') {
-    return parts.length === 5 &&
-      (parts[2] === '--short' || parts[2] === '--porcelain') &&
-      parts[3] === '--' &&
-      safePathToken(parts[4]);
+  if (commandName === 'status') {
+    return parts.length === index + 4 &&
+      (parts[index + 1] === '--short' || parts[index + 1] === '--porcelain') &&
+      parts[index + 2] === '--' &&
+      safePathToken(parts[index + 3]);
   }
 
   return false;
@@ -142,7 +150,7 @@ export class ProgressController {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const allowed = toolName === 'read' &&
         (requestedPath === this.requiredFirstReadPath || requestedPath.endsWith(`/${this.requiredFirstReadPath}`));
-      if (!allowed) return { block: true, reason: `First read the required operating contract: ${this.requiredFirstReadPath}` };
+      if (!allowed) return { block: true, reason: `First action must be read(path: "${this.requiredFirstReadPath}"). The path is exact and already known; do not search, list directories, inspect package docs, or guess another path.` };
       this.requiredFirstReadDone = true;
       this.complexityTurnBase = this.absoluteTurn;
       return undefined;
