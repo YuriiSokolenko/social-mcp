@@ -47,7 +47,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 - **One already-known small file:** call `read` once with an explicit `limit <= 200`. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result.
 - **One known-path diff/status check:** use a bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`.
-- **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may use exactly one direct `grep`, `find`, or `ls` call to locate the first sufficient target when the path is unknown. Do not enable subagents for this lookup.
+- **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first sufficient tracked-file target and optionally check exact-text idempotency. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
 - `submit_result`.
 
@@ -55,16 +55,16 @@ Do not use repeated guessed reads as a substitute for search. If the first bound
 
 ### Delegate
 
-Use `scout` with `async: false` when any of these are true (except the single direct lookup allowed for a `trivial` task):
+Use `scout` with `async: false` when any of these are true (except the single `trivial_repo_lookup` allowed for a `trivial` task):
 
-- the target path, symbol, test, config, or pattern is unknown after the trivial direct lookup, or the task is not `trivial`;
+- the target path, symbol, test, config, or pattern is unknown after `trivial_repo_lookup`, or the task is not `trivial`;
 - more than one repository file must be inspected or compared;
 - usages/similar implementations must be searched;
 - logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
 - expected output is larger than a small bounded read/diff;
 - a skill or project document must be searched for relevant rules.
 
-Outside the one trivial direct lookup, `grep`, `find`, and `ls` are runtime-blocked in the main agent. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
+`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `trivial_repo_lookup` for the one cheap trivial lookup. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
 
 For scout requests:
 
@@ -105,7 +105,7 @@ For a tiny task with a known target, prefer:
 
 If the target is unknown and complexity is `trivial`:
 
-`AGENTS.md → prepare_implementation → one direct grep/find/ls → one bounded read if needed → edit → bounded git diff → submit_result`
+`AGENTS.md → prepare_implementation → trivial_repo_lookup → one bounded read if needed → edit → bounded git diff → submit_result`
 
 If the target is unknown and complexity is `normal` or `complex`:
 
