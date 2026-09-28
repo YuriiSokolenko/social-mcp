@@ -20,7 +20,7 @@ Task-level complexity is delegated before repository inspection.
 - Main activates `pi-subagents` if needed.
 - Main calls one runtime-owned `classify_task_complexity` action with only its short plan.
 - Runtime invokes the project `complexity-classifier` through pi-subagents structured delegation; the child receives only the issue title/body plus that plan.
-- The classifier has no tools, no inherited project/global context, and no skills catalog.
+- The classifier has no repository tools, no inherited project/global context, and no skills catalog. Runtime gives it one tool call solely so the injected `structured_output` return path can complete.
 - It returns exactly `trivial|normal|complex` plus one short reason.
 - Runtime schema-validates `{ complexity, reason }` and records the result directly; raw child output never enters the main context.
 
