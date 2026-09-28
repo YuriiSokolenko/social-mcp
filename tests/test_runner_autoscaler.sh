@@ -29,12 +29,12 @@ run_with_timeout 5 true || fail 'run_with_timeout must succeed for a command wel
 
 api_get() {
   case "$1" in
-    *first.yml*status=pending*) if [[ "${FIRST_PENDING_RESPONSE+x}" ]]; then printf '%s' "$FIRST_PENDING_RESPONSE"; else printf '%s' '{"total_count":1}'; fi ;;
-    *second.yml*status=pending*) if [[ "${SECOND_PENDING_RESPONSE+x}" ]]; then printf '%s' "$SECOND_PENDING_RESPONSE"; else printf '%s' '{"total_count":0}'; fi ;;
-    *first.yml*) if [[ "${FIRST_RESPONSE+x}" ]]; then printf '%s' "$FIRST_RESPONSE"; else printf '%s' '{"total_count":2}'; fi ;;
-    *second.yml*)
-      if [[ "${SECOND_FAIL:-0}" == 1 ]]; then return 22; fi
-      if [[ "${SECOND_RESPONSE+x}" ]]; then printf '%s' "$SECOND_RESPONSE"; else printf '%s' '{"total_count":1}'; fi ;;
+    *'/actions/runs?status=queued'*)
+      if [[ "${QUEUED_FAIL:-0}" == 1 ]]; then return 22; fi
+      if [[ "${QUEUED_RESPONSE+x}" ]]; then printf '%s' "$QUEUED_RESPONSE"; else printf '%s' '{"total_count":0,"workflow_runs":[]}'; fi ;;
+    *'/actions/runs?status=pending'*)
+      if [[ "${PENDING_FAIL:-0}" == 1 ]]; then return 22; fi
+      if [[ "${PENDING_RESPONSE+x}" ]]; then printf '%s' "$PENDING_RESPONSE"; else printf '%s' '{"total_count":0,"workflow_runs":[]}'; fi ;;
     */actions/runners?*) if [[ "${RUNNERS_RESPONSE+x}" ]]; then printf '%s' "$RUNNERS_RESPONSE"; else printf '%s' '{"runners":[]}'; fi ;;
     *) fail "unexpected API request: $1" ;;
   esac
@@ -58,26 +58,31 @@ curl() {
 }
 
 WORKFLOW_FILES=first.yml,second.yml
-[[ "$(queued_jobs)" == 4 ]] || fail 'queued and pending run counts'
+QUEUED_RESPONSE='{"total_count":2,"workflow_runs":[{"path":".github/workflows/first.yml"},{"path":".github/workflows/second.yml"}]}'
+PENDING_RESPONSE='{"total_count":2,"workflow_runs":[{"path":".github/workflows/first.yml"},{"path":".github/workflows/third.yml"}]}'
+[[ "$(queued_jobs)" == 3 ]] || fail 'queued and pending run counts, filtered to watched workflow files'
 
-SECOND_FAIL=1
+PENDING_FAIL=1
 assert_failure queued_jobs
-unset SECOND_FAIL
+unset PENDING_FAIL
 
 for invalid in 'null' '"abc"' '-1' '1.5' '"3"'; do
-  SECOND_RESPONSE="{\"total_count\":$invalid}"
+  PENDING_RESPONSE="{\"total_count\":$invalid,\"workflow_runs\":[]}"
   assert_failure queued_jobs
 done
-SECOND_RESPONSE=''
-unset SECOND_RESPONSE
+PENDING_RESPONSE=''
+unset PENDING_RESPONSE
 
-SECOND_PENDING_RESPONSE='{"total_count":"1"}'
+# total_count greater than the returned page means a truncated result --
+# must fail rather than silently under-count.
+QUEUED_RESPONSE='{"total_count":5,"workflow_runs":[{"path":".github/workflows/first.yml"}]}'
 assert_failure queued_jobs
-unset SECOND_PENDING_RESPONSE
+QUEUED_RESPONSE=''
+unset QUEUED_RESPONSE
 
-FIRST_RESPONSE=''
+QUEUED_RESPONSE='{"total_count":0}'
 assert_failure queued_jobs
-unset FIRST_RESPONSE
+unset QUEUED_RESPONSE
 
 CONTAINER_NAMES=$'n150-pi-eph-10\nother-manager-11'
 [[ "$(active_containers)" == 1 ]] || fail 'container counting must use runner prefix'
@@ -90,13 +95,13 @@ cleanup_stale_registrations
 
 RUNNERS_RESPONSE='{"runners":null}'
 assert_failure cleanup_stale_registrations
-[[ "$(wc -l < "$DELETED_IDS")" == 1 ]] || fail 'invalid runner list caused deletion'
+[[ "$(grep -c '' "$DELETED_IDS")" == 1 ]] || fail 'invalid runner list caused deletion'
 
 RUNNERS_RESPONSE='{"runners":[{"id":13,"name":"n150-pi-eph-13","status":"offline"}]}'
 DOCKER_FAIL=1
 assert_failure cleanup_stale_registrations
 assert_failure active_containers
-[[ "$(wc -l < "$DELETED_IDS")" == 1 ]] || fail 'Docker failure caused deletion'
+[[ "$(grep -c '' "$DELETED_IDS")" == 1 ]] || fail 'Docker failure caused deletion'
 unset DOCKER_FAIL
 
 MODEL_STATUS_URL='http://model:3009/slots'
@@ -126,17 +131,42 @@ STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":false},{
   api_get() {
     printf '%s' '{"runners":[{"name":"n150-pi-eph-busy","status":"online","busy":true},{"name":"n150-pi-eph-idle","status":"online","busy":false},{"name":"other-manager","status":"online","busy":false}]}'
   }
-  docker() {
+  # Stub run_with_timeout itself (its own mechanics are covered by the
+  # dedicated tests above) rather than docker -- letting the real
+  # run_with_timeout background a stub docker function inside this already-
+  # nested test subshell has triggered spurious early exits in this harness
+  # before; this sidesteps that entirely.
+  run_with_timeout() {
+    shift
     case "$1" in
-      ps) printf '%s\n' 'n150-pi-eph-busy' 'n150-pi-eph-idle' ;;
-      stop) printf '%s\n' "$2" >> "$STOPPED_NAMES" ;;
-      *) fail "unexpected Docker command: $1" ;;
+      docker)
+        case "$2" in
+          ps) printf '%s\n' 'n150-pi-eph-busy' 'n150-pi-eph-idle' ;;
+          stop) printf '%s\n' "$3" >> "$STOPPED_NAMES" ;;
+          *) fail "unexpected docker subcommand: $2" ;;
+        esac
+        ;;
+      *) fail "unexpected run_with_timeout target: $1" ;;
     esac
   }
-  sleep() { exit 0; }
+  # retire_idle_runners now debounces across two consecutive polls (a runner
+  # can look idle for one snapshot right as GitHub assigns it a job); run
+  # main through two iterations and confirm nothing was stopped after the
+  # first one, only after the second.
+  polls=0
+  sleep() {
+    polls=$((polls + 1))
+    if [[ "$polls" -eq 1 ]] && [[ -s "$STOPPED_NAMES" ]]; then
+      fail 'idle runner stopped on the first poll, before the debounce confirms it'
+    fi
+    if [[ "$polls" -ge 2 ]]; then
+      exit 0
+    fi
+    return 0
+  }
   main > "$STATUS_LOG"
 )
-[[ "$(cat "$STOPPED_NAMES")" == 'n150-pi-eph-idle' ]] || fail 'only the surplus idle runner may be stopped'
+[[ "$(cat "$STOPPED_NAMES")" == 'n150-pi-eph-idle' ]] || fail 'idle runner must be stopped once confirmed idle on two consecutive polls'
 grep -q 'model_slots_total=4 model_slots_busy=3 model_capacity=0' "$STATUS_LOG" || fail 'log must report total and busy slots even without queued jobs'
 
 STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"id":2,"is_processing":true},{"id":3,"is_processing":true}]'
@@ -184,13 +214,13 @@ STATUS_RESPONSE=$'vllm:num_requests_waiting{model_name="a"} 0\nvllm:num_requests
 STATUS_RESPONSE='vllm:num_requests_running 0'
 assert_failure model_start_capacity 0
 
-SECOND_FAIL=1
+QUEUED_FAIL=1
 (
   spawn_runner() { fail 'spawned a runner after API failure'; }
   sleep() { exit 0; }
   main >/dev/null
 )
-unset SECOND_FAIL
+unset QUEUED_FAIL
 
 DOCKER_RUN_LOG="$(mktemp)"
 trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG" "$DOCKER_RUN_LOG"' EXIT
