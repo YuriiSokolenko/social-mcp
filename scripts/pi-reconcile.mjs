@@ -76,7 +76,9 @@ for (const issue of issues) {
 
   if (apply) {
     const lostOwner = findings.some(item =>
-      item.code === 'orphaned-implementer-state' || item.code === 'orphaned-architect-state');
+      item.code === 'orphaned-implementer-state' ||
+      item.code === 'orphaned-architect-state' ||
+      item.code === 'mr-label-without-open-pr');
     if (lostOwner || strandedReady) {
       const target = issueRecoveryTarget(issue, {
         hasOpenPiPr: openPiPrIssues.has(issue.number),

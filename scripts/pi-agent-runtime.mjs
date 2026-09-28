@@ -246,7 +246,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'prepare_implementation',
       label: 'Prepare implementation',
-      description: 'Run the runtime-owned implementation planner and then the complexity classifier. Call exactly once after reading the operating contract; do not write a competing plan in the main agent.',
+      description: 'Run the runtime-owned implementation planner and then the complexity classifier. Call exactly once as the first startup tool after the operating contract is loaded in the initial prompt; do not write a competing plan in the main agent.',
       parameters: Type.Object({}),
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
         const plan = await runStructuredImplementationPlanner(pi, ctx, config, signal);
@@ -263,7 +263,7 @@ export default function (pi) {
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nPreparation complete. Continue according to agents/implementer/AGENTS.md. Complexity is metadata and does not by itself require delegation.`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nPreparation complete. Continue according to the loaded Implementer contract. Complexity is metadata and does not by itself require delegation.`,
           }],
           details: {
             ...result,

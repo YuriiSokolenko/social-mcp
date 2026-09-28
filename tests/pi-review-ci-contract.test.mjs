@@ -469,9 +469,14 @@ test('stage runner wires the shared safety/runtime extensions once for all agent
 
 test('stage configuration is the single source of per-agent runtime limits', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
-  for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
+  for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair']) {
     assert.match(config, new RegExp(`${name}:[\\s\\S]*requiredFirstReadPath`));
   }
+  const implementerBlock = config.slice(
+    config.indexOf('  implementer:'),
+    config.indexOf('\n  },\n});', config.indexOf('  implementer:')),
+  );
+  assert.doesNotMatch(implementerBlock, /requiredFirstReadPath/);
   assert.match(config, /dispatcher:[\s\S]*maxTurns: 30/);
   assert.match(config, /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
 });
@@ -523,14 +528,15 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
   assert.match(config, /directReadMaxLines: 200[\s\S]*directReadCalls: 1[\s\S]*boundedDirectBash: true/);
 
-  assert.match(agent, /### Restored work[\s\S]*Call \`submit_result\` immediately[\s\S]*Do \*\*not\*\* call \`prepare_implementation\`/);
+  assert.match(agent, /### Restored work[\s\S]*Call \`submit_result\` with no arguments immediately[\s\S]*Do \*\*not\*\* call \`prepare_implementation\`/);
+  assert.match(agent, /contract is embedded verbatim[\s\S]*Do not search for or re-read this file/i);
   assert.match(agent, /Restored work is never \`already_satisfied\`/);
   assert.match(agent, /### Fresh work[\s\S]*Use the issue title\/body already supplied in the prompt[\s\S]*Call \`prepare_implementation\` exactly once/);
   assert.match(agent, /Task complexity alone never requires delegation/);
   assert.match(agent, /submit_result[\s\S]*both validation and submission/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
-  assert.match(runtime, /Preparation complete\. Continue according to agents\/implementer\/AGENTS\.md/);
+  assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
 
   assert.match(agent, /do not write a competing execution plan/i);
   assert.match(agent, /one already-known small file/i);
@@ -569,10 +575,11 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
 
-  assert.match(config, /Read and follow agents\/implementer\/AGENTS\.md first/);
+  assert.match(config, /complete Implementer operating contract is embedded below/);
+  assert.doesNotMatch(config, /Read and follow agents\/implementer\/AGENTS\.md first/);
   assert.doesNotMatch(tool, /If there is no real diff, implement the task/);
   assert.match(tool, /already_satisfied/);
-  assert.match(tool, /diff', '--quiet', 'origin\/dev'/);
+  assert.match(tool, /diff', '--name-only', 'origin\/dev', 'HEAD'/);
   assert.match(tool, /already_satisfied requires zero diff against latest dev/);
   assert.match(workflow, /\.already_satisfied \/\/ false/);
   assert.match(workflow, /issue satisfied/);

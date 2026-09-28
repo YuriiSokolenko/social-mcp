@@ -2,6 +2,8 @@
 
 You implement one GitHub issue in the Social MCP product repository.
 
+This contract is embedded verbatim in the initial Implementer prompt. Do not search for or re-read this file; begin directly with the startup action for the selected path.
+
 ## Goal
 
 Make the smallest complete product change that satisfies the issue. Keep execution decisions, mutations, and terminal submission in the main agent. The startup planner owns the top-level plan for fresh work; restored work is validated before any replanning. Use later subagents only where they reduce genuinely necessary exploratory context.
@@ -30,8 +32,8 @@ Choose the path from the initial prompt.
 
 If the initial prompt says saved checkpoint or issue-branch changes were replayed into the worktree:
 
-1. Read this `agents/implementer/AGENTS.md`.
-2. Call `submit_result` immediately. Do **not** call `prepare_implementation`, inspect repository files, or prove the restored implementation correct first.
+1. Call `submit_result` with no arguments immediately. Runtime derives publication metadata from the trusted issue context and validated diff.
+2. Do **not** call `prepare_implementation`, inspect repository files, summarize restored changes, or prove the restored implementation correct first.
 3. If `submit_result` reports a concrete conflict or failing check, fix only that reported problem and retry `submit_result`. Delegate only when the failure does not contain enough evidence to make the next safe change.
 
 Restored work is never `already_satisfied`. That flag is reserved for an end state that already exists in latest `dev`.
@@ -42,15 +44,14 @@ Restored work is never `already_satisfied`. That flag is reserved for an end sta
 
 Follow this sequence:
 
-1. Read this `agents/implementer/AGENTS.md`. This mandatory contract read is not part of the normal direct-read budget.
-2. Use the issue title/body already supplied in the prompt as the authoritative requested outcome. Do not inspect repository files and do not write a competing execution plan.
-3. Call `prepare_implementation` exactly once.
+1. Use the issue title/body already supplied in the prompt as the authoritative requested outcome. Do not inspect repository files and do not write a competing execution plan.
+2. Call `prepare_implementation` exactly once as the first tool action.
    - The runtime sends only issue title/body to the permanent project `implementation-planner` subagent.
    - The planner starts with its own planning contract plus inherited skill guidance; its response ceiling is **768 output tokens**.
    - The runtime schema-validates the ordered plan.
    - The runtime then sends issue title/body plus that plan to the separate `complexity-classifier` and schema-validates `{ complexity, reason }`.
    - The main agent receives only the prepared plan and complexity. Do not call either child manually and do not re-run task-level classification.
-4. Execute the first prepared plan step unless existing evidence already gives a more direct next action.
+3. Execute the first prepared plan step unless existing evidence already gives a more direct next action.
 
 Once the next repository mutation is known and enough evidence exists, call `edit` or `write` immediately. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a bounded read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
 
@@ -124,19 +125,19 @@ If evidence shows the **exact requested end state already exists in latest dev**
 
 For fresh work with a known target, prefer:
 
-`AGENTS.md → prepare_implementation → one bounded read if needed → edit/write → submit_result`
+`loaded contract → prepare_implementation → one bounded read if needed → edit/write → submit_result`
 
 If a fresh trivial task has an unknown target:
 
-`AGENTS.md → prepare_implementation → trivial_repo_lookup → one bounded read if needed → edit/write → submit_result`
+`loaded contract → prepare_implementation → trivial_repo_lookup → one bounded read if needed → edit/write → submit_result`
 
 If the next safe action is genuinely unknown:
 
-`AGENTS.md → prepare_implementation → one compact evidence-gathering scout → edit/write → submit_result`
+`loaded contract → prepare_implementation → one compact evidence-gathering scout → edit/write → submit_result`
 
 For restored work, prefer:
 
-`AGENTS.md → submit_result → fix only a reported failure if any → submit_result`
+`loaded contract → submit_result → fix only a reported failure if any → submit_result`
 
 ## Validation and submission
 
@@ -150,6 +151,8 @@ Do not run full pytest, full-repository Ruff, or CI/control-plane suites before 
 - runs `ruff check .`.
 
 If it reports a conflict or failing check, fix only that concrete problem. Use a focused delegated check only when the failure itself does not provide enough evidence for the next safe change, then retry `submit_result`.
+
+For restored work, the first call is `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields after validation. Fresh work continues to provide normal result metadata.
 
 After successful `submit_result`, **stop immediately**.
 

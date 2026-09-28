@@ -87,7 +87,7 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
-  assert.match(runtime, /Preparation complete\. Continue according to agents\/implementer\/AGENTS\.md/);
+  assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
   assert.match(runtime, /origin\/dev only/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /do not classify complexity/i);
@@ -342,8 +342,11 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
     assert.match(stageConfig(name).resultTool, /-result-tool\.mjs$/);
+  }
+  for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair']) {
     assert.match(stageConfig(name).requiredFirstReadPath, /AGENTS\.md$/);
   }
+  assert.equal(stageConfig('implementer').requiredFirstReadPath, undefined);
 });
 
 
@@ -369,7 +372,9 @@ test('stage configuration owns every model prompt', () => {
     }
     assert.match(stagePrompt('reviewer', env), /trusted prepared review context[\s\S]*review-context\.json/);
     assert.match(stagePrompt('reviewer', env), /blocked or failed tool call did not execute/i);
-    assert.match(stagePrompt('implementer', env), /Example issue[\s\S]*Acceptance criteria/);
+    assert.match(stagePrompt('implementer', env), /# Pi Implementer Agent[\s\S]*Example issue[\s\S]*Acceptance criteria/);
+    assert.match(stagePrompt('implementer', env), /Do not search for or re-read agents\/implementer\/AGENTS\.md/);
+    assert.doesNotMatch(stagePrompt('implementer', env), /Read and follow agents\/implementer\/AGENTS\.md first/);
     assert.match(stagePrompt('implementer', env), /prepare_implementation[\s\S]*implementation-planner[\s\S]*complexity-classifier/);
     assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
     assert.match(stagePrompt('implementer', env), /do not call subagent\(action:"list"\)/i);
@@ -383,7 +388,7 @@ test('stage configuration owns every model prompt', () => {
       PI_CHECKPOINT_EXPECTED: 'checkpoint-sha',
     });
     assert.match(resumedPrompt, /restored checkpoint work is already in this worktree/);
-    assert.match(resumedPrompt, /Skip startup planning\/classification and validate the restored implementation first with \`submit_result\`/);
+    assert.match(resumedPrompt, /Call `submit_result` with no arguments as your first tool action/);
     assert.match(resumedPrompt, /Do not call prepare_implementation/);
     assert.match(resumedPrompt, /Do not use already_satisfied for restored work/);
     assert.match(resumedPrompt, /Restored work path:[\s\S]*submit_result[\s\S]*fix only that failure/);

@@ -1,4 +1,10 @@
 import fs from 'node:fs';
+import path from 'node:path';
+
+function loadAgentContract(name, env = process.env) {
+  const workspace = env.GITHUB_WORKSPACE || process.cwd();
+  return fs.readFileSync(path.join(workspace, 'agents', name, 'AGENTS.md'), 'utf8').trim();
+}
 
 const IMPLEMENTER_SUBAGENT_CATALOG = `Available delegated agents (already known; do not call subagent(action:"list")):
 - implementation-planner — creates the startup implementation plan for fresh work from issue title/body; prepare_implementation invokes it.
@@ -61,6 +67,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
     const title = context.title ?? '';
     const body = context.body ?? '';
+    const contract = loadAgentContract('implementer', env);
     const resumePatch = env.PI_RESUME_PATCH;
     const resumed = Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
     const resumeSource = env.PI_CHECKPOINT_EXPECTED
@@ -69,14 +76,15 @@ Call submit_result exactly once as your last action. Do not modify repository or
         ? 'issue branch'
         : 'saved work';
     const resumeNotice = resumed
-      ? `Runtime resume state: restored ${resumeSource} work is already in this worktree. After the required contract read, call submit_result immediately. Do not call prepare_implementation and do not inspect, summarize, or plan the restored files first. If submit_result fails, fix only the concrete reported problem and retry. Do not use already_satisfied for restored work.\n\n`
+      ? `Runtime resume state: restored ${resumeSource} work is already in this worktree. The operating contract is already loaded in this prompt. Call \`submit_result\` with no arguments immediately. Do not call \`prepare_implementation\` and do not inspect, summarize, or plan the restored files first. If \`submit_result\` fails, fix only the concrete reported problem and retry. Do not use \`already_satisfied\` for restored work.\n\n`
       : '';
     const startupInstruction = resumed
-      ? 'This is restored work. Skip startup planning/classification and validate the restored implementation first with \`submit_result\`.'
-      : 'This is fresh work. Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity.';
+      ? 'This is restored work. Call \`submit_result\` with no arguments as your first tool action. Runtime validation and trusted repository state provide the publication metadata.'
+      : 'This is fresh work. Call \`prepare_implementation\` exactly once as your first tool action. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity.';
     const executionGuidance = resumed
       ? `Restored work path:
-- \`submit_result\` is both validation and submission; call it before inspecting restored files.
+- Call \`submit_result\` with no arguments before inspecting restored files; it is both validation and submission.
+- Runtime derives restored-work publication metadata from the trusted issue context and validated diff.
 - If it reports a concrete failure, fix only that failure and retry.
 - Never use \`already_satisfied\` for restored work.`
       : `For fresh work after preparation:
@@ -86,7 +94,11 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - Delegate to \`scout\` only when the evidence already available is insufficient to know the next safe action: unknown targets, genuine multi-file comparison/search, logs/diagnostics, or broader command output. Complexity alone never requires delegation.
 - \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
 - For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.`;
-    return `Read and follow agents/implementer/AGENTS.md first. Do not write a competing startup plan.
+    return `The complete Implementer operating contract is embedded below and is authoritative. Do not search for or re-read agents/implementer/AGENTS.md.
+
+<implementer_contract>
+${contract}
+</implementer_contract>
 
 ${startupInstruction}
 
@@ -174,7 +186,6 @@ export const STAGES = Object.freeze({
     bashTimeoutSeconds: 1800,
     maxTurns: 100,
     repeatThreshold: 3,
-    requiredFirstReadPath: 'agents/implementer/AGENTS.md',
     requireComplexity: true,
     implementationPlannerAgent: 'implementation-planner',
     implementationPlannerMaxTokens: 768,

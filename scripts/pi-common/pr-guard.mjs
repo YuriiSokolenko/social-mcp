@@ -10,7 +10,7 @@ import { prLabelNames, withoutReviewLabels } from './pr-labels.mjs';
  *
  * The Reviewer and PR Fix must make the same security decision before any
  * model code runs:
- *   1. the PR still exists, is open, targets dev and comes from this repo;
+ *   1. the PR still exists and comes from this repo; closed/merged PRs are a normal skip, while open PRs must target dev;
  *   2. its branch is exactly pi/issue-N;
  *   3. pi:needs-human is a hard stop;
  *   4. the COMPLETE changed-file list contains no protected control-plane path.
@@ -30,12 +30,24 @@ export async function preparePr(prNumber) {
   const pr = await loadPullRequest(prNumber);
   const branch = pr.head?.ref ?? '';
   const match = /^pi\/issue-([1-9]\d*)$/.exec(branch);
-  if (pr.state !== 'open' || pr.base?.ref !== 'dev' ||
-      pr.base?.repo?.full_name !== repo || pr.head?.repo?.full_name !== repo || !match) {
-    throw new Error(`PR #${prNumber} is not an open same-repository pi/issue-N PR targeting dev`);
+  if (pr.head?.repo?.full_name !== repo || !match) {
+    throw new Error(`PR #${prNumber} is not a same-repository pi/issue-N PR`);
   }
 
   const issueNumber = Number(match[1]);
+  if (pr.state !== 'open') {
+    return {
+      skip: true,
+      reason: pr.merged ? 'merged' : 'closed',
+      pr: prNumber,
+      issue: issueNumber,
+      head: pr.head.sha,
+      branch,
+    };
+  }
+  if (pr.base?.ref !== 'dev' || pr.base?.repo?.full_name !== repo) {
+    throw new Error(`PR #${prNumber} is not an open same-repository pi/issue-N PR targeting dev`);
+  }
   const labels = prLabelNames(pr);
   if (labels.includes('pi:needs-human')) {
     return { skip: true, reason: 'needs-human', pr: prNumber, issue: issueNumber, head: pr.head.sha, branch };
