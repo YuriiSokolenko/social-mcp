@@ -8,6 +8,14 @@ on:
         description: Pull request number to repair
         required: true
         type: number
+      model:
+        description: Model backend to use (must already be loaded on nano)
+        required: true
+        default: laguna
+        type: choice
+        options:
+          - laguna
+          - qwen
 
 permissions:
   actions: write
@@ -26,6 +34,7 @@ jobs:
     timeout-minutes: 1200
     env:
       PR: ${{ inputs.pr_number }}
+      PI_MODEL_CHOICE: ${{ inputs.model || vars.PI_MODEL || 'laguna' }}
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5

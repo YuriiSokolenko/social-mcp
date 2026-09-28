@@ -8,6 +8,46 @@ import { pathToFileURL } from 'node:url';
 
 import { stageConfig, stagePrompt } from './pi-common/stage-config.mjs';
 
+// The hp-laguna backend (llama-server on nano) can only ever have ONE of
+// these loaded at a time -- switching model here is a *claim* about what a
+// human has already started on nano, not something this script can make
+// true by itself. verifyModelIsLoaded() below checks that claim against
+// reality and fails loudly instead of silently running the wrong model
+// under the requested model's name (see PR #118 for the bug this replaces).
+const MODEL_CHOICES = {
+  laguna: { id: 'laguna-s-2.1-gguf', label: 'Laguna S 2.1' },
+  qwen: { id: 'qwen3.8-flash-next', label: 'Qwen 3.8 Flash Next' },
+};
+
+function resolveModelId(env) {
+  if (env.PI_MODEL) return env.PI_MODEL;
+  const choice = env.PI_MODEL_CHOICE || 'laguna';
+  const entry = MODEL_CHOICES[choice];
+  if (!entry) {
+    throw new Error(`Unknown PI_MODEL_CHOICE "${choice}", expected one of: ${Object.keys(MODEL_CHOICES).join(', ')}`);
+  }
+  return entry.id;
+}
+
+async function verifyModelIsLoaded(baseUrl, expectedId) {
+  const url = new URL('models', baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`);
+  let res;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  } catch (error) {
+    throw new Error(`Could not reach model server at ${url} to verify "${expectedId}" is loaded: ${error.message}`);
+  }
+  if (!res.ok) throw new Error(`Model status check failed: ${url} responded ${res.status}`);
+  const body = await res.json();
+  const loaded = (body.data ?? []).map((entry) => entry.id);
+  if (!loaded.includes(expectedId)) {
+    throw new Error(
+      `Requested model "${expectedId}" is not loaded on ${baseUrl} (currently loaded: ${loaded.join(', ') || 'none'}). ` +
+      'Start it on nano first (infra/llama-gguf-experimental/start_*.sh) or pick the model that is actually running.',
+    );
+  }
+}
+
 function parseArgs(argv) {
   const [stage, ...rest] = argv;
   const options = { stage, promptFile: null, raw: null };
@@ -56,6 +96,10 @@ export async function runStage({ stage, promptFile = null, raw = null }, env = p
   if (childEnv.PI_ISSUE) writeGithubEnv(env, 'PI_ISSUE', childEnv.PI_ISSUE);
   fs.rmSync(childEnv.PI_TERMINAL_RESULT_FILE, { force: true });
 
+  const providerBaseUrl = env.PI_MODEL_BASE_URL || 'http://192.168.8.210:3009/v1';
+  const modelId = resolveModelId(env);
+  await verifyModelIsLoaded(providerBaseUrl, modelId);
+
   const workspace = env.GITHUB_WORKSPACE || path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
   const extensions = [
     path.join(workspace, 'scripts/pi-bash-timeout.mjs'),
@@ -66,7 +110,7 @@ export async function runStage({ stage, promptFile = null, raw = null }, env = p
   for (const extension of extensions) args.push('--extension', extension);
   args.push(
     '--provider', env.PI_PROVIDER || 'hp-laguna',
-    '--model', env.PI_MODEL || 'qwen3.8-flash-next',
+    '--model', modelId,
     '--mode', 'json',
     '--no-session',
     prompt,
