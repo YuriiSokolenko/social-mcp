@@ -356,7 +356,9 @@ test('stage configuration owns every model prompt', () => {
     assert.match(resumedPrompt, /Skip startup planning\/classification and validate the restored implementation first with \`submit_result\`/);
     assert.match(resumedPrompt, /Do not call prepare_implementation/);
     assert.match(resumedPrompt, /Do not use already_satisfied for restored work/);
-    assert.match(resumedPrompt, /Complexity alone never requires delegation/);
+    assert.match(resumedPrompt, /Restored work path:[\s\S]*submit_result[\s\S]*fix only that failure/);
+    assert.doesNotMatch(resumedPrompt, /For fresh work after preparation/);
+    assert.match(stagePrompt('implementer', env), /Complexity alone never requires delegation/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
   } finally {
