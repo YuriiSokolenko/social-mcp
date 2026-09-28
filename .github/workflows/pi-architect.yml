@@ -72,9 +72,16 @@ jobs:
           fi
 
       - name: Validate and publish child tasks
+        if: vars.PI_AUTOMATION_MODE == 'RUNNING'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-architect.mjs" publish "$ISSUE" "$RUNNER_TEMP/pi-architect-result.jsonl" "$RUNNER_TEMP/pi-architect-context.json"
+
+      - name: Wake Dispatcher after Architect publication
+        if: vars.PI_AUTOMATION_MODE == 'RUNNING'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/workflow-dispatch.mjs" pi-dispatcher.yml
 
       - name: Mark Architect failed
         if: failure()

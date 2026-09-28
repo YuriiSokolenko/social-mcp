@@ -628,3 +628,34 @@ test('model-driven terminal workflows require a successful terminal tool marker'
   const architectTool = fs.readFileSync('scripts/pi-architect-result-tool.mjs', 'utf8');
   assert.match(architectTool, /terminalResult\('Result recorded\. Architect decision is complete; stop now\.'/);
 });
+
+test('DRAINING cannot create new issue work but still recovers published PR work', () => {
+  for (const [name, step] of [
+    ['pi-dispatcher.yml', 'Validate and start selected issues'],
+    ['pi-triage.yml', 'Validate and apply triage decisions'],
+    ['pi-architect.yml', 'Validate and publish child tasks'],
+  ]) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    const index = workflow.indexOf(`- name: ${step}`);
+    assert.ok(index >= 0, `${name}: missing ${step}`);
+    assert.match(workflow.slice(index, index + 220), /if: vars\.PI_AUTOMATION_MODE == 'RUNNING'/);
+  }
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconcile, /issueRecoveryAllowed = automationMode === 'RUNNING'/);
+  assert.match(reconcile, /prRecoveryAllowed = automationMode === 'RUNNING' \|\| automationMode === 'DRAINING'/);
+  assert.match(reconcile, /clear orphaned implementer ownership without re-queueing/);
+  assert.match(reconcile, /passed-pr-needs-merge-gate/);
+  assert.match(reconcile, /pi-auto-merge\.yml/);
+});
+
+test('Architect split publication has a durable parent marker and recoverable children', () => {
+  const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
+  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(architect, /Parent body \+ epic ownership are one durable transaction marker/);
+  assert.match(architect, /body: parentBody[\s\S]*architect:epic/);
+  assert.match(architect, /state\.length === 1 && state\[0\] === 'dispatcher:ready'/);
+  assert.match(reconcile, /partial-architect-split-child/);
+  const workflow = fs.readFileSync('.github/workflows/pi-architect.yml', 'utf8');
+  assert.match(workflow, /Wake Dispatcher after Architect publication/);
+  assert.match(workflow, /workflow-dispatch\.mjs" pi-dispatcher\.yml/);
+});

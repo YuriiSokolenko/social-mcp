@@ -87,6 +87,7 @@ jobs:
           fi
 
       - name: Validate and apply triage decisions
+        if: vars.PI_AUTOMATION_MODE == 'RUNNING'
         if: steps.prepare.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}

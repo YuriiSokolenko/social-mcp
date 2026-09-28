@@ -207,12 +207,16 @@ async function publish(issue, jsonl, contextFile) {
   if (childNumbers(parent.body).length && !parent.body.includes(marker)) {
     throw new Error('Parent already has a different decomposition');
   }
-  if (!parent.body.includes(marker)) {
-    await api(`/issues/${issue}`, 'PATCH', { body: `${parent.body ?? ''}\n\n${marker}` });
-  }
   await ensureLabel('architect:epic', '7057ff', 'Parent issue split into linked work items');
   await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
+
+  // Parent body + epic ownership are one durable transaction marker. If child
+  // labeling is interrupted, Reconciler can finish the exact published split
+  // without asking the model to plan again.
   const latestParent = await api(`/issues/${issue}`);
+  const parentBody = latestParent.body?.includes(marker)
+    ? latestParent.body
+    : `${latestParent.body ?? ''}\n\n${marker}`;
   await replaceIssueState({
     number: issue,
     expected: latestParent,
@@ -226,14 +230,17 @@ async function publish(issue, jsonl, contextFile) {
       }
     },
     patch: (number, labels) => api(`/issues/${number}`, 'PATCH', {
+      body: parentBody,
       labels: [...new Set([...labels, 'architect:epic'])],
     }),
   });
+
   for (const number of children) {
     const child = await api(`/issues/${number}`);
-    if (child.state !== 'open' || issueStateLabels(child).length) {
-      throw new Error(`Child #${number} acquired pipeline state before dispatch`);
-    }
+    const state = issueStateLabels(child);
+    if (child.state !== 'open') throw new Error(`Child #${number} is no longer open`);
+    if (state.length === 1 && state[0] === 'dispatcher:ready') continue;
+    if (state.length) throw new Error(`Child #${number} acquired incompatible pipeline state: [${state}]`);
     await replaceIssueState({
       number,
       expected: child,
