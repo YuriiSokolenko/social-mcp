@@ -174,11 +174,12 @@ test('required operating contract is the first tool read', () => {
   assert.equal(state.checkToolCall('bash', { command: 'cat context.json' }), undefined);
 });
 
-test('pre-complexity turn budget starts after the required contract read', () => {
+test('pre-complexity deadline still permits classification and terminal actions', () => {
   const state = controller({
     requiredFirstReadPath: 'agents/implementer/AGENTS.md',
     requireComplexity: true,
     preComplexityAllowedTools: ['subagent'],
+    preComplexityTransitionTools: ['declare_task_complexity'],
     preComplexityTurnLimit: 2,
   });
   for (let turn = 0; turn < 6; turn += 1) {
@@ -189,7 +190,11 @@ test('pre-complexity turn budget starts after the required contract read', () =>
   state.onTurnStart(6);
   assert.equal(state.checkToolCall('subagent', { task: 'inspect target' }), undefined);
   state.onTurnStart(7);
-  assert.match(state.checkToolCall('subagent', { task: 'inspect another target' }).reason, /configured preparation\/classification action/);
+  const blocked = state.checkToolCall('subagent', { task: 'inspect another target' });
+  assert.match(blocked.reason, /did not execute/);
+  assert.match(blocked.reason, /configured preparation\/classification action/);
+  assert.equal(state.checkToolCall('declare_task_complexity', { complexity: 'trivial' }), undefined);
+  assert.equal(state.checkToolCall('submit_result', { verdict: 'PASS' }), undefined);
 });
 
 test('configured repository tools must be delegated after startup', () => {
@@ -213,15 +218,17 @@ test('complexity is a bounded planning declaration, not an execution quota', () 
   const state = controller({
     requireComplexity: true,
     preComplexityAllowedTools: ['read', 'bash'],
+    preComplexityTransitionTools: ['declare_task_complexity'],
     preComplexityTurnLimit: 2,
   });
   state.onTurnStart(0);
   assert.equal(state.checkToolCall('read', { path: 'a' }), undefined);
-  assert.equal(state.checkToolCall('edit', { path: 'a' }).block, true);
+  assert.equal(state.checkToolCall('edit', { path: 'a' }), undefined);
   state.onTurnStart(1);
   assert.equal(state.checkToolCall('bash', { command: 'grep target a' }), undefined);
   state.onTurnStart(2);
   assert.match(state.checkToolCall('read', { path: 'b' }).reason, /configured preparation\/classification action/);
+  assert.equal(state.checkToolCall('declare_task_complexity', { complexity: 'normal' }), undefined);
   state.setComplexity('normal');
   assert.equal(state.checkToolCall('read', { path: 'b' }), undefined);
   assert.equal(state.checkToolCall('edit', { path: 'b' }), undefined);
@@ -259,19 +266,33 @@ test('repeat protection is consecutive and nested arguments are canonicalized', 
   assert.equal(state.checkToolCall('bash', { command: 'git status' }), undefined);
 });
 
-test('ceiling hits escalate even when the turn made no edit progress', () => {
+test('ceiling hits escalate only when the turn made concrete progress', () => {
   const state = controller();
   state.onTurnStart(0);
-  assert.equal(state.afterTurn(2048).level, 'normal');
+  const reasoningOnly = state.afterTurn(2048);
+  assert.equal(reasoningOnly.level, 'short');
+  assert.equal(reasoningOnly.madeProgress, false);
+
   state.onTurnStart(1);
-  assert.equal(state.afterTurn(4096).level, 'deep');
+  assert.equal(state.checkToolCall('edit', { path: 'example.py' }), undefined);
+  state.onToolExecutionEnd('edit', false);
+  const progressed = state.afterTurn(2048);
+  assert.equal(progressed.level, 'normal');
+  assert.equal(progressed.madeProgress, true);
+
   state.onTurnStart(2);
-  assert.equal(state.afterTurn(100).level, 'short');
+  assert.equal(state.checkToolCall('edit', { path: 'example.py' }), undefined);
+  state.onToolExecutionEnd('edit', true);
+  const failedTool = state.afterTurn(4096);
+  assert.equal(failedTool.level, 'short');
+  assert.equal(failedTool.madeProgress, false);
 });
 
 test('elevated budget survives a short intermediate tool turn', () => {
   const state = controller();
   state.onTurnStart(0);
+  assert.equal(state.checkToolCall('edit', { path: 'examples/new.py' }), undefined);
+  state.onToolExecutionEnd('edit', false);
   assert.equal(state.afterTurn(2048).level, 'normal');
 
   state.onTurnStart(1);
@@ -301,8 +322,12 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('dispatcher').maxTurns, 30);
   assert.equal(stageConfig('triage').fixedResponseMaxTokens, 1000);
   for (const name of ['implementer', 'reviewer', 'repair']) assert.equal(stageConfig(name).requireComplexity, true);
-  for (const name of ['reviewer', 'repair']) assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
+  for (const name of ['reviewer', 'repair']) {
+    assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
+    assert.deepEqual(stageConfig(name).preComplexityTransitionTools, ['declare_task_complexity']);
+  }
   assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['prepare_implementation']);
+  assert.deepEqual(stageConfig('implementer').preComplexityTransitionTools, ['prepare_implementation']);
   assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
   assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 768);
   assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 120000);
@@ -331,6 +356,7 @@ test('stage configuration owns every model prompt', () => {
     PR: '7',
     PI_ISSUE_CONTEXT: issueContext,
     ISSUE_CONTEXT: issueContext,
+    REVIEW_CONTEXT: path.join(dir, 'review-context.json'),
   };
   try {
     for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
@@ -339,6 +365,8 @@ test('stage configuration owns every model prompt', () => {
       assert.ok(prompt.includes(`agents/${name === 'repair' ? 'repair' : name}/AGENTS.md`));
       assert.match(prompt, /submit_(?:result|repair)/);
     }
+    assert.match(stagePrompt('reviewer', env), /trusted prepared review context[\s\S]*review-context\.json/);
+    assert.match(stagePrompt('reviewer', env), /blocked or failed tool call did not execute/i);
     assert.match(stagePrompt('implementer', env), /Example issue[\s\S]*Acceptance criteria/);
     assert.match(stagePrompt('implementer', env), /prepare_implementation[\s\S]*implementation-planner[\s\S]*complexity-classifier/);
     assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
