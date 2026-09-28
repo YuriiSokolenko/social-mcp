@@ -33,7 +33,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `automation-control.mjs` — owns RUNNING/DRAINING/PAUSED variable mutation; RUNNING wakes only Dispatcher, never Reconciler.
 - `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow wakes; it keeps authenticated REST and the trusted `dev` ref out of YAML.
 - `terminal-tool.mjs` / `result-jsonl.mjs` — one machine-checkable terminal-tool contract plus tolerant Pi JSONL reading; free-text result markers are not pipeline state.
-- `stage-config.mjs` — single source of per-agent runtime defaults (first contract read, turn/repeat limits, complexity mode, bash timeout, fixed token budget, result tool).
+- `stage-config.mjs` — single source of per-agent runtime defaults and prompt builders (first contract read, turn/repeat limits, complexity mode, bash timeout, fixed token budget, result tool, stage prompt).
 
 ## What does NOT belong here
 

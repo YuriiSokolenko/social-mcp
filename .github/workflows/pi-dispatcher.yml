@@ -51,17 +51,7 @@ jobs:
 
       - name: Ask Pi dispatcher
         if: steps.prepare.outputs.run == 'true'
-        run: |
-          TASK_FILE="$RUNNER_TEMP/pi-dispatcher-task.txt"
-          cat > "$TASK_FILE" <<EOF
-          Read and follow agents/dispatcher/AGENTS.md.
-          Read the project documentation once, before reading dispatcher candidates, to understand the project's architecture, conventions, component boundaries, and terminology.
-          Then read $RUNNER_TEMP/pi-dispatcher-context.json; each candidate already contains the current GitHub issue metadata and scope needed for classification.
-          The candidates list is authoritative: do not re-check eligibility, dependencies, priority, ordering or capacity.
-          For every candidate decide only IMPLEMENT or ARCHITECT based on scope.
-          Call submit_result exactly once as your last action. Do not modify repository or GitHub state.
-          EOF
-          node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" dispatcher --prompt-file "$TASK_FILE" --raw "$RUNNER_TEMP/pi-dispatcher-result.jsonl"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" dispatcher --raw "$RUNNER_TEMP/pi-dispatcher-result.jsonl"
 
       - name: Validate and start selected issues
         if: vars.PI_AUTOMATION_MODE == 'RUNNING' && steps.prepare.outputs.run == 'true'

@@ -47,16 +47,7 @@ jobs:
 
       - name: Ask Pi triage
         if: steps.prepare.outputs.run == 'true'
-        run: |
-          TASK_FILE="$RUNNER_TEMP/pi-triage-task.txt"
-          cat > "$TASK_FILE" <<EOF
-          Read and follow agents/triage/AGENTS.md. Do not read docs/PROJECT_CONTEXT.md unless one specific candidate genuinely requires product context to resolve an ambiguity.
-          The candidate issues to review are at $RUNNER_TEMP/pi-triage-context.json.
-          The snapshot contains current issue body, Task metadata, labels, dependency states, and relevant comments.
-          Classify every candidate exactly once as ready for Dispatcher, needing a person, or skipped. Do not reconsider a decided candidate.
-          Call submit_result exactly once as your last action. Do not modify repository or GitHub state.
-          EOF
-          node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" triage --prompt-file "$TASK_FILE" --raw "$RUNNER_TEMP/pi-triage-result.jsonl"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" triage --raw "$RUNNER_TEMP/pi-triage-result.jsonl"
 
       - name: Validate and apply triage decisions
         if: vars.PI_AUTOMATION_MODE == 'RUNNING' && steps.prepare.outputs.run == 'true'

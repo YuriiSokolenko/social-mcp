@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   ProgressController,
@@ -7,7 +10,7 @@ import {
   nextResponseBudgetLevel,
   toolCallSignature,
 } from '../scripts/pi-common/progress-controller.mjs';
-import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
 
 const controller = (overrides = {}, env = {}) => new ProgressController({
   maxTurns: 100,
@@ -113,5 +116,33 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
     assert.match(stageConfig(name).resultTool, /-result-tool\.mjs$/);
     assert.match(stageConfig(name).requiredFirstReadPath, /AGENTS\.md$/);
+  }
+});
+
+
+test('stage configuration owns every model prompt', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-stage-prompt-'));
+  const issueContext = path.join(dir, 'issue.json');
+  fs.writeFileSync(issueContext, JSON.stringify({ title: 'Example issue', body: 'Acceptance criteria' }));
+  const env = {
+    RUNNER_TEMP: dir,
+    ISSUE: '42',
+    PI_ISSUE: '42',
+    PR: '7',
+    PI_ISSUE_CONTEXT: issueContext,
+    ISSUE_CONTEXT: issueContext,
+  };
+  try {
+    for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
+      const prompt = stagePrompt(name, env);
+      assert.equal(typeof prompt, 'string');
+      assert.ok(prompt.includes(`agents/${name === 'repair' ? 'repair' : name}/AGENTS.md`));
+      assert.match(prompt, /submit_(?:result|repair)/);
+    }
+    assert.match(stagePrompt('implementer', env), /Example issue[\s\S]*Acceptance criteria/);
+    assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
+    assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
