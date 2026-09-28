@@ -130,16 +130,26 @@ test('bounded local operations stay in main while exploration remains delegated'
   assert.equal(state.checkToolCall('bash', { command: 'git diff -- src/known.py' }), undefined);
   assert.equal(state.checkToolCall('bash', { command: 'git diff --check -- src/known.py' }), undefined);
   assert.equal(state.checkToolCall('bash', { command: 'git status --short -- src/known.py' }), undefined);
+  assert.equal(state.checkToolCall('bash', { command: 'git -C /tmp/worktree diff -- src/known.py' }), undefined);
+  assert.equal(state.checkToolCall('bash', { command: 'git --no-pager diff -- src/known.py' }), undefined);
+  assert.equal(state.checkToolCall('bash', { command: 'git -C /tmp/worktree --no-pager status --porcelain -- src/known.py' }), undefined);
   assert.match(state.checkToolCall('bash', { command: 'git diff' }).reason, /bounded git diff/);
   assert.match(state.checkToolCall('bash', { command: 'pytest -q tests/test_known.py' }).reason, /broader commands/);
   assert.match(state.checkToolCall('bash', { command: 'git diff -- src/known.py; cat secrets' }).reason, /bounded git diff/);
   assert.equal(isBoundedDirectBash('git diff --numstat -- src/known.py'), true);
+  assert.equal(isBoundedDirectBash('git -C /tmp/worktree diff -- src/known.py'), true);
+  assert.equal(isBoundedDirectBash('git --no-pager diff -- src/known.py'), true);
+  assert.equal(isBoundedDirectBash('git -C /tmp/worktree --no-pager status --short -- src/known.py'), true);
+  assert.equal(isBoundedDirectBash('git -C -evil diff -- src/known.py'), false);
   assert.equal(isBoundedDirectBash('git log --oneline'), false);
 });
 
 test('required operating contract is the first tool read', () => {
   const state = controller({ requiredFirstReadPath: 'agents/triage/AGENTS.md' });
-  assert.equal(state.checkToolCall('bash', { command: 'cat context.json' }).block, true);
+  const blocked = state.checkToolCall('bash', { command: 'cat context.json' });
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /First action must be read\(path: "agents\/triage\/AGENTS\.md"\)/);
+  assert.match(blocked.reason, /do not search/i);
   assert.equal(state.checkToolCall('read', { path: '/work/agents/triage/AGENTS.md' }), undefined);
   assert.equal(state.checkToolCall('bash', { command: 'cat context.json' }), undefined);
 });
