@@ -49,4 +49,5 @@ export default function (pi) {
   });
 
   pi.on('tool_call', (event) => guard.checkToolCall(event.toolName, event.input));
+  pi.on('tool_execution_end', (event) => guard.onToolExecutionEnd(event.toolName, event.isError));
 }

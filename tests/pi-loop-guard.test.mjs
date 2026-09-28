@@ -11,6 +11,8 @@ test('global turn ceiling is independent of task complexity', () => {
   assert.equal(guard.checkToolCall('read', { path: 'b' }), undefined);
   guard.onTurnStart(3);
   assert.equal(guard.checkToolCall('read', { path: 'c' }).block, true);
+  assert.equal(guard.checkToolCall('edit', { path: 'c' }), undefined);
+  assert.equal(guard.checkToolCall('submit_result', {}), undefined);
 });
 
 test('required operating contract is the first tool read when configured', () => {
@@ -39,6 +41,8 @@ test('bounded orientation is allowed before required complexity declaration', ()
   assert.equal(guard.checkToolCall('submit_result', {}).block, true);
   guard.setComplexity('trivial');
   assert.equal(guard.checkToolCall('edit', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }).block, true);
+  guard.onToolExecutionEnd('edit', false);
   assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
 });
 
@@ -91,6 +95,10 @@ test('required complexity makes the first post-plan tool call an edit', () => {
     assert.match(blocked.reason, /next tool call must make the first repository edit/);
   }
   assert.equal(guard.checkToolCall('edit', { path: 'src/a.py' }), undefined);
+  assert.equal(guard.checkToolCall('read', { path: 'src/c.py' }).block, true);
+  guard.onToolExecutionEnd('edit', true);
+  assert.equal(guard.checkToolCall('read', { path: 'src/c.py' }).block, true);
+  guard.onToolExecutionEnd('edit', false);
   assert.equal(guard.checkToolCall('read', { path: 'src/c.py' }), undefined);
 });
 
@@ -121,8 +129,38 @@ test('blocks an exact call repeated past the threshold', () => {
   assert.match(guard.checkToolCall('bash', command).reason, /already ran this exact bash call 2 times/);
 });
 
-test('whitespace-only differences still count as the same call', () => {
+test('whitespace-only command differences still count as the same call', () => {
   assert.equal(toolCallSignature('bash', { command: 'echo  ok' }), toolCallSignature('bash', { command: 'echo ok' }));
+});
+
+test('tool signatures canonicalize nested object keys without dropping nested values', () => {
+  assert.equal(
+    toolCallSignature('x', { outer: { b: 2, a: 1 } }),
+    toolCallSignature('x', { outer: { a: 1, b: 2 } }),
+  );
+  assert.notEqual(
+    toolCallSignature('x', { outer: { a: 1, b: 2 } }),
+    toolCallSignature('x', { outer: { a: 1, b: 3 } }),
+  );
+});
+
+test('repeat protection is consecutive rather than cumulative across productive work', () => {
+  const guard = new LoopGuard({ turnLimit: 100, repeatThreshold: 2 });
+  const same = { command: 'git status --short' };
+  assert.equal(guard.checkToolCall('bash', same), undefined);
+  assert.equal(guard.checkToolCall('bash', same), undefined);
+  assert.equal(guard.checkToolCall('edit', { path: 'a' }), undefined);
+  guard.onToolExecutionEnd('edit', false);
+  assert.equal(guard.checkToolCall('bash', same), undefined);
+  assert.equal(guard.checkToolCall('bash', same), undefined);
+});
+
+test('failed first edit does not unlock post-plan exploration', () => {
+  const guard = new LoopGuard({ turnLimit: 100, repeatThreshold: 3, requireComplexity: true });
+  guard.setComplexity('normal');
+  assert.equal(guard.checkToolCall('edit', { path: 'a' }), undefined);
+  guard.onToolExecutionEnd('edit', true);
+  assert.equal(guard.checkToolCall('bash', { command: 'pytest' }).block, true);
 });
 
 test('invalid configuration and complexity fail early', () => {

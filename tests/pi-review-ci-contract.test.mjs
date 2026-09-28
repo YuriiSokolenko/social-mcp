@@ -447,11 +447,10 @@ test('every model-driven workflow wires the shared safety extensions exactly onc
   }
 });
 
-test('loop guard is limited to stages that need exploration/task-complexity control', () => {
-  const guarded = new Set(['pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']);
+test('every model-driven workflow uses the shared loop guard', () => {
   for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']) {
     const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
-    assert.equal(source.includes('pi-loop-guard.mjs'), guarded.has(name), `${name}: unexpected loop-guard wiring`);
+    assert.match(source, /pi-loop-guard\.mjs/, `${name}: missing shared loop guard`);
   }
 });
 
@@ -612,6 +611,7 @@ test('deterministic review failure routes directly to PR Fix instead of stopping
 
 test('model-driven terminal workflows require a successful terminal tool marker', () => {
   const workflows = [
+    ['pi-architect.yml', 'Require terminal architect result'],
     ['pi-triage.yml', 'Require terminal triage result'],
     ['pi-dispatcher.yml', 'Require terminal dispatcher result'],
     ['pi-pr-review.yml', 'Require terminal review result'],
@@ -625,4 +625,6 @@ test('model-driven terminal workflows require a successful terminal tool marker'
   }
   const dispatcherTool = fs.readFileSync('scripts/pi-dispatcher-result-tool.mjs', 'utf8');
   assert.match(dispatcherTool, /terminalResult\('Result recorded\. Dispatch classification is complete; stop now\.'/);
+  const architectTool = fs.readFileSync('scripts/pi-architect-result-tool.mjs', 'utf8');
+  assert.match(architectTool, /terminalResult\('Result recorded\. Architect decision is complete; stop now\.'/);
 });

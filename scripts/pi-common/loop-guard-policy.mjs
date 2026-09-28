@@ -23,10 +23,21 @@ export function validateComplexity(name) {
   return name;
 }
 
-export function toolCallSignature(toolName, input) {
-  const sortedKeys = Object.keys(input ?? {}).sort();
-  return `${toolName}:${JSON.stringify(input ?? {}, sortedKeys)}`.replace(/\s+/g, ' ');
+function canonicalize(value, key = '') {
+  if (Array.isArray(value)) return value.map((item) => canonicalize(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((name) => [name, canonicalize(value[name], name)]));
+  }
+  if (typeof value === 'string' && key === 'command') return value.replace(/\s+/g, ' ').trim();
+  return value;
 }
+
+export function toolCallSignature(toolName, input) {
+  return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
+}
+
+const FIRST_EDIT_TOOLS = new Set(['edit', 'write']);
+const FINISH_TOOLS = new Set(['edit', 'write', 'submit_result', 'submit_repair']);
 
 export class LoopGuard {
   constructor({ turnLimit = 100, repeatThreshold, requireComplexity = false, preComplexityAllowedTools = [], preComplexityTurnLimit = 8, requiredFirstReadPath = null }) {
@@ -40,7 +51,8 @@ export class LoopGuard {
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
     this.lastTurnIndex = null;
-    this.seen = new Map();
+    this.lastSignature = null;
+    this.repeatCount = 0;
     this.repositoryEditSeen = false;
   }
 
@@ -71,6 +83,10 @@ export class LoopGuard {
     this.lastTurnIndex = turnIndex;
   }
 
+  onToolExecutionEnd(toolName, isError) {
+    if (!isError && FIRST_EDIT_TOOLS.has(toolName)) this.repositoryEditSeen = true;
+  }
+
   checkToolCall(toolName, input) {
     if (!this.requiredFirstReadDone) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
@@ -79,12 +95,9 @@ export class LoopGuard {
       this.requiredFirstReadDone = true;
     }
     if (toolName === 'declare_task_complexity') return undefined;
-    if (this.requireComplexity && this.complexity && this.complexity !== 'default' && !this.repositoryEditSeen) {
-      if (toolName === 'edit' || toolName === 'write') {
-        this.repositoryEditSeen = true;
-      } else {
-        return { block: true, reason: 'Complexity is declared and the execution plan is fixed. The next tool call must make the first repository edit with edit or write; do not inspect, test, load skills, or continue analysis first.' };
-      }
+    if (this.requireComplexity && this.complexity && this.complexity !== 'default' && !this.repositoryEditSeen &&
+        !FIRST_EDIT_TOOLS.has(toolName)) {
+      return { block: true, reason: 'Complexity is declared and the execution plan is fixed. The next tool call must make the first successful repository edit with edit or write; do not inspect, test, load skills, or continue analysis first.' };
     }
     if (this.requireComplexity && !this.complexity) {
       if (this.absoluteTurn >= this.preComplexityTurnLimit) {
@@ -94,15 +107,18 @@ export class LoopGuard {
         return { block: true, reason: 'Before complexity declaration, finish the required startup orientation and plan using only the allowed inspection tools. Repository edits, skills, submission, and other work require declare_task_complexity first.' };
       }
     }
-    if (this.absoluteTurn >= this.turnLimit) {
-      return { block: true, reason: `Global execution limit reached (${this.turnLimit} turns). Stop investigating and finish with the available evidence.` };
+    if (this.absoluteTurn >= this.turnLimit && !FINISH_TOOLS.has(toolName)) {
+      return { block: true, reason: `Global execution limit reached (${this.turnLimit} turns). Exploration is closed. Finish using only edit/write and the terminal submit tool with the evidence already collected.` };
     }
 
     const signature = toolCallSignature(toolName, input);
-    const count = (this.seen.get(signature) ?? 0) + 1;
-    this.seen.set(signature, count);
-    if (count > this.repeatThreshold) {
-      return { block: true, reason: `You already ran this exact ${toolName} call ${count - 1} times with the same arguments; reuse the earlier result or change strategy.` };
+    if (signature === this.lastSignature) this.repeatCount += 1;
+    else {
+      this.lastSignature = signature;
+      this.repeatCount = 1;
+    }
+    if (this.repeatCount > this.repeatThreshold) {
+      return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively with the same arguments; reuse the earlier result or change strategy.` };
     }
     return undefined;
   }

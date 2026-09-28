@@ -1,15 +1,9 @@
 import { Type } from 'typebox';
-import { registerSubmitNudge } from './pi-common/terminal-result.mjs';
+import { registerSubmitNudge, terminalResult } from './pi-common/terminal-result.mjs';
 import { validatePlan } from './pi-architect.mjs';
 
-// Prototype replacement for the ARCHITECT_RESULT text-line protocol: the
-// model calls a real tool instead of writing a marker line, so there is no
-// free-text line for the workflow to parse, duplicate, or lose inside
-// <think>. `parent_issue` is injected from PI_ISSUE rather than asked of the
-// model, removing a whole class of possible mismatch. If the model never
-// calls the tool, agent_before_settle asks for exactly one retry before
-// giving up, so the workflow's legacy ARCHITECT_RESULT parsing (kept as a
-// fallback) still has a chance to see a result. See docs/CI_RULES.md.
+// Architect uses the same explicit terminal-result contract as every other
+// model-driven stage. Free-text result markers are not pipeline state.
 export default function (pi) {
   const parent = Number(process.env.PI_ISSUE);
   let submitted = false;
@@ -40,7 +34,7 @@ export default function (pi) {
       const plan = validatePlan({ ...params, parent_issue: parent }, parent);
       pi.appendEntry('architect-result', plan);
       submitted = true;
-      return { content: [{ type: 'text', text: 'Result recorded.' }], details: undefined };
+      return terminalResult('Result recorded. Architect decision is complete; stop now.', undefined);
     },
   });
 
