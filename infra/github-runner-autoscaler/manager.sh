@@ -279,10 +279,10 @@ main() {
         to_start="$available"
       fi
     fi
-    if [ "$queued" -eq 0 ] && [ "$busy" -eq 0 ]; then
-      next_poll_seconds="$IDLE_POLL_SECONDS"
-    else
+    if [ "$queued" -gt 0 ] || [ "$busy" -gt 0 ] || [ "$active" -lt "$desired" ]; then
       next_poll_seconds="$POLL_SECONDS"
+    else
+      next_poll_seconds="$IDLE_POLL_SECONDS"
     fi
     log "queued=$queued busy=$busy active=$active desired=$desired min_idle=$MIN_IDLE_RUNNERS model_slots_total=$model_total model_slots_busy=$model_busy model_capacity=$available spawning=$to_start next_poll=${next_poll_seconds}s"
     if [ "$to_start" -gt 0 ]; then

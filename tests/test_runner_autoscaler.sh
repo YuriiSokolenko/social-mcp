@@ -147,13 +147,14 @@ STATUS_RESPONSE='[{"id":0,"is_processing":false},{"id":1,"is_processing":false}]
   spawned=0
   spawn_runner() { spawned=$((spawned + 1)); }
   sleep() {
-    [[ "$1" == 60 ]] || fail "idle pool must back off to 60s, got ${1}s"
+    [[ "$1" == 20 ]] || fail "missing warm runner must be checked again after 20s, got ${1}s"
     [[ "$spawned" == 1 ]] || fail "expected one warm runner, got $spawned"
     exit 0
   }
   main > "$STATUS_LOG"
 )
 grep -q 'desired=1 min_idle=1' "$STATUS_LOG" || fail 'empty general pool must request one warm runner'
+grep -q 'next_poll=20s' "$STATUS_LOG" || fail 'manager must quickly confirm warm runner startup'
 
 (
   queued_jobs() { printf '0\n'; }
