@@ -6,10 +6,11 @@ export function terminalResult(text, details) {
   return { content: [{ type: 'text', text }], details, terminate: true };
 }
 
-export function registerSubmitNudge(pi, { isSubmitted, customType, content }) {
+export function registerSubmitNudge(pi, { isSubmitted, customType, content, repeatWhile = () => false }) {
   let nudged = false;
   pi.on('agent_before_settle', () => {
-    if (isSubmitted() || nudged) return undefined;
+    if (isSubmitted()) return undefined;
+    if (nudged && !repeatWhile()) return undefined;
     nudged = true;
     return {
       continue: true,
@@ -30,16 +31,22 @@ export function registerTerminalTool(pi, {
   successText = 'Result recorded. Stop now.',
 }) {
   let submitted = false;
+  let terminalFailed = false;
   pi.registerTool({
     name,
     label,
     description,
     parameters,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const outcome = await execute(params, { toolCallId, signal, onUpdate, ctx });
-      if (customType && outcome?.data !== undefined) pi.appendEntry(customType, outcome.data);
-      submitted = true;
-      return terminalResult(outcome?.text ?? successText, outcome?.details);
+      try {
+        const outcome = await execute(params, { toolCallId, signal, onUpdate, ctx });
+        if (customType && outcome?.data !== undefined) pi.appendEntry(customType, outcome.data);
+        submitted = true;
+        return terminalResult(outcome?.text ?? successText, outcome?.details);
+      } catch (error) {
+        terminalFailed = true;
+        throw error;
+      }
     },
   });
 
@@ -47,6 +54,7 @@ export function registerTerminalTool(pi, {
     isSubmitted: () => submitted,
     customType: nudgeType,
     content: nudgeText,
+    repeatWhile: () => terminalFailed,
   });
 
   return { isSubmitted: () => submitted };
