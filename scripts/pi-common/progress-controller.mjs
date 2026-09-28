@@ -174,16 +174,17 @@ export class ProgressController {
 
     if (this.requireComplexity && !this.complexity) {
       const preComplexityTurns = Math.max(0, this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn));
-      if (preComplexityTurns >= this.preComplexityTurnLimit && !pendingComplexityTransition && !terminalTool) {
+      const orientationDeadlineReached = preComplexityTurns >= this.preComplexityTurnLimit;
+      if (orientationDeadlineReached && !pendingComplexityTransition && !terminalTool) {
         return {
           block: true,
           reason: `BLOCKED: ${toolName} did not execute. Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Use only the configured preparation/classification action or terminal submit tool now.`,
         };
       }
-      if (!pendingComplexityTransition && !terminalTool && !this.preComplexityAllowedTools.has(toolName)) {
+      if (!orientationDeadlineReached && !pendingComplexityTransition && !this.preComplexityAllowedTools.has(toolName)) {
         return {
           block: true,
-          reason: `BLOCKED: ${toolName} did not execute. Before complexity is recorded, use only initial-orientation tools, the configured preparation/classification action, or the terminal submit tool.`,
+          reason: `BLOCKED: ${toolName} did not execute. Before complexity is recorded, use only initial-orientation tools or the configured preparation/classification action.`,
         };
       }
     }
