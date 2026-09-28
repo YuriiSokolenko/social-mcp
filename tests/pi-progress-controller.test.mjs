@@ -149,7 +149,6 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, []);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['read', 'bash', 'grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
-  assert.equal(stageConfig('implementer').subagent, true);
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
     assert.match(stageConfig(name).resultTool, /-result-tool\.mjs$/);
     assert.match(stageConfig(name).requiredFirstReadPath, /AGENTS\.md$/);
@@ -177,7 +176,7 @@ test('stage configuration owns every model prompt', () => {
       assert.match(prompt, /submit_(?:result|repair)/);
     }
     assert.match(stagePrompt('implementer', env), /Example issue[\s\S]*Acceptance criteria/);
-    assert.match(stagePrompt('implementer', env), /subagent/);
+    assert.match(stagePrompt('implementer', env), /subagents_enable[\s\S]*scout[\s\S]*run-ci/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
   } finally {

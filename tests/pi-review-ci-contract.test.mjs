@@ -510,8 +510,17 @@ test('implementer plans before complexity and delegates repository inspection af
   assert.match(agent, /Do not modify repository files or perform implementation work before step 4 is complete/);
   assert.match(agent, /main agent must not call `read`, `bash`, `grep`, `find`, or `ls` directly/);
   assert.match(agent, /missing context is only one small file immediately before an edit/);
+  assert.match(agent, /subagents_enable/);
+  assert.match(agent, /built-in `scout` agent/);
+  assert.match(agent, /package-owned `run-ci` workflow/);
   assert.match(agent, /complex[\s\S]*implement this same issue to completion/i);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
+});
+
+
+test('stage runner relies on installed pi-subagents instead of registering a duplicate subagent tool', () => {
+  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  assert.doesNotMatch(runner, /pi-subagent\.mjs/);
 });
 
 test('reviewer orients and plans before declaring complexity', () => {

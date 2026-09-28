@@ -61,7 +61,6 @@ export async function runStage({ stage, promptFile = null, raw = null }, env = p
     path.join(workspace, 'scripts/pi-bash-timeout.mjs'),
     path.join(workspace, 'scripts/pi-agent-runtime.mjs'),
   ];
-  if (config.subagent) extensions.push(path.join(workspace, 'scripts/pi-subagent.mjs'));
   extensions.push(path.join(workspace, `scripts/${config.resultTool}`));
   const args = [];
   for (const extension of extensions) args.push('--extension', extension);

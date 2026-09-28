@@ -46,7 +46,9 @@ Complexity describes **this issue**; it never transfers ownership. If the issue 
 
 After the required AGENTS.md read, the main agent must not call `read`, `bash`, `grep`, `find`, or `ls` directly. The runtime enforces this boundary.
 
-Whenever repository/tool access is needed, call `subagent` with one bounded question or research objective. This applies even when the missing context is only one small file immediately before an edit.
+Whenever repository/tool access is needed, delegate through the installed `pi-subagents` extension. In a fresh session, if only `subagents_enable` is available, call it once; call `subagent` on the next model turn. This applies even when the missing context is only one small file immediately before an edit.
+
+For repository reads, search, navigation, docs, skills, and post-change content inspection, use the built-in `scout` agent with `async: false`. `scout` is read-only. For a bounded command/check that genuinely adds signal, use the package-owned `run-ci` workflow through `subagent` when available rather than direct `bash`.
 
 Always delegate repository-facing work such as:
 
@@ -54,10 +56,10 @@ Always delegate repository-facing work such as:
 - reading one file or several related files;
 - extracting exact snippets/anchors needed for an `edit`;
 - searching usages, similar implementations, TODOs, or existing patterns;
-- inspecting logs, stack traces, failed commands, or diagnostics;
-- focused test/lint/type/compile checks and analysis of their output;
-- read-only Git inspection such as diff/status/show/log when genuinely needed;
-- post-change diff inspection and acceptance-criteria verification.
+- inspecting repository-visible diagnostics and test artifacts;
+- focused test/lint/type/compile checks through the delegated `run-ci` workflow when useful;
+- read-only Git/diff checks through delegated package workflows when useful;
+- post-change content inspection and acceptance-criteria verification through `scout`.
 
 Ask for compact conclusions, relevant paths/symbols, and only the evidence needed for the next decision. Do not ask a subagent for a raw repository dump.
 
@@ -80,7 +82,7 @@ The main agent always owns and performs:
 - conflict-resolution decisions and mutations;
 - `submit_result`.
 
-Subagents gather facts and run read-only investigation/verification. They do not own plan items, mutate repository files, or submit the task.
+Subagents gather facts and run read-only investigation/verification. Use `scout` for repository facts; do not use `worker` or `reviewer` as mutation owners. Subagents do not own plan items, mutate repository files, or submit the task.
 
 During execution:
 
