@@ -26,7 +26,6 @@ jobs:
     timeout-minutes: 1200
     env:
       PR: ${{ inputs.pr_number }}
-      REPO: ${{ github.repository }}
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5

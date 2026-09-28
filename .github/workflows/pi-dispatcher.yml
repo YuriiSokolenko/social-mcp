@@ -21,9 +21,6 @@ jobs:
     if: vars.PI_AUTOMATION_MODE == 'RUNNING' && (github.event_name != 'issues' || github.event.action == 'closed' || github.event.label.name == 'dispatcher:ready')
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
-    env:
-      REPO: ${{ github.repository }}
-
     steps:
       - name: Checkout trusted dev
         uses: actions/checkout@v5

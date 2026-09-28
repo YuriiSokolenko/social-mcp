@@ -26,7 +26,6 @@ jobs:
     timeout-minutes: 1200
     env:
       ISSUE: ${{ inputs.issue_number }}
-      REPO: ${{ github.repository }}
 
     steps:
       - name: Checkout dev control repository
@@ -162,9 +161,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          MESSAGE="Pi workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          MESSAGE="Pi workflow failed. Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           if git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}-checkpoint" >/dev/null; then
-            MESSAGE="$MESSAGE Saved work: https://github.com/${REPO}/tree/pi/issue-${ISSUE}-checkpoint"
+            MESSAGE="$MESSAGE Saved work: https://github.com/${GITHUB_REPOSITORY}/tree/pi/issue-${ISSUE}-checkpoint"
           fi
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human "$MESSAGE"
 

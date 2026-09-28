@@ -696,3 +696,15 @@ test('implementer publication does not transport unused issue title or deleted t
   assert.doesNotMatch(publication, /issueTitle/);
   assert.doesNotMatch(worktree, /taskFile|\[task-file\]/);
 });
+
+
+test('model workflows use native GITHUB_REPOSITORY instead of redundant repository aliases', () => {
+  for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-triage.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-issue-agent.yml']) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.doesNotMatch(workflow, /^\s+(?:REPO|GITHUB_REPOSITORY):\s*\$\{\{ github\.repository \}\}/m);
+  }
+  const issue = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const architect = fs.readFileSync('.github/workflows/pi-architect.yml', 'utf8');
+  assert.match(issue, /\$\{GITHUB_REPOSITORY\}\/actions\/runs/);
+  assert.match(architect, /\$\{GITHUB_REPOSITORY\}\/actions\/runs/);
+});

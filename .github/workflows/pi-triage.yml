@@ -23,7 +23,6 @@ jobs:
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
-      REPO: ${{ github.repository }}
       PI_TRIAGE_BATCH_SIZE: '8'
 
     steps:

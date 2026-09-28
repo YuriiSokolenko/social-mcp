@@ -24,7 +24,6 @@ jobs:
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 120
     env:
-      GITHUB_REPOSITORY: ${{ github.repository }}
       ISSUE: ${{ inputs.issue_number }}
 
     steps:
@@ -52,16 +51,14 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
         run: |
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human \
-            "Pi Architect workflow failed. Run: https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+            "Pi Architect workflow failed. Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Mark Architect cancelled
         if: cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
         run: |
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue stopped \
             "Pi Architect run was cancelled. Returned to Dispatcher without automatic redispatch."
