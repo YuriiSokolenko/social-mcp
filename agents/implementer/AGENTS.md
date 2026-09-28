@@ -135,7 +135,7 @@ Every session starts at **SHORT (2048)**.
 
 Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Any response below its ceiling resets the following response to SHORT; a ceiling hit only promotes when that turn also made concrete action progress.
 
-Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 768 output tokens.
+Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 768 output tokens. If it misses the required structured-output call, the runtime retries that planner internally once; main still calls `prepare_implementation` only once.
 
 ## Engineering constraints
 
