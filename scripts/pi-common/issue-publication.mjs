@@ -16,8 +16,8 @@ import { runGit as git } from './git.mjs';
  * - checkpoint/issue branch pushes use exact-ref --force-with-lease;
  * - forbidden control-plane paths are checked with the central policy;
  * - credential/runtime files are rejected before checkpoint publication;
- * - PR metadata comes from the validated submit_result file, with a safe issue
- *   fallback only when metadata is unavailable;
+ * - PR metadata comes only from the validated submit_result file; missing
+ *   terminal metadata is a publication error, never a synthesized success;
  * - GitHub mutations use the shared authenticated API client.
  *
  * This helper never decides whether implementation content is correct. The live

@@ -33,6 +33,7 @@ let responseNumber = 0;
 let thinkingStreamed = false;
 let textStreamed = false;
 let reasoningAvailable = false;
+let redactingPrivateKey = false;
 const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 let measuredResponses = 0;
 let totalResponseMs = 0;
@@ -147,16 +148,30 @@ function startGroup(title, color = C.blue) {
 }
 
 function emitStream(content) {
-  for (const fragment of String(redact(content)).split(/(\r\n|\r|\n)/)) {
+  for (const fragment of String(content).split(/(\r\n|\r|\n)/)) {
     if (fragment === "\n" || fragment === "\r" || fragment === "\r\n") {
       process.stdout.write("\n");
       streamAtLineStart = true;
-    } else if (fragment) {
-      if (streamAtLineStart) process.stdout.write("  ");
-      const color = streamKind === "thinking" ? C.blue : C.green;
-      process.stdout.write(color + fragment + C.reset);
-      streamAtLineStart = false;
+      continue;
     }
+    if (!fragment) continue;
+
+    if (redactingPrivateKey) {
+      if (/-----END [^-]*PRIVATE KEY-----/.test(fragment)) redactingPrivateKey = false;
+      continue;
+    }
+
+    let safe = fragment;
+    if (/-----BEGIN [^-]*PRIVATE KEY-----/.test(fragment)) {
+      redactingPrivateKey = true;
+      safe = "[REDACTED PRIVATE KEY]";
+    } else {
+      safe = String(redact(fragment));
+    }
+    if (streamAtLineStart) process.stdout.write("  ");
+    const color = streamKind === "thinking" ? C.blue : C.green;
+    process.stdout.write(color + safe + C.reset);
+    streamAtLineStart = false;
   }
   outputNeedsNewline = !streamAtLineStart;
 }
