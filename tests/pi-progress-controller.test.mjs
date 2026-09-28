@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import {
   ProgressController,
@@ -11,6 +12,7 @@ import {
   nextResponseBudgetLevel,
   toolCallSignature,
 } from '../scripts/pi-common/progress-controller.mjs';
+import { trivialRepoLookup } from '../scripts/pi-agent-runtime.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
 import subagentResponseBudget from '../scripts/pi-subagent-response-budget.mjs';
 
@@ -23,10 +25,10 @@ const controller = (overrides = {}, env = {}) => new ProgressController({
 
 test('shared response budgets stay capped at 2k, 4k, and 8k', () => {
   assert.deepEqual(RESPONSE_BUDGETS, { short: 2048, normal: 4096, deep: 8192 });
-  assert.equal(nextResponseBudgetLevel('short', 2048), 'short');
-  assert.equal(nextResponseBudgetLevel('short', 2048, RESPONSE_BUDGETS, { madeProgress: true }), 'normal');
-  assert.equal(nextResponseBudgetLevel('normal', 4096, RESPONSE_BUDGETS, { madeProgress: true }), 'deep');
-  assert.equal(nextResponseBudgetLevel('deep', 8192, RESPONSE_BUDGETS, { madeProgress: true }), 'short');
+  assert.equal(nextResponseBudgetLevel('short', 2047), 'short');
+  assert.equal(nextResponseBudgetLevel('short', 2048), 'normal');
+  assert.equal(nextResponseBudgetLevel('normal', 4096), 'deep');
+  assert.equal(nextResponseBudgetLevel('deep', 8192), 'short');
 });
 
 test('scout child response budget mirrors the main response ceiling', async () => {
@@ -86,6 +88,31 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /do not classify complexity/i);
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
+});
+
+test('trivial repository lookup skips control and legal targets and honors extension order', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-trivial-lookup-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.agents', 'skills', 'sample'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'tasks'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.agents', 'skills', 'sample', 'LICENSE.txt'), 'license\n');
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'notes\n');
+    fs.writeFileSync(path.join(dir, 'tasks', 'README.md'), 'task notes\n');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'root readme\n');
+    fs.writeFileSync(path.join(dir, 'COPYING.md'), 'copying\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+
+    const result = trivialRepoLookup(dir, {
+      extensions: ['md', 'txt'],
+      exactText: 'task notes',
+    });
+    assert.equal(result.candidate.path, 'tasks/README.md');
+    assert.equal(result.exactTextFound, true);
+    assert.deepEqual(result.exactTextPaths, ['tasks/README.md']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('bounded local operations stay in main while exploration remains delegated', () => {
@@ -202,13 +229,12 @@ test('repeat protection is consecutive and nested arguments are canonicalized', 
   assert.equal(state.checkToolCall('bash', { command: 'git status' }), undefined);
 });
 
-test('reasoning-only ceiling hits do not earn larger budgets', () => {
+test('ceiling hits escalate even when the turn made no edit progress', () => {
   const state = controller();
   state.onTurnStart(0);
-  assert.equal(state.afterTurn(2048).level, 'short');
-  state.onTurnStart(1);
-  state.onToolExecutionEnd('edit', false);
   assert.equal(state.afterTurn(2048).level, 'normal');
+  state.onTurnStart(1);
+  assert.equal(state.afterTurn(4096).level, 'deep');
   state.onTurnStart(2);
   assert.equal(state.afterTurn(100).level, 'short');
 });
