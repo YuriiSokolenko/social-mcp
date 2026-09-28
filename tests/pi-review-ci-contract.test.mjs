@@ -609,3 +609,20 @@ test('deterministic review failure routes directly to PR Fix instead of stopping
   assert.match(workflow, /name: Run independent review\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
   assert.match(workflow, /name: Apply review result\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
 });
+
+test('model-driven terminal workflows require a successful terminal tool marker', () => {
+  const workflows = [
+    ['pi-triage.yml', 'Require terminal triage result'],
+    ['pi-dispatcher.yml', 'Require terminal dispatcher result'],
+    ['pi-pr-review.yml', 'Require terminal review result'],
+    ['pi-pr-fix.yml', 'Require terminal repair result'],
+  ];
+  for (const [name, gate] of workflows) {
+    const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
+    assert.match(workflow, /PI_TERMINAL_RESULT_FILE/);
+    assert.ok(workflow.includes(gate), `${name}: missing terminal result gate`);
+    assert.match(workflow, /\[ ! -s "\$PI_TERMINAL_RESULT_FILE" \]/);
+  }
+  const dispatcherTool = fs.readFileSync('scripts/pi-dispatcher-result-tool.mjs', 'utf8');
+  assert.match(dispatcherTool, /terminalResult\('Result recorded\. Dispatch classification is complete; stop now\.'/);
+});

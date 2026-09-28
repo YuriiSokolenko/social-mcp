@@ -24,6 +24,7 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       PI_BASH_TIMEOUT_SECONDS: '600'
+      PI_TERMINAL_RESULT_FILE: ${{ runner.temp }}/pi-terminal-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout trusted dev
@@ -77,6 +78,14 @@ jobs:
             "$(cat "$TASK_FILE")" \
           | tee "$RUNNER_TEMP/pi-dispatcher-result.jsonl" \
           | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+
+      - name: Require terminal dispatcher result
+        if: steps.prepare.outputs.run == 'true'
+        run: |
+          if [ ! -s "$PI_TERMINAL_RESULT_FILE" ]; then
+            echo "::error::Dispatcher exited without a successful submit_result."
+            exit 1
+          fi
 
       - name: Validate and start selected issues
         if: steps.prepare.outputs.run == 'true'

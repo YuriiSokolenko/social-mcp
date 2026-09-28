@@ -28,6 +28,7 @@ jobs:
       PI_TRIAGE_BATCH_SIZE: '8'
       PI_REQUIRED_FIRST_READ_PATH: 'agents/triage/AGENTS.md'
       PI_FIXED_RESPONSE_MAX_TOKENS: '1000'
+      PI_TERMINAL_RESULT_FILE: ${{ runner.temp }}/pi-terminal-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout trusted dev
@@ -75,6 +76,14 @@ jobs:
             "$(cat "$TASK_FILE")" \
           | tee "$RUNNER_TEMP/pi-triage-result.jsonl" \
           | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+
+      - name: Require terminal triage result
+        if: steps.prepare.outputs.run == 'true'
+        run: |
+          if [ ! -s "$PI_TERMINAL_RESULT_FILE" ]; then
+            echo "::error::Triage exited without a successful submit_result."
+            exit 1
+          fi
 
       - name: Validate and apply triage decisions
         if: steps.prepare.outputs.run == 'true'

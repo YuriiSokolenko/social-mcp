@@ -52,6 +52,7 @@ jobs:
       PI_MAX_REPEAT_CALLS: '3'
       PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
       PI_MAX_PRE_COMPLEXITY_TURNS: '8'
+      PI_TERMINAL_RESULT_FILE: ${{ runner.temp }}/pi-terminal-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5
@@ -115,6 +116,14 @@ jobs:
             | tee "$RAW" | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
           jq -r '.text' "$RUNNER_TEMP/review-result.json"
+
+      - name: Require terminal review result
+        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
+        run: |
+          if [ ! -s "$PI_TERMINAL_RESULT_FILE" ]; then
+            echo "::error::Reviewer exited without a successful submit_result."
+            exit 1
+          fi
 
       - name: Apply review result
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'

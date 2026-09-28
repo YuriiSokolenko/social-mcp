@@ -1,4 +1,8 @@
+import { writeFileSync } from 'node:fs';
+
 export function terminalResult(text, details) {
+  const marker = process.env.PI_TERMINAL_RESULT_FILE;
+  if (marker) writeFileSync(marker, 'submitted\n', { encoding: 'utf8', mode: 0o600 });
   return { content: [{ type: 'text', text }], details, terminate: true };
 }
 

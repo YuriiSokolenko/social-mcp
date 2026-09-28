@@ -33,6 +33,7 @@ jobs:
       PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
       PI_MAX_PRE_COMPLEXITY_TURNS: '8'
       PI_MAX_REPEAT_CALLS: '3'
+      PI_TERMINAL_RESULT_FILE: ${{ runner.temp }}/pi-terminal-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5
@@ -87,6 +88,14 @@ jobs:
           set -o pipefail
           cd "$JOB_DIR"
           pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-repair-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session             "Read agents/repair/AGENTS.md, then read the complete original issue JSON from ${ISSUE_CONTEXT}. Repair PR #${PR} for issue #${ISSUE}. The worktree was preflight-synced with current dev; if merge conflicts remain, resolve them first. Work only from the PR branch and current repository evidence. Make the smallest correct change. Finish by calling submit_repair; it integrates current dev and validates the final tree. If it reports merge conflicts or failing checks, resolve them in this same session and retry submit_repair until it succeeds. Do not push or modify GitHub state yourself."             | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+
+      - name: Require terminal repair result
+        if: steps.load.outputs.skip != 'true'
+        run: |
+          if [ ! -s "$PI_TERMINAL_RESULT_FILE" ]; then
+            echo "::error::PR Fix exited without a successful submit_repair."
+            exit 1
+          fi
 
       - name: Verify and publish repair
         id: publish

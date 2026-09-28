@@ -1,5 +1,5 @@
 import { Type } from 'typebox';
-import { registerSubmitNudge } from './pi-common/terminal-result.mjs';
+import { registerSubmitNudge, terminalResult } from './pi-common/terminal-result.mjs';
 import { validateDispatch } from './pi-dispatcher.mjs';
 
 // Same prototype as pi-architect-result-tool.mjs, adapted for the dispatcher's
@@ -21,7 +21,7 @@ export default function (pi) {
       const result = validateDispatch(params);
       pi.appendEntry('dispatcher-result', result);
       submitted = true;
-      return { content: [{ type: 'text', text: 'Result recorded.' }], details: undefined };
+      return terminalResult('Result recorded. Dispatch classification is complete; stop now.', undefined);
     },
   });
 
