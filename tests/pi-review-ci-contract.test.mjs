@@ -522,7 +522,8 @@ test('implementer prepares plan and complexity before tiny known-path work', () 
     'Read this `agents/implementer/AGENTS.md`',
     'Use the issue title/body already supplied in the prompt',
     'Call `prepare_implementation` exactly once',
-    'Execute plan step 1 immediately',
+    'If the initial prompt says saved checkpoint/issue-branch changes were replayed',
+    'Otherwise execute plan step 1 immediately',
   ];
   let previous = -1;
   for (const marker of contract) {
@@ -542,7 +543,11 @@ test('implementer prepares plan and complexity before tiny known-path work', () 
   assert.match(runtime, /controller\.complexity !== 'trivial'/);
   assert.match(runtime, /trivialLookupUsed/);
   assert.match(runtime, /trivialRepoLookup/);
-  assert.match(trivialLookup, /git', \['ls-files', '-z'\]/);
+  assert.match(trivialLookup, /const DEV_REF = 'origin\/dev'/);
+  assert.match(trivialLookup, /git', \['ls-tree', '-r', '-l', '-z', DEV_REF\]/);
+  assert.doesNotMatch(trivialLookup, /\['ls-files'/);
+  assert.match(agent, /exactTextFoundInDev/);
+  assert.match(agent, /resumed checkpoint\/current-worktree changes/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /1–8 ordered concrete steps/);
   assert.match(planner, /do not classify complexity/i);
