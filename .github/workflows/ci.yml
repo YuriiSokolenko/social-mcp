@@ -67,6 +67,7 @@ jobs:
       - name: Generate ephemeral test encryption key
         shell: bash
         run: |
+          pip install --quiet "cryptography>=45,<47"
           python - <<'PY' >> "$GITHUB_ENV"
           from cryptography.fernet import Fernet
           print(f"TOKEN_ENCRYPTION_KEY={Fernet.generate_key().decode()}")
