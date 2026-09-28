@@ -36,6 +36,8 @@ Follow this sequence exactly:
    - The main agent receives only the prepared plan and complexity. Do not call either child manually and do not re-run task-level classification.
 4. Execute plan step 1 immediately.
 
+Once the next repository mutation is known and enough evidence exists, call `edit` or `write` immediately. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a bounded read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
+
 Do not modify repository files before step 4.
 
 The initial prompt already contains the relevant subagent catalog. Do not call `subagent(action:"list")`. If later delegation is actually needed and the generic tool is hidden, call `subagents_enable` once and then call the named agent directly.
