@@ -34,7 +34,7 @@ Follow this sequence exactly:
    - Do not draft implementation code in prose.
 4. Call `classify_task_complexity` once with the short plan.
    - The runtime delegates to the project `complexity-classifier` through pi-subagents structured delegation.
-   - The child has a zero-tool budget and receives only the issue title/body plus the short plan.
+   - The child has no repository tools; its single allowed tool call is reserved for the injected `structured_output` return path. It receives only the issue title/body plus the short plan.
    - The runtime schema-validates `{ complexity, reason }`, records the complexity itself, and returns only that compact result.
    - Do **not** call `subagents_enable`, `subagent`, or `declare_task_complexity` for task-level classification.
 5. Execute the first plan item.
@@ -94,7 +94,7 @@ Main always owns:
 - conflict-resolution mutations;
 - `submit_result`.
 
-The runtime-owned `classify_task_complexity` action is the only task-level classification path. The `complexity-classifier` only classifies and cannot use tools. `scout` only gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
+The runtime-owned `classify_task_complexity` action is the only task-level classification path. The `complexity-classifier` only classifies and has no repository tools; the runtime permits only its structured-result return call. `scout` only gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
 
 If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. Call `submit_result` with `already_satisfied: true` and `changes: []`.
 
