@@ -35,7 +35,7 @@ export async function preparePr(prNumber) {
     throw new Error(`PR #${prNumber} is not an open same-repository pi/issue-N PR targeting dev`);
   }
 
-  const issueNumber = issueNumber;
+  const issueNumber = Number(match[1]);
   const labels = prLabelNames(pr);
   if (labels.includes('pi:needs-human')) {
     return { skip: true, reason: 'needs-human', pr: prNumber, issue: issueNumber, head: pr.head.sha, branch };
