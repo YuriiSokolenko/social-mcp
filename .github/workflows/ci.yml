@@ -8,7 +8,9 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
+  issues: write
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.sha }}
@@ -107,6 +109,11 @@ jobs:
         with:
           persist-credentials: false
           ref: dev
+
+      - name: Finalize merged issue after green dev CI
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pi-post-merge.mjs "$GITHUB_SHA"
 
       - name: Continue merge queue after green dev CI
         env:
