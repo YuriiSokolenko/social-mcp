@@ -39,7 +39,7 @@ test('bounded orientation is allowed before required complexity declaration', ()
   assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
 });
 
-test('required complexity forces implementation after two post-plan inspections', () => {
+test('required complexity makes the first post-plan tool call an edit', () => {
   const guard = new LoopGuard({
     turnLimit: 100,
     repeatThreshold: 3,
@@ -47,11 +47,15 @@ test('required complexity forces implementation after two post-plan inspections'
     preComplexityAllowedTools: ['read', 'bash'],
   });
   guard.setComplexity('normal');
-  assert.equal(guard.checkToolCall('read', { path: 'src/a.py' }), undefined);
-  assert.equal(guard.checkToolCall('bash', { command: 'grep -n target src/b.py' }), undefined);
-  const blocked = guard.checkToolCall('read', { path: 'src/c.py' });
-  assert.equal(blocked.block, true);
-  assert.match(blocked.reason, /make the first repository edit now/);
+  for (const [toolName, input] of [
+    ['read', { path: 'src/a.py' }],
+    ['bash', { command: 'grep -n target src/b.py' }],
+    ['set_response_budget', { budget: 'normal' }],
+  ]) {
+    const blocked = guard.checkToolCall(toolName, input);
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /next tool call must make the first repository edit/);
+  }
   assert.equal(guard.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   assert.equal(guard.checkToolCall('read', { path: 'src/c.py' }), undefined);
 });
