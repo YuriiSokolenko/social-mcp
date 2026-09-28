@@ -77,7 +77,13 @@ export async function upsertPullRequest({ issue, issueTitle, resultFile, owner }
     throw new Error('Implementer result metadata is required before PR publication');
   }
   const metadata = JSON.parse(fs.readFileSync(resultFile,'utf8'));
-  const changes = metadata.changes?.length ? metadata.changes.map(x=>`- ${x}`).join('\n') : '- See the diff for implementation details.';
+  if (typeof metadata.title !== 'string' || !metadata.title.trim() ||
+      typeof metadata.summary !== 'string' || !metadata.summary.trim() ||
+      !Array.isArray(metadata.changes) || !metadata.changes.length ||
+      !metadata.changes.every(item => typeof item === 'string' && item.trim())) {
+    throw new Error('Implementer result metadata is incomplete');
+  }
+  const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
   const tests = '- pytest: passed\n- ruff check .: passed\n- git diff --check: passed\n- The merged result is validated by the normal CI run on dev after merge.';
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
   if (existing[0]) {
