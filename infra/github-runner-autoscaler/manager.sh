@@ -31,10 +31,18 @@ CURL_TIMEOUT_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time 
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 AUTH=(
-  -H "Authorization: Bearer ${GH_ADMIN_TOKEN}"
   -H "Accept: application/vnd.github+json"
   -H "X-GitHub-Api-Version: 2026-03-10"
 )
+
+# GH_ADMIN_TOKEN must never land in a curl argv -H flag: argv is visible to
+# any local user on the host via `ps aux`/`/proc/<pid>/cmdline` for the call's
+# duration. Feed it to curl as a config line via -K instead; every real curl
+# call below passes it through process substitution so the token touches no
+# argv and no file on disk.
+auth_header() {
+  printf 'header = "Authorization: Bearer %s"\n' "${GH_ADMIN_TOKEN}"
+}
 
 log() {
   printf '[manager] %s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -65,11 +73,11 @@ run_with_timeout() {
 }
 
 api_get() {
-  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" "${AUTH[@]}" "$1"
+  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) "${AUTH[@]}" "$1"
 }
 
 registration_token() {
-  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -X POST "${AUTH[@]}"     "${API}/actions/runners/registration-token" | jq -r '.token'
+  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X POST "${AUTH[@]}" "${API}/actions/runners/registration-token" | jq -r '.token'
 }
 
 queued_jobs() {
@@ -114,7 +122,7 @@ cleanup_stale_registrations() {
       continue
     fi
     log "removing stale GitHub runner registration id=$id"
-    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || true
+    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || true
   done <<< "$registrations"
 }
 
