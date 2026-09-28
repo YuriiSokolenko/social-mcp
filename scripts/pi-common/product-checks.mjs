@@ -6,10 +6,11 @@ import { runProcess } from './process.mjs';
  * wedged test runner cannot consume the whole workflow timeout.
  */
 function run(command, args) {
-  runProcess(command, args, {
-    stdio: 'inherit',
+  const result = runProcess(command, args, {
     timeoutSeconds: Number(process.env.PI_PRODUCT_CHECK_TIMEOUT_SECONDS ?? 900),
   });
+  if (result.out) process.stdout.write(`${result.out}\n`);
+  if (result.err) process.stderr.write(`${result.err}\n`);
 }
 
 export function runProductChecks() {
