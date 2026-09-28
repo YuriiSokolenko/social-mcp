@@ -1,7 +1,128 @@
+import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+
 import { Type } from 'typebox';
 
 import { ProgressController } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
+
+const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
+const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
+
+const COMPLEXITY_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    complexity: { type: 'string', enum: ['trivial', 'normal', 'complex'] },
+    reason: { type: 'string', minLength: 1, maxLength: 300 },
+  },
+  required: ['complexity', 'reason'],
+  additionalProperties: false,
+});
+
+function implementerIssueContext(env = process.env) {
+  const contextFile = env.PI_ISSUE_CONTEXT;
+  if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for runtime complexity classification');
+  const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
+  return {
+    title: String(context.title ?? ''),
+    body: String(context.body ?? ''),
+  };
+}
+
+function validateComplexityValue(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Complexity classifier returned a non-object structured result');
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes('complexity') || !keys.includes('reason')) {
+    throw new Error('Complexity classifier returned unexpected structured fields');
+  }
+  if (!['trivial', 'normal', 'complex'].includes(value.complexity)) {
+    throw new Error(`Complexity classifier returned invalid complexity: ${String(value.complexity)}`);
+  }
+  const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
+  if (!reason || reason.length > 300) throw new Error('Complexity classifier returned an invalid reason');
+  return { complexity: value.complexity, reason };
+}
+
+function classifierTask(plan, env = process.env) {
+  const issue = implementerIssueContext(env);
+  return `Classify only the supplied issue and parent execution plan. Do not inspect the repository or solve the task.
+
+Issue title:
+${issue.title}
+
+Issue body:
+${issue.body}
+
+Parent execution plan:
+${plan}`;
+}
+
+async function runStructuredComplexityClassifier(pi, ctx, config, plan, signal) {
+  const requestId = randomUUID();
+  const ownerRunId = ctx.sessionManager.getSessionId();
+  const nodeId = 'task-complexity';
+  const timeoutMs = Number(config.complexityClassifierTimeoutMs ?? 120000);
+
+  const response = await new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    let unsubscribe = () => {};
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+      signal?.removeEventListener?.('abort', onAbort);
+    };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onAbort = () => finish(reject, new Error('Complexity classification was aborted'));
+
+    unsubscribe = pi.events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, (payload) => {
+      if (payload?.requestId !== requestId) return;
+      if (payload.status !== 'invalid_request' &&
+          (payload.ownerRunId !== ownerRunId || payload.nodeId !== nodeId)) return;
+      finish(resolve, payload);
+    });
+
+    timer = setTimeout(
+      () => finish(reject, new Error(`Complexity classifier did not return within ${timeoutMs} ms`)),
+      timeoutMs + 5000,
+    );
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+
+    pi.events.emit(SUBAGENT_DELEGATION_REQUEST_EVENT, {
+      requestId,
+      ownerRunId,
+      nodeId,
+      agent: config.complexityClassifierAgent,
+      task: classifierTask(plan),
+      context: 'fresh',
+      cwd: ctx.cwd,
+      timeoutMs,
+      toolBudget: { hard: 0, block: '*' },
+      intercomBridge: { mode: 'off' },
+      result: { kind: 'structured', schema: COMPLEXITY_SCHEMA },
+    });
+  });
+
+  if (response.status !== 'completed') {
+    throw new Error(`Complexity classifier failed: ${response.error || response.status}`);
+  }
+  if (response.result?.kind !== 'structured') {
+    throw new Error('Complexity classifier did not return a structured result');
+  }
+
+  return {
+    ...validateComplexityValue(response.result.value),
+    usage: response.usage ?? null,
+  };
+}
 
 // Single runtime controller for every model-driven stage. It owns orientation,
 // task-complexity declaration, repeat/turn safety and per-response output budget.
@@ -22,11 +143,45 @@ export default function (pi) {
     await applyBudget('short', ctx);
   });
 
-  if (controller.requireComplexity) {
+  if (controller.requireComplexity && config.complexityClassifierAgent) {
+    pi.registerTool({
+      name: 'classify_task_complexity',
+      label: 'Classify task complexity',
+      description: 'Classify task complexity through a runtime-owned, zero-tool pi-subagents child. Pass only the short parent execution plan. The runtime validates the structured result and records complexity automatically; no raw child output is returned.',
+      parameters: Type.Object({
+        plan: Type.String({
+          minLength: 1,
+          maxLength: 6000,
+          description: 'The short top-level execution plan already written from the supplied issue text',
+        }),
+      }),
+      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+        const classified = await runStructuredComplexityClassifier(pi, ctx, config, params.plan, signal);
+        const result = controller.setComplexity(classified.complexity);
+        console.log(`PI_COMPLEXITY ${JSON.stringify({
+          stage,
+          complexity: classified.complexity,
+          reason: classified.reason,
+          usage: classified.usage,
+        })}`);
+        return {
+          content: [{
+            type: 'text',
+            text: `Complexity set to ${result.complexity}: ${classified.reason} Execute the plan now.`,
+          }],
+          details: {
+            ...result,
+            reason: classified.reason,
+            classifierUsage: classified.usage,
+          },
+        };
+      },
+    });
+  } else if (controller.requireComplexity) {
     pi.registerTool({
       name: 'declare_task_complexity',
       label: 'Declare task complexity',
-      description: 'Record the trivial, normal, or complex classification returned by the required complexity classifier. Do not re-evaluate it in the parent. Complexity is planning metadata only; it does not change tool quotas or response budgets.',
+      description: 'Record the trivial, normal, or complex classification. Complexity is planning metadata only; it does not change tool quotas or response budgets.',
       parameters: Type.Object({
         complexity: Type.Union([
           Type.Literal('trivial'),
