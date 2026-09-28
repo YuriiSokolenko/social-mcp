@@ -29,12 +29,11 @@ run_with_timeout 5 true || fail 'run_with_timeout must succeed for a command wel
 
 api_get() {
   case "$1" in
-    *first.yml*status=pending*) if [[ "${FIRST_PENDING_RESPONSE+x}" ]]; then printf '%s' "$FIRST_PENDING_RESPONSE"; else printf '%s' '{"total_count":1}'; fi ;;
-    *second.yml*status=pending*) if [[ "${SECOND_PENDING_RESPONSE+x}" ]]; then printf '%s' "$SECOND_PENDING_RESPONSE"; else printf '%s' '{"total_count":0}'; fi ;;
-    *first.yml*) if [[ "${FIRST_RESPONSE+x}" ]]; then printf '%s' "$FIRST_RESPONSE"; else printf '%s' '{"total_count":2}'; fi ;;
-    *second.yml*)
-      if [[ "${SECOND_FAIL:-0}" == 1 ]]; then return 22; fi
-      if [[ "${SECOND_RESPONSE+x}" ]]; then printf '%s' "$SECOND_RESPONSE"; else printf '%s' '{"total_count":1}'; fi ;;
+    */actions/runs?status=queued*)
+      if [[ "${QUEUED_FAIL:-0}" == 1 ]]; then return 22; fi
+      if [[ "${QUEUED_RESPONSE+x}" ]]; then printf '%s' "$QUEUED_RESPONSE"; else printf '%s' '{"total_count":3}'; fi ;;
+    */actions/runs?status=pending*)
+      if [[ "${PENDING_RESPONSE+x}" ]]; then printf '%s' "$PENDING_RESPONSE"; else printf '%s' '{"total_count":1}'; fi ;;
     */actions/runners?*) if [[ "${RUNNERS_RESPONSE+x}" ]]; then printf '%s' "$RUNNERS_RESPONSE"; else printf '%s' '{"runners":[]}'; fi ;;
     *) fail "unexpected API request: $1" ;;
   esac
@@ -57,27 +56,26 @@ curl() {
   fi
 }
 
-WORKFLOW_FILES=first.yml,second.yml
 [[ "$(queued_jobs)" == 4 ]] || fail 'queued and pending run counts'
 
-SECOND_FAIL=1
+QUEUED_FAIL=1
 assert_failure queued_jobs
-unset SECOND_FAIL
+unset QUEUED_FAIL
 
 for invalid in 'null' '"abc"' '-1' '1.5' '"3"'; do
-  SECOND_RESPONSE="{\"total_count\":$invalid}"
+  QUEUED_RESPONSE="{\"total_count\":$invalid}"
   assert_failure queued_jobs
 done
-SECOND_RESPONSE=''
-unset SECOND_RESPONSE
+QUEUED_RESPONSE=''
+unset QUEUED_RESPONSE
 
-SECOND_PENDING_RESPONSE='{"total_count":"1"}'
+PENDING_RESPONSE='{"total_count":"1"}'
 assert_failure queued_jobs
-unset SECOND_PENDING_RESPONSE
+unset PENDING_RESPONSE
 
-FIRST_RESPONSE=''
+QUEUED_RESPONSE=''
 assert_failure queued_jobs
-unset FIRST_RESPONSE
+unset QUEUED_RESPONSE
 
 CONTAINER_NAMES=$'n150-pi-eph-10\nother-manager-11'
 [[ "$(active_containers)" == 1 ]] || fail 'container counting must use runner prefix'
@@ -90,13 +88,13 @@ cleanup_stale_registrations
 
 RUNNERS_RESPONSE='{"runners":null}'
 assert_failure cleanup_stale_registrations
-[[ "$(wc -l < "$DELETED_IDS")" == 1 ]] || fail 'invalid runner list caused deletion'
+[[ "$(wc -l < "$DELETED_IDS" | tr -d '[:space:]')" == 1 ]] || fail 'invalid runner list caused deletion'
 
 RUNNERS_RESPONSE='{"runners":[{"id":13,"name":"n150-pi-eph-13","status":"offline"}]}'
 DOCKER_FAIL=1
 assert_failure cleanup_stale_registrations
 assert_failure active_containers
-[[ "$(wc -l < "$DELETED_IDS")" == 1 ]] || fail 'Docker failure caused deletion'
+[[ "$(wc -l < "$DELETED_IDS" | tr -d '[:space:]')" == 1 ]] || fail 'Docker failure caused deletion'
 unset DOCKER_FAIL
 
 MODEL_STATUS_URL='http://model:3009/slots'
@@ -184,7 +182,7 @@ STATUS_RESPONSE=$'vllm:num_requests_waiting{model_name="a"} 0\nvllm:num_requests
 STATUS_RESPONSE='vllm:num_requests_running 0'
 assert_failure model_start_capacity 0
 
-SECOND_FAIL=1
+QUEUED_FAIL=1
 (
   spawn_runner() { fail 'spawned a runner after API failure'; }
   sleep() { exit 0; }

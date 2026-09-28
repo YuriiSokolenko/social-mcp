@@ -5,11 +5,19 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
 MAX_RUNNERS="${MAX_RUNNERS:-2}"
-POLL_SECONDS="${POLL_SECONDS:-10}"
+POLL_SECONDS="${POLL_SECONDS:-30}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
-WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-pr-fix.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}}"
+RUNNER_LABELS="${RUNNER_LABELS:-n150,pi-agent}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
+# Whether to seed the ephemeral worker with the Pi config (needed only by
+# pool that actually runs the Pi/LLM agent) and whether to give it the host
+# Docker socket (needed only by a pool whose jobs themselves run `docker`,
+# e.g. the CI `docker` job's `docker compose up`). One manager instance runs
+# per pool (see compose.yaml); these two flags are what tell an otherwise
+# identical manager/worker pair apart.
+MOUNT_PI_CONFIG="${MOUNT_PI_CONFIG:-true}"
+MOUNT_DOCKER_SOCKET="${MOUNT_DOCKER_SOCKET:-false}"
 MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 # This loop has no external supervisor for a hang (only `restart: unless-stopped`,
 # which never fires for a process that is alive but stuck). Every network or
@@ -22,10 +30,18 @@ CURL_TIMEOUT_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time 
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 AUTH=(
-  -H "Authorization: Bearer ${GH_ADMIN_TOKEN}"
   -H "Accept: application/vnd.github+json"
   -H "X-GitHub-Api-Version: 2026-03-10"
 )
+
+# GH_ADMIN_TOKEN must never land in a curl argv -H flag: argv is visible to
+# any local user on the host via `ps aux`/`/proc/<pid>/cmdline` for the call's
+# duration. Feed it to curl as a config line via -K instead; every real curl
+# call below passes it through process substitution so the token touches no
+# argv and no file on disk.
+auth_header() {
+  printf 'header = "Authorization: Bearer %s"\n' "${GH_ADMIN_TOKEN}"
+}
 
 log() {
   printf '[manager] %s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -56,27 +72,24 @@ run_with_timeout() {
 }
 
 api_get() {
-  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" "${AUTH[@]}" "$1"
+  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) "${AUTH[@]}" "$1"
 }
 
 registration_token() {
-  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -X POST "${AUTH[@]}"     "${API}/actions/runners/registration-token" | jq -r '.token'
+  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X POST "${AUTH[@]}" "${API}/actions/runners/registration-token" | jq -r '.token'
 }
 
 queued_jobs() {
-  local total=0 workflow status count
-  IFS=',' read -ra workflows <<< "${WORKFLOW_FILES}"
-  for workflow in "${workflows[@]}"; do
-    workflow="$(printf '%s' "$workflow" | xargs)"
-    [ -z "$workflow" ] && continue
-    for status in queued pending; do
-      count="$(api_get "${API}/actions/workflows/${workflow}/runs?status=${status}&per_page=100" | jq -er '.total_count | if type == "number" and . >= 0 and floor == . then . else error("invalid count") end')" || return 1
-      if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
-        log "warning: invalid run count for workflow=$workflow status=$status"
-        return 1
-      fi
-      total=$((total + count))
-    done
+  local total=0 status count
+  # Query all repository workflows in two requests instead of making two
+  # requests per configured workflow. queued and pending are disjoint states.
+  for status in queued pending; do
+    count="$(api_get "${API}/actions/runs?status=${status}&per_page=100" | jq -er '.total_count | if type == "number" and . >= 0 and floor == . then . else error("invalid count") end')" || return 1
+    if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      log "warning: invalid run count for status=$status"
+      return 1
+    fi
+    total=$((total + count))
   done
   printf '%s\n' "$total"
 }
@@ -105,7 +118,7 @@ cleanup_stale_registrations() {
       continue
     fi
     log "removing stale GitHub runner registration id=$id"
-    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || true
+    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || true
   done <<< "$registrations"
 }
 
@@ -184,17 +197,34 @@ model_start_capacity() {
 }
 
 spawn_runner() {
-  local token name
+  local token name docker_args
   token="$(registration_token)"
   name="${RUNNER_PREFIX}-$(date +%s)-$RANDOM"
 
-  log "starting ephemeral runner $name"
+  docker_args=(
+    -d --rm
+    --name "$name"
+    --label social-mcp.pi-runner=ephemeral
+    --network host
+    -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+    -e "RUNNER_TOKEN=$token"
+    -e "RUNNER_NAME=$name"
+    -e "RUNNER_LABELS=${RUNNER_LABELS}"
+  )
+  if [ "$MOUNT_PI_CONFIG" == true ]; then
+    docker_args+=(-v "${PI_CONFIG_DIR}:/pi-config-ro:ro")
+  fi
+  if [ "$MOUNT_DOCKER_SOCKET" == true ]; then
+    docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
+  fi
 
-  run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run -d --rm     --name "$name"     --label social-mcp.pi-runner=ephemeral     --network host     -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"     -e "RUNNER_TOKEN=$token"     -e "RUNNER_NAME=$name"     -v "${PI_CONFIG_DIR}:/pi-config-ro:ro"     "${RUNNER_IMAGE}" >/dev/null
+  log "starting ephemeral runner $name (labels=${RUNNER_LABELS})"
+
+  run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run "${docker_args[@]}" "${RUNNER_IMAGE}" >/dev/null
 }
 
 main() {
-  log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s workflows=${WORKFLOW_FILES}"
+  log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s labels=${RUNNER_LABELS}"
   while true; do
     cleanup_stale_registrations || log "warning: stale-runner cleanup failed"
 
