@@ -542,7 +542,7 @@ test('implementer delegates complexity but keeps tiny known-path operations loca
   assert.match(classifier, /trivial[\s\S]*normal[\s\S]*complex/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  assert.match(runtime, /toolBudget: \{ hard: 0, block: '\*' \}/);
+  assert.match(runtime, /toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /result: \{ kind: 'structured', schema: COMPLEXITY_SCHEMA \}/);
   assert.doesNotMatch(agent, /call `subagent` with `agent: "complexity-classifier"`/);
 });
