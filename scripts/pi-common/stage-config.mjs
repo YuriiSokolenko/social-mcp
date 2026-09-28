@@ -1,5 +1,18 @@
 import fs from 'node:fs';
 
+const IMPLEMENTER_SUBAGENT_CATALOG = `Available delegated agents (already known; do not call subagent(action:"list")):
+- implementation-planner — creates the startup implementation plan from issue title/body; prepare_implementation already invokes it.
+- complexity-classifier — classifies issue + prepared plan; prepare_implementation already invokes it.
+- scout — fast repository reconnaissance for unknown paths, symbols, usages, docs, logs, or broader evidence.
+- delegate — lightweight focused helper for a narrow delegated question.
+- reviewer — independent read-only review of code, diffs, plans, or evidence.
+- oracle — high-context read-only advisor for difficult consistency or architecture decisions.
+- researcher — focused web research when external/current evidence is genuinely required.
+- evidence-auditor — checks whether research claims are supported by sources.
+- worker — implementation specialist; do not use it as mutation owner in Implementer because main owns edits and submission.
+
+The generic subagent tool may be hidden until subagents_enable is called. If delegation is actually needed, enable it once and then call the named agent directly. Never spend a turn listing agents.`;
+
 const promptBuilders = Object.freeze({
   architect(env) {
     const root = env.RUNNER_TEMP;
@@ -45,9 +58,9 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
     const title = context.title ?? '';
     const body = context.body ?? '';
-    return `Follow agents/implementer/AGENTS.md exactly: first read agents/implementer/AGENTS.md, derive acceptance criteria only from the supplied issue text, and write a short execution plan of at most 1000 output tokens with no complexity labels.
+    return `Read and follow agents/implementer/AGENTS.md first. Do not write your own startup plan and do not inspect the repository before preparation.
 
-Before repository inspection or modification, call \`classify_task_complexity\` once with your short plan. The runtime itself delegates to the project \`complexity-classifier\` through pi-subagents structured delegation, validates the schema, and records the complexity. Do not call \`subagents_enable\`, \`subagent\`, or \`declare_task_complexity\` for task-level classification.
+Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (480 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity and should execute step 1 immediately.
 
 You are implementing GitHub issue #${issue} in the current repository.
 
@@ -58,17 +71,19 @@ Issue body:
 ${body}
 
 Work directly in the checked-out repository, always based on latest dev. dev is the only development base; never treat main as an alternative source tree.
-After complexity is declared:
+After preparation:
 - If one small target file is already known, the main agent may read it directly once with \`limit <= 200\`.
 - The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
-- If the path/symbol is unknown, more than one file must be inspected, patterns/usages must be searched, logs/diagnostics are involved, or broader command output is needed, delegate to the built-in \`scout\` (or package-owned \`run-ci\` for checks).
+- If the path/symbol is unknown, more than one file must be inspected, patterns/usages must be searched, logs/diagnostics are involved, or broader command output is needed, delegate to \`scout\` (or package-owned \`run-ci\` for checks).
 - \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
 - For scout requests, ask for the first sufficient answer, not the globally smallest/best match; require compact fixed-shape output.
 
-Main owns decisions, \`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Subagents gather evidence only. If delegated evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`.
+Main owns execution decisions, \`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Planning and task-level complexity are already owned by the startup subagents. If delegated evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`.
 
-Use the smallest implementation satisfying the issue. Do not commit, push, create PRs, or modify GitHub state. \`submit_result\` integrates latest dev and owns final git diff --check, full pytest, and Ruff validation. A successful \`submit_result\` is terminal.`;
-  },
+Use the smallest implementation satisfying the issue. Do not commit, push, create PRs, or modify GitHub state. \`submit_result\` integrates latest dev and owns final git diff --check, full pytest, and Ruff validation. A successful \`submit_result\` is terminal.
+
+${IMPLEMENTER_SUBAGENT_CATALOG}`;
+  }
 });
 
 export const STAGES = Object.freeze({
@@ -135,10 +150,13 @@ export const STAGES = Object.freeze({
     repeatThreshold: 3,
     requiredFirstReadPath: 'agents/implementer/AGENTS.md',
     requireComplexity: true,
+    implementationPlannerAgent: 'implementation-planner',
+    implementationPlannerMaxTokens: 480,
+    implementationPlannerTimeoutMs: 120000,
     complexityClassifierAgent: 'complexity-classifier',
     complexityClassifierTimeoutMs: 120000,
-    preComplexityTurnLimit: 8,
-    preComplexityAllowedTools: ['classify_task_complexity'],
+    preComplexityTurnLimit: 4,
+    preComplexityAllowedTools: ['prepare_implementation'],
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     directReadMaxLines: 200,
