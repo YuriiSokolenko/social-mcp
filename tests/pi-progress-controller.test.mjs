@@ -34,6 +34,41 @@ test('required operating contract is the first tool read', () => {
   assert.equal(state.checkToolCall('bash', { command: 'cat context.json' }), undefined);
 });
 
+test('pre-complexity turn budget starts after the required contract read', () => {
+  const state = controller({
+    requiredFirstReadPath: 'agents/implementer/AGENTS.md',
+    requireComplexity: true,
+    preComplexityAllowedTools: ['subagent'],
+    preComplexityTurnLimit: 2,
+  });
+  for (let turn = 0; turn < 6; turn += 1) {
+    state.onTurnStart(turn);
+    assert.equal(state.checkToolCall('bash', { command: 'pwd' }).block, true);
+  }
+  assert.equal(state.checkToolCall('read', { path: 'agents/implementer/AGENTS.md' }), undefined);
+  state.onTurnStart(6);
+  assert.equal(state.checkToolCall('subagent', { task: 'inspect target' }), undefined);
+  state.onTurnStart(7);
+  assert.match(state.checkToolCall('subagent', { task: 'inspect another target' }).reason, /declare_task_complexity/);
+});
+
+test('configured repository tools must be delegated after startup', () => {
+  const state = controller({
+    requiredFirstReadPath: 'agents/implementer/AGENTS.md',
+    requireComplexity: true,
+    preComplexityAllowedTools: [],
+    delegatedTools: ['read', 'bash', 'grep', 'find', 'ls'],
+    delegationTool: 'subagent',
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('read', { path: 'agents/implementer/AGENTS.md' }), undefined);
+  state.setComplexity('trivial');
+  for (const tool of ['read', 'bash', 'grep', 'find', 'ls']) {
+    assert.match(state.checkToolCall(tool, {}).reason, /subagent/);
+  }
+  assert.equal(state.checkToolCall('subagent', { task: 'find a file' }), undefined);
+  assert.equal(state.checkToolCall('edit', { path: 'README.md' }), undefined);
+});
 test('complexity is a bounded planning declaration, not an execution quota', () => {
   const state = controller({
     requireComplexity: true,
@@ -109,10 +144,12 @@ test('explicit response budget applies to one next response', () => {
 test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('dispatcher').maxTurns, 30);
   assert.equal(stageConfig('triage').fixedResponseMaxTokens, 1000);
-  for (const name of ['implementer', 'reviewer', 'repair']) {
-    assert.equal(stageConfig(name).requireComplexity, true);
-    assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
-  }
+  for (const name of ['implementer', 'reviewer', 'repair']) assert.equal(stageConfig(name).requireComplexity, true);
+  for (const name of ['reviewer', 'repair']) assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
+  assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, []);
+  assert.deepEqual(stageConfig('implementer').delegatedTools, ['read', 'bash', 'grep', 'find', 'ls']);
+  assert.equal(stageConfig('implementer').delegationTool, 'subagent');
+  assert.equal(stageConfig('implementer').subagent, true);
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
     assert.match(stageConfig(name).resultTool, /-result-tool\.mjs$/);
     assert.match(stageConfig(name).requiredFirstReadPath, /AGENTS\.md$/);
@@ -140,6 +177,7 @@ test('stage configuration owns every model prompt', () => {
       assert.match(prompt, /submit_(?:result|repair)/);
     }
     assert.match(stagePrompt('implementer', env), /Example issue[\s\S]*Acceptance criteria/);
+    assert.match(stagePrompt('implementer', env), /subagent/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
   } finally {

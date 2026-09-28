@@ -281,6 +281,11 @@ issue -> read -> grep -> read -> bash -> read -> reasoning
 
 ## Status
 
-This is a **research/design conclusion**, not yet a normative runtime or agent rule.
+Implemented for the **Implementer** runtime on **2026-09-28**:
 
-Implementation should be handled separately by updating the relevant agent prompts/runtime/tool permissions and validating the behavior on dedicated test issues.
+- the main Implementer keeps plan/decision/mutation/submit ownership;
+- repository reads, search, diagnostics, focused verification, Git inspection, docs and skills are routed through the isolated `subagent` tool;
+- direct main-agent `read`/`bash`/`grep`/`find`/`ls` calls are runtime-blocked after the mandatory `agents/implementer/AGENTS.md` read;
+- the pre-complexity turn budget starts only after that mandatory contract read, so blocked startup mistakes do not consume the orientation allowance.
+
+Issue #115 is the dedicated smoke test for this policy. Reviewer/Repair migration is intentionally separate from this Implementer test.

@@ -45,7 +45,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
     const title = context.title ?? '';
     const body = context.body ?? '';
-    return `Follow the startup sequence in agents/implementer/AGENTS.md exactly: read AGENTS.md, read this issue, inspect only directly relevant current-dev code, write a short execution plan of at most 1000 output tokens, then call declare_task_complexity before any repository modification or implementation work. A complex classification still means you implement this same issue to completion.
+    return `Follow the startup sequence in agents/implementer/AGENTS.md exactly: read AGENTS.md, use the supplied issue text below to identify acceptance criteria, write a short execution plan of at most 1000 output tokens, then call declare_task_complexity before repository inspection or modification. After complexity is declared, obtain repository facts through the subagent tool; the main agent must not call read/bash/grep/find/ls directly. A complex classification still means you implement this same issue to completion.
 
 You are implementing GitHub issue #${issue} in the current repository.
 
@@ -58,9 +58,9 @@ ${body}
 Work directly in the checked-out repository.
 The checked-out worktree is always based on the latest dev branch. dev is the only development base; never switch to, compare against, or treat main as an alternative source tree.
 Implement the issue completely with the smallest scope that satisfies its acceptance criteria.
-For an exact trivial edit, use the fast path from AGENTS.md: inspect only the target/relevant context, edit promptly, avoid unrelated skills/configuration/tests, and submit.
-Inspect broader code, architecture, and tests only when the issue's behavior or ambiguity requires it.
-If replayed checkpoint work left merge conflicts, follow the AGENTS.md startup sequence: inspect only the conflicting files and current-dev counterparts during orientation, make conflict resolution the first plan item, declare task complexity, then resolve that item immediately against current dev. Do not abandon current dev or inspect main as a replacement base.
+For an exact trivial edit, use the fast path from AGENTS.md: declare complexity, delegate one bounded repository-fact request when needed, edit promptly, delegate any useful post-change inspection, and submit.
+Use subagent for repository reads, search/navigation, existing-pattern research, logs/diagnostics, focused checks, read-only Git inspection, project docs/skills, and post-change diff inspection. Ask bounded questions and consume compact conclusions rather than raw repository output.
+If replayed checkpoint work left merge conflicts, keep conflict resolution as the first implementation item; after complexity declaration use subagent to inspect only the conflicting/current-dev evidence needed, then resolve it in the main agent. Do not abandon current dev or inspect main as a replacement base.
 Add or update tests when executable behavior changes; do not manufacture tests merely to restate an exact static artifact.
 Before submission run only useful focused checks. Do not run full pytest or full Ruff just before submit_result.
 submit_result owns the authoritative final git diff --check, full pytest, and Ruff validation after integrating latest dev.
@@ -136,7 +136,10 @@ export const STAGES = Object.freeze({
     requiredFirstReadPath: 'agents/implementer/AGENTS.md',
     requireComplexity: true,
     preComplexityTurnLimit: 8,
-    preComplexityAllowedTools: ['read', 'bash'],
+    preComplexityAllowedTools: [],
+    delegatedTools: ['read', 'bash', 'grep', 'find', 'ls'],
+    delegationTool: 'subagent',
+    subagent: true,
     prompt: promptBuilders.implementer,
   },
 });

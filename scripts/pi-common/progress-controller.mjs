@@ -45,6 +45,9 @@ export class ProgressController {
     );
     this.requiredFirstReadPath = env.PI_REQUIRED_FIRST_READ_PATH || config.requiredFirstReadPath || null;
     this.requiredFirstReadDone = !this.requiredFirstReadPath;
+    this.complexityTurnBase = this.requiredFirstReadDone ? 0 : null;
+    this.delegatedTools = new Set(config.delegatedTools ?? []);
+    this.delegationTool = config.delegationTool ?? 'subagent';
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
     if (this.fixedMaxTokens && (!Number.isSafeInteger(this.fixedMaxTokens) || this.fixedMaxTokens < 1)) {
@@ -97,17 +100,24 @@ export class ProgressController {
         (requestedPath === this.requiredFirstReadPath || requestedPath.endsWith(`/${this.requiredFirstReadPath}`));
       if (!allowed) return { block: true, reason: `First read the required operating contract: ${this.requiredFirstReadPath}` };
       this.requiredFirstReadDone = true;
+      this.complexityTurnBase = this.absoluteTurn;
+      return undefined;
     }
 
     if (toolName === 'declare_task_complexity') return undefined;
 
     if (this.requireComplexity && !this.complexity) {
-      if (this.absoluteTurn >= this.preComplexityTurnLimit) {
-        return { block: true, reason: `Startup orientation used ${this.preComplexityTurnLimit} model turns. Stop exploring and call declare_task_complexity now.` };
+      const preComplexityTurns = Math.max(0, this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn));
+      if (preComplexityTurns >= this.preComplexityTurnLimit) {
+        return { block: true, reason: `Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Stop exploring and call declare_task_complexity now.` };
       }
       if (!this.preComplexityAllowedTools.has(toolName)) {
         return { block: true, reason: 'Before complexity declaration, use only the bounded orientation tools, then declare complexity and execute the plan.' };
       }
+    }
+
+    if (this.delegatedTools.has(toolName)) {
+      return { block: true, reason: `The main agent must not use ${toolName} directly. Delegate repository inspection, search, diagnostics, and verification through ${this.delegationTool}.` };
     }
 
     if (this.absoluteTurn >= this.turnLimit && !FINISH_TOOLS.has(toolName)) {
