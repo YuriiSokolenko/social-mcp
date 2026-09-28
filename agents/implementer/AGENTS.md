@@ -32,13 +32,12 @@ Follow this sequence exactly:
    - Ordered concrete actions only.
    - Do **not** assign complexity labels to plan items.
    - Do not draft implementation code in prose.
-4. Delegate **task-level complexity** to `complexity-classifier`.
-   - If only `subagents_enable` is available, call it once.
-   - Then call `subagent` with `agent: "complexity-classifier"`, `async: false`, and `output: "inline"`.
-   - Give it only the issue title/body and the short plan. Do not ask it to inspect the repository.
-   - It returns `trivial`, `normal`, or `complex` plus one short reason.
-5. Immediately call `declare_task_complexity` with that result. Do not debate or reinterpret the classifier in the main context.
-6. Execute the first plan item.
+4. Call `classify_task_complexity` once with the short plan.
+   - The runtime delegates to the project `complexity-classifier` through pi-subagents structured delegation.
+   - The child has a zero-tool budget and receives only the issue title/body plus the short plan.
+   - The runtime schema-validates `{ complexity, reason }`, records the complexity itself, and returns only that compact result.
+   - Do **not** call `subagents_enable`, `subagent`, or `declare_task_complexity` for task-level classification.
+5. Execute the first plan item.
 
 Do not modify repository files before step 5 completes.
 
@@ -95,17 +94,17 @@ Main always owns:
 - conflict-resolution mutations;
 - `submit_result`.
 
-The `complexity-classifier` only classifies. `scout` only gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
+The runtime-owned `classify_task_complexity` action is the only task-level classification path. The `complexity-classifier` only classifies and cannot use tools. `scout` only gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
 
 If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. Call `submit_result` with `already_satisfied: true` and `changes: []`.
 
 For a tiny task with a known target, prefer:
 
-`AGENTS.md → plan → classifier → declare_task_complexity → one bounded read → edit → bounded git diff → submit_result`
+`AGENTS.md → plan → classify_task_complexity → one bounded read → edit → bounded git diff → submit_result`
 
 If the target is unknown:
 
-`AGENTS.md → plan → classifier → declare_task_complexity → one compact edit-ready scout → edit → bounded git diff → submit_result`
+`AGENTS.md → plan → classify_task_complexity → one compact edit-ready scout → edit → bounded git diff → submit_result`
 
 For normal/complex work, delegate only the exploratory parts that would otherwise grow the main context. Do not launch a subagent for a fact already present in the main context.
 
