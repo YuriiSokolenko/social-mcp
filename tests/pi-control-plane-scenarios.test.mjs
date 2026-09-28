@@ -169,3 +169,12 @@ test('dispatcher-ready label event is the only normal wake after architect publi
   assert.match(dispatcher, /github\.event\.label\.name == 'dispatcher:ready'/);
   assert.doesNotMatch(architect, /dispatchWorkflow\('pi-dispatcher\.yml'/);
 });
+
+test('manual Implementer dispatch bypasses pi:ready while Dispatcher keeps the strict ready gate', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const dispatcher = fs.readFileSync('scripts/pi-dispatcher.mjs', 'utf8');
+  assert.match(workflow, /require_ready:/);
+  assert.match(workflow, /MODE="plain"/);
+  assert.match(workflow, /ACTION="running-manual"/);
+  assert.match(dispatcher, /dispatchWorkflow\("pi-issue-agent\.yml", \{ issue_number: String\(number\), require_ready: true \}\)/);
+});

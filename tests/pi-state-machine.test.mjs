@@ -136,3 +136,11 @@ test('stopped transition removes pipeline ownership and preserves unrelated labe
   assert.throws(() => validateIssueTransition(issue('open', []), 'stopped'), /pi:running or architect:ready/);
   assert.throws(() => validateIssueTransition(issue('open', ['dispatcher:ready']), 'stopped'), /pi:running or architect:ready/);
 });
+
+test('manual implementer start can claim an open issue without pi:ready but cannot steal PR or Architect ownership', () => {
+  assert.equal(validateIssueTransition(issue('open', []), 'running-manual'), 'pi:running');
+  assert.equal(validateIssueTransition(issue('open', ['dispatcher:ready']), 'running-manual'), 'pi:running');
+  assert.equal(validateIssueTransition(issue('open', ['pi:needs-human']), 'running-manual'), 'pi:running');
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:mr-created']), 'running-manual'), /cannot steal/);
+  assert.throws(() => validateIssueTransition(issue('open', ['architect:ready']), 'running-manual'), /cannot steal/);
+});

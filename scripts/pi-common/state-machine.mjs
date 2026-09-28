@@ -90,6 +90,7 @@ export const ISSUE_TRANSITIONS = Object.freeze({
   ready: PIPELINE_LABELS.ready,
   'architect-ready': PIPELINE_LABELS.architectReady,
   running: PIPELINE_LABELS.running,
+  'running-manual': PIPELINE_LABELS.running,
   'mr-created': PIPELINE_LABELS.pr,
   'needs-human': PIPELINE_LABELS.needsHuman,
   stopped: null,
@@ -127,6 +128,10 @@ export function validateIssueTransition(issue, action) {
   }
   if (action === 'running' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running)) {
     throw new Error('running requires pi:ready or an idempotent pi:running state');
+  }
+  if (action === 'running-manual' &&
+      (labels.has(PIPELINE_LABELS.pr) || labels.has(PIPELINE_LABELS.architectReady))) {
+    throw new Error('running-manual cannot steal pi:mr-created or architect:ready ownership');
   }
   if (action === 'mr-created' && !labels.has(PIPELINE_LABELS.running) && !labels.has(PIPELINE_LABELS.pr)) {
     throw new Error('mr-created requires pi:running or an idempotent pi:mr-created state');

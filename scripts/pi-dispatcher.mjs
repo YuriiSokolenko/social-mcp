@@ -165,7 +165,7 @@ async function main() {
 
     await transitionIssue(number, "ready");
     try {
-      await dispatchWorkflow("pi-issue-agent.yml", { issue_number: String(number) });
+      await dispatchWorkflow("pi-issue-agent.yml", { issue_number: String(number), require_ready: true });
     } catch (error) {
       try {
         await transitionIssue(number, "queued");

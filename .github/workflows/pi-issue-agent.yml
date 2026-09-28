@@ -8,6 +8,11 @@ on:
         description: Issue number to implement
         required: true
         type: number
+      require_ready:
+        description: Require pi:ready preflight (used by Dispatcher)
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: write
@@ -42,9 +47,12 @@ jobs:
         id: preflight
         env:
           GH_TOKEN: ${{ github.token }}
+          REQUIRE_READY: ${{ inputs.require_ready }}
         run: |
           ISSUE_CONTEXT="$RUNNER_TEMP/pi-issue-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
-          node "$GITHUB_WORKSPACE/scripts/pi-common/issue-context.mjs" "$ISSUE" "$ISSUE_CONTEXT"
+          MODE="plain"
+          if [ "$REQUIRE_READY" = "true" ]; then MODE="ready"; fi
+          node "$GITHUB_WORKSPACE/scripts/pi-common/issue-context.mjs" "$ISSUE" "$ISSUE_CONTEXT" "$MODE"
           echo "PI_ISSUE_CONTEXT=$ISSUE_CONTEXT" >> "$GITHUB_ENV"
 
       - name: Ensure workflow labels
@@ -55,7 +63,11 @@ jobs:
       - name: Mark issue running
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue running
+          REQUIRE_READY: ${{ inputs.require_ready }}
+        run: |
+          ACTION="running-manual"
+          if [ "$REQUIRE_READY" = "true" ]; then ACTION="running"; fi
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue "$ACTION"
 
       - name: Create temporary issue worktree
         id: worktree
