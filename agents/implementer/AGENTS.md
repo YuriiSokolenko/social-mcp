@@ -135,7 +135,7 @@ Every session starts at **SHORT (2048)**.
 - **NORMAL / 4096** — ordinary diagnosis or modest implementation reasoning.
 - **DEEP / 8192** — difficult debugging/synthesis or conflict resolution.
 
-Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Any response below its ceiling resets the following response to SHORT. Hitting the active ceiling promotes the next response automatically: SHORT → NORMAL → DEEP; a DEEP ceiling hit resets to SHORT.
+Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Hitting the active ceiling promotes the next response automatically: SHORT → NORMAL → DEEP; a DEEP ceiling hit resets to SHORT. A short intermediate turn that actually calls a tool preserves an already elevated NORMAL/DEEP budget for the following response; a short turn without a tool resets the following response to SHORT.
 
 Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 768 output tokens. If it misses the required structured-output call, the runtime retries that planner internally once; main still calls `prepare_implementation` only once.
 
