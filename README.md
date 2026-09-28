@@ -237,3 +237,4 @@ Architecture decisions are recorded under `docs/adr/`.
 ## Status
 
 Architecture and Threads MCP tool contract are defined. No application credentials or platform secrets are stored in this repository.
+Subagent edit-ready delegation test passed.
