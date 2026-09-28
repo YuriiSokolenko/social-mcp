@@ -26,7 +26,10 @@ from social_mcp.server.capabilities import (
     SCOPE_BASIC,
     SCOPE_CONTENT,
 )
-from social_mcp.server.errors import AUTHENTICATION_REQUIRED
+from social_mcp.server.errors import (
+    AUTHENTICATION_REQUIRED,
+    PLATFORM_ERROR,
+)
 from social_mcp.server.server import (
     _CAPABILITIES_TOOL_NAME,
     create_mcp_server,
@@ -224,6 +227,22 @@ async def test_provider_returning_none_each_call_yields_is_error() -> None:
 
     assert result.is_error is True
     assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_raising_unknown_error_is_normalized_to_platform_error() -> None:
+    """A non-McpError exception from the account provider is normalized into an
+    is_error result carrying the platform_error category, not a crash."""
+
+    async def provider() -> ConnectedAccount | None:
+        raise RuntimeError("unexpected adapter failure")
+
+    server = create_mcp_server(provider)
+    result = await _call_tool(server, _CAPABILITIES_TOOL_NAME)
+
+    assert result.is_error is True
+    text = _tool_text(result)
+    assert PLATFORM_ERROR in text
 
 
 @pytest.mark.asyncio
