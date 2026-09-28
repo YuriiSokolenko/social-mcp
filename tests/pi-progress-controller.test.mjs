@@ -57,28 +57,34 @@ test('scout child response budget mirrors the main response ceiling', async () =
   }
 });
 
-test('implementer exposes one runtime-owned complexity action before repository work', () => {
+test('implementer exposes one runtime-owned preparation action before repository work', () => {
   const state = controller({
     requireComplexity: true,
-    preComplexityAllowedTools: ['classify_task_complexity'],
+    preComplexityAllowedTools: ['prepare_implementation'],
   });
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('classify_task_complexity', { plan: 'Make the smallest requested change.' }), undefined);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
   assert.match(state.checkToolCall('subagents_enable', {}).reason, /configured complexity action/);
-  assert.match(state.checkToolCall('subagent', { agent: 'complexity-classifier', async: false }).reason, /configured complexity action/);
+  assert.match(state.checkToolCall('subagent', { agent: 'implementation-planner', async: false }).reason, /configured complexity action/);
   state.setComplexity('trivial');
   assert.equal(state.checkToolCall('subagent', { agent: 'scout', async: false }), undefined);
 });
 
-test('runtime-owned classifier reserves one tool call for structured output', () => {
+test('runtime-owned preparation delegates structured planner then classifier', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
   assert.match(runtime, /prompt-template:subagent:request/);
   assert.match(runtime, /prompt-template:subagent:response/);
-  assert.match(runtime, /name: 'classify_task_complexity'/);
-  assert.match(runtime, /result: \{ kind: 'structured', schema: COMPLEXITY_SCHEMA \}/);
+  assert.match(runtime, /name: 'prepare_implementation'/);
+  assert.match(runtime, /IMPLEMENTATION_PLAN_SCHEMA/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 480/);
+  assert.match(runtime, /runStructuredImplementationPlanner[\s\S]*runStructuredComplexityClassifier/);
   assert.match(runtime, /toolBudget: \{ hard: 1 \}/);
-  assert.match(runtime, /additionalProperties: false/);
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
+  assert.match(planner, /inheritSkills: true/);
+  assert.match(planner, /do not classify complexity/i);
+  assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
 });
 
 test('bounded local operations stay in main while exploration remains delegated', () => {
@@ -125,7 +131,7 @@ test('pre-complexity turn budget starts after the required contract read', () =>
   state.onTurnStart(6);
   assert.equal(state.checkToolCall('subagent', { task: 'inspect target' }), undefined);
   state.onTurnStart(7);
-  assert.match(state.checkToolCall('subagent', { task: 'inspect another target' }).reason, /declare_task_complexity/);
+  assert.match(state.checkToolCall('subagent', { task: 'inspect another target' }).reason, /configured preparation\/classification action/);
 });
 
 test('configured repository tools must be delegated after startup', () => {
@@ -222,7 +228,10 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('triage').fixedResponseMaxTokens, 1000);
   for (const name of ['implementer', 'reviewer', 'repair']) assert.equal(stageConfig(name).requireComplexity, true);
   for (const name of ['reviewer', 'repair']) assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
-  assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['classify_task_complexity']);
+  assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['prepare_implementation']);
+  assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
+  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 480);
+  assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 120000);
   assert.equal(stageConfig('implementer').complexityClassifierAgent, 'complexity-classifier');
   assert.equal(stageConfig('implementer').complexityClassifierTimeoutMs, 120000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
@@ -257,8 +266,10 @@ test('stage configuration owns every model prompt', () => {
       assert.match(prompt, /submit_(?:result|repair)/);
     }
     assert.match(stagePrompt('implementer', env), /Example issue[\s\S]*Acceptance criteria/);
-    assert.match(stagePrompt('implementer', env), /classify_task_complexity[\s\S]*complexity-classifier[\s\S]*scout/);
-    assert.doesNotMatch(stagePrompt('implementer', env), /subagents_enable once, then call/);
+    assert.match(stagePrompt('implementer', env), /prepare_implementation[\s\S]*implementation-planner[\s\S]*complexity-classifier/);
+    assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
+    assert.match(stagePrompt('implementer', env), /do not call subagent\(action:"list"\)/i);
+    assert.match(stagePrompt('implementer', env), /480 max output tokens/);
     assert.match(stagePrompt('implementer', env), /limit <= 200/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
