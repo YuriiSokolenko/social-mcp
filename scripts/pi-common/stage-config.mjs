@@ -58,9 +58,19 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
     const title = context.title ?? '';
     const body = context.body ?? '';
+    const resumePatch = env.PI_RESUME_PATCH;
+    const resumed = Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
+    const resumeSource = env.PI_CHECKPOINT_EXPECTED
+      ? 'checkpoint'
+      : env.PI_ISSUE_BRANCH_EXPECTED
+        ? 'issue branch'
+        : 'saved work';
+    const resumeNotice = resumed
+      ? `Runtime resume state: saved ${resumeSource} changes have already been replayed on top of latest dev in this worktree. These are in-progress local implementation changes, NOT evidence that the same content exists in origin/dev. After prepare_implementation, call submit_result immediately before any lookup/read/status. submit_result preserves the current implementation changes, integrates latest dev, and runs authoritative validation. Only investigate or mutate if submit_result reports a specific conflict or failing check.\n\n`
+      : '';
     return `Read and follow agents/implementer/AGENTS.md first. Do not write your own startup plan and do not inspect the repository before preparation.
 
-Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity and should execute step 1 immediately.
+Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity and should execute step 1 immediately unless the runtime resume state below requires terminal validation first.
 
 You are implementing GitHub issue #${issue} in the current repository.
 
@@ -70,11 +80,11 @@ ${title}
 Issue body:
 ${body}
 
-Work directly in the checked-out repository, always based on latest dev. dev is the only development base; never treat main as an alternative source tree.
+${resumeNotice}Work directly in the checked-out repository, always based on latest dev. dev is the only development base; never treat main as an alternative source tree.
 After preparation:
 - If one small target file is already known, the main agent may read it directly once with \`limit <= 200\`.
 - The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
-- If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; do not enable subagents for that lookup.
+- If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
 - If the task is \`normal\`/\`complex\`, more than one file must be inspected, broader patterns/usages must be searched, logs/diagnostics are involved, or broader command output is needed, delegate to \`scout\` (or package-owned \`run-ci\` for checks).
 - \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
 - For scout requests, ask for the first sufficient answer, not the globally smallest/best match; require compact fixed-shape output.

@@ -34,7 +34,8 @@ Follow this sequence exactly:
    - The runtime schema-validates the ordered plan.
    - The runtime then sends issue title/body plus that plan to the separate `complexity-classifier` and schema-validates `{ complexity, reason }`.
    - The main agent receives only the prepared plan and complexity. Do not call either child manually and do not re-run task-level classification.
-4. Execute plan step 1 immediately.
+4. If the initial prompt says saved checkpoint/issue-branch changes were replayed into the worktree, call `submit_result` immediately after preparation. Do not use lookup/read/status to decide whether resumed files belong to dev; resumed files are local in-progress work by definition. Investigate or mutate only if `submit_result` reports a specific conflict or failing check.
+5. Otherwise execute plan step 1 immediately.
 
 Once the next repository mutation is known and enough evidence exists, call `edit` or `write` immediately. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a bounded read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
 
@@ -49,7 +50,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 - **One already-known small file:** call `read` once with an explicit `limit <= 200`. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result.
 - **One known-path diff/status check:** use a bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`.
-- **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText` so idempotency is decided in the same lookup. Do not enable subagents for this lookup.
+- **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target in `origin/dev`. The lookup never reads resumed checkpoint/current-worktree changes. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText`; the result fields `exactTextFoundInDev` / `exactTextPathsInDev` are evidence about latest dev only. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
 - `submit_result`.
 
@@ -116,7 +117,7 @@ If the target is unknown and complexity is `normal` or `complex`:
 
 Do not run full pytest, full-repository Ruff, or CI/control-plane suites before submission as a ritual.
 
-`submit_result` is authoritative. It:
+`submit_result` is authoritative. It never resets/checks out away current implementation changes; it merges latest `dev` into the current worktree and reports conflicts instead of discarding work. It:
 
 - integrates latest `dev`;
 - runs `git diff --check`;

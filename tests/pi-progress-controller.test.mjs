@@ -85,12 +85,13 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
+  assert.match(runtime, /origin\/dev only/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /do not classify complexity/i);
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
 });
 
-test('trivial repository lookup skips control and legal targets and honors extension order', () => {
+test('trivial repository lookup reads origin/dev and ignores resumed worktree changes', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-trivial-lookup-'));
   try {
     fs.mkdirSync(path.join(dir, '.agents', 'skills', 'sample'), { recursive: true });
@@ -101,6 +102,14 @@ test('trivial repository lookup skips control and legal targets and honors exten
     fs.writeFileSync(path.join(dir, 'README.md'), 'root readme\n');
     fs.writeFileSync(path.join(dir, 'COPYING.md'), 'copying\n');
     execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: dir });
+
+    fs.writeFileSync(path.join(dir, 'tasks', 'README.md'), 'checkpoint-only task notes\n');
+    fs.writeFileSync(path.join(dir, 'checkpoint.md'), 'checkpoint marker\n');
     execFileSync('git', ['add', '.'], { cwd: dir });
 
     const result = trivialRepoLookup(dir, {
@@ -108,8 +117,16 @@ test('trivial repository lookup skips control and legal targets and honors exten
       exactText: 'task notes',
     });
     assert.equal(result.candidate.path, 'tasks/README.md');
-    assert.equal(result.exactTextFound, true);
-    assert.deepEqual(result.exactTextPaths, ['tasks/README.md']);
+    assert.equal(result.candidate.lastLine, 'task notes');
+    assert.equal(result.exactTextFoundInDev, true);
+    assert.deepEqual(result.exactTextPathsInDev, ['tasks/README.md']);
+
+    const resumedOnly = trivialRepoLookup(dir, {
+      extensions: ['md'],
+      exactText: 'checkpoint marker',
+    });
+    assert.equal(resumedOnly.exactTextFoundInDev, false);
+    assert.deepEqual(resumedOnly.exactTextPathsInDev, []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -325,6 +342,16 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('implementer', env), /do not call subagent\(action:"list"\)/i);
     assert.match(stagePrompt('implementer', env), /768 max output tokens/);
     assert.match(stagePrompt('implementer', env), /limit <= 200/);
+    const resumePatch = path.join(dir, 'resume.patch');
+    fs.writeFileSync(resumePatch, 'diff --git a/src/example.py b/src/example.py\n');
+    const resumedPrompt = stagePrompt('implementer', {
+      ...env,
+      PI_RESUME_PATCH: resumePatch,
+      PI_CHECKPOINT_EXPECTED: 'checkpoint-sha',
+    });
+    assert.match(resumedPrompt, /saved checkpoint changes have already been replayed on top of latest dev/);
+    assert.match(resumedPrompt, /NOT evidence that the same content exists in origin\/dev/);
+    assert.match(resumedPrompt, /call submit_result immediately before any lookup\/read\/status/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
   } finally {
