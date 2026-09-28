@@ -26,7 +26,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'declare_task_complexity',
       label: 'Declare task complexity',
-      description: 'After the bounded orientation and short execution plan, classify this task as trivial, normal, or complex. Complexity is planning metadata only; it does not change tool quotas or response budgets.',
+      description: 'Record the trivial, normal, or complex classification returned by the required complexity classifier. Do not re-evaluate it in the parent. Complexity is planning metadata only; it does not change tool quotas or response budgets.',
       parameters: Type.Object({
         complexity: Type.Union([
           Type.Literal('trivial'),

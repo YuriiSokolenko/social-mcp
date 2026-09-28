@@ -5,6 +5,11 @@
         "subagentOnlyExtensions": [
           "./scripts/pi-subagent-response-budget.mjs"
         ]
+      },
+      "complexity-classifier": {
+        "subagentOnlyExtensions": [
+          "./scripts/pi-subagent-response-budget.mjs"
+        ]
       }
     }
   }

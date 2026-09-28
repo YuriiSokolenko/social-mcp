@@ -1,6 +1,41 @@
 const COMPLEXITY_RANK = Object.freeze({ trivial: 0, normal: 1, complex: 2 });
 export const RESPONSE_BUDGETS = Object.freeze({ short: 2048, normal: 4096, deep: 8192 });
 
+function safePathToken(value) {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value !== '.' &&
+    !value.startsWith('-') &&
+    !/[?*\\[]/.test(value);
+}
+
+export function isBoundedDirectBash(command) {
+  if (typeof command !== 'string') return false;
+  const trimmed = command.trim();
+  if (!trimmed || /[\\n\\r;&|><`$()]/.test(trimmed)) return false;
+  const parts = trimmed.split(/\\s+/);
+
+  if (parts[0] !== 'git') return false;
+
+  if (parts[1] === 'diff') {
+    const separator = parts.lastIndexOf('--');
+    if (separator < 2 || separator !== parts.length - 2 || !safePathToken(parts[separator + 1])) return false;
+    const allowed = new Set(['--check', '--name-only', '--stat', '--numstat', '--cached', '--staged']);
+    return parts.slice(2, separator).every(part =>
+      allowed.has(part) || /^-U\\d+$/.test(part) || /^--unified=\\d+$/.test(part)
+    );
+  }
+
+  if (parts[1] === 'status') {
+    return parts.length === 5 &&
+      (parts[2] === '--short' || parts[2] === '--porcelain') &&
+      parts[3] === '--' &&
+      safePathToken(parts[4]);
+  }
+
+  return false;
+}
+
 const FINISH_TOOLS = new Set(['edit', 'write', 'submit_result', 'submit_repair']);
 const PROGRESS_TOOLS = new Set(['edit', 'write', 'submit_result', 'submit_repair']);
 
@@ -48,6 +83,20 @@ export class ProgressController {
     this.complexityTurnBase = this.requiredFirstReadDone ? 0 : null;
     this.delegatedTools = new Set(config.delegatedTools ?? []);
     this.delegationTool = config.delegationTool ?? 'subagent';
+    this.requireDelegatedComplexity = config.requireDelegatedComplexity === true;
+    this.preComplexitySubagentAgent = config.preComplexitySubagentAgent ?? null;
+    this.delegatedComplexityPending = false;
+    this.delegatedComplexityComplete = !this.requireDelegatedComplexity;
+    this.directReadMaxLines = Number(config.directReadMaxLines ?? 0);
+    this.directReadCalls = Number(config.directReadCalls ?? 0);
+    this.directReadCount = 0;
+    this.boundedDirectBash = config.boundedDirectBash === true;
+    if (this.directReadMaxLines && (!Number.isSafeInteger(this.directReadMaxLines) || this.directReadMaxLines < 1)) {
+      throw new Error('directReadMaxLines must be a positive integer');
+    }
+    if (this.directReadCalls && (!Number.isSafeInteger(this.directReadCalls) || this.directReadCalls < 1)) {
+      throw new Error('directReadCalls must be a positive integer');
+    }
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
     if (this.fixedMaxTokens && (!Number.isSafeInteger(this.fixedMaxTokens) || this.fixedMaxTokens < 1)) {
@@ -104,16 +153,48 @@ export class ProgressController {
       return undefined;
     }
 
-    if (toolName === 'declare_task_complexity') return undefined;
+    if (toolName === 'declare_task_complexity') {
+      if (this.requireDelegatedComplexity && !this.delegatedComplexityComplete) {
+        return { block: true, reason: `Before declare_task_complexity, run the required ${this.preComplexitySubagentAgent ?? 'complexity'} subagent and use its result.` };
+      }
+      return undefined;
+    }
 
     if (this.requireComplexity && !this.complexity) {
       const preComplexityTurns = Math.max(0, this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn));
       if (preComplexityTurns >= this.preComplexityTurnLimit) {
-        return { block: true, reason: `Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Stop exploring and call declare_task_complexity now.` };
+        return { block: true, reason: `Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Finish the delegated complexity classification and call declare_task_complexity now.` };
+      }
+      if (toolName === 'subagent' && this.preComplexitySubagentAgent) {
+        if (input?.agent !== this.preComplexitySubagentAgent) {
+          return { block: true, reason: `Before complexity declaration, the only allowed subagent is ${this.preComplexitySubagentAgent}.` };
+        }
+        if (input?.async !== false) {
+          return { block: true, reason: `${this.preComplexitySubagentAgent} must run with async: false so its classification is available immediately.` };
+        }
+        if (this.delegatedComplexityPending || this.delegatedComplexityComplete) {
+          return { block: true, reason: 'Complexity classification was already requested; use its result instead of launching another classifier.' };
+        }
+        this.delegatedComplexityPending = true;
       }
       if (!this.preComplexityAllowedTools.has(toolName)) {
-        return { block: true, reason: 'Before complexity declaration, use only the bounded orientation tools, then declare complexity and execute the plan.' };
+        return { block: true, reason: 'Before complexity declaration, only activate subagents, run the bounded complexity classifier, then declare complexity.' };
       }
+    }
+
+    if (toolName === 'read' && this.directReadMaxLines) {
+      const limit = Number(input?.limit);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > this.directReadMaxLines) {
+        return { block: true, reason: `Direct main-agent read is only for one already-known small file and must set limit <= ${this.directReadMaxLines}; delegate broader reading to ${this.delegationTool}.` };
+      }
+      if (this.directReadCalls && this.directReadCount >= this.directReadCalls) {
+        return { block: true, reason: `Direct main-agent read budget is ${this.directReadCalls} file per task; delegate additional repository reading to ${this.delegationTool}.` };
+      }
+      this.directReadCount += 1;
+    }
+
+    if (toolName === 'bash' && this.boundedDirectBash && !isBoundedDirectBash(input?.command)) {
+      return { block: true, reason: 'Direct main-agent bash is limited to a bounded git diff/status on one known path. Delegate searches, tests, logs, and broader commands.' };
     }
 
     if (this.delegatedTools.has(toolName)) {
@@ -137,6 +218,11 @@ export class ProgressController {
   }
 
   onToolExecutionEnd(toolName, isError) {
+    if (this.requireDelegatedComplexity && toolName === 'subagent' && this.delegatedComplexityPending && !this.complexity) {
+      this.delegatedComplexityPending = false;
+      if (!isError) this.delegatedComplexityComplete = true;
+    }
+    if (toolName === 'read' && isError && this.directReadCount > 0) this.directReadCount -= 1;
     if (!isError && PROGRESS_TOOLS.has(toolName)) this.turnMadeProgress = true;
   }
 

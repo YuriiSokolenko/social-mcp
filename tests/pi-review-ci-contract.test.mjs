@@ -396,12 +396,14 @@ test('every model-driven Pi workflow delegates model execution to one stage runn
   }
 });
 
-test('scout inherits the main response ceiling through a child-only extension', () => {
+test('selected subagents inherit the main response ceiling through a child-only extension', () => {
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
-  assert.deepEqual(
-    settings.subagents.agentOverrides.scout.subagentOnlyExtensions,
-    ['./scripts/pi-subagent-response-budget.mjs'],
-  );
+  for (const name of ['scout', 'complexity-classifier']) {
+    assert.deepEqual(
+      settings.subagents.agentOverrides[name].subagentOnlyExtensions,
+      ['./scripts/pi-subagent-response-budget.mjs'],
+    );
+  }
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const child = fs.readFileSync('scripts/pi-subagent-response-budget.mjs', 'utf8');
   const policy = fs.readFileSync('scripts/pi-common/control-plane-policy.mjs', 'utf8');
@@ -504,17 +506,22 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
-test('implementer plans before complexity and delegates repository inspection afterward', () => {
+test('implementer delegates complexity but keeps tiny known-path operations local', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  assert.match(config, /implementer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \[\][\s\S]*delegatedTools: \['read', 'bash', 'grep', 'find', 'ls'\]/);
+  const classifier = fs.readFileSync('.pi/agents/complexity-classifier.md', 'utf8');
+
+  assert.match(config, /implementer:[\s\S]*requireDelegatedComplexity: true[\s\S]*preComplexityAllowedTools: \['subagents_enable', 'subagent'\][\s\S]*preComplexitySubagentAgent: 'complexity-classifier'/);
+  assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
+  assert.match(config, /directReadMaxLines: 200[\s\S]*directReadCalls: 1[\s\S]*boundedDirectBash: true/);
+
   const contract = [
     'Read this `agents/implementer/AGENTS.md`',
-    'Use the GitHub issue title/body already supplied in the prompt',
-    'Write a short top-level execution plan',
-    '1000 output tokens',
-    'The very next action after the plan must be `declare_task_complexity`',
-    'Immediately execute the first plan item',
+    'Use the issue title/body already supplied in the prompt',
+    'Write one short top-level execution plan',
+    'Delegate **task-level complexity** to `complexity-classifier`',
+    'Immediately call `declare_task_complexity`',
+    'Execute the first plan item',
   ];
   let previous = -1;
   for (const marker of contract) {
@@ -522,15 +529,17 @@ test('implementer plans before complexity and delegates repository inspection af
     assert.ok(position > previous, `implementer startup marker missing or out of order: ${marker}`);
     previous = position;
   }
-  assert.match(agent, /Do not modify repository files or perform implementation work before step 4 is complete/);
-  assert.match(agent, /main agent must not call `read`, `bash`, `grep`, `find`, or `ls` directly/);
-  assert.match(agent, /missing context is only one small file immediately before an edit/);
-  assert.match(agent, /subagents_enable/);
-  assert.match(agent, /built-in `scout` agent/);
-  assert.match(agent, /package-owned `run-ci` workflow/);
-  assert.match(agent, /complex[\s\S]*implement this same issue to completion/i);
-  assert.match(agent, /exact requested end state already exists in latest dev/);
-  assert.match(agent, /already_satisfied: true/);
+
+  assert.match(agent, /Do \*\*not\*\* assign complexity labels to plan items/);
+  assert.match(agent, /one already-known small file/i);
+  assert.match(agent, /limit <= 200/);
+  assert.match(agent, /first sufficient/i);
+  assert.match(agent, /Do not use repeated guessed reads as a substitute for search/);
+  assert.match(agent, /`grep`, `find`, and `ls` are runtime-blocked/);
+  assert.match(classifier, /tools:\n/);
+  assert.match(classifier, /inheritProjectContext: false/);
+  assert.match(classifier, /Return exactly two lines/);
+  assert.match(classifier, /trivial[\s\S]*normal[\s\S]*complex/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
 });
 

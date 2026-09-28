@@ -45,7 +45,9 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
     const title = context.title ?? '';
     const body = context.body ?? '';
-    return `Follow the startup sequence in agents/implementer/AGENTS.md exactly: first read agents/implementer/AGENTS.md, use the supplied issue text below to identify acceptance criteria, write a short execution plan of at most 1000 output tokens, then call declare_task_complexity before repository inspection or modification. After complexity is declared, obtain repository facts through the subagent tool; the main agent must not call read/bash/grep/find/ls directly. A complex classification still means you implement this same issue to completion.
+    return `Follow agents/implementer/AGENTS.md exactly. First read that file, derive acceptance criteria only from the supplied issue text, and write a short execution plan of at most 1000 output tokens with no complexity labels.
+
+Before repository inspection or modification, delegate the task-level complexity decision to the project \`complexity-classifier\` subagent. If needed, call subagents_enable once, then call \`subagent\` with \`agent: "complexity-classifier"\`, \`async: false\`, and only the issue title/body plus your short plan. Use its classification verbatim in \`declare_task_complexity\`; do not re-argue the classification in the main context.
 
 You are implementing GitHub issue #${issue} in the current repository.
 
@@ -55,19 +57,17 @@ ${title}
 Issue body:
 ${body}
 
-Work directly in the checked-out repository.
-The checked-out worktree is always based on the latest dev branch. dev is the only development base; never switch to, compare against, or treat main as an alternative source tree.
-Implement the issue completely with the smallest scope that satisfies its acceptance criteria.
-For an exact trivial edit, use the fast path from AGENTS.md: declare complexity, make one edit-ready scout request when repository context is needed, edit promptly, delegate any useful post-change inspection, and submit. The pre-edit scout must return the target path plus an exact minimal verbatim oldText anchor suitable for edit in that same call; do not request first-N-lines or the whole file and then launch another scout just to obtain the anchor. If that delegated evidence shows the exact requested end state already exists in latest dev, do not add a duplicate, do not launch another scout, and do not debate alternatives: call submit_result immediately with already_satisfied: true and changes: [].
-Use the installed pi-subagents package for delegation. If a fresh session exposes only subagents_enable, call it once; the full subagent tool is available on the next model turn. For repository reads/search/navigation use the built-in scout agent in foreground mode (async: false). For a bounded read-only command/check, use the package-owned run-ci workflow through subagent when available. Never use a worker/reviewer subagent to mutate repository files; main-agent edit/write remains authoritative. Ask bounded questions and consume compact conclusions rather than raw repository output.
-If replayed checkpoint work left merge conflicts, keep conflict resolution as the first implementation item; after complexity declaration use subagent to inspect only the conflicting/current-dev evidence needed, then resolve it in the main agent. Do not abandon current dev or inspect main as a replacement base.
-Add or update tests when executable behavior changes; do not manufacture tests merely to restate an exact static artifact.
-Before submission run only useful focused checks. Do not run full pytest or full Ruff just before submit_result.
-submit_result owns the authoritative final git diff --check, full pytest, and Ruff validation after integrating latest dev.
-If submit_result reports merge conflicts, resolve them in this same agent session, rerun relevant tests, and call submit_result again until it succeeds.
-Do not commit, push, create a pull request, or modify GitHub issue labels; trusted workflow tooling owns those Git operations.
-Do not access production credentials or external social APIs.
-A successful submit_result is terminal: stop immediately and do not perform more tool calls or write another implementation recap.`;
+Work directly in the checked-out repository, always based on latest dev.
+After complexity is declared:
+- If one small target file is already known, the main agent may read it directly once with \`limit <= 200\`.
+- The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
+- If the path/symbol is unknown, more than one file must be inspected, patterns/usages must be searched, logs/diagnostics are involved, or broader command output is needed, delegate to the built-in \`scout\` (or package-owned \`run-ci\` for checks).
+- \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
+- For scout requests, ask for the first sufficient answer, not the globally smallest/best match; require compact fixed-shape output.
+
+Main owns decisions, \`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Subagents gather evidence only. If delegated evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`.
+
+Use the smallest implementation satisfying the issue. Do not commit, push, create PRs, or modify GitHub state. \`submit_result\` integrates latest dev and owns final git diff --check, full pytest, and Ruff validation. A successful \`submit_result\` is terminal.`;
   },
 });
 
@@ -135,10 +135,15 @@ export const STAGES = Object.freeze({
     repeatThreshold: 3,
     requiredFirstReadPath: 'agents/implementer/AGENTS.md',
     requireComplexity: true,
+    requireDelegatedComplexity: true,
     preComplexityTurnLimit: 8,
-    preComplexityAllowedTools: [],
-    delegatedTools: ['read', 'bash', 'grep', 'find', 'ls'],
+    preComplexityAllowedTools: ['subagents_enable', 'subagent'],
+    preComplexitySubagentAgent: 'complexity-classifier',
+    delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
+    directReadMaxLines: 200,
+    directReadCalls: 1,
+    boundedDirectBash: true,
     prompt: promptBuilders.implementer,
   },
 });

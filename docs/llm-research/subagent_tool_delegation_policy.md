@@ -4,290 +4,145 @@ Research date: **2026-09-28**.
 
 ## Purpose
 
-This document records the proposed boundary between the main Pi coding agent and its subagents.
-
-The main goal is to keep raw repository exploration, long tool output, logs, and repeated read-only inspection out of the main agent context. The main agent should retain ownership of the task, decisions, repository mutations, and terminal result.
+This document records the current Implementer boundary between the main Pi agent and native subagents.
 
 Core principle:
 
-> **Main acts. Subagents gather facts.**
+> **Main handles bounded known-path operations. Subagents handle exploration.**
 
-A stricter operational formulation:
+Subagent launches have real fixed cost: a new child context, model turns, tool work, and handoff. The goal is therefore not to maximize delegation. The goal is to keep exploratory context out of the main session when that actually saves context or reasoning.
 
-> **The main agent does not read repository context directly. It asks a subagent for the repository knowledge it needs.**
+## Task complexity
 
-This applies even when the missing context is only one small file immediately before an edit.
+Task-level complexity is delegated before repository inspection.
 
-## Always delegate to a subagent
+- Main reads `agents/implementer/AGENTS.md`, derives acceptance criteria from the supplied issue, and writes a short plan.
+- Main activates `pi-subagents` if needed.
+- A project `complexity-classifier` child receives only the issue title/body plus the short plan.
+- The classifier has no tools, no inherited project/global context, and no skills catalog.
+- It returns exactly `trivial|normal|complex` plus one short reason.
+- Main records that result through `declare_task_complexity` without re-arguing it.
 
-The following work should be delegated whenever repository/tool access is needed for it.
+The classifier rubric lives in `.pi/agents/complexity-classifier.md`, so the main Implementer prompt does not carry the detailed rubric.
 
-### Repository reads
+## Keep in the main agent
 
-- Read any repository file, including one small file needed immediately before an edit.
-- Read several related files.
-- Extract only the signatures, constants, contracts, types, or behavior needed for the current decision.
-- Read configuration files.
-- Read existing tests.
-- Read project documentation.
-- Read repository skills and return only the rules relevant to the current task.
+Use direct main-agent operations when all needed context is already bounded:
 
-The subagent should return a compact answer rather than raw file contents whenever possible.
+- one already-known small file: one `read` call with `limit <= 200`;
+- one bounded `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`;
+- `edit` / `write`;
+- conflict-resolution mutations;
+- `submit_result`.
 
-Example:
+Do not use repeated guessed reads as a substitute for discovery. If the first bounded read is insufficient, switch to delegated exploration.
 
-Instead of the main agent reading `FooRepository`, it asks:
+## Delegate
 
-> Read `FooRepository` and return only the signatures and behavior needed to implement X.
+Use `scout` when any of these are true:
 
-### Code search and navigation
+- target path/symbol/test/config is unknown;
+- several files must be inspected or compared;
+- usages, patterns, or similar implementations must be searched;
+- logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
+- expected output is larger than one small bounded read/diff;
+- a skill or project document must be searched for relevant rules.
 
-Delegate:
+`grep`, `find`, and `ls` remain runtime-blocked in main. Broad `bash` is also blocked. Focused test/lint/type/compile commands can use the package-owned `run-ci` workflow.
 
-- `grep` / `rg`;
-- symbol/usages search;
-- TODO/FIXME search;
-- search for similar implementations;
-- search for relevant tests;
-- `find`;
-- `ls`;
-- locating a module, adapter, config, interface, or implementation;
-- bounded inspection of a directory.
+## Scout request shape
 
-### Existing-pattern research
+A scout request should answer one concrete question and stop at the first sufficient answer.
 
-Delegate questions such as:
+Do not ask for the globally smallest/best candidate unless the issue actually requires that optimization. That wording caused exhaustive repository exploration in the #115 smoke test.
 
-- How is X already implemented in this repository?
-- Which interface is normally used for Y?
-- Which layer owns this behavior?
-- Which of several existing implementations is the closest pattern?
-- Is there already a helper/abstraction that should be reused?
+For a pre-edit scout, request in one call:
 
-The main agent should receive the conclusion, relevant paths/symbols, and only the evidence necessary to make the next decision.
+1. target path;
+2. exact minimal verbatim `oldText`;
+3. insertion/replacement point;
+4. one safety constraint, if any.
 
-### Logs and diagnostics
+Require compact fixed-shape output. Do not ask for whole files or broad repository dumps.
 
-Delegate:
+## Ownership
 
-- CI logs;
-- runtime logs;
-- test output;
-- stack traces;
-- long exception chains;
-- failed-command output;
-- comparison of repeated failures.
+Main retains:
 
-Preferred return shape:
-
-1. root cause;
-2. evidence;
-3. affected path/symbol;
-4. recommended next action.
-
-### Focused verification
-
-Delegate read-only or verification-oriented commands such as:
-
-- focused `pytest`;
-- focused lint checks;
-- focused type checks;
-- compile/check commands for the affected area;
-- diagnostic scripts;
-- analysis of the resulting failures.
-
-The subagent reports the result to the main agent. It does not turn a failed check into an unbounded investigation.
-
-### Read-only Git inspection
-
-Delegate:
-
-- `git diff`;
-- `git show`;
-- `git log` when history is genuinely required;
-- branch/diff inspection;
-- determining where a relevant change was introduced;
-- comparison with current `dev`.
-
-This does not grant permission to mutate Git state.
-
-### PR/review analysis
-
-For Reviewer-like work, subagents may inspect independent parts of a PR, for example:
-
-- production code;
-- tests;
-- API/schema/config changes;
-- focused behavioral concerns.
-
-The main Reviewer remains responsible for synthesizing findings and making the final review decision.
-
-### External technical research
-
-Delegate narrow research into:
-
-- library/API documentation;
-- signatures and behavior of a dependency;
-- migration notes;
-- version-specific behavior;
-- known failure modes relevant to the current task.
-
-The result should answer a concrete question, not produce broad background research unless the task explicitly requires it.
-
-### Post-change inspection
-
-Delegate:
-
-- reading the resulting diff;
-- checking whether changed code appears to satisfy acceptance criteria;
-- detecting obvious omissions;
-- inspecting focused verification output.
-
-The subagent reports findings. It does not take ownership of the task.
-
-## May be delegated
-
-The default direction is to delegate all repository reading and investigation. Some higher-level analysis can also be delegated when useful, but ownership stays with the main agent.
-
-Examples:
-
-- compare two or three implementation approaches already present in the repository;
-- isolate the cause of a difficult bug;
-- analyze one independent portion of a large PR;
-- verify whether a proposed edit matches an existing project convention;
-- investigate one exact architectural question and report evidence.
-
-These should be bounded questions with a concrete expected result.
-
-## Never delegate
-
-The main agent retains ownership of the task lifecycle and all authoritative state-changing decisions.
-
-Do not delegate:
-
-- ownership of the GitHub issue;
-- final interpretation of the issue;
-- final acceptance criteria;
-- top-level execution plan;
-- `declare_task_complexity`;
-- final architecture/implementation decision for the issue;
-- `edit`;
-- `write`;
-- conflict resolution;
-- `submit_result`;
-- commit;
-- push;
-- merge;
-- PR creation or mutation;
-- labels;
-- comments;
-- workflow dispatch;
-- other GitHub or external state mutations.
-
-Subagents may provide evidence that informs these actions, but the main agent performs and owns them.
-
-## Intended execution model
-
-```text
-Main
-  |
-  |-- read AGENTS.md
-  |-- receive issue / acceptance criteria
-  |-- create top-level plan
-  |-- declare task complexity
-  |
-  |-- need repository fact?
-  |       |
-  |       +--> Subagent
-  |              |-- read
-  |              |-- grep / rg
-  |              |-- find / ls
-  |              |-- focused bash/check
-  |              |-- docs / skills / git inspection
-  |              |
-  |              +--> compact factual result
-  |
-  |-- make implementation decision
-  |-- edit / write
-  |-- repeat bounded fact requests as needed
-  |-- submit_result
-```
-
-The main context should therefore contain primarily:
-
-- issue requirements;
+- issue interpretation and acceptance criteria;
 - execution plan;
-- compact facts returned by subagents;
-- implementation decisions;
+- implementation/architecture decisions;
 - mutations;
-- focused verification conclusions;
-- terminal result.
+- terminal submission;
+- Git/GitHub state ownership remains with trusted workflow tooling.
 
-It should not contain large quantities of raw repository content or exploratory tool output.
+`complexity-classifier` only classifies. `scout` only gathers evidence. `worker`/`reviewer` are not mutation owners in the Implementer flow.
 
-## Delegation granularity
+## Runtime enforcement
 
-Delegate a **question or research objective**, not a mechanical tool call.
+For Implementer:
 
-Bad:
+- mandatory first read remains `agents/implementer/AGENTS.md`;
+- before `declare_task_complexity`, runtime allows only `subagents_enable` and the `complexity-classifier` subagent;
+- a failed classifier may be retried; a successful classification is single-shot;
+- after declaration, one bounded direct file read is allowed;
+- direct shell access is restricted to bounded one-path Git diff/status commands;
+- `grep` / `find` / `ls` stay delegated;
+- `.pi/**` is control-plane and cannot be modified by Implementer.
 
-> Run grep for `OAuthClient`.
+## Response budget
 
-Better:
+`scout` and `complexity-classifier` load `scripts/pi-subagent-response-budget.mjs` as a child-only extension.
 
-> Find the existing OAuth token refresh pattern. Inspect only relevant files and return the reusable functions/types, their paths, and any constraints that affect this change.
+The parent publishes its current response ceiling, so selected native children mirror SHORT/NORMAL/DEEP:
 
-One bounded subagent task may absorb many internal `read`, `grep`, `find`, or diagnostic calls while returning only the useful result to the main context.
+- SHORT: `2048`
+- NORMAL: `4096`
+- DEEP: `8192`
 
-## Guard against over-delegation
+This controls child response output, not total child usage or context size.
 
-Moving exploration to subagents must not replace one failure mode with another.
+## Intended flow
 
-Rules:
-
-- A subagent request must answer one concrete question.
-- Do not launch a subagent when the needed fact is already available in the main context.
-- Do not ask multiple subagents the same question unless conflicting evidence requires independent verification.
-- Do not delegate ownership of a plan item merely because the item is complex.
-- Do not let subagents recursively create an uncontrolled research tree.
-- Return concise conclusions and references rather than raw transcripts.
-- The main agent must proceed to mutation once it has enough evidence for the next concrete edit.
-
-The objective is not to maximize subagent use. The objective is to keep exploratory context isolated while preserving forward progress.
-
-## Expected benefits
-
-This design is intended to reduce:
-
-- main-context growth from raw file reads;
-- repeated repository inspection;
-- long reasoning chains caused by large tool outputs;
-- loss of task state after compaction;
-- accidental re-reading of already inspected context;
-- reasoning loops where the model keeps gathering information instead of editing.
-
-It also makes the main trajectory easier to reason about:
+Known target:
 
 ```text
-issue -> plan -> compact facts -> edits -> verification -> submit_result
+AGENTS.md
+  -> issue acceptance criteria
+  -> short plan
+  -> complexity-classifier
+  -> declare_task_complexity
+  -> one bounded direct read
+  -> edit/write
+  -> bounded direct git diff
+  -> submit_result
 ```
 
-rather than:
+Unknown target:
 
 ```text
-issue -> read -> grep -> read -> bash -> read -> reasoning
-      -> more grep -> more read -> compaction -> rediscovery -> ...
+AGENTS.md
+  -> issue acceptance criteria
+  -> short plan
+  -> complexity-classifier
+  -> declare_task_complexity
+  -> compact scout exploration
+  -> edit/write
+  -> bounded direct git diff
+  -> submit_result
 ```
 
-## Status
+## Measurement goal
 
-Implemented for the **Implementer** runtime on **2026-09-28**:
+The next smoke tests should compare:
 
-- the main Implementer keeps plan/decision/mutation/submit ownership;
-- repository reads/search are routed through the installed `pi-subagents` extension, primarily its read-only `scout` agent; bounded command checks use its package-owned `run-ci` workflow when useful;
-- direct main-agent `read`/`bash`/`grep`/`find`/`ls` calls are runtime-blocked after the mandatory `agents/implementer/AGENTS.md` read;
-- the pre-complexity turn budget starts only after that mandatory contract read, so blocked startup mistakes do not consume the orientation allowance;
-- no repository-local extension registers a second `subagent` tool: the runner-installed `pi-subagents` package is the single owner of that tool. Fresh sessions may activate it through `subagents_enable` first;
-- the built-in `scout` loads a child-only response-budget extension. The parent publishes its current response ceiling, and the scout applies the same ceiling to its child model, so SHORT/NORMAL/DEEP stay `2048/4096/8192` for both parent and scout instead of letting the child fall back to the model registry's larger default.
+- main-context tokens;
+- child tokens;
+- total tokens;
+- model time;
+- number of main responses;
+- number of child runs;
+- failed child runs;
+- whether direct bounded operations eliminate unnecessary scout launches.
 
-Issue #115 is the dedicated smoke test for this policy. Reviewer/Repair migration is intentionally separate from this Implementer test.
+Issue #115 remains the smoke-test vehicle for this policy.

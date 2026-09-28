@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   ProgressController,
   RESPONSE_BUDGETS,
+  isBoundedDirectBash,
   nextResponseBudgetLevel,
   toolCallSignature,
 } from '../scripts/pi-common/progress-controller.mjs';
@@ -54,6 +55,65 @@ test('scout child response budget mirrors the main response ceiling', async () =
     if (previous == null) delete process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
     else process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = previous;
   }
+});
+
+test('delegated complexity must complete before parent declaration', () => {
+  const state = controller({
+    requireComplexity: true,
+    requireDelegatedComplexity: true,
+    preComplexityAllowedTools: ['subagents_enable', 'subagent'],
+    preComplexitySubagentAgent: 'complexity-classifier',
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('subagents_enable', {}), undefined);
+  assert.match(state.checkToolCall('declare_task_complexity', {}).reason, /complexity-classifier/);
+  assert.match(state.checkToolCall('subagent', { agent: 'scout', async: false }).reason, /only allowed subagent/);
+  assert.equal(state.checkToolCall('subagent', {
+    agent: 'complexity-classifier',
+    async: false,
+    task: 'classify supplied issue and plan',
+  }), undefined);
+  assert.match(state.checkToolCall('declare_task_complexity', {}).reason, /complexity-classifier/);
+  state.onToolExecutionEnd('subagent', false);
+  assert.equal(state.checkToolCall('declare_task_complexity', {}), undefined);
+});
+
+test('failed complexity child may be retried but successful classification is single-shot', () => {
+  const state = controller({
+    requireComplexity: true,
+    requireDelegatedComplexity: true,
+    preComplexityAllowedTools: ['subagent'],
+    preComplexitySubagentAgent: 'complexity-classifier',
+  });
+  state.onTurnStart(0);
+  const call = { agent: 'complexity-classifier', async: false, task: 'classify' };
+  assert.equal(state.checkToolCall('subagent', call), undefined);
+  state.onToolExecutionEnd('subagent', true);
+  assert.equal(state.checkToolCall('subagent', call), undefined);
+  state.onToolExecutionEnd('subagent', false);
+  assert.match(state.checkToolCall('subagent', call).reason, /already requested/);
+});
+
+test('bounded local operations stay in main while exploration remains delegated', () => {
+  const state = controller({
+    delegatedTools: ['grep', 'find', 'ls'],
+    delegationTool: 'subagent',
+    directReadMaxLines: 200,
+    directReadCalls: 1,
+    boundedDirectBash: true,
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('read', { path: 'src/known.py', limit: 120 }), undefined);
+  assert.match(state.checkToolCall('read', { path: 'src/second.py', limit: 120 }).reason, /read budget/);
+  assert.match(state.checkToolCall('grep', { pattern: 'token' }).reason, /subagent/);
+  assert.equal(state.checkToolCall('bash', { command: 'git diff -- src/known.py' }), undefined);
+  assert.equal(state.checkToolCall('bash', { command: 'git diff --check -- src/known.py' }), undefined);
+  assert.equal(state.checkToolCall('bash', { command: 'git status --short -- src/known.py' }), undefined);
+  assert.match(state.checkToolCall('bash', { command: 'git diff' }).reason, /bounded git diff/);
+  assert.match(state.checkToolCall('bash', { command: 'pytest -q tests/test_known.py' }).reason, /broader commands/);
+  assert.match(state.checkToolCall('bash', { command: 'git diff -- src/known.py; cat secrets' }).reason, /bounded git diff/);
+  assert.equal(isBoundedDirectBash('git diff --numstat -- src/known.py'), true);
+  assert.equal(isBoundedDirectBash('git log --oneline'), false);
 });
 
 test('required operating contract is the first tool read', () => {
@@ -175,9 +235,14 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('triage').fixedResponseMaxTokens, 1000);
   for (const name of ['implementer', 'reviewer', 'repair']) assert.equal(stageConfig(name).requireComplexity, true);
   for (const name of ['reviewer', 'repair']) assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
-  assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, []);
-  assert.deepEqual(stageConfig('implementer').delegatedTools, ['read', 'bash', 'grep', 'find', 'ls']);
+  assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['subagents_enable', 'subagent']);
+  assert.equal(stageConfig('implementer').preComplexitySubagentAgent, 'complexity-classifier');
+  assert.equal(stageConfig('implementer').requireDelegatedComplexity, true);
+  assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
+  assert.equal(stageConfig('implementer').directReadMaxLines, 200);
+  assert.equal(stageConfig('implementer').directReadCalls, 1);
+  assert.equal(stageConfig('implementer').boundedDirectBash, true);
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
     assert.match(stageConfig(name).resultTool, /-result-tool\.mjs$/);
     assert.match(stageConfig(name).requiredFirstReadPath, /AGENTS\.md$/);
@@ -205,7 +270,8 @@ test('stage configuration owns every model prompt', () => {
       assert.match(prompt, /submit_(?:result|repair)/);
     }
     assert.match(stagePrompt('implementer', env), /Example issue[\s\S]*Acceptance criteria/);
-    assert.match(stagePrompt('implementer', env), /subagents_enable[\s\S]*scout[\s\S]*run-ci/);
+    assert.match(stagePrompt('implementer', env), /complexity-classifier[\s\S]*declare_task_complexity[\s\S]*scout/);
+    assert.match(stagePrompt('implementer', env), /limit <= 200/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
   } finally {
