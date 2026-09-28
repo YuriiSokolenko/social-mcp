@@ -43,8 +43,9 @@ export function isBoundedDirectBash(command) {
 
   return false;
 }
-const FINISH_TOOLS = new Set(['edit', 'write', 'submit_result', 'submit_repair']);
-const PROGRESS_TOOLS = new Set(['edit', 'write', 'submit_result', 'submit_repair']);
+const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
+const FINISH_TOOLS = new Set(['edit', 'write', ...TERMINAL_TOOLS]);
+const PROGRESS_TOOLS = new Set(['edit', 'write', ...TERMINAL_TOOLS]);
 
 function positiveInteger(value, name) {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
@@ -168,17 +169,18 @@ export class ProgressController {
       this.requireComplexity &&
       !this.complexity &&
       this.preComplexityTransitionTools.has(toolName);
+    const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
 
     if (this.requireComplexity && !this.complexity) {
       const preComplexityTurns = Math.max(0, this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn));
-      if (preComplexityTurns >= this.preComplexityTurnLimit && !pendingComplexityTransition && !finishTool) {
+      if (preComplexityTurns >= this.preComplexityTurnLimit && !pendingComplexityTransition && !terminalTool) {
         return {
           block: true,
           reason: `BLOCKED: ${toolName} did not execute. Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Use only the configured preparation/classification action or terminal submit tool now.`,
         };
       }
-      if (!pendingComplexityTransition && !finishTool && !this.preComplexityAllowedTools.has(toolName)) {
+      if (!pendingComplexityTransition && !terminalTool && !this.preComplexityAllowedTools.has(toolName)) {
         return {
           block: true,
           reason: `BLOCKED: ${toolName} did not execute. Before complexity is recorded, use only initial-orientation tools, the configured preparation/classification action, or the terminal submit tool.`,
