@@ -686,3 +686,13 @@ test('stage runner owns model phase and issue metadata', () => {
     assert.doesNotMatch(workflow, /^\s+PI_ISSUE:/m);
   }
 });
+
+
+test('implementer publication does not transport unused issue title or deleted task files', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const worktree = fs.readFileSync('scripts/pi-common/issue-worktree.mjs', 'utf8');
+  assert.doesNotMatch(workflow, /PI_ISSUE_TITLE|pi-task-/);
+  assert.doesNotMatch(publication, /issueTitle/);
+  assert.doesNotMatch(worktree, /taskFile|\[task-file\]/);
+});

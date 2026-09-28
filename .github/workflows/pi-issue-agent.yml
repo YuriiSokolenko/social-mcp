@@ -47,7 +47,6 @@ jobs:
           ISSUE_CONTEXT="$RUNNER_TEMP/pi-issue-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           node "$GITHUB_WORKSPACE/scripts/pi-common/issue-context.mjs" "$ISSUE" "$ISSUE_CONTEXT"
           echo "PI_ISSUE_CONTEXT=$ISSUE_CONTEXT" >> "$GITHUB_ENV"
-          echo "PI_ISSUE_TITLE=$(jq -r '.title' "$ISSUE_CONTEXT")" >> "$GITHUB_ENV"
 
       - name: Ensure workflow labels
         env:
@@ -116,7 +115,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_ISSUE_TITLE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}")"
+          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}")"
           echo "number=$(jq -r '.number' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "url=$(jq -r '.url' <<<"$PR")" >> "$GITHUB_OUTPUT"
 
@@ -198,5 +197,5 @@ jobs:
       - name: Clean temporary worktree
         if: always()
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-common/issue-worktree.mjs" clean "${JOB_DIR:-}" "${RUNNER_TEMP}/pi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" "${PI_RESUME_PATCH:-}"
+          node "$GITHUB_WORKSPACE/scripts/pi-common/issue-worktree.mjs" clean "${JOB_DIR:-}" "${PI_RESUME_PATCH:-}"
           echo "Temporary worktree removed: ${JOB_DIR:-}"

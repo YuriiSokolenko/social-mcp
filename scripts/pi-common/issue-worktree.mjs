@@ -52,24 +52,24 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
   return { start, checkpointExpected, issueBranchExpected, patch };
 }
 
-export function cleanIssueWorktree({ jobDir, taskFile, patchFile }) {
+export function cleanIssueWorktree({ jobDir, patchFile }) {
   if (jobDir && fs.existsSync(jobDir)) git(['worktree', 'remove', '--force', jobDir], { allowFailure: true });
   if (jobDir) fs.rmSync(jobDir, { recursive: true, force: true });
-  for (const file of [taskFile, patchFile].filter(Boolean)) fs.rmSync(file, { force: true });
+  if (patchFile) fs.rmSync(patchFile, { force: true });
   git(['worktree', 'prune'], { allowFailure: true });
 }
 
 async function main() {
-  const [command, rawIssue, jobDir, tempDir] = process.argv.slice(2);
+  const [command, first, second, third] = process.argv.slice(2);
   if (command === 'prepare') {
-    const result = prepareIssueWorktree({ issue: Number(rawIssue), jobDir, tempDir });
+    const result = prepareIssueWorktree({ issue: Number(first), jobDir: second, tempDir: third });
     process.stdout.write(JSON.stringify(result));
     return;
   }
   if (command === 'clean') {
-    cleanIssueWorktree({ jobDir: rawIssue, taskFile: jobDir, patchFile: tempDir });
+    cleanIssueWorktree({ jobDir: first, patchFile: second });
     return;
   }
-  throw new Error('usage: issue-worktree.mjs prepare <issue> <job-dir> <temp-dir> | clean <job-dir> [task-file] [patch-file]');
+  throw new Error('usage: issue-worktree.mjs prepare <issue> <job-dir> <temp-dir> | clean <job-dir> [patch-file]');
 }
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main().catch(e => { console.error(e); process.exitCode = 1; });

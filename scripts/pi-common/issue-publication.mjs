@@ -70,7 +70,7 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
   return { commit };
 }
 
-export async function upsertPullRequest({ issue, issueTitle, resultFile, owner }) {
+export async function upsertPullRequest({ issue, resultFile, owner }) {
   const { api } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(owner + ':pi/issue-' + issue)}&base=dev`);
   if (!resultFile || !fs.existsSync(resultFile) || !fs.statSync(resultFile).size) {
@@ -103,7 +103,7 @@ async function main() {
   const [cmd, ...a] = process.argv.slice(2);
   if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
-  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),issueTitle:a[1],resultFile:a[2],owner:a[3]})));
+  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
   throw new Error('unknown publication command');
 }
