@@ -46,8 +46,12 @@ Before enabling the manager, stop the old persistent `github-pi-runner` containe
 it cannot consume jobs in parallel with the ephemeral pool.
 
 Set `MAX_RUNNERS` in the N150 host's local `.env` to the desired pool capacity.
-The manager polls every 30 seconds by default. Set `POLL_SECONDS` in the N150
-host's local `.env` to override that interval, then recreate the manager.
+The manager polls every 20 seconds while work is queued or running. While idle
+or when GitHub is unavailable, the Pi pool polls every 30 seconds and the
+general CI pool every 60 seconds. The general pool keeps one idle runner
+registered so its first job can start immediately; Pi runners still scale from
+zero by default. Configure these with `POLL_SECONDS`, `IDLE_POLL_SECONDS`, and
+`MIN_IDLE_RUNNERS` in the N150 host's local `.env`, then recreate the manager.
 The example defaults to two; a local value such as three takes precedence.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
 Set `MODEL_STATUS_URL` in the N150 host's local `.env` to the active model

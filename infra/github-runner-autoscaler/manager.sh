@@ -5,7 +5,9 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
 MAX_RUNNERS="${MAX_RUNNERS:-2}"
-POLL_SECONDS="${POLL_SECONDS:-30}"
+POLL_SECONDS="${POLL_SECONDS:-20}"
+IDLE_POLL_SECONDS="${IDLE_POLL_SECONDS:-60}"
+MIN_IDLE_RUNNERS="${MIN_IDLE_RUNNERS:-0}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
 RUNNER_LABELS="${RUNNER_LABELS:-n150,pi-agent}"
@@ -129,7 +131,8 @@ active_containers() {
 }
 
 retire_idle_runners() {
-  local names containers name still_idle current_queue
+  local max_to_stop="${1:-2147483647}" names containers name still_idle current_queue stopped=0
+  [[ "$max_to_stop" =~ ^[1-9][0-9]*$ ]] || return 0
   # An already registered idle runner can accept a job without consulting the
   # model gate. Remove surplus idle runners when no workflows are queued.
   names="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" '
@@ -141,6 +144,7 @@ retire_idle_runners() {
   containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
   while IFS= read -r name; do
     [ -n "$name" ] || continue
+    [ "$stopped" -lt "$max_to_stop" ] || break
     printf '%s\n' "$containers" | grep -Fxq -- "$name" || continue
     current_queue="$(queued_jobs)" || return 1
     [ "$current_queue" -eq 0 ] || return 0
@@ -152,6 +156,7 @@ retire_idle_runners() {
     [ "$still_idle" == true ] || continue
     log "stopping surplus idle runner $name"
     run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker stop "$name" >/dev/null || return 1
+    stopped=$((stopped + 1))
   done <<< "$names"
 }
 
@@ -224,26 +229,36 @@ spawn_runner() {
 }
 
 main() {
-  log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s labels=${RUNNER_LABELS}"
+  if [[ ! "$MIN_IDLE_RUNNERS" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    log "error: MIN_IDLE_RUNNERS must be a non-negative integer"
+    return 2
+  fi
+
+  log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s idle_poll=${IDLE_POLL_SECONDS}s min_idle=${MIN_IDLE_RUNNERS} labels=${RUNNER_LABELS}"
   while true; do
     cleanup_stale_registrations || log "warning: stale-runner cleanup failed"
 
     if ! queued="$(queued_jobs)" || ! busy="$(busy_ephemeral_runners)" || ! active="$(active_containers)"; then
       log "warning: runner state unavailable; skipping this poll"
-      sleep "$POLL_SECONDS"
+      sleep "$IDLE_POLL_SECONDS"
       continue
     fi
     if [[ ! "$busy" =~ ^(0|[1-9][0-9]*)$ || ! "$active" =~ ^(0|[1-9][0-9]*)$ ]]; then
       log "warning: invalid runner state; skipping this poll"
-      sleep "$POLL_SECONDS"
+      sleep "$IDLE_POLL_SECONDS"
       continue
     fi
 
-    if [ "$queued" -eq 0 ] && [ "$active" -gt "$busy" ]; then
-      retire_idle_runners || log "warning: idle-runner cleanup failed"
+    surplus_idle=$((active - busy - MIN_IDLE_RUNNERS))
+    if [ "$queued" -eq 0 ] && [ "$surplus_idle" -gt 0 ]; then
+      retire_idle_runners "$surplus_idle" || log "warning: idle-runner cleanup failed"
     fi
 
     desired=$((queued + busy))
+    warm_desired=$((busy + MIN_IDLE_RUNNERS))
+    if [ "$warm_desired" -gt "$desired" ]; then
+      desired="$warm_desired"
+    fi
     if [ "$desired" -gt "$MAX_RUNNERS" ]; then
       desired="$MAX_RUNNERS"
     fi
@@ -264,14 +279,19 @@ main() {
         to_start="$available"
       fi
     fi
-    log "queued=$queued busy=$busy active=$active desired=$desired model_slots_total=$model_total model_slots_busy=$model_busy model_capacity=$available spawning=$to_start"
+    if [ "$queued" -eq 0 ] && [ "$busy" -eq 0 ]; then
+      next_poll_seconds="$IDLE_POLL_SECONDS"
+    else
+      next_poll_seconds="$POLL_SECONDS"
+    fi
+    log "queued=$queued busy=$busy active=$active desired=$desired min_idle=$MIN_IDLE_RUNNERS model_slots_total=$model_total model_slots_busy=$model_busy model_capacity=$available spawning=$to_start next_poll=${next_poll_seconds}s"
     if [ "$to_start" -gt 0 ]; then
       for _ in $(seq 1 "$to_start"); do
         spawn_runner || log "warning: failed to start runner"
       done
     fi
 
-    sleep "$POLL_SECONDS"
+    sleep "$next_poll_seconds"
   done
 }
 

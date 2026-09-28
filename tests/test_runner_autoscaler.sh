@@ -137,6 +137,52 @@ STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":false},{
 [[ "$(cat "$STOPPED_NAMES")" == 'n150-pi-eph-idle' ]] || fail 'only the surplus idle runner may be stopped'
 grep -q 'model_slots_total=4 model_slots_busy=3 model_capacity=0' "$STATUS_LOG" || fail 'log must report total and busy slots even without queued jobs'
 
+STATUS_RESPONSE='[{"id":0,"is_processing":false},{"id":1,"is_processing":false}]'
+(
+  queued_jobs() { printf '0\n'; }
+  busy_ephemeral_runners() { printf '0\n'; }
+  active_containers() { printf '0\n'; }
+  cleanup_stale_registrations() { :; }
+  MIN_IDLE_RUNNERS=1
+  spawned=0
+  spawn_runner() { spawned=$((spawned + 1)); }
+  sleep() {
+    [[ "$1" == 60 ]] || fail "idle pool must back off to 60s, got ${1}s"
+    [[ "$spawned" == 1 ]] || fail "expected one warm runner, got $spawned"
+    exit 0
+  }
+  main > "$STATUS_LOG"
+)
+grep -q 'desired=1 min_idle=1' "$STATUS_LOG" || fail 'empty general pool must request one warm runner'
+
+(
+  queued_jobs() { printf '0\n'; }
+  busy_ephemeral_runners() { printf '0\n'; }
+  active_containers() { printf '1\n'; }
+  cleanup_stale_registrations() { :; }
+  MIN_IDLE_RUNNERS=1
+  retire_idle_runners() { fail 'stopped the configured warm runner'; }
+  spawn_runner() { fail 'started a duplicate warm runner'; }
+  sleep() {
+    [[ "$1" == 60 ]] || fail "idle pool must poll at 60s, got ${1}s"
+    exit 0
+  }
+  main > /dev/null
+)
+
+(
+  queued_jobs() { printf '1\n'; }
+  busy_ephemeral_runners() { printf '0\n'; }
+  active_containers() { printf '0\n'; }
+  cleanup_stale_registrations() { :; }
+  spawn_runner() { :; }
+  sleep() {
+    [[ "$1" == 20 ]] || fail "active pool must poll at 20s, got ${1}s"
+    exit 0
+  }
+  main > /dev/null
+)
+
 STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"id":2,"is_processing":true},{"id":3,"is_processing":true}]'
 (
   queued_jobs() { printf '1\n'; }
