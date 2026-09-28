@@ -213,11 +213,13 @@ async function runStructuredComplexityClassifier(pi, ctx, config, plan, signal) 
   };
 }
 
-function trivialRepoLookup(cwd, { extensions = [], exactText = '' }) {
+export function trivialRepoLookup(cwd, { extensions = [], exactText = '' }) {
   const normalized = extensions.map(value => String(value).replace(/^\./, '').toLowerCase()).filter(Boolean);
+  const extensionRank = new Map(normalized.map((ext, index) => [ext, index]));
   const tracked = execFileSync('git', ['ls-files', '-z'], { cwd, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
     .split('\0').filter(Boolean);
-  const excluded = ['.github/workflows/', '.pi/', 'agents/', 'scripts/', 'infra/', 'tests/', 'node_modules/', '.venv/'];
+  const excluded = ['.github/', '.agents/', '.pi/', 'agents/', 'scripts/', 'infra/', 'tests/', 'node_modules/', '.venv/'];
+  const legalNames = /^(?:licen[sc]e|copying|notice)(?:\.|$)/i;
   const candidates = [];
   const found = [];
   for (const relative of tracked) {
@@ -230,16 +232,31 @@ function trivialRepoLookup(cwd, { extensions = [], exactText = '' }) {
     if (exactText && text.includes(exactText)) found.push(relative);
 
     if (excluded.some(prefix => relative.startsWith(prefix))) continue;
+    const basename = relative.split('/').at(-1) ?? relative;
+    if (legalNames.test(basename)) continue;
     const ext = relative.includes('.') ? relative.split('.').pop().toLowerCase() : '';
-    if (normalized.length && !normalized.includes(ext)) continue;
+    if (normalized.length && !extensionRank.has(ext)) continue;
     if (stat.size <= 20 * 1024) {
       const lastLine = text.split(/\r?\n/).map(line => line.trimEnd()).filter(Boolean).at(-1) ?? '';
-      candidates.push({ path: relative, size: stat.size, lastLine });
+      const pathRank = relative.startsWith('tasks/') ? 0 : relative.startsWith('docs/') ? 1 : 2;
+      candidates.push({
+        path: relative,
+        size: stat.size,
+        lastLine,
+        extensionRank: extensionRank.get(ext) ?? normalized.length,
+        pathRank,
+      });
     }
   }
-  candidates.sort((a, b) => a.path.localeCompare(b.path));
+  candidates.sort((a, b) =>
+    a.extensionRank - b.extensionRank ||
+    a.pathRank - b.pathRank ||
+    a.path.localeCompare(b.path)
+  );
   return {
-    candidate: candidates[0] ?? null,
+    candidate: candidates[0]
+      ? { path: candidates[0].path, size: candidates[0].size, lastLine: candidates[0].lastLine }
+      : null,
     exactTextFound: found.length > 0,
     exactTextPaths: found.slice(0, 5),
   };
@@ -354,7 +371,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'trivial_repo_lookup',
       label: 'Trivial repository lookup',
-      description: 'For TRIVIAL tasks only: perform one deterministic, bounded tracked-file lookup without enabling subagents. Returns the first small matching file plus an optional exact-text idempotency check.',
+      description: 'For TRIVIAL tasks only: perform one deterministic, bounded tracked-file lookup without enabling subagents. Honors extension preference order, excludes control/legal/generated-style targets, and can check exact-text idempotency.',
       parameters: Type.Object({
         extensions: Type.Array(Type.String({ minLength: 1, maxLength: 12 }), { maxItems: 8 }),
         exactText: Type.Optional(Type.String({ maxLength: 500 })),
@@ -378,7 +395,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'set_response_budget',
       label: 'Set response budget',
-      description: `Set the maximum output for the NEXT model response only: short (${controller.budgets.short}), normal (${controller.budgets.normal}), or deep (${controller.budgets.deep}). Use the smallest sufficient level; a ceiling hit without concrete progress will not be rewarded with a larger automatic budget.`,
+      description: `Set the maximum output for the NEXT model response only: short (${controller.budgets.short}), normal (${controller.budgets.normal}), or deep (${controller.budgets.deep}). Use the smallest sufficient level; automatic budget escalation is driven by hitting the active ceiling.`,
       parameters: Type.Object({
         level: Type.Union([Type.Literal('short'), Type.Literal('normal'), Type.Literal('deep')]),
         reason: Type.String({ description: 'One short sentence explaining why the next response needs this budget' }),
