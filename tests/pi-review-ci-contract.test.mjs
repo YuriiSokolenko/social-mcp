@@ -475,18 +475,17 @@ test('agent prompts document the shared response-budget contract', () => {
 
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
-  assert.ok(workflow.includes('PI_ISSUE=$(jq -r \'.issue\' "$CONTEXT")'));
+  assert.ok(workflow.includes('PI_ISSUE=$(jq -r \'\.issue\' "$CONTEXT")'));
   assert.match(prompt, /\*\*trivial\*\* — tiny self-contained diff/);
-  assert.match(workflow, /do not rerun pytest, Ruff, or git diff --check/);
+  assert.match(stageConfig, /do not rerun pytest, Ruff, or git diff --check/);
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /History or prior attempts are valid when they materially answer a concrete question/);
   assert.match(prompt, /Never load skills for trivial reviews/);
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
-
-
 test('implementer orients and plans before declaring complexity', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
