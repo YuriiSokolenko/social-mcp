@@ -52,7 +52,6 @@ jobs:
       PI_MAX_REPEAT_CALLS: '3'
       PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
       PI_MAX_PRE_COMPLEXITY_TURNS: '8'
-      PI_TERMINAL_RESULT_FILE: ${{ runner.temp }}/pi-terminal-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5
@@ -60,6 +59,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: dev
+
+      - name: Initialize terminal result marker
+        run: echo "PI_TERMINAL_RESULT_FILE=$RUNNER_TEMP/pi-terminal-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
 
       - name: Load and guard PR
         id: load

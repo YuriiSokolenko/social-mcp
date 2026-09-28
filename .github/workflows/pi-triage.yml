@@ -28,7 +28,6 @@ jobs:
       PI_TRIAGE_BATCH_SIZE: '8'
       PI_REQUIRED_FIRST_READ_PATH: 'agents/triage/AGENTS.md'
       PI_FIXED_RESPONSE_MAX_TOKENS: '1000'
-      PI_TERMINAL_RESULT_FILE: ${{ runner.temp }}/pi-terminal-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout trusted dev
@@ -38,7 +37,9 @@ jobs:
           persist-credentials: false
 
       - name: Initialize Pi usage
-        run: echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl" >> "$GITHUB_ENV"
+        run: |
+          echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl" >> "$GITHUB_ENV"
+          echo "PI_TERMINAL_RESULT_FILE=$RUNNER_TEMP/pi-terminal-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
 
       - name: Prepare triage context
         id: prepare
