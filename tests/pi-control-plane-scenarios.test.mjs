@@ -71,7 +71,8 @@ test('closed unmerged Pi PR is a normal review skip and immediately enters issue
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   const workflow = fs.readFileSync('.github/workflows/pi-reconcile.yml', 'utf8');
   assert.match(guard, /pr\.state !== 'open'[\s\S]*reason: pr\.merged \? 'merged' : 'closed'/);
-  assert.match(reconcile, /lostOwner[\s\S]*mr-label-without-open-pr/);
+  assert.match(reconcile, /safeRemovals\(findings\)/);
+  assert.doesNotMatch(reconcile, /lostOwner[\s\S]{0,220}mr-label-without-open-pr/);
   assert.match(workflow, /pull_request:[\s\S]*types: \[closed\]/);
   assert.match(workflow, /pull_request\.merged == false/);
   assert.match(workflow, /startsWith\(github\.event\.pull_request\.head\.ref, 'pi\/issue-'\)/);
