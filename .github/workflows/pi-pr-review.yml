@@ -47,11 +47,6 @@ jobs:
       PR: ${{ inputs.pr_number }}
       REPO: ${{ github.repository }}
       PI_PHASE: review
-      PI_BASH_TIMEOUT_SECONDS: '600'
-      PI_REQUIRE_TASK_COMPLEXITY: '1'
-      PI_MAX_REPEAT_CALLS: '3'
-      PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'
-      PI_MAX_PRE_COMPLEXITY_TURNS: '8'
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5
@@ -59,9 +54,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: dev
-
-      - name: Initialize terminal result marker
-        run: echo "PI_TERMINAL_RESULT_FILE=$RUNNER_TEMP/pi-terminal-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
 
       - name: Load and guard PR
         id: load
@@ -110,22 +102,11 @@ jobs:
       - name: Run independent review
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
         run: |
-          set -o pipefail
           cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
-          pi --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-reviewer-result-tool.mjs" --provider hp-laguna --model qwen3.8-flash-next --mode json --no-session \
-            "Read agents/reviewer/AGENTS.md first. Then read issue #${ISSUE}, inspect the complete PR diff and directly relevant changed code, and write a short review plan of at most 1000 output tokens. Only then call declare_task_complexity based on that evidence. Review PR #${PR} against issue #${ISSUE}. Do not modify files or GitHub state. The deterministic checks already passed; do not rerun pytest, Ruff, or git diff --check. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action." \
-            | tee "$RAW" | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
+          node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" reviewer --raw "$RAW"
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
           jq -r '.text' "$RUNNER_TEMP/review-result.json"
-
-      - name: Require terminal review result
-        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
-        run: |
-          if [ ! -s "$PI_TERMINAL_RESULT_FILE" ]; then
-            echo "::error::Reviewer exited without a successful submit_result."
-            exit 1
-          fi
 
       - name: Apply review result
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'

@@ -2,23 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { inspectIssueState, safeRemovals } from '../scripts/pi-common/state-machine.mjs';
-import { checkpointGcDecision, recoveryForIssue } from '../scripts/pi-common/recovery-policy.mjs';
+import { checkpointGcDecision, issueRecoveryTarget } from '../scripts/pi-common/recovery-policy.mjs';
 
 const labels = (...names) => names.map(name => ({ name }));
 
-test('dead implementer with checkpoint is released without losing saved work', () => {
+test('dead implementer returns to Dispatcher without losing saved work', () => {
   const issue = { state: 'open', labels: labels('pi:running') };
   const findings = inspectIssueState(issue, { hasLiveImplementer: false, hasCheckpoint: true });
   assert.deepEqual(safeRemovals(findings), ['pi:running']);
-  assert.equal(recoveryForIssue(issue, { hasCheckpoint: true }).add, 'pi:ready');
+  assert.equal(issueRecoveryTarget(issue, { automationMode: 'RUNNING' }), 'dispatcher:ready');
   assert.equal(checkpointGcDecision(issue).remove, false);
 });
 
-test('published PR wins over restarting a dead implementer', () => {
+test('published PR wins over returning a dead implementer to Dispatcher', () => {
   const issue = { state: 'open', labels: labels('pi:running') };
-  const recovery = recoveryForIssue(issue, { hasOpenPiPr: true, hasCheckpoint: true });
-  assert.equal(recovery.add, 'pi:mr-created');
-  assert.equal(recovery.dispatch, null);
+  assert.equal(issueRecoveryTarget(issue, { hasOpenPiPr: true, automationMode: 'RUNNING' }), 'pi:mr-created');
+  assert.equal(issueRecoveryTarget(issue, { automationMode: 'DRAINING' }), null);
 });
 
 test('completed issue makes checkpoint garbage collectable', () => {
@@ -55,7 +54,7 @@ test('published PR state is durable before independent review starts', () => {
   assert.match(workflow, /issue-publication\.mjs" review/);
   assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(publication, /dispatchWorkflow\('pi-auto-merge\.yml'/);
-  assert.match(workflow, /- name: Require terminal implementation result[\s\S]*PI_IMPLEMENTER_RESULT_FILE/);
+  assert.match(workflow, /pi-run-stage\.mjs" implementer/);
   assert.match(workflow, /- name: Mark no-change result[\s\S]*exit 1/);
   assert.match(workflow, /if: failure\(\) && steps\.preflight\.outcome == 'success' && steps\.checkpoint\.outputs\.changed != 'false' && steps\.pr\.outputs\.number == ''/);
 });
@@ -133,11 +132,12 @@ test('implementer structured result requires at least one concrete change', () =
 });
 
 
-test('reconciler never redispatches a ready implementer when its PR already exists', () => {
+test('Reconciler never schedules Implementer directly', () => {
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(reconcile, /retryReadyImplementer[\s\S]*!openPiPrIssues\.has\(issue\.number\)/);
+  assert.doesNotMatch(reconcile, /pi-issue-agent\.yml/);
+  assert.match(reconcile, /issueRecoveryTarget/);
+  assert.match(reconcile, /dispatcher:ready/);
 });
-
 
 test('merge gate owns only eligibility and merge; dev CI owns validation', () => {
   const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
@@ -154,12 +154,14 @@ test('manual review and repair contain no captured dev-base state', () => {
 });
 
 
-test('reconciler restarts stranded ready work without another dispatcher round trip', () => {
+test('stranded pi:ready work returns through the normal Dispatcher round trip', () => {
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(reconcile, /retryReadyImplementer[\s\S]*pi-issue-agent\.yml/);
-  assert.doesNotMatch(reconcile, /retryReadyImplementer[\s\S]{0,500}pi-dispatcher\.yml/);
+  assert.match(reconcile, /strandedReady/);
+  assert.match(reconcile, /issueRecoveryTarget/);
+  assert.doesNotMatch(reconcile, /dispatchWorkflow\('pi-issue-agent\.yml'/);
+  const dispatcher = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
+  assert.match(dispatcher, /github\.event\.label\.name == 'dispatcher:ready'/);
 });
-
 
 test('dispatcher-ready label event is the only normal wake after architect publication', () => {
   const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');

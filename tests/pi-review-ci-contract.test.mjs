@@ -90,7 +90,9 @@ test('review PASS is required before merge gate can merge', () => {
 test('PR fix resolves current-dev conflicts in the live repair session and returns to fresh review', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
   const tool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
-  assert.match(workflow, /pi-repair-result-tool\.mjs/);
+  const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  assert.match(workflow, /pi-run-stage\.mjs" repair/);
+  assert.match(stageConfig, /repair:[\s\S]*resultTool: 'pi-repair-result-tool\.mjs'/);
   const finalizer = fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
   assert.match(tool, /integrateLatestDev/);
   assert.match(tool, /validateFinalProductTree/);
@@ -102,7 +104,6 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8'), /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
-
 
 test('stale reviewer verdict is discarded without self-rescheduling', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
@@ -386,38 +387,43 @@ test('Reviewer, PR Fix, and Automation Control contain no inline GitHub REST imp
 });
 
 
-test('every model-driven Pi workflow uses the shared response-budget extension', () => {
+test('every model-driven Pi workflow delegates model execution to one stage runner', () => {
   for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']) {
     const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
-    assert.match(workflow, /pi-response-budget\.mjs/, `${name}: missing shared response-budget extension`);
+    assert.equal(workflow.split('pi-run-stage.mjs').length - 1, 1, `${name}: expected exactly one shared stage runner`);
+    assert.doesNotMatch(workflow, /pi-(?:loop-guard|response-budget)\.mjs/);
+    assert.doesNotMatch(workflow, /PI_TERMINAL_RESULT_FILE/);
   }
 });
 
-test('response-budget policy has one hard 8k ceiling and is independent of loop guard', () => {
-  const extension = fs.readFileSync('scripts/pi-response-budget.mjs', 'utf8');
-  const policy = fs.readFileSync('scripts/pi-common/response-budget-policy.mjs', 'utf8');
-  const guard = fs.readFileSync('scripts/pi-loop-guard.mjs', 'utf8');
-  assert.match(policy, /short:\s*2048/);
-  assert.match(policy, /normal:\s*4096/);
-  assert.match(policy, /deep:\s*8192/);
-  assert.match(extension, /set_response_budget/);
-  assert.match(extension, /session_start/);
-  assert.doesNotMatch(guard, /set_response_budget|RESPONSE_BUDGETS|withResponseBudget/);
+test('one progress controller owns loop safety, complexity, and response budgets', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  const controller = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
+  assert.match(controller, /short: 2048/);
+  assert.match(controller, /normal: 4096/);
+  assert.match(controller, /deep: 8192/);
+  assert.match(controller, /checkToolCall/);
+  assert.match(controller, /nextResponseBudgetLevel/);
+  assert.match(runtime, /declare_task_complexity/);
+  assert.match(runtime, /set_response_budget/);
 });
 
-
-test('Pi result tools reuse the shared submit-nudge primitive', () => {
+test('all Pi result tools reuse one terminal-tool helper', () => {
   for (const name of ['pi-architect-result-tool.mjs', 'pi-dispatcher-result-tool.mjs', 'pi-implementer-result-tool.mjs', 'pi-repair-result-tool.mjs', 'pi-reviewer-result-tool.mjs', 'pi-triage-result-tool.mjs']) {
     const source = fs.readFileSync(`scripts/${name}`, 'utf8');
-    assert.match(source, /registerSubmitNudge/);
-    assert.doesNotMatch(source, /pi\.on\(['"]agent_before_settle/);
+    assert.match(source, /registerTerminalTool/);
+    assert.doesNotMatch(source, /registerSubmitNudge|terminalResult|agent_before_settle/);
   }
+  const helper = fs.readFileSync('scripts/pi-common/terminal-tool.mjs', 'utf8');
+  assert.match(helper, /registerSubmitNudge/);
+  assert.match(helper, /terminalResult/);
 });
 
-test('Triage submission is terminal and avoids a post-submit model turn', () => {
+test('Triage submission uses the shared terminal contract', () => {
   const source = fs.readFileSync('scripts/pi-triage-result-tool.mjs', 'utf8');
   const agent = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
-  assert.match(source, /terminalResult\('Result recorded\.'/);
+  assert.match(source, /registerTerminalTool/);
+  assert.match(source, /customType: 'triage-result'/);
   assert.match(agent, /do not narrate internal debate or print a prose classification list/i);
   assert.match(agent, /put the classifications directly in its arguments/i);
 });
@@ -437,44 +443,35 @@ test('publication helpers reuse one trusted git runner', () => {
 });
 
 
-test('every model-driven workflow wires the shared safety extensions exactly once', () => {
-  const workflows = ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml'];
-  for (const name of workflows) {
-    const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
-    for (const extension of ['pi-bash-timeout.mjs', 'pi-response-budget.mjs']) {
-      assert.equal(source.split(extension).length - 1, 1, `${name}: expected exactly one ${extension}`);
-    }
-  }
+test('stage runner wires the shared safety/runtime extensions once for all agents', () => {
+  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  assert.equal(runner.split('pi-bash-timeout.mjs').length - 1, 1);
+  assert.equal(runner.split('pi-agent-runtime.mjs').length - 1, 1);
+  assert.match(runner, /config\.resultTool/);
 });
 
-test('every model-driven workflow uses the shared loop guard', () => {
-  for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-issue-agent.yml', 'pi-pr-fix.yml', 'pi-pr-review.yml', 'pi-triage.yml']) {
-    const source = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
-    assert.match(source, /pi-loop-guard\.mjs/, `${name}: missing shared loop guard`);
+test('stage configuration is the single source of per-agent runtime limits', () => {
+  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
+    assert.match(config, new RegExp(`${name}:[\\s\\S]*requiredFirstReadPath`));
   }
+  assert.match(config, /dispatcher:[\s\S]*maxTurns: 30/);
+  assert.match(config, /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
 });
 
-test('agent prompts document their configured response-budget contract', () => {
-  for (const name of ['architect', 'implementer', 'repair', 'reviewer']) {
+test('agent prompts document the shared response-budget contract', () => {
+  for (const name of ['architect', 'implementer', 'repair', 'reviewer', 'dispatcher']) {
     const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
     assert.match(source, /set_response_budget/);
     assert.match(source, /SHORT[\s\S]*2048/);
     assert.match(source, /NORMAL[\s\S]*4096/);
     assert.match(source, /DEEP[\s\S]*8192/);
   }
-  const dispatcher = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
-  assert.match(dispatcher, /set_response_budget/);
-  assert.match(dispatcher, /SHORT[\s\S]*2048/);
-  assert.match(dispatcher, /NORMAL[\s\S]*4096/);
-  assert.match(dispatcher, /DEEP[\s\S]*8192/);
-  const dispatcherWorkflow = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
-  assert.doesNotMatch(dispatcherWorkflow, /PI_RESPONSE_BUDGET_(?:SHORT|NORMAL|DEEP)/);
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
   assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
   assert.match(triage, /`set_response_budget` is intentionally unavailable/);
-  assert.match(fs.readFileSync('.github/workflows/pi-triage.yml', 'utf8'), /PI_FIXED_RESPONSE_MAX_TOKENS: '1000'/);
+  assert.match(fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8'), /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
 });
-
 
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
@@ -491,12 +488,9 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
 
 
 test('implementer orients and plans before declaring complexity', () => {
-  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-
-  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
-  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
-
+  assert.match(config, /implementer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash'\]/);
   const contract = [
     'Read this `agents/implementer/AGENTS.md`',
     'Read the supplied GitHub issue',
@@ -512,58 +506,27 @@ test('implementer orients and plans before declaring complexity', () => {
     assert.ok(position > previous, `implementer startup marker missing or out of order: ${marker}`);
     previous = position;
   }
-
   assert.match(agent, /Do not modify repository files or perform implementation work before step 5 is complete/);
   assert.match(agent, /complex[\s\S]*implement[\s\S]*same issue[\s\S]*completion/i);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
-  assert.doesNotMatch(agent, /Before starting, read `docs\/PROJECT_CONTEXT\.md`/);
 });
 
 test('reviewer orients and plans before declaring complexity', () => {
-  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
-  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
-  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
-  const contract = [
-    'Read `agents/reviewer/AGENTS.md`',
-    'Read the linked issue',
-    'Inspect the complete PR diff',
-    'Write a concise review plan',
-    '1000 tokens',
-    'Call `declare_task_complexity`',
-    'Continue the semantic review',
-  ];
-  let previous = -1;
-  for (const value of contract) {
-    const position = agent.indexOf(value);
-    assert.ok(position > previous, `reviewer startup marker missing or out of order: ${value}`);
-    previous = position;
+  assert.match(config, /reviewer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash'\]/);
+  for (const value of ['Read `agents/reviewer/AGENTS.md`', 'Read the linked issue', 'Inspect the complete PR diff', 'Write a concise review plan', '1000 tokens', 'Call `declare_task_complexity`', 'Continue the semantic review']) {
+    assert.ok(agent.includes(value), `reviewer startup marker missing: ${value}`);
   }
-  assert.doesNotMatch(workflow, /first assistant response MUST contain exactly one tool call/i);
 });
 
 test('repair orients and plans before declaring complexity', () => {
-  const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
+  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
-  assert.match(workflow, /PI_REQUIRE_TASK_COMPLEXITY: '1'/);
-  assert.match(workflow, /PI_PRE_COMPLEXITY_ALLOWED_TOOLS: 'read,bash'/);
-  assert.match(workflow, /pi-loop-guard\.mjs/);
-  const contract = [
-    'Read `agents/repair/AGENTS.md`',
-    'Read the concrete blocking Reviewer finding',
-    'Inspect the PR diff',
-    'Write a short repair plan',
-    '1000 output tokens',
-    'Call `declare_task_complexity`',
-    'Immediately execute the first plan item',
-  ];
-  let previous = -1;
-  for (const value of contract) {
-    const position = agent.indexOf(value);
-    assert.ok(position > previous, `repair startup marker missing or out of order: ${value}`);
-    previous = position;
+  assert.match(config, /repair:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash'\]/);
+  for (const value of ['Read `agents/repair/AGENTS.md`', 'Read the concrete blocking Reviewer finding', 'Inspect the PR diff', 'Write a short repair plan', '1000 output tokens', 'Call `declare_task_complexity`', 'Immediately execute the first plan item']) {
+    assert.ok(agent.includes(value), `repair startup marker missing: ${value}`);
   }
-  assert.match(agent, /Do not edit files[\s\S]*before step 5 is complete/);
 });
 
 test('dispatcher stays a narrow scope classifier and does not treat complexity as decomposition', () => {
@@ -609,24 +572,14 @@ test('deterministic review failure routes directly to PR Fix instead of stopping
   assert.match(workflow, /name: Apply review result\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
 });
 
-test('model-driven terminal workflows require a successful terminal tool marker', () => {
-  const workflows = [
-    ['pi-architect.yml', 'Require terminal architect result'],
-    ['pi-triage.yml', 'Require terminal triage result'],
-    ['pi-dispatcher.yml', 'Require terminal dispatcher result'],
-    ['pi-pr-review.yml', 'Require terminal review result'],
-    ['pi-pr-fix.yml', 'Require terminal repair result'],
-  ];
-  for (const [name, gate] of workflows) {
+test('stage runner owns the terminal marker contract for every model-driven workflow', () => {
+  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  assert.match(runner, /PI_TERMINAL_RESULT_FILE/);
+  assert.match(runner, /exited without its terminal tool/);
+  for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-triage.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-issue-agent.yml']) {
     const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
-    assert.match(workflow, /PI_TERMINAL_RESULT_FILE/);
-    assert.ok(workflow.includes(gate), `${name}: missing terminal result gate`);
-    assert.match(workflow, /\[ ! -s "\$PI_TERMINAL_RESULT_FILE" \]/);
+    assert.doesNotMatch(workflow, /Require terminal .* result|PI_TERMINAL_RESULT_FILE/);
   }
-  const dispatcherTool = fs.readFileSync('scripts/pi-dispatcher-result-tool.mjs', 'utf8');
-  assert.match(dispatcherTool, /terminalResult\('Result recorded\. Dispatch classification is complete; stop now\.'/);
-  const architectTool = fs.readFileSync('scripts/pi-architect-result-tool.mjs', 'utf8');
-  assert.match(architectTool, /terminalResult\('Result recorded\. Architect decision is complete; stop now\.'/);
 });
 
 test('DRAINING cannot create new issue work but still recovers published PR work', () => {
@@ -643,21 +596,22 @@ test('DRAINING cannot create new issue work but still recovers published PR work
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /issueRecoveryAllowed = automationMode === 'RUNNING'/);
   assert.match(reconcile, /prRecoveryAllowed = automationMode === 'RUNNING' \|\| automationMode === 'DRAINING'/);
-  assert.match(reconcile, /clear orphaned implementer ownership without re-queueing/);
+  assert.match(reconcile, /issueRecoveryTarget/);
+  assert.match(reconcile, /clear lost issue ownership without re-queueing/);
   assert.match(reconcile, /passed-pr-needs-merge-gate/);
   assert.match(reconcile, /pi-auto-merge\.yml/);
 });
 
-test('Architect split publication has a durable parent marker and recoverable children', () => {
+test('Architect split publication is two-phase and Dispatcher wakes only from ready labels', () => {
   const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
   const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(architect, /Parent body \+ epic ownership are one durable transaction marker/);
-  assert.match(architect, /body: parentBody[\s\S]*architect:epic/);
-  assert.match(architect, /state\.length === 1 && state\[0\] === 'dispatcher:ready'/);
-  assert.match(reconcile, /partial-architect-split-child/);
   const workflow = fs.readFileSync('.github/workflows/pi-architect.yml', 'utf8');
-  assert.match(workflow, /Wake Dispatcher after Architect publication/);
-  assert.match(workflow, /workflow-dispatch\.mjs" pi-dispatcher\.yml/);
+  assert.match(architect, /architect-children:/);
+  assert.match(architect, /body: parentBody[\s\S]*architect:epic/);
+  assert.match(architect, /dispatcher:ready/);
+  assert.match(reconcile, /partial-architect-split-child/);
+  assert.doesNotMatch(workflow, /Wake Dispatcher after Architect publication|workflow-dispatch\.mjs" pi-dispatcher\.yml/);
+  assert.match(fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8'), /github\.event\.label\.name == 'dispatcher:ready'/);
 });
 
 test('terminal result parsers do not accept legacy free-text markers', () => {

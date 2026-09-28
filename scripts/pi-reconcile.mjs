@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { issueTargetAfterRemovals, replaceIssueState } from './pi-common/github-state.mjs';
 import { inspectIssueState, issueStateLabels, safeRemovals } from './pi-common/state-machine.mjs';
-import { checkpointGcDecision, recoveryForIssue } from './pi-common/recovery-policy.mjs';
+import { checkpointGcDecision, issueRecoveryTarget } from './pi-common/recovery-policy.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
 
 const apply = process.argv.includes('--apply');
@@ -64,55 +64,39 @@ for (const issue of issues) {
     hasLiveArchitect: liveArchitects.has(issue.number),
     hasCheckpoint: checkpoints.has(issue.number),
   });
-  const issueLabels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
+  const labels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   const issueAgeMs = Date.now() - Date.parse(issue.updated_at ?? issue.created_at);
-  const retryReadyImplementer = apply && issueRecoveryAllowed && issue.state === 'open' && issueLabels.has('pi:ready') &&
+  const strandedReady = issue.state === 'open' && labels.has('pi:ready') &&
     Number.isFinite(issueAgeMs) && issueAgeMs >= RECOVERY_GRACE_MS &&
     !liveImplementers.has(issue.number) && !openPiPrIssues.has(issue.number);
-  if (!findings.length && !retryReadyImplementer) continue;
+
+  if (!findings.length && !strandedReady) continue;
   const removals = safeRemovals(findings);
   let recovery = null;
+
   if (apply) {
-    if (findings.some(x => x.code === 'orphaned-implementer-state')) {
-      if (issueRecoveryAllowed) {
-        recovery = recoveryForIssue(issue, { hasCheckpoint: checkpoints.has(issue.number), hasOpenPiPr: openPiPrIssues.has(issue.number) });
-        if (recovery) {
-          await replaceStateLabels(issue.number, issue, recovery.add, 'issue');
-          if (recovery.dispatch === 'implementer') {
-            const dispatched = await tryDispatchWorkflow('pi-issue-agent.yml', { issue_number: String(issue.number) }, `issue #${issue.number}`);
-            if (!dispatched) recovery = { ...recovery, dispatch: null, reason: 'implementer recovery dispatch failed; pi:ready retained for retry' };
-          }
-        }
-      } else {
-        await replaceStateLabels(issue.number, issue, null, 'issue');
-        recovery = { add: null, dispatch: null, reason: `${automationMode}: clear orphaned implementer ownership without re-queueing` };
-      }
-    } else if (findings.some(x => x.code === 'orphaned-architect-state')) {
-      const target = issueRecoveryAllowed ? 'dispatcher:ready' : null;
+    const lostOwner = findings.some(item =>
+      item.code === 'orphaned-implementer-state' || item.code === 'orphaned-architect-state');
+    if (lostOwner || strandedReady) {
+      const target = issueRecoveryTarget(issue, {
+        hasOpenPiPr: openPiPrIssues.has(issue.number),
+        automationMode,
+      });
       await replaceStateLabels(issue.number, issue, target, 'issue');
       recovery = {
         add: target,
         dispatch: null,
-        reason: issueRecoveryAllowed
-          ? 'return orphaned architect ownership to dispatcher'
-          : `${automationMode}: clear orphaned architect ownership without re-queueing`,
+        reason: target === 'pi:mr-created'
+          ? 'published PR is the durable owner'
+          : target === 'dispatcher:ready'
+            ? 'return lost issue ownership to the normal Dispatcher'
+            : `${automationMode}: clear lost issue ownership without re-queueing`,
       };
     } else if (removals.length) {
       await replaceStateLabels(issue.number, issue, issueTargetAfterRemovals(issue, removals), 'issue');
     }
   }
-  if (retryReadyImplementer && !recovery) {
-    const dispatched = await tryDispatchWorkflow(
-      'pi-issue-agent.yml',
-      { issue_number: String(issue.number) },
-      `ready issue #${issue.number}`,
-    );
-    recovery = {
-      add: 'pi:ready',
-      dispatch: dispatched ? 'implementer' : null,
-      reason: dispatched ? 'restart stranded ready implementation' : 'implementer wake failed; pi:ready retained for retry',
-    };
-  }
+
   report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
 }
 

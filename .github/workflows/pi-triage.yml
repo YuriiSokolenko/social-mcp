@@ -24,10 +24,7 @@ jobs:
     timeout-minutes: 120
     env:
       REPO: ${{ github.repository }}
-      PI_BASH_TIMEOUT_SECONDS: '600'
       PI_TRIAGE_BATCH_SIZE: '8'
-      PI_REQUIRED_FIRST_READ_PATH: 'agents/triage/AGENTS.md'
-      PI_FIXED_RESPONSE_MAX_TOKENS: '1000'
 
     steps:
       - name: Checkout trusted dev
@@ -35,11 +32,6 @@ jobs:
         with:
           ref: dev
           persist-credentials: false
-
-      - name: Initialize Pi usage
-        run: |
-          echo "PI_METRICS_FILE=$RUNNER_TEMP/pi-usage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl" >> "$GITHUB_ENV"
-          echo "PI_TERMINAL_RESULT_FILE=$RUNNER_TEMP/pi-terminal-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
 
       - name: Prepare triage context
         id: prepare
@@ -56,35 +48,15 @@ jobs:
       - name: Ask Pi triage
         if: steps.prepare.outputs.run == 'true'
         run: |
-          set -o pipefail
           TASK_FILE="$RUNNER_TEMP/pi-triage-task.txt"
           cat > "$TASK_FILE" <<EOF
           Read and follow agents/triage/AGENTS.md. Do not read docs/PROJECT_CONTEXT.md unless one specific candidate genuinely requires product context to resolve an ambiguity.
           The candidate issues to review are at $RUNNER_TEMP/pi-triage-context.json.
-          The snapshot contains the current GitHub issue body, Task metadata, labels, dependency states, and relevant comments for every candidate.
-          Classify every candidate exactly once as ready for the dispatcher, needing a person, or skipped, per your role rules. Previous workflow failures and pipeline labels are not unresolved product decisions by themselves. Do not reconsider a decided candidate; move directly to the next one.
-          Call submit_result exactly once, as your last action, with your classification.
-          Do not modify the repository or GitHub state.
+          The snapshot contains current issue body, Task metadata, labels, dependency states, and relevant comments.
+          Classify every candidate exactly once as ready for Dispatcher, needing a person, or skipped. Do not reconsider a decided candidate.
+          Call submit_result exactly once as your last action. Do not modify repository or GitHub state.
           EOF
-          pi \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-bash-timeout.mjs" --extension "$GITHUB_WORKSPACE/scripts/pi-response-budget.mjs" \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-loop-guard.mjs" \
-            --extension "$GITHUB_WORKSPACE/scripts/pi-triage-result-tool.mjs" \
-            --provider hp-laguna \
-            --model qwen3.8-flash-next \
-            --mode json \
-            --no-session \
-            "$(cat "$TASK_FILE")" \
-          | tee "$RUNNER_TEMP/pi-triage-result.jsonl" \
-          | PI_CALL=main node "$GITHUB_WORKSPACE/scripts/pi-log-filter.mjs"
-
-      - name: Require terminal triage result
-        if: steps.prepare.outputs.run == 'true'
-        run: |
-          if [ ! -s "$PI_TERMINAL_RESULT_FILE" ]; then
-            echo "::error::Triage exited without a successful submit_result."
-            exit 1
-          fi
+          node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" triage --prompt-file "$TASK_FILE" --raw "$RUNNER_TEMP/pi-triage-result.jsonl"
 
       - name: Validate and apply triage decisions
         if: vars.PI_AUTOMATION_MODE == 'RUNNING' && steps.prepare.outputs.run == 'true'
