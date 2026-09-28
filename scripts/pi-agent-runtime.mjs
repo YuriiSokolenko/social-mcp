@@ -19,6 +19,20 @@ const COMPLEXITY_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
+const IMPLEMENTATION_PLAN_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    steps: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 8,
+      items: { type: 'string', minLength: 1, maxLength: 240 },
+    },
+  },
+  required: ['steps'],
+  additionalProperties: false,
+});
+
 function implementerIssueContext(env = process.env) {
   const contextFile = env.PI_ISSUE_CONTEXT;
   if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for runtime complexity classification');
@@ -45,9 +59,34 @@ function validateComplexityValue(value) {
   return { complexity: value.complexity, reason };
 }
 
+function validateImplementationPlan(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1) {
+    throw new Error('Implementation planner returned an invalid structured result');
+  }
+  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 8) {
+    throw new Error('Implementation planner returned an invalid step list');
+  }
+  const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
+  if (steps.some(step => !step || step.length > 240)) {
+    throw new Error('Implementation planner returned an invalid plan step');
+  }
+  return { steps };
+}
+
+function plannerTask(env = process.env) {
+  const issue = implementerIssueContext(env);
+  return `Create the concise top-level implementation plan for this issue. Do not classify it and do not implement it.
+
+Issue title:
+${issue.title}
+
+Issue body:
+${issue.body}`;
+}
+
 function classifierTask(plan, env = process.env) {
   const issue = implementerIssueContext(env);
-  return `Classify only the supplied issue and parent execution plan. Do not inspect the repository or solve the task.
+  return `Classify only the supplied issue and implementation plan. Do not inspect the repository or solve the task.
 
 Issue title:
 ${issue.title}
@@ -55,69 +94,99 @@ ${issue.title}
 Issue body:
 ${issue.body}
 
-Parent execution plan:
-${plan}`;
+Implementation plan:
+${plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n')}`;
+}
+
+async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, timeoutMs, maxTokens = null }, signal) {
+  const requestId = randomUUID();
+  const ownerRunId = ctx.sessionManager.getSessionId();
+  const previousBudget = process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
+  if (maxTokens) process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(maxTokens);
+
+  try {
+    const response = await new Promise((resolve, reject) => {
+      let settled = false;
+      let timer;
+      let unsubscribe = () => {};
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        unsubscribe();
+        signal?.removeEventListener?.('abort', onAbort);
+      };
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn(value);
+      };
+      const onAbort = () => finish(reject, new Error(`${agent} delegation was aborted`));
+
+      unsubscribe = pi.events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, (payload) => {
+        if (payload?.requestId !== requestId) return;
+        if (payload.status !== 'invalid_request' &&
+            (payload.ownerRunId !== ownerRunId || payload.nodeId !== nodeId)) return;
+        finish(resolve, payload);
+      });
+
+      timer = setTimeout(
+        () => finish(reject, new Error(`${agent} did not return within ${timeoutMs} ms`)),
+        timeoutMs + 5000,
+      );
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+
+      pi.events.emit(SUBAGENT_DELEGATION_REQUEST_EVENT, {
+        requestId,
+        ownerRunId,
+        nodeId,
+        agent,
+        task,
+        context: 'fresh',
+        cwd: ctx.cwd,
+        timeoutMs,
+        toolBudget: { hard: 1 },
+        intercomBridge: { mode: 'off' },
+        result: { kind: 'structured', schema },
+      });
+    });
+
+    if (response.status !== 'completed') {
+      throw new Error(`${agent} failed: ${response.error || response.status}`);
+    }
+    if (response.result?.kind !== 'structured') {
+      throw new Error(`${agent} did not return a structured result`);
+    }
+    return response;
+  } finally {
+    if (previousBudget == null) delete process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
+    else process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = previousBudget;
+  }
+}
+
+async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
+  const response = await runStructuredSubagent(pi, ctx, {
+    agent: config.implementationPlannerAgent,
+    nodeId: 'implementation-plan',
+    task: plannerTask(),
+    schema: IMPLEMENTATION_PLAN_SCHEMA,
+    timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
+    maxTokens: Number(config.implementationPlannerMaxTokens ?? 480),
+  }, signal);
+  return {
+    ...validateImplementationPlan(response.result.value),
+    usage: response.usage ?? null,
+  };
 }
 
 async function runStructuredComplexityClassifier(pi, ctx, config, plan, signal) {
-  const requestId = randomUUID();
-  const ownerRunId = ctx.sessionManager.getSessionId();
-  const nodeId = 'task-complexity';
-  const timeoutMs = Number(config.complexityClassifierTimeoutMs ?? 120000);
-
-  const response = await new Promise((resolve, reject) => {
-    let settled = false;
-    let timer;
-    let unsubscribe = () => {};
-
-    const cleanup = () => {
-      if (timer) clearTimeout(timer);
-      unsubscribe();
-      signal?.removeEventListener?.('abort', onAbort);
-    };
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      fn(value);
-    };
-    const onAbort = () => finish(reject, new Error('Complexity classification was aborted'));
-
-    unsubscribe = pi.events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, (payload) => {
-      if (payload?.requestId !== requestId) return;
-      if (payload.status !== 'invalid_request' &&
-          (payload.ownerRunId !== ownerRunId || payload.nodeId !== nodeId)) return;
-      finish(resolve, payload);
-    });
-
-    timer = setTimeout(
-      () => finish(reject, new Error(`Complexity classifier did not return within ${timeoutMs} ms`)),
-      timeoutMs + 5000,
-    );
-    signal?.addEventListener?.('abort', onAbort, { once: true });
-
-    pi.events.emit(SUBAGENT_DELEGATION_REQUEST_EVENT, {
-      requestId,
-      ownerRunId,
-      nodeId,
-      agent: config.complexityClassifierAgent,
-      task: classifierTask(plan),
-      context: 'fresh',
-      cwd: ctx.cwd,
-      timeoutMs,
-      toolBudget: { hard: 1 },
-      intercomBridge: { mode: 'off' },
-      result: { kind: 'structured', schema: COMPLEXITY_SCHEMA },
-    });
-  });
-
-  if (response.status !== 'completed') {
-    throw new Error(`Complexity classifier failed: ${response.error || response.status}`);
-  }
-  if (response.result?.kind !== 'structured') {
-    throw new Error('Complexity classifier did not return a structured result');
-  }
-
+  const response = await runStructuredSubagent(pi, ctx, {
+    agent: config.complexityClassifierAgent,
+    nodeId: 'task-complexity',
+    task: classifierTask(plan),
+    schema: COMPLEXITY_SCHEMA,
+    timeoutMs: Number(config.complexityClassifierTimeoutMs ?? 120000),
+  }, signal);
   return {
     ...validateComplexityValue(response.result.value),
     usage: response.usage ?? null,
@@ -143,20 +212,50 @@ export default function (pi) {
     await applyBudget('short', ctx);
   });
 
-  if (controller.requireComplexity && config.complexityClassifierAgent) {
+  if (controller.requireComplexity && config.implementationPlannerAgent && config.complexityClassifierAgent) {
+    pi.registerTool({
+      name: 'prepare_implementation',
+      label: 'Prepare implementation',
+      description: 'Run the runtime-owned implementation planner and then the complexity classifier. Call exactly once after reading the operating contract; do not write a competing plan in the main agent.',
+      parameters: Type.Object({}),
+      async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+        const plan = await runStructuredImplementationPlanner(pi, ctx, config, signal);
+        const classified = await runStructuredComplexityClassifier(pi, ctx, config, plan, signal);
+        const result = controller.setComplexity(classified.complexity);
+        console.log(`PI_PLAN ${JSON.stringify({ stage, steps: plan.steps, usage: plan.usage })}`);
+        console.log(`PI_COMPLEXITY ${JSON.stringify({
+          stage,
+          complexity: classified.complexity,
+          reason: classified.reason,
+          usage: classified.usage,
+        })}`);
+        const numberedPlan = plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
+        return {
+          content: [{
+            type: 'text',
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nExecute step 1 now. Do not re-plan unless repository evidence makes a step impossible or stale.`,
+          }],
+          details: {
+            ...result,
+            plan: plan.steps,
+            plannerUsage: plan.usage,
+            reason: classified.reason,
+            classifierUsage: classified.usage,
+          },
+        };
+      },
+    });
+  } else if (controller.requireComplexity && config.complexityClassifierAgent) {
     pi.registerTool({
       name: 'classify_task_complexity',
       label: 'Classify task complexity',
-      description: 'Classify task complexity through a runtime-owned pi-subagents child with no repository tools. One child tool call is reserved for structured_output so the schema-validated result can be returned. Pass only the short parent execution plan; no raw child output is returned.',
+      description: 'Classify task complexity through a runtime-owned structured child from the supplied plan.',
       parameters: Type.Object({
-        plan: Type.String({
-          minLength: 1,
-          maxLength: 6000,
-          description: 'The short top-level execution plan already written from the supplied issue text',
-        }),
+        plan: Type.String({ minLength: 1, maxLength: 6000 }),
       }),
       async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-        const classified = await runStructuredComplexityClassifier(pi, ctx, config, params.plan, signal);
+        const plan = { steps: params.plan.split('\n').map(line => line.trim()).filter(Boolean) };
+        const classified = await runStructuredComplexityClassifier(pi, ctx, config, plan, signal);
         const result = controller.setComplexity(classified.complexity);
         console.log(`PI_COMPLEXITY ${JSON.stringify({
           stage,
@@ -165,15 +264,8 @@ export default function (pi) {
           usage: classified.usage,
         })}`);
         return {
-          content: [{
-            type: 'text',
-            text: `Complexity set to ${result.complexity}: ${classified.reason} Execute the plan now.`,
-          }],
-          details: {
-            ...result,
-            reason: classified.reason,
-            classifierUsage: classified.usage,
-          },
+          content: [{ type: 'text', text: `Complexity set to ${result.complexity}: ${classified.reason} Execute the plan now.` }],
+          details: { ...result, reason: classified.reason, classifierUsage: classified.usage },
         };
       },
     });
