@@ -489,17 +489,16 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
-test('implementer orients and plans before declaring complexity', () => {
+test('implementer plans before complexity and delegates repository inspection afterward', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  assert.match(config, /implementer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash'\]/);
+  assert.match(config, /implementer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \[\][\s\S]*delegatedTools: \['read', 'bash', 'grep', 'find', 'ls'\]/);
   const contract = [
     'Read this `agents/implementer/AGENTS.md`',
-    'Read the supplied GitHub issue',
-    'Inspect only the current `dev` code directly relevant',
-    'Write a short execution plan',
+    'Use the GitHub issue title/body already supplied in the prompt',
+    'Write a short top-level execution plan',
     '1000 output tokens',
-    'Call `declare_task_complexity`',
+    'The very next action after the plan must be `declare_task_complexity`',
     'Immediately execute the first plan item',
   ];
   let previous = -1;
@@ -508,8 +507,10 @@ test('implementer orients and plans before declaring complexity', () => {
     assert.ok(position > previous, `implementer startup marker missing or out of order: ${marker}`);
     previous = position;
   }
-  assert.match(agent, /Do not modify repository files or perform implementation work before step 5 is complete/);
-  assert.match(agent, /complex[\s\S]*implement[\s\S]*same issue[\s\S]*completion/i);
+  assert.match(agent, /Do not modify repository files or perform implementation work before step 4 is complete/);
+  assert.match(agent, /main agent must not call `read`, `bash`, `grep`, `find`, or `ls` directly/);
+  assert.match(agent, /missing context is only one small file immediately before an edit/);
+  assert.match(agent, /complex[\s\S]*implement this same issue to completion/i);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
 });
 
