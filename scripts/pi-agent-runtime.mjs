@@ -324,7 +324,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'trivial_repo_lookup',
       label: 'Trivial repository lookup',
-      description: 'For TRIVIAL tasks only: perform one deterministic, bounded tracked-file lookup without enabling subagents. Honors extension preference order, excludes control/legal/generated-style targets, and can check exact-text idempotency.',
+      description: 'For TRIVIAL tasks only: inspect tracked files from origin/dev only, never resumed checkpoint/worktree changes. Honors extension preference order, excludes control/legal/generated-style targets, and reports exact-text idempotency explicitly as latest-dev evidence.',
       parameters: Type.Object({
         extensions: Type.Array(Type.String({ minLength: 1, maxLength: 12 }), { maxItems: 8 }),
         exactText: Type.Optional(Type.String({ maxLength: 500 })),
