@@ -1,5 +1,12 @@
 # Pi Merge Gate
 
+> Reference documentation only. Unlike the other files in `agents/`, this one is not
+> loaded as a runtime prompt: Merge Gate has no model-driven stage, so no
+> `stage-config.mjs` entry, workflow, or `pi-run-stage.mjs` invocation reads this file.
+> It exists to record the contract `.github/workflows/pi-auto-merge.yml` and
+> `scripts/pi-auto-merge.mjs` actually implement. Edit `docs/CI_RULES.md` as the
+> canonical source and keep this file consistent with it.
+
 ## Mission
 
 The merge decision is deterministic and implemented by `.github/workflows/pi-auto-merge.yml` plus `scripts/pi-auto-merge.mjs`. There is no model-driven merge agent. Read `docs/CI_RULES.md` for the canonical contract.

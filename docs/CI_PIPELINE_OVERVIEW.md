@@ -72,7 +72,7 @@ Reconciler does not wake Merge Gate. A wake carries no authoritative task state;
 
 ## Agent control-plane boundary
 
-Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
+Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. `agents/**` holds the runtime prompts every model stage reads first, so it is protected the same way as workflow/script control-plane files, not treated as ordinary product content. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
 
 ## Branch, trust, and inputs
 
@@ -90,7 +90,7 @@ Do not use workflow inputs as a message bus or state store.
 
 ## Model response budgets
 
-All model-driven stages use the shared `scripts/pi-response-budget.mjs` extension. Architect, Dispatcher, Implementer, Reviewer, and PR Fix use the same default ladder:
+All model-driven stages use the shared `scripts/pi-agent-runtime.mjs` extension (backed by `scripts/pi-common/progress-controller.mjs`). Architect, Dispatcher, Implementer, Reviewer, and PR Fix use the same default ladder:
 
 ```text
 SHORT 2048
