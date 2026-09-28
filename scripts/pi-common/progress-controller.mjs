@@ -120,6 +120,7 @@ export class ProgressController {
     this.turnLevel = 'short';
     this.explicitNextResponse = false;
     this.turnMadeProgress = false;
+    this.turnUsedTool = false;
   }
 
   setComplexity(name) {
@@ -143,6 +144,7 @@ export class ProgressController {
     this.lastTurnIndex = turnIndex;
     this.turnLevel = this.level;
     this.turnMadeProgress = false;
+    this.turnUsedTool = false;
   }
 
   checkToolCall(toolName, input) {
@@ -153,6 +155,7 @@ export class ProgressController {
       if (!allowed) return { block: true, reason: `First action must be read(path: "${this.requiredFirstReadPath}"). The path is exact and already known; do not search, list directories, inspect package docs, or guess another path.` };
       this.requiredFirstReadDone = true;
       this.complexityTurnBase = this.absoluteTurn;
+      this.turnUsedTool = true;
       return undefined;
     }
 
@@ -198,6 +201,7 @@ export class ProgressController {
     if (this.repeatCount > this.repeatThreshold) {
       return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
     }
+    this.turnUsedTool = true;
     return undefined;
   }
 
@@ -228,8 +232,21 @@ export class ProgressController {
       this.explicitNextResponse = false;
       return { changed: false, level: this.level, maxTokens: this.budgets[this.level], explicit: true };
     }
-    const next = nextResponseBudgetLevel(this.turnLevel, outputTokens, this.budgets);
+    const ceiling = this.budgets[this.turnLevel];
+    const preserveElevatedToolTurn =
+      this.turnLevel !== 'short' &&
+      outputTokens < ceiling &&
+      this.turnUsedTool;
+    const next = preserveElevatedToolTurn
+      ? this.turnLevel
+      : nextResponseBudgetLevel(this.turnLevel, outputTokens, this.budgets);
     this.level = next;
-    return { changed: true, level: next, maxTokens: this.budgets[next], madeProgress: this.turnMadeProgress };
+    return {
+      changed: next !== this.turnLevel,
+      level: next,
+      maxTokens: this.budgets[next],
+      madeProgress: this.turnMadeProgress,
+      preservedForToolTurn: preserveElevatedToolTurn,
+    };
   }
 }
