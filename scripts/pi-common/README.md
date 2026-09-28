@@ -21,7 +21,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `queue-context.mjs` — shared read-only queue snapshot construction.
 - `recovery-policy.mjs` — small deterministic recovery decisions.
 - `control-plane-policy.mjs` — single security boundary for files Pi agents must never change/review/repair/auto-merge.
-- `bash-timeout-policy.mjs` / `loop-guard-policy.mjs` — reusable model tool safety limits; turn ceilings close exploration without blocking final edit/write/submit operations.
+- `bash-timeout-policy.mjs` / `progress-controller.mjs` — reusable model safety state: bounded orientation, complexity declaration, repeat/turn protection, and response budgets in one controller.
 - `product-checks.mjs` — authoritative product-code deterministic checks used before publication/review.
 - `pr-guard.mjs` — loads the complete PR state/file list and enforces the pre-model human/control-plane gate.
 - `issue-context.mjs` — performs the Implementer's one fresh issue read and validates `open + pi:ready` before model work.
@@ -32,11 +32,12 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `repair-publication.mjs` — owns safe PR Fix publication and the single handoff back to a fresh Reviewer.
 - `automation-control.mjs` — owns RUNNING/DRAINING/PAUSED variable mutation; RUNNING wakes only Dispatcher, never Reconciler.
 - `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow wakes; it keeps authenticated REST and the trusted `dev` ref out of YAML.
-- `terminal-result.mjs` / `result-jsonl.mjs` — shared machine-checkable terminal-result and Pi JSONL primitives; free-text result markers are not pipeline state.
+- `terminal-tool.mjs` / `result-jsonl.mjs` — one machine-checkable terminal-tool contract plus tolerant Pi JSONL reading; free-text result markers are not pipeline state.
+- `stage-config.mjs` — single source of per-agent runtime defaults (first contract read, turn/repeat limits, complexity mode, bash timeout, fixed token budget, result tool).
 
 ## What does NOT belong here
 
-Dispatcher classification, Architect decomposition, Reviewer verdict parsing, repair strategy, merge selection, and Reconciler orchestration remain stage-specific. Do not turn this directory into a framework.
+Dispatcher classification, Architect decomposition, Reviewer verdict parsing, repair strategy, merge selection, and Reconciler orchestration remain stage-specific. `scripts/pi-run-stage.mjs` is the one thin model runner that wires the shared runtime plus the stage result tool; keep YAML and stage scripts out of extension wiring.
 
 ## Trust rule
 

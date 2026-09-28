@@ -124,7 +124,7 @@ Triage is an optional preparation step for issues not yet in the pipeline. It re
 
 ## Terminal-result contract
 
-Model prose is never pipeline state. Architect, Dispatcher, Triage, Reviewer, PR Fix, and Implementer must finish through their trusted terminal tool. The workflow verifies the terminal marker/result artifact before applying or publishing state; a zero Pi process exit without that artifact is a workflow failure. Legacy free-text `*_RESULT:` markers are not accepted as fallback success.
+Model prose is never pipeline state. Architect, Dispatcher, Triage, Reviewer, PR Fix, and Implementer finish through their trusted terminal tool. The shared `pi-run-stage.mjs` runner verifies the terminal marker before returning success; result parsers/publication then consume the trusted result artifact. A zero Pi process exit without the terminal tool is still a stage failure. Legacy free-text `*_RESULT:` markers are not accepted.
 
 ## Concurrency and failures
 
@@ -143,6 +143,9 @@ Do not silently substitute another task when selected work fails.
 
 ## Complexity guard
 
+Complexity is planning metadata only. Implementer, Reviewer, and PR Fix declare it after bounded orientation; it may guide how much relevant context the agent chooses to inspect, but it does not alter response budgets, turn quotas, or route the task to another workflow. Routing to Architect is a Dispatcher decision made before those stages start.
+
+
 Before adding a workflow, input, status, SHA field, synchronization step, or recovery path, ask whether fresh GitHub state plus the existing owner can solve the problem.
 
 Prefer current GitHub state over transported state, IDs over metadata payloads, direct ownership over relay workflows, ordinary `dev` CI over synthetic integration, one wake owner over duplicate wake sources, and explicit failure/blocking over hidden repair.
@@ -152,7 +155,7 @@ Do not add complexity solely for a hypothetical race that GitHub's atomic API op
 
 ## Shared trusted CI helpers
 
-Reusable control-plane primitives live in `scripts/pi-common/`. Workflow YAML is orchestration only: checkout trusted `dev`, invoke a stage/helper, run the model when required, publish, and clean up. Do not duplicate GitHub REST pagination, pipeline-state mutation, control-plane path policy, PR pre-model gates, product validation, or reusable safety policy in multiple workflows. Repeated GitHub REST routes belong in `github-api.mjs`; YAML must not implement them with inline `curl`. No-input workflow wakes use `workflow-dispatch.mjs`, which always dispatches the trusted `dev` workflow definition.
+Reusable control-plane primitives live in `scripts/pi-common/`. Workflow YAML is orchestration only: checkout trusted `dev`, prepare context, invoke `pi-run-stage.mjs` when a model is required, publish, and clean up. Model provider/options, extensions, terminal-marker enforcement, and per-stage runtime limits must not be duplicated in YAML. Do not duplicate GitHub REST pagination, pipeline-state mutation, control-plane path policy, PR pre-model gates, product validation, or reusable safety policy in multiple workflows. Repeated GitHub REST routes belong in `github-api.mjs`; YAML must not implement them with inline `curl`. No-input workflow wakes use `workflow-dispatch.mjs`, which always dispatches the trusted `dev` workflow definition.
 
 `scripts/pi-common/README.md` documents every shared helper and the boundary for adding new ones. Stage-specific decisions remain in their existing `scripts/pi-*.mjs` files; the common directory must not become a generic framework.
 

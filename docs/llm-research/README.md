@@ -139,9 +139,9 @@ Initial fixes were applied around commits `ad662526`, `0cfe599e`, and `bd8c67af`
 
 Relevant files:
 
-- `scripts/pi-common/response-budget-policy.mjs`
-- `scripts/pi-response-budget.mjs`
-- `tests/pi-response-budget.test.mjs`
+- `scripts/pi-common/progress-controller.mjs`
+- `scripts/pi-agent-runtime.mjs`
+- `tests/pi-progress-controller.test.mjs`
 
 Behavior:
 
@@ -154,12 +154,10 @@ Behavior:
 
 Relevant files:
 
-- `scripts/pi-common/loop-guard-policy.mjs`
-- `scripts/pi-loop-guard.mjs`
-- `tests/pi-loop-guard.test.mjs`
-- `.github/workflows/pi-issue-agent.yml`
-- `.github/workflows/pi-pr-fix.yml`
-- `.github/workflows/pi-pr-review.yml`
+- `scripts/pi-common/progress-controller.mjs`
+- `scripts/pi-common/stage-config.mjs`
+- `scripts/pi-agent-runtime.mjs`
+- `tests/pi-progress-controller.test.mjs`
 
 Behavior:
 
@@ -169,23 +167,24 @@ Behavior:
 
 ### Monotonic guard accounting across context compaction
 
-Pi can reset its reported `turnIndex` after context compaction. The loop guard now keeps an internal monotonic count, so compaction cannot reset global or pre-complexity safety limits.
+Pi can reset its reported `turnIndex` after context compaction. The shared progress controller keeps an internal monotonic count, so compaction cannot reset global or pre-complexity safety limits.
 
 ### Repository-grounded completion nudge
 
 The Implementer terminal nudge now explicitly states that repository state is authoritative and that code present only in reasoning, plans, or compaction summaries is not implemented work.
 
-### Explicit Implementer terminal-result gate
+### Shared terminal-result gate
 
 Relevant files:
 
-- `scripts/pi-implementer-result-tool.mjs`
-- `.github/workflows/pi-issue-agent.yml`
+- `scripts/pi-common/terminal-tool.mjs`
+- `scripts/pi-run-stage.mjs`
+- stage-specific `scripts/pi-*-result-tool.mjs`
 
 Behavior:
 
-- a successful Implementer run must produce the `submit_result` artifact;
-- Pi exiting without that result is a workflow failure;
+- every model-driven stage must complete through its trusted terminal tool;
+- the shared runner treats Pi exiting without that terminal marker as a workflow failure;
 - a no-change implementation result is no longer a green GitHub Actions run;
 - checkpoint/recovery logic can still preserve work where appropriate.
 

@@ -106,11 +106,11 @@ Trusted reusable pipeline policy belongs in `scripts/pi-common/`, with its purpo
 
 Keep stage-specific orchestration outside the common directory. A helper is common only when multiple stages need the same deterministic rule.
 
-All model-driven stages use the shared loop guard. The global turn ceiling closes exploration but must leave `edit`, `write`, and terminal submission available so the guard itself cannot prevent completion. Successful repository mutation—not an attempted tool call—is what advances the implementation phase. Model prose or a process exit is never accepted as a substitute for a trusted terminal result artifact.
+All model-driven stages run through `pi-run-stage.mjs`, which wires one shared progress controller plus the stage-specific terminal tool. The controller owns bounded orientation, complexity declaration, repeat/turn protection, and response budgets. The global turn ceiling closes exploration but leaves `edit`, `write`, and terminal submission available. Complexity is planning metadata, not a second quota system. Model prose or a process exit is never accepted as a substitute for a trusted terminal result artifact.
 
 ## Recovery rule
 
-Recovery must be smaller than the normal pipeline. Prefer returning stranded work directly to its normal owner. Do not reproduce the happy path inside Reconciler, and do not add recovery-specific copies of merge/review/dispatch logic. `DRAINING` disables creation/recreation of issue-ready states while preserving recovery for already-published PRs. A durable Architect parent marker makes partial child publication idempotently recoverable without rerunning model planning.
+Recovery must be smaller than the normal pipeline. For issue work, Reconciler only restores durable ownership: in RUNNING lost work goes back to `dispatcher:ready`; it never dispatches Implementer or Architect directly. Do not reproduce the happy path inside Reconciler, and do not add recovery-specific copies of merge/review/dispatch logic. `DRAINING` disables creation/recreation of issue-ready states while preserving recovery for already-published PRs. A durable Architect parent marker makes partial child publication idempotently recoverable without rerunning model planning.
 
 ## Change test
 

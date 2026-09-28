@@ -144,6 +144,82 @@ async function prepare(issue, filename) {
   }, null, 2));
 }
 
+async function createSplitChildren(issue, plan, inherited, backlog) {
+  const created = new Map();
+  for (const step of plan.steps) {
+    const marker = `<!-- architect-parent:${issue}; architect-key:${step.key} -->`;
+    const dependencies = [...new Set([
+      ...inherited,
+      ...step.depends_on.map(key => created.get(key)),
+    ])];
+    const body = withTaskMetadata(`Part of #${issue}.\n\n${step.body}\n\n${marker}`, step.priority, dependencies);
+    const matches = backlog.filter(item => item.body?.includes(marker));
+    if (matches.length > 1) throw new Error(`Duplicate issues for ${marker}`);
+    const task = matches[0] ?? await api('/issues', 'POST', { title: step.title, body });
+    if (!matches.length) backlog.push(task);
+    if (task.state !== 'open' || task.title !== step.title || task.body !== body) {
+      throw new Error(`Existing issue #${task.number} differs from Architect plan`);
+    }
+    created.set(step.key, task.number);
+    console.log(`${step.key}: #${task.number} after [${dependencies.join(', ')}]`);
+  }
+  return [...created.values()];
+}
+
+async function publishSplit(issue, parent, children) {
+  const marker = `<!-- architect-children:${children.join(',')} -->`;
+  if (childNumbers(parent.body).length && !parent.body.includes(marker)) {
+    throw new Error('Parent already has a different decomposition');
+  }
+  await ensureLabel('architect:epic', '7057ff', 'Parent issue split into linked work items');
+  await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
+
+  // Phase 1: make the exact child set durable on the parent.
+  const latestParent = await api(`/issues/${issue}`);
+  const parentBody = latestParent.body?.includes(marker)
+    ? latestParent.body
+    : `${latestParent.body ?? ''}\n\n${marker}`;
+  await replaceIssueState({
+    number: issue,
+    expected: latestParent,
+    target: null,
+    context: 'Architect split parent',
+    load: number => api(`/issues/${number}`),
+    validateCurrent: current => {
+      const state = issueStateLabels(current);
+      if (current.state !== 'open' || state.length !== 1 || state[0] !== 'architect:ready') {
+        throw new Error(`Parent state changed before split publish: [${state}]`);
+      }
+    },
+    patch: (number, labels) => api(`/issues/${number}`, 'PATCH', {
+      body: parentBody,
+      labels: [...new Set([...labels, 'architect:epic'])],
+    }),
+  });
+
+  // Phase 2: expose each already-created child to the normal Dispatcher.
+  for (const number of children) {
+    const child = await api(`/issues/${number}`);
+    const state = issueStateLabels(child);
+    if (child.state !== 'open') throw new Error(`Child #${number} is no longer open`);
+    if (state.length === 1 && state[0] === 'dispatcher:ready') continue;
+    if (state.length) throw new Error(`Child #${number} acquired incompatible pipeline state: [${state}]`);
+    await replaceIssueState({
+      number,
+      expected: child,
+      target: 'dispatcher:ready',
+      context: 'Architect split child',
+      load: childNumber => api(`/issues/${childNumber}`),
+      validateCurrent: current => {
+        if (current.state !== 'open' || issueStateLabels(current).length) {
+          throw new Error(`Child #${number} acquired pipeline state before dispatch`);
+        }
+      },
+      patch: (childNumber, labels) => api(`/issues/${childNumber}`, 'PATCH', { labels }),
+    });
+  }
+}
+
 async function publish(issue, jsonl, contextFile) {
   const parent = await api(`/issues/${issue}`);
   const labels = new Set(parent?.labels?.map(label => label.name));
@@ -182,78 +258,9 @@ async function publish(issue, jsonl, contextFile) {
     return;
   }
   const inherited = taskMetadataFromBody(parent.number, parent.body ?? '').dependencies;
-  const existing = backlog;
-  const created = new Map();
-  for (const step of plan.steps) {
-    const marker = `<!-- architect-parent:${issue}; architect-key:${step.key} -->`;
-    const dependencies = [...new Set([
-      ...inherited, ...step.depends_on.map(key => created.get(key)),
-    ])];
-    const body = withTaskMetadata(`Part of #${issue}.\n\n${step.body}\n\n${marker}`, step.priority, dependencies);
-    const matches = existing.filter(item => item.body?.includes(marker));
-    if (matches.length > 1) throw new Error(`Duplicate issues for ${marker}`);
-    const task = matches[0] ?? await api('/issues', 'POST', { title: step.title, body });
-    if (!matches.length) existing.push(task);
-    if (task.state !== 'open' || task.title !== step.title || task.body !== body) {
-      throw new Error(`Existing issue #${task.number} differs from Architect plan`);
-    }
-    created.set(step.key, task.number);
-    console.log(`${step.key}: #${task.number} after [${dependencies.join(', ')}]`);
-  }
-  const children = [...created.values()];
-  const marker = `<!-- architect-children:${children.join(',')} -->`;
-  if (childNumbers(parent.body).length && !parent.body.includes(marker)) {
-    throw new Error('Parent already has a different decomposition');
-  }
-  await ensureLabel('architect:epic', '7057ff', 'Parent issue split into linked work items');
-  await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
-
-  // Parent body + epic ownership are one durable transaction marker. If child
-  // labeling is interrupted, Reconciler can finish the exact published split
-  // without asking the model to plan again.
-  const latestParent = await api(`/issues/${issue}`);
-  const parentBody = latestParent.body?.includes(marker)
-    ? latestParent.body
-    : `${latestParent.body ?? ''}\n\n${marker}`;
-  await replaceIssueState({
-    number: issue,
-    expected: latestParent,
-    target: null,
-    context: 'Architect split parent',
-    load: number => api(`/issues/${number}`),
-    validateCurrent: current => {
-      const state = issueStateLabels(current);
-      if (current.state !== 'open' || state.length !== 1 || state[0] !== 'architect:ready') {
-        throw new Error(`Parent state changed before split publish: [${state}]`);
-      }
-    },
-    patch: (number, labels) => api(`/issues/${number}`, 'PATCH', {
-      body: parentBody,
-      labels: [...new Set([...labels, 'architect:epic'])],
-    }),
-  });
-
-  for (const number of children) {
-    const child = await api(`/issues/${number}`);
-    const state = issueStateLabels(child);
-    if (child.state !== 'open') throw new Error(`Child #${number} is no longer open`);
-    if (state.length === 1 && state[0] === 'dispatcher:ready') continue;
-    if (state.length) throw new Error(`Child #${number} acquired incompatible pipeline state: [${state}]`);
-    await replaceIssueState({
-      number,
-      expected: child,
-      target: 'dispatcher:ready',
-      context: 'Architect split child',
-      load: childNumber => api(`/issues/${childNumber}`),
-      validateCurrent: current => {
-        if (current.state !== 'open' || issueStateLabels(current).length) {
-          throw new Error(`Child #${number} acquired pipeline state before dispatch`);
-        }
-      },
-      patch: (childNumber, labels) => api(`/issues/${childNumber}`, 'PATCH', { labels }),
-    });
-  }
-  console.log(`Split #${issue} into ${children.map(n => `#${n}`).join(', ')}`);
+  const children = await createSplitChildren(issue, plan, inherited, backlog);
+  await publishSplit(issue, parent, children);
+  console.log(`Split #${issue} into ${children.map(number => `#${number}`).join(', ')}`);
 }
 
 async function main() {
