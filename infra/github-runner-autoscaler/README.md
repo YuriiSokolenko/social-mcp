@@ -10,8 +10,15 @@ pool's stuck loop can never block the other's:
   `.github/workflows/pi-architect.yml`, and `.github/workflows/pi-triage.yml` --
   jobs that call the Pi/LLM agent, gated by `MODEL_STATUS_URL` capacity.
 - **`general-runner-manager`** (pool label `general`) watches queued runs of
-  `.github/workflows/ci.yml` -- plain Ruff/pytest/Node/Compose CI with no
-  Pi/LLM agent involved, so it has no model gate; `MAX_RUNNERS` is the only cap.
+  every workflow with a job on the `general` label: `.github/workflows/ci.yml`,
+  `pi-auto-merge.yml`, `pi-automation-control.yml`, `pi-pr-review.yml`'s gate
+  job (its review job stays on `pi-agent`), `pi-reconcile.yml`, `pi-set-model.yml`,
+  and `pi-usage.yml` -- none of these call the Pi/LLM agent, so this pool has
+  no model gate; `MAX_RUNNERS` is the only cap. **This list must stay in sync
+  with `GENERAL_WORKFLOW_FILES`** (`compose.yaml`'s default / the host's
+  `.env`): a workflow file moved onto the `general` label but left out of that
+  list queues forever with nothing watching it -- check
+  `grep -rl 'n150, *general' .github/workflows/` when adding one.
 
 Each pool keeps up to its own `MAX_RUNNERS` ephemeral self-hosted runner
 containers alive. Each worker registers with GitHub using `--ephemeral`,

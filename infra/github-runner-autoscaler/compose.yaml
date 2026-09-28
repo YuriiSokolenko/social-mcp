@@ -45,7 +45,7 @@ services:
       RUNNER_IMAGE: ${GENERAL_RUNNER_IMAGE:-n150/github-general-runner-ephemeral:0.87.1}
       RUNNER_PREFIX: ${GENERAL_RUNNER_PREFIX:-n150-gen-eph}
       RUNNER_LABELS: ${GENERAL_RUNNER_LABELS:-n150,general}
-      WORKFLOW_FILES: ${GENERAL_WORKFLOW_FILES:-ci.yml}
+      WORKFLOW_FILES: ${GENERAL_WORKFLOW_FILES:-ci.yml,pi-auto-merge.yml,pi-automation-control.yml,pi-pr-review.yml,pi-reconcile.yml,pi-set-model.yml,pi-usage.yml}
       MODEL_STATUS_URL: ""
       MOUNT_PI_CONFIG: "false"
       MOUNT_DOCKER_SOCKET: "true"
