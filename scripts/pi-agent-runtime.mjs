@@ -98,7 +98,7 @@ Implementation plan:
 ${plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n')}`;
 }
 
-async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, timeoutMs, maxTokens = null }, signal) {
+async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, timeoutMs, maxTokens = null, toolBudget = { hard: 1 } }, signal) {
   const requestId = randomUUID();
   const ownerRunId = ctx.sessionManager.getSessionId();
   const previousBudget = process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
@@ -145,7 +145,7 @@ async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, tim
         context: 'fresh',
         cwd: ctx.cwd,
         timeoutMs,
-        toolBudget: { hard: 1 },
+        toolBudget,
         intercomBridge: { mode: 'off' },
         result: { kind: 'structured', schema },
       });
@@ -172,6 +172,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
     schema: IMPLEMENTATION_PLAN_SCHEMA,
     timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 480),
+    toolBudget: { hard: 3 },
   }, signal);
   return {
     ...validateImplementationPlan(response.result.value),
@@ -186,6 +187,7 @@ async function runStructuredComplexityClassifier(pi, ctx, config, plan, signal) 
     task: classifierTask(plan),
     schema: COMPLEXITY_SCHEMA,
     timeoutMs: Number(config.complexityClassifierTimeoutMs ?? 120000),
+    toolBudget: { hard: 1 },
   }, signal);
   return {
     ...validateComplexityValue(response.result.value),
