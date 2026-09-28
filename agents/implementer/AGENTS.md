@@ -47,7 +47,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 - **One already-known small file:** call `read` once with an explicit `limit <= 200`. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result.
 - **One known-path diff/status check:** use a bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`.
-- **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first sufficient tracked-file target and optionally check exact-text idempotency. Do not enable subagents for this lookup.
+- **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText` so idempotency is decided in the same lookup. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
 - `submit_result`.
 
@@ -133,7 +133,7 @@ Every session starts at **SHORT (2048)**.
 - **NORMAL / 4096** — ordinary diagnosis or modest implementation reasoning.
 - **DEEP / 8192** — difficult debugging/synthesis or conflict resolution.
 
-Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Any response below its ceiling resets the following response to SHORT; a ceiling hit only promotes when that turn also made concrete action progress.
+Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Any response below its ceiling resets the following response to SHORT. Hitting the active ceiling promotes the next response automatically: SHORT → NORMAL → DEEP; a DEEP ceiling hit resets to SHORT.
 
 Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 768 output tokens. If it misses the required structured-output call, the runtime retries that planner internally once; main still calls `prepare_implementation` only once.
 
