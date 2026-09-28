@@ -47,7 +47,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const body = context.body ?? '';
     return `Follow agents/implementer/AGENTS.md exactly: first read agents/implementer/AGENTS.md, derive acceptance criteria only from the supplied issue text, and write a short execution plan of at most 1000 output tokens with no complexity labels.
 
-Before repository inspection or modification, delegate the task-level complexity decision to the project \`complexity-classifier\` subagent. If needed, call subagents_enable once, then call \`subagent\` with \`agent: "complexity-classifier"\`, \`async: false\`, and only the issue title/body plus your short plan. Use its classification verbatim in \`declare_task_complexity\`; do not re-argue the classification in the main context.
+Before repository inspection or modification, call \`classify_task_complexity\` once with your short plan. The runtime itself delegates to the project \`complexity-classifier\` through pi-subagents structured delegation, validates the schema, and records the complexity. Do not call \`subagents_enable\`, \`subagent\`, or \`declare_task_complexity\` for task-level classification.
 
 You are implementing GitHub issue #${issue} in the current repository.
 
@@ -135,10 +135,10 @@ export const STAGES = Object.freeze({
     repeatThreshold: 3,
     requiredFirstReadPath: 'agents/implementer/AGENTS.md',
     requireComplexity: true,
-    requireDelegatedComplexity: true,
+    complexityClassifierAgent: 'complexity-classifier',
+    complexityClassifierTimeoutMs: 120000,
     preComplexityTurnLimit: 8,
-    preComplexityAllowedTools: ['subagents_enable', 'subagent'],
-    preComplexitySubagentAgent: 'complexity-classifier',
+    preComplexityAllowedTools: ['classify_task_complexity'],
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     directReadMaxLines: 200,
