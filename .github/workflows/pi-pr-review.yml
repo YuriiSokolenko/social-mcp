@@ -33,7 +33,7 @@ concurrency:
 jobs:
   invalidate:
     if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'pi/issue-')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, n150, general]
     steps:
       - name: Checkout trusted dev
         uses: actions/checkout@v5
