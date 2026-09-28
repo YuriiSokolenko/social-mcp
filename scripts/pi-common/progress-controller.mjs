@@ -81,9 +81,6 @@ export class ProgressController {
     this.requiredFirstReadDone = !this.requiredFirstReadPath;
     this.complexityTurnBase = this.requiredFirstReadDone ? 0 : null;
     this.delegatedTools = new Set(config.delegatedTools ?? []);
-    this.trivialDirectDelegatedTools = new Set(config.trivialDirectDelegatedTools ?? []);
-    this.trivialDirectSearchCalls = Number(config.trivialDirectSearchCalls ?? 0);
-    this.trivialDirectSearchCount = 0;
     this.delegationTool = config.delegationTool ?? 'subagent';
     this.directReadMaxLines = Number(config.directReadMaxLines ?? 0);
     this.directReadCalls = Number(config.directReadCalls ?? 0);
@@ -94,9 +91,6 @@ export class ProgressController {
     }
     if (this.directReadCalls && (!Number.isSafeInteger(this.directReadCalls) || this.directReadCalls < 1)) {
       throw new Error('directReadCalls must be a positive integer');
-    }
-    if (this.trivialDirectSearchCalls && (!Number.isSafeInteger(this.trivialDirectSearchCalls) || this.trivialDirectSearchCalls < 1)) {
-      throw new Error('trivialDirectSearchCalls must be a positive integer');
     }
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
@@ -180,14 +174,7 @@ export class ProgressController {
     }
 
     if (this.delegatedTools.has(toolName)) {
-      const directTrivialSearch = this.complexity === 'trivial' && this.trivialDirectDelegatedTools.has(toolName);
-      if (!directTrivialSearch) {
-        return { block: true, reason: `The main agent must not use ${toolName} directly. Delegate repository inspection, search, diagnostics, and verification through ${this.delegationTool}.` };
-      }
-      if (this.trivialDirectSearchCalls && this.trivialDirectSearchCount >= this.trivialDirectSearchCalls) {
-        return { block: true, reason: `Trivial direct search budget is ${this.trivialDirectSearchCalls} call per task; use the first sufficient result or delegate further exploration through ${this.delegationTool}.` };
-      }
-      this.trivialDirectSearchCount += 1;
+      return { block: true, reason: `The main agent must not use ${toolName} directly. Delegate repository inspection, search, diagnostics, and verification through ${this.delegationTool}.` };
     }
 
     if (this.absoluteTurn >= this.turnLimit && !FINISH_TOOLS.has(toolName)) {
@@ -208,9 +195,6 @@ export class ProgressController {
 
   onToolExecutionEnd(toolName, isError) {
     if (toolName === 'read' && isError && this.directReadCount > 0) this.directReadCount -= 1;
-    if (isError && this.trivialDirectDelegatedTools.has(toolName) && this.trivialDirectSearchCount > 0) {
-      this.trivialDirectSearchCount -= 1;
-    }
     if (!isError && PROGRESS_TOOLS.has(toolName)) this.turnMadeProgress = true;
   }
 
