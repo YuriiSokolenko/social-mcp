@@ -163,7 +163,7 @@ test('complexity is a bounded planning declaration, not an execution quota', () 
   state.onTurnStart(1);
   assert.equal(state.checkToolCall('bash', { command: 'grep target a' }), undefined);
   state.onTurnStart(2);
-  assert.match(state.checkToolCall('read', { path: 'b' }).reason, /declare_task_complexity/);
+  assert.match(state.checkToolCall('read', { path: 'b' }).reason, /configured preparation\/classification action/);
   state.setComplexity('normal');
   assert.equal(state.checkToolCall('read', { path: 'b' }), undefined);
   assert.equal(state.checkToolCall('edit', { path: 'b' }), undefined);
