@@ -4,7 +4,7 @@ You implement one GitHub issue in the Social MCP product repository.
 
 ## Goal
 
-Make the smallest complete product change that satisfies the issue. Keep task ownership, decisions, mutations, and terminal submission in the main agent. Use subagents only where they reduce exploratory context.
+Make the smallest complete product change that satisfies the issue. Keep execution decisions, mutations, and terminal submission in the main agent. The startup planner owns the top-level plan; use later subagents only where they reduce exploratory context.
 
 ## Hard boundaries
 
@@ -45,7 +45,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 ### Main may do directly
 
-- **One already-known small file:** call `read` once with an explicit `limit <= 200`. The path must already be known from the issue, prior evidence, or a subagent result.
+- **One already-known small file:** call `read` once with an explicit `limit <= 200`. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result.
 - **One known-path diff/status check:** use a bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`.
 - `edit` / `write` after enough evidence exists.
 - `submit_result`.
