@@ -235,7 +235,9 @@ async function publish(issue, jsonl, contextFile) {
   }
   const plan = planFromJsonl(fs.readFileSync(jsonl, 'utf8'), issue);
   const backlog = await allIssues();
-  validateArchitectPlanAgainstBacklog(plan, issue, backlog, item => taskMetadataFromBody(item.number, item.body).dependencies);
+  const backlogByNumber = new Map(backlog.map(item => [item.number, item]));
+  validateArchitectPlanAgainstBacklog(plan, issue, backlog,
+    number => taskMetadataFromBody(number, backlogByNumber.get(number)?.body ?? ''));
   if (plan.action === 'keep' || plan.action === 'revise') {
     if (childNumbers(parent.body).length) throw new Error('Cannot revise an already split issue');
     if (plan.action === 'revise') {
