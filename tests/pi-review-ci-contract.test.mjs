@@ -550,7 +550,6 @@ test('implementer prepares plan and complexity before tiny known-path work', () 
   assert.match(classifier, /rewrite or execute the plan/);
   assert.match(classifier, /trivial[\s\S]*normal[\s\S]*complex/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /result: \{ kind: 'structured', schema \}/);
