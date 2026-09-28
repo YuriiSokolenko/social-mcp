@@ -16,3 +16,4 @@ Dispatcher reloads GitHub issues on every run and reads this metadata directly. 
 
 The canonical authoring template is `.github/ISSUE_TEMPLATE/task.md`.
 Subagent delegation test passed.
+Subagent edit-ready delegation test passed.
