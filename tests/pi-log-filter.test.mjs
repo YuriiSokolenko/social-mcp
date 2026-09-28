@@ -56,6 +56,23 @@ test("keeps thinking, response and tool details in separate groups with visible 
   assert.match(output, /PI_METRIC \{"issue":51,"phase":"implementation"/);
 });
 
+test("records finalized subagent tool usage as separate PI_METRIC rows", () => {
+  const output = render([
+    { type: "turn_start" },
+    { type: "message_end", message: { role: "assistant", content: [], usage: { input: 10, output: 5, totalTokens: 15 } } },
+    { type: "tool_execution_start", toolName: "subagent", toolCallId: "scout-1", args: { agent: "scout", task: "Return edit anchor", async: false } },
+    { type: "tool_execution_end", toolName: "subagent", toolCallId: "scout-1", result: {
+      content: [{ type: "text", text: "tasks/README.md" }],
+      details: {},
+      usage: { input: 100, output: 20, cacheRead: 50, cacheWrite: 5 },
+    } },
+    { type: "agent_end", messages: [] },
+  ], { PI_ISSUE: "115", PI_PHASE: "implementation" });
+
+  assert.match(output, /PI_METRIC \{"issue":115,"phase":"implementation","call":"main","response":1/);
+  assert.match(output, /PI_METRIC \{"issue":115,"phase":"implementation","call":"subagent","response":1,"agent":"scout","usage":\{"input":100,"output":20,"cacheRead":50,"cacheWrite":5,"totalTokens":175\},"responseMs":\d+\}/);
+});
+
 test("reports completed usage at EOF when Pi never emits agent_end", () => {
   const output = render([
     { type: "turn_start" },

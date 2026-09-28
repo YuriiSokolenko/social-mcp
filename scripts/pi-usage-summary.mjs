@@ -58,8 +58,9 @@ for (const [call, row] of calls) {
   lines.push(`| ${call} | ${row.responses} | ${n(row.input)} | ${n(row.output)} | ${n(row.total)} | ${(row.responseMs / 1000).toFixed(1)} s |`);
 }
 lines.push(`| **Total** | **${unique.size}** | **${n(totals.input)}** | **${n(totals.output)}** | **${n(totals.total)}** | **${(totals.responseMs / 1000).toFixed(1)} s** |`);
-lines.push("", "Only completed model responses are included. Runner time and all attempts are in the repository usage table.", "");
-const warning = usageWarning(unique.size, totals.responseMs / 1000);
+lines.push("", "Completed main-model responses and finalized delegated-model usage are included. Runner time and all attempts are in the repository usage table.", "");
+const main = calls.get("main") ?? { responses: 0, responseMs: 0 };
+const warning = usageWarning(main.responses, main.responseMs / 1000);
 if (warning) lines.push(`> [!WARNING]`, `> ${warning}`, "");
 if (summary) appendFileSync(summary, lines.join("\n") + "\n");
 console.log(`Pi usage: ${unique.size} responses · ${n(totals.total)} tokens · ${(totals.responseMs / 1000).toFixed(1)} s model time`);

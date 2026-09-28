@@ -41,6 +41,7 @@ const activeTools = new Map();
 let toolCount = 0;
 let reportedFinal = false;
 let lastAgentEndSeen = false;
+let subagentMetricNumber = 0;
 const issue = /^\d+$/.test(process.env.PI_ISSUE ?? "") ? Number(process.env.PI_ISSUE) : null;
 const phase = process.env.PI_PHASE ?? "agent";
 const call = process.env.PI_CALL ?? "main";
@@ -63,6 +64,24 @@ function recordMetric(metric) {
   const line = JSON.stringify(metric);
   console.log(`PI_METRIC ${line}`);
   if (process.env.PI_METRICS_FILE) appendFileSync(process.env.PI_METRICS_FILE, line + "\n");
+}
+
+function normalizedUsage(value) {
+  if (!value || typeof value !== "object") return null;
+  const keys = ["input", "output", "cacheRead", "cacheWrite", "totalTokens"];
+  if (!keys.some((key) => Number.isFinite(value[key]))) return null;
+  const usage = Object.fromEntries(keys
+    .filter((key) => Number.isFinite(value[key]))
+    .map((key) => [key, value[key]]));
+  if (!Number.isFinite(usage.totalTokens)) {
+    usage.totalTokens = (usage.input ?? 0) + (usage.output ?? 0)
+      + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+  }
+  return usage;
+}
+
+function finalizedToolUsage(result) {
+  return normalizedUsage(result?.usage) ?? normalizedUsage(result?.details?.usage);
 }
 
 const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie|gh_token|github_token|token|secret|private[_-]?key)$/i;
@@ -461,6 +480,21 @@ for await (const line of rl) {
       const took = ms == null ? "" : ` · ${duration(ms)}`;
       const hint = toolSummary(name, started?.args);
       const title = name + (hint ? " · " + oneLine(hint, 80) : "") + (isError ? " · failed" : "") + took;
+      if (name === "subagent" && !isError) {
+        const usage = finalizedToolUsage(event.result);
+        if (usage) {
+          subagentMetricNumber += 1;
+          recordMetric({
+            issue: issue ?? 0,
+            phase,
+            call: "subagent",
+            response: subagentMetricNumber,
+            agent: typeof started?.args?.agent === "string" ? started.args.agent : undefined,
+            usage,
+            responseMs: ms,
+          });
+        }
+      }
       printToolDetails(title, started?.args, event.result, isError);
       if (started?.summaryRecord) {
         started.summaryRecord.isError = isError;

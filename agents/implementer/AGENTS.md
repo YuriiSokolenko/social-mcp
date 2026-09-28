@@ -63,9 +63,20 @@ Always delegate repository-facing work such as:
 
 Ask for compact conclusions, relevant paths/symbols, and only the evidence needed for the next decision. Do not ask a subagent for a raw repository dump.
 
+### Pre-edit delegation must be edit-ready
+
+When the next main-agent action will be `edit`, make the scout request produce the edit contract in the same call:
+
+1. the target path;
+2. the exact minimal **verbatim `oldText`** that is unique enough for `edit`;
+3. where the requested replacement/insertion belongs relative to that `oldText`;
+4. any constraint that would make the edit unsafe.
+
+Do **not** ask for "the first N lines", a broad excerpt, or the complete file merely to come back for a second anchor lookup. For a trivial edit, one pre-edit scout call is the default. A second pre-edit scout is justified only when the first scout explicitly reports that no safe unique anchor can be produced, or when an attempted `edit` proves the returned anchor stale/ambiguous.
+
 Good delegation:
 
-> Find the smallest safe Markdown file for this change. Return its path, the exact nearby text needed as an edit anchor, and why it is safe to modify.
+> Find the smallest safe Markdown file for this change. Return its path and the exact minimal verbatim `oldText` that the main agent can pass directly to `edit`, plus the intended insertion point and one-line safety rationale.
 
 Bad delegation:
 
@@ -97,7 +108,7 @@ During execution:
 
 For an exact trivial task, the fast path is:
 
-`AGENTS.md → issue-based one-item plan → declare_task_complexity → one bounded subagent fact request if needed → edit/write → optional delegated diff/check → submit_result`.
+`AGENTS.md → issue-based one-item plan → declare_task_complexity → one edit-ready scout request if needed → edit/write → optional delegated diff/check → submit_result`.
 
 The plan controls execution but never grants permission for broad exploration. Prefer existing project patterns already present in current `dev`. If a dependency required by the issue is absent from current `dev`, report that concrete blocker instead of reconstructing unrelated work.
 

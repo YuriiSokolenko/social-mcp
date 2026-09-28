@@ -52,6 +52,20 @@ test("the CLI emits no warning annotation for a small run", () => {
   assert.doesNotMatch(stdout, /::warning::/);
 });
 
+test("the CLI includes finalized subagent usage without treating subagent runs as main-loop responses", () => {
+  const metrics = [
+    { call: "main", response: 1, usage: { input: 10, output: 5, totalTokens: 15 }, responseMs: 2000 },
+    ...Array.from({ length: 80 }, (_, i) => ({
+      call: "subagent", response: i + 1,
+      usage: { input: 100, output: 20, cacheRead: 50, cacheWrite: 5, totalTokens: 175 },
+      responseMs: 1000,
+    })),
+  ];
+  const stdout = run(metrics);
+  assert.match(stdout, /Pi usage: 81 responses · 14,015 tokens · 82\.0 s model time/);
+  assert.doesNotMatch(stdout, /::warning::/);
+});
+
 test("the CLI emits a warning annotation once a run is stuck", () => {
   const metrics = Array.from({ length: 61 }, (_, i) => (
     { call: "main", response: i + 1, usage: { input: 10, output: 5, totalTokens: 15 }, responseMs: 100 }
