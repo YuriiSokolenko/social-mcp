@@ -17,7 +17,7 @@ concurrency:
 jobs:
   merge:
     if: contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 10
     permissions:
       actions: write

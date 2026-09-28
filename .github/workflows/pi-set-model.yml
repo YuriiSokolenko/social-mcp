@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   set-model:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, n150, general]
     steps:
       - name: Update PI_MODEL repo variable
         env:

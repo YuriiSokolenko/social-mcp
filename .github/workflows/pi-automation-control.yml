@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   control:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, n150, general]
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5

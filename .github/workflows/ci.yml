@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 15
 
     steps:
@@ -51,7 +51,7 @@ jobs:
         run: bash tests/test_runner_autoscaler.sh
 
   docker:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 15
     env:
       COMPOSE_PROJECT_NAME: social-mcp-ci-${{ github.run_id }}-${{ github.run_attempt }}
@@ -63,10 +63,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
 
       - name: Generate ephemeral test encryption key
         shell: bash
         run: |
+          pip install --quiet "cryptography>=45,<47"
           python - <<'PY' >> "$GITHUB_ENV"
           from cryptography.fernet import Fernet
           print(f"TOKEN_ENCRYPTION_KEY={Fernet.generate_key().decode()}")
@@ -101,7 +107,7 @@ jobs:
   wake-merge-gate:
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
     needs: [test, docker]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 2
     steps:
       - name: Checkout trusted control repository
