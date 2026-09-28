@@ -66,7 +66,7 @@ export async function runStage({ stage, promptFile = null, raw = null }, env = p
   for (const extension of extensions) args.push('--extension', extension);
   args.push(
     '--provider', env.PI_PROVIDER || 'hp-laguna',
-    '--model', env.PI_MODEL || 'qwen3.8-flash-next',
+    '--model', env.PI_MODEL || 'laguna-s-2.1-gguf',
     '--mode', 'json',
     '--no-session',
     prompt,
