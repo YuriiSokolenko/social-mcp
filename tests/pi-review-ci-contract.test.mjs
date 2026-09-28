@@ -579,7 +579,7 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   assert.doesNotMatch(config, /Read and follow agents\/implementer\/AGENTS\.md first/);
   assert.doesNotMatch(tool, /If there is no real diff, implement the task/);
   assert.match(tool, /already_satisfied/);
-  assert.match(tool, /diff', '--name-only', 'origin\/dev', 'HEAD'/);
+  assert.match(tool, /diff', '--name-only', 'origin\/dev'/);
   assert.match(tool, /already_satisfied requires zero diff against latest dev/);
   assert.match(workflow, /\.already_satisfied \/\/ false/);
   assert.match(workflow, /issue satisfied/);

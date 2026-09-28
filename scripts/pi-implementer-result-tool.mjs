@@ -44,7 +44,7 @@ export default function (pi) {
       const alreadySatisfied = params.already_satisfied === true;
       if (restored && alreadySatisfied) throw new Error('Restored work cannot use already_satisfied');
 
-      const changedPaths = lines(git(['diff', '--name-only', 'origin/dev', 'HEAD']).out);
+      const changedPaths = lines(git(['diff', '--name-only', 'origin/dev']).out);
       const hasDiff = changedPaths.length > 0;
       let data;
 
