@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
+import { runGit as git } from './git.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -15,12 +15,6 @@ import path from 'node:path';
  * or as authoritative pipeline state. If 3-way apply leaves conflicts, the live
  * Implementer resolves them against current dev.
  */
-function git(args, { cwd, allowFailure = false } = {}) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: process.env });
-  if (r.error) throw r.error;
-  if (!allowFailure && r.status !== 0) throw new Error((r.stderr || r.stdout || 'git failed').trim());
-  return { status: r.status ?? 1, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
-}
 
 export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
   if (!Number.isSafeInteger(issue) || issue < 1) throw new Error('issue must be a positive integer');

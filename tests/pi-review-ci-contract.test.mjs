@@ -685,3 +685,32 @@ test('publication never invents a successful result and PR Fix publishes a clean
   assert.match(repair, /if \(localHead === expectedHead\) return/);
   assert.match(repair, /\$\{localHead\}:refs\/heads\/\$\{headRef\}/);
 });
+
+test('trusted subprocess and GitHub IO share bounded infrastructure helpers', () => {
+  const processHelper = fs.readFileSync('scripts/pi-common/process.mjs', 'utf8');
+  assert.match(processHelper, /spawnSync/);
+  assert.match(processHelper, /timeout:/);
+  assert.match(processHelper, /SIGKILL/);
+
+  for (const name of ['agent-change-policy.mjs', 'issue-worktree.mjs', 'finalize-product-tree.mjs']) {
+    const source = fs.readFileSync(`scripts/pi-common/${name}`, 'utf8');
+    assert.match(source, /\.\/git\.mjs/);
+    assert.doesNotMatch(source, /node:child_process/);
+  }
+  const repair = fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8');
+  assert.doesNotMatch(repair, /spawnSync\('rm'/);
+
+  const github = fs.readFileSync('scripts/pi-common/github-api.mjs', 'utf8');
+  assert.match(github, /AbortSignal\.timeout/);
+  assert.match(github, /PI_GITHUB_HTTP_TIMEOUT_MS/);
+  const usage = fs.readFileSync('scripts/pi-usage-collect.mjs', 'utf8');
+  assert.match(usage, /githubClient/);
+  assert.doesNotMatch(usage, /https:\/\/api\.github\.com/);
+});
+
+test('log rendering finalizes after continuations and redacts generic secret fields', () => {
+  const source = fs.readFileSync('scripts/pi-log-filter.mjs', 'utf8');
+  assert.match(source, /lastAgentEndSeen/);
+  assert.match(source, /reportFinal\(lastAgentEndSeen \? "completed" : "interrupted"\)/);
+  assert.match(source, /private\[_-\]\?key/);
+});

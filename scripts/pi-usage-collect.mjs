@@ -3,6 +3,7 @@
 // Rebuild one CSV from completed workflow job logs. Each run/attempt is an
 // idempotent record; issue rows are derived from those records on every update.
 import { readFileSync } from "node:fs";
+import { githubClient } from "./pi-common/github-api.mjs";
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
@@ -11,20 +12,7 @@ let run = event.workflow_run;
 const path = "reports/pi-usage.csv";
 const metricsBranch = "pi-metrics";
 const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "url"];
-const api = `https://api.github.com/repos/${repo}`;
-
-async function request(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...options.headers,
-    },
-  });
-  return response;
-}
+const { raw: request } = githubClient({ repo, token });
 
 function events(log, prefix) {
   return log.split("\n").flatMap((line) => {
@@ -56,7 +44,7 @@ function csv(rows) {
 }
 
 if (!run && /^\d+$/.test(process.env.MANUAL_RUN_ID ?? "")) {
-  const response = await request(`${api}/actions/runs/${process.env.MANUAL_RUN_ID}`);
+  const response = await request(`/actions/runs/${process.env.MANUAL_RUN_ID}`);
   if (!response.ok) throw new Error(`Failed to load requested workflow run: ${response.status}`);
   run = await response.json();
 }
@@ -73,7 +61,7 @@ if (run.head_repository?.full_name !== repo || !trustedWorkflows.has(run.path)) 
   throw new Error("The requested run is not a trusted Pi workflow from this repository");
 }
 
-const jobsResponse = await request(`${api}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`);
+const jobsResponse = await request(`/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`);
 if (!jobsResponse.ok) throw new Error(`Failed to list jobs: ${jobsResponse.status}`);
 const jobs = (await jobsResponse.json()).jobs.filter((job) => ["pi", "review", "fix", "architect", "dispatcher", "triage"].includes(job.name));
 const newRows = [];
@@ -84,7 +72,7 @@ for (const job of jobs) {
   }
   let log;
   for (let retry = 0; retry < 5; retry++) {
-    const response = await request(`${api}/actions/jobs/${job.id}/logs`);
+    const response = await request(`/actions/jobs/${job.id}/logs`);
     if (response.ok) { log = await response.text(); break; }
     if (retry === 4) throw new Error(`Failed to fetch job ${job.id} logs: ${response.status}`);
     await new Promise((resolve) => setTimeout(resolve, 1000 * (retry + 1)));
@@ -128,7 +116,7 @@ if (!newRows.length) {
 }
 
 for (let retry = 0; retry < 8; retry++) {
-  const current = await request(`${api}/contents/${path}?ref=${metricsBranch}`);
+  const current = await request(`/contents/${path}?ref=${metricsBranch}`);
   if (!current.ok && current.status !== 404) throw new Error(`Failed to read usage CSV: ${current.status}`);
   const body = current.ok ? await current.json() : null;
   const oldRows = body ? parseCsv(Buffer.from(body.content, "base64").toString("utf8")) : [];
@@ -156,9 +144,7 @@ for (let retry = 0; retry < 8; retry++) {
     branch: metricsBranch,
     ...(body ? { sha: body.sha } : {}),
   };
-  const update = await request(`${api}/contents/${path}`, {
-    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-  });
+  const update = await request(`/contents/${path}`, "PUT", payload);
   if (update.ok) {
     console.log(`Updated ${path}: ${sortedIssues.length} issues, ${sortedAttempts.length} attempts`);
     process.exit(0);

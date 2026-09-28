@@ -146,3 +146,32 @@ test("emits issue=0 metrics for system agents without PI_ISSUE", () => {
   ], { PI_PHASE: "dispatcher", PI_CALL: "main", PI_ISSUE: "" });
   assert.match(output, /PI_METRIC \{"issue":0,"phase":"dispatcher","call":"main","response":1/);
 });
+
+test("waits until EOF to finalize totals across post-settle continuations", () => {
+  const { stdout, summary } = renderWithSummary([
+    { type: "agent_start" },
+    { type: "turn_start" },
+    { type: "message_end", message: { role: "assistant", content: [], usage: { input: 10, output: 4, totalTokens: 14 } } },
+    { type: "agent_end", messages: [] },
+    { type: "agent_start" },
+    { type: "turn_start" },
+    { type: "message_end", message: { role: "assistant", content: [], usage: { input: 20, output: 6, totalTokens: 26 } } },
+    { type: "agent_end", messages: [] },
+  ], { PI_ISSUE: "97" });
+  assert.equal((stdout.match(/Model totals \(2 responses\)/g) ?? []).length, 1);
+  assert.match(stdout, /Agent completed/);
+  assert.match(summary, /Responses:\*\* 2/);
+  assert.equal((summary.match(/<summary>◉ Model #/g) ?? []).length, 2);
+});
+
+test("redacts generic token, secret and PEM private-key material", () => {
+  const output = render([
+    { type: "message_update", assistantMessageEvent: { type: "text_delta",
+      delta: "token=syntheticToken\nsecret=syntheticSecret\n-----BEGIN PRIVATE KEY-----\nsyntheticPem\n-----END PRIVATE KEY-----\n" } },
+    { type: "message_end", message: { role: "assistant", content: [] } },
+  ]);
+  assert.doesNotMatch(output, /syntheticToken|syntheticSecret|syntheticPem/);
+  assert.match(output, /token=\[REDACTED\]/);
+  assert.match(output, /secret=\[REDACTED\]/);
+  assert.match(output, /\[REDACTED PRIVATE KEY\]/);
+});

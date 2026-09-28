@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { runGit as git } from './git.mjs';
 
 import { githubClient } from './github-api.mjs';
@@ -20,8 +20,8 @@ export async function publishRepair({ prNumber, issue, cwd, headRef, expectedHea
   if (pr.head.sha !== expectedHead) throw new Error(`PR #${prNumber} HEAD moved during repair`);
 
   git(['diff','--check'], { cwd });
-  for (const p of ['.venv','.pytest_cache','.ruff_cache','htmlcov','build','dist']) spawnSync('rm',['-rf',p],{cwd});
-  for (const p of ['.coverage','coverage.xml']) spawnSync('rm',['-f',p],{cwd});
+  for (const p of ['.venv','.pytest_cache','.ruff_cache','htmlcov','build','dist']) fs.rmSync(`${cwd}/${p}`, { recursive:true, force:true });
+  for (const p of ['.coverage','coverage.xml']) fs.rmSync(`${cwd}/${p}`, { force:true });
   git(['config','user.name','social-mcp-pi'],{cwd}); git(['config','user.email','social-mcp-pi@users.noreply.github.com'],{cwd});
   git(['add','-A'],{cwd});
   if (git(['diff','--cached','--quiet'],{cwd,allowFailure:true}).status !== 0) {

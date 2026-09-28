@@ -39,6 +39,7 @@ let totalResponseMs = 0;
 const activeTools = new Map();
 let toolCount = 0;
 let reportedFinal = false;
+let lastAgentEndSeen = false;
 const issue = /^\d+$/.test(process.env.PI_ISSUE ?? "") ? Number(process.env.PI_ISSUE) : null;
 const phase = process.env.PI_PHASE ?? "agent";
 const call = process.env.PI_CALL ?? "main";
@@ -63,7 +64,7 @@ function recordMetric(metric) {
   if (process.env.PI_METRICS_FILE) appendFileSync(process.env.PI_METRICS_FILE, line + "\n");
 }
 
-const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie|gh_token|github_token)$/i;
+const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie|gh_token|github_token|token|secret|private[_-]?key)$/i;
 
 function redact(value, key = "") {
   if (sensitiveKey.test(key)) return "[REDACTED]";
@@ -74,7 +75,8 @@ function redact(value, key = "") {
   if (typeof value === "string") {
     return value
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-      .replace(/\b(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|gh_token|github_token|cookie|set-cookie)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/gi, "$1$2$3[REDACTED]")
+      .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
+      .replace(/\b(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|gh_token|github_token|cookie|set-cookie|token|secret|private[_-]?key)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/gi, "$1$2$3[REDACTED]")
       .replace(/\b(gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g, "[REDACTED]");
   }
   return value;
@@ -338,6 +340,7 @@ for await (const line of rl) {
       divider();
       break;
     case "agent_start":
+      lastAgentEndSeen = false;
       heading("▶", "Agent started", C.green);
       break;
     case "turn_start":
@@ -463,18 +466,21 @@ for await (const line of rl) {
       break;
     case "agent_end": {
       closeGroup();
+      lastAgentEndSeen = true;
       const finalText = finalAssistantText(event.messages);
       if (finalText.trim() && !streamedText.trimEnd().endsWith(finalText.trimEnd())) {
         console.log();
         console.log(C.bold + "Final response" + C.reset);
         detailLines(truncate(redact(finalText), 12000));
       }
-      reportFinal("completed");
-      if (!reasoningAvailable) console.log(C.gray + "Thinking text: not provided by the model" + C.reset);
-      divider();
+      // agent_before_settle may immediately continue the same Pi session. Do
+      // not freeze totals or the Job Summary on this intermediate agent_end.
+      heading("◇", "Agent pass settled", C.green);
       break;
     }
   }
 }
 flushStream(true);
-reportFinal("interrupted");
+reportFinal(lastAgentEndSeen ? "completed" : "interrupted");
+if (!reasoningAvailable) console.log(C.gray + "Thinking text: not provided by the model" + C.reset);
+divider();

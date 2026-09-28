@@ -18,3 +18,11 @@ test('runGit throws on failure by default and exposes failures when allowed', ()
   const result = runGit(['definitely-not-a-git-command'], { allowFailure: true });
   assert.notEqual(result.status, 0);
 });
+
+test('git authentication is kept out of argv and every git process has a deadline', () => {
+  const source = fs.readFileSync('scripts/pi-common/git.mjs', 'utf8');
+  assert.doesNotMatch(source, /credential\.helper/);
+  assert.match(source, /GIT_CONFIG_VALUE_/);
+  assert.match(source, /PI_GIT_TIMEOUT_SECONDS/);
+  assert.match(source, /runProcess\('git'/);
+});
