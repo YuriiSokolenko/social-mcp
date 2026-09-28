@@ -76,7 +76,7 @@ test('runtime-owned classifier reserves one tool call for structured output', ()
   assert.match(runtime, /prompt-template:subagent:response/);
   assert.match(runtime, /name: 'classify_task_complexity'/);
   assert.match(runtime, /result: \{ kind: 'structured', schema: COMPLEXITY_SCHEMA \}/);
-  assert.match(runtime, /toolBudget: \{ hard: 0, block: '\*' \}/);
+  assert.match(runtime, /toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /additionalProperties: false/);
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
 });
