@@ -221,9 +221,6 @@ function trivialRepoLookup(cwd, { extensions = [], exactText = '' }) {
   const candidates = [];
   const found = [];
   for (const relative of tracked) {
-    if (excluded.some(prefix => relative.startsWith(prefix))) continue;
-    const ext = relative.includes('.') ? relative.split('.').pop().toLowerCase() : '';
-    if (normalized.length && !normalized.includes(ext)) continue;
     const full = `${cwd}/${relative}`;
     let stat;
     try { stat = fs.statSync(full); } catch { continue; }
@@ -231,6 +228,10 @@ function trivialRepoLookup(cwd, { extensions = [], exactText = '' }) {
     let text;
     try { text = fs.readFileSync(full, 'utf8'); } catch { continue; }
     if (exactText && text.includes(exactText)) found.push(relative);
+
+    if (excluded.some(prefix => relative.startsWith(prefix))) continue;
+    const ext = relative.includes('.') ? relative.split('.').pop().toLowerCase() : '';
+    if (normalized.length && !normalized.includes(ext)) continue;
     if (stat.size <= 20 * 1024) {
       const lastLine = text.split(/\r?\n/).map(line => line.trimEnd()).filter(Boolean).at(-1) ?? '';
       candidates.push({ path: relative, size: stat.size, lastLine });
