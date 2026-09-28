@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 
 const IMPLEMENTER_SUBAGENT_CATALOG = `Available delegated agents (already known; do not call subagent(action:"list")):
-- implementation-planner — creates the startup implementation plan from issue title/body; prepare_implementation already invokes it.
-- complexity-classifier — classifies issue + prepared plan; prepare_implementation already invokes it.
+- implementation-planner — creates the startup implementation plan for fresh work from issue title/body; prepare_implementation invokes it.
+- complexity-classifier — classifies fresh issue + prepared plan; prepare_implementation invokes it.
 - scout — fast repository reconnaissance for unknown paths, symbols, usages, docs, logs, or broader evidence.
 - delegate — lightweight focused helper for a narrow delegated question.
 - reviewer — independent read-only review of code, diffs, plans, or evidence.
@@ -66,11 +66,14 @@ Call submit_result exactly once as your last action. Do not modify repository or
         ? 'issue branch'
         : 'saved work';
     const resumeNotice = resumed
-      ? `Runtime resume state: saved ${resumeSource} changes have already been replayed on top of latest dev in this worktree. These are in-progress local implementation changes, NOT evidence that the same content exists in origin/dev. After prepare_implementation, call submit_result immediately before any lookup/read/status. submit_result preserves the current implementation changes, integrates latest dev, and runs authoritative validation. Only investigate or mutate if submit_result reports a specific conflict or failing check.\n\n`
+      ? `Runtime resume state: restored ${resumeSource} work is already in this worktree. After the required contract read, call submit_result immediately. Do not call prepare_implementation and do not inspect, summarize, or plan the restored files first. If submit_result fails, fix only the concrete reported problem and retry. Do not use already_satisfied for restored work.\n\n`
       : '';
-    return `Read and follow agents/implementer/AGENTS.md first. Do not write your own startup plan and do not inspect the repository before preparation.
+    const startupInstruction = resumed
+      ? 'This is restored work. Skip startup planning/classification and validate the restored implementation first with \`submit_result\`.'
+      : 'This is fresh work. Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity.';
+    return `Read and follow agents/implementer/AGENTS.md first. Do not write a competing startup plan.
 
-Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity and should execute step 1 immediately unless the runtime resume state below requires terminal validation first.
+${startupInstruction}
 
 You are implementing GitHub issue #${issue} in the current repository.
 
@@ -81,17 +84,17 @@ Issue body:
 ${body}
 
 ${resumeNotice}Work directly in the checked-out repository, always based on latest dev. dev is the only development base; never treat main as an alternative source tree.
-After preparation:
+For fresh work after preparation:
 - If one small target file is already known, the main agent may read it directly once with \`limit <= 200\`.
 - The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
 - If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
-- If the task is \`normal\`/\`complex\`, more than one file must be inspected, broader patterns/usages must be searched, logs/diagnostics are involved, or broader command output is needed, delegate to \`scout\` (or package-owned \`run-ci\` for checks).
+- Delegate to \`scout\` only when the evidence already available is insufficient to know the next safe action: unknown targets, genuine multi-file comparison/search, logs/diagnostics, or broader command output. Complexity alone never requires delegation.
 - \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
-- For scout requests, ask for the first sufficient answer, not the globally smallest/best match; require compact fixed-shape output.
+- For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.
 
-Main owns execution decisions, \`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Planning and task-level complexity are already owned by the startup subagents. If delegated evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`.
+Main owns execution decisions, \`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Planning and task-level complexity belong to the fresh-work startup subagents. If evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`. Never use \`already_satisfied\` for restored work.
 
-Use the smallest implementation satisfying the issue. Do not commit, push, create PRs, or modify GitHub state. \`submit_result\` integrates latest dev and owns final git diff --check, full pytest, and Ruff validation. A successful \`submit_result\` is terminal.
+Use the smallest implementation satisfying the issue. \`submit_result\` is both validation and submission; do not independently prove correctness before calling it. Do not commit, push, create PRs, or modify GitHub state. A successful \`submit_result\` is terminal.
 
 ${IMPLEMENTER_SUBAGENT_CATALOG}`;
   }

@@ -4,7 +4,7 @@ You implement one GitHub issue in the Social MCP product repository.
 
 ## Goal
 
-Make the smallest complete product change that satisfies the issue. Keep execution decisions, mutations, and terminal submission in the main agent. The startup planner owns the top-level plan; use later subagents only where they reduce exploratory context.
+Make the smallest complete product change that satisfies the issue. Keep execution decisions, mutations, and terminal submission in the main agent. The startup planner owns the top-level plan for fresh work; restored work is validated before any replanning. Use later subagents only where they reduce genuinely necessary exploratory context.
 
 ## Hard boundaries
 
@@ -24,7 +24,23 @@ Never expose credentials or tokens, weaken authentication/authorization, commit 
 
 ## Startup
 
-Follow this sequence exactly:
+Choose the path from the initial prompt.
+
+### Restored work
+
+If the initial prompt says saved checkpoint or issue-branch changes were replayed into the worktree:
+
+1. Read this `agents/implementer/AGENTS.md`.
+2. Call `submit_result` immediately. Do **not** call `prepare_implementation`, inspect repository files, or prove the restored implementation correct first.
+3. If `submit_result` reports a concrete conflict or failing check, fix only that reported problem and retry `submit_result`. Delegate only when the failure does not contain enough evidence to make the next safe change.
+
+Restored work is never `already_satisfied`. That flag is reserved for an end state that already exists in latest `dev`.
+
+`submit_result` is the first validation step for restored work. Do not summarize, re-plan, or independently verify restored files before that first call.
+
+### Fresh work
+
+Follow this sequence:
 
 1. Read this `agents/implementer/AGENTS.md`. This mandatory contract read is not part of the normal direct-read budget.
 2. Use the issue title/body already supplied in the prompt as the authoritative requested outcome. Do not inspect repository files and do not write a competing execution plan.
@@ -34,15 +50,15 @@ Follow this sequence exactly:
    - The runtime schema-validates the ordered plan.
    - The runtime then sends issue title/body plus that plan to the separate `complexity-classifier` and schema-validates `{ complexity, reason }`.
    - The main agent receives only the prepared plan and complexity. Do not call either child manually and do not re-run task-level classification.
-4. If the initial prompt says saved checkpoint/issue-branch changes were replayed into the worktree, call `submit_result` immediately after preparation. Do not use lookup/read/status to decide whether resumed files belong to dev; resumed files are local in-progress work by definition. Investigate or mutate only if `submit_result` reports a specific conflict or failing check.
-5. Otherwise execute plan step 1 immediately.
+4. Execute the first prepared plan step unless existing evidence already gives a more direct next action.
 
 Once the next repository mutation is known and enough evidence exists, call `edit` or `write` immediately. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a bounded read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
 
-Do not modify repository files before step 4.
+For fresh work, do not modify repository files before preparation.
 
 The initial prompt already contains the relevant subagent catalog. Do not call `subagent(action:"list")`. If later delegation is actually needed and the generic tool is hidden, call `subagents_enable` once and then call the named agent directly.
-## Repository access routing
+
+## Repository access routing## Repository access routing
 
 Use direct main-agent tools when the operation is cheaper than launching a child. Delegate exploration.
 
@@ -58,16 +74,18 @@ Do not use repeated guessed reads as a substitute for search. If the first bound
 
 ### Delegate
 
-Use `scout` with `async: false` when any of these are true (except the single `trivial_repo_lookup` allowed for a `trivial` task):
+Use `scout` with `async: false` only when the evidence already available to the main agent is insufficient to know the next safe action, for example when:
 
-- the target path, symbol, test, config, or pattern is unknown after `trivial_repo_lookup`, or the task is not `trivial`;
-- more than one repository file must be inspected or compared;
-- usages/similar implementations must be searched;
+- the target path, symbol, test, config, or pattern is unknown and the cheap trivial lookup is unavailable or insufficient;
+- more than one repository file must genuinely be inspected or compared;
+- usages or similar implementations must be searched;
 - logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
 - expected output is larger than a small bounded read/diff;
-- a skill or project document must be searched for relevant rules.
+- a skill or project document must be searched for a concrete rule needed by the current decision.
 
-`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `trivial_repo_lookup` for the one cheap trivial lookup. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
+**Task complexity alone never requires delegation.** A `normal` or `complex` classification is metadata, not an instruction to call `scout`.
+
+`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `trivial_repo_lookup` for the one cheap trivial lookup when applicable. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
 
 For scout requests:
 
@@ -85,9 +103,11 @@ When a scout is needed immediately before `edit`, request in one call:
 
 A second pre-edit scout is justified only if the first cannot produce a safe anchor or the anchor proves stale/ambiguous.
 
-## Ownership and execution
+## Ownership and execution## Ownership and execution
 
-The startup `implementation-planner` owns the top-level plan. The `complexity-classifier` owns the task-level classification. Main owns:
+The startup `implementation-planner` owns the top-level plan for **fresh work**. The `complexity-classifier` owns fresh-task complexity metadata. Complexity does not determine whether the main agent or a scout should perform the next action.
+
+Main owns:
 
 - issue acceptance as the authoritative goal;
 - executing and locally adapting prepared plan steps when repository evidence requires it;
@@ -96,39 +116,44 @@ The startup `implementation-planner` owns the top-level plan. The `complexity-cl
 - conflict-resolution mutations;
 - `submit_result`.
 
-Do not discard and rewrite the whole prepared plan merely because a local detail changes. Delegate only the exploratory parts that would otherwise grow the main context.
+Do not discard and rewrite the whole prepared plan merely because a local detail changes. Delegate only the exploratory part that is actually missing.
 
 `scout` gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
 
-If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. Call `submit_result` with `already_satisfied: true` and `changes: []`.
+If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. Call `submit_result` with `already_satisfied: true` and `changes: []`. Never use `already_satisfied` for restored checkpoint/issue-branch work.
 
-For a tiny task with a known target, prefer:
+For fresh work with a known target, prefer:
 
-`AGENTS.md → prepare_implementation → one bounded read → edit → bounded git diff → submit_result`
+`AGENTS.md → prepare_implementation → one bounded read if needed → edit/write → submit_result`
 
-If the target is unknown and complexity is `trivial`:
+If a fresh trivial task has an unknown target:
 
-`AGENTS.md → prepare_implementation → trivial_repo_lookup → one bounded read if needed → edit → bounded git diff → submit_result`
+`AGENTS.md → prepare_implementation → trivial_repo_lookup → one bounded read if needed → edit/write → submit_result`
 
-If the target is unknown and complexity is `normal` or `complex`:
+If the next safe action is genuinely unknown:
 
-`AGENTS.md → prepare_implementation → one compact edit-ready scout → edit → bounded git diff → submit_result`
-## Validation and submission
+`AGENTS.md → prepare_implementation → one compact evidence-gathering scout → edit/write → submit_result`
+
+For restored work, prefer:
+
+`AGENTS.md → submit_result → fix only a reported failure if any → submit_result`
+
+## Validation and submission## Validation and submission
 
 Do not run full pytest, full-repository Ruff, or CI/control-plane suites before submission as a ritual.
 
-`submit_result` is authoritative. It never resets/checks out away current implementation changes; it merges latest `dev` into the current worktree and reports conflicts instead of discarding work. It:
+`submit_result` is both validation and submission. You do not need to prove correctness before calling it. It never resets/checks out away current implementation changes; it merges latest `dev` into the current worktree and reports conflicts instead of discarding work. It:
 
 - integrates latest `dev`;
 - runs `git diff --check`;
 - runs the full product pytest suite;
 - runs `ruff check .`.
 
-If it reports a conflict or failing check, fix only that problem, use a focused delegated check if useful, and retry `submit_result`.
+If it reports a conflict or failing check, fix only that concrete problem. Use a focused delegated check only when the failure itself does not provide enough evidence for the next safe change, then retry `submit_result`.
 
 After successful `submit_result`, **stop immediately**.
 
-## Response budget
+## Response budget## Response budget
 
 Every session starts at **SHORT (2048)**.
 

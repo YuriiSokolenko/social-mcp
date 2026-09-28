@@ -85,6 +85,9 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
+  assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
+  assert.doesNotMatch(runtime, /Execute step 1 now/);
+  assert.match(runtime, /Preparation complete\. Continue according to agents\/implementer\/AGENTS\.md/);
   assert.match(runtime, /origin\/dev only/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /do not classify complexity/i);
@@ -349,9 +352,11 @@ test('stage configuration owns every model prompt', () => {
       PI_RESUME_PATCH: resumePatch,
       PI_CHECKPOINT_EXPECTED: 'checkpoint-sha',
     });
-    assert.match(resumedPrompt, /saved checkpoint changes have already been replayed on top of latest dev/);
-    assert.match(resumedPrompt, /NOT evidence that the same content exists in origin\/dev/);
-    assert.match(resumedPrompt, /call submit_result immediately before any lookup\/read\/status/);
+    assert.match(resumedPrompt, /restored checkpoint work is already in this worktree/);
+    assert.match(resumedPrompt, /Skip startup planning\/classification and validate the restored implementation first with \`submit_result\`/);
+    assert.match(resumedPrompt, /Do not call prepare_implementation/);
+    assert.match(resumedPrompt, /Do not use already_satisfied for restored work/);
+    assert.match(resumedPrompt, /Complexity alone never requires delegation/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
   } finally {

@@ -506,7 +506,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
-test('implementer prepares plan and complexity before tiny known-path work', () => {
+test('fresh implementer prepares plan and complexity while restored work validates first', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
@@ -518,19 +518,14 @@ test('implementer prepares plan and complexity before tiny known-path work', () 
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
   assert.match(config, /directReadMaxLines: 200[\s\S]*directReadCalls: 1[\s\S]*boundedDirectBash: true/);
 
-  const contract = [
-    'Read this `agents/implementer/AGENTS.md`',
-    'Use the issue title/body already supplied in the prompt',
-    'Call `prepare_implementation` exactly once',
-    'If the initial prompt says saved checkpoint/issue-branch changes were replayed',
-    'Otherwise execute plan step 1 immediately',
-  ];
-  let previous = -1;
-  for (const marker of contract) {
-    const position = agent.indexOf(marker);
-    assert.ok(position > previous, `implementer startup marker missing or out of order: ${marker}`);
-    previous = position;
-  }
+  assert.match(agent, /### Restored work[\s\S]*Call \`submit_result\` immediately[\s\S]*Do \*\*not\*\* call \`prepare_implementation\`/);
+  assert.match(agent, /Restored work is never \`already_satisfied\`/);
+  assert.match(agent, /### Fresh work[\s\S]*Use the issue title\/body already supplied in the prompt[\s\S]*Call \`prepare_implementation\` exactly once/);
+  assert.match(agent, /Task complexity alone never requires delegation/);
+  assert.match(agent, /submit_result[\s\S]*both validation and submission/);
+  assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
+  assert.doesNotMatch(runtime, /Execute step 1 now/);
+  assert.match(runtime, /Preparation complete\. Continue according to agents\/implementer\/AGENTS\.md/);
 
   assert.match(agent, /do not write a competing execution plan/i);
   assert.match(agent, /one already-known small file/i);

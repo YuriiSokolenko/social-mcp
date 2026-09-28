@@ -220,7 +220,15 @@ async function runStructuredComplexityClassifier(pi, ctx, config, plan, signal) 
 export default function (pi) {
   const stage = process.env.PI_STAGE;
   const config = stageConfig(stage);
-  const controller = new ProgressController(config);
+  const resumePatch = stage === 'implementer' ? process.env.PI_RESUME_PATCH : null;
+  const resumedImplementer = Boolean(
+    resumePatch &&
+    fs.existsSync(resumePatch) &&
+    fs.statSync(resumePatch).size > 0
+  );
+  const controller = new ProgressController(
+    resumedImplementer ? { ...config, requireComplexity: false } : config
+  );
 
   async function applyBudget(level, ctx) {
     if (!ctx.model) throw new Error('No active model is available for response budgeting');
@@ -255,7 +263,7 @@ export default function (pi) {
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nExecute step 1 now. Do not re-plan unless repository evidence makes a step impossible or stale.`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nPreparation complete. Continue according to agents/implementer/AGENTS.md. Complexity is metadata and does not by itself require delegation.`,
           }],
           details: {
             ...result,
