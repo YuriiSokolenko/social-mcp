@@ -60,7 +60,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const body = context.body ?? '';
     return `Read and follow agents/implementer/AGENTS.md first. Do not write your own startup plan and do not inspect the repository before preparation.
 
-Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (480 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity and should execute step 1 immediately.
+Immediately after the required contract read, call \`prepare_implementation\` exactly once. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity and should execute step 1 immediately.
 
 You are implementing GitHub issue #${issue} in the current repository.
 
@@ -151,13 +151,16 @@ export const STAGES = Object.freeze({
     requiredFirstReadPath: 'agents/implementer/AGENTS.md',
     requireComplexity: true,
     implementationPlannerAgent: 'implementation-planner',
-    implementationPlannerMaxTokens: 480,
+    implementationPlannerMaxTokens: 768,
+    implementationPlannerStructuredRetry: 1,
     implementationPlannerTimeoutMs: 120000,
     complexityClassifierAgent: 'complexity-classifier',
     complexityClassifierTimeoutMs: 120000,
     preComplexityTurnLimit: 4,
     preComplexityAllowedTools: ['prepare_implementation'],
     delegatedTools: ['grep', 'find', 'ls'],
+    trivialDirectDelegatedTools: ['grep', 'find', 'ls'],
+    trivialDirectSearchCalls: 1,
     delegationTool: 'subagent',
     directReadMaxLines: 200,
     directReadCalls: 1,
