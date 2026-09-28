@@ -161,11 +161,4 @@ async def health(request: Request, response: Response) -> dict[str, str]:
     return {"status": "ok"}
 
 
-@system_router.get("/pipeline-check")
-async def pipeline_check() -> dict[str, str]:
-    """Smoke-test the deployment pipeline end to end."""
-
-    return {"status": "pipeline-ok"}
-
-
 app = create_app()
