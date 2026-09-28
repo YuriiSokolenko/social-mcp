@@ -35,18 +35,17 @@ test('prefers a submit_result tool entry over any DISPATCH_RESULT text line', ()
   assert.deepEqual(dispatchFromJsonl(jsonl), result);
 });
 
-test('uses the last DISPATCH_RESULT line when the model second-guesses itself mid-response', () => {
-  const draft = { classifications: [{ issue: 4, decision: 'IMPLEMENT' }] };
+test('rejects text-only DISPATCH_RESULT markers without submit_result', () => {
   const final = { classifications: [{ issue: 3, decision: 'IMPLEMENT' }] };
   const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
-    content: [{ type: 'text', text: `DISPATCH_RESULT: ${JSON.stringify(draft)}\nOn reflection:\nDISPATCH_RESULT: ${JSON.stringify(final)}` }] }] });
-  assert.deepEqual(dispatchFromJsonl(jsonl), final);
+    content: [{ type: 'text', text: `DISPATCH_RESULT: ${JSON.stringify(final)}` }] }] });
+  assert.throws(() => dispatchFromJsonl(jsonl), /expected submit_result tool output/);
 });
 
-test('rejects a run with no DISPATCH_RESULT line and no tool entry', () => {
+test('rejects a run with neither text nor submit_result', () => {
   const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
     content: [{ type: 'text', text: 'I looked around but found nothing to report.' }] }] });
-  assert.throws(() => dispatchFromJsonl(jsonl), /expected a DISPATCH_RESULT line/);
+  assert.throws(() => dispatchFromJsonl(jsonl), /expected submit_result tool output/);
 });
 
 test('finalText uses the last non-empty assistant message across agent_end events', () => {

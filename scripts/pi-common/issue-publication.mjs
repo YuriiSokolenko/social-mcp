@@ -73,9 +73,10 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
 export async function upsertPullRequest({ issue, issueTitle, resultFile, owner }) {
   const { api } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(owner + ':pi/issue-' + issue)}&base=dev`);
-  let metadata;
-  if (resultFile && fs.existsSync(resultFile) && fs.statSync(resultFile).size) metadata = JSON.parse(fs.readFileSync(resultFile,'utf8'));
-  else metadata = { title:`Pi: #${issue} ${issueTitle}`, summary:`Implements issue #${issue}.`, changes:[], security_notes:'', limitations:'' };
+  if (!resultFile || !fs.existsSync(resultFile) || !fs.statSync(resultFile).size) {
+    throw new Error('Implementer result metadata is required before PR publication');
+  }
+  const metadata = JSON.parse(fs.readFileSync(resultFile,'utf8'));
   const changes = metadata.changes?.length ? metadata.changes.map(x=>`- ${x}`).join('\n') : '- See the diff for implementation details.';
   const tests = '- pytest: passed\n- ruff check .: passed\n- git diff --check: passed\n- The merged result is validated by the normal CI run on dev after merge.';
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;

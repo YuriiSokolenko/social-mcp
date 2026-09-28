@@ -149,11 +149,9 @@ export function validateTriage(result) {
 }
 
 export function triageFromJsonl(jsonl) {
-  const { customResult, finalText: text } = readPiJsonl(jsonl, { customType: "triage-result" });
-  if (customResult) return validateTriage(customResult);
-  const lines = text.split(/\r?\n/).filter(line => line.startsWith("TRIAGE_RESULT: "));
-  if (!lines.length) throw new Error("expected a TRIAGE_RESULT line");
-  return validateTriage(JSON.parse(lines.at(-1).slice("TRIAGE_RESULT: ".length)));
+  const { customResult } = readPiJsonl(jsonl, { customType: "triage-result" });
+  if (!customResult) throw new Error("expected submit_result tool output");
+  return validateTriage(customResult);
 }
 
 async function main() {

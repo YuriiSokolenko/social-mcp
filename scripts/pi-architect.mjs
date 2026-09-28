@@ -23,11 +23,9 @@ export function childNumbers(body) {
 }
 
 export function planFromJsonl(jsonl, parent) {
-  const { customResult, finalText } = readPiJsonl(jsonl, { customType: 'architect-result' });
-  if (customResult) return validatePlan(customResult, parent);
-  const lines = finalText.split(/\r?\n/).filter(line => line.startsWith('ARCHITECT_RESULT: '));
-  if (!lines.length) throw new Error('Expected an ARCHITECT_RESULT line');
-  return validatePlan(JSON.parse(lines.at(-1).slice('ARCHITECT_RESULT: '.length)), parent);
+  const { customResult } = readPiJsonl(jsonl, { customType: 'architect-result' });
+  if (!customResult) throw new Error('Expected submit_result tool output');
+  return validatePlan(customResult, parent);
 }
 
 export function validatePlan(plan, parent) {

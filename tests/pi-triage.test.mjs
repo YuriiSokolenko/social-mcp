@@ -37,18 +37,17 @@ test('prefers a submit_result tool entry over any TRIAGE_RESULT text line', () =
   assert.deepEqual(triageFromJsonl(jsonl), result);
 });
 
-test('uses the last TRIAGE_RESULT line when the model second-guesses itself mid-response', () => {
-  const draft = { ready: [4], needs_human: [], skipped: [] };
+test('rejects text-only TRIAGE_RESULT markers without submit_result', () => {
   const final = { ready: [3], needs_human: [], skipped: [] };
   const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
-    content: [{ type: 'text', text: `TRIAGE_RESULT: ${JSON.stringify(draft)}\nOn reflection:\nTRIAGE_RESULT: ${JSON.stringify(final)}` }] }] });
-  assert.deepEqual(triageFromJsonl(jsonl), final);
+    content: [{ type: 'text', text: `TRIAGE_RESULT: ${JSON.stringify(final)}` }] }] });
+  assert.throws(() => triageFromJsonl(jsonl), /expected submit_result tool output/);
 });
 
-test('rejects a run with no TRIAGE_RESULT line and no tool entry', () => {
+test('rejects a run with neither text nor submit_result', () => {
   const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
     content: [{ type: 'text', text: 'Nothing to report.' }] }] });
-  assert.throws(() => triageFromJsonl(jsonl), /expected a TRIAGE_RESULT line/);
+  assert.throws(() => triageFromJsonl(jsonl), /expected submit_result tool output/);
 });
 
 test('finalText uses the last non-empty assistant message across agent_end events', () => {

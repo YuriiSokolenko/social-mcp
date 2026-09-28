@@ -13,8 +13,8 @@ test('accepts ordered, independently mergeable contract, test and implementation
     step('feature', 'implementation', ['tests']),
   ] };
   assert.equal(validatePlan(plan, 42), plan);
-  const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
-    content: [{ type: 'text', text: `ARCHITECT_RESULT: ${JSON.stringify(plan)}` }] }] });
+  const jsonl = JSON.stringify({ type: 'entry_appended',
+    entry: { type: 'custom', customType: 'architect-result', data: plan } });
   assert.deepEqual(planFromJsonl(jsonl, 42), plan);
 });
 
@@ -36,12 +36,11 @@ test('prefers a submit_result tool entry over any ARCHITECT_RESULT text line', (
   assert.deepEqual(planFromJsonl(jsonl, 42), keep);
 });
 
-test('uses the last ARCHITECT_RESULT line when the model second-guesses itself mid-response', () => {
-  const draft = { parent_issue: 42, action: 'keep', reason: 'Draft reasoning that gets revised before the final answer.' };
+test('rejects text-only ARCHITECT_RESULT markers without submit_result', () => {
   const final = { parent_issue: 42, action: 'keep', reason: 'The task is already bounded and its dependencies are correct.' };
   const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
-    content: [{ type: 'text', text: `ARCHITECT_RESULT: ${JSON.stringify(draft)}\nOn reflection:\nARCHITECT_RESULT: ${JSON.stringify(final)}` }] }] });
-  assert.deepEqual(planFromJsonl(jsonl, 42), final);
+    content: [{ type: 'text', text: `ARCHITECT_RESULT: ${JSON.stringify(final)}` }] }] });
+  assert.throws(() => planFromJsonl(jsonl, 42), /Expected submit_result tool output/);
 });
 
 test('accepts review decisions without forcing unnecessary child issues', () => {
@@ -54,8 +53,8 @@ test('accepts review decisions without forcing unnecessary child issues', () => 
   assert.equal(validatePlan(revise, 42), revise);
   assert.throws(() => validatePlan({ ...revise, depends_on: [42] }, 42));
   assert.throws(() => validatePlan({ ...revise, body: `${body}\n<!-- architect-parent:1; architect-key:x -->` }, 42));
-  const jsonl = JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant',
-    content: [{ type: 'text', text: `ARCHITECT_RESULT: ${JSON.stringify(keep)}` }] }] });
+  const jsonl = JSON.stringify({ type: 'entry_appended',
+    entry: { type: 'custom', customType: 'architect-result', data: keep } });
   assert.deepEqual(planFromJsonl(jsonl, 42), keep);
 });
 

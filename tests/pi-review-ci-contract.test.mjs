@@ -659,3 +659,29 @@ test('Architect split publication has a durable parent marker and recoverable ch
   assert.match(workflow, /Wake Dispatcher after Architect publication/);
   assert.match(workflow, /workflow-dispatch\.mjs" pi-dispatcher\.yml/);
 });
+
+test('terminal result parsers do not accept legacy free-text markers', () => {
+  for (const [name, forbidden] of [
+    ['pi-architect.mjs', 'ARCHITECT_RESULT:'],
+    ['pi-dispatcher.mjs', 'DISPATCH_RESULT:'],
+    ['pi-triage.mjs', 'TRIAGE_RESULT:'],
+  ]) {
+    const source = fs.readFileSync(`scripts/${name}`, 'utf8');
+    assert.match(source, /expected submit_result tool output|Expected submit_result tool output/);
+    assert.doesNotMatch(source, new RegExp("startsWith\\(['\"]" + forbidden.replace(/[.*+?^$\{\}()|[\]\\]/g, '\\$&')));
+  }
+  const review = fs.readFileSync('scripts/pi-review-result.mjs', 'utf8');
+  assert.match(review, /did not call submit_result/);
+  assert.doesNotMatch(review, /matchAll\(\/\^\[ \\t\]/);
+});
+
+test('publication never invents a successful result and PR Fix publishes a clean integrated HEAD', () => {
+  const issuePublication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  assert.match(issuePublication, /Implementer result metadata is required before PR publication/);
+  assert.doesNotMatch(issuePublication, /See the diff for implementation details/);
+
+  const repair = fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8');
+  assert.match(repair, /const localHead = git\(\['rev-parse','HEAD'\]/);
+  assert.match(repair, /if \(localHead === expectedHead\) return/);
+  assert.match(repair, /\$\{localHead\}:refs\/heads\/\$\{headRef\}/);
+});
