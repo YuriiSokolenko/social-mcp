@@ -85,6 +85,7 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
+  assert.match(runtime, /origin\/dev only/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /do not classify complexity/i);
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
@@ -341,6 +342,16 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('implementer', env), /do not call subagent\(action:"list"\)/i);
     assert.match(stagePrompt('implementer', env), /768 max output tokens/);
     assert.match(stagePrompt('implementer', env), /limit <= 200/);
+    const resumePatch = path.join(dir, 'resume.patch');
+    fs.writeFileSync(resumePatch, 'diff --git a/src/example.py b/src/example.py\n');
+    const resumedPrompt = stagePrompt('implementer', {
+      ...env,
+      PI_RESUME_PATCH: resumePatch,
+      PI_CHECKPOINT_EXPECTED: 'checkpoint-sha',
+    });
+    assert.match(resumedPrompt, /saved checkpoint changes have already been replayed on top of latest dev/);
+    assert.match(resumedPrompt, /NOT evidence that the same content exists in origin\/dev/);
+    assert.match(resumedPrompt, /call submit_result immediately before any lookup\/read\/status/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
   } finally {
