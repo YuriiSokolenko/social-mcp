@@ -1,0 +1,27 @@
+name: Pi Set Model
+run-name: "Set default Pi model → ${{ inputs.model }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Default model for Pi runs (does not start/stop anything on nano)
+        required: true
+        type: choice
+        options:
+          - laguna
+          - qwen
+
+permissions:
+  actions: write
+
+jobs:
+  set-model:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update PI_MODEL repo variable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh variable set PI_MODEL --body "${{ inputs.model }}" --repo "${{ github.repository }}"
+          echo "PI_MODEL is now '${{ inputs.model }}'. Every Pi workflow's model default (see #118) reads this."
