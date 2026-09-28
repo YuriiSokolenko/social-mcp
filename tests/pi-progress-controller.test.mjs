@@ -66,8 +66,8 @@ test('implementer exposes one runtime-owned preparation action before repository
   });
   state.onTurnStart(0);
   assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  assert.match(state.checkToolCall('subagents_enable', {}).reason, /configured complexity action/);
-  assert.match(state.checkToolCall('subagent', { agent: 'implementation-planner', async: false }).reason, /configured complexity action/);
+  assert.match(state.checkToolCall('subagents_enable', {}).reason, /configured preparation\/classification action/);
+  assert.match(state.checkToolCall('subagent', { agent: 'implementation-planner', async: false }).reason, /configured preparation\/classification action/);
   state.setComplexity('trivial');
   assert.equal(state.checkToolCall('subagent', { agent: 'scout', async: false }), undefined);
 });
