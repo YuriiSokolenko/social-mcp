@@ -35,6 +35,23 @@ test('submit nudge fires at most once while result is missing', () => {
   assert.equal(handler(), undefined);
 });
 
+test('submit nudge repeats while terminal recovery is active', () => {
+  let handler;
+  const pi = { on(_event, fn) { handler = fn; } };
+  registerSubmitNudge(pi, {
+    isSubmitted: () => false,
+    customType: 'result-nudge',
+    content: 'retry submit',
+    repeatWhile: () => true,
+  });
+  const expected = {
+    continue: true,
+    entries: [{ type: 'custom_message', customType: 'result-nudge', content: 'retry submit', display: true }],
+  };
+  assert.deepEqual(handler(), expected);
+  assert.deepEqual(handler(), expected);
+});
+
 test('submit nudge stays silent after submission', () => {
   let handler;
   const pi = { on(_event, fn) { handler = fn; } };
@@ -78,4 +95,43 @@ test('registerTerminalTool owns append, marker, termination, and settle nudge', 
     else process.env.PI_TERMINAL_RESULT_FILE = previous;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('failed terminal action keeps settle recovery active until a successful retry', async () => {
+  let tool;
+  let settle;
+  let attempts = 0;
+  const pi = {
+    registerTool(value) { tool = value; },
+    appendEntry() {},
+    on(event, fn) { if (event === 'agent_before_settle') settle = fn; },
+  };
+  registerTerminalTool(pi, {
+    label: 'Submit',
+    description: 'Submit result',
+    parameters: { type: 'object', properties: {} },
+    nudgeText: 'fix the reported failure and retry submit_result',
+    execute: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('ruff: E501 diagnostic');
+      return { data: { ok: true } };
+    },
+  });
+
+  await assert.rejects(tool.execute('first', {}), /ruff: E501 diagnostic/);
+  const expected = {
+    continue: true,
+    entries: [{
+      type: 'custom_message',
+      customType: 'pi-result-nudge',
+      content: 'fix the reported failure and retry submit_result',
+      display: true,
+    }],
+  };
+  assert.deepEqual(settle(), expected);
+  assert.deepEqual(settle(), expected);
+
+  const result = await tool.execute('second', {});
+  assert.equal(result.terminate, true);
+  assert.equal(settle(), undefined);
 });
