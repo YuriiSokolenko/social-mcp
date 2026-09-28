@@ -506,21 +506,21 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
-test('implementer delegates complexity but keeps tiny known-path operations local', () => {
+test('implementer prepares plan and complexity before tiny known-path work', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
+  const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const classifier = fs.readFileSync('.pi/agents/complexity-classifier.md', 'utf8');
 
-  assert.match(config, /implementer:[\s\S]*complexityClassifierAgent: 'complexity-classifier'[\s\S]*preComplexityAllowedTools: \['classify_task_complexity'\]/);
+  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 480[\s\S]*complexityClassifierAgent: 'complexity-classifier'[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
   assert.match(config, /directReadMaxLines: 200[\s\S]*directReadCalls: 1[\s\S]*boundedDirectBash: true/);
 
   const contract = [
     'Read this `agents/implementer/AGENTS.md`',
     'Use the issue title/body already supplied in the prompt',
-    'Write one short top-level execution plan',
-    'Call `classify_task_complexity` once with the short plan',
-    'Execute the first plan item',
+    'Call `prepare_implementation` exactly once',
+    'Execute plan step 1 immediately',
   ];
   let previous = -1;
   for (const marker of contract) {
@@ -529,12 +529,15 @@ test('implementer delegates complexity but keeps tiny known-path operations loca
     previous = position;
   }
 
-  assert.match(agent, /Do \*\*not\*\* assign complexity labels to plan items/);
+  assert.match(agent, /do not write a competing execution plan/i);
   assert.match(agent, /one already-known small file/i);
   assert.match(agent, /limit <= 200/);
   assert.match(agent, /first sufficient/i);
   assert.match(agent, /Do not use repeated guessed reads as a substitute for search/);
   assert.match(agent, /`grep`, `find`, and `ls` are runtime-blocked/);
+  assert.match(planner, /inheritSkills: true/);
+  assert.match(planner, /1–8 ordered concrete steps/);
+  assert.match(planner, /do not classify complexity/i);
   assert.match(classifier, /tools:\n/);
   assert.match(classifier, /inheritProjectContext: false/);
   assert.match(classifier, /Return only the requested structured result/);
@@ -542,8 +545,9 @@ test('implementer delegates complexity but keeps tiny known-path operations loca
   assert.match(classifier, /trivial[\s\S]*normal[\s\S]*complex/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  assert.match(runtime, /toolBudget: \{ hard: 1 \}/);
-  assert.match(runtime, /result: \{ kind: 'structured', schema: COMPLEXITY_SCHEMA \}/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 480[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
+  assert.match(runtime, /result: \{ kind: 'structured', schema \}/);
   assert.doesNotMatch(agent, /call `subagent` with `agent: "complexity-classifier"`/);
 });
 
@@ -553,7 +557,7 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
 
-  assert.match(config, /first read agents\/implementer\/AGENTS\.md/);
+  assert.match(config, /Read and follow agents\/implementer\/AGENTS\.md first/);
   assert.doesNotMatch(tool, /If there is no real diff, implement the task/);
   assert.match(tool, /already_satisfied/);
   assert.match(tool, /diff', '--quiet', 'origin\/dev'/);
