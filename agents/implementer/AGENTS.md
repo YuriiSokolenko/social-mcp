@@ -30,7 +30,7 @@ Follow this sequence exactly:
 2. Use the issue title/body already supplied in the prompt as the authoritative requested outcome. Do not inspect repository files and do not write a competing execution plan.
 3. Call `prepare_implementation` exactly once.
    - The runtime sends only issue title/body to the permanent project `implementation-planner` subagent.
-   - The planner starts with its own planning contract plus inherited skill guidance; its response ceiling is **480 output tokens**.
+   - The planner starts with its own planning contract plus inherited skill guidance; its response ceiling is **768 output tokens**.
    - The runtime schema-validates the ordered plan.
    - The runtime then sends issue title/body plus that plan to the separate `complexity-classifier` and schema-validates `{ complexity, reason }`.
    - The main agent receives only the prepared plan and complexity. Do not call either child manually and do not re-run task-level classification.
@@ -47,6 +47,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 - **One already-known small file:** call `read` once with an explicit `limit <= 200`. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result.
 - **One known-path diff/status check:** use a bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`.
+- **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may use exactly one direct `grep`, `find`, or `ls` call to locate the first sufficient target when the path is unknown. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
 - `submit_result`.
 
@@ -54,16 +55,16 @@ Do not use repeated guessed reads as a substitute for search. If the first bound
 
 ### Delegate
 
-Use `scout` with `async: false` when any of these are true:
+Use `scout` with `async: false` when any of these are true (except the single direct lookup allowed for a `trivial` task):
 
-- the target path, symbol, test, config, or pattern is unknown;
+- the target path, symbol, test, config, or pattern is unknown after the trivial direct lookup, or the task is not `trivial`;
 - more than one repository file must be inspected or compared;
 - usages/similar implementations must be searched;
 - logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
 - expected output is larger than a small bounded read/diff;
 - a skill or project document must be searched for relevant rules.
 
-`grep`, `find`, and `ls` are runtime-blocked in the main agent. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
+Outside the one trivial direct lookup, `grep`, `find`, and `ls` are runtime-blocked in the main agent. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
 
 For scout requests:
 
@@ -102,7 +103,11 @@ For a tiny task with a known target, prefer:
 
 `AGENTS.md → prepare_implementation → one bounded read → edit → bounded git diff → submit_result`
 
-If the target is unknown:
+If the target is unknown and complexity is `trivial`:
+
+`AGENTS.md → prepare_implementation → one direct grep/find/ls → one bounded read if needed → edit → bounded git diff → submit_result`
+
+If the target is unknown and complexity is `normal` or `complex`:
 
 `AGENTS.md → prepare_implementation → one compact edit-ready scout → edit → bounded git diff → submit_result`
 ## Validation and submission
@@ -130,7 +135,7 @@ Every session starts at **SHORT (2048)**.
 
 Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Any response below its ceiling resets the following response to SHORT; a ceiling hit only promotes when that turn also made concrete action progress.
 
-Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 480 output tokens.
+Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 768 output tokens.
 
 ## Engineering constraints
 
