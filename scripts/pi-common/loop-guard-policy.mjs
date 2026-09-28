@@ -39,7 +39,6 @@ export class LoopGuard {
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
     this.seen = new Map();
-    this.postComplexityInspectionCount = 0;
     this.repositoryEditSeen = false;
   }
 
@@ -69,11 +68,8 @@ export class LoopGuard {
     if (this.requireComplexity && this.complexity && this.complexity !== 'default' && !this.repositoryEditSeen) {
       if (toolName === 'edit' || toolName === 'write') {
         this.repositoryEditSeen = true;
-      } else if (toolName === 'read' || toolName === 'bash') {
-        this.postComplexityInspectionCount += 1;
-        if (this.postComplexityInspectionCount > 2) {
-          return { block: true, reason: 'Complexity is declared and the execution plan is fixed. The two-turn implementation-orientation allowance is exhausted: make the first repository edit now. Do not restart broad analysis or redesign.' };
-        }
+      } else {
+        return { block: true, reason: 'Complexity is declared and the execution plan is fixed. The next tool call must make the first repository edit with edit or write; do not inspect, test, load skills, or continue analysis first.' };
       }
     }
     if (this.requireComplexity && !this.complexity) {
