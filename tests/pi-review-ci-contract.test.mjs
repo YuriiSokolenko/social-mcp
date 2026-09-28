@@ -494,6 +494,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
   const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const guard = fs.readFileSync('scripts/pi-common/pr-guard.mjs', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.ok(workflow.includes('ISSUE=$(jq -r \'\.issue\' "$CONTEXT")'));
   assert.ok(workflow.includes('REVIEW_CONTEXT=$CONTEXT'));
