@@ -74,7 +74,8 @@ Work directly in the checked-out repository, always based on latest dev. dev is 
 After preparation:
 - If one small target file is already known, the main agent may read it directly once with \`limit <= 200\`.
 - The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
-- If the path/symbol is unknown, more than one file must be inspected, patterns/usages must be searched, logs/diagnostics are involved, or broader command output is needed, delegate to \`scout\` (or package-owned \`run-ci\` for checks).
+- If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; do not enable subagents for that lookup.
+- If the task is \`normal\`/\`complex\`, more than one file must be inspected, broader patterns/usages must be searched, logs/diagnostics are involved, or broader command output is needed, delegate to \`scout\` (or package-owned \`run-ci\` for checks).
 - \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
 - For scout requests, ask for the first sufficient answer, not the globally smallest/best match; require compact fixed-shape output.
 
@@ -159,8 +160,6 @@ export const STAGES = Object.freeze({
     preComplexityTurnLimit: 4,
     preComplexityAllowedTools: ['prepare_implementation'],
     delegatedTools: ['grep', 'find', 'ls'],
-    trivialDirectDelegatedTools: ['grep', 'find', 'ls'],
-    trivialDirectSearchCalls: 1,
     delegationTool: 'subagent',
     directReadMaxLines: 200,
     directReadCalls: 1,
