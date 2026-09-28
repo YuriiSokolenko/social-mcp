@@ -8,6 +8,14 @@ on:
         description: Issue to review, refine, or split into dependency-linked tasks
         required: true
         type: number
+      model:
+        description: Model backend to use (must already be loaded on nano)
+        required: true
+        default: laguna
+        type: choice
+        options:
+          - laguna
+          - qwen
 
 permissions:
   actions: write
@@ -25,6 +33,7 @@ jobs:
     timeout-minutes: 120
     env:
       ISSUE: ${{ inputs.issue_number }}
+      PI_MODEL_CHOICE: ${{ inputs.model || vars.PI_MODEL || 'laguna' }}
 
     steps:
       - name: Checkout trusted dev

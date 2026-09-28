@@ -13,6 +13,14 @@ on:
         required: true
         default: false
         type: boolean
+      model:
+        description: Model backend to use (must already be loaded on nano)
+        required: true
+        default: laguna
+        type: choice
+        options:
+          - laguna
+          - qwen
 
 permissions:
   actions: write
@@ -31,6 +39,7 @@ jobs:
     timeout-minutes: 1200
     env:
       ISSUE: ${{ inputs.issue_number }}
+      PI_MODEL_CHOICE: ${{ inputs.model || vars.PI_MODEL || 'laguna' }}
 
     steps:
       - name: Checkout dev control repository

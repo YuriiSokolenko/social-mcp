@@ -3,6 +3,15 @@ run-name: "🔎 Triage · ${{ github.event.issue.title || 'queue scan' }}"
 
 on:
   workflow_dispatch:
+    inputs:
+      model:
+        description: Model backend to use (must already be loaded on nano)
+        required: true
+        default: laguna
+        type: choice
+        options:
+          - laguna
+          - qwen
   issues:
     types: [closed]
 
@@ -24,6 +33,7 @@ jobs:
     timeout-minutes: 120
     env:
       PI_TRIAGE_BATCH_SIZE: '8'
+      PI_MODEL_CHOICE: ${{ inputs.model || vars.PI_MODEL || 'laguna' }}
 
     steps:
       - name: Checkout trusted dev
