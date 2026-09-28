@@ -70,7 +70,7 @@ test('implementer exposes one runtime-owned complexity action before repository 
   assert.equal(state.checkToolCall('subagent', { agent: 'scout', async: false }), undefined);
 });
 
-test('runtime-owned classifier uses schema-validated zero-tool structured delegation', () => {
+test('runtime-owned classifier reserves one tool call for structured output', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /prompt-template:subagent:request/);
   assert.match(runtime, /prompt-template:subagent:response/);
