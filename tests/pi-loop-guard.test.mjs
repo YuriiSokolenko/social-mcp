@@ -42,6 +42,19 @@ test('bounded orientation is allowed before required complexity declaration', ()
   assert.equal(guard.checkToolCall('read', { path: '/work/src/social_mcp/storage/sqlite.py' }), undefined);
 });
 
+test('turn counting stays monotonic when Pi resets turnIndex after compaction', () => {
+  const guard = new LoopGuard({ turnLimit: 3, repeatThreshold: 10 });
+  guard.onTurnStart(0);
+  assert.equal(guard.absoluteTurn, 0);
+  guard.onTurnStart(1);
+  assert.equal(guard.absoluteTurn, 1);
+  guard.onTurnStart(0);
+  assert.equal(guard.absoluteTurn, 2);
+  guard.onTurnStart(1);
+  assert.equal(guard.absoluteTurn, 3);
+  assert.equal(guard.checkToolCall('read', { path: 'after-compaction' }).block, true);
+});
+
 test('pre-complexity orientation stops after the configured turn budget', () => {
   const guard = new LoopGuard({
     repeatThreshold: 10,

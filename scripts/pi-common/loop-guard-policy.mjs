@@ -39,6 +39,7 @@ export class LoopGuard {
     this.requiredFirstReadDone = !requiredFirstReadPath;
     this.complexity = requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
+    this.lastTurnIndex = null;
     this.seen = new Map();
     this.repositoryEditSeen = false;
   }
@@ -56,7 +57,19 @@ export class LoopGuard {
     return { complexity: name, previous, changed: previous !== name };
   }
 
-  onTurnStart(turnIndex) { this.absoluteTurn = turnIndex; }
+  onTurnStart(turnIndex) {
+    if (!Number.isSafeInteger(turnIndex) || turnIndex < 0) throw new Error('turnIndex must be a non-negative integer');
+    if (this.lastTurnIndex == null) {
+      this.absoluteTurn = turnIndex;
+    } else if (turnIndex > this.lastTurnIndex) {
+      this.absoluteTurn += turnIndex - this.lastTurnIndex;
+    } else {
+      // Pi restarts turnIndex at 0 after context compaction. Keep the guard
+      // monotonic so compaction cannot reset global/orientation safety limits.
+      this.absoluteTurn += 1;
+    }
+    this.lastTurnIndex = turnIndex;
+  }
 
   checkToolCall(toolName, input) {
     if (!this.requiredFirstReadDone) {
