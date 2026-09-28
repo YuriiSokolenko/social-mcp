@@ -15,14 +15,15 @@ const names = item => new Set((item.labels ?? []).map(label => typeof label === 
 async function load() {
   return api(`/issues/${number}`);
 }
-async function replaceIssueLabels(expected, target, transition) {
+async function replaceIssueLabels(expected, target, transition, { complete = false } = {}) {
   await replaceIssueState({
     number,
     expected: { labels: [...expected] },
     target,
     load,
     validateCurrent: current => validateIssueTransition(current, transition),
-    patch: async (_number, labels) => api(`/issues/${number}`, 'PATCH', { labels }),
+    patch: async (_number, labels) => api(`/issues/${number}`, 'PATCH',
+      complete ? { labels, state: 'closed', state_reason: 'completed' } : { labels }),
   });
 }
 async function postComment() {
@@ -33,6 +34,6 @@ async function postComment() {
 const item = await load();
 const expected = names(item);
 const target = validateIssueTransition(item, action);
-await replaceIssueLabels(expected, target, action);
+await replaceIssueLabels(expected, target, action, { complete: action === 'satisfied' });
 if (action !== 'running') await postComment();
 console.log(`issue #${number}: transitioned to ${target}`);

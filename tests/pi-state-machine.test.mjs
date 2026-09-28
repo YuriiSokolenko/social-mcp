@@ -118,6 +118,13 @@ test('queued transition cannot steal a live implementer state', () => {
 });
 
 
+test('already-satisfied completion is allowed only from a running implementer state', () => {
+  assert.equal(validateIssueTransition(issue('open', ['pi:running']), 'satisfied'), null);
+  assert.throws(() => validateIssueTransition(issue('open', []), 'satisfied'), /pi:running/);
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:ready']), 'satisfied'), /pi:running/);
+  assert.throws(() => validateIssueTransition(issue('closed', ['pi:running']), 'satisfied'), /closed issue/);
+});
+
 test('stopped transition removes pipeline ownership and preserves unrelated labels', async () => {
   const running = issue('open', ['pi:running', 'keep-me']);
   assert.equal(validateIssueTransition(running, 'stopped'), null);

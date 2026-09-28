@@ -93,6 +93,7 @@ export const ISSUE_TRANSITIONS = Object.freeze({
   'running-manual': PIPELINE_LABELS.running,
   'mr-created': PIPELINE_LABELS.pr,
   'needs-human': PIPELINE_LABELS.needsHuman,
+  satisfied: null,
   stopped: null,
 });
 export function issueStateLabels(issue) {
@@ -106,6 +107,9 @@ export function validateIssueTransition(issue, action) {
   const labels = names(issue);
   if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target ?? 'unowned'}`);
   if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target ?? 'unowned'}`);
+  if (action === 'satisfied' && !labels.has(PIPELINE_LABELS.running)) {
+    throw new Error('satisfied requires pi:running');
+  }
   if (action === 'stopped' && !labels.has(PIPELINE_LABELS.running) && !labels.has(PIPELINE_LABELS.architectReady)) {
     throw new Error('stopped requires pi:running or architect:ready');
   }

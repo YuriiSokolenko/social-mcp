@@ -514,7 +514,25 @@ test('implementer plans before complexity and delegates repository inspection af
   assert.match(agent, /built-in `scout` agent/);
   assert.match(agent, /package-owned `run-ci` workflow/);
   assert.match(agent, /complex[\s\S]*implement this same issue to completion/i);
+  assert.match(agent, /exact requested end state already exists in latest dev/);
+  assert.match(agent, /already_satisfied: true/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
+});
+
+test('implementer has an explicit already-satisfied terminal path without duplicate edits', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
+  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+
+  assert.match(config, /first read agents\/implementer\/AGENTS\.md/);
+  assert.doesNotMatch(tool, /If there is no real diff, implement the task/);
+  assert.match(tool, /already_satisfied/);
+  assert.match(tool, /diff', '--quiet', 'origin\/dev'/);
+  assert.match(tool, /already_satisfied requires zero diff against latest dev/);
+  assert.match(workflow, /\.already_satisfied \/\/ false/);
+  assert.match(workflow, /issue satisfied/);
+  assert.match(transition, /state: 'closed', state_reason: 'completed'/);
 });
 
 

@@ -156,6 +156,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ALREADY_SATISFIED=false
+          if [ -s "$PI_IMPLEMENTER_RESULT_FILE" ]; then
+            ALREADY_SATISFIED="$(jq -r '.already_satisfied // false' "$PI_IMPLEMENTER_RESULT_FILE")"
+          fi
+          if [ "$ALREADY_SATISFIED" = "true" ]; then
+            node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue satisfied               "Pi verified that the exact requested end state already exists in latest dev; no duplicate change or PR is needed."
+            exit 0
+          fi
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human             "Pi completed the task but produced no repository changes. Human review is required."
           echo "::error::Implementation completed without repository changes."
           exit 1

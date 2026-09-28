@@ -102,13 +102,14 @@ During execution:
 - A **complex** item may get exactly one short local subplan when it becomes current: at most 5 concrete sub-items and at most 500 output tokens. Never recursively decompose it.
 - If one repository fact is missing, delegate exactly that fact, then proceed.
 - Do not ask multiple subagents the same question unless conflicting evidence genuinely requires independent verification.
+- If delegated evidence shows the **exact requested end state already exists in latest dev**, do not create a duplicate and do not spend another reasoning turn comparing alternatives. The next tool call must be `submit_result` with `already_satisfied: true` and `changes: []`. This terminal path is authoritative and will reject the claim if a real diff exists.
 - Once enough evidence exists for the next edit, stop investigating and use `edit`/`write`.
 - After a successful mutation, delegate only focused verification that adds useful signal.
 - When all required plan items are complete, call `submit_result` promptly.
 
 For an exact trivial task, the fast path is:
 
-`AGENTS.md → issue-based one-item plan → declare_task_complexity → one edit-ready scout request if needed → edit/write → optional delegated diff/check → submit_result`.
+`AGENTS.md → issue-based one-item plan → declare_task_complexity → one edit-ready scout request if needed → (exact state already present: submit_result already_satisfied) OR (edit/write → optional delegated diff/check → submit_result)`.
 
 The plan controls execution but never grants permission for broad exploration. Prefer existing project patterns already present in current `dev`. If a dependency required by the issue is absent from current `dev`, report that concrete blocker instead of reconstructing unrelated work.
 
