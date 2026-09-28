@@ -45,7 +45,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
     const title = context.title ?? '';
     const body = context.body ?? '';
-    return `Follow agents/implementer/AGENTS.md exactly. First read that file, derive acceptance criteria only from the supplied issue text, and write a short execution plan of at most 1000 output tokens with no complexity labels.
+    return `Follow agents/implementer/AGENTS.md exactly: first read agents/implementer/AGENTS.md, derive acceptance criteria only from the supplied issue text, and write a short execution plan of at most 1000 output tokens with no complexity labels.
 
 Before repository inspection or modification, delegate the task-level complexity decision to the project \`complexity-classifier\` subagent. If needed, call subagents_enable once, then call \`subagent\` with \`agent: "complexity-classifier"\`, \`async: false\`, and only the issue title/body plus your short plan. Use its classification verbatim in \`declare_task_complexity\`; do not re-argue the classification in the main context.
 
@@ -57,7 +57,7 @@ ${title}
 Issue body:
 ${body}
 
-Work directly in the checked-out repository, always based on latest dev.
+Work directly in the checked-out repository, always based on latest dev. dev is the only development base; never treat main as an alternative source tree.
 After complexity is declared:
 - If one small target file is already known, the main agent may read it directly once with \`limit <= 200\`.
 - The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.

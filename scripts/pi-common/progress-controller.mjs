@@ -6,14 +6,14 @@ function safePathToken(value) {
     value.length > 0 &&
     value !== '.' &&
     !value.startsWith('-') &&
-    !/[?*\\[]/.test(value);
+    !/[?*\[]/.test(value);
 }
 
 export function isBoundedDirectBash(command) {
   if (typeof command !== 'string') return false;
   const trimmed = command.trim();
-  if (!trimmed || /[\\n\\r;&|><`$()]/.test(trimmed)) return false;
-  const parts = trimmed.split(/\\s+/);
+  if (!trimmed || /[\n\r;&|><`$()]/.test(trimmed)) return false;
+  const parts = trimmed.split(/\s+/);
 
   if (parts[0] !== 'git') return false;
 
@@ -22,7 +22,7 @@ export function isBoundedDirectBash(command) {
     if (separator < 2 || separator !== parts.length - 2 || !safePathToken(parts[separator + 1])) return false;
     const allowed = new Set(['--check', '--name-only', '--stat', '--numstat', '--cached', '--staged']);
     return parts.slice(2, separator).every(part =>
-      allowed.has(part) || /^-U\\d+$/.test(part) || /^--unified=\\d+$/.test(part)
+      allowed.has(part) || /^-U\d+$/.test(part) || /^--unified=\d+$/.test(part)
     );
   }
 
@@ -35,7 +35,6 @@ export function isBoundedDirectBash(command) {
 
   return false;
 }
-
 const FINISH_TOOLS = new Set(['edit', 'write', 'submit_result', 'submit_repair']);
 const PROGRESS_TOOLS = new Set(['edit', 'write', 'submit_result', 'submit_repair']);
 
