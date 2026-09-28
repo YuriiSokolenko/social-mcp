@@ -82,10 +82,6 @@ export class ProgressController {
     this.complexityTurnBase = this.requiredFirstReadDone ? 0 : null;
     this.delegatedTools = new Set(config.delegatedTools ?? []);
     this.delegationTool = config.delegationTool ?? 'subagent';
-    this.requireDelegatedComplexity = config.requireDelegatedComplexity === true;
-    this.preComplexitySubagentAgent = config.preComplexitySubagentAgent ?? null;
-    this.delegatedComplexityPending = false;
-    this.delegatedComplexityComplete = !this.requireDelegatedComplexity;
     this.directReadMaxLines = Number(config.directReadMaxLines ?? 0);
     this.directReadCalls = Number(config.directReadCalls ?? 0);
     this.directReadCount = 0;
@@ -152,32 +148,13 @@ export class ProgressController {
       return undefined;
     }
 
-    if (toolName === 'declare_task_complexity') {
-      if (this.requireDelegatedComplexity && !this.delegatedComplexityComplete) {
-        return { block: true, reason: `Before declare_task_complexity, run the required ${this.preComplexitySubagentAgent ?? 'complexity'} subagent and use its result.` };
-      }
-      return undefined;
-    }
-
     if (this.requireComplexity && !this.complexity) {
       const preComplexityTurns = Math.max(0, this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn));
       if (preComplexityTurns >= this.preComplexityTurnLimit) {
         return { block: true, reason: `Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Finish the delegated complexity classification and call declare_task_complexity now.` };
       }
-      if (toolName === 'subagent' && this.preComplexitySubagentAgent) {
-        if (input?.agent !== this.preComplexitySubagentAgent) {
-          return { block: true, reason: `Before complexity declaration, the only allowed subagent is ${this.preComplexitySubagentAgent}.` };
-        }
-        if (input?.async !== false) {
-          return { block: true, reason: `${this.preComplexitySubagentAgent} must run with async: false so its classification is available immediately.` };
-        }
-        if (this.delegatedComplexityPending || this.delegatedComplexityComplete) {
-          return { block: true, reason: 'Complexity classification was already requested; use its result instead of launching another classifier.' };
-        }
-        this.delegatedComplexityPending = true;
-      }
       if (!this.preComplexityAllowedTools.has(toolName)) {
-        return { block: true, reason: 'Before complexity declaration, only activate subagents, run the bounded complexity classifier, then declare complexity.' };
+        return { block: true, reason: 'Before complexity is recorded, finish the required orientation and use only the configured complexity action.' };
       }
     }
 
@@ -217,10 +194,6 @@ export class ProgressController {
   }
 
   onToolExecutionEnd(toolName, isError) {
-    if (this.requireDelegatedComplexity && toolName === 'subagent' && this.delegatedComplexityPending && !this.complexity) {
-      this.delegatedComplexityPending = false;
-      if (!isError) this.delegatedComplexityComplete = true;
-    }
     if (toolName === 'read' && isError && this.directReadCount > 0) this.directReadCount -= 1;
     if (!isError && PROGRESS_TOOLS.has(toolName)) this.turnMadeProgress = true;
   }
