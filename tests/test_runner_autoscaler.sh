@@ -190,5 +190,47 @@ SECOND_FAIL=1
   sleep() { exit 0; }
   main >/dev/null
 )
+unset SECOND_FAIL
+
+DOCKER_RUN_LOG="$(mktemp)"
+trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG" "$DOCKER_RUN_LOG"' EXIT
+
+# spawn_runner's own run_with_timeout/background-job mechanics are covered
+# above; stub run_with_timeout here so this only exercises spawn_runner's
+# docker-arg construction (labels, PI-config mount, docker-socket mount).
+(
+  RUNNER_PREFIX=n150-gen-eph
+  RUNNER_IMAGE=test-general-image:tag
+  RUNNER_LABELS=n150,general
+  MOUNT_PI_CONFIG=false
+  MOUNT_DOCKER_SOCKET=true
+  registration_token() { printf 'tok\n'; }
+  run_with_timeout() {
+    shift
+    printf '%s\n' "$*" >> "$DOCKER_RUN_LOG"
+  }
+  spawn_runner
+)
+grep -q -- '-e RUNNER_LABELS=n150,general' "$DOCKER_RUN_LOG" || fail 'spawn_runner must pass RUNNER_LABELS through'
+grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the docker socket when MOUNT_DOCKER_SOCKET=true'
+grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the Pi config when MOUNT_PI_CONFIG=false'
+
+: > "$DOCKER_RUN_LOG"
+(
+  RUNNER_PREFIX=n150-pi-eph
+  RUNNER_IMAGE=test-pi-image:tag
+  RUNNER_LABELS=n150,pi-agent
+  PI_CONFIG_DIR=/some/pi/config
+  MOUNT_PI_CONFIG=true
+  MOUNT_DOCKER_SOCKET=false
+  registration_token() { printf 'tok\n'; }
+  run_with_timeout() {
+    shift
+    printf '%s\n' "$*" >> "$DOCKER_RUN_LOG"
+  }
+  spawn_runner
+)
+grep -q -- '/some/pi/config:/pi-config-ro:ro' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the Pi config when MOUNT_PI_CONFIG=true'
+grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the docker socket when MOUNT_DOCKER_SOCKET=false'
 
 printf 'runner autoscaler checks passed\n'

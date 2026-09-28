@@ -8,8 +8,17 @@ MAX_RUNNERS="${MAX_RUNNERS:-4}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
+RUNNER_LABELS="${RUNNER_LABELS:-n150,pi-agent}"
 WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-pr-fix.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
+# Whether to seed the ephemeral worker with the Pi config (needed only by
+# pool that actually runs the Pi/LLM agent) and whether to give it the host
+# Docker socket (needed only by a pool whose jobs themselves run `docker`,
+# e.g. the CI `docker` job's `docker compose up`). One manager instance runs
+# per pool (see compose.yaml); these two flags are what tell an otherwise
+# identical manager/worker pair apart.
+MOUNT_PI_CONFIG="${MOUNT_PI_CONFIG:-true}"
+MOUNT_DOCKER_SOCKET="${MOUNT_DOCKER_SOCKET:-false}"
 MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 # This loop has no external supervisor for a hang (only `restart: unless-stopped`,
 # which never fires for a process that is alive but stuck). Every network or
@@ -184,17 +193,34 @@ model_start_capacity() {
 }
 
 spawn_runner() {
-  local token name
+  local token name docker_args
   token="$(registration_token)"
   name="${RUNNER_PREFIX}-$(date +%s)-$RANDOM"
 
-  log "starting ephemeral runner $name"
+  docker_args=(
+    -d --rm
+    --name "$name"
+    --label social-mcp.pi-runner=ephemeral
+    --network host
+    -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+    -e "RUNNER_TOKEN=$token"
+    -e "RUNNER_NAME=$name"
+    -e "RUNNER_LABELS=${RUNNER_LABELS}"
+  )
+  if [ "$MOUNT_PI_CONFIG" == true ]; then
+    docker_args+=(-v "${PI_CONFIG_DIR}:/pi-config-ro:ro")
+  fi
+  if [ "$MOUNT_DOCKER_SOCKET" == true ]; then
+    docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
+  fi
 
-  run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run -d --rm     --name "$name"     --label social-mcp.pi-runner=ephemeral     --network host     -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"     -e "RUNNER_TOKEN=$token"     -e "RUNNER_NAME=$name"     -v "${PI_CONFIG_DIR}:/pi-config-ro:ro"     "${RUNNER_IMAGE}" >/dev/null
+  log "starting ephemeral runner $name (labels=${RUNNER_LABELS})"
+
+  run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run "${docker_args[@]}" "${RUNNER_IMAGE}" >/dev/null
 }
 
 main() {
-  log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s workflows=${WORKFLOW_FILES}"
+  log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s workflows=${WORKFLOW_FILES} labels=${RUNNER_LABELS}"
   while true; do
     cleanup_stale_registrations || log "warning: stale-runner cleanup failed"
 

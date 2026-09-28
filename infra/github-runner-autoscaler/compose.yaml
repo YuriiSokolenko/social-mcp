@@ -13,9 +13,43 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-10}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}
       RUNNER_PREFIX: ${RUNNER_PREFIX:-n150-pi-eph}
+      RUNNER_LABELS: ${RUNNER_LABELS:-n150,pi-agent}
       WORKFLOW_FILES: ${WORKFLOW_FILES:-pi-issue-agent.yml,pi-pr-review.yml,pi-pr-fix.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}
       MODEL_STATUS_URL: ${MODEL_STATUS_URL:-}
+      MOUNT_PI_CONFIG: "true"
+      MOUNT_DOCKER_SOCKET: "false"
       PI_CONFIG_DIR: ${PI_HOME_HOST}/.pi/agent
+      CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
+      CURL_MAX_TIME_SECONDS: ${CURL_MAX_TIME_SECONDS:-15}
+      DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # Second, independent pool: plain CI (ci.yml's `test`/`docker`/`wake-merge-gate`
+  # jobs) with no Pi/LLM agent involved. Kept as a separate manager instance
+  # rather than folded into one multi-pool process, so the two pools scale,
+  # fail, and get restarted independently -- a stuck GitHub/model call in one
+  # pool's loop can never block the other's.
+  general-runner-manager:
+    build:
+      context: ../..
+      dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
+    image: n150/pi-runner-manager:latest
+    container_name: general-runner-manager
+    restart: unless-stopped
+    environment:
+      GH_ADMIN_TOKEN: ${GH_ADMIN_TOKEN}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}
+      MAX_RUNNERS: ${GENERAL_MAX_RUNNERS:-3}
+      POLL_SECONDS: ${GENERAL_POLL_SECONDS:-10}
+      RUNNER_IMAGE: ${GENERAL_RUNNER_IMAGE:-n150/github-general-runner-ephemeral:0.87.1}
+      RUNNER_PREFIX: ${GENERAL_RUNNER_PREFIX:-n150-gen-eph}
+      RUNNER_LABELS: ${GENERAL_RUNNER_LABELS:-n150,general}
+      WORKFLOW_FILES: ${GENERAL_WORKFLOW_FILES:-ci.yml}
+      MODEL_STATUS_URL: ""
+      MOUNT_PI_CONFIG: "false"
+      MOUNT_DOCKER_SOCKET: "true"
+      PI_CONFIG_DIR: ""
       CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
       CURL_MAX_TIME_SECONDS: ${CURL_MAX_TIME_SECONDS:-15}
       DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
