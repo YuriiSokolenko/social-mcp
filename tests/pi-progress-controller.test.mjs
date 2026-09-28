@@ -90,7 +90,7 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
 });
 
-test('trivial repository lookup skips control and legal targets and honors extension order', () => {
+test('trivial repository lookup reads origin/dev and ignores resumed worktree changes', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-trivial-lookup-'));
   try {
     fs.mkdirSync(path.join(dir, '.agents', 'skills', 'sample'), { recursive: true });
@@ -101,6 +101,14 @@ test('trivial repository lookup skips control and legal targets and honors exten
     fs.writeFileSync(path.join(dir, 'README.md'), 'root readme\n');
     fs.writeFileSync(path.join(dir, 'COPYING.md'), 'copying\n');
     execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: dir });
+
+    fs.writeFileSync(path.join(dir, 'tasks', 'README.md'), 'checkpoint-only task notes\n');
+    fs.writeFileSync(path.join(dir, 'checkpoint.md'), 'checkpoint marker\n');
     execFileSync('git', ['add', '.'], { cwd: dir });
 
     const result = trivialRepoLookup(dir, {
@@ -108,8 +116,16 @@ test('trivial repository lookup skips control and legal targets and honors exten
       exactText: 'task notes',
     });
     assert.equal(result.candidate.path, 'tasks/README.md');
-    assert.equal(result.exactTextFound, true);
-    assert.deepEqual(result.exactTextPaths, ['tasks/README.md']);
+    assert.equal(result.candidate.lastLine, 'task notes');
+    assert.equal(result.exactTextFoundInDev, true);
+    assert.deepEqual(result.exactTextPathsInDev, ['tasks/README.md']);
+
+    const resumedOnly = trivialRepoLookup(dir, {
+      extensions: ['md'],
+      exactText: 'checkpoint marker',
+    });
+    assert.equal(resumedOnly.exactTextFoundInDev, false);
+    assert.deepEqual(resumedOnly.exactTextPathsInDev, []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
