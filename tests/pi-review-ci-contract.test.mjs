@@ -214,7 +214,7 @@ test('review verdict exists only for the unchanged reviewed PR head', () => {
   assert.match(repairPublication, /pi:needs-human/);
   assert.match(repairPublication, /expectedHead/);
   assert.match(repairPublication, /withoutReviewLabels/);
-  assert.match(repair, /if: steps\.publish\.outputs\.published == 'true'/);
+  assert.match(repair, /if: steps\.publish\.outputs\.needs_review == 'true'/);
   assert.match(repair, /issues: write/);
 });
 
