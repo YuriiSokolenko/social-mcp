@@ -11,6 +11,7 @@ import {
   toolCallSignature,
 } from '../scripts/pi-common/progress-controller.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
+import subagentResponseBudget from '../scripts/pi-subagent-response-budget.mjs';
 
 const controller = (overrides = {}, env = {}) => new ProgressController({
   maxTurns: 100,
@@ -25,6 +26,34 @@ test('shared response budgets stay capped at 2k, 4k, and 8k', () => {
   assert.equal(nextResponseBudgetLevel('short', 2048, RESPONSE_BUDGETS, { madeProgress: true }), 'normal');
   assert.equal(nextResponseBudgetLevel('normal', 4096, RESPONSE_BUDGETS, { madeProgress: true }), 'deep');
   assert.equal(nextResponseBudgetLevel('deep', 8192, RESPONSE_BUDGETS, { madeProgress: true }), 'short');
+});
+
+test('scout child response budget mirrors the main response ceiling', async () => {
+  const previous = process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
+  let handler;
+  let appliedModel;
+  const pi = {
+    on(name, callback) {
+      if (name === 'session_start') handler = callback;
+    },
+    async setModel(model) {
+      appliedModel = model;
+      return true;
+    },
+  };
+  try {
+    subagentResponseBudget(pi);
+    process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = '4096';
+    await handler({}, { model: { provider: 'test', id: 'model', maxTokens: 32000 } });
+    assert.equal(appliedModel.maxTokens, 4096);
+
+    process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = '8192';
+    await handler({}, { model: { provider: 'test', id: 'model', maxTokens: 4096 } });
+    assert.equal(appliedModel.maxTokens, 4096);
+  } finally {
+    if (previous == null) delete process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
+    else process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = previous;
+  }
 });
 
 test('required operating contract is the first tool read', () => {

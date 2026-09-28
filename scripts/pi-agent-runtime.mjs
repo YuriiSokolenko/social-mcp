@@ -12,7 +12,9 @@ export default function (pi) {
 
   async function applyBudget(level, ctx) {
     if (!ctx.model) throw new Error('No active model is available for response budgeting');
-    const changed = await pi.setModel(controller.modelFor(ctx.model, level));
+    const budgetedModel = controller.modelFor(ctx.model, level);
+    process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(budgetedModel.maxTokens);
+    const changed = await pi.setModel(budgetedModel);
     if (!changed) throw new Error(`Failed to apply ${level} response budget`);
   }
 

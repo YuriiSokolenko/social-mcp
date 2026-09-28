@@ -11,6 +11,7 @@ Make the smallest complete product change that satisfies the issue. Stay inside 
 Never modify CI/control-plane paths:
 
 - `.github/workflows/**`
+- `.pi/**`
 - `scripts/pi-*`
 - `tests/*.test.mjs`
 - `tests/test_runner_autoscaler.sh`
@@ -48,7 +49,7 @@ After the required AGENTS.md read, the main agent must not call `read`, `bash`, 
 
 Whenever repository/tool access is needed, delegate through the installed `pi-subagents` extension. In a fresh session, if only `subagents_enable` is available, call it once; call `subagent` on the next model turn. This applies even when the missing context is only one small file immediately before an edit.
 
-For repository reads, search, navigation, docs, skills, and post-change content inspection, use the built-in `scout` agent with `async: false`. `scout` is read-only. For a bounded command/check that genuinely adds signal, use the package-owned `run-ci` workflow through `subagent` when available rather than direct `bash`.
+For repository reads, search, navigation, docs, skills, and post-change content inspection, use the built-in `scout` agent with `async: false`. `scout` is read-only. Its child model automatically receives the same current response ceiling as the main model (`2048`, `4096`, or `8192`); do not ask it to expand beyond the compact result needed for the next action. For a bounded command/check that genuinely adds signal, use the package-owned `run-ci` workflow through `subagent` when available rather than direct `bash`.
 
 Always delegate repository-facing work such as:
 

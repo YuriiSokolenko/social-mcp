@@ -287,6 +287,7 @@ Implemented for the **Implementer** runtime on **2026-09-28**:
 - repository reads/search are routed through the installed `pi-subagents` extension, primarily its read-only `scout` agent; bounded command checks use its package-owned `run-ci` workflow when useful;
 - direct main-agent `read`/`bash`/`grep`/`find`/`ls` calls are runtime-blocked after the mandatory `agents/implementer/AGENTS.md` read;
 - the pre-complexity turn budget starts only after that mandatory contract read, so blocked startup mistakes do not consume the orientation allowance;
-- no repository-local extension registers a second `subagent` tool: the runner-installed `pi-subagents` package is the single owner of that tool. Fresh sessions may activate it through `subagents_enable` first.
+- no repository-local extension registers a second `subagent` tool: the runner-installed `pi-subagents` package is the single owner of that tool. Fresh sessions may activate it through `subagents_enable` first;
+- the built-in `scout` loads a child-only response-budget extension. The parent publishes its current response ceiling, and the scout applies the same ceiling to its child model, so SHORT/NORMAL/DEEP stay `2048/4096/8192` for both parent and scout instead of letting the child fall back to the model registry's larger default.
 
 Issue #115 is the dedicated smoke test for this policy. Reviewer/Repair migration is intentionally separate from this Implementer test.

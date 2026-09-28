@@ -396,6 +396,21 @@ test('every model-driven Pi workflow delegates model execution to one stage runn
   }
 });
 
+test('scout inherits the main response ceiling through a child-only extension', () => {
+  const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
+  assert.deepEqual(
+    settings.subagents.agentOverrides.scout.subagentOnlyExtensions,
+    ['./scripts/pi-subagent-response-budget.mjs'],
+  );
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  const child = fs.readFileSync('scripts/pi-subagent-response-budget.mjs', 'utf8');
+  const policy = fs.readFileSync('scripts/pi-common/control-plane-policy.mjs', 'utf8');
+  assert.match(runtime, /PI_SUBAGENT_RESPONSE_MAX_TOKENS/);
+  assert.match(child, /PI_SUBAGENT_RESPONSE_MAX_TOKENS/);
+  assert.match(child, /Math\.min\(requested, modelLimit\)/);
+  assert.match(policy, /path\.startsWith\('\.pi\/'\)/);
+});
+
 test('one progress controller owns loop safety, complexity, and response budgets', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const controller = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');

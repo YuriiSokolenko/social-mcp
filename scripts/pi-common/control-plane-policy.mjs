@@ -11,6 +11,7 @@
 
 export function isControlPlanePath(path) {
   return path.startsWith('.github/workflows/') ||
+    path.startsWith('.pi/') ||
     path.startsWith('agents/') ||
     /^scripts\/pi-(?:[^/]+\.(?:mjs|sh)|[^/]+\/)/.test(path) ||
     /^tests\/[^/]+\.test\.mjs$/.test(path) ||

@@ -1,0 +1,11 @@
+{
+  "subagents": {
+    "agentOverrides": {
+      "scout": {
+        "subagentOnlyExtensions": [
+          "./scripts/pi-subagent-response-budget.mjs"
+        ]
+      }
+    }
+  }
+}
