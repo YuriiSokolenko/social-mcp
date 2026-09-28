@@ -23,7 +23,7 @@ import { prLabelNames, withoutReviewLabels } from './pr-labels.mjs';
  * pi:needs-human (for control-plane changes) and returns {skip:true}; this is a
  * normal automation stop, not an execution failure.
  */
-const { loadPullRequest, replaceLabels, pages, repo } = githubClient();
+const { loadPullRequest, loadIssue, replaceLabels, pages, repo } = githubClient();
 
 export async function preparePr(prNumber) {
   if (!Number.isSafeInteger(prNumber) || prNumber < 1) throw new Error('PR number must be a positive integer');
@@ -35,9 +35,10 @@ export async function preparePr(prNumber) {
     throw new Error(`PR #${prNumber} is not an open same-repository pi/issue-N PR targeting dev`);
   }
 
+  const issueNumber = issueNumber;
   const labels = prLabelNames(pr);
   if (labels.includes('pi:needs-human')) {
-    return { skip: true, reason: 'needs-human', pr: prNumber, issue: Number(match[1]), head: pr.head.sha, branch };
+    return { skip: true, reason: 'needs-human', pr: prNumber, issue: issueNumber, head: pr.head.sha, branch };
   }
 
   const files = await pages(`/pulls/${prNumber}/files`);
@@ -49,12 +50,37 @@ export async function preparePr(prNumber) {
     if (!next.includes('pi:needs-human')) next.push('pi:needs-human');
     await replaceLabels(prNumber, next);
     return {
-      skip: true, reason: 'control-plane', pr: prNumber, issue: Number(match[1]),
+      skip: true, reason: 'control-plane', pr: prNumber, issue: issueNumber,
       head: pr.head.sha, branch, forbidden,
     };
   }
 
-  return { skip: false, pr: prNumber, issue: Number(match[1]), head: pr.head.sha, branch };
+  const issue = await loadIssue(issueNumber);
+  return {
+    skip: false,
+    pr: prNumber,
+    issue: issueNumber,
+    head: pr.head.sha,
+    branch,
+    review: {
+      issue: {
+        number: issueNumber,
+        title: issue.title ?? '',
+        body: issue.body ?? '',
+      },
+      pullRequest: {
+        number: prNumber,
+        title: pr.title ?? '',
+        base: pr.base?.ref ?? '',
+        head: branch,
+      },
+      changedFiles: files.map(file => ({
+        filename: file.filename,
+        status: file.status ?? '',
+        previousFilename: file.previous_filename ?? null,
+      })),
+    },
+  };
 }
 
 async function main() {
