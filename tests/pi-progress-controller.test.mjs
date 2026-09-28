@@ -57,41 +57,28 @@ test('scout child response budget mirrors the main response ceiling', async () =
   }
 });
 
-test('delegated complexity must complete before parent declaration', () => {
+test('implementer exposes one runtime-owned complexity action before repository work', () => {
   const state = controller({
     requireComplexity: true,
-    requireDelegatedComplexity: true,
-    preComplexityAllowedTools: ['subagents_enable', 'subagent'],
-    preComplexitySubagentAgent: 'complexity-classifier',
+    preComplexityAllowedTools: ['classify_task_complexity'],
   });
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('subagents_enable', {}), undefined);
-  assert.match(state.checkToolCall('declare_task_complexity', {}).reason, /complexity-classifier/);
-  assert.match(state.checkToolCall('subagent', { agent: 'scout', async: false }).reason, /only allowed subagent/);
-  assert.equal(state.checkToolCall('subagent', {
-    agent: 'complexity-classifier',
-    async: false,
-    task: 'classify supplied issue and plan',
-  }), undefined);
-  assert.match(state.checkToolCall('declare_task_complexity', {}).reason, /complexity-classifier/);
-  state.onToolExecutionEnd('subagent', false);
-  assert.equal(state.checkToolCall('declare_task_complexity', {}), undefined);
+  assert.equal(state.checkToolCall('classify_task_complexity', { plan: 'Make the smallest requested change.' }), undefined);
+  assert.match(state.checkToolCall('subagents_enable', {}).reason, /configured complexity action/);
+  assert.match(state.checkToolCall('subagent', { agent: 'complexity-classifier', async: false }).reason, /configured complexity action/);
+  state.setComplexity('trivial');
+  assert.equal(state.checkToolCall('subagent', { agent: 'scout', async: false }), undefined);
 });
 
-test('failed complexity child may be retried but successful classification is single-shot', () => {
-  const state = controller({
-    requireComplexity: true,
-    requireDelegatedComplexity: true,
-    preComplexityAllowedTools: ['subagent'],
-    preComplexitySubagentAgent: 'complexity-classifier',
-  });
-  state.onTurnStart(0);
-  const call = { agent: 'complexity-classifier', async: false, task: 'classify' };
-  assert.equal(state.checkToolCall('subagent', call), undefined);
-  state.onToolExecutionEnd('subagent', true);
-  assert.equal(state.checkToolCall('subagent', call), undefined);
-  state.onToolExecutionEnd('subagent', false);
-  assert.match(state.checkToolCall('subagent', call).reason, /already requested/);
+test('runtime-owned classifier uses schema-validated zero-tool structured delegation', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /prompt-template:subagent:request/);
+  assert.match(runtime, /prompt-template:subagent:response/);
+  assert.match(runtime, /name: 'classify_task_complexity'/);
+  assert.match(runtime, /result: \{ kind: 'structured', schema: COMPLEXITY_SCHEMA \}/);
+  assert.match(runtime, /toolBudget: \{ hard: 0, block: '\*' \}/);
+  assert.match(runtime, /additionalProperties: false/);
+  assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
 });
 
 test('bounded local operations stay in main while exploration remains delegated', () => {
@@ -235,9 +222,9 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('triage').fixedResponseMaxTokens, 1000);
   for (const name of ['implementer', 'reviewer', 'repair']) assert.equal(stageConfig(name).requireComplexity, true);
   for (const name of ['reviewer', 'repair']) assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
-  assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['subagents_enable', 'subagent']);
-  assert.equal(stageConfig('implementer').preComplexitySubagentAgent, 'complexity-classifier');
-  assert.equal(stageConfig('implementer').requireDelegatedComplexity, true);
+  assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['classify_task_complexity']);
+  assert.equal(stageConfig('implementer').complexityClassifierAgent, 'complexity-classifier');
+  assert.equal(stageConfig('implementer').complexityClassifierTimeoutMs, 120000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
   assert.equal(stageConfig('implementer').directReadMaxLines, 200);
@@ -270,7 +257,8 @@ test('stage configuration owns every model prompt', () => {
       assert.match(prompt, /submit_(?:result|repair)/);
     }
     assert.match(stagePrompt('implementer', env), /Example issue[\s\S]*Acceptance criteria/);
-    assert.match(stagePrompt('implementer', env), /complexity-classifier[\s\S]*declare_task_complexity[\s\S]*scout/);
+    assert.match(stagePrompt('implementer', env), /classify_task_complexity[\s\S]*complexity-classifier[\s\S]*scout/);
+    assert.doesNotMatch(stagePrompt('implementer', env), /subagents_enable once, then call/);
     assert.match(stagePrompt('implementer', env), /limit <= 200/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
