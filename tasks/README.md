@@ -15,3 +15,4 @@ Use `Depends on: []` when there are no prerequisites. Priority is exactly `P0`, 
 Dispatcher reloads GitHub issues on every run and reads this metadata directly. No per-issue task files are generated or maintained.
 
 The canonical authoring template is `.github/ISSUE_TEMPLATE/task.md`.
+Subagent delegation test passed.
