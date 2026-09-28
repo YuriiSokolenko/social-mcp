@@ -159,8 +159,6 @@ export const STAGES = Object.freeze({
     preComplexityTurnLimit: 4,
     preComplexityAllowedTools: ['prepare_implementation'],
     delegatedTools: ['grep', 'find', 'ls'],
-    trivialDirectDelegatedTools: ['grep', 'find', 'ls'],
-    trivialDirectSearchCalls: 1,
     delegationTool: 'subagent',
     directReadMaxLines: 200,
     directReadCalls: 1,
