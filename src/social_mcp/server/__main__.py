@@ -32,7 +32,9 @@ from social_mcp.storage.models import ConnectedAccount
 logger = logging.getLogger("social-mcp")
 
 
-def _build_accounts_provider(settings: Settings) -> tuple[ThreadsAccountProvider, ApplicationContainer]:
+def _build_accounts_provider(
+    settings: Settings,
+) -> tuple[ThreadsAccountProvider, ApplicationContainer]:
     """Create a container and an async provider for the connected Threads account.
 
     The provider resolves the account at call time from the persisted store so a
@@ -56,10 +58,11 @@ def _build_accounts_provider(settings: Settings) -> tuple[ThreadsAccountProvider
 
 async def amain() -> None:
     settings = get_settings()
-    provider, _container = _build_accounts_provider(settings)
+    provider, container = _build_accounts_provider(settings)
 
     server = create_mcp_server(
         accounts_provider=provider,
+        token_cipher=container.token_cipher_or_none(),
         server_name=settings.app_name,
         server_version="0.1.0",
     )
