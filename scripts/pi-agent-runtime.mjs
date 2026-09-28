@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 import { Type } from 'typebox';
 
@@ -75,7 +76,7 @@ function validateImplementationPlan(value) {
 
 function plannerTask(env = process.env) {
   const issue = implementerIssueContext(env);
-  return `Create the concise top-level implementation plan for this issue. Do not classify it and do not implement it.
+  return `Create the concise top-level implementation plan for this issue. Do not classify it and do not implement it. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing; runtime complexity policy decides that after classification.
 
 Issue title:
 ${issue.title}
@@ -212,6 +213,37 @@ async function runStructuredComplexityClassifier(pi, ctx, config, plan, signal) 
   };
 }
 
+function trivialRepoLookup(cwd, { extensions = [], exactText = '' }) {
+  const normalized = extensions.map(value => String(value).replace(/^\./, '').toLowerCase()).filter(Boolean);
+  const tracked = execFileSync('git', ['ls-files', '-z'], { cwd, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+    .split('\0').filter(Boolean);
+  const excluded = ['.github/workflows/', '.pi/', 'agents/', 'scripts/', 'infra/', 'tests/', 'node_modules/', '.venv/'];
+  const candidates = [];
+  const found = [];
+  for (const relative of tracked) {
+    if (excluded.some(prefix => relative.startsWith(prefix))) continue;
+    const ext = relative.includes('.') ? relative.split('.').pop().toLowerCase() : '';
+    if (normalized.length && !normalized.includes(ext)) continue;
+    const full = `${cwd}/${relative}`;
+    let stat;
+    try { stat = fs.statSync(full); } catch { continue; }
+    if (!stat.isFile() || stat.size > 256 * 1024) continue;
+    let text;
+    try { text = fs.readFileSync(full, 'utf8'); } catch { continue; }
+    if (exactText && text.includes(exactText)) found.push(relative);
+    if (stat.size <= 20 * 1024) {
+      const lastLine = text.split(/\r?\n/).map(line => line.trimEnd()).filter(Boolean).at(-1) ?? '';
+      candidates.push({ path: relative, size: stat.size, lastLine });
+    }
+  }
+  candidates.sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    candidate: candidates[0] ?? null,
+    exactTextFound: found.length > 0,
+    exactTextPaths: found.slice(0, 5),
+  };
+}
+
 // Single runtime controller for every model-driven stage. It owns orientation,
 // task-complexity declaration, repeat/turn safety and per-response output budget.
 export default function (pi) {
@@ -311,6 +343,31 @@ export default function (pi) {
               : `Complexity remains ${result.complexity}.`,
           }],
           details: { ...result, reason: params.reason },
+        };
+      },
+    });
+  }
+
+  let trivialLookupUsed = false;
+  if (stage === 'implementer') {
+    pi.registerTool({
+      name: 'trivial_repo_lookup',
+      label: 'Trivial repository lookup',
+      description: 'For TRIVIAL tasks only: perform one deterministic, bounded tracked-file lookup without enabling subagents. Returns the first small matching file plus an optional exact-text idempotency check.',
+      parameters: Type.Object({
+        extensions: Type.Array(Type.String({ minLength: 1, maxLength: 12 }), { maxItems: 8 }),
+        exactText: Type.Optional(Type.String({ maxLength: 500 })),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        if (controller.complexity !== 'trivial') {
+          throw new Error('trivial_repo_lookup is available only after task complexity is classified as trivial');
+        }
+        if (trivialLookupUsed) throw new Error('trivial_repo_lookup may be called only once per task');
+        trivialLookupUsed = true;
+        const result = trivialRepoLookup(ctx.cwd, params);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          details: result,
         };
       },
     });
