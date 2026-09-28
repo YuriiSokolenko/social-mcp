@@ -388,6 +388,7 @@ export default function (pi) {
       nextBudget: next.level,
       maxTokens: next.maxTokens,
       explicit: next.explicit === true,
+      preservedForToolTurn: next.preservedForToolTurn === true,
     })}`);
   });
 }
