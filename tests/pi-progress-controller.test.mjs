@@ -80,7 +80,8 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /IMPLEMENTATION_PLAN_SCHEMA/);
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 480/);
   assert.match(runtime, /runStructuredImplementationPlanner[\s\S]*runStructuredComplexityClassifier/);
-  assert.match(runtime, /toolBudget: \{ hard: 1 \}/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 480[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /do not classify complexity/i);
