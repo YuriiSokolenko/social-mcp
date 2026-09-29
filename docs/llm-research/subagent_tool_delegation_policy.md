@@ -40,7 +40,7 @@ prepare_implementation
         v
 EVIDENCE_ALLOWED
         |
-        | exactly one non-control evidence action
+        | up to six bounded non-control evidence actions
         v
 ACTION_REQUIRED
         |
@@ -58,19 +58,21 @@ ACTION_REQUIRED
               ACTION_REQUIRED
 ```
 
-The evidence permit is consumed when the tool call is accepted, not when it finishes. This prevents one model response from issuing several parallel exploration calls.
+Each evidence permit is consumed when its tool call is accepted, not when it finishes. The initial six-action window supports one bounded locate → inspect → anchor chain without reopening exploration indefinitely.
 
 ### Evidence actions
 
 Examples include:
 
+- repo-map orientation or one `repomap outline` when the target area is unclear;
 - direct `read` of an already-known path;
-- `repo_search` for deterministic literal path/content discovery;
+- `indexed_repo_search` for fast literal/path/symbol discovery on indexed `dev`;
+- `repo_search` for deterministic literal path/content discovery in the current worktree;
 - `trivial_repo_lookup` for the special trivial unknown-target path;
 - one scout/research/delegate call when semantic evidence is genuinely required;
 - an allowed bounded diagnostic command.
 
-After any evidence action, main is back in `ACTION_REQUIRED`.
+After the initial six-action evidence window is exhausted, main is back in `ACTION_REQUIRED`.
 
 ### Concrete blocker escape
 
@@ -192,9 +194,10 @@ Literal discovery:
 ```text
 embedded contract
   -> prepare_implementation
-  -> repo_search
-  -> need_more_evidence("read discovered target")
-  -> read
+  -> repo map orientation when useful
+  -> indexed_repo_search or repo_search
+  -> read discovered target
+  -> read exact anchor when needed
   -> edit/write
   -> submit_result
 ```
