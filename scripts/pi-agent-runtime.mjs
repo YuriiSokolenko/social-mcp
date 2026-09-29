@@ -8,6 +8,7 @@ import { ProgressController } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { trivialRepoLookup } from './pi-common/trivial-repo-lookup.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
+import { zoektSearch } from './pi-common/zoekt-search.mjs';
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
@@ -408,6 +409,34 @@ export default function (pi) {
         };
       },
     });
+
+    if (process.env.PI_ZOEKT_URL) {
+      pi.registerTool({
+        name: 'indexed_repo_search',
+        label: 'Indexed repository search',
+        description: 'Fast read-only search against the configured Zoekt index of dev. Prefer it for initial literal/path/symbol discovery when available. Results may lag the current worktree, so use direct read/repo_search for exact post-mutation verification.',
+        parameters: Type.Object({
+          kind: Type.Optional(Type.Union([
+            Type.Literal('content'),
+            Type.Literal('path'),
+            Type.Literal('symbol'),
+          ])),
+          query: Type.String({ minLength: 1, maxLength: 300 }),
+          pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
+          extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
+          maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+        }),
+        async execute(_toolCallId, params) {
+          const result = await zoektSearch({
+            endpoint: process.env.PI_ZOEKT_URL,
+            repository: process.env.PI_ZOEKT_REPOSITORY || '',
+            timeoutMs: Number(process.env.PI_ZOEKT_TIMEOUT_MS || 3000),
+            ...params,
+          });
+          return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        },
+      });
+    }
 
     pi.registerTool({
       name: 'repo_search',
