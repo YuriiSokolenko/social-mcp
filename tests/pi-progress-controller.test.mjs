@@ -139,7 +139,7 @@ test('single-shot tools cannot be retried after the first accepted call', () => 
   assert.match(state.checkToolCall('prepare_implementation', {}).reason, /single-shot/);
 });
 
-test('trivial productive progress treats LSP cold start as control and requires action after two evidence calls', () => {
+test('trivial productive progress serializes cold LSP startup and requires action after semantic read', () => {
   const state = controller({
     requireComplexity: true,
     preComplexityAllowedTools: ['prepare_implementation'],
@@ -167,11 +167,18 @@ test('trivial productive progress treats LSP cold start as control and requires 
     server_id: 'python',
     workspace_root: '/tmp/worktree',
   }), undefined);
+  assert.match(
+    state.checkToolCall('lsp_find_symbol', { name: '_clamp_limit' }).reason,
+    /still running/,
+  );
+  state.onToolExecutionEnd('lsp_start_server', false);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
 
   assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_clamp_limit' }), undefined);
+  state.onToolExecutionEnd('lsp_find_symbol', false);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.equal(state.checkToolCall('read', { path: 'src/social_mcp/platforms/threads/api.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
   assert.equal(state.productiveProgressState(), 'action_required');
   assert.match(
     state.checkToolCall('repo_search', { query: '_clamp_limit' }).reason,
@@ -183,6 +190,75 @@ test('trivial productive progress treats LSP cold start as control and requires 
     start_line: 123,
     text: '    """Docstring."""',
   }), undefined);
+});
+
+test('trivial semantic miss preserves one fallback discovery plus authoritative read', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 6,
+      initialEvidenceBudgetByComplexity: { trivial: 2, nontrivial: 6 },
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      controlTools: ['lsp_start_server'],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('trivial');
+  state.onToolExecutionEnd('prepare_implementation', false);
+
+  assert.equal(state.checkToolCall('lsp_start_server', {
+    server_id: 'python',
+    workspace_root: '/tmp/worktree',
+  }), undefined);
+  state.onToolExecutionEnd('lsp_start_server', false);
+  assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_check_active' }), undefined);
+  // A zero-match lookup is transport-successful, so runtime cannot distinguish
+  // it from a useful lookup until the agent chooses deterministic fallback.
+  state.onToolExecutionEnd('lsp_find_symbol', false);
+  assert.equal(state.checkToolCall('repo_search', { query: '_check_active' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/social_mcp/platforms/reliability.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+});
+
+test('failed semantic lookup restores its evidence permit for fallback', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudgetByComplexity: { trivial: 2 },
+      initialEvidenceBudget: 6,
+      actionTools: ['safe_edit', 'edit', 'write', 'submit_result'],
+      controlTools: ['lsp_start_server'],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('trivial');
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.checkToolCall('lsp_start_server', {
+    server_id: 'python',
+    workspace_root: '/tmp/worktree',
+  }), undefined);
+  state.onToolExecutionEnd('lsp_start_server', false);
+  assert.equal(state.checkToolCall('lsp_find_symbol', { name: 'missing' }), undefined);
+  state.onToolExecutionEnd('lsp_find_symbol', true);
+
+  assert.equal(state.checkToolCall('repo_search', { query: 'missing' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/fallback.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
 });
 
 test('nontrivial semantic lookup closes evidence after the authoritative source read', () => {
