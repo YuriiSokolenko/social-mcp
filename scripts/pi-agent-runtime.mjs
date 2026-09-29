@@ -295,12 +295,15 @@ export default function (pi) {
         })}`);
         const numberedPlan = plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
         const provenance = stage === 'implementer' && !resumedImplementer
-          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched origin/dev${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful edit/write, direct reads of this worktree are authoritative latest-dev evidence; do not use extra Git/evidence calls to re-prove that provenance.`
+          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched origin/dev${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful safe_edit/edit/write, direct reads of this worktree are authoritative latest-dev evidence; do not use extra Git/evidence calls to re-prove that provenance.`
+          : '';
+        const lspWorkspace = stage === 'implementer' && !resumedImplementer
+          ? `\n\nLSP workspace root: ${ctx.cwd}. For a cold name-only lookup with an explicit language, call lsp_start_server once with the matching server_id and this exact absolute workspace_root before lsp_find_symbol; lsp_start_server is a control action and does not consume evidence budget.`
           : '';
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nPreparation complete. Continue according to the loaded Implementer contract. Complexity is metadata and does not by itself require delegation.${provenance}`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nPreparation complete. Continue according to the loaded Implementer contract. Complexity is metadata and does not by itself require delegation.${provenance}${lspWorkspace}`,
           }],
           details: {
             ...result,
@@ -310,6 +313,7 @@ export default function (pi) {
             classifierUsage: classified.usage,
             freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
             freshWorktreeIsLatestDev: stage === 'implementer' && !resumedImplementer,
+            lspWorkspaceRoot: stage === 'implementer' && !resumedImplementer ? ctx.cwd : null,
           },
         };
       },
@@ -414,7 +418,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'safe_edit',
       label: 'Safe line edit',
-      description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, and participates in normal rollback/progress handling.',
+      description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, returns a bounded post-edit preview of what landed on disk, and participates in normal rollback/progress handling. Do not re-read merely to verify a successful result.',
       parameters: Type.Object({
         path: Type.String({ minLength: 1, maxLength: 1000 }),
         operation: Type.Union([
