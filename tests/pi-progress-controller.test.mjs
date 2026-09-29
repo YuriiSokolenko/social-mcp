@@ -392,6 +392,8 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);
+  assert.match(runtime, /most recent successful structural_edit\/safe_edit\/edit\/write/);
+  assert.match(runtime, /No successful structural_edit\/safe_edit\/edit\/write is available to roll back/);
   assert.match(runtime, /captureMutationSnapshot/);
   assert.match(runtime, /productiveProgressState\(\)/);
   assert.match(runtime, /PI_PRODUCTIVE_STATE/);

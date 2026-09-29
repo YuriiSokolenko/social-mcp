@@ -398,13 +398,13 @@ export default function (pi) {
     pi.registerTool({
       name: 'rollback_last_mutation',
       label: 'Rollback last mutation',
-      description: 'Restore exactly the file state captured immediately before the most recent successful safe_edit/edit/write. Use when that mutation caused a regression or was the wrong approach. This is a productive recovery action and does not reset unrelated earlier changes.',
+      description: 'Restore exactly the file state captured immediately before the most recent successful structural_edit/safe_edit/edit/write. Use when that mutation caused a regression or was the wrong approach. This is a productive recovery action and does not reset unrelated earlier changes.',
       parameters: Type.Object({
         reason: Type.String({ minLength: 1, maxLength: 500 }),
       }),
       async execute(_toolCallId, params) {
         const snapshot = lastSuccessfulMutationSnapshot;
-        if (!snapshot) throw new Error('No successful safe_edit/edit/write is available to roll back');
+        if (!snapshot) throw new Error('No successful structural_edit/safe_edit/edit/write is available to roll back');
         if (snapshot.existed) {
           fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
           fs.writeFileSync(snapshot.absolutePath, snapshot.content);
