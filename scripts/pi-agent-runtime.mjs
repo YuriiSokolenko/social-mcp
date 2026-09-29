@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { Type } from 'typebox';
@@ -358,7 +359,56 @@ export default function (pi) {
   }
 
   let trivialLookupUsed = false;
+  let pendingMutationSnapshot = null;
+  let lastSuccessfulMutationSnapshot = null;
+
+  function captureMutationSnapshot(cwd, requestedPath) {
+    if (typeof requestedPath !== 'string' || !requestedPath) return null;
+    const root = path.resolve(cwd);
+    const absolutePath = path.resolve(root, requestedPath);
+    if (absolutePath !== root && !absolutePath.startsWith(`${root}${path.sep}`)) {
+      throw new Error('Mutation path escapes the current worktree');
+    }
+    const existed = fs.existsSync(absolutePath);
+    if (existed && !fs.statSync(absolutePath).isFile()) {
+      throw new Error('Mutation rollback supports files only');
+    }
+    return {
+      path: requestedPath,
+      absolutePath,
+      existed,
+      content: existed ? fs.readFileSync(absolutePath) : null,
+    };
+  }
+
   if (stage === 'implementer') {
+    pi.registerTool({
+      name: 'rollback_last_mutation',
+      label: 'Rollback last mutation',
+      description: 'Restore exactly the file state captured immediately before the most recent successful edit/write. Use when that mutation caused a regression or was the wrong approach. This is a productive recovery action and does not reset unrelated earlier changes.',
+      parameters: Type.Object({
+        reason: Type.String({ minLength: 1, maxLength: 500 }),
+      }),
+      async execute(_toolCallId, params) {
+        const snapshot = lastSuccessfulMutationSnapshot;
+        if (!snapshot) throw new Error('No successful edit/write is available to roll back');
+        if (snapshot.existed) {
+          fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
+          fs.writeFileSync(snapshot.absolutePath, snapshot.content);
+        } else if (fs.existsSync(snapshot.absolutePath)) {
+          fs.rmSync(snapshot.absolutePath, { force: true });
+        }
+        lastSuccessfulMutationSnapshot = null;
+        return {
+          content: [{
+            type: 'text',
+            text: `Rolled back the most recent successful mutation to ${snapshot.path}. Continue from the restored repository state; do not rebuild a workaround around the reverted change.`,
+          }],
+          details: { path: snapshot.path, reason: params.reason },
+        };
+      },
+    });
+
     pi.registerTool({
       name: 'repo_search',
       label: 'Repository search',
@@ -430,8 +480,23 @@ export default function (pi) {
     })}`);
   });
 
-  pi.on('tool_call', (event) => controller.checkToolCall(event.toolName, event.input));
-  pi.on('tool_execution_end', (event) => controller.onToolExecutionEnd(event.toolName, event.isError));
+  pi.on('tool_call', (event, ctx) => {
+    const blocked = controller.checkToolCall(event.toolName, event.input);
+    if (blocked) return blocked;
+    if (stage === 'implementer' && (event.toolName === 'edit' || event.toolName === 'write')) {
+      pendingMutationSnapshot = captureMutationSnapshot(ctx?.cwd || process.cwd(), event.input?.path);
+    }
+    return undefined;
+  });
+  pi.on('tool_execution_end', (event) => {
+    if (stage === 'implementer' && (event.toolName === 'edit' || event.toolName === 'write')) {
+      if (!event.isError && pendingMutationSnapshot) {
+        lastSuccessfulMutationSnapshot = pendingMutationSnapshot;
+      }
+      pendingMutationSnapshot = null;
+    }
+    controller.onToolExecutionEnd(event.toolName, event.isError);
+  });
 
   pi.on('turn_end', async (event, ctx) => {
     const outputTokens = Number(event.message?.usage?.output || 0);
