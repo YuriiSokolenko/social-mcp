@@ -58,7 +58,7 @@ docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150
 ```
 
 The Pi worker tag `0.88.0-lsp` pins `pi-mcp-adapter@3.2.0`,
-`lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, BasedPyright `1.40.1`, and the official JetBrains
+`lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`, BasedPyright `1.40.1`, and the official JetBrains
 Kotlin LSP `263.4702.0`. The general runner image and the base runner image
 remain on their existing tags. To roll the Pi pool back, set
 `RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
@@ -226,7 +226,9 @@ The upstream server can enrich local history with PR/issue metadata through the 
 
 ## Deterministic Implementer edits
 
-The Implementer runtime exposes `safe_edit` for bounded line/range mutations that would otherwise require the model to reproduce brittle multiline `oldText`. It re-reads the current worktree file immediately before mutation, validates the selected 1-based range and optional marker, preserves newline/final-newline state, writes atomically, and participates in the same productive-progress/rollback path as `edit` and `write`. Existing `edit`/`write` remain available when they are simpler.
+The Implementer runtime exposes `structural_edit` as the preferred source-code mutation when one exact syntax node can be described with an ast-grep pattern/rewrite. The worker image pins `@ast-grep/cli`; the tool lets ast-grep infer the language from the target file, performs a JSON dry-run, requires exactly one AST match, verifies that the returned byte range still matches the current worktree, and atomically applies only that proposed replacement. Metavariables should preserve untouched code instead of making the model reproduce neighboring statements.
+
+`safe_edit` remains the bounded line/range fallback for text/config edits or source changes where structural matching is not a good fit. It re-reads the current worktree file immediately before mutation, validates the selected 1-based range and optional marker, preserves newline/final-newline state, writes atomically, and returns a bounded post-edit preview. `structural_edit`, `safe_edit`, `edit`, and `write` all participate in the same productive-progress snapshot/rollback path.
 
 ## Pi RepoMap navigation context
 

@@ -52,9 +52,9 @@ Follow this sequence:
    - One structured result contains the ordered plan plus `trivial | nontrivial` and one short reason.
    - The main agent receives that prepared result. Do not call the child manually and do not re-run task-level classification.
 3. Execute the first prepared plan step unless existing evidence already gives a more direct next action.
-4. Runtime creates fresh worktrees directly from the latest fetched `origin/dev`. Until the first successful `safe_edit`/`edit`/`write`, direct reads of the current worktree are authoritative latest-dev evidence. Do not spend Git/evidence calls re-proving whether HEAD or a clean known-path read came from latest dev.
+4. Runtime creates fresh worktrees directly from the latest fetched `origin/dev`. Until the first successful `structural_edit`/`safe_edit`/`edit`/`write`, direct reads of the current worktree are authoritative latest-dev evidence. Do not spend Git/evidence calls re-proving whether HEAD or a clean known-path read came from latest dev.
 
-Once the next repository mutation is known and enough evidence exists, call `safe_edit`, `edit`, or `write` immediately. Prefer `safe_edit` for bounded line/range insertions or replacements where reproducing multiline `oldText` would be brittle; keep `edit`/`write` for cases where they are simpler. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
+Once the next repository mutation is known and enough evidence exists, call `structural_edit`, `safe_edit`, `edit`, or `write` immediately. Prefer `structural_edit` for source-code changes that can be expressed as one exact ast-grep pattern/rewrite; it requires exactly one AST match and lets metavariables preserve untouched code instead of copying neighboring statements. Prefer `safe_edit` for bounded line/range or non-code text edits where structural matching is not a good fit; keep `edit`/`write` for cases where they are simpler. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
 
 For fresh work, do not modify repository files before preparation.
 
@@ -64,14 +64,14 @@ The runtime enforces execution as a state machine rather than a turn counter.
 
 - After successful `prepare_implementation`, the bounded evidence budget is **2 actions for trivial** work and **6 for nontrivial** work.
 - An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, scout/research delegation, or a bounded diagnostic command.
-- Use that budget only for one narrow implementation chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor`. Reading directly relevant files found during that chain is expected; do not mutate blindly merely to reopen evidence. Once the budget is exhausted, exploration closes and the next substantive tool must be `safe_edit`, `edit`, `write`, or `submit_result`.
+- Use that budget only for one narrow implementation chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor`. Reading directly relevant files found during that chain is expected; do not mutate blindly merely to reopen evidence. Once the budget is exhausted, exploration closes and the next substantive tool must be `structural_edit`, `safe_edit`, `edit`, `write`, or `submit_result`.
 - While productive progress is in `action_required` or `recovery_action_required`, runtime normally caps action-required responses at 512 output tokens. If a prose-only action-required response actually reaches that ceiling without attempting any tool or making progress, the next response gets a bounded 1024-token retry ceiling so reasoning can finish and reach the required tool call. Any tool attempt/progress or exit from action-required state returns to the normal 512 cap. Use this budget for the required productive tool call, not another prose-only reconsideration.
 - If one concrete fact outside the bounded initial chain still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one further evidence action, after which action is required again. Do not spend this escape hatch on target files that should have been covered by the initial evidence budget.
-- Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result` starts a new productive epoch.
+- Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `structural_edit`, `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result` starts a new productive epoch.
 - Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion.
 - `set_response_budget`, the one-time `subagents_enable`, and `lsp_start_server` are control actions and do not consume an evidence permit.
-- Prefer completing `evidence → safe_edit/edit/write` in the same model response whenever the evidence is sufficient.
-- If your latest successful `safe_edit`/`edit`/`write` is shown by validation to be the wrong approach or to cause a regression, prefer `rollback_last_mutation` over compensating workarounds. It restores the exact file state from immediately before that mutation and leaves earlier unrelated changes intact.
+- Prefer completing `evidence → structural_edit/safe_edit/edit/write` in the same model response whenever the evidence is sufficient.
+- If your latest successful `structural_edit`/`safe_edit`/`edit`/`write` is shown by validation to be the wrong approach or to cause a regression, prefer `rollback_last_mutation` over compensating workarounds. It restores the exact file state from immediately before that mutation and leaves earlier unrelated changes intact.
 - If `submit_result` fails validation, runtime enters recovery mode. You get at most one diagnostic evidence action for that failure; after it, only fix an already-mutated file, call `rollback_last_mutation`, or retry `submit_result`. Do not reopen general repository exploration or use `need_more_evidence` during validation recovery.
 
 This protocol deliberately permits long/complex tasks without an arbitrary turn quota while preventing open-ended exploration. It also avoids forcing a mutation before the agent has enough repository evidence to identify a safe target.
@@ -104,7 +104,8 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 - **Semantic navigation (language-routed):** when the issue/plan already names a source symbol and LSP tools are available, semantic lookup is the first hop. Name-only workspace lookup requires an active language server. When the language is explicit from the issue/plan and no file position is known yet, call `lsp_start_server` once with the configured server id (`python` or `kotlin`) and the exact absolute workspace root supplied by `prepare_implementation`, then call `lsp_find_symbol`; this cold-start call is control-plane setup, not evidence. Do not precede that sequence with Zoekt, `repo_search`, Git Context, or scout just to discover a file/position, and do not call `lsp_server_status` first. If the language is not known, use deterministic discovery to resolve it instead of issuing a guaranteed-cold name-only lookup. If file + position are already known, skip explicit startup and use the narrow position-based tool directly: `lsp_goto_definition` for the resolved definition, `lsp_find_references` for usages, `lsp_find_implementations` for concrete implementations, and `lsp_call_hierarchy` for callers/callees; file-scoped LSP calls auto-start the correct server. The LSP bridge routes by file/language: Python (`.py`, `.pyi`) uses BasedPyright; Kotlin (`.kt`, `.kts`) uses JetBrains Kotlin LSP. Use `lsp_smart_search` only when several semantic facts are genuinely needed together. Treat LSP output as discovery evidence and still `read` the exact source before mutation. If startup/lookup times out, the server is unavailable, or the project cannot be resolved correctly, fall back immediately to Orbit/Zoekt/current-worktree search rather than retrying the same failed semantic request. A successful `lsp_find_symbol` followed by the authoritative source `read` closes the initial evidence window early and requires the next productive action; if one concrete fact still blocks a safe mutation, use `need_more_evidence` instead of continuing open-ended reads.
 - **Orbit Local graph:** Orbit is configured before Implementer starts and is exposed through Pi's MCP integration. Use it for structural questions that LSP does not answer reliably, for non-Kotlin relationships, or as the first fallback after an LSP failure: imports, dependency direction, bounded blast radius, and graph relationships across the current worktree. Prefer one narrow Orbit graph query via the MCP tools (`get_graph_schema` when schema orientation is required, then `run_sql` for the actual bounded query) instead of broad repository scanning. Do not spend multiple startup evidence permits rediscovering structure that one semantic/graph call can answer. Orbit indexes the current worktree; exact source text still comes from `read` before mutation.
 - **Current-worktree search:** use `repo_search` for exact literal path/content discovery in the current tracked worktree, especially after mutations or when the indexed result must be verified.
-- `safe_edit` for bounded line/range insertion or replacement after one exact `read`; it validates the current line/range/optional marker, avoids brittle multiline `oldText` reproduction, and returns a compact post-edit preview of what landed on disk. Do not spend another evidence action merely to re-read a successful `safe_edit`.
+- `structural_edit` for source-code mutation after one exact `read` when a single AST node can be matched. It uses ast-grep, infers the language from the file, dry-runs the rewrite, requires exactly one match, verifies the matched byte range is still current, and atomically applies only that replacement. Prefer metavariables for untouched bodies/arguments instead of reproducing neighboring code.
+- `safe_edit` for bounded line/range or non-code text insertion/replacement after one exact `read`; it validates the current line/range/optional marker, avoids brittle multiline `oldText` reproduction, and returns a compact post-edit preview of what landed on disk. Do not spend another evidence action merely to re-read a successful mutation result.
 - `edit` / `write` when they are simpler than a line/range mutation.
 - `rollback_last_mutation` when the most recent mutation caused the current regression or was the wrong local approach.
 - `submit_result`.
@@ -151,7 +152,7 @@ Main owns:
 - issue acceptance as the authoritative goal;
 - executing and locally adapting prepared plan steps when repository evidence requires it;
 - implementation/architecture decisions discovered during execution;
-- `safe_edit` / `edit` / `write`;
+- `structural_edit` / `safe_edit` / `edit` / `write`;
 - conflict-resolution mutations;
 - `submit_result`.
 
@@ -163,25 +164,25 @@ If evidence shows the **exact requested end state already exists in latest dev**
 
 For fresh work with a known target, prefer:
 
-`loaded contract → prepare_implementation → lsp_start_server (cold name-only lookup; runtime absolute workspace root) → lsp_find_symbol → read → safe_edit/edit/write → submit_result`
+`loaded contract → prepare_implementation → lsp_start_server (cold name-only lookup; runtime absolute workspace root) → lsp_find_symbol → read → structural_edit/safe_edit/edit/write → submit_result`
 
 If one more known fact is required after that read:
 
-`... → read → need_more_evidence → one evidence action → safe_edit/edit/write → submit_result`
+`... → read → need_more_evidence → one evidence action → structural_edit/safe_edit/edit/write → submit_result`
 
 If a fresh task has an unknown target or unclear area:
 
-`loaded contract → prepare_implementation → indexed_repo_search (when available) or repo_search → read likely path → safe_edit/edit/write`
+`loaded contract → prepare_implementation → indexed_repo_search (when available) or repo_search → read likely path → structural_edit/safe_edit/edit/write`
 
 Use Orbit only when the remaining question is structural rather than literal/path discovery.
 
 If literal discovery is needed:
 
-`loaded contract → prepare_implementation → indexed_repo_search (when available) or repo_search → read discovered path → read exact anchor if needed → safe_edit/edit/write`
+`loaded contract → prepare_implementation → indexed_repo_search (when available) or repo_search → read discovered path → read exact anchor if needed → structural_edit/safe_edit/edit/write`
 
 If deterministic search still leaves one concrete semantic blocker:
 
-`... → repo_search → need_more_evidence → one compact scout → safe_edit/edit/write`
+`... → repo_search → need_more_evidence → one compact scout → structural_edit/safe_edit/edit/write`
 
 For restored work, prefer:
 

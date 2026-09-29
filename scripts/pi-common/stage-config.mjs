@@ -185,7 +185,7 @@ export const STAGES = Object.freeze({
       },
       actionResponseMaxTokens: 512,
       actionResponseRetryMaxTokens: 1024,
-      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server'],
     },
     prompt: promptBuilders.implementer,

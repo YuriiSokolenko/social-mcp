@@ -392,6 +392,8 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);
+  assert.match(runtime, /most recent successful structural_edit\/safe_edit\/edit\/write/);
+  assert.match(runtime, /No successful structural_edit\/safe_edit\/edit\/write is available to roll back/);
   assert.match(runtime, /captureMutationSnapshot/);
   assert.match(runtime, /productiveProgressState\(\)/);
   assert.match(runtime, /PI_PRODUCTIVE_STATE/);
@@ -641,7 +643,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   });
   assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 512);
   assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 1024);
-  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result']);
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
@@ -752,7 +754,7 @@ test('productive progress allows only one extra evidence permit per productive e
     missing: 'different helper detail',
     reason: 'would provide more context',
   });
-  assert.match(secondUnlock.reason, /already used since the last successful safe_edit\/edit\/write\/submit_result/);
+  assert.match(secondUnlock.reason, /already used since the last successful structural_edit\/safe_edit\/edit\/write\/submit_result/);
 
   assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   state.onToolExecutionEnd('edit', true);
@@ -760,7 +762,7 @@ test('productive progress allows only one extra evidence permit per productive e
     missing: 'failed edit follow-up',
     reason: 'the mutation did not succeed',
   });
-  assert.match(afterFailedEdit.reason, /already used since the last successful safe_edit\/edit\/write\/submit_result/);
+  assert.match(afterFailedEdit.reason, /already used since the last successful structural_edit\/safe_edit\/edit\/write\/submit_result/);
 
   assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   state.onToolExecutionEnd('edit', false);
