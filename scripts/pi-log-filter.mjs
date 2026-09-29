@@ -97,7 +97,8 @@ function redact(value, key = "") {
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
       .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
       .replace(/::add-mask::[^\r\n]*/gi, "::add-mask::[REDACTED]")
-      .replace(/\b([A-Za-z_][A-Za-z0-9_-]*(?:ACCESS[_-]?TOKEN|REFRESH[_-]?TOKEN|CLIENT[_-]?SECRET|API[_-]?KEY|AUTHORIZATION|PASSWORD|CREDENTIAL|COOKIE|SET-COOKIE|GH[_-]?TOKEN|GITHUB[_-]?TOKEN|TOKEN|SECRET|PRIVATE[_-]?KEY)[A-Za-z0-9_-]*)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/gi, "$1$2$3[REDACTED]")
+      .replace(/\b([A-Za-z_][A-Za-z0-9_-]*)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/g, (match, name, quote, separator) =>
+        sensitiveKey.test(name) ? `${name}${quote}${separator}[REDACTED]` : match)
       .replace(/\b(gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g, "[REDACTED]");
   }
   return value;
