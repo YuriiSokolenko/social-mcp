@@ -70,6 +70,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const resumePatch = env.PI_RESUME_PATCH;
     const resumed = Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
     const freshBaseCommit = String(env.PI_IMPLEMENTER_START_COMMIT ?? '').trim();
+    const worktreeRoot = env.JOB_DIR || process.cwd();
     const resumeSource = env.PI_CHECKPOINT_EXPECTED
       ? 'checkpoint'
       : env.PI_ISSUE_BRANCH_EXPECTED
@@ -89,7 +90,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - Never use \`already_satisfied\` for restored work.`
       : `For fresh work after preparation:
 - The worktree started as an exact checkout of latest fetched \`origin/dev\`. Before the first successful \`safe_edit\`/\`edit\`/\`write\`, direct reads of the current worktree are authoritative latest-dev evidence. Do not run Git commands merely to prove that provenance again.
-- When the issue or prepared plan already names a source-code symbol, use semantic LSP lookup first. For cold name-only lookup when the language is already explicit, call \`lsp_start_server\` once with server id \`python\` or \`kotlin\` and \`workspace_root: "."\`, then \`lsp_find_symbol\`; do not call \`lsp_server_status\` first and do not precede this with RepoMap/Zoekt/repo_search/Git Context/scout. If language is unknown, try \`lsp_find_symbol\` directly and fall back only when it returns no useful match. If file + position are already known, use the narrow position-based LSP tool directly; it auto-starts the routed server.
+- When the issue or prepared plan already names a source-code symbol, use semantic LSP lookup first. For a fresh name-only lookup when the language is explicit, call \`lsp_start_server\` once with server id \`python\` or \`kotlin\` and the exact absolute \`workspace_root: "${worktreeRoot}"\`, then \`lsp_find_symbol\`; this cold-start control action does not consume evidence budget. Do not call \`lsp_server_status\` first and do not precede this with RepoMap/Zoekt/repo_search/Git Context/scout. If language is unknown, use deterministic discovery to resolve the language rather than issuing a guaranteed-cold name-only query. If file + position are already known, use the narrow position-based LSP tool directly; it auto-starts the routed server.
 - Read already-known target files directly. There is no runtime line-count or per-task file-count limit for known-path reads.
 - After a mutation, the main agent may run bounded \`git diff\`/\`git status\` checks for known paths directly as needed.
 - Use \`repo_search\` for cheap deterministic literal path/content discovery in the current tracked worktree when the source symbol/path is not already known, before launching a scout.
@@ -97,7 +98,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - Delegate to \`scout\` only when deterministic search plus direct reads are insufficient to decide the next safe action: semantic comparison, logs/diagnostics/history, or other evidence requiring interpretation. Complexity alone never requires delegation.
 - Direct \`grep\`, \`find\`, and \`ls\` remain blocked; use \`repo_search\` instead of simulating search through guessed reads.
 - For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.
-- Productive-progress runtime permits up to six bounded evidence actions after preparation. Use them as one narrow locate/read/anchor chain, then \`safe_edit\`, \`edit\`, \`write\`, or \`submit_result\`; if one concrete fact still blocks safe action after that window, call \`need_more_evidence\` to unlock exactly one further evidence action.`;
+- Productive-progress runtime permits 2 bounded evidence actions for trivial work and 6 for normal/complex work after preparation. Use them as one narrow locate/read/anchor chain, then \`safe_edit\`, \`edit\`, \`write\`, or \`submit_result\`; if one concrete fact still blocks safe action after that window, call \`need_more_evidence\` to unlock exactly one further evidence action.
     return `The complete Implementer operating contract is embedded below and is authoritative. Do not search for or re-read agents/implementer/AGENTS.md.
 
 <implementer_contract>
@@ -213,10 +214,15 @@ export const STAGES = Object.freeze({
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 6,
+      initialEvidenceBudgetByComplexity: {
+        trivial: 2,
+        normal: 6,
+        complex: 6,
+      },
       actionResponseMaxTokens: 512,
       actionResponseRetryMaxTokens: 1024,
       actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
-      controlTools: ['set_response_budget', 'subagents_enable'],
+      controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server'],
     },
     prompt: promptBuilders.implementer,
   },
