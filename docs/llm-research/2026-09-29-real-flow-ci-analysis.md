@@ -162,13 +162,15 @@ The rule therefore optimized a cheap operation at the cost of expensive child se
 
 Remove the **per-task file-count cap**.
 
-Keep the useful bound:
+The first follow-up removed the per-task file-count cap while retaining a 200-line per-call cap. That remaining cap was then removed as well because it was trivially bypassable with sequential reads and created more policy surface for the model to reason about.
 
-- each direct `read` must remain explicit and bounded to `limit <= 200`;
-- unknown-path discovery, broad repository search, large dumps, logs, and cross-repository reconnaissance should still go to scout;
-- already-known paths may be read directly as many times/files as needed for the immediate implementation decision.
+Current rule:
 
-This change is implemented in the same repository update as this report.
+- already-known paths may be read directly without a runtime line-count or file-count cap;
+- unknown-path discovery, broad repository search, large dumps, logs, and cross-repository reconnaissance still go to scout;
+- the routing boundary is now based on **known path vs. exploration**, not arbitrary read size.
+
+This keeps the control simple and avoids turning cheap direct reads into another source of meta-reasoning.
 
 ## Subagent response budget observation
 
@@ -247,4 +249,4 @@ Therefore the real-task failures should be analyzed primarily as agent/runtime b
 6. **Idle watchdogs are insufficient; productive-progress watchdogs are needed.**
 7. **Runtime correctly refused to mark no-terminal/no-change runs green.**
 
-The immediate change from this incident is to remove the one-file-per-task direct-read rule while retaining the 200-line per-call bound and delegated search/discovery model.
+The immediate follow-up removed both the one-file-per-task cap and the later 200-line per-call cap. Known-path reads now stay in main without an arbitrary size/count quota; discovery and broad search remain delegated.

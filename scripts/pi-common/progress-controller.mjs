@@ -96,11 +96,7 @@ export class ProgressController {
     this.complexityTurnBase = this.requiredFirstReadDone ? 0 : null;
     this.delegatedTools = new Set(config.delegatedTools ?? []);
     this.delegationTool = config.delegationTool ?? 'subagent';
-    this.directReadMaxLines = Number(config.directReadMaxLines ?? 0);
     this.boundedDirectBash = config.boundedDirectBash === true;
-    if (this.directReadMaxLines && (!Number.isSafeInteger(this.directReadMaxLines) || this.directReadMaxLines < 1)) {
-      throw new Error('directReadMaxLines must be a positive integer');
-    }
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
     if (this.fixedMaxTokens && (!Number.isSafeInteger(this.fixedMaxTokens) || this.fixedMaxTokens < 1)) {
@@ -181,13 +177,6 @@ export class ProgressController {
           block: true,
           reason: `BLOCKED: ${toolName} did not execute. Before complexity is recorded, use only initial-orientation tools or the configured preparation/classification action.`,
         };
-      }
-    }
-
-    if (toolName === 'read' && this.directReadMaxLines) {
-      const limit = Number(input?.limit);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > this.directReadMaxLines) {
-        return { block: true, reason: `Direct main-agent reads must set limit <= ${this.directReadMaxLines}; delegate broad or unbounded repository reading to ${this.delegationTool}.` };
       }
     }
 

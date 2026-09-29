@@ -53,7 +53,7 @@ Follow this sequence:
    - The main agent receives only the prepared plan and complexity. Do not call either child manually and do not re-run task-level classification.
 3. Execute the first prepared plan step unless existing evidence already gives a more direct next action.
 
-Once the next repository mutation is known and enough evidence exists, call `edit` or `write` immediately. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a bounded read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
+Once the next repository mutation is known and enough evidence exists, call `edit` or `write` immediately. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
 
 For fresh work, do not modify repository files before preparation.
 
@@ -65,13 +65,13 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 ### Main may do directly
 
-- **Already-known files:** call `read` directly with an explicit `limit <= 200` for each file. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result. There is no per-task file-count limit for bounded known-path reads.
+- **Already-known files:** call `read` directly. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result. There is no runtime line-count or per-task file-count limit for known-path reads.
 - **One known-path diff/status check:** use a bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`.
 - **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target in `origin/dev`. The lookup never reads resumed checkpoint/current-worktree changes. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText`; the result fields `exactTextFoundInDev` / `exactTextPathsInDev` are evidence about latest dev only. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
 - `submit_result`.
 
-Do not use repeated guessed reads as a substitute for search. Delegate discovery/search when the path, symbol, or pattern is unknown; when paths are already known, continue with bounded direct reads as needed.
+Do not use repeated guessed reads as a substitute for search. Delegate discovery/search when the path, symbol, or pattern is unknown; when paths are already known, continue with direct reads as needed.
 
 ### Delegate
 
@@ -81,7 +81,7 @@ Use `scout` with `async: false` only when the evidence already available to the 
 - more than one repository file must genuinely be inspected or compared;
 - usages or similar implementations must be searched;
 - logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
-- expected output is larger than a small bounded read/diff;
+- the needed evidence requires a broad repository dump or search rather than reading known files;
 - a skill or project document must be searched for a concrete rule needed by the current decision.
 
 **Task complexity alone never requires delegation.** A `normal` or `complex` classification is metadata, not an instruction to call `scout`.
@@ -125,11 +125,11 @@ If evidence shows the **exact requested end state already exists in latest dev**
 
 For fresh work with a known target, prefer:
 
-`loaded contract → prepare_implementation → bounded known-path reads as needed → edit/write → submit_result`
+`loaded contract → prepare_implementation → known-path reads as needed → edit/write → submit_result`
 
 If a fresh trivial task has an unknown target:
 
-`loaded contract → prepare_implementation → trivial_repo_lookup → one bounded read if needed → edit/write → submit_result`
+`loaded contract → prepare_implementation → trivial_repo_lookup → read target as needed → edit/write → submit_result`
 
 If the next safe action is genuinely unknown:
 

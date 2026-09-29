@@ -139,14 +139,12 @@ test('bounded local operations stay in main while exploration remains delegated'
   const state = controller({
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
-    directReadMaxLines: 200,
     boundedDirectBash: true,
   });
   state.onTurnStart(0);
   assert.equal(state.checkToolCall('read', { path: 'src/known.py', limit: 120 }), undefined);
-  assert.equal(state.checkToolCall('read', { path: 'src/second.py', limit: 120 }), undefined);
-  assert.equal(state.checkToolCall('read', { path: 'src/third.py', limit: 200 }), undefined);
-  assert.match(state.checkToolCall('read', { path: 'src/too-large.py', limit: 201 }).reason, /limit <= 200/);
+  assert.equal(state.checkToolCall('read', { path: 'src/second.py', limit: 500 }), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'src/third.py' }), undefined);
   assert.match(state.checkToolCall('grep', { pattern: 'token' }).reason, /subagent/);
   assert.equal(state.checkToolCall('bash', { command: 'git diff -- src/known.py' }), undefined);
   assert.equal(state.checkToolCall('bash', { command: 'git diff --check -- src/known.py' }), undefined);
@@ -338,7 +336,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').complexityClassifierTimeoutMs, 120000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
-  assert.equal(stageConfig('implementer').directReadMaxLines, 200);
+  assert.equal(stageConfig('implementer').directReadMaxLines, undefined);
   assert.equal(stageConfig('implementer').directReadCalls, undefined);
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
@@ -380,7 +378,7 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
     assert.match(stagePrompt('implementer', env), /do not call subagent\(action:"list"\)/i);
     assert.match(stagePrompt('implementer', env), /768 max output tokens/);
-    assert.match(stagePrompt('implementer', env), /limit <= 200/);
+    assert.doesNotMatch(stagePrompt('implementer', env), /limit <= 200/);
     const resumePatch = path.join(dir, 'resume.patch');
     fs.writeFileSync(resumePatch, 'diff --git a/src/example.py b/src/example.py\n');
     const resumedPrompt = stagePrompt('implementer', {

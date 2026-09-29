@@ -88,7 +88,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - If it reports a concrete failure, fix only that failure and retry.
 - Never use \`already_satisfied\` for restored work.`
       : `For fresh work after preparation:
-- Read already-known target files directly with \`limit <= 200\` per call. There is no per-task file-count limit for bounded known-path reads.
+- Read already-known target files directly. There is no runtime line-count or per-task file-count limit for known-path reads.
 - The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
 - If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
 - Delegate to \`scout\` only when the evidence already available is insufficient to know the next safe action: unknown targets, genuine multi-file comparison/search, logs/diagnostics, or broader command output. Complexity alone never requires delegation.
@@ -198,7 +198,6 @@ export const STAGES = Object.freeze({
     preComplexityTransitionTools: ['prepare_implementation'],
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
-    directReadMaxLines: 200,
     boundedDirectBash: true,
     prompt: promptBuilders.implementer,
   },

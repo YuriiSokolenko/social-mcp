@@ -31,7 +31,7 @@ The planner/classifier split keeps exploratory planning and the complexity rubri
 
 Use direct main-agent operations when all needed context is already bounded:
 
-- already-known files: direct `read` calls with `limit <= 200` per call, with no per-task file-count cap;
+- already-known files: direct `read` calls with no runtime line-count or per-task file-count cap;
 - one bounded `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`;
 - `edit` / `write`;
 - conflict-resolution mutations;
@@ -47,7 +47,7 @@ Use `scout` when any of these are true:
 - several unknown files must first be discovered, or a broad cross-repository comparison/search is required;
 - usages, patterns, or similar implementations must be searched;
 - logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
-- expected output is larger than one small bounded read/diff;
+- the needed evidence requires a broad repository dump or search rather than reading known files;
 - a skill or project document must be searched for relevant rules.
 
 `grep`, `find`, and `ls` remain runtime-blocked in main. Broad `bash` is also blocked. Focused test/lint/type/compile commands can use the package-owned `run-ci` workflow.
@@ -87,7 +87,7 @@ For Implementer:
 - mandatory first read remains `agents/implementer/AGENTS.md`;
 - before complexity is recorded, runtime allows only `classify_task_complexity`; direct `subagents_enable` / `subagent` classification is not exposed to main;
 - a failed classifier may be retried; a successful classification is single-shot;
-- after declaration, bounded direct reads of already-known paths are allowed with `limit <= 200` per call and no per-task file-count cap;
+- after declaration, direct reads of already-known paths are allowed with no runtime line-count or per-task file-count cap;
 - direct shell access is restricted to bounded one-path Git diff/status commands;
 - `grep` / `find` / `ls` stay delegated;
 - `.pi/**` is control-plane and cannot be modified by Implementer.
@@ -113,7 +113,7 @@ AGENTS.md
   -> prepare_implementation
      -> implementation-planner
      -> complexity-classifier
-  -> bounded known-path reads as needed
+  -> known-path reads as needed
   -> edit/write
   -> bounded direct git diff
   -> submit_result
