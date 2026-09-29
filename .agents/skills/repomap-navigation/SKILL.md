@@ -26,7 +26,7 @@ Skip it when the issue, prepared plan, previous evidence, or an exact search res
 2. Choose at most **3 likely files** or **1 likely subsystem** tied directly to the current question.
 3. If one candidate needs structural detail, call `repomap outline <file>` for that file only.
 4. Move immediately to the cheapest authoritative next action:
-   - semantic LSP lookup when a source symbol is already known by name;
+   - semantic LSP lookup when a source symbol is already known by name; when its language is already explicit and the server may be cold, bootstrap that language server once before the name-only lookup;
    - `read` when a likely path is known and exact source text is needed;
    - `indexed_repo_search` for literal/path discovery on indexed `dev` when the source symbol/path is not already known;
    - `repo_search` when current-worktree text is authoritative;

@@ -201,9 +201,12 @@ files from `index/`, run the updater, and start the service again. Normal
 updates never delete the index. `indexed_repo_search`
 is discovery against indexed `dev`; `repo_search` and `read` remain authoritative
 for the current worktree, including after edits. For an already-known source-code
-symbol, semantic LSP lookup is the first hop: `lsp_find_symbol` resolves a symbol
-by name without a preliminary Zoekt/path search, while the existing position-based
-LSP tools remain appropriate when file + line/column are already known.
+symbol, semantic LSP lookup is the first hop. Name-only workspace lookup needs
+an active language server: when the task already makes the language explicit,
+call `lsp_start_server` once with server id `python` or `kotlin` and
+`workspace_root: "."`, then call `lsp_find_symbol`. Do not add a
+`lsp_server_status` ritual first. Position-based LSP tools remain appropriate
+when file + line/column are already known and auto-start the routed server.
 
 
 ## GitLab Orbit Local for Pi
