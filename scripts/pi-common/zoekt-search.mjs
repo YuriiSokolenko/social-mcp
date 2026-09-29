@@ -150,20 +150,29 @@ export async function zoektSearch({
   const q = buildZoektQuery({ ...params, kind, query, repository });
   const timeout = positiveInteger(timeoutMs, DEFAULT_TIMEOUT_MS, 'timeoutMs');
 
-  const response = await fetchImpl(`${base}/api/search`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      Q: q,
-      Opts: {
-        MaxDocDisplayCount: maxResults,
-        MaxMatchDisplayCount: maxResults,
-        NumContextLines: 0,
-      },
-    }),
-    signal: AbortSignal.timeout(timeout),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort(new DOMException(`Zoekt search timed out after ${timeout} ms`, 'TimeoutError'));
+  }, timeout);
 
-  if (!response.ok) throw new Error(`Zoekt search failed: HTTP ${response.status}`);
-  return normalizeResponse(await response.json(), { kind, query, maxResults });
+  try {
+    const response = await fetchImpl(`${base}/api/search`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        Q: q,
+        Opts: {
+          MaxDocDisplayCount: maxResults,
+          MaxMatchDisplayCount: maxResults,
+          NumContextLines: 0,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) throw new Error(`Zoekt search failed: HTTP ${response.status}`);
+    return normalizeResponse(await response.json(), { kind, query, maxResults });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
