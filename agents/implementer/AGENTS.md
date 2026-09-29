@@ -85,6 +85,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 - **Already-known files:** call `read` directly. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result. There is no runtime line-count or per-task file-count limit for known-path reads.
 - **Known-path diff/status checks:** use bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>` as needed.
+- **Repository map orientation:** when the target file or subsystem is still unclear, use the injected repo map as the first reading-order hint. Load `.agents/skills/repomap-navigation/SKILL.md` only when this navigation decision is genuinely needed. Prefer the map to broad exploration, but treat it as discovery evidence rather than authoritative source text. Use `repomap outline <file>` for one likely candidate instead of requesting broader map output.
 - **Indexed repository search:** when `indexed_repo_search` is available, prefer it for initial literal/path/symbol discovery against the indexed `dev` snapshot. It is fast and does not launch a child model. Treat it as discovery evidence only because the index can lag the current worktree.
 - **Orbit Local graph:** when the Orbit MCP tools are available, use them for structural questions that literal search answers poorly: symbol definitions, imports, references, dependency direction, and bounded blast-radius checks. Prefer one narrow graph query over broad repository scanning. Orbit indexes the current checkout/worktree, but exact source text still comes from `read` before mutation.
 - **Current-worktree search:** use `repo_search` for exact literal path/content discovery in the current tracked worktree, especially after mutations or when the indexed result must be verified.
@@ -156,6 +157,10 @@ If one more known fact is required after that read:
 If a fresh trivial task has an unknown target:
 
 `loaded contract → prepare_implementation → trivial_repo_lookup → edit/write`
+
+If the target area is unclear:
+
+`loaded contract → prepare_implementation → repo map orientation → read likely path → edit/write`
 
 If literal discovery is needed:
 
