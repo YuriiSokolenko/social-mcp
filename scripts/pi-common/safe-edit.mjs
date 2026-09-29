@@ -74,6 +74,9 @@ export function safeEdit(root, params) {
   const { lines, newline, hasFinalNewline } = splitLogicalLines(source);
 
   const startLine = positiveLine(params.start_line, 'start_line');
+  if (operation !== 'replace' && params.end_line != null) {
+    throw new Error('end_line is supported only for replace operations');
+  }
   const endLine = operation === 'replace'
     ? positiveLine(params.end_line ?? startLine, 'end_line')
     : startLine;
