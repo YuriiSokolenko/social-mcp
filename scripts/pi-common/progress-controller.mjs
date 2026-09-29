@@ -81,6 +81,18 @@ export function nextActionResponseCap({
   return proseOnlyTurn ? corrective : base;
 }
 
+export function nextActionRequiredProseOnlyTurns(
+  current,
+  { actionRequired, attemptedTool, madeProgress },
+) {
+  if (!Number.isSafeInteger(current) || current < 0) {
+    throw new Error('action-required prose-only turn count must be a non-negative integer');
+  }
+  return actionRequired && attemptedTool !== true && madeProgress !== true
+    ? current + 1
+    : 0;
+}
+
 export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, madeProgress = true) {
   const ceiling = budgets[currentLevel];
   if (!ceiling) throw new Error(`Unknown response budget: ${currentLevel}`);
