@@ -199,3 +199,11 @@ The `pi-agent` ephemeral worker image pins `@gitlab/orbit@0.130.0`. Architect an
 After changing the worker image, rebuild it on N150 with the existing image tag, restart the Pi runner manager, and verify a fresh Architect or Implementer job prints only the Orbit version plus the non-sensitive confirmation line. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
 
 Orbit complements the host Zoekt service: Zoekt stays the fast shared `dev` text index; Orbit supplies per-job structural code context for the current checkout/worktree.
+
+## Pi RepoMap navigation context
+
+Implementer and Architect additionally load the pinned `pi-repomap` extension from `scripts/pi-run-stage.mjs`. It is intentionally not installed through project `.pi/settings.json`, because that would install/load the package for every Pi stage. The selected stages load the pinned git revision only for their own run.
+
+Project configuration lives in `.pi/repomap.json` with `refreshStrategy: "auto"` and a fixed **1536-token** map budget. RepoMap is a navigation hint, not authoritative source text: use it to choose a small reading order, then verify exact code with `read`/`repo_search`, use Zoekt for indexed literal discovery, and Orbit for precise graph questions. The repository skill `.agents/skills/repomap-navigation/SKILL.md` records the bounded routing policy.
+
+RepoMap writes its incremental cache under `.pi/cache/`; that path is gitignored so ephemeral navigation state cannot be checkpointed or published with an implementation.
