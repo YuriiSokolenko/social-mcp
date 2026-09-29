@@ -151,14 +151,14 @@ This document is the human- and agent-readable text map of the current Social MC
                                               v                                 |
                                        EVIDENCE_ALLOWED                          |
                                               |                                 |
-                                   up to three evidence actions                    |
+                                   up to six evidence actions                    |
                                               |                                 |
                                               v                                 |
                                        ACTION_REQUIRED <-------------------------+
                                         /      |      \
                            need_more_evidence  |       +--> submit_result
                                   |            |
-                                  v            +--> edit / write
+                                  v            +--> safe_edit / edit / write
                           one evidence action          |
                                   |                    |
                                   +----> ACTION_REQUIRED
@@ -195,20 +195,27 @@ This document is the human- and agent-readable text map of the current Social MC
        |
        +--> known path .......................... read directly
        |
-       +--> initial path/content/symbol discovery
+       +--> known source symbol ................. LSP first
+       |      +--> lsp_find_symbol (name-only)
+       |      +--> position-based LSP when file/line is known
+       |
+       +--> initial literal/path discovery
        |      +--> indexed_repo_search (Zoekt, when configured)
        |      +--> repo_search (current worktree / fallback)
        |
        +--> structural graph question ........... Orbit Local
        |
-       +--> semantic missing fact ............... scout/advisor
+       +--> historical intent/provenance ......... Git Context MCP
+       |
+       +--> semantic missing fact after deterministic tools
+              +--> scout/advisor
        |
        +--> trivial unknown target .............. trivial_repo_lookup
        |
        v
     ACTION_REQUIRED
        |
-       +--> edit / write
+       +--> safe_edit / edit / write
        |
        +--> submit_result
        |
