@@ -33,6 +33,12 @@ test('safe_edit inserts a multiline docstring after a signature without oldText'
     assert.equal(result.changed_start_line, 3);
     assert.equal(result.changed_end_line, 3);
     assert.equal(result.line_delta, 1);
+    assert.deepEqual(result.post_edit, {
+      start_line: 3,
+      end_line: 3,
+      text: '        """Return the injected transport or lazily create the platform transport."""',
+      truncated: false,
+    });
     assert.equal(
       fs.readFileSync(file, 'utf8'),
       [
@@ -68,6 +74,12 @@ test('safe_edit preserves CRLF and final-newline state while replacing a range',
       [result.changed_start_line, result.changed_end_line, result.line_delta],
       [2, 3, 1],
     );
+    assert.deepEqual(result.post_edit, {
+      start_line: 2,
+      end_line: 3,
+      text: '    one\n    two',
+      truncated: false,
+    });
     assert.equal(fs.readFileSync(file, 'utf8'), 'alpha\r\n    one\r\n    two\r\ngamma\r\n');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -138,6 +150,31 @@ test('safe_edit rejects stale markers and invalid ranges without changing the fi
       /outside the current file/,
     );
     assert.equal(fs.readFileSync(file, 'utf8'), original);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('safe_edit bounds the post-edit preview for large mutations', () => {
+  const dir = tempRepo();
+  try {
+    const file = path.join(dir, 'sample.txt');
+    fs.writeFileSync(file, 'anchor\n');
+    const inserted = 'x'.repeat(2500);
+
+    const result = safeEdit(dir, {
+      path: 'sample.txt',
+      operation: 'insert_after',
+      start_line: 1,
+      expected_marker: 'anchor',
+      text: inserted,
+    });
+
+    assert.equal(result.post_edit.start_line, 2);
+    assert.equal(result.post_edit.end_line, 2);
+    assert.equal(result.post_edit.text.length, 2000);
+    assert.equal(result.post_edit.truncated, true);
+    assert.equal(fs.readFileSync(file, 'utf8'), `anchor\n${inserted}\n`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
