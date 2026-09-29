@@ -151,7 +151,7 @@ This document is the human- and agent-readable text map of the current Social MC
                                               v                                 |
                                        EVIDENCE_ALLOWED                          |
                                               |                                 |
-                                      one evidence action                        |
+                                   up to three evidence actions                    |
                                               |                                 |
                                               v                                 |
                                        ACTION_REQUIRED <-------------------------+
@@ -188,7 +188,7 @@ This document is the human- and agent-readable text map of the current Social MC
     prepare_implementation (single-shot)
        |
        v
-    EVIDENCE_ALLOWED
+    EVIDENCE_ALLOWED (up to 3 initial actions)
        |
        +--> known path ......................... read directly
        |
