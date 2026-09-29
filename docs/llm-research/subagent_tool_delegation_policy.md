@@ -40,7 +40,7 @@ prepare_implementation
         v
 EVIDENCE_ALLOWED
         |
-        | up to six bounded non-control evidence actions
+        | 2 bounded actions for trivial; 6 for normal/complex
         v
 ACTION_REQUIRED
         |
@@ -58,7 +58,7 @@ ACTION_REQUIRED
               ACTION_REQUIRED
 ```
 
-Each evidence permit is consumed when its tool call is accepted, not when it finishes. The initial six-action window supports one bounded locate → inspect → anchor chain without reopening exploration indefinitely.
+Each evidence permit is consumed when its tool call is accepted, not when it finishes. The initial allowance is complexity-aware: **2 actions for trivial work and 6 for normal/complex work**. It supports one bounded locate → inspect → anchor chain without reopening exploration indefinitely.
 
 ### Evidence actions
 
@@ -72,7 +72,7 @@ Examples include:
 - one scout/research/delegate call when semantic evidence is genuinely required;
 - an allowed bounded diagnostic command.
 
-After the initial six-action evidence window is exhausted, main is back in `ACTION_REQUIRED`.
+After the complexity-specific initial evidence window is exhausted, main is back in `ACTION_REQUIRED`.
 
 ### Concrete blocker escape
 
@@ -95,7 +95,8 @@ Main retains:
 - direct reads of already-known paths when an evidence permit is available;
 - deterministic `repo_search`;
 - the special `trivial_repo_lookup` path;
-- `edit` / `write`;
+- `safe_edit` / `edit` / `write`;
+- `rollback_last_mutation` when the latest mutation is proven harmful;
 - conflict-resolution mutations;
 - bounded known-path `git diff` / `git status`;
 - `submit_result`.
@@ -119,15 +120,15 @@ A scout request should answer one concrete question and stop at the first suffic
 For a pre-edit scout, prefer asking for:
 
 1. target path;
-2. exact minimal verbatim `oldText`;
-3. insertion/replacement point;
+2. a 1-based line/range plus a short marker suitable for `safe_edit`, when line-based mutation fits;
+3. otherwise the exact minimal verbatim `oldText` needed by `edit`;
 4. one safety constraint, if any.
 
 After the scout returns, runtime is back in `ACTION_REQUIRED`.
 
 ## Tool routing constraints
 
-Main may not use direct `grep`, `find`, or `ls`. Use `repo_search` for ordinary deterministic repository discovery.
+When the issue or prepared plan already names a source-code symbol, use semantic LSP first; do not spend RepoMap, Zoekt, Git Context, or scout calls merely rediscovering that symbol. Main may not use direct `grep`, `find`, or `ls`. For non-semantic discovery, prefer indexed search when available and `repo_search` for authoritative current-worktree literal/path discovery.
 
 Broad main-agent shell access remains blocked. Known-path read-only Git diff/status commands are the intended direct shell exception.
 
@@ -179,13 +180,25 @@ These limits apply to individual responses. They are **not** a hard aggregate ch
 
 ## Current intended flows
 
-Known target:
+Known source symbol:
+
+```text
+embedded contract
+  -> prepare_implementation
+  -> lsp_start_server when a cold name-only lookup needs it
+  -> lsp_find_symbol
+  -> read exact source
+  -> safe_edit/edit/write
+  -> submit_result
+```
+
+Known file/path without a semantic lookup:
 
 ```text
 embedded contract
   -> prepare_implementation
   -> read known target
-  -> edit/write
+  -> safe_edit/edit/write
   -> submit_result
 ```
 
@@ -198,7 +211,7 @@ embedded contract
   -> indexed_repo_search or repo_search
   -> read discovered target
   -> read exact anchor when needed
-  -> edit/write
+  -> safe_edit/edit/write
   -> submit_result
 ```
 
@@ -210,7 +223,7 @@ embedded contract
   -> first evidence action
   -> need_more_evidence("one concrete semantic fact")
   -> one compact scout/advisor call
-  -> edit/write
+  -> safe_edit/edit/write
   -> submit_result
 ```
 
