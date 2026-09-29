@@ -65,7 +65,8 @@ The runtime enforces execution as a state machine rather than a turn counter.
 - An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, `trivial_repo_lookup`, scout/research delegation, or a bounded diagnostic command.
 - As soon as one evidence action is requested, exploration closes again. The next substantive tool must be `edit`, `write`, or `submit_result`.
 - If one concrete missing fact still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one further evidence action, after which action is required again.
-- Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion. Repeating the same blocker is runtime-blocked.
+- Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `edit`, `write`, or `submit_result` starts a new productive epoch.
+- Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion.
 - `set_response_budget` and the one-time `subagents_enable` control action do not consume an evidence permit.
 - Prefer completing `evidence → edit/write` in the same model response whenever the evidence is sufficient.
 
