@@ -156,6 +156,8 @@ export class ProgressController {
     this.mutatedPaths = new Set();
     this.pendingMutationPath = null;
     this.semanticLookupAwaitingRead = false;
+    this.semanticFallbackEvidenceUsed = false;
+    this.lspServerStartPending = false;
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
     if (this.fixedMaxTokens && (!Number.isSafeInteger(this.fixedMaxTokens) || this.fixedMaxTokens < 1)) {
@@ -263,6 +265,19 @@ export class ProgressController {
       this.usedSingleUseTools.add(toolName);
     }
 
+    if (toolName === 'lsp_find_symbol' && this.lspServerStartPending) {
+      return {
+        block: true,
+        reason: 'BLOCKED: lsp_start_server is still running. Wait for that control action to finish successfully, then call lsp_find_symbol in the next turn.',
+      };
+    }
+    if (toolName === 'lsp_start_server' && this.lspServerStartPending) {
+      return {
+        block: true,
+        reason: 'BLOCKED: lsp_start_server is already running. Reuse that startup result instead of starting the same cold server in parallel.',
+      };
+    }
+
     if (this.productiveProgress) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const activatesOnRead =
@@ -353,11 +368,22 @@ export class ProgressController {
           };
         }
         if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
-          // Consume bounded evidence budget at accepted call time. This still
-          // prevents unbounded parallel exploration, while allowing a short
-          // locate -> read -> anchor sequence before mutation is required.
-          this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
-          if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
+          const semanticFallback = this.semanticLookupAwaitingRead &&
+            !this.semanticFallbackEvidenceUsed &&
+            toolName !== 'read' &&
+            toolName !== 'lsp_find_symbol';
+          if (semanticFallback) {
+            // A name lookup can complete successfully at the transport level yet
+            // return no useful match. Permit exactly one deterministic fallback
+            // discovery action without stealing the authoritative source read.
+            this.semanticFallbackEvidenceUsed = true;
+          } else {
+            // Consume bounded evidence budget at accepted call time. This still
+            // prevents unbounded parallel exploration, while allowing a short
+            // locate -> read -> anchor sequence before mutation is required.
+            this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
+            if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
+          }
         }
       }
     }
@@ -382,20 +408,30 @@ export class ProgressController {
     if (this.repeatCount > this.repeatThreshold) {
       return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
     }
+    if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
     this.turnUsedTool = true;
     return undefined;
   }
 
   onToolExecutionEnd(toolName, isError) {
+    if (toolName === 'lsp_start_server') this.lspServerStartPending = false;
     if (this.productiveProgress && toolName === 'lsp_find_symbol') {
       if (!isError && this.productiveState === 'evidence_allowed') {
         this.semanticLookupAwaitingRead = true;
+        this.semanticFallbackEvidenceUsed = false;
       } else if (isError) {
         this.semanticLookupAwaitingRead = false;
+        this.semanticFallbackEvidenceUsed = false;
+        // Failed semantic discovery produced no evidence. Restore the permit
+        // consumed when the call was accepted so fallback search + exact read
+        // can still fit inside the same bounded evidence window.
+        this.productiveEvidenceRemaining += 1;
+        if (this.productiveState === 'action_required') this.productiveState = 'evidence_allowed';
       }
     }
     if (this.productiveProgress && toolName === 'read' && !isError && this.semanticLookupAwaitingRead) {
       this.semanticLookupAwaitingRead = false;
+      this.semanticFallbackEvidenceUsed = false;
       this.productiveEvidenceRemaining = 0;
       if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
     }
@@ -416,6 +452,7 @@ export class ProgressController {
     }
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
+      this.semanticFallbackEvidenceUsed = false;
       if (toolName === ROLLBACK_TOOL) {
         this.recoveryMode = false;
         this.recoveryEvidenceRemaining = 0;
