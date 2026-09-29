@@ -376,3 +376,45 @@ The productive-epoch rule remains unchanged after the initial budget is exhauste
 - successful `edit`, `write`, or `submit_result` resets the extra-evidence eligibility.
 
 This change addresses **forced action without sufficient evidence** without returning to open-ended exploration or a generic no-progress turn counter.
+
+
+## Confirmation run: state machine is steering in the right direction
+
+The next real implementation attempt on issue #4 provided stronger evidence that the productive-progress design is directionally correct:
+
+- Actions run `36543597806`, job `109330983540`
+- workflow conclusion: `success`
+- 98 model responses
+- 101 tool calls
+- 53,964 output tokens
+- 4,463,917 reported total tokens including cache reads
+- about 2,879.7 seconds model response time
+- PR #146 created successfully
+- issue transitioned to `pi:mr-created`
+- checkpoint publication and cleanup completed successfully
+
+The important result is not the cost; the run remained much too expensive. The important result is that the runtime state was correctly identifying the trajectory.
+
+Across the 98 main responses:
+
+- 40 turns were logged with `madeProgress:true`;
+- 58 turns were logged with `madeProgress:false`;
+- `productiveState:"action_required"` was active for 94 turns;
+- the longest uninterrupted no-progress streak was 17 turns, from turn 1 through turn 17.
+
+This confirms that the state machine is observing the right failure class. The model repeatedly entered a state where more free exploration was not justified, and the runtime correctly represented that as `ACTION_REQUIRED`.
+
+The remaining gap is therefore narrower than the original watchdog problem:
+
+> detection is working; action enforcement and recovery behavior still need tightening.
+
+A particularly useful failure pattern occurred after the agent introduced `tests/__init__.py` and caused existing pytest import behavior to regress. The model eventually identified the correct conceptual recovery — remove or roll back the change — but then spent many responses inventing compensating `sys.path` shims and repeatedly reconsidering pytest import semantics.
+
+That gives us a concrete next target: rollback/revert of the agent's own harmful mutation must be treated as a first-class productive action, and `ACTION_REQUIRED` should make repeated evidence-only reconsideration progressively harder rather than merely recording it.
+
+This run therefore strengthens, rather than weakens, the current architecture:
+
+- do not return to a generic fixed no-progress turn counter;
+- keep the explicit productive-progress state machine;
+- improve what actions are legal and preferred inside `ACTION_REQUIRED`;
+- measure future changes against time-to-first-mutation, no-progress streak length, and mutation-to-submit delay.
