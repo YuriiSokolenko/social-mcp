@@ -69,6 +69,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const contract = loadAgentContract('implementer', env);
     const resumePatch = env.PI_RESUME_PATCH;
     const resumed = Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
+    const freshBaseCommit = String(env.PI_IMPLEMENTER_START_COMMIT ?? '').trim();
     const resumeSource = env.PI_CHECKPOINT_EXPECTED
       ? 'checkpoint'
       : env.PI_ISSUE_BRANCH_EXPECTED
@@ -210,6 +211,7 @@ export const STAGES = Object.freeze({
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 6,
+      actionResponseMaxTokens: 512,
       actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
