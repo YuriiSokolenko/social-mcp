@@ -8,6 +8,7 @@ Research date for the initial corpus: **2026-09-28**.
 
 - [`llm_agent_looping_100_cases.md`](./llm_agent_looping_100_cases.md) — 100 external cases involving agent looping, excessive reasoning, repeated tool calls, loss of progress, failure to stop, tool/runtime protocol bugs, and related mitigations.
 - [`2026-09-29-real-flow-ci-analysis.md`](./2026-09-29-real-flow-ci-analysis.md) — analysis of the first real multi-issue Dispatcher/Implementer flow after enabling real tasks, including token/model-time costs and the reasoning-to-action failure pattern.
+- [`2026-09-29-productive-progress-state-machine.md`](./2026-09-29-productive-progress-state-machine.md) — follow-up analysis of Implementer #4 and Dispatcher looping, the rejected turn-counter design, the implemented `EVIDENCE_ALLOWED -> ACTION_REQUIRED` runtime protocol, and green validation.
 - This README — conclusions drawn from the external corpus and from our own Pi/Laguna runs.
 
 ## Executive conclusions
@@ -174,6 +175,42 @@ Pi can reset its reported `turnIndex` after context compaction. The shared progr
 
 The Implementer terminal nudge now explicitly states that repository state is authoritative and that code present only in reasoning, plans, or compaction summaries is not implemented work.
 
+### Productive-progress state machine
+
+Relevant files:
+
+- `scripts/pi-common/progress-controller.mjs`
+- `scripts/pi-agent-runtime.mjs`
+- `scripts/pi-common/stage-config.mjs`
+- `agents/implementer/AGENTS.md`
+- `agents/dispatcher/AGENTS.md`
+- `tests/pi-progress-controller.test.mjs`
+
+The follow-up Implementer #4 and Dispatcher runs showed that `madeProgress=false` was being measured but only affected response-budget selection. The model could therefore continue with different reads/searches or repeated prose while product state remained unchanged.
+
+The runtime now uses a state transition instead of a fixed "N turns without progress" counter:
+
+```text
+prepare_implementation
+  -> EVIDENCE_ALLOWED
+  -> one evidence action
+  -> ACTION_REQUIRED
+       -> edit/write/submit_result
+       -> need_more_evidence -> one evidence action -> ACTION_REQUIRED
+```
+
+Important properties:
+
+- `prepare_implementation` is runtime-enforced single-shot;
+- an evidence permit is consumed at tool-call time, preventing parallel exploration fan-out;
+- `need_more_evidence({missing, reason})` must state one concrete blocker and unlocks exactly one evidence action;
+- an exact repeated blocker is rejected;
+- restored Implementer work starts in `ACTION_REQUIRED`;
+- Dispatcher moves to terminal-only classification after its prepared context is read;
+- `productiveState` is logged in `PI_BUDGET` / `PI_BUDGET_NEXT`.
+
+This makes productive progress a control-flow constraint rather than only a metric. See `2026-09-29-productive-progress-state-machine.md` for the incident data and design rationale.
+
 ### Shared terminal-result gate
 
 Relevant files:
@@ -191,15 +228,15 @@ Behavior:
 
 ## What remains to investigate
 
-The fixes above intentionally target the concrete #97 failure without pretending to solve every class in the corpus. The next useful research directions are:
+The deterministic state machine closes the main open-ended exploration gap without relying on an arbitrary turn counter. Remaining research is narrower:
 
-1. **Result-aware loop detection** — fingerprint `(tool, normalized args, normalized result)`, not just call arguments.
-2. **Short sequence detection** — catch `ABAB`, `ABCABC`, etc. while avoiding legitimate polling/edit-test loops.
-3. **Semantic no-progress detection** — identify repeated reconsideration when repository/task state does not advance.
+1. **Aggregate child-session budgets** — bound total child turns/output/wall time, not only each individual child response.
+2. **Result-aware loop detection** — fingerprint `(tool, normalized args, normalized result)` where stages still permit repeated evidence cycles.
+3. **Semantic blocker equivalence** — differently worded `need_more_evidence` requests may describe the same blocker; the current guard rejects only exact canonical repeats.
 4. **Completion regression detection** — once objective completion evidence exists, prevent reopening already-settled questions unless new contradictory evidence appears.
-5. **Compaction checkpoint quality** — explicitly persist completed plan items, actual mutations, current next action, and terminal state.
+5. **Compaction checkpoint quality** — explicitly persist completed plan items, actual mutations, current next action, terminal state, and productive-progress state.
 6. **Laguna A/B experiments** — compare response-budget policy, sampling, reasoning preservation, and repetition penalties on identical prompts/seeds.
-7. **False-positive control** — polling, iterative debugging, and edit/test cycles must not be killed merely because actions look repetitive.
+7. **False-positive control** — validate that legitimate debug/fix cycles can request concrete new evidence without reopening broad exploration.
 
 ## Design principles for future fixes
 

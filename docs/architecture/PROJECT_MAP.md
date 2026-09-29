@@ -126,6 +126,10 @@ This document is the human- and agent-readable text map of the current Social MC
        v
     Dispatcher
        |
+       +-- read prepared candidate context
+       +-- classify scope
+       +-- submit_result
+       |
        +-- coherent task ------------------------------------+
        |                                                     |
        +-- genuine decomposition needed --> Architect        |
@@ -144,52 +148,70 @@ This document is the human- and agent-readable text map of the current Social MC
                                               |                                 |
                                       planner + classifier                       |
                                               |                                 |
-                                  repo_search / known reads                      |
+                                              v                                 |
+                                       EVIDENCE_ALLOWED                          |
                                               |                                 |
-                                         edit / write <--------------------------+
-                                              |
-                                         submit_result
-                                              |
-                                              v
-                                         Pull Request
-                                              |
-                                              v
-                                           Reviewer
-                                          /        \
-                                       PASS       CHANGES_REQUESTED
-                                        |               |
-                                        v               v
-                                   Merge Gate         Repair
-                                        ^               |
-                                        |               v
-                                        +----------- Reviewer
-                                        |
-                                        v
-                                       dev
+                                      one evidence action                        |
+                                              |                                 |
+                                              v                                 |
+                                       ACTION_REQUIRED <-------------------------+
+                                        /      |      \
+                           need_more_evidence  |       +--> submit_result
+                                  |            |
+                                  v            +--> edit / write
+                          one evidence action          |
+                                  |                    |
+                                  +----> ACTION_REQUIRED
+                                                       |
+                                                       v
+                                                 submit_result
+                                                       |
+                                                       v
+                                                  Pull Request
+                                                       |
+                                                       v
+                                                    Reviewer
+                                                   /        \
+                                                PASS       CHANGES_REQUESTED
+                                                 |               |
+                                                 v               v
+                                            Merge Gate         Repair
+                                                 ^               |
+                                                 |               v
+                                                 +----------- Reviewer
+                                                 |
+                                                 v
+                                                dev
 
-## Implementer repository-access hierarchy
+## Implementer productive-progress / repository-access hierarchy
 
-    Known path
+    prepare_implementation (single-shot)
        |
-       +--> read directly
-
-    Unknown literal path/content
+       v
+    EVIDENCE_ALLOWED
        |
-       +--> repo_search
-               |
-               +--> read discovered path(s)
-
-    Still requires semantic interpretation
+       +--> known path ......................... read directly
        |
-       +--> scout
-               |
-               +--> compact evidence back to main
-
-    Enough evidence
+       +--> unknown literal path/content ....... repo_search
+       |
+       +--> semantic missing fact ............... scout/advisor
+       |
+       +--> trivial unknown target .............. trivial_repo_lookup
+       |
+       v
+    ACTION_REQUIRED
        |
        +--> edit / write
        |
        +--> submit_result
+       |
+       +--> one concrete fact still missing
+               |
+               +--> need_more_evidence
+                         |
+                         +--> exactly one evidence action
+                         |
+                         +--> ACTION_REQUIRED
 
 ## Component ownership
 

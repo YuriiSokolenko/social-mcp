@@ -90,26 +90,49 @@ Do not use workflow inputs as a message bus or state store.
 
 ## Model response budgets
 
-All model-driven stages use the shared `scripts/pi-agent-runtime.mjs` extension (backed by `scripts/pi-common/progress-controller.mjs`). Architect, Dispatcher, Implementer, Reviewer, and PR Fix use the same default ladder:
+All model-driven stages use the shared `scripts/pi-agent-runtime.mjs` extension (backed by `scripts/pi-common/progress-controller.mjs`).
+
+The normal response levels are SHORT 2048, NORMAL 4096, and DEEP 8192, but a ceiling hit alone no longer earns a larger response. Automatic promotion requires the current turn to have made concrete progress:
 
 ```text
 SHORT 2048
-  ├─ response below 2048 -> SHORT 2048
-  └─ response reaches 2048 -> next response NORMAL 4096
+  ├─ below ceiling OR no productive progress -> SHORT 2048
+  └─ ceiling hit + productive progress        -> NORMAL 4096
 
 NORMAL 4096
-  ├─ response below 4096 -> SHORT 2048
-  └─ response reaches 4096 -> next response DEEP 8192
+  ├─ below ceiling OR no productive progress -> SHORT 2048
+  └─ ceiling hit + productive progress        -> DEEP 8192
 
 DEEP 8192
-  └─ next response -> SHORT 2048
+  └─ automatic next level -> SHORT 2048
 ```
 
-Promotion is one-response only; it does not put the rest of the session into a larger budget. `set_response_budget` is a proactive one-response override and then the same automatic policy resumes. Task complexity and response size remain independent.
+A short intermediate turn that actually invokes a tool may preserve an already elevated NORMAL/DEEP budget for the following response. `set_response_budget` remains a proactive one-response override. Task complexity and response size remain independent.
 
 Triage is the deliberate exception: `PI_FIXED_RESPONSE_MAX_TOKENS=1000` keeps every Triage response fixed at 1000 tokens, disables automatic promotion, and does not expose `set_response_budget`.
 
 Each model call logs its active limit as `PI_BUDGET`; the automatic decision for the following call is logged as `PI_BUDGET_NEXT`.
+
+## Productive-progress state
+
+Response-budget state and execution-progress state are separate.
+
+For fresh Implementer work:
+
+```text
+prepare_implementation
+  -> EVIDENCE_ALLOWED
+  -> one evidence action
+  -> ACTION_REQUIRED
+       -> edit / write / submit_result
+       -> need_more_evidence -> one evidence action -> ACTION_REQUIRED
+```
+
+`prepare_implementation` is single-shot. The evidence permit is consumed at accepted tool-call time, so parallel exploration cannot fan out. Restored Implementer work starts in `ACTION_REQUIRED`.
+
+For Dispatcher, reading the prepared candidate context closes exploration and moves directly to terminal classification submission. Project docs/repository/history are not part of the normal Dispatcher classification path.
+
+The current execution state is logged as `productiveState` in `PI_BUDGET` and `PI_BUDGET_NEXT`.
 
 ## Automation modes
 

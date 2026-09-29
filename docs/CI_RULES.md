@@ -143,8 +143,20 @@ Do not silently substitute another task when selected work fails.
 
 ## Complexity guard
 
-Complexity is planning metadata only. Implementer, Reviewer, and PR Fix declare it after bounded orientation; it may guide how much relevant context the agent chooses to inspect, but it does not alter response budgets, turn quotas, or route the task to another workflow. Routing to Architect is a Dispatcher decision made before those stages start.
+Complexity is planning metadata only. Implementer records it through runtime-owned preparation; Reviewer and PR Fix declare it after bounded orientation. It may guide how much relevant context the agent chooses to inspect, but it does not alter response budgets, turn quotas, or route the task to another workflow. Routing to Architect is a Dispatcher decision made before those stages start.
 
+
+## Productive-progress guard
+
+Implementer exploration is constrained by trusted runtime state rather than by a fixed count of "no-progress" turns.
+
+For fresh work, successful `prepare_implementation` opens exactly one evidence action. After that evidence call is accepted, the runtime enters `ACTION_REQUIRED`: the next substantive action must be `edit`, `write`, or `submit_result`. If one concrete missing fact still prevents a safe action, `need_more_evidence({missing, reason})` unlocks exactly one additional evidence action and then returns to `ACTION_REQUIRED`.
+
+`prepare_implementation` is runtime single-shot. Restored Implementer work starts directly in `ACTION_REQUIRED` and should call `submit_result({})` first.
+
+Dispatcher is narrower: after reading its prepared candidate context, exploration is closed and only classification submission (plus non-evidence response-budget control) remains valid. The prepared candidate issue scope is authoritative; Dispatcher must not read repository code, project documentation, Git history, queue state, or unrelated issues to manufacture more certainty.
+
+The productive-progress state is independent from response-token budgeting and is logged as `productiveState` in `PI_BUDGET` / `PI_BUDGET_NEXT`. Prompt prose does not override this state machine.
 
 Before adding a workflow, input, status, SHA field, synchronization step, or recovery path, ask whether fresh GitHub state plus the existing owner can solve the problem.
 

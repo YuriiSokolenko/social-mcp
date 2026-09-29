@@ -190,7 +190,7 @@ This is consistent with the configured ceiling applying to an individual child m
 
 A separate total child-session budget or productive-progress limit is needed if we want deterministic upper bounds on delegated cost.
 
-## Watchdog gap
+## Historical watchdog gap (resolved later on 2026-09-29)
 
 The current idle/stall protections are aimed at periods with no activity. These failures remained "active":
 
@@ -246,7 +246,7 @@ Therefore the real-task failures should be analyzed primarily as agent/runtime b
 3. **The one-file direct-read cap materially amplified cost and delegation.**
 4. **Planner failure is dangerous because preparation is an enforced gateway.**
 5. **Scout/delegate sessions need a total-session cost/progress bound, not only per-response max tokens.**
-6. **Idle watchdogs are insufficient; productive-progress watchdogs are needed.**
+6. **At this point in the investigation, idle watchdogs were insufficient and a productive-progress runtime guard was still needed.** This was later addressed by the state-machine change documented at the end of this report.
 7. **Runtime correctly refused to mark no-terminal/no-change runs green.**
 
 The immediate follow-up removed both the one-file-per-task cap and the later 200-line per-call cap. Known-path reads now stay in main without an arbitrary size/count quota. Subsequent changes also added deterministic main-agent repository search and made closed-issue cancellation cleanup idempotent.
@@ -258,17 +258,73 @@ Reassessment after commit `09d5aa6` and green CI run `36526006149`:
 1. **The direct-read routing mistake is fixed.** Main can read already-known files without arbitrary line/file-count limits, and inspecting multiple known files is no longer a reason to delegate.
 2. **Deterministic discovery now has the correct place in the cost hierarchy.** `repo_search` handles literal path/content discovery in main without launching another model. The preferred flow is now `repo_search -> read -> scout only if semantic interpretation is still needed`.
 3. **Scout is closer to the intended role but remains the most dangerous cost amplifier.** Its launch conditions are narrower, but a child session still has no hard aggregate session budget for total turns/output/wall time.
-4. **The core reasoning-to-action failure is still open.** Laguna can reach sufficient repository evidence and continue reconsidering instead of calling `edit`/`write`. `ProgressController` recognizes mutation/terminal tools as progress, but it does not yet stop exploration when productive progress is absent for too long.
-5. **`prepare_implementation` is still only textually single-shot.** The contract says to call it exactly once, but a planner failure before complexity is recorded still leaves the tool technically callable again by main. Retry/fallback ownership should move fully into runtime.
+4. **At this reassessment point, the core reasoning-to-action failure was still open.** Laguna could reach sufficient repository evidence and continue reconsidering instead of calling `edit`/`write`. This was later addressed by the productive-progress state machine described below.
+5. **At this reassessment point, `prepare_implementation` was still only textually single-shot.** Runtime single-use enforcement was added later in the same 2026-09-29 follow-up described below.
 6. **The Architect #100 cancellation race is fixed narrowly and safely.** A `stopped` transition on an already-closed issue is now an explicit no-op; unrelated invalid state transitions remain errors.
 7. **The system is materially better positioned for the next real-flow experiment.** The next run should measure how many `repo_search`/direct-read operations replace former scout calls, how many child sessions remain, and how many model turns elapse between the last new evidence and the first repository mutation.
 
-### Remaining high-priority work
+### Remaining high-priority work at that reassessment point
 
-The remaining major controls are:
+At the time of the `09d5aa6` reassessment, the remaining major controls were:
 
 1. runtime-enforced single-shot preparation with internal retry/fallback;
 2. hard aggregate budget for scout/delegate sessions;
 3. productive-progress watchdog tied to repository mutation or terminal state.
 
-These now matter more than further prompt-level restrictions.
+The first and third items were subsequently addressed by the 2026-09-29 productive-progress state-machine change described below. The aggregate child-session budget remains open.
+
+## Second real-flow reproduction and watchdog implementation
+
+Later runs reproduced the same reasoning-to-action failure more cleanly:
+
+- Implementer #4 — run `36532754647`, job `109289896187`
+- Dispatcher — run `36533170996`, job `109291202103`
+
+Implementer #4 completed preparation and accumulated enough repository evidence to describe the implementation, but finished after 21 model responses and 45 tool calls with no `edit`, `write`, or `submit_result`. Dispatcher reached a stable classification for all five candidates, then repeatedly reconsidered the same decisions and exhausted two 2,048-token responses without calling `submit_result`.
+
+The important runtime finding was that `madeProgress:false` already existed in the logs, but `ProgressController` used it only for response-budget selection. Lack of productive progress did not constrain the next legal action.
+
+A fixed "N turns without progress" watchdog was considered and rejected because it measures duration rather than whether the next transition is justified. The implemented design is instead a deterministic state machine:
+
+```text
+prepare_implementation
+  -> EVIDENCE_ALLOWED
+  -> one evidence action
+  -> ACTION_REQUIRED
+       -> edit/write/submit_result
+       -> need_more_evidence({missing, reason})
+            -> one evidence action
+            -> ACTION_REQUIRED
+```
+
+Additional enforcement:
+
+- `prepare_implementation` is now runtime single-shot;
+- the evidence permit is consumed at tool-call time, so parallel exploration cannot fan out;
+- exact repeated `need_more_evidence` blockers are rejected;
+- restored Implementer work begins in `ACTION_REQUIRED`;
+- Dispatcher moves directly from its prepared candidate context to terminal-only submission;
+- Dispatcher no longer performs a mandatory project-documentation exploration phase;
+- `productiveState` is emitted in the budget logs for trace analysis.
+
+Implementation:
+
+- `064a78a89e08401f425eae71073d35c87c75b707` — `fix(pi): enforce productive progress state machine`
+- `6da3bc652a84fcfda2949aaf0b170d0a9e2ec134` — contract-test alignment
+
+Validation:
+
+- CI run `36537093235` — **success**
+- Ruff — success
+- full pytest — success
+- Agent workflow checks — success
+- Runner autoscaler checks — success
+- Docker — success
+
+The detailed incident/design report is `docs/llm-research/2026-09-29-productive-progress-state-machine.md`.
+
+### Current remaining high-priority work
+
+1. **Hard aggregate child-session budget** for scout/delegate total turns/output/wall time.
+2. **Semantic blocker-equivalence research** if differently worded `need_more_evidence` requests become a new loop surface.
+3. **Real-flow measurement** of preparation-to-first-mutation time, blocked exploration attempts, blocker count, and child cost under the new state machine.

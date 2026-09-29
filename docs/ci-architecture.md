@@ -106,7 +106,7 @@ Trusted reusable pipeline policy belongs in `scripts/pi-common/`, with its purpo
 
 Keep stage-specific orchestration outside the common directory. A helper is common only when multiple stages need the same deterministic rule.
 
-All model-driven stages run through `pi-run-stage.mjs`, which wires one shared progress controller plus the stage-specific terminal tool. The controller owns bounded orientation, complexity declaration, repeat/turn protection, and response budgets. The global turn ceiling closes exploration but leaves `edit`, `write`, and terminal submission available. Complexity is planning metadata, not a second quota system. Model prose or a process exit is never accepted as a substitute for a trusted terminal result artifact.
+All model-driven stages run through `pi-run-stage.mjs`, which wires one shared progress controller plus the stage-specific terminal tool. The controller owns bounded orientation, complexity declaration, repeat/turn protection, response budgets, single-use startup actions, and productive-progress state. The global turn ceiling remains an emergency bound, but Implementer no longer depends on a no-progress turn count: after one evidence action it enters `ACTION_REQUIRED`, where it must `edit`, `write`, `submit_result`, or declare one concrete `need_more_evidence` blocker to unlock exactly one more evidence action. Dispatcher becomes terminal-only after its prepared candidate context is loaded. Complexity is planning metadata, not a second quota system. Model prose or a process exit is never accepted as a substitute for a trusted terminal result artifact.
 
 ## Recovery rule
 

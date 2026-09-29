@@ -614,7 +614,17 @@ Source: https://github.com/NousResearch/hermes-agent/blob/main/agent/tool_guardr
 - Separate counters for LLM turns and actual tool executions.
 - Terminal classification for non-retryable failures.
 - Explicit completion states after tests/build/review succeed.
-- Search/exploration budgets followed by a forced synthesis/implementation phase.
+- Search/exploration phases should have a deterministic transition to action rather than relying only on a large `max_iterations` counter.
 - Preserve tool-call/result identity and execution checkpoints across retries/compaction.
 - Never silently trim the current tool-call/result pair from context.
 - Circuit breaker should be runtime-enforced; prompt reminders are a secondary layer only.
+
+### Local application in Social MCP
+
+The 2026-09-29 Implementer #4 and Dispatcher reproductions showed a semantic no-progress loop that exact-call and turn-count guards did not capture. Social MCP therefore implemented a transition-based guard:
+
+`EVIDENCE_ALLOWED -> one evidence action -> ACTION_REQUIRED`
+
+From `ACTION_REQUIRED`, Implementer must mutate/submit or declare one concrete `need_more_evidence` blocker, which unlocks exactly one additional evidence action. Dispatcher becomes terminal-only after its prepared context is loaded. This intentionally constrains **legal transitions**, not the number of turns a difficult task is allowed to use.
+
+Detailed report: `2026-09-29-productive-progress-state-machine.md`.

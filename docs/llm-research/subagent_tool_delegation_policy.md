@@ -1,251 +1,279 @@
 # Subagent Tool Delegation Policy
 
-Research date: **2026-09-28**.
+Research baseline: **2026-09-28**. Current runtime policy updated **2026-09-29**.
 
 ## Purpose
 
-This document records the current Implementer boundary between the main Pi agent and native subagents.
+This document records the current Implementer boundary between the main Pi agent, deterministic repository tools, and native subagents.
 
 Core principle:
 
-> **Main handles bounded known-path operations. Subagents handle exploration.**
+> **Main owns mutations and terminal submission. Evidence gathering is bounded by runtime state, not by an arbitrary number of model turns.**
 
-Subagent launches have real fixed cost: a new child context, model turns, tool work, and handoff. The goal is therefore not to maximize delegation. The goal is to keep exploratory context out of the main session when that actually saves context or reasoning.
+Subagent launches have real fixed cost: a new child context, model turns, tool work, and handoff. The goal is not to maximize delegation. The goal is to obtain the minimum missing evidence needed for the next safe product action.
 
-## Planning and task complexity
+## Startup planning and complexity
 
-Planning and task-level complexity are delegated before repository inspection.
+Fresh Implementer work starts from the complete operating contract embedded in the initial prompt. Main must not re-read `agents/implementer/AGENTS.md`.
 
-- Main reads `agents/implementer/AGENTS.md`.
-- Main calls the runtime-owned `prepare_implementation` action exactly once.
-- Runtime sends only the issue title/body to the permanent project `implementation-planner`.
-- The planner owns the top-level implementation plan and is capped at **768 output tokens**.
-- Runtime then sends issue title/body plus that plan to the separate `complexity-classifier`.
-- The classifier returns exactly `trivial|normal|complex` plus one short reason.
-- Runtime schema-validates `{ complexity, reason }` and gives main only the prepared plan and classification.
-- Main does not manually invoke either child and does not repeat task-level planning/classification.
+The first tool action is the runtime-owned `prepare_implementation`.
 
-The planner/classifier split keeps exploratory planning and the complexity rubric out of the main implementation context while preserving a structured execution contract.
+Runtime then:
+
+1. sends only issue title/body to the permanent `implementation-planner`;
+2. caps the planner at **768 output tokens** and schema-validates its ordered plan;
+3. sends issue title/body plus that plan to the separate `complexity-classifier`;
+4. schema-validates `{ complexity, reason }`;
+5. returns only the prepared plan and classification to main.
+
+`prepare_implementation` is runtime-enforced **single-shot**. Main cannot call the planner or classifier children directly as substitutes.
+
+Complexity remains planning metadata. It does not grant more tool calls, more response budget, or permission for broad exploration.
+
+## Productive-progress state machine
+
+The current runtime no longer permits an open-ended sequence of reads/searches/scouts after preparation.
+
+```text
+prepare_implementation
+        |
+        v
+EVIDENCE_ALLOWED
+        |
+        | exactly one non-control evidence action
+        v
+ACTION_REQUIRED
+        |
+        +--> edit
+        +--> write
+        +--> submit_result
+        |
+        +--> need_more_evidence({missing, reason})
+                    |
+                    v
+              EVIDENCE_ALLOWED
+                    |
+                    | exactly one evidence action
+                    v
+              ACTION_REQUIRED
+```
+
+The evidence permit is consumed when the tool call is accepted, not when it finishes. This prevents one model response from issuing several parallel exploration calls.
+
+### Evidence actions
+
+Examples include:
+
+- direct `read` of an already-known path;
+- `repo_search` for deterministic literal path/content discovery;
+- `trivial_repo_lookup` for the special trivial unknown-target path;
+- one scout/research/delegate call when semantic evidence is genuinely required;
+- an allowed bounded diagnostic command.
+
+After any evidence action, main is back in `ACTION_REQUIRED`.
+
+### Concrete blocker escape
+
+If the available evidence is insufficient for a safe mutation or submission, main may call:
+
+`need_more_evidence({missing, reason})`
+
+The request must name one concrete missing fact and why it blocks the next safe action. Runtime then unlocks exactly one evidence action.
+
+An exact repeated blocker request is rejected. The runtime intentionally does not use another LLM to judge semantic equivalence.
+
+`set_response_budget` and the one-time `subagents_enable` control action do not consume an evidence permit.
 
 ## Keep in the main agent
 
-Use direct main-agent operations when all needed context is already bounded:
+Main retains:
 
-- already-known files: direct `read` calls with no runtime line-count or per-task file-count cap;
-- one bounded `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`;
+- issue/acceptance-criteria interpretation;
+- execution decisions after the prepared plan;
+- direct reads of already-known paths when an evidence permit is available;
+- deterministic `repo_search`;
+- the special `trivial_repo_lookup` path;
 - `edit` / `write`;
 - conflict-resolution mutations;
+- bounded known-path `git diff` / `git status`;
 - `submit_result`.
 
-Do not use repeated guessed reads as a substitute for discovery. Delegate when the path/symbol/pattern is unknown; do not delegate merely because another already-known file must be read.
+Do not use repeated guessed reads as discovery. More importantly, do not treat "another useful read exists" as sufficient reason to reopen exploration: after the current evidence action, another read requires a concrete `need_more_evidence` blocker.
 
-## Delegate
+## When to use scout
 
-Use `scout` when any of these are true:
+Use `scout` only when the one missing fact cannot be obtained cheaply with deterministic search or one direct known-path read, for example:
 
-- target path/symbol/test/config is unknown;
-- several unknown files must first be discovered, or a broad cross-repository comparison/search is required;
-- usages, patterns, or similar implementations must be searched;
-- logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
-- the needed evidence requires a broad repository dump or search rather than reading known files;
-- a skill or project document must be searched for relevant rules.
+- a conceptual target cannot be identified by literal `repo_search`;
+- several candidates were found and choosing between them requires semantic comparison;
+- usages or related implementations require interpretation;
+- logs, diagnostics, stack traces, or history need analysis;
+- the missing evidence requires a broad repository view rather than a bounded read.
 
-`grep`, `find`, and `ls` remain runtime-blocked in main. Broad `bash` is also blocked. Focused test/lint/type/compile commands can use the package-owned `run-ci` workflow.
+Complexity alone never justifies scout.
 
-## Scout request shape
+A scout request should answer one concrete question and stop at the first sufficient answer. Require compact fixed-shape output; do not ask for whole files or broad dumps.
 
-A scout request should answer one concrete question and stop at the first sufficient answer.
-
-Do not ask for the globally smallest/best candidate unless the issue actually requires that optimization. That wording caused exhaustive repository exploration in the #115 smoke test.
-
-For a pre-edit scout, request in one call:
+For a pre-edit scout, prefer asking for:
 
 1. target path;
 2. exact minimal verbatim `oldText`;
 3. insertion/replacement point;
 4. one safety constraint, if any.
 
-Require compact fixed-shape output. Do not ask for whole files or broad repository dumps.
+After the scout returns, runtime is back in `ACTION_REQUIRED`.
+
+## Tool routing constraints
+
+Main may not use direct `grep`, `find`, or `ls`. Use `repo_search` for ordinary deterministic repository discovery.
+
+Broad main-agent shell access remains blocked. Known-path read-only Git diff/status commands are the intended direct shell exception.
+
+Focused test/lint/type/compile work remains owned by the existing trusted/package workflows and terminal validation path rather than broad ad-hoc shell exploration.
 
 ## Ownership
 
-Main retains:
+Main owns:
 
-- issue interpretation and acceptance criteria;
-- execution plan;
-- implementation/architecture decisions;
-- mutations;
-- terminal submission;
-- Git/GitHub state ownership remains with trusted workflow tooling.
+- mutation;
+- conflict resolution;
+- terminal submission.
 
-`complexity-classifier` only classifies. `scout` only gathers evidence. `worker`/`reviewer` are not mutation owners in the Implementer flow.
+Children do not become mutation owners in the Implementer flow.
 
-## Runtime enforcement
+- `implementation-planner` plans.
+- `complexity-classifier` classifies.
+- `scout` gathers evidence.
+- `delegate`, `reviewer`, `oracle`, and `researcher` are optional focused advisors/evidence sources when the current blocker genuinely needs them.
+- `worker` is not the mutation owner for Implementer.
 
-For Implementer:
+Git/GitHub state ownership remains with trusted workflow tooling.
 
-- mandatory first read remains `agents/implementer/AGENTS.md`;
-- before complexity is recorded, runtime allows only `classify_task_complexity`; direct `subagents_enable` / `subagent` classification is not exposed to main;
-- a failed classifier may be retried; a successful classification is single-shot;
-- after declaration, direct reads of already-known paths are allowed with no runtime line-count or per-task file-count cap;
-- direct shell access is restricted to bounded one-path Git diff/status commands;
-- `grep` / `find` / `ls` stay delegated;
-- `.pi/**` is control-plane and cannot be modified by Implementer.
+## Restored work
 
-## Response budget
+Restored checkpoint/issue-branch work does not enter the fresh exploration path.
 
-`scout` and `complexity-classifier` load `scripts/pi-subagent-response-budget.mjs` as a child-only extension.
+It starts in `ACTION_REQUIRED` and should call:
 
-The parent publishes its current response ceiling, so selected native children mirror SHORT/NORMAL/DEEP:
+`submit_result({})`
 
-- SHORT: `2048`
-- NORMAL: `4096`
-- DEEP: `8192`
+immediately.
 
-This controls child response output, not total child usage or context size.
+If submission reports a concrete conflict or validation failure, main fixes only that problem and retries. Restored work must not use `already_satisfied`.
 
-## Intended flow
+## Response budgets
+
+Selected child agents load `scripts/pi-subagent-response-budget.mjs` and mirror the parent's current per-response ceiling. The implementation planner is separately capped at 768 output tokens.
+
+The normal main response levels remain:
+
+- SHORT: 2048
+- NORMAL: 4096
+- DEEP: 8192
+
+Automatic promotion after hitting a ceiling occurs only when the turn made concrete progress. A reasoning-only ceiling hit does not earn a larger next response.
+
+These limits apply to individual responses. They are **not** a hard aggregate child-session token/turn/wall-time budget. Aggregate child-session cost remains an open reliability item.
+
+## Current intended flows
 
 Known target:
 
 ```text
-AGENTS.md
+embedded contract
   -> prepare_implementation
-     -> implementation-planner
-     -> complexity-classifier
-  -> known-path reads as needed
+  -> read known target
   -> edit/write
-  -> bounded direct git diff
   -> submit_result
 ```
 
-Unknown target:
+Literal discovery:
 
 ```text
-AGENTS.md
+embedded contract
   -> prepare_implementation
-     -> implementation-planner
-     -> complexity-classifier
-  -> compact scout exploration
+  -> repo_search
+  -> need_more_evidence("read discovered target")
+  -> read
   -> edit/write
-  -> bounded direct git diff
   -> submit_result
 ```
 
-## Confirmed successful run — issue #139
+Semantic blocker:
 
-GitHub Actions run: `36468466648`, job `109084405617`.
+```text
+embedded contract
+  -> prepare_implementation
+  -> first evidence action
+  -> need_more_evidence("one concrete semantic fact")
+  -> one compact scout/advisor call
+  -> edit/write
+  -> submit_result
+```
 
-Test issue: **#139 — known-target implementer smoke test rerun**.
+Already satisfied in current `dev`:
 
-Target operation was deliberately minimal: append exactly one line to the already-known file `tasks/README.md` and change nothing else.
+```text
+embedded contract
+  -> prepare_implementation
+  -> evidence establishing exact requested end state
+  -> submit_result(already_satisfied=true, changes=[])
+```
 
-### Successful steps
+## Historical successful reference — issue #139
 
-1. **Mandatory contract read stayed in main.**
-   - Main read `agents/implementer/AGENTS.md` first.
-   - It did not perform repository exploration before the contract was loaded.
+GitHub Actions run `36468466648`, job `109084405617`, was the first confirmed successful known-target run for the planner/classifier architecture before the productive-progress state machine was added.
 
-2. **Preparation was delegated through one runtime entry point.**
-   - Main called `prepare_implementation` once.
-   - Main did not manually call planner or classifier children.
+The task was deliberately minimal: append one exact line to already-known `tasks/README.md`.
 
-3. **The planner produced a small, usable plan.**
-   - Planner ceiling: **768 output tokens**.
-   - Actual planner output: **195 tokens**.
-   - The plan identified the exact known target, idempotency check, one-line edit, bounded diff, and terminal submission.
-   - No repository search was needed to create the plan.
+Observed behavior:
 
-4. **Complexity classification stayed separate and cheap.**
-   - Classifier output: **62 tokens**.
-   - Result: `trivial`.
-   - Reason correctly described the task as a single-file static README append with no architecture, dependency, migration, security, or conflict decision.
+- main called `prepare_implementation` once;
+- planner output: 195 tokens;
+- classifier output: 62 tokens, `trivial`;
+- no scout or generic subagent discovery;
+- one direct target read supplied the edit anchor;
+- main performed one `edit`;
+- bounded diff confirmed one line added;
+- `submit_result` validated and published PR #140;
+- 6 main responses;
+- 1,825 main output tokens;
+- 71,015 total reported tokens;
+- about 154.7 seconds model response time.
 
-5. **Main respected the known-target fast path.**
-   - No `trivial_repo_lookup`.
-   - No `scout`.
-   - No generic subagent discovery/listing.
-   - The issue already supplied `tasks/README.md`, so main went directly to one bounded read.
+The run also exposed a remaining inefficiency at that time: the model spent 1,188 output tokens and about 80.5 seconds reasoning about a trivial newline/edit anchor after the read had already supplied enough evidence.
 
-6. **The bounded read was sufficient evidence for mutation.**
-   - Main read only `tasks/README.md`.
-   - The requested line was absent, so the task was not already satisfied.
-   - The existing final line provided a safe edit anchor.
+That observation directly motivated the later productive-progress design: once evidence is sufficient, the runtime should move the trajectory toward action rather than merely asking the prompt to be less verbose.
 
-7. **Mutation ownership stayed in main.**
-   - Main performed the single `edit`.
-   - Exactly one line was added:
-     `Subagent edit-ready delegation test passed.`
-   - No existing text was changed.
+## 2026-09-29 reasoning-to-action follow-up
 
-8. **Verification stayed bounded.**
-   - Main ran `git diff -- tasks/README.md`.
-   - Diff confirmed one file changed, one line added, zero unrelated edits.
+Implementer #4 and a Dispatcher run later reproduced the same class more strongly: both had sufficient evidence but continued reasoning/research without mutation or terminal submission.
 
-9. **Terminal result and publication completed correctly.**
-   - `submit_result` completed.
-   - Validation reported `pytest`, `ruff check .`, and `git diff --check` passed.
-   - Workflow created PR **#140** from `pi/issue-139`.
-   - PR diff was exactly one added line and the PR was mergeable.
-   - Issue #139 transitioned to `pi:mr-created`.
-   - The checkpoint branch was removed after publication.
-   - The overall job completed successfully.
+The resulting state-machine implementation is documented in:
 
-### Measured usage
+`docs/llm-research/2026-09-29-productive-progress-state-machine.md`
 
-Main/model totals for the run:
+Validated implementation commits:
 
-- **6 main responses**
-- **11,958 input tokens**
-- **1,825 output tokens**
-- **57,232 cache-read tokens**
-- **71,015 total reported tokens**
-- **154.7 s model response time**
-- **6 tool calls**
+- `064a78a89e08401f425eae71073d35c87c75b707`
+- `6da3bc652a84fcfda2949aaf0b170d0a9e2ec134`
 
-Child preparation work:
+Final CI run `36537093235` succeeded.
 
-- implementation planner: **195 output tokens**
-- complexity classifier: **62 output tokens**
+## Measurement goals
 
-This confirms that the planner/classifier split is working as intended: both preparation children stayed compact and main avoided exploratory subagent overhead for a known target.
+Future real-flow runs should compare:
 
-### Remaining inefficiency found by the successful run
-
-The flow was correct, but the main agent was still too verbose immediately before the simple edit.
-
-The edit-preparation response used:
-
-- **1,188 output tokens**
-- about **80.5 s** response time
-
-Most of that response repeatedly reasoned about the trailing newline and whether the final-line anchor should include `\n`. The bounded read had already supplied enough evidence, so this reasoning added no safety value.
-
-For this run, that single response accounted for roughly **65% of all main output tokens**.
-
-Follow-up optimization target:
-
-> When a known-target bounded read yields a unique, obvious edit anchor and the mutation is mechanically specified, main should invoke `edit` immediately instead of narrating alternative anchor/newline strategies.
-
-This is now a more important optimization target than planner/classifier token cost for trivial known-target tasks.
-
-### Secondary parser observation
-
-After terminal submission the log contained an `Unparsed Pi event` for a pytest progress line (`tests/server/test_errors.py ... [81%]`). It did not affect execution: tests passed, publication succeeded, and the job conclusion was `success`. Treat this as a log-parser cleanup item rather than an implementation-flow failure.
-
-## Measurement goal
-
-Future smoke tests should continue comparing:
-
+- time from `prepare_implementation` completion to first mutation;
+- number of evidence actions;
+- number of `need_more_evidence` calls;
+- attempts blocked while in `ACTION_REQUIRED`;
 - main-context tokens;
 - planner/classifier tokens;
 - exploratory child tokens;
-- total tokens;
-- model time;
-- number of main responses;
-- number of child runs;
-- failed child runs;
-- edit-preparation verbosity;
-- whether bounded known-target operations eliminate unnecessary scout/lookup launches.
+- total child-session time;
+- total model time;
+- mutation-to-`submit_result` delay;
+- whether differently worded blockers become a new loop surface.
 
-Issue #139 is the first confirmed successful known-target reference run for the current `prepare_implementation -> planner -> classifier -> main` architecture.
+The current priority is no longer "add a productive-progress watchdog"; it is to validate this state machine under real tasks and add an aggregate child-session budget if child cost remains the dominant failure mode.

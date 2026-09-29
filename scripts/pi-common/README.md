@@ -23,7 +23,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `control-plane-policy.mjs` — single security boundary for files Pi agents must never change/review/repair/auto-merge.
 - `agent-change-policy.mjs` — lists every path an agent session actually touched (committed, staged, unstaged, and untracked), so control-plane checks see real working-tree changes, not just `HEAD` diffs.
 - `finalize-product-tree.mjs` — integrates latest `dev` into the agent's branch, rejects agent changes to control-plane paths via `agent-change-policy.mjs`, and runs the authoritative product checks; shared by the Implementer and PR Fix terminal tools as `validateFinalProductTree()`.
-- `bash-timeout-policy.mjs` / `progress-controller.mjs` — reusable model safety state: bounded orientation, complexity declaration, repeat/turn protection, and response budgets in one controller.
+- `bash-timeout-policy.mjs` / `progress-controller.mjs` — reusable model safety state: bounded orientation, complexity declaration, repeat/turn protection, response budgets, single-use startup actions, and the productive-progress state machine (`EVIDENCE_ALLOWED` / `ACTION_REQUIRED`).
 - `product-checks.mjs` — authoritative product-code deterministic checks used before publication/review.
 - `pr-guard.mjs` — loads the complete PR state/file list and enforces the pre-model human/control-plane gate.
 - `issue-context.mjs` — performs the Implementer's one fresh issue read and validates `open + pi:ready` before model work.
