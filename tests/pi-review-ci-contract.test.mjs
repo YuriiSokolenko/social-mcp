@@ -605,9 +605,12 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   const progress = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
   const resultTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
 
+  assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_start_server'));
+  assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_start_server'));
   assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_find_symbol'));
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_find_symbol'));
-  assert.match(implementer, /If only the symbol name is known, call `lsp_find_symbol` directly/i);
+  assert.match(implementer, /call `lsp_start_server` once.*workspace_root: "\.".*then call `lsp_find_symbol`/i);
+  assert.match(implementer, /Do not call `lsp_server_status` first/i);
   assert.match(implementer, /Do not use it before LSP merely to rediscover an already-named source symbol/i);
   assert.match(implementer, /Treat history as provenance evidence, never current source truth, current-symbol discovery, or an edit anchor/i);
   assert.match(implementer, /safe_edit.*bounded line\/range/i);
