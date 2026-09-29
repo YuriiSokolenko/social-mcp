@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const OPERATIONS = new Set(['insert_before', 'insert_after', 'replace']);
+const POST_EDIT_PREVIEW_MAX_CHARS = 2000;
 
 function positiveLine(value, name) {
   if (!Number.isSafeInteger(value) || value < 1) {
@@ -115,6 +116,14 @@ export function safeEdit(root, params) {
   const output = lines.join(newline) + (hasFinalNewline ? newline : '');
   atomicWrite(absolutePath, output);
 
+  // Re-read the written file so the mutation result itself proves what landed
+  // on disk. Keep the preview bounded so a large replacement cannot inflate
+  // the next model response or tempt a redundant verification read.
+  const written = fs.readFileSync(absolutePath, 'utf8');
+  const { lines: writtenLines } = splitLogicalLines(written);
+  const postEditText = writtenLines.slice(changedStart - 1, changedEnd).join('\n');
+  const postEditTruncated = postEditText.length > POST_EDIT_PREVIEW_MAX_CHARS;
+
   return {
     path: params.path,
     operation,
@@ -123,5 +132,13 @@ export function safeEdit(root, params) {
     changed_start_line: changedStart,
     changed_end_line: changedEnd,
     line_delta: replacement.length - (operation === 'replace' ? endLine - startLine + 1 : 0),
+    post_edit: {
+      start_line: changedStart,
+      end_line: changedEnd,
+      text: postEditTruncated
+        ? postEditText.slice(0, POST_EDIT_PREVIEW_MAX_CHARS)
+        : postEditText,
+      truncated: postEditTruncated,
+    },
   };
 }
