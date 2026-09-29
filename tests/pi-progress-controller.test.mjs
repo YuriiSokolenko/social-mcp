@@ -645,7 +645,7 @@ test('productive progress allows only one extra evidence permit per productive e
     missing: 'different helper detail',
     reason: 'would provide more context',
   });
-  assert.match(secondUnlock.reason, /already used since the last successful edit\/write\/submit_result/);
+  assert.match(secondUnlock.reason, /already used since the last successful safe_edit\/edit\/write\/submit_result/);
 
   assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   state.onToolExecutionEnd('edit', true);
@@ -653,7 +653,7 @@ test('productive progress allows only one extra evidence permit per productive e
     missing: 'failed edit follow-up',
     reason: 'the mutation did not succeed',
   });
-  assert.match(afterFailedEdit.reason, /already used since the last successful edit\/write\/submit_result/);
+  assert.match(afterFailedEdit.reason, /already used since the last successful safe_edit\/edit\/write\/submit_result/);
 
   assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   state.onToolExecutionEnd('edit', false);
