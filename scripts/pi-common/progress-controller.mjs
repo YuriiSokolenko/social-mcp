@@ -224,17 +224,17 @@ export class ProgressController {
         this.productiveState = 'action_required';
       } else if (this.productiveState === 'action_required') {
         if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
-          if (this.evidenceUnlockUsedSinceProgress) {
-            return {
-              block: true,
-              reason: 'BLOCKED: an extra evidence permit was already used since the last successful edit/write/submit_result. Act on the evidence already gathered before requesting more.',
-            };
-          }
           const blockerSignature = toolCallSignature(toolName, input);
           if (blockerSignature === this.lastEvidenceRequestSignature) {
             return {
               block: true,
               reason: 'BLOCKED: the same missing-evidence request was already used. Act on the evidence already gathered before requesting more.',
+            };
+          }
+          if (this.evidenceUnlockUsedSinceProgress) {
+            return {
+              block: true,
+              reason: 'BLOCKED: an extra evidence permit was already used since the last successful edit/write/submit_result. Act on the evidence already gathered before requesting more.',
             };
           }
           this.lastEvidenceRequestSignature = blockerSignature;
