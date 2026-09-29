@@ -35,3 +35,15 @@ export function withTaskMetadata(body, priority, dependencies) {
   }
   return block + source;
 }
+
+
+export function acceptanceCriteria(body) {
+  const source = body ?? "";
+  const match = /^## Acceptance criteria\s*\r?\n([\s\S]*?)(?=^##\s|(?![\s\S]))/im.exec(source);
+  if (!match) return { valid: false, count: 0, error: "missing ## Acceptance criteria section" };
+  const count = match[1].split(/\r?\n/).filter(line => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line)).length;
+  if (count < 3 || count > 15) {
+    return { valid: false, count, error: "Acceptance criteria must contain 3-15 list items" };
+  }
+  return { valid: true, count, error: null };
+}

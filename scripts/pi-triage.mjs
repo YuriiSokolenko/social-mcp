@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { githubClient } from "./pi-common/github-api.mjs";
 import { replaceIssueState } from "./pi-common/github-state.mjs";
 import { validateIssueTransition } from "./pi-common/state-machine.mjs";
-import { taskMetadata } from "./pi-common/task-metadata.mjs";
+import { acceptanceCriteria, taskMetadata } from "./pi-common/task-metadata.mjs";
 import { readPiJsonl } from "./pi-common/result-jsonl.mjs";
 
 const { api: request, pages, ensureLabel, repo, comment: postIssueComment } = githubClient();
@@ -108,6 +108,7 @@ async function candidates() {
         .slice(-15)
         .map(comment => ({ author: comment.user?.login ?? "unknown", body: comment.body ?? "" })),
       task,
+      acceptance_criteria: acceptanceCriteria(issue.body ?? ""),
       dependency_states: dependencies,
     });
   }
@@ -197,6 +198,8 @@ async function main() {
       console.log(`Skipped #${number}: no longer an eligible candidate`);
       continue;
     }
+    const ac = acceptanceCriteria(issue.body ?? "");
+    if (!ac.valid) throw new Error(`#${number} cannot be ready: ${ac.error}`);
     await transitionIssue(number, "queued");
     console.log(`Marked #${number} dispatcher:ready`);
   }

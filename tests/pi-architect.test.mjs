@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { childNumbers, parentOf, planFromJsonl, taskMetadataFromBody, validatePlan, withTaskMetadata } from '../scripts/pi-architect.mjs';
 
-const body = '## Goal\nSpecify the shared contract.\n\n## Acceptance criteria\nDefine the stable schema and cover compatibility with focused tests.\n\n## Out of scope\nNo business logic.';
+const body = '## Goal\nSpecify the shared contract.\n\n## Acceptance criteria\n- Define the stable schema.\n- Cover compatibility with focused tests.\n- Keep the contract independently reviewable.\n\n## Out of scope\nNo business logic.';
 const step = (key, kind, depends_on = []) => ({
   key, kind, priority: 'P1', title: `Complete the ${key} part of issue 42`, body, depends_on,
 });
@@ -87,4 +87,18 @@ test('rewrites Task metadata without consuming issue content', () => {
     withTaskMetadata('## Task metadata\nPriority: P2\nDepends on: []\n', 'P1', [7, 8]),
     '## Task metadata\nPriority: P1\nDepends on: [#7, #8]\n\n',
   );
+});
+
+
+test('architect rejects revised or child issue bodies outside the 3-15 AC range', () => {
+  const tooFew = '## Goal\nX\n\n## Acceptance criteria\n- One\n- Two\n\n## Out of scope\nNone';
+  const revise = { parent_issue: 42, action: 'revise', reason: 'The issue needs a clearer specification before implementation.',
+    title: 'Implement the remaining account profile behavior', body: tooFew, priority: 'P1', depends_on: [] };
+  assert.throws(() => validatePlan(revise, 42), /Invalid revised issue/);
+  assert.throws(() => validatePlan({ parent_issue: 42, steps: [
+    { key: 'a', kind: 'implementation', priority: 'P1', title: 'Implement the first bounded feature',
+      body: tooFew, depends_on: [] },
+    { key: 'b', kind: 'implementation', priority: 'P1', title: 'Implement the second bounded feature',
+      body, depends_on: [] },
+  ] }, 42), /Invalid step metadata/);
 });

@@ -30,6 +30,9 @@ Describe the concrete outcome.
 
 ## Acceptance criteria
 
+<!-- Required: 3-15 concrete, testable list items. -->
+- 
+- 
 - 
 
 ## Out of scope

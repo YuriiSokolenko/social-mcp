@@ -7,7 +7,7 @@ import { replaceIssueState } from './pi-common/github-state.mjs';
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-common/state-machine.mjs';
 import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
-import { taskMetadata, withTaskMetadata } from './pi-common/task-metadata.mjs';
+import { acceptanceCriteria, taskMetadata, withTaskMetadata } from './pi-common/task-metadata.mjs';
 import { readPiJsonl } from './pi-common/result-jsonl.mjs';
 
 const { api, pages, ensureLabel, repo } = githubClient();
@@ -36,7 +36,7 @@ export function validatePlan(plan, parent) {
     if (plan.action === 'keep') return plan;
     if (typeof plan.title !== 'string' || plan.title.length < 12 || plan.title.length > 110 ||
         typeof plan.body !== 'string' || plan.body.length < 120 || plan.body.length > 5000 ||
-        /<!--\s*architect-/.test(plan.body) || !['P0', 'P1', 'P2'].includes(plan.priority) ||
+        !acceptanceCriteria(plan.body).valid || /<!--\s*architect-/.test(plan.body) || !['P0', 'P1', 'P2'].includes(plan.priority) ||
         !Array.isArray(plan.depends_on) || new Set(plan.depends_on).size !== plan.depends_on.length ||
         !plan.depends_on.every(n => Number.isSafeInteger(n) && n > 0 && n !== parent)) {
       throw new Error('Invalid revised issue or task metadata');
@@ -58,6 +58,7 @@ export function validatePlan(plan, parent) {
         !['P0', 'P1', 'P2'].includes(step.priority) ||
         typeof step.title !== 'string' || step.title.length < 12 || step.title.length > 110 ||
         typeof step.body !== 'string' || step.body.length < 120 || step.body.length > 5000 ||
+        !acceptanceCriteria(step.body).valid ||
         !Array.isArray(step.depends_on) || !step.depends_on.every(key => seen.has(key)) ||
         new Set(step.depends_on).size !== step.depends_on.length) {
       throw new Error('Invalid step metadata, duplicate key, or forward dependency');
@@ -240,6 +241,9 @@ async function publish(issue, jsonl, contextFile) {
     number => taskMetadataFromBody(number, backlogByNumber.get(number)?.body ?? ''));
   if (plan.action === 'keep' || plan.action === 'revise') {
     if (childNumbers(parent.body).length) throw new Error('Cannot revise an already split issue');
+    if (plan.action === 'keep' && !acceptanceCriteria(parent.body ?? '').valid) {
+      throw new Error('Architect keep requires ## Acceptance criteria with 3-15 list items');
+    }
     if (plan.action === 'revise') {
             const marker = /<!-- architect-parent:\d+; architect-key:[a-z][a-z0-9-]* -->/.exec(parent.body ?? '')?.[0];
       const revised = withTaskMetadata(plan.body, plan.priority, plan.depends_on);

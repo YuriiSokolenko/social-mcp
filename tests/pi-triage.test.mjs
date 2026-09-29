@@ -2,6 +2,7 @@ import fs from "node:fs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { finalText, triageFromJsonl, validateTriage } from '../scripts/pi-triage.mjs';
+import { acceptanceCriteria } from '../scripts/pi-common/task-metadata.mjs';
 
 const needsHuman = (issue, comment = 'This issue is missing an acceptance criteria section entirely.') => ({ issue, comment });
 const skipped = (issue, reason = 'lacks enough repository context to judge safely') => ({ issue, reason });
@@ -63,4 +64,13 @@ test('triage no longer depends on deleted task files', () => {
   const source = fs.readFileSync('scripts/pi-triage.mjs', 'utf8');
   assert.doesNotMatch(source, /readTask\s*\(/);
   assert.match(source, /taskMetadata\(issue, \{ required: false \}\)/);
+});
+
+
+test('acceptance criteria require a Markdown section with 3-15 list items', () => {
+  assert.equal(acceptanceCriteria('## Acceptance criteria\n- A\n- B\n- C\n').valid, true);
+  assert.equal(acceptanceCriteria('Acceptance criteria:\n- A\n- B\n- C\n').valid, false);
+  assert.equal(acceptanceCriteria('## Acceptance criteria\n- A\n- B\n').valid, false);
+  const sixteen = Array.from({ length: 16 }, (_, i) => `- AC ${i + 1}`).join('\n');
+  assert.equal(acceptanceCriteria(`## Acceptance criteria\n${sixteen}\n`).valid, false);
 });

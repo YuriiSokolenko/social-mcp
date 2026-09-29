@@ -24,7 +24,7 @@ Current `dev` is authoritative for what already exists. Queue/PR/run data is use
 
 ## Decision rule
 
-Choose **keep** when the issue has one coherent outcome that can be implemented in one PR and reviewed against clear acceptance criteria.
+Choose **keep** when the issue has one coherent outcome that can be implemented in one PR and reviewed against **3–15 concrete acceptance criteria** under a `## Acceptance criteria` section.
 
 **Size alone is not a reason to split. Complexity alone is not a reason to split.** Implementer can handle complex tasks.
 
@@ -58,7 +58,7 @@ Create the **minimum number** of independently mergeable steps required. The res
 
 Every child must:
 
-- have one clear outcome and acceptance criteria;
+- have one clear outcome and a `## Acceptance criteria` section containing **3–15 concrete, testable list items**;
 - be independently reviewable;
 - leave the repository in a valid state when merged;
 - be implementable without making a new architectural decision that should have been resolved by an earlier child;
@@ -80,7 +80,7 @@ Do not invent credentials, external access, production writes, product requireme
 
 For `revise`, return a complete corrected title/body plus priority and numeric dependencies.
 
-Keep the issue focused on the same intended outcome. Preserve valid acceptance criteria, tests, security boundaries, and dependencies. Change metadata only when the prepared context provides a concrete reason.
+Keep the issue focused on the same intended outcome. The revised body must contain a `## Acceptance criteria` section with **3–15 concrete, testable list items**. Preserve valid criteria, tests, security boundaries, and dependencies. Change metadata only when the prepared context provides a concrete reason.
 
 Do not include workflow-owned `<!-- architect-* -->` markers.
 
