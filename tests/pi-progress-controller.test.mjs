@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import {
   ProgressController,
   RESPONSE_BUDGETS,
+  actionRequiredToolNames,
   isBoundedDirectBash,
   nextActionRequiredProseOnlyTurns,
   nextActionResponseCap,
@@ -86,6 +87,20 @@ test('action-required corrective cap shrinks any prose-only turn', () => {
     madeProgress: false,
   }), 0);
 });
+test('action-required tool surface keeps only productive and control tools', () => {
+  assert.deepEqual(
+    actionRequiredToolNames(
+      ['read', 'repo_search', 'safe_edit', 'submit_result', 'need_more_evidence', 'set_response_budget'],
+      {
+        actionTools: ['safe_edit', 'submit_result'],
+        controlTools: ['set_response_budget'],
+        blockerTool: 'need_more_evidence',
+      },
+    ),
+    ['safe_edit', 'submit_result', 'need_more_evidence', 'set_response_budget'],
+  );
+});
+
 test('scout child response budget mirrors the main response ceiling', async () => {
   const previous = process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
   let handler;
@@ -142,6 +157,7 @@ test('single-shot tools cannot be retried after the first accepted call', () => 
 test('trivial productive progress serializes cold LSP startup and requires action after semantic read', () => {
   const state = controller({
     requireComplexity: true,
+    requireLspStartBeforeFindSymbol: true,
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
     productiveProgress: {
@@ -162,6 +178,10 @@ test('trivial productive progress serializes cold LSP startup and requires actio
   state.setComplexity('trivial');
   state.onToolExecutionEnd('prepare_implementation', false);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.match(
+    state.checkToolCall('lsp_find_symbol', { name: '_clamp_limit' }).reason,
+    /requires one successful lsp_start_server/,
+  );
 
   assert.equal(state.checkToolCall('lsp_start_server', {
     server_id: 'python',
@@ -190,6 +210,44 @@ test('trivial productive progress serializes cold LSP startup and requires actio
     start_line: 123,
     text: '    """Docstring."""',
   }), undefined);
+});
+
+test('blocked pre-preparation LSP start cannot unlock name-only lookup', () => {
+  const state = controller({
+    requireComplexity: true,
+    requireLspStartBeforeFindSymbol: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      initialEvidenceBudgetByComplexity: { trivial: 2 },
+      actionTools: ['safe_edit', 'submit_result'],
+      controlTools: ['lsp_start_server'],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.match(
+    state.checkToolCall('lsp_start_server', {
+      server_id: 'python',
+      workspace_root: '/tmp/worktree',
+    }).reason,
+    /Before complexity is recorded/,
+  );
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('trivial');
+  state.onToolExecutionEnd('prepare_implementation', false);
+
+  assert.match(
+    state.checkToolCall('lsp_find_symbol', { name: '_is_sensitive_key' }).reason,
+    /requires one successful lsp_start_server/,
+  );
+  assert.equal(state.checkToolCall('lsp_start_server', {
+    server_id: 'python',
+    workspace_root: '/tmp/worktree',
+  }), undefined);
+  state.onToolExecutionEnd('lsp_start_server', false);
+  assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_is_sensitive_key' }), undefined);
 });
 
 test('trivial semantic miss preserves one fallback discovery plus authoritative read', () => {
@@ -491,7 +549,11 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /PI_PRODUCTIVE_STATE/);
   assert.match(runtime, /actionResponseMaxTokens/);
   assert.match(runtime, /applyTokenCap/);
+  assert.match(runtime, /pi\.setActiveTools/);
+  assert.match(runtime, /actionRequiredToolNames/);
   assert.match(runtime, /pi\.sendMessage/);
+  assert.match(runtime, /pi\.sendUserMessage/);
+  assert.match(runtime, /maxTokens: appliedActionCap \|\| controller\.fixedMaxTokens/);
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
