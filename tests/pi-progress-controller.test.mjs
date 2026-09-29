@@ -491,6 +491,8 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /PI_PRODUCTIVE_STATE/);
   assert.match(runtime, /actionResponseMaxTokens/);
   assert.match(runtime, /applyTokenCap/);
+  assert.match(runtime, /pi\.sendMessage/);
+  assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
