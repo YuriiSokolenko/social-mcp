@@ -230,6 +230,10 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /name: 'rollback_last_mutation'/);
   assert.match(runtime, /captureMutationSnapshot/);
   assert.match(runtime, /productiveProgressState\(\)/);
+  assert.match(runtime, /PI_PRODUCTIVE_STATE/);
+  assert.match(runtime, /actionResponseMaxTokens/);
+  assert.match(runtime, /applyTokenCap/);
+  assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
   assert.match(runtime, /origin\/dev only/);
@@ -510,6 +514,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.activationTool, 'prepare_implementation');
   assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
   assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 6);
+  assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 512);
   assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['edit', 'write', 'rollback_last_mutation', 'submit_result']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
