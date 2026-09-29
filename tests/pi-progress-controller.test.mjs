@@ -664,10 +664,10 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('dispatcher').maxTurns, 30);
   assert.equal(stageConfig('triage').fixedResponseMaxTokens, 1000);
   for (const name of ['implementer', 'reviewer', 'repair']) assert.equal(stageConfig(name).requireComplexity, true);
-  for (const name of ['reviewer', 'repair']) {
-    assert.deepEqual(stageConfig(name).preComplexityAllowedTools, ['read', 'bash']);
-    assert.deepEqual(stageConfig(name).preComplexityTransitionTools, ['declare_task_complexity']);
-  }
+  assert.deepEqual(stageConfig('reviewer').preComplexityAllowedTools, ['read', 'bash', 'lsp_start_server', 'lsp_find_symbol']);
+  assert.deepEqual(stageConfig('reviewer').preComplexityTransitionTools, ['declare_task_complexity']);
+  assert.deepEqual(stageConfig('repair').preComplexityAllowedTools, ['read', 'bash']);
+  assert.deepEqual(stageConfig('repair').preComplexityTransitionTools, ['declare_task_complexity']);
   assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['prepare_implementation']);
   assert.deepEqual(stageConfig('implementer').preComplexityTransitionTools, ['prepare_implementation']);
   assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
