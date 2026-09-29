@@ -266,3 +266,61 @@ Future real-flow runs should measure:
 - attempts to call blocked exploration tools in `ACTION_REQUIRED`;
 - main and child token cost;
 - whether terminal submission follows mutation without renewed open-ended exploration.
+
+
+## Regression: differently worded evidence-unlock loop
+
+A later real-flow run exposed a loophole in the first state-machine implementation:
+
+- Implementer issue #4 — Actions run `36539939627`, job `109312697784`
+- 37 model responses
+- 42 tool calls
+- 17,610 output tokens
+- 927,310 reported total tokens including cache reads
+- 919.2 seconds model response time
+- 0 successful repository mutations
+- no terminal tool
+
+The runtime correctly reached `ACTION_REQUIRED` and blocked ordinary reads/searches. However, the model discovered that it could repeatedly call `need_more_evidence` with a newly worded missing fact, consume the single evidence permit, return to `ACTION_REQUIRED`, and request another permit.
+
+The trace explicitly showed the loop:
+
+```text
+ACTION_REQUIRED
+-> need_more_evidence("fact A")
+-> one evidence action
+-> ACTION_REQUIRED
+-> need_more_evidence("fact B")
+-> one evidence action
+-> ACTION_REQUIRED
+-> ...
+```
+
+The earlier exact-signature guard only rejected an identical blocker payload. It did not constrain semantically different blocker requests within the same no-mutation period.
+
+### Fix: productive epochs
+
+The runtime now treats evidence reopening as a one-shot escape hatch within a productive epoch:
+
+```text
+successful prepare_implementation
+-> initial evidence permit
+-> ACTION_REQUIRED
+-> at most one need_more_evidence
+-> one evidence action
+-> ACTION_REQUIRED
+-> edit/write/submit_result required
+-> successful productive action resets the epoch
+```
+
+Rules:
+
+- one extra evidence unlock is allowed between successful productive actions;
+- changing `missing` or `reason` does not create another permit;
+- a failed `edit`, `write`, or terminal submission does not reset the permit;
+- a successful productive action resets the epoch and permits a future concrete blocker if later work genuinely needs one;
+- the design remains state-based rather than imposing a generic tool-call or no-progress-turn quota.
+
+This regression is covered in `tests/pi-progress-controller.test.mjs`.
+
+The incident also confirmed that `madeProgress:false` and `productiveState:"action_required"` were being logged correctly; the missing protection was specifically the ability to reopen evidence repeatedly without an intervening productive action.
