@@ -747,7 +747,7 @@ test('stage configuration owns every model prompt', () => {
     assert.match(resumedPrompt, /restored checkpoint work is already in this worktree/);
     assert.match(resumedPrompt, /Call `submit_result` with no arguments as your first tool action/);
     assert.match(resumedPrompt, /Do \*\*not\*\* call `prepare_implementation`/);
-    assert.match(resumedPrompt, /Do not use `already_satisfied` for restored work/);
+    assert.match(resumedPrompt, /Do not pass `already_satisfied` for restored work/);
     assert.match(resumedPrompt, /Restored work path:[\s\S]*submit_result[\s\S]*fix only that failure/);
     assert.match(resumedPrompt, /zero-diff state[\s\S]*completes it automatically/);
     assert.doesNotMatch(resumedPrompt, /For fresh work after preparation/);
