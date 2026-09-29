@@ -61,16 +61,16 @@ For fresh work, do not modify repository files before preparation.
 
 The runtime enforces execution as a state machine rather than a turn counter.
 
-- After successful `prepare_implementation`, exactly one evidence action is permitted immediately.
+- After successful `prepare_implementation`, up to **three** bounded evidence actions are permitted immediately.
 - An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, `trivial_repo_lookup`, scout/research delegation, or a bounded diagnostic command.
-- As soon as one evidence action is requested, exploration closes again. The next substantive tool must be `edit`, `write`, or `submit_result`.
+- Use that budget only for a short evidence chain such as `locate -> read -> exact anchor`. Once the budget is exhausted, exploration closes and the next substantive tool must be `edit`, `write`, or `submit_result`.
 - If one concrete missing fact still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one further evidence action, after which action is required again.
 - Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `edit`, `write`, or `submit_result` starts a new productive epoch.
 - Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion.
 - `set_response_budget` and the one-time `subagents_enable` control action do not consume an evidence permit.
 - Prefer completing `evidence → edit/write` in the same model response whenever the evidence is sufficient.
 
-This protocol deliberately permits long/complex tasks without an arbitrary turn quota while preventing open-ended exploration.
+This protocol deliberately permits long/complex tasks without an arbitrary turn quota while preventing open-ended exploration. It also avoids forcing a mutation before the agent has enough repository evidence to identify a safe target.
 
 The initial prompt already contains the relevant subagent catalog. Do not call `subagent(action:"list")`. If later delegation is actually needed and the generic tool is hidden, call `subagents_enable` once and then call the named agent directly.
 
@@ -153,7 +153,7 @@ If a fresh trivial task has an unknown target:
 
 If literal discovery is needed:
 
-`loaded contract → prepare_implementation → repo_search → need_more_evidence → read discovered path → edit/write`
+`loaded contract → prepare_implementation → repo_search → read discovered path → read exact anchor if needed → edit/write`
 
 If deterministic search still leaves one concrete semantic blocker:
 
