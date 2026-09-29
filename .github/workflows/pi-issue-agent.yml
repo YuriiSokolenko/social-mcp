@@ -107,6 +107,7 @@ jobs:
         run: |
           command -v orbit >/dev/null
           orbit version
+          cd "$RUNNER_TEMP"
           orbit setup pi --mcp --yes --no-index >/dev/null
           orbit index "$JOB_DIR" >/dev/null
           echo "Orbit Local MCP configured and current issue worktree indexed."
