@@ -55,6 +55,39 @@ test('safe_edit inserts a multiline docstring after a signature without oldText'
   }
 });
 
+test('safe_edit rejects copied trailing context that would duplicate adjacent lines', () => {
+  const dir = tempRepo();
+  try {
+    const file = path.join(dir, 'sample.py');
+    const original = [
+      'class Client:',
+      '    def _check_active(self) -> None:',
+      '        if self._closed:',
+      '            raise RuntimeError("closed")',
+      '',
+    ].join('\n');
+    fs.writeFileSync(file, original);
+
+    assert.throws(
+      () => safeEdit(dir, {
+        path: 'sample.py',
+        operation: 'insert_after',
+        start_line: 2,
+        expected_marker: '_check_active',
+        text: [
+          '        """Verify the client is still usable."""',
+          '        if self._closed:',
+          '            raise RuntimeError("closed")',
+        ].join('\n'),
+      }),
+      /duplicates 2 adjacent existing lines/,
+    );
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('safe_edit preserves CRLF and final-newline state while replacing a range', () => {
   const dir = tempRepo();
   try {

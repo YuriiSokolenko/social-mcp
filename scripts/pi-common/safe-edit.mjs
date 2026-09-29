@@ -49,6 +49,25 @@ function blockLines(text) {
   return lines;
 }
 
+function adjacentOverlap(lines, startLine, operation, replacement) {
+  const maxOverlap = operation === 'insert_after'
+    ? Math.min(replacement.length, lines.length - startLine)
+    : Math.min(replacement.length, startLine - 1);
+
+  for (let count = maxOverlap; count >= 2; count -= 1) {
+    const inserted = operation === 'insert_after'
+      ? replacement.slice(-count)
+      : replacement.slice(0, count);
+    const adjacent = operation === 'insert_after'
+      ? lines.slice(startLine, startLine + count)
+      : lines.slice(startLine - 1 - count, startLine - 1);
+    if (inserted.every((line, index) => line === adjacent[index])) {
+      return count;
+    }
+  }
+  return 0;
+}
+
 function atomicWrite(absolutePath, content) {
   const stat = fs.statSync(absolutePath);
   const tempPath = path.join(
@@ -96,6 +115,15 @@ export function safeEdit(root, params) {
 
   const replacement = blockLines(params.text);
   if (replacement.length === 0) throw new Error('safe_edit text must contain at least one line');
+
+  if (operation === 'insert_before' || operation === 'insert_after') {
+    const overlap = adjacentOverlap(lines, startLine, operation, replacement);
+    if (overlap > 0) {
+      throw new Error(
+        `safe_edit refuses insertion that duplicates ${overlap} adjacent existing lines; insert only the new content`,
+      );
+    }
+  }
 
   let changedStart;
   let changedEnd;
