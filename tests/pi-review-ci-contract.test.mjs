@@ -532,7 +532,8 @@ test('fresh implementer prepares plan and complexity while restored work validat
 
   assert.match(agent, /### Restored work[\s\S]*Call \`submit_result\` with no arguments immediately[\s\S]*Do \*\*not\*\* call \`prepare_implementation\`/);
   assert.match(agent, /contract is embedded verbatim[\s\S]*Do not search for or re-read this file/i);
-  assert.match(agent, /Restored work is never \`already_satisfied\`/);
+  assert.match(agent, /Do not pass \`already_satisfied\` for restored work/);
+  assert.match(agent, /zero diff[\s\S]*records the issue as already satisfied automatically/);
   assert.match(agent, /### Fresh work[\s\S]*Use the issue title\/body already supplied in the prompt[\s\S]*Call \`prepare_implementation\` exactly once/);
   assert.match(agent, /Task complexity alone never requires delegation/);
   assert.match(agent, /submit_result[\s\S]*both validation and submission/);
