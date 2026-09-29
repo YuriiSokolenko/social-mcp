@@ -388,8 +388,6 @@ class PlatformHttpClient:
         """
         if self._closed:
             raise RuntimeError("PlatformHttpClient has been closed.")
-        if self._closed:
-            raise RuntimeError("PlatformHttpClient has been closed.")
 
     # -- public API -------------------------------------------------------
 
