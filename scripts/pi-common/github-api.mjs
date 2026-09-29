@@ -83,7 +83,12 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
     try {
       await api(`/git/refs/${ref}`, 'DELETE');
     } catch (error) {
-      if (!/DELETE .*: 404 /.test(error.message)) throw error;
+      // GitHub can report an already-missing ref as either 404 or
+      // 422 "Reference does not exist". Ref cleanup is intentionally idempotent.
+      if (!/DELETE .*: 404 /.test(error.message) &&
+          !/DELETE .*: 422 .*Reference does not exist/i.test(error.message)) {
+        throw error;
+      }
     }
   }
 
