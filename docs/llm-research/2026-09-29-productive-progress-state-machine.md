@@ -324,3 +324,55 @@ Rules:
 This regression is covered in `tests/pi-progress-controller.test.mjs`.
 
 The incident also confirmed that `madeProgress:false` and `productiveState:"action_required"` were being logged correctly; the missing protection was specifically the ability to reopen evidence repeatedly without an intervening productive action.
+
+
+## Regression: forced action before sufficient evidence
+
+A later clean real-flow rerun exposed the opposite failure mode after the productive-epoch fix:
+
+- Implementer issue #4 — Actions run `36543597806`, job `109324580830`
+- 6 model responses
+- 5 tool calls
+- 5,520 output tokens
+- 89,693 reported total tokens including cache reads
+- about 273.0 seconds model response time
+- 0 repository mutations
+- no terminal tool
+
+The runtime correctly prevented repeated evidence reopening, but the initial evidence allowance was too narrow. After preparation, main attempted a bounded read/search sequence. The first deterministic search was not sufficient to locate the implementation target, and the one `need_more_evidence` permit was then consumed by a path search that returned no useful target. Runtime moved to `ACTION_REQUIRED` even though the model still did not know a safe file/anchor to edit.
+
+The trace reached the explicit contradiction:
+
+`productiveState:"action_required"`
+
+while the model reported that it still did not know the relevant repository path. The remaining responses were spent reasoning about how to obey the runtime contract rather than implementing the issue, and the stage ended with `Pi stage implementer exited without its terminal tool`.
+
+### Fix: bounded initial evidence chain
+
+Fresh Implementer work now receives an initial evidence budget of **three** accepted evidence actions after `prepare_implementation`:
+
+```text
+prepare_implementation
+        |
+        v
+EVIDENCE_ALLOWED (3)
+        |
+        +--> locate
+        +--> read target
+        +--> obtain exact edit anchor / one final bounded fact
+        |
+        v
+ACTION_REQUIRED
+```
+
+The budget is consumed at accepted tool-call time, so exploration is still bounded and parallel fan-out cannot become unlimited. Three actions are enough for the common `repo_search -> read -> anchor` path while still forcing a transition to mutation/submission quickly.
+
+The productive-epoch rule remains unchanged after the initial budget is exhausted:
+
+- at most one `need_more_evidence` unlock before the next successful productive action;
+- that unlock permits exactly one evidence action;
+- differently worded blockers do not create new permits;
+- failed edits/writes/submissions do not reset the epoch;
+- successful `edit`, `write`, or `submit_result` resets the extra-evidence eligibility.
+
+This change addresses **forced action without sufficient evidence** without returning to open-ended exploration or a generic no-progress turn counter.
