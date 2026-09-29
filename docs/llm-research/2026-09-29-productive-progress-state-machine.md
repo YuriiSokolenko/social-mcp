@@ -466,3 +466,43 @@ During recovery:
 - rollback exits recovery and starts a new productive epoch from the restored state.
 
 This directly targets the `tests/__init__.py` failure pattern from job `109330983540`: once validation demonstrates that a mutation is harmful, the preferred trajectory becomes diagnose once -> fix or rollback -> validate, rather than repeated semantic reconsideration and workaround accumulation.
+
+
+## Regression: issue #148 exhausted discovery before inspection
+
+A real Implementer run on issue #148 exposed a second case where the three-action startup budget was still too small for a normal product change:
+
+- Actions run `36565564926`, job `109396511401`
+- Orbit Local setup/indexing: successful
+- Implementer responses: 9
+- tool calls: 16
+- reported total tokens including cache reads: 155,640
+- model response time: about 407.6 seconds
+- repository mutations: 0
+- terminal tool: not called
+- final stage error: `Pi stage implementer exited without its terminal tool`
+
+The agent used the three startup evidence permits on repository discovery, then used the one extra `need_more_evidence` permit to read the Threads tool contract. It still had not inspected the existing Threads adapter, registration/caller pattern, or tests. Runtime then entered `ACTION_REQUIRED` and blocked those reads. The model correctly recognized that editing without those files would be blind, but the state machine gave it no safe path forward. Several responses were then spent reasoning about the deadlock instead of implementing the issue.
+
+This is a useful negative benchmark because it separates two concerns clearly:
+
+- the anti-loop guard correctly prevents unlimited exploration;
+- the startup evidence budget must still be large enough for one bounded implementation chain before forcing mutation.
+
+### Fix: six-action initial evidence window
+
+Fresh Implementer work now receives **six** initial evidence actions after `prepare_implementation`. The intended shape is one narrow chain, for example:
+
+```text
+locate
+-> contract/spec
+-> target implementation
+-> registration/caller
+-> directly relevant test/pattern
+-> exact mutation anchor
+-> edit/write/submit_result
+```
+
+The runtime still counts accepted evidence tool calls and still transitions to `ACTION_REQUIRED` after the sixth action. The one-shot `need_more_evidence` escape hatch remains unchanged and is reserved for one concrete fact outside that bounded initial chain. This keeps the state machine finite while avoiding the #148 failure mode where the model was forced to choose between blind mutation and protocol deadlock.
+
+Orbit remains complementary evidence. The #148 run confirmed that Orbit indexing completed successfully, but the main agent did not invoke Orbit graph queries; this benchmark therefore should not be interpreted as an Orbit failure. Future runs should prefer Orbit for bounded structural questions and Zoekt/repo search for literal/path discovery, but neither should consume the entire startup window before direct target inspection.
