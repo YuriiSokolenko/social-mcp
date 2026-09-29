@@ -66,27 +66,28 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 ### Main may do directly
 
 - **Already-known files:** call `read` directly. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result. There is no runtime line-count or per-task file-count limit for known-path reads.
-- **One known-path diff/status check:** use a bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`.
+- **Known-path diff/status checks:** use bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>` as needed.
+- **Deterministic repository search:** use `repo_search` directly for cheap literal path/content discovery in the current tracked worktree. Prefer it over a subagent when the question is mechanically answerable as “which path contains this name/text?”.
 - **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target in `origin/dev`. The lookup never reads resumed checkpoint/current-worktree changes. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText`; the result fields `exactTextFoundInDev` / `exactTextPathsInDev` are evidence about latest dev only. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
 - `submit_result`.
 
-Do not use repeated guessed reads as a substitute for search. Delegate discovery/search when the path, symbol, or pattern is unknown; when paths are already known, continue with direct reads as needed.
+Do not use repeated guessed reads as a substitute for search. Use `repo_search` for deterministic literal path/content discovery; when paths are already known, continue with direct reads as needed. Delegate only when deterministic search plus direct reads are insufficient to decide the next safe action.
 
 ### Delegate
 
 Use `scout` with `async: false` only when the evidence already available to the main agent is insufficient to know the next safe action, for example when:
 
-- the target path, symbol, test, config, or pattern is unknown and the cheap trivial lookup is unavailable or insufficient;
-- more than one repository file must genuinely be inspected or compared;
-- usages or similar implementations must be searched;
+- the target is conceptual/semantic and literal `repo_search` cannot identify the relevant path or symbol;
+- several candidate implementations were found and choosing among them requires semantic comparison rather than direct reading;
+- usages or similar implementations require interpretation beyond deterministic literal search;
 - logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
 - the needed evidence requires a broad repository dump or search rather than reading known files;
 - a skill or project document must be searched for a concrete rule needed by the current decision.
 
 **Task complexity alone never requires delegation.** A `normal` or `complex` classification is metadata, not an instruction to call `scout`.
 
-`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `trivial_repo_lookup` for the one cheap trivial lookup when applicable. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
+`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `repo_search` for ordinary deterministic repository discovery and `trivial_repo_lookup` for the special trivial-target lookup when applicable. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
 
 For scout requests:
 
@@ -131,9 +132,13 @@ If a fresh trivial task has an unknown target:
 
 `loaded contract → prepare_implementation → trivial_repo_lookup → read target as needed → edit/write → submit_result`
 
-If the next safe action is genuinely unknown:
+If literal discovery is needed:
 
-`loaded contract → prepare_implementation → one compact evidence-gathering scout → edit/write → submit_result`
+`loaded contract → prepare_implementation → repo_search → read discovered paths → edit/write → submit_result`
+
+If deterministic search and direct reads still leave the next safe action genuinely unknown:
+
+`loaded contract → prepare_implementation → repo_search if useful → one compact evidence-gathering scout → edit/write → submit_result`
 
 For restored work, prefer:
 

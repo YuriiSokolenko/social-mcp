@@ -89,10 +89,11 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - Never use \`already_satisfied\` for restored work.`
       : `For fresh work after preparation:
 - Read already-known target files directly. There is no runtime line-count or per-task file-count limit for known-path reads.
-- The main agent may run only a bounded \`git diff\`/\`git status\` for one known path directly.
+- The main agent may run bounded \`git diff\`/\`git status\` checks for known paths directly as needed.
+- Use \`repo_search\` for cheap deterministic literal path/content discovery in the current tracked worktree before launching a scout.
 - If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
-- Delegate to \`scout\` only when the evidence already available is insufficient to know the next safe action: unknown targets, genuine multi-file comparison/search, logs/diagnostics, or broader command output. Complexity alone never requires delegation.
-- \`grep\`, \`find\`, and \`ls\` remain delegated. Do not simulate search through repeated guessed reads.
+- Delegate to \`scout\` only when deterministic search plus direct reads are insufficient to decide the next safe action: semantic comparison, logs/diagnostics/history, or other evidence requiring interpretation. Complexity alone never requires delegation.
+- Direct \`grep\`, \`find\`, and \`ls\` remain blocked; use \`repo_search\` instead of simulating search through guessed reads.
 - For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.`;
     return `The complete Implementer operating contract is embedded below and is authoritative. Do not search for or re-read agents/implementer/AGENTS.md.
 

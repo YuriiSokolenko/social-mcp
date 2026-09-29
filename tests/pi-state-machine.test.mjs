@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectIssueState, safeRemovals, validateIssueTransition } from '../scripts/pi-common/state-machine.mjs';
+import { inspectIssueState, isIssueTransitionNoop, safeRemovals, validateIssueTransition } from '../scripts/pi-common/state-machine.mjs';
 import { replaceIssueState } from '../scripts/pi-common/github-state.mjs';
 
 const issue = (state, labels) => ({ state, labels: labels.map(name => ({ name })) });
@@ -123,6 +123,13 @@ test('already-satisfied completion is allowed only from a running implementer st
   assert.throws(() => validateIssueTransition(issue('open', []), 'satisfied'), /pi:running/);
   assert.throws(() => validateIssueTransition(issue('open', ['pi:ready']), 'satisfied'), /pi:running/);
   assert.throws(() => validateIssueTransition(issue('closed', ['pi:running']), 'satisfied'), /closed issue/);
+});
+
+test('cancel cleanup is a no-op when the issue is already closed', () => {
+  assert.equal(isIssueTransitionNoop(issue('closed', []), 'stopped'), true);
+  assert.equal(isIssueTransitionNoop(issue('closed', ['architect:ready']), 'stopped'), true);
+  assert.equal(isIssueTransitionNoop(issue('open', ['architect:ready']), 'stopped'), false);
+  assert.equal(isIssueTransitionNoop(issue('closed', []), 'needs-human'), false);
 });
 
 test('stopped transition removes pipeline ownership and preserves unrelated labels', async () => {

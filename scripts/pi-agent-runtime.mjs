@@ -6,6 +6,7 @@ import { Type } from 'typebox';
 import { ProgressController } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { trivialRepoLookup } from './pi-common/trivial-repo-lookup.mjs';
+import { repoSearch } from './pi-common/repo-search.mjs';
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
@@ -329,6 +330,23 @@ export default function (pi) {
 
   let trivialLookupUsed = false;
   if (stage === 'implementer') {
+    pi.registerTool({
+      name: 'repo_search',
+      label: 'Repository search',
+      description: 'Cheap deterministic literal search over tracked repository paths or content in the current worktree. Use before scout for mechanical discovery; no child model is launched.',
+      parameters: Type.Object({
+        kind: Type.Optional(Type.Union([Type.Literal('content'), Type.Literal('path')])),
+        query: Type.String({ minLength: 1, maxLength: 300 }),
+        pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
+        extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
+        maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const result = repoSearch(ctx.cwd, params);
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+      },
+    });
+
     pi.registerTool({
       name: 'trivial_repo_lookup',
       label: 'Trivial repository lookup',

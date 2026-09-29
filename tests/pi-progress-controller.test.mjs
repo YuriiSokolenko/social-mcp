@@ -13,6 +13,7 @@ import {
   toolCallSignature,
 } from '../scripts/pi-common/progress-controller.mjs';
 import { trivialRepoLookup } from '../scripts/pi-common/trivial-repo-lookup.mjs';
+import { repoSearch } from '../scripts/pi-common/repo-search.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
 import subagentResponseBudget from '../scripts/pi-subagent-response-budget.mjs';
 
@@ -130,6 +131,32 @@ test('trivial repository lookup reads origin/dev and ignores resumed worktree ch
     });
     assert.equal(resumedOnly.exactTextFoundInDev, false);
     assert.deepEqual(resumedOnly.exactTextPathsInDev, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('repo search performs deterministic path and content discovery without a child model', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-repo-search-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'alpha.py'), 'first needle\n');
+    fs.writeFileSync(path.join(dir, 'src', 'beta.py'), 'second needle\n');
+    fs.writeFileSync(path.join(dir, 'docs', 'needle-guide.md'), 'guide\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+
+    const contentResult = repoSearch(dir, { kind: 'content', query: 'needle', extensions: ['py'], maxResults: 1 });
+    assert.equal(contentResult.matches.length, 1);
+    assert.equal(contentResult.matches[0].path, 'src/alpha.py');
+    assert.equal(contentResult.truncated, true);
+
+    const pathResult = repoSearch(dir, { kind: 'path', query: 'needle', maxResults: 5 });
+    assert.deepEqual(pathResult.matches, [{ path: 'docs/needle-guide.md' }]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { replaceIssueState } from './pi-common/github-state.mjs';
-import { validateIssueTransition } from './pi-common/state-machine.mjs';
+import { isIssueTransitionNoop, validateIssueTransition } from './pi-common/state-machine.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
@@ -32,8 +32,12 @@ async function postComment() {
 }
 
 const item = await load();
-const expected = names(item);
-const target = validateIssueTransition(item, action);
-await replaceIssueLabels(expected, target, action, { complete: action === 'satisfied' });
-if (action !== 'running') await postComment();
-console.log(`issue #${number}: transitioned to ${target}`);
+if (isIssueTransitionNoop(item, action)) {
+  console.log(`issue #${number}: ${action} is a no-op because the issue is already closed`);
+} else {
+  const expected = names(item);
+  const target = validateIssueTransition(item, action);
+  await replaceIssueLabels(expected, target, action, { complete: action === 'satisfied' });
+  if (action !== 'running') await postComment();
+  console.log(`issue #${number}: transitioned to ${target}`);
+}

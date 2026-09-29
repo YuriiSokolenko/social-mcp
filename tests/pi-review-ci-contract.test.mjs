@@ -521,6 +521,7 @@ test('fresh implementer prepares plan and complexity while restored work validat
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const trivialLookup = fs.readFileSync('scripts/pi-common/trivial-repo-lookup.mjs', 'utf8');
+  const repoSearchSource = fs.readFileSync('scripts/pi-common/repo-search.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const classifier = fs.readFileSync('.pi/agents/complexity-classifier.md', 'utf8');
 
@@ -545,8 +546,15 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.doesNotMatch(agent, /limit <= 200/);
   assert.match(agent, /first sufficient/i);
   assert.match(agent, /Do not use repeated guessed reads as a substitute for search/);
+  assert.match(agent, /repo_search/);
+  assert.doesNotMatch(agent, /more than one repository file must genuinely be inspected or compared/);
+  assert.match(agent, /Known-path diff\/status checks/);
   assert.match(agent, /`grep`, `find`, and `ls` remain runtime-blocked/);
   assert.match(agent, /trivial_repo_lookup/);
+  assert.match(runtime, /name: 'repo_search'/);
+  assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
+  assert.match(repoSearchSource, /\['ls-files', '-z'\]/);
+  assert.match(repoSearchSource, /\['grep', '-n', '-I', '-F'/);
   assert.match(runtime, /name: 'trivial_repo_lookup'/);
   assert.match(runtime, /controller\.complexity !== 'trivial'/);
   assert.match(runtime, /trivialLookupUsed/);

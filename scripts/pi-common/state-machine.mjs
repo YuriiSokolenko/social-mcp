@@ -101,6 +101,10 @@ export function issueStateLabels(issue) {
   return [...ISSUE_STATE_LABELS].filter(label => labels.has(label)).sort();
 }
 
+export function isIssueTransitionNoop(issue, action) {
+  return action === 'stopped' && issue.state === 'closed';
+}
+
 export function validateIssueTransition(issue, action) {
   if (!(action in ISSUE_TRANSITIONS)) throw new Error(`unknown issue transition: ${action}`);
   const target = ISSUE_TRANSITIONS[action];
