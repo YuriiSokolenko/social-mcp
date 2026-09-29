@@ -23,6 +23,7 @@ Never modify CI/control-plane paths:
 Do not commit, push, create/merge PRs, change labels/issues, or post GitHub comments. Trusted workflow tooling owns Git and GitHub state.
 
 Never expose credentials or tokens, weaken authentication/authorization, commit local/runtime artifacts, or call production social APIs from tests.
+Never print secret values or bulk-dump the environment. Do not use `env`, bare `printenv`, `set -x`, shell tracing, or commands that echo token/secret/password/key/credential values. You may inspect whether a named variable is present only through a non-value-bearing check.
 
 ## Startup
 
@@ -85,6 +86,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 - **Already-known files:** call `read` directly. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result. There is no runtime line-count or per-task file-count limit for known-path reads.
 - **Known-path diff/status checks:** use bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>` as needed.
 - **Indexed repository search:** when `indexed_repo_search` is available, prefer it for initial literal/path/symbol discovery against the indexed `dev` snapshot. It is fast and does not launch a child model. Treat it as discovery evidence only because the index can lag the current worktree.
+- **Orbit Local graph:** when the Orbit MCP tools are available, use them for structural questions that literal search answers poorly: symbol definitions, imports, references, dependency direction, and bounded blast-radius checks. Prefer one narrow graph query over broad repository scanning. Orbit indexes the current checkout/worktree, but exact source text still comes from `read` before mutation.
 - **Current-worktree search:** use `repo_search` for exact literal path/content discovery in the current tracked worktree, especially after mutations or when the indexed result must be verified.
 - **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target in `origin/dev`. The lookup never reads resumed checkpoint/current-worktree changes. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText`; the result fields `exactTextFoundInDev` / `exactTextPathsInDev` are evidence about latest dev only. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
