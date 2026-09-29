@@ -445,6 +445,30 @@ test('dispatcher closes exploration after prepared context is loaded', () => {
   assert.equal(state.checkToolCall('submit_result', { classifications: [] }), undefined);
 });
 
+test('triage closes exploration after prepared context is loaded', () => {
+  const state = controller({
+    requiredFirstReadPath: 'agents/triage/AGENTS.md',
+    fixedResponseMaxTokens: 1000,
+    productiveProgress: {
+      activationReadSuffix: 'pi-triage-context.json',
+      actionResponseMaxTokens: 512,
+      actionResponseRetryMaxTokens: 128,
+      actionTools: ['submit_result'],
+      controlTools: [],
+    },
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('read', { path: 'agents/triage/AGENTS.md' }), undefined);
+  assert.equal(state.checkToolCall('read', { path: '/tmp/pi-triage-context.json' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(state.checkToolCall('read', { path: 'README.md' }).reason, /classification evidence is complete/);
+  assert.equal(state.checkToolCall('submit_result', {
+    ready: [1],
+    needs_human: [],
+    skipped: [],
+  }), undefined);
+});
+
 test('runtime-owned preparation uses one structured planner for plan and startup class', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
@@ -715,6 +739,10 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
+  assert.equal(stageConfig('triage').productiveProgress.activationReadSuffix, 'pi-triage-context.json');
+  assert.equal(stageConfig('triage').productiveProgress.actionResponseMaxTokens, 512);
+  assert.equal(stageConfig('triage').productiveProgress.actionResponseRetryMaxTokens, 128);
+  assert.deepEqual(stageConfig('triage').productiveProgress.actionTools, ['submit_result']);
   assert.equal(stageConfig('implementer').directReadMaxLines, undefined);
   assert.equal(stageConfig('implementer').directReadCalls, undefined);
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
@@ -787,6 +815,7 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('dispatcher', env), /prepared context is sufficient and authoritative/i);
     assert.doesNotMatch(stagePrompt('dispatcher', env), /Read the project documentation once/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
+    assert.match(stagePrompt('triage', env), /runtime closes exploration/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
