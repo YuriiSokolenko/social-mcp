@@ -1,6 +1,6 @@
 {
   "packages": [
-    "/opt/pi-repomap"
+    "git:github.com/EnTeQuAk/pi-repomap@a4a2c85685a7a06ec850b23a2ae1bb7c9ecde9ab"
   ],
   "subagents": {
     "agentOverrides": {
