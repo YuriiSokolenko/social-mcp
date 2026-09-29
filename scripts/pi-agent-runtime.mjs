@@ -573,6 +573,21 @@ export default function (pi) {
       await applyBudget(next.level, ctx);
     }
 
+    if (actionRequired && !controller.turnMadeProgress) {
+      const directive = stage === 'implementer'
+        ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result immediately. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
+        : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
+      pi.sendMessage({
+        customType: 'pi-action-required',
+        content: directive,
+        display: false,
+        details: { stage, productiveState },
+      }, {
+        deliverAs: 'steer',
+        triggerTurn: true,
+      });
+    }
+
     console.log(`PI_BUDGET_NEXT ${JSON.stringify({
       afterTurn: event.turnIndex,
       outputTokens,
