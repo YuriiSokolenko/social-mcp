@@ -193,15 +193,17 @@ The runtime now uses a state transition instead of a fixed "N turns without prog
 ```text
 prepare_implementation
   -> EVIDENCE_ALLOWED
-  -> one evidence action
+  -> 2 evidence actions for trivial work
+     or 6 for normal/complex work
   -> ACTION_REQUIRED
-       -> edit/write/submit_result
+       -> safe_edit/edit/write/submit_result
        -> need_more_evidence -> one evidence action -> ACTION_REQUIRED
 ```
 
 Important properties:
 
 - `prepare_implementation` is runtime-enforced single-shot;
+- the initial evidence allowance is complexity-aware: **2 actions for trivial work, 6 for normal/complex work**;
 - an evidence permit is consumed at tool-call time, preventing parallel exploration fan-out;
 - `need_more_evidence({missing, reason})` must state one concrete blocker and unlocks exactly one evidence action;
 - an exact repeated blocker is rejected;
