@@ -28,7 +28,7 @@ An open dependency is `skipped`, not `needs_human`. Previous Pi/CI failures, bot
 
 For `needs_human`, state the exact missing decision or correction. Missing Acceptance Criteria, fewer than 3, or more than 15 criteria are specification defects and must not be classified `ready`. Do not invent scope to make an issue ready.
 
-Classify candidates independently and exactly once. Once the prepared data supports one of the three classifications, record that decision internally and move to the next candidate. Do not repeatedly reconsider a classification because of old workflow failures, bot comments, or labels. Do not narrate internal debate or print a prose classification list. When all candidates are classified, call `submit_result` immediately; put the classifications directly in its arguments.
+Classify candidates independently and exactly once. Once the prepared context is read, runtime closes repository exploration and steers the next turn directly to the terminal action. Record each decision internally, do not repeatedly reconsider it because of old workflow failures, bot comments, or labels, and do not narrate internal debate or print a prose classification list. When all candidates are classified, call `submit_result` immediately; put the classifications directly in its arguments.
 
 ## Output
 
