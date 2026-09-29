@@ -22,7 +22,7 @@ function issueContext() {
 export default function (pi) {
   registerTerminalTool(pi, {
     label: 'Sync, validate, and submit implementation result',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. Fresh changed work supplies normal result metadata. On failure, fix only the reported problem and retry.',
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. Fresh changed work supplies normal result metadata. On failure, fix only the reported problem with safe_edit/edit/write as appropriate and retry.',
     parameters: Type.Object({
       title: Type.Optional(Type.String()),
       summary: Type.Optional(Type.String()),
@@ -32,7 +32,7 @@ export default function (pi) {
       limitations: Type.Optional(Type.String()),
     }),
     customType: 'implementer-result',
-    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. For restored work call submit_result({}) now. For fresh work call edit/write now when a change is required, or submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state. If exactly one concrete missing fact blocks safe action, call need_more_evidence once, gather exactly one fact, then act.',
+    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. For restored work call submit_result({}) now. For fresh work call safe_edit/edit/write now when a change is required, or submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state. If exactly one concrete missing fact blocks safe action, call need_more_evidence once, gather exactly one fact, then act.',
     nudgeRepeatWhile: () => ['action_required', 'recovery_action_required'].includes(process.env.PI_PRODUCTIVE_STATE ?? ''),
     nudgeMaxCount: 3,
     successText: 'SUCCESS. Latest dev is integrated and final checks pass. Implementation result recorded. Stop now.',
