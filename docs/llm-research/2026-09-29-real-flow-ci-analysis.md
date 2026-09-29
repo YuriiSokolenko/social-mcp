@@ -249,4 +249,26 @@ Therefore the real-task failures should be analyzed primarily as agent/runtime b
 6. **Idle watchdogs are insufficient; productive-progress watchdogs are needed.**
 7. **Runtime correctly refused to mark no-terminal/no-change runs green.**
 
-The immediate follow-up removed both the one-file-per-task cap and the later 200-line per-call cap. Known-path reads now stay in main without an arbitrary size/count quota; discovery and broad search remain delegated.
+The immediate follow-up removed both the one-file-per-task cap and the later 200-line per-call cap. Known-path reads now stay in main without an arbitrary size/count quota. Subsequent changes also added deterministic main-agent repository search and made closed-issue cancellation cleanup idempotent.
+
+## Post-fix reassessment
+
+Reassessment after commit `09d5aa6` and green CI run `36526006149`:
+
+1. **The direct-read routing mistake is fixed.** Main can read already-known files without arbitrary line/file-count limits, and inspecting multiple known files is no longer a reason to delegate.
+2. **Deterministic discovery now has the correct place in the cost hierarchy.** `repo_search` handles literal path/content discovery in main without launching another model. The preferred flow is now `repo_search -> read -> scout only if semantic interpretation is still needed`.
+3. **Scout is closer to the intended role but remains the most dangerous cost amplifier.** Its launch conditions are narrower, but a child session still has no hard aggregate session budget for total turns/output/wall time.
+4. **The core reasoning-to-action failure is still open.** Laguna can reach sufficient repository evidence and continue reconsidering instead of calling `edit`/`write`. `ProgressController` recognizes mutation/terminal tools as progress, but it does not yet stop exploration when productive progress is absent for too long.
+5. **`prepare_implementation` is still only textually single-shot.** The contract says to call it exactly once, but a planner failure before complexity is recorded still leaves the tool technically callable again by main. Retry/fallback ownership should move fully into runtime.
+6. **The Architect #100 cancellation race is fixed narrowly and safely.** A `stopped` transition on an already-closed issue is now an explicit no-op; unrelated invalid state transitions remain errors.
+7. **The system is materially better positioned for the next real-flow experiment.** The next run should measure how many `repo_search`/direct-read operations replace former scout calls, how many child sessions remain, and how many model turns elapse between the last new evidence and the first repository mutation.
+
+### Remaining high-priority work
+
+The remaining major controls are:
+
+1. runtime-enforced single-shot preparation with internal retry/fallback;
+2. hard aggregate budget for scout/delegate sessions;
+3. productive-progress watchdog tied to repository mutation or terminal state.
+
+These now matter more than further prompt-level restrictions.
