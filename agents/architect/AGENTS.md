@@ -46,10 +46,11 @@ Use the smallest evidence set needed for the decision:
 
 1. Read the source issue and acceptance criteria.
 2. Compare with current code only if you need to know whether scope is already implemented, inaccurate, or has a real architectural boundary.
-3. For structural code questions, prefer the available Orbit Local graph over broad repository scanning: use it only to resolve definitions, references, dependency direction, or a concrete architectural boundary.
-4. Check related/open work only if a proposed child or revision may overlap it.
-5. Stop investigating as soon as keep/revise/split is justified.
-5. Call `submit_result`.
+3. When the relevant subsystem is unclear, use the injected repo map for a bounded first reading order; load `.agents/skills/repomap-navigation/SKILL.md` only for that navigation decision.
+4. For structural code questions, prefer the available Orbit Local graph over broad repository scanning: use it only to resolve definitions, references, dependency direction, or a concrete architectural boundary.
+5. Check related/open work only if a proposed child or revision may overlap it.
+6. Stop investigating as soon as keep/revise/split is justified.
+7. Call `submit_result`.
 
 Do not inspect Git history, unrelated modules, every queue entry, or broad project documentation for reassurance.
 
@@ -96,6 +97,7 @@ For a genuine decomposition or design-boundary question, load only the skill tha
 - simplest sufficient structure / avoiding accidental complexity → `.agents/skills/kiss/SKILL.md`
 - speculative future scope / premature abstraction or extension points → `.agents/skills/yagni/SKILL.md`
 - module/interface/dependency boundary → `.agents/skills/solid/SKILL.md`
+- unclear repository area / bounded first reading order → `.agents/skills/repomap-navigation/SKILL.md`
 
 - shared architectural boundary/interface → `.agents/skills/breakdown-epic-arch/SKILL.md`
 - independently verifiable implementation plan → `.agents/skills/writing-plans/SKILL.md`
