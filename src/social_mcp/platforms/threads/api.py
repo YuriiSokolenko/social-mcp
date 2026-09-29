@@ -121,6 +121,11 @@ class ThreadsApiError(Exception):
 
 
 def _clamp_limit(limit: int) -> int:
+    """Validate and clamp a pagination limit to the supported bounds.
+
+    Booleans and non-integer values are rejected; valid integer limits are
+    clamped to the supported minimum/maximum bounds.
+    """
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise ThreadsApiError(f"limit must be an integer, got {type(limit).__name__}")
     return max(MIN_LIMIT, min(MAX_LIMIT, limit))
