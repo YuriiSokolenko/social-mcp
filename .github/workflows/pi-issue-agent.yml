@@ -103,6 +103,14 @@ jobs:
           pytest --version
           ruff --version
 
+      - name: Prepare Orbit Local code graph
+        run: |
+          command -v orbit >/dev/null
+          orbit version
+          orbit setup pi --mcp --yes --no-index >/dev/null
+          orbit index "$JOB_DIR" >/dev/null
+          echo "Orbit Local MCP configured and current issue worktree indexed."
+
       - name: Run Pi with live progress
         run: |
           cd "$JOB_DIR"
