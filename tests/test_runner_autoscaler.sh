@@ -244,6 +244,7 @@ trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG" "$DOCKER_RUN_LOG"' EXI
   }
   spawn_runner
 )
+grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'ephemeral runners must use host networking for local model/Zoekt endpoints'
 grep -q -- '-e RUNNER_LABELS=n150,general' "$DOCKER_RUN_LOG" || fail 'spawn_runner must pass RUNNER_LABELS through'
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the docker socket when MOUNT_DOCKER_SOCKET=true'
 grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the Pi config when MOUNT_PI_CONFIG=false'
@@ -267,6 +268,7 @@ grep -q -- 'PI_ZOEKT_' "$DOCKER_RUN_LOG" && fail 'general runners must not recei
   }
   spawn_runner
 )
+grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'Pi runners must use host networking so 127.0.0.1 reaches host-local services'
 grep -q -- '/some/pi/config:/pi-config-ro:ro' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the Pi config when MOUNT_PI_CONFIG=true'
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the docker socket when MOUNT_DOCKER_SOCKET=false'
 grep -q -- '-e PI_ZOEKT_URL=http://127.0.0.1:6070' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive PI_ZOEKT_URL when configured'
