@@ -79,8 +79,8 @@ Call submit_result exactly once as your last action. Do not modify repository or
       ? `Runtime resume state: restored ${resumeSource} work is already in this worktree. The operating contract is already loaded in this prompt. Call \`submit_result\` with no arguments immediately. Do not call \`prepare_implementation\` and do not inspect, summarize, or plan the restored files first. If \`submit_result\` fails, fix only the concrete reported problem and retry. Do not use \`already_satisfied\` for restored work.\n\n`
       : '';
     const startupInstruction = resumed
-      ? 'This is restored work. Call \`submit_result\` with no arguments as your first tool action. Runtime validation and trusted repository state provide the publication metadata.'
-      : 'This is fresh work. Call \`prepare_implementation\` exactly once as your first tool action. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity.';
+      ? 'This is restored work. Call `submit_result` with no arguments as your first tool action. Runtime validation and trusted repository state provide the publication metadata.'
+      : `This is fresh work. Runtime created this worktree directly from the latest fetched origin/dev${freshBaseCommit ? ` at commit ${freshBaseCommit}` : ''}, with no saved issue work applied. Until the first successful edit/write, a direct read of the current worktree is latest-dev evidence; do not spend tools re-proving HEAD/origin/dev provenance. Call \`prepare_implementation\` exactly once as your first tool action. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity.`;
     const executionGuidance = resumed
       ? `Restored work path:
 - Call \`submit_result\` with no arguments before inspecting restored files; it is both validation and submission.
@@ -88,8 +88,9 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - If it reports a concrete failure, fix only that failure and retry.
 - Never use \`already_satisfied\` for restored work.`
       : `For fresh work after preparation:
+- The worktree started as an exact checkout of latest fetched \`origin/dev\`. Before the first successful \`edit\`/\`write\`, direct reads of the current worktree are authoritative latest-dev evidence. Do not run Git commands merely to prove that provenance again.
 - Read already-known target files directly. There is no runtime line-count or per-task file-count limit for known-path reads.
-- The main agent may run bounded \`git diff\`/\`git status\` checks for known paths directly as needed.
+- After a mutation, the main agent may run bounded \`git diff\`/\`git status\` checks for known paths directly as needed.
 - Use \`repo_search\` for cheap deterministic literal path/content discovery in the current tracked worktree before launching a scout.
 - If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
 - Delegate to \`scout\` only when deterministic search plus direct reads are insufficient to decide the next safe action: semantic comparison, logs/diagnostics/history, or other evidence requiring interpretation. Complexity alone never requires delegation.
