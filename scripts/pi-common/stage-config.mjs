@@ -133,7 +133,7 @@ export const STAGES = Object.freeze({
     productiveProgress: {
       activationReadSuffix: 'pi-triage-context.json',
       actionResponseMaxTokens: 512,
-      actionResponseRetryMaxTokens: 128,
+      actionResponseRetryMaxTokens: 512,
       actionTools: ['submit_result'],
       controlTools: [],
     },
@@ -193,7 +193,7 @@ export const STAGES = Object.freeze({
         nontrivial: 6,
       },
       actionResponseMaxTokens: 512,
-      actionResponseRetryMaxTokens: 128,
+      actionResponseRetryMaxTokens: 512,
       actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server'],
     },
