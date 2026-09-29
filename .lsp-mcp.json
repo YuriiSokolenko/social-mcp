@@ -1,6 +1,20 @@
 {
   "servers": [
     {
+      "id": "python",
+      "extensions": [".py", ".pyi"],
+      "languageIds": ["python"],
+      "command": "basedpyright-langserver",
+      "args": ["--stdio"],
+      "rootPatterns": [
+        "pyproject.toml",
+        "setup.cfg",
+        "setup.py",
+        "requirements.txt",
+        ".git"
+      ]
+    },
+    {
       "id": "kotlin",
       "extensions": [".kt", ".kts"],
       "languageIds": ["kotlin"],
@@ -10,7 +24,8 @@
         "settings.gradle.kts",
         "settings.gradle",
         "build.gradle.kts",
-        "build.gradle"
+        "build.gradle",
+        ".git"
       ]
     }
   ],
