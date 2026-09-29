@@ -40,6 +40,7 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
   git(['worktree', 'prune']);
   git(['worktree', 'add', '-B', issueBranch, jobDir, 'origin/dev']);
   const patch = path.join(tempDir, `pi-resume-${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}.patch`);
+  let resumed = false;
   if (resumeRef) {
     const base = git(['merge-base', 'origin/dev', resumeRef]).out;
     const diff = git(['diff', '--binary', base, resumeRef]).out;
@@ -47,9 +48,14 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
     if (diff) {
       const applied = git(['apply', '--3way', patch], { cwd: jobDir, allowFailure: true });
       if (applied.status !== 0) console.log('Saved work does not apply cleanly to latest dev; conflicts are left for the live Implementer session');
+      resumed = git(['diff', '--quiet', 'origin/dev', '--'], { cwd: jobDir, allowFailure: true }).status !== 0;
+      if (!resumed) {
+        fs.writeFileSync(patch, '');
+        console.log('Saved issue work is already contained in latest dev; treating this attempt as fresh work');
+      }
     }
   }
-  return { start, checkpointExpected, issueBranchExpected, patch };
+  return { start, checkpointExpected, issueBranchExpected, patch, resumed };
 }
 
 export function cleanIssueWorktree({ jobDir, patchFile }) {

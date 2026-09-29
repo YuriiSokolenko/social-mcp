@@ -9,6 +9,7 @@ const lines = (text) => text.split(/\r?\n/).map(item => item.trim()).filter(Bool
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
 
 function restoredWork() {
+  if (process.env.PI_RESUME_ACTIVE != null) return process.env.PI_RESUME_ACTIVE === 'true';
   const patch = process.env.PI_RESUME_PATCH;
   return Boolean(patch && fs.existsSync(patch) && fs.statSync(patch).size > 0);
 }
@@ -71,14 +72,23 @@ export default function (pi) {
       if (restored) {
         const context = issueContext();
         const issue = process.env.PI_ISSUE || process.env.ISSUE || context.number || '';
-        data = {
-          title: clean(context.title),
-          summary: `Restored implementation${issue ? ` for issue #${issue}` : ''} was validated against latest dev.`,
-          changes: changedPaths,
-          already_satisfied: false,
-          security_notes: 'No additional security notes were supplied for restored work.',
-          limitations: 'No additional limitations were supplied for restored work.',
-        };
+        data = hasDiff
+          ? {
+              title: clean(context.title),
+              summary: `Restored implementation${issue ? ` for issue #${issue}` : ''} was validated against latest dev.`,
+              changes: changedPaths,
+              already_satisfied: false,
+              security_notes: 'No additional security notes were supplied for restored work.',
+              limitations: 'No additional limitations were supplied for restored work.',
+            }
+          : {
+              title: clean(context.title),
+              summary: `Latest dev already contains the replayed saved implementation${issue ? ` for issue #${issue}` : ''}; no duplicate implementation is required.`,
+              changes: [],
+              already_satisfied: true,
+              security_notes: 'No repository change was required because latest dev already contains the saved implementation.',
+              limitations: 'No implementation PR is created for a stale restored branch that is already contained in latest dev.',
+            };
       } else if (alreadySatisfied) {
         const context = issueContext();
         const issue = process.env.PI_ISSUE || process.env.ISSUE || context.number || '';
@@ -99,9 +109,9 @@ export default function (pi) {
       }
 
       if (!data.title || !data.summary) throw new Error('title and summary are required');
-      if (alreadySatisfied && hasDiff) throw new Error('already_satisfied requires zero diff against latest dev');
-      if (alreadySatisfied && data.changes.length) throw new Error('already_satisfied requires changes: []');
-      if (!alreadySatisfied && !data.changes.length) throw new Error('at least one concrete change is required');
+      if (data.already_satisfied && hasDiff) throw new Error('already_satisfied requires zero diff against latest dev');
+      if (data.already_satisfied && data.changes.length) throw new Error('already_satisfied requires changes: []');
+      if (!data.already_satisfied && !data.changes.length) throw new Error('at least one concrete change is required');
 
       const target = process.env.PI_IMPLEMENTER_RESULT_FILE;
       if (!target) throw new Error('PI_IMPLEMENTER_RESULT_FILE is not configured');

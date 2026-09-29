@@ -101,8 +101,8 @@ export function issueStateLabels(issue) {
   return [...ISSUE_STATE_LABELS].filter(label => labels.has(label)).sort();
 }
 
-export function isIssueTransitionNoop(issue, action) {
-  return action === 'stopped' && issue.state === 'closed';
+export function isIssueTransitionNoop(issue, _action) {
+  return issue.state === 'closed';
 }
 
 export function validateIssueTransition(issue, action) {

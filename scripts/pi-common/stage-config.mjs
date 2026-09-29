@@ -69,7 +69,9 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const body = context.body ?? '';
     const contract = loadAgentContract('implementer', env);
     const resumePatch = env.PI_RESUME_PATCH;
-    const resumed = Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
+    const resumed = env.PI_RESUME_ACTIVE != null
+      ? env.PI_RESUME_ACTIVE === 'true'
+      : Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
     const freshBaseCommit = String(env.PI_IMPLEMENTER_START_COMMIT ?? '').trim();
     const worktreeRoot = env.JOB_DIR || process.cwd();
     const resumeSource = env.PI_CHECKPOINT_EXPECTED
@@ -78,7 +80,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
         ? 'issue branch'
         : 'saved work';
     const resumeNotice = resumed
-      ? `Runtime resume state: restored ${resumeSource} work is already in this worktree. The operating contract is already loaded in this prompt. Call \`submit_result\` with no arguments immediately. Do not call \`prepare_implementation\` and do not inspect, summarize, or plan the restored files first. If \`submit_result\` fails, fix only the concrete reported problem and retry. Do not use \`already_satisfied\` for restored work.\n\n`
+      ? `Runtime resume state: restored ${resumeSource} work is already in this worktree. The operating contract is already loaded in this prompt. Call \`submit_result\` with no arguments immediately. Do not call \`prepare_implementation\` and do not inspect, summarize, or plan the restored files first. If \`submit_result\` fails, fix only the concrete reported problem and retry. Do not pass \`already_satisfied\` for restored work; if saved work is already contained in latest dev, \`submit_result\` detects that zero-diff state and completes it automatically.\n\n`
       : '';
     const startupInstruction = resumed
       ? 'This is restored work. Call `submit_result` with no arguments as your first tool action. Runtime validation and trusted repository state provide the publication metadata.'
@@ -88,7 +90,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - Call \`submit_result\` with no arguments before inspecting restored files; it is both validation and submission.
 - Runtime derives restored-work publication metadata from the trusted issue context and validated diff.
 - If it reports a concrete failure, fix only that failure and retry.
-- Never use \`already_satisfied\` for restored work.`
+- Never pass \`already_satisfied\` for restored work. If replayed saved work has become a zero diff against latest dev, \`submit_result\` records it as already satisfied automatically.`
       : `For fresh work after preparation:
 - The worktree started as an exact checkout of latest fetched \`origin/dev\`. Before the first successful \`safe_edit\`/\`edit\`/\`write\`, direct reads of the current worktree are authoritative latest-dev evidence. Do not run Git commands merely to prove that provenance again.
 - When the issue or prepared plan already names a source-code symbol, use semantic LSP lookup first. For a fresh name-only lookup when the language is explicit, call \`lsp_start_server\` once with server id \`python\` or \`kotlin\` and the exact absolute \`workspace_root: "${worktreeRoot}"\`, then \`lsp_find_symbol\`; this cold-start control action does not consume evidence budget. Do not call \`lsp_server_status\` first and do not precede this with RepoMap/Zoekt/repo_search/Git Context/scout. If language is unknown, use deterministic discovery to resolve the language rather than issuing a guaranteed-cold name-only query. If file + position are already known, use the narrow position-based LSP tool directly; it auto-starts the routed server.
@@ -120,7 +122,7 @@ ${resumeNotice}Work directly in the checked-out repository, always based on late
 
 ${executionGuidance}
 
-Main owns execution decisions, \`safe_edit\`/\`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Planning and task-level complexity belong to the fresh-work startup subagents. If evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`. Never use \`already_satisfied\` for restored work.
+Main owns execution decisions, \`safe_edit\`/\`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Planning and task-level complexity belong to the fresh-work startup subagents. If evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`. Never pass \`already_satisfied\` for restored work; runtime handles a zero-diff stale restore automatically.
 
 Use the smallest implementation satisfying the issue. \`submit_result\` is both validation and submission; do not independently prove correctness before calling it. Do not commit, push, create PRs, or modify GitHub state. A successful \`submit_result\` is terminal.
 

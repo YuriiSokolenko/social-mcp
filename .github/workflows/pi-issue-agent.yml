@@ -70,6 +70,7 @@ jobs:
         run: node "$GITHUB_WORKSPACE/scripts/pi-labels.mjs" issue
 
       - name: Mark issue running
+        id: claim
         env:
           GH_TOKEN: ${{ github.token }}
           REQUIRE_READY: ${{ inputs.require_ready }}
@@ -80,6 +81,7 @@ jobs:
 
       - name: Create temporary issue worktree
         id: worktree
+        if: steps.claim.outputs.terminal != 'true'
         run: |
           JOB_DIR="$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
@@ -88,8 +90,10 @@ jobs:
           echo "PI_CHECKPOINT_EXPECTED=$(jq -r '.checkpointExpected' <<<"$CONTEXT")" >> "$GITHUB_ENV"
           echo "PI_ISSUE_BRANCH_EXPECTED=$(jq -r '.issueBranchExpected' <<<"$CONTEXT")" >> "$GITHUB_ENV"
           echo "PI_RESUME_PATCH=$(jq -r '.patch' <<<"$CONTEXT")" >> "$GITHUB_ENV"
+          echo "PI_RESUME_ACTIVE=$(jq -r '.resumed' <<<"$CONTEXT")" >> "$GITHUB_ENV"
 
       - name: Prepare Python environment
+        if: steps.claim.outputs.terminal != 'true'
         run: |
           cd "$JOB_DIR"
           python --version
@@ -104,6 +108,7 @@ jobs:
           ruff --version
 
       - name: Prepare Orbit Local code graph
+        if: steps.claim.outputs.terminal != 'true'
         run: |
           command -v orbit >/dev/null
           orbit version
@@ -113,6 +118,7 @@ jobs:
           echo "Orbit Local MCP configured and current issue worktree indexed."
 
       - name: Run Pi with live progress
+        if: steps.claim.outputs.terminal != 'true'
         run: |
           cd "$JOB_DIR"
           node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" implementer

@@ -192,3 +192,28 @@ test('manual Implementer dispatch bypasses pi:ready while Dispatcher keeps the s
   assert.match(workflow, /ACTION="running-manual"/);
   assert.match(dispatcher, /dispatchWorkflow\("pi-issue-agent\.yml", \{ issue_number: String\(number\), require_ready: true \}\)/);
 });
+
+
+test('stale implementation refs do not create restored work when latest dev already contains them', () => {
+  const worktree = fs.readFileSync('scripts/pi-common/issue-worktree.mjs', 'utf8');
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  const resultTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  assert.match(worktree, /diff', '--quiet', 'origin\/dev', '--'/);
+  assert.match(worktree, /if \(!resumed\)[\s\S]*writeFileSync\(patch, ''\)/);
+  assert.match(workflow, /PI_RESUME_ACTIVE=.*\.resumed/);
+  assert.match(runtime, /PI_RESUME_ACTIVE/);
+  assert.match(resultTool, /PI_RESUME_ACTIVE/);
+  assert.match(resultTool, /Latest dev already contains the replayed saved implementation/);
+  assert.match(resultTool, /already_satisfied: true/);
+});
+
+test('merged implementation PR is terminal before a repeated Implementer run becomes expensive', () => {
+  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.match(transition, /mergedImplementationPr/);
+  assert.match(transition, /state: 'closed', state_reason: 'completed'/);
+  assert.match(transition, /terminal=true/);
+  assert.match(workflow, /id: claim/);
+  assert.match(workflow, /if: steps\.claim\.outputs\.terminal != 'true'/);
+});

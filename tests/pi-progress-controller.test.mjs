@@ -741,6 +741,7 @@ test('stage configuration owns every model prompt', () => {
     const resumedPrompt = stagePrompt('implementer', {
       ...env,
       PI_RESUME_PATCH: resumePatch,
+      PI_RESUME_ACTIVE: 'true',
       PI_CHECKPOINT_EXPECTED: 'checkpoint-sha',
     });
     assert.match(resumedPrompt, /restored checkpoint work is already in this worktree/);
@@ -748,7 +749,16 @@ test('stage configuration owns every model prompt', () => {
     assert.match(resumedPrompt, /Do \*\*not\*\* call `prepare_implementation`/);
     assert.match(resumedPrompt, /Do not use `already_satisfied` for restored work/);
     assert.match(resumedPrompt, /Restored work path:[\s\S]*submit_result[\s\S]*fix only that failure/);
+    assert.match(resumedPrompt, /zero-diff state[\s\S]*completes it automatically/);
     assert.doesNotMatch(resumedPrompt, /For fresh work after preparation/);
+    const staleResumePrompt = stagePrompt('implementer', {
+      ...env,
+      PI_RESUME_PATCH: resumePatch,
+      PI_RESUME_ACTIVE: 'false',
+      PI_ISSUE_BRANCH_EXPECTED: 'stale-branch-sha',
+    });
+    assert.match(staleResumePrompt, /This is fresh work/);
+    assert.doesNotMatch(staleResumePrompt, /Runtime resume state/);
     assert.match(stagePrompt('implementer', env), /Complexity alone never requires delegation/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('dispatcher', env), /prepared context is sufficient and authoritative/i);

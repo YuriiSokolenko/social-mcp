@@ -125,11 +125,12 @@ test('already-satisfied completion is allowed only from a running implementer st
   assert.throws(() => validateIssueTransition(issue('closed', ['pi:running']), 'satisfied'), /closed issue/);
 });
 
-test('cancel cleanup is a no-op when the issue is already closed', () => {
+test('all pipeline transitions are no-ops once an issue is closed', () => {
   assert.equal(isIssueTransitionNoop(issue('closed', []), 'stopped'), true);
   assert.equal(isIssueTransitionNoop(issue('closed', ['architect:ready']), 'stopped'), true);
+  assert.equal(isIssueTransitionNoop(issue('closed', []), 'needs-human'), true);
+  assert.equal(isIssueTransitionNoop(issue('closed', []), 'running-manual'), true);
   assert.equal(isIssueTransitionNoop(issue('open', ['architect:ready']), 'stopped'), false);
-  assert.equal(isIssueTransitionNoop(issue('closed', []), 'needs-human'), false);
 });
 
 test('stopped transition removes pipeline ownership and preserves unrelated labels', async () => {

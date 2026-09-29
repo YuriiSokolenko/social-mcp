@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
+
 import { replaceIssueState } from './pi-common/github-state.mjs';
-import { isIssueTransitionNoop, validateIssueTransition } from './pi-common/state-machine.mjs';
+import { ISSUE_STATE_LABELS, isIssueTransitionNoop, validateIssueTransition } from './pi-common/state-machine.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
@@ -30,10 +32,33 @@ async function postComment() {
   if (!comment) return;
   await postIssueComment(number, comment);
 }
+function markTerminalOutput() {
+  if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, 'terminal=true\n');
+}
+async function mergedImplementationPr() {
+  const owner = String(process.env.GITHUB_REPOSITORY ?? '').split('/')[0];
+  if (!owner) return null;
+  const head = encodeURIComponent(`${owner}:pi/issue-${number}`);
+  const prs = await api(`/pulls?state=closed&head=${head}&base=dev&per_page=100`);
+  return prs.find(pr => pr.merged_at) ?? null;
+}
+async function completeFromMergedImplementation(item) {
+  if (item.state !== 'open') return null;
+  const pr = await mergedImplementationPr();
+  if (!pr) return null;
+  const labels = [...names(item)].filter(label => !ISSUE_STATE_LABELS.has(label));
+  await api(`/issues/${number}`, 'PATCH', { labels, state: 'closed', state_reason: 'completed' });
+  markTerminalOutput();
+  console.log(`issue #${number}: merged implementation PR #${pr.number} already completed the issue; ignored stale ${action} transition`);
+  return pr;
+}
 
 const item = await load();
 if (isIssueTransitionNoop(item, action)) {
+  markTerminalOutput();
   console.log(`issue #${number}: ${action} is a no-op because the issue is already closed`);
+} else if (await completeFromMergedImplementation(item)) {
+  // Merged implementation ownership is terminal even if an earlier cleanup missed the issue.
 } else {
   const expected = names(item);
   const target = validateIssueTransition(item, action);

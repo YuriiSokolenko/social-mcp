@@ -225,11 +225,13 @@ export default function (pi) {
   const stage = process.env.PI_STAGE;
   const config = stageConfig(stage);
   const resumePatch = stage === 'implementer' ? process.env.PI_RESUME_PATCH : null;
-  const resumedImplementer = Boolean(
-    resumePatch &&
-    fs.existsSync(resumePatch) &&
-    fs.statSync(resumePatch).size > 0
-  );
+  const resumedImplementer = process.env.PI_RESUME_ACTIVE != null
+    ? process.env.PI_RESUME_ACTIVE === 'true'
+    : Boolean(
+        resumePatch &&
+        fs.existsSync(resumePatch) &&
+        fs.statSync(resumePatch).size > 0
+      );
   const freshBaseCommit = stage === 'implementer'
     ? String(process.env.PI_IMPLEMENTER_START_COMMIT ?? '').trim()
     : '';

@@ -37,7 +37,7 @@ If the initial prompt says saved checkpoint or issue-branch changes were replaye
 2. Do **not** call `prepare_implementation`, inspect repository files, summarize restored changes, or prove the restored implementation correct first.
 3. If `submit_result` reports a concrete conflict or failing check, fix only that reported problem and retry `submit_result`. Delegate only when the failure does not contain enough evidence to make the next safe change.
 
-Restored work is never `already_satisfied`. That flag is reserved for an end state that already exists in latest `dev`.
+Do not pass `already_satisfied` for restored work. If replayed saved work is already contained in latest `dev`, `submit_result` detects the resulting zero diff and records the issue as already satisfied automatically; that runtime recovery is not a model claim.
 
 `submit_result` is the first validation step for restored work. Do not summarize, re-plan, or independently verify restored files before that first call.
 
@@ -149,7 +149,7 @@ Do not discard and rewrite the whole prepared plan merely because a local detail
 
 `scout` gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
 
-If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. For fresh work call `submit_result({already_satisfied: true, changes: []})` immediately; runtime derives the remaining publication metadata from the trusted issue context. Never use `already_satisfied` for restored checkpoint/issue-branch work.
+If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. For fresh work call `submit_result({already_satisfied: true, changes: []})` immediately; runtime derives the remaining publication metadata from the trusted issue context. For restored checkpoint/issue-branch work, never pass `already_satisfied` yourself; a zero-diff replay is completed automatically by `submit_result`.
 
 For fresh work with a known target, prefer:
 
@@ -192,7 +192,7 @@ Do not run full pytest, full-repository Ruff, or CI/control-plane suites before 
 
 If it reports a conflict or failing check, fix only that concrete problem. If the failure was caused by the most recent mutation and the correct recovery is to undo it, call `rollback_last_mutation` instead of layering a workaround on top. Runtime permits at most one diagnostic evidence action for each failed validation attempt; then fix an already-mutated file, rollback, or retry `submit_result`.
 
-For restored work, the first call is `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields after validation. Fresh work with real changes provides normal result metadata; fresh already-satisfied work uses only `submit_result({already_satisfied: true, changes: []})`.
+For restored work, the first call is `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields after validation. If the replayed saved implementation is already contained in latest `dev`, that same call succeeds as an automatic already-satisfied result instead of entering validation recovery. Fresh work with real changes provides normal result metadata; fresh already-satisfied work uses only `submit_result({already_satisfied: true, changes: []})`.
 
 After successful `submit_result`, **stop immediately**.
 
