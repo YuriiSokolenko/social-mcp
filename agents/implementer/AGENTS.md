@@ -65,10 +65,12 @@ The runtime enforces execution as a state machine rather than a turn counter.
 - An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, `trivial_repo_lookup`, scout/research delegation, or a bounded diagnostic command.
 - Use that budget only for a short evidence chain such as `locate -> read -> exact anchor`. Once the budget is exhausted, exploration closes and the next substantive tool must be `edit`, `write`, or `submit_result`.
 - If one concrete missing fact still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one further evidence action, after which action is required again.
-- Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `edit`, `write`, or `submit_result` starts a new productive epoch.
+- Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `edit`, `write`, `rollback_last_mutation`, or `submit_result` starts a new productive epoch.
 - Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion.
 - `set_response_budget` and the one-time `subagents_enable` control action do not consume an evidence permit.
 - Prefer completing `evidence → edit/write` in the same model response whenever the evidence is sufficient.
+- If your latest successful `edit`/`write` is shown by validation to be the wrong approach or to cause a regression, prefer `rollback_last_mutation` over compensating workarounds. It restores the exact file state from immediately before that mutation and leaves earlier unrelated changes intact.
+- If `submit_result` fails validation, runtime enters recovery mode. You get at most one diagnostic evidence action for that failure; after it, only fix an already-mutated file, call `rollback_last_mutation`, or retry `submit_result`. Do not reopen general repository exploration or use `need_more_evidence` during validation recovery.
 
 This protocol deliberately permits long/complex tasks without an arbitrary turn quota while preventing open-ended exploration. It also avoids forcing a mutation before the agent has enough repository evidence to identify a safe target.
 
@@ -85,6 +87,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 - **Deterministic repository search:** use `repo_search` directly for cheap literal path/content discovery in the current tracked worktree. Prefer it over a subagent when the question is mechanically answerable as “which path contains this name/text?”.
 - **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target in `origin/dev`. The lookup never reads resumed checkpoint/current-worktree changes. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText`; the result fields `exactTextFoundInDev` / `exactTextPathsInDev` are evidence about latest dev only. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
+- `rollback_last_mutation` when the most recent mutation caused the current regression or was the wrong local approach.
 - `submit_result`.
 
 Do not use repeated guessed reads as a substitute for search. Use `repo_search` for deterministic literal path/content discovery; when paths are already known, continue with direct reads as needed. Delegate only when deterministic search plus direct reads are insufficient to decide the next safe action.
@@ -174,7 +177,7 @@ Do not run full pytest, full-repository Ruff, or CI/control-plane suites before 
 - runs the full product pytest suite;
 - runs `ruff check .`.
 
-If it reports a conflict or failing check, fix only that concrete problem. Use a focused delegated check only when the failure itself does not provide enough evidence for the next safe change, then retry `submit_result`.
+If it reports a conflict or failing check, fix only that concrete problem. If the failure was caused by the most recent mutation and the correct recovery is to undo it, call `rollback_last_mutation` instead of layering a workaround on top. Runtime permits at most one diagnostic evidence action for each failed validation attempt; then fix an already-mutated file, rollback, or retry `submit_result`.
 
 For restored work, the first call is `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields after validation. Fresh work continues to provide normal result metadata.
 
