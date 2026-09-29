@@ -77,6 +77,11 @@ _REDACTED_MARKER = "REDACTED"
 
 
 def _is_sensitive_key(key: str) -> bool:
+    """Return whether ``key`` names a sensitive value.
+
+    The key is normalized to lowercase and treated as sensitive when it equals,
+    ends with, or contains one of the configured :data:`_SENSITIVE_KEY_SUFFIXES`.
+    """
     lowered = key.lower()
     return any(
         lowered == suffix or lowered.endswith(suffix) or suffix in lowered
