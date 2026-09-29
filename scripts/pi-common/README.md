@@ -36,6 +36,8 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow wakes; it keeps authenticated REST and the trusted `dev` ref out of YAML.
 - `terminal-tool.mjs` / `result-jsonl.mjs` — one machine-checkable terminal-tool contract plus tolerant Pi JSONL reading; free-text result markers are not pipeline state.
 - `stage-config.mjs` — single source of per-agent runtime defaults and prompt builders (first contract read, turn/repeat limits, complexity mode, bash timeout, fixed token budget, result tool, stage prompt).
+- `repo-search.mjs` — exact literal path/content discovery in the current tracked worktree.
+- `zoekt-search.mjs` — optional read-only Zoekt client for fast indexed `dev` content/path/symbol discovery. The runtime exposes `indexed_repo_search` only when `PI_ZOEKT_URL` is configured; `PI_ZOEKT_REPOSITORY` can scope a shared index and `PI_ZOEKT_TIMEOUT_MS` controls the bounded request timeout.
 
 ## What does NOT belong here
 
