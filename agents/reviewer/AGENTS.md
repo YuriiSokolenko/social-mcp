@@ -51,6 +51,16 @@ Additional investigation is allowed whenever it answers a concrete review questi
 
 Do not perform additional investigation merely to accumulate reassurance after the acceptance criteria and relevant correctness concerns are already resolved.
 
+### Known-symbol semantic navigation
+
+When a concrete unresolved review question names an existing source-code symbol and LSP tools are available, use semantic lookup before literal/index search.
+
+- If the language is explicit and only the symbol name is known, call `lsp_start_server` once with the matching server id and the exact reviewer workspace root supplied in the prompt, then call `lsp_find_symbol`.
+- Treat the LSP result as discovery evidence and `read` only the exact definition/caller context needed to answer the review question.
+- Do not use `grep`, `rg`, Zoekt/indexed search, RepoMap, Git Context, or broad repository search merely to rediscover or confirm a named symbol before trying LSP.
+- Fall back to literal/index search only when LSP startup/lookup fails, times out, returns no useful match, or the language cannot be resolved semantically.
+- A named-symbol ambiguity is not a reason to delay complexity declaration when the issue + diff + changed code are already sufficient to classify the review. Classify first, then resolve the semantic question.
+
 ### Historical intent / provenance
 
 Use Git history only when one concrete review question cannot be resolved from the current issue, diff, changed code, tests, or semantic current-code context.
