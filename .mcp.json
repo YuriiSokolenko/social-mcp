@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "lsp": {
+      "command": "lsp-mcp-server",
+      "lifecycle": "lazy",
+      "idleTimeout": 15,
+      "requestTimeoutMs": 125000,
+      "exposeResources": false,
+      "toolPrefix": "none",
+      "includeTools": [
+        "lsp_server_status",
+        "lsp_goto_definition",
+        "lsp_find_references",
+        "lsp_find_implementations",
+        "lsp_call_hierarchy",
+        "lsp_smart_search"
+      ],
+      "directTools": [
+        "lsp_server_status",
+        "lsp_goto_definition",
+        "lsp_find_references",
+        "lsp_find_implementations",
+        "lsp_call_hierarchy",
+        "lsp_smart_search"
+      ]
+    }
+  }
+}
