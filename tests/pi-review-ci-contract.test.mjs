@@ -625,9 +625,9 @@ test('dispatcher stays a narrow scope classifier and does not treat complexity a
   assert.match(agent, /candidates.*authoritative/is);
   assert.match(agent, /Size alone is not a reason for ARCHITECT/);
   assert.match(agent, /Complexity alone is not a reason for ARCHITECT/);
-  assert.match(agent, /Read the project documentation once, before reading the dispatcher candidates/);
-  assert.match(agent, /Do not repeatedly reread project documentation for each candidate/);
-  assert.match(agent, /Do not inspect repository code, Git history, queue state/);
+  assert.match(agent, /prepared context is sufficient/i);
+  assert.match(agent, /Runtime closes exploration as soon as the prepared context has been read/);
+  assert.match(agent, /Do not inspect repository code, project documentation, Git history, queue state/);
   assert.match(agent, /That classification is your entire job/);
 });
 
