@@ -613,7 +613,7 @@ export default function (pi) {
         : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
       if (stage === 'implementer' && actionRequiredProseOnlyTurns > 0) {
         console.log('PI_ACTION_REQUIRED_ESCALATE: prose-only turn; injecting user-level runtime directive');
-        pi.sendUserMessage(directive);
+        await pi.sendUserMessage(directive, { deliverAs: 'steer' });
       } else {
         pi.sendMessage({
           customType: 'pi-action-required',
