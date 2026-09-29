@@ -507,3 +507,50 @@ test('stage configuration owns every model prompt', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test('productive progress allows only one extra evidence permit per productive epoch', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'write', 'submit_result'],
+      controlTools: ['set_response_budget', 'subagents_enable'],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('normal');
+  state.onToolExecutionEnd('prepare_implementation', false);
+
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'exact helper path',
+    reason: 'needed for a safe edit',
+  }), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'src/b.py' }), undefined);
+
+  const secondUnlock = state.checkToolCall('need_more_evidence', {
+    missing: 'different helper detail',
+    reason: 'would provide more context',
+  });
+  assert.match(secondUnlock.reason, /already used since the last successful edit\/write\/submit_result/);
+
+  assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
+  state.onToolExecutionEnd('edit', true);
+  const afterFailedEdit = state.checkToolCall('need_more_evidence', {
+    missing: 'failed edit follow-up',
+    reason: 'the mutation did not succeed',
+  });
+  assert.match(afterFailedEdit.reason, /already used since the last successful edit\/write\/submit_result/);
+
+  state.onToolExecutionEnd('edit', false);
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'post-edit verification fact',
+    reason: 'a successful mutation starts a new productive epoch',
+  }), undefined);
+});
