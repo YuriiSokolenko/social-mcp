@@ -190,3 +190,12 @@ files from `index/`, run the updater, and start the service again. Normal
 updates never delete the index. `indexed_repo_search`
 is discovery against indexed `dev`; `repo_search` and `read` remain authoritative
 for the current worktree, including after edits.
+
+
+## GitLab Orbit Local for Pi
+
+The `pi-agent` ephemeral worker image pins `@gitlab/orbit@0.130.0`. Architect and Implementer workflows run `orbit setup pi --mcp --yes --no-index` before Pi starts, then index only the checkout authoritative for that job. No GitLab login, PAT, or Orbit Remote service is required: Orbit Local runs against the worker's local checkout and local DuckDB graph.
+
+After changing the worker image, rebuild it on N150 with the existing image tag, restart the Pi runner manager, and verify a fresh Architect or Implementer job prints only the Orbit version plus the non-sensitive confirmation line. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
+
+Orbit complements the host Zoekt service: Zoekt stays the fast shared `dev` text index; Orbit supplies per-job structural code context for the current checkout/worktree.
