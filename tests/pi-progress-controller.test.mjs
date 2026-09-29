@@ -93,7 +93,7 @@ test('productive progress allows a bounded initial evidence sequence before acti
     productiveProgress: {
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
-      initialEvidenceBudget: 3,
+      initialEvidenceBudget: 6,
       actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
@@ -106,9 +106,15 @@ test('productive progress allows a bounded initial evidence sequence before acti
 
   assert.equal(state.checkToolCall('indexed_repo_search', { kind: 'content', query: 'target' }), undefined);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('repo_search', { kind: 'path', query: 'target' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'docs/contract.md' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
-  assert.equal(state.checkToolCall('read', { path: 'src/b.py' }), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'src/registration.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'tests/test_a.py' }), undefined);
   assert.equal(state.productiveProgressState(), 'action_required');
   assert.match(state.checkToolCall('read', { path: 'src/c.py' }).reason, /productive progress requires an action/);
   assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
@@ -503,7 +509,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.deepEqual(stageConfig('implementer').singleUseTools, ['prepare_implementation']);
   assert.equal(stageConfig('implementer').productiveProgress.activationTool, 'prepare_implementation');
   assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
-  assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 3);
+  assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 6);
   assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['edit', 'write', 'rollback_last_mutation', 'submit_result']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
