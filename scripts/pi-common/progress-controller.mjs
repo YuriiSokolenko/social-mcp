@@ -67,6 +67,26 @@ export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
 }
 
+export function nextActionResponseCap({
+  baseCap,
+  retryCap,
+  outputTokens,
+  actionRequired,
+  attemptedTool,
+  madeProgress,
+}) {
+  if (!actionRequired) return 0;
+  const base = positiveInteger(Number(baseCap), 'actionResponseMaxTokens');
+  const retry = positiveInteger(Number(retryCap ?? base), 'actionResponseRetryMaxTokens');
+  if (retry < base) throw new Error('actionResponseRetryMaxTokens must be >= actionResponseMaxTokens');
+  const cappedProseOnlyTurn =
+    Number.isFinite(outputTokens) &&
+    outputTokens >= base &&
+    attemptedTool !== true &&
+    madeProgress !== true;
+  return cappedProseOnlyTurn ? retry : base;
+}
+
 export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, madeProgress = true) {
   const ceiling = budgets[currentLevel];
   if (!ceiling) throw new Error(`Unknown response budget: ${currentLevel}`);

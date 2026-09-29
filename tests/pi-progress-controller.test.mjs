@@ -9,6 +9,7 @@ import {
   ProgressController,
   RESPONSE_BUDGETS,
   isBoundedDirectBash,
+  nextActionResponseCap,
   nextResponseBudgetLevel,
   toolCallSignature,
 } from '../scripts/pi-common/progress-controller.mjs';
@@ -30,6 +31,68 @@ test('shared response budgets stay capped at 2k, 4k, and 8k', () => {
   assert.equal(nextResponseBudgetLevel('short', 2048), 'normal');
   assert.equal(nextResponseBudgetLevel('normal', 4096), 'deep');
   assert.equal(nextResponseBudgetLevel('deep', 8192), 'short');
+});
+
+test('action-required retry cap escalates only after a capped prose-only turn', () => {
+  assert.equal(nextActionResponseCap({
+    baseCap: 512,
+    retryCap: 1024,
+    outputTokens: 512,
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 1024);
+  assert.equal(nextActionResponseCap({
+    baseCap: 512,
+    retryCap: 1024,
+    outputTokens: 1024,
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 1024);
+  assert.equal(nextActionResponseCap({
+    baseCap: 512,
+    retryCap: 1024,
+    outputTokens: 511,
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 512);
+  assert.equal(nextActionResponseCap({
+    baseCap: 512,
+    retryCap: 1024,
+    outputTokens: 512,
+    actionRequired: true,
+    attemptedTool: true,
+    madeProgress: false,
+  }), 512);
+  assert.equal(nextActionResponseCap({
+    baseCap: 512,
+    retryCap: 1024,
+    outputTokens: 512,
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: true,
+  }), 512);
+  assert.equal(nextActionResponseCap({
+    baseCap: 512,
+    retryCap: 1024,
+    outputTokens: 8192,
+    actionRequired: false,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 0);
+  assert.throws(
+    () => nextActionResponseCap({
+      baseCap: 512,
+      retryCap: 256,
+      outputTokens: 512,
+      actionRequired: true,
+      attemptedTool: false,
+      madeProgress: false,
+    }),
+    /must be >=/,
+  );
 });
 
 test('scout child response budget mirrors the main response ceiling', async () => {
@@ -546,6 +609,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
   assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 6);
   assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 512);
+  assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 1024);
   assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);

@@ -540,6 +540,10 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(runtime, /freshBaseCommit/);
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.match(runtime, /actionResponseMaxTokens/);
+  assert.match(runtime, /actionResponseRetryMaxTokens/);
+  assert.match(runtime, /nextActionResponseCap/);
+  assert.match(runtime, /attemptedTool: actionTurnAttemptedTool/);
+  assert.match(runtime, /actionCapEscalated/);
   assert.match(runtime, /PI_PRODUCTIVE_STATE/);
   assert.match(runtime, /name: 'safe_edit'/);
   assert.match(runtime, /safeEdit\(ctx\.cwd, params\)/);
