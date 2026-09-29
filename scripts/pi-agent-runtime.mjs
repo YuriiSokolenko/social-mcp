@@ -611,20 +611,11 @@ export default function (pi) {
       const directive = stage === 'implementer'
         ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result immediately. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
         : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
-      if (stage === 'implementer' && actionRequiredProseOnlyTurns > 0) {
-        console.log('PI_ACTION_REQUIRED_ESCALATE: prose-only turn; injecting user-level runtime directive');
-        await pi.sendUserMessage(directive, { deliverAs: 'steer' });
-      } else {
-        pi.sendMessage({
-          customType: 'pi-action-required',
-          content: directive,
-          display: false,
-          details: { stage, productiveState },
-        }, {
-          deliverAs: 'steer',
-          triggerTurn: true,
-        });
-      }
+      const reason = actionRequiredProseOnlyTurns > 0
+        ? 'prose-only retry'
+        : 'action-required transition';
+      console.log(`PI_ACTION_REQUIRED_STEER: ${reason}; injecting user-level runtime directive`);
+      await pi.sendUserMessage(directive, { deliverAs: 'steer' });
     }
 
     console.log(`PI_BUDGET_NEXT ${JSON.stringify({
