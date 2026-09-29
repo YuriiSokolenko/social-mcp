@@ -662,7 +662,7 @@ test('implementer has an explicit already-satisfied terminal path without duplic
 
 test('fresh implementer result metadata is validated before expensive final checks', () => {
   const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
-  const guard = tool.indexOf('Fresh changed work requires title, summary, security_notes, and limitations');
+  const guard = tool.indexOf("throw new Error('Fresh changed work requires title, summary, security_notes, and limitations')");
   assert.ok(guard >= 0);
   assert.ok(guard < tool.indexOf('integrateLatestDev({'));
   assert.ok(guard < tool.indexOf('validateFinalProductTree()'));
