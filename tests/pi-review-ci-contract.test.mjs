@@ -551,6 +551,8 @@ test('fresh implementer uses one planner/classifier result while restored work v
   assert.match(runtime, /freshBaseCommit/);
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.match(runtime, /lspWorkspaceRoot/);
+  assert.match(runtime, /name: 'structural_edit'/);
+  assert.match(runtime, /structuralEdit\(ctx\.cwd, params\)/);
   assert.match(runtime, /name: 'safe_edit'/);
   assert.match(runtime, /name: 'repo_search'/);
   assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
@@ -576,6 +578,7 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
   const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const progress = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
+  const structuralEdit = fs.readFileSync('scripts/pi-common/structural-edit.mjs', 'utf8');
   const safeEdit = fs.readFileSync('scripts/pi-common/safe-edit.mjs', 'utf8');
   const resultTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
 
@@ -588,8 +591,10 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.match(implementer, /cold-start call is control-plane setup, not evidence/i);
   assert.match(implementer, /Do not use it before LSP merely to rediscover an already-named source symbol/i);
   assert.match(implementer, /Treat history as provenance evidence, never current source truth, current-symbol discovery, or an edit anchor/i);
+  assert.match(implementer, /structural_edit.*exactly one AST match/i);
   assert.match(implementer, /safe_edit.*bounded line\/range/i);
   assert.match(implementer, /post-edit preview[\s\S]*Do not spend another evidence action/i);
+  assert.match(structuralEdit, /--json=compact[\s\S]*matches\.length !== 1[\s\S]*byteOffset[\s\S]*atomicWrite/);
   assert.match(safeEdit, /POST_EDIT_PREVIEW_MAX_CHARS[\s\S]*post_edit:/);
   assert.match(reviewer, /Historical intent \/ provenance/);
   assert.match(reviewer, /prefer one narrow local Git Context MCP call/i);
@@ -599,9 +604,9 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.doesNotMatch(triage, /blame_context|commit_story|file_history|search_commits|file_contributors/);
   assert.match(stageConfig, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
   assert.match(stageConfig, /controlTools: \['set_response_budget', 'subagents_enable', 'lsp_start_server'\]/);
-  assert.match(stageConfig, /actionTools: \['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'\]/);
-  assert.match(progress, /const MUTATION_TOOLS = new Set\(\['safe_edit', 'edit', 'write'\]\)/);
-  assert.match(resultTool, /safe_edit\/edit\/write/);
+  assert.match(stageConfig, /actionTools: \['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'\]/);
+  assert.match(progress, /const MUTATION_TOOLS = new Set\(\['structural_edit', 'safe_edit', 'edit', 'write'\]\)/);
+  assert.match(resultTool, /structural_edit\/safe_edit\/edit\/write/);
 });
 
 test('implementer has an explicit already-satisfied terminal path without duplicate edits', () => {

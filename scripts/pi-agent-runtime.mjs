@@ -8,6 +8,7 @@ import { ProgressController, nextActionResponseCap } from './pi-common/progress-
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
+import { structuralEdit } from './pi-common/structural-edit.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
@@ -352,6 +353,24 @@ export default function (pi) {
 
   if (stage === 'implementer') {
     pi.registerTool({
+      name: 'structural_edit',
+      label: 'Structural AST edit',
+      description: 'Preferred source-code mutation when one exact syntax node can be described with an ast-grep pattern/rewrite. ast-grep infers the language from the target file, dry-runs the rewrite, requires exactly one AST match, verifies the matched byte range is still current, then writes that one replacement atomically. Use metavariables to preserve untouched code instead of reproducing neighboring statements. Use safe_edit for bounded text/config edits or when structural matching is not a good fit.',
+      parameters: Type.Object({
+        path: Type.String({ minLength: 1, maxLength: 1000 }),
+        pattern: Type.String({ minLength: 1, maxLength: 20000 }),
+        rewrite: Type.String({ minLength: 1, maxLength: 20000 }),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const result = structuralEdit(ctx.cwd, params);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          details: result,
+        };
+      },
+    });
+
+    pi.registerTool({
       name: 'safe_edit',
       label: 'Safe line edit',
       description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, returns a bounded post-edit preview of what landed on disk, and participates in normal rollback/progress handling. Do not re-read merely to verify a successful result.',
@@ -489,13 +508,13 @@ export default function (pi) {
     actionTurnAttemptedTool = true;
     const blocked = controller.checkToolCall(event.toolName, event.input);
     if (blocked) return blocked;
-    if (stage === 'implementer' && ['safe_edit', 'edit', 'write'].includes(event.toolName)) {
+    if (stage === 'implementer' && ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName)) {
       pendingMutationSnapshot = captureMutationSnapshot(ctx?.cwd || process.cwd(), event.input?.path);
     }
     return undefined;
   });
   pi.on('tool_execution_end', (event) => {
-    if (stage === 'implementer' && ['safe_edit', 'edit', 'write'].includes(event.toolName)) {
+    if (stage === 'implementer' && ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName)) {
       if (!event.isError && pendingMutationSnapshot) {
         lastSuccessfulMutationSnapshot = pendingMutationSnapshot;
       }
