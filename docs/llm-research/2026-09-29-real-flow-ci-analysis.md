@@ -284,7 +284,7 @@ Implementer #4 completed preparation and accumulated enough repository evidence 
 
 The important runtime finding was that `madeProgress:false` already existed in the logs, but `ProgressController` used it only for response-budget selection. Lack of productive progress did not constrain the next legal action.
 
-A fixed "N turns without progress" watchdog was considered and rejected because it measures duration rather than whether the next transition is justified. The implemented design is instead a deterministic state machine:
+A fixed "N turns without progress" watchdog was considered and rejected because it measures duration rather than whether the next transition is justified. The first implemented design used a single initial evidence action:
 
 ```text
 prepare_implementation
@@ -296,6 +296,8 @@ prepare_implementation
             -> one evidence action
             -> ACTION_REQUIRED
 ```
+
+This historical design was later superseded after issue #148 demonstrated that one bounded implementation chain could legitimately require more repository evidence. The current runtime uses **six** initial evidence actions; the one-shot `need_more_evidence` escape remains unchanged.
 
 Additional enforcement:
 
