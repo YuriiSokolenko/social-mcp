@@ -214,6 +214,12 @@ class ThreadsApiClient:
             self._platform_transport = None
 
     def _effective_transport(self) -> ThreadsApiTransport:
+        """Return the transport used for API calls.
+
+        Returns the injected transport when one was provided to the client;
+        otherwise lazily creates and reuses the platform transport, which
+        provides retry, rate-limit and timeout handling for real API calls.
+        """
         if self._transport is not None:
             return self._transport
         if self._platform_transport is None:
