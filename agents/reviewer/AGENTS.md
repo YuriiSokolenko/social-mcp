@@ -137,12 +137,7 @@ For normal/complex reviews, load a skill only when the diff actually raises that
 - Concrete speculative/future-proof or premature-abstraction question → `.agents/skills/yagni/SKILL.md`
 - Concrete module/interface/dependency-design question → `.agents/skills/solid/SKILL.md`
 - Python test behavior → `.agents/skills/python-testing-patterns/SKILL.md`
-- Architecture/abstractions → `python-design-patterns` / `architecture-patterns`
-- Package/module organization → `python-project-structure`
-- Public APIs/types → `python-type-safety`
-- Validation/errors/OAuth/API failures → `python-error-handling`
-- MCP protocol/release behavior → `mcp-release-qa`
-- Node.js/Bash/Docker/Compose/packaging → the corresponding repository skill
+- Architecture/abstractions → `.agents/skills/architecture-patterns/SKILL.md`
 
 KISS, YAGNI, and SOLID are heuristics for an already-existing review question, not independent reasons to request changes. Do not reject a correct PR merely because a more abstract or theoretically cleaner design exists. Repository code, configuration, and existing conventions take precedence over generic skill examples. A skill is guidance for an existing review question, not a reason to create new requirements.
 

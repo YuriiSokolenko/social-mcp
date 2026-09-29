@@ -106,14 +106,7 @@ Do not read skills for trivial/static repairs. For normal/complex work, load a s
 - Concrete reuse/dependency/boilerplate question → `.agents/skills/minimalist/SKILL.md`
 - Module/interface/dependency design decision → `.agents/skills/solid/SKILL.md`
 - Python test behavior → `.agents/skills/python-testing-patterns/SKILL.md`
-- Architecture/abstractions → `python-design-patterns` and, for layer boundaries, `architecture-patterns`
-- Package/module organization → `python-project-structure`
-- Public APIs/types → `python-type-safety`
-- Validation/errors/OAuth/API failures → `python-error-handling`
-- Material Python style/documentation question → `python-code-style`
-- Node.js → `modern-javascript-patterns`
-- Bash → `bash-defensive-patterns`
-- Docker/Compose/packaging → the corresponding repository skill
+- Architecture/layer boundaries → `.agents/skills/architecture-patterns/SKILL.md`
 
 KISS, YAGNI, Minimalist, and SOLID are heuristics, not repair checklists. Correctness, the concrete blocking finding, security, existing PR intent, and repository conventions take precedence. Never broaden a repair merely to satisfy a principle or skill example.
 
