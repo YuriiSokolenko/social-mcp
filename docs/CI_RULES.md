@@ -175,4 +175,10 @@ Reviewer and PR Fix share `pr-guard.mjs` for complete PR loading, human gating, 
 
 ## Security
 
-Never commit credentials, PATs, OAuth tokens, client secrets, encryption keys, authorization headers, cookies, local `.env` files, or production credentials. Repository rulesets/branch protection remain an independent security boundary; agent prompts are not one.
+Never commit credentials, PATs, OAuth tokens, client secrets, encryption keys, authorization headers, cookies, local `.env` files, or production credentials. Never print secret values to agent logs or Job Summaries. Agents must not bulk-dump environment variables or enable shell tracing; the trusted Pi log filter redacts secret-bearing keys as a defense-in-depth boundary, but redaction is not permission to inspect secrets. Repository rulesets/branch protection remain an independent security boundary; agent prompts are not one.
+
+## Orbit Local code graph
+
+The Pi runner image includes a pinned GitLab Orbit Local CLI. Architect and Implementer workflows configure Orbit's local stdio MCP integration for Pi before model execution and index the checkout that is authoritative for that stage. Architect indexes the trusted `dev` checkout; Implementer indexes its isolated issue worktree, so delegated scout work can use the same current code graph.
+
+Orbit is complementary to Zoekt, not a replacement. Use Zoekt/indexed search for fast literal/path/symbol discovery against indexed `dev`; use Orbit for bounded structural questions such as definitions, imports, references, dependency direction, and blast radius; use direct `read` for exact source before mutation. Orbit Local is code-only and must not be configured with GitLab Remote credentials for this pipeline.
