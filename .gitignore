@@ -39,3 +39,6 @@ secrets/
 .DS_Store
 .idea/
 .vscode/
+
+# Pi runtime caches
+.pi/cache/
