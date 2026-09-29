@@ -149,6 +149,7 @@ export class ProgressController {
     this.recoveryEvidenceRemaining = 0;
     this.mutatedPaths = new Set();
     this.pendingMutationPath = null;
+    this.semanticLookupAwaitingRead = false;
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
     if (this.fixedMaxTokens && (!Number.isSafeInteger(this.fixedMaxTokens) || this.fixedMaxTokens < 1)) {
@@ -380,6 +381,18 @@ export class ProgressController {
   }
 
   onToolExecutionEnd(toolName, isError) {
+    if (this.productiveProgress && toolName === 'lsp_find_symbol') {
+      if (!isError && this.productiveState === 'evidence_allowed') {
+        this.semanticLookupAwaitingRead = true;
+      } else if (isError) {
+        this.semanticLookupAwaitingRead = false;
+      }
+    }
+    if (this.productiveProgress && toolName === 'read' && !isError && this.semanticLookupAwaitingRead) {
+      this.semanticLookupAwaitingRead = false;
+      this.productiveEvidenceRemaining = 0;
+      if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
+    }
     if (this.productiveProgress && MUTATION_TOOLS.has(toolName)) {
       if (!isError && this.pendingMutationPath) this.mutatedPaths.add(this.pendingMutationPath);
       this.pendingMutationPath = null;
@@ -396,6 +409,7 @@ export class ProgressController {
       this.evidenceUnlockUsedSinceProgress = false;
     }
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
+      this.semanticLookupAwaitingRead = false;
       if (toolName === ROLLBACK_TOOL) {
         this.recoveryMode = false;
         this.recoveryEvidenceRemaining = 0;

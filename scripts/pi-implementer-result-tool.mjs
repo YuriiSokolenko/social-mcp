@@ -22,14 +22,14 @@ function issueContext() {
 export default function (pi) {
   registerTerminalTool(pi, {
     label: 'Sync, validate, and submit implementation result',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. Fresh changed work supplies normal result metadata. On failure, fix only the reported problem with safe_edit/edit/write as appropriate and retry.',
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. Fresh changed work must include title, summary, changes, security_notes, and limitations on the first call; metadata is preflight-validated before dev integration or expensive checks. On failure, fix only the reported problem with safe_edit/edit/write as appropriate and retry.',
     parameters: Type.Object({
-      title: Type.Optional(Type.String()),
-      summary: Type.Optional(Type.String()),
-      changes: Type.Optional(Type.Array(Type.String())),
+      title: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
+      summary: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
+      changes: Type.Optional(Type.Array(Type.String(), { description: 'Required for fresh changed work; list concrete repository changes.' })),
       already_satisfied: Type.Optional(Type.Boolean()),
-      security_notes: Type.Optional(Type.String()),
-      limitations: Type.Optional(Type.String()),
+      security_notes: Type.Optional(Type.String({ description: 'Required for fresh changed work, including when there are no security-relevant changes.' })),
+      limitations: Type.Optional(Type.String({ description: 'Required for fresh changed work, including when there are no known limitations.' })),
     }),
     customType: 'implementer-result',
     nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. For restored work call submit_result({}) now. For fresh work call safe_edit/edit/write now when a change is required, or submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state. If exactly one concrete missing fact blocks safe action, call need_more_evidence once, gather exactly one fact, then act.',
@@ -37,14 +37,32 @@ export default function (pi) {
     nudgeMaxCount: 3,
     successText: 'SUCCESS. Latest dev is integrated and final checks pass. Implementation result recorded. Stop now.',
     execute: async (params) => {
+      const restored = restoredWork();
+      const alreadySatisfied = params.already_satisfied === true;
+      if (restored && alreadySatisfied) throw new Error('Restored work cannot use already_satisfied');
+
+      const freshChangedMetadata = !restored && !alreadySatisfied
+        ? {
+            title: clean(params.title),
+            summary: clean(params.summary),
+            security_notes: clean(params.security_notes),
+            limitations: clean(params.limitations),
+          }
+        : null;
+      if (
+        freshChangedMetadata &&
+        (!freshChangedMetadata.title ||
+          !freshChangedMetadata.summary ||
+          !freshChangedMetadata.security_notes ||
+          !freshChangedMetadata.limitations)
+      ) {
+        throw new Error('Fresh changed work requires title, summary, security_notes, and limitations');
+      }
+
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
       });
       validateFinalProductTree();
-
-      const restored = restoredWork();
-      const alreadySatisfied = params.already_satisfied === true;
-      if (restored && alreadySatisfied) throw new Error('Restored work cannot use already_satisfied');
 
       const changedPaths = lines(git(['diff', '--name-only', 'origin/dev']).out);
       const hasDiff = changedPaths.length > 0;
@@ -74,16 +92,10 @@ export default function (pi) {
         };
       } else {
         data = {
-          title: clean(params.title),
-          summary: clean(params.summary),
+          ...freshChangedMetadata,
           changes: Array.isArray(params.changes) ? params.changes.map(clean).filter(Boolean) : [],
           already_satisfied: false,
-          security_notes: clean(params.security_notes),
-          limitations: clean(params.limitations),
         };
-        if (!data.title || !data.summary || !data.security_notes || !data.limitations) {
-          throw new Error('Fresh changed work requires title, summary, security_notes, and limitations');
-        }
       }
 
       if (!data.title || !data.summary) throw new Error('title and summary are required');

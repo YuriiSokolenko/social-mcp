@@ -51,7 +51,8 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const reviewContext = env.REVIEW_CONTEXT
       ? `Read the trusted prepared review context at ${env.REVIEW_CONTEXT}; it contains the linked issue title/body and PR metadata.`
       : `Read issue #${env.ISSUE} directly.`;
-    return `Read agents/reviewer/AGENTS.md first. ${reviewContext} Then inspect the complete PR diff against origin/dev and directly relevant changed code exactly once, and write a short review plan of at most 1000 output tokens. Do not inspect repository structure, git history, branches, PR body, or issue comments before classification unless the prepared issue and diff leave one concrete ambiguity. Once issue + diff + plan are available, call declare_task_complexity immediately and do not repeatedly reconsider the classification. Review PR #${env.PR} against issue #${env.ISSUE}. A blocked or failed tool call did not execute; never count it as completed. Do not modify files or GitHub state. The deterministic checks already passed; do not rerun pytest, Ruff, or git diff --check. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action.`;
+    const worktreeRoot = env.JOB_DIR || process.cwd();
+    return `Read agents/reviewer/AGENTS.md first. ${reviewContext} Then inspect the complete PR diff against origin/dev and directly relevant changed code exactly once, and write a short review plan of at most 1000 output tokens. Do not inspect repository structure, git history, branches, PR body, or issue comments before classification unless the prepared issue and diff leave one concrete ambiguity. Once issue + diff + plan are available, call declare_task_complexity immediately and do not repeatedly reconsider the classification. Reviewer LSP workspace root: ${worktreeRoot}. For a concrete unresolved question about an already-named source symbol, use semantic LSP lookup first; when the language is explicit and only the name is known, call lsp_start_server once with this exact root and then lsp_find_symbol. Use grep/rg/indexed or broad repository search only if semantic lookup fails or returns no useful match. Review PR #${env.PR} against issue #${env.ISSUE}. A blocked or failed tool call did not execute; never count it as completed. Do not modify files or GitHub state. The deterministic checks already passed; do not rerun pytest, Ruff, or git diff --check. Do not depend on a captured dev SHA or pre-merge CI status. Call submit_result exactly once as your final action.`;
   },
 
   repair(env) {
@@ -173,7 +174,7 @@ export const STAGES = Object.freeze({
     requiredFirstReadPath: 'agents/reviewer/AGENTS.md',
     requireComplexity: true,
     preComplexityTurnLimit: 8,
-    preComplexityAllowedTools: ['read', 'bash'],
+    preComplexityAllowedTools: ['read', 'bash', 'lsp_start_server', 'lsp_find_symbol'],
     preComplexityTransitionTools: ['declare_task_complexity'],
     prompt: promptBuilders.reviewer,
   },
