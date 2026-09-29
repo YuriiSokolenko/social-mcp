@@ -103,7 +103,7 @@ test('apply marks ready issues dispatcher:ready and flags needs_human issues wit
   const jsonlFile = join(dir, 'result.jsonl');
   writeFileSync(storeFile, JSON.stringify({
     issues: {
-      1: { number: 1, state: 'open', title: 'Ready to go', body: 'Clear scope.', labels: [] },
+      1: { number: 1, state: 'open', title: 'Ready to go', body: '## Goal\nClear scope.\n\n## Acceptance criteria\n- Deliver the requested behavior.\n- Keep the change scoped.\n- Add focused tests.', labels: [] },
       2: { number: 2, state: 'open', title: 'Needs clarification', body: 'Ambiguous ask.', labels: [] },
     },
   }));

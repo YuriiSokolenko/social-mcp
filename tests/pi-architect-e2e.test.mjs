@@ -12,7 +12,7 @@ import { test } from 'node:test';
 // exercise.
 
 const taskBody = (goal, priority = 'P1', deps = []) =>
-  `## Task metadata\nPriority: ${priority}\nDepends on: [${deps.map(d => `#${d}`).join(', ')}]\n\n## Goal\n${goal}`;
+  `## Task metadata\nPriority: ${priority}\nDepends on: [${deps.map(d => `#${d}`).join(', ')}]\n\n## Goal\n${goal}\n\n## Acceptance criteria\n- Deliver the requested outcome.\n- Keep the change independently reviewable.\n- Add focused validation for the behavior.`;
 
 function writeMock(mockFile, storeFile) {
   writeFileSync(mockFile, `
@@ -135,8 +135,9 @@ test('prepare + publish "split" creates ordered children and exposes them to Dis
   const prepareResult = run(['prepare', '50', contextFile], storeFile);
   assert.equal(prepareResult.status, 0, prepareResult.stderr);
 
-  const longBody = 'Define the stable schema and cover compatibility with focused tests for this slice of the feature. ' +
-    'Keep the change scoped to this step alone and avoid touching unrelated modules or configuration.';
+  const longBody = '## Goal\nDefine one independently mergeable slice of the feature.\n\n' +
+    '## Acceptance criteria\n- Define the stable behavior for this slice.\n- Cover compatibility with focused tests.\n- Keep unrelated modules unchanged.\n\n' +
+    '## Out of scope\nDo not implement adjacent slices.';
   const plan = {
     parent_issue: 50,
     action: 'split',
