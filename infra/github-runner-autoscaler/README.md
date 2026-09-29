@@ -53,8 +53,19 @@ repository code, same trust boundary as the `pi-agent` pool.
 Build both ephemeral worker images first:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.87.1 .
+docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.88.0-lsp .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.1 .
+```
+
+The Pi worker tag `0.88.0-lsp` pins `pi-mcp-adapter@3.2.0`,
+`lsp-mcp-server@1.1.25`, BasedPyright `1.40.1`, and the official JetBrains
+Kotlin LSP `263.4702.0`. The general runner image and the base runner image
+remain on their existing tags. To roll the Pi pool back, set
+`RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
+untracked `.env` and recreate only `pi-runner-manager`:
+
+```bash
+docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
 ```
 
 Create the local manager environment:
