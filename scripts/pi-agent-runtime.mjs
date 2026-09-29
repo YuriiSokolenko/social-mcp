@@ -204,6 +204,7 @@ export default function (pi) {
 
   let appliedActionCap = 0;
   let actionTurnAttemptedTool = false;
+  let actionRequiredProseOnlyTurns = 0;
 
   function syncProductiveState() {
     const state = controller.productiveProgressState();
@@ -535,11 +536,24 @@ export default function (pi) {
     const actionRequired =
       productiveState === 'action_required' ||
       productiveState === 'recovery_action_required';
+    const proseOnlyActionTurn =
+      actionRequired &&
+      actionTurnAttemptedTool !== true &&
+      controller.turnMadeProgress !== true;
+
+    if (proseOnlyActionTurn) actionRequiredProseOnlyTurns += 1;
+    else actionRequiredProseOnlyTurns = 0;
+
+    if (actionRequiredProseOnlyTurns >= 2) {
+      console.error('PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn; aborting stage');
+      ctx.abort();
+      return;
+    }
+
     const targetActionCap = actionCap > 0
       ? nextActionResponseCap({
           baseCap: actionCap,
           retryCap: actionRetryCap,
-          outputTokens,
           actionRequired,
           attemptedTool: actionTurnAttemptedTool,
           madeProgress: controller.turnMadeProgress,
