@@ -139,7 +139,7 @@ test('single-shot tools cannot be retried after the first accepted call', () => 
   assert.match(state.checkToolCall('prepare_implementation', {}).reason, /single-shot/);
 });
 
-test('trivial productive progress treats LSP cold start as control and requires action after two evidence calls', () => {
+test('trivial productive progress serializes cold LSP startup and requires action after semantic read', () => {
   const state = controller({
     requireComplexity: true,
     preComplexityAllowedTools: ['prepare_implementation'],
@@ -167,11 +167,18 @@ test('trivial productive progress treats LSP cold start as control and requires 
     server_id: 'python',
     workspace_root: '/tmp/worktree',
   }), undefined);
+  assert.match(
+    state.checkToolCall('lsp_find_symbol', { name: '_clamp_limit' }).reason,
+    /still running/,
+  );
+  state.onToolExecutionEnd('lsp_start_server', false);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
 
   assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_clamp_limit' }), undefined);
+  state.onToolExecutionEnd('lsp_find_symbol', false);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.equal(state.checkToolCall('read', { path: 'src/social_mcp/platforms/threads/api.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
   assert.equal(state.productiveProgressState(), 'action_required');
   assert.match(
     state.checkToolCall('repo_search', { query: '_clamp_limit' }).reason,
@@ -183,6 +190,75 @@ test('trivial productive progress treats LSP cold start as control and requires 
     start_line: 123,
     text: '    """Docstring."""',
   }), undefined);
+});
+
+test('trivial semantic miss preserves one fallback discovery plus authoritative read', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 6,
+      initialEvidenceBudgetByComplexity: { trivial: 2, nontrivial: 6 },
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      controlTools: ['lsp_start_server'],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('trivial');
+  state.onToolExecutionEnd('prepare_implementation', false);
+
+  assert.equal(state.checkToolCall('lsp_start_server', {
+    server_id: 'python',
+    workspace_root: '/tmp/worktree',
+  }), undefined);
+  state.onToolExecutionEnd('lsp_start_server', false);
+  assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_check_active' }), undefined);
+  // A zero-match lookup is transport-successful, so runtime cannot distinguish
+  // it from a useful lookup until the agent chooses deterministic fallback.
+  state.onToolExecutionEnd('lsp_find_symbol', false);
+  assert.equal(state.checkToolCall('repo_search', { query: '_check_active' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/social_mcp/platforms/reliability.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+});
+
+test('failed semantic lookup restores its evidence permit for fallback', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudgetByComplexity: { trivial: 2 },
+      initialEvidenceBudget: 6,
+      actionTools: ['safe_edit', 'edit', 'write', 'submit_result'],
+      controlTools: ['lsp_start_server'],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('trivial');
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.checkToolCall('lsp_start_server', {
+    server_id: 'python',
+    workspace_root: '/tmp/worktree',
+  }), undefined);
+  state.onToolExecutionEnd('lsp_start_server', false);
+  assert.equal(state.checkToolCall('lsp_find_symbol', { name: 'missing' }), undefined);
+  state.onToolExecutionEnd('lsp_find_symbol', true);
+
+  assert.equal(state.checkToolCall('repo_search', { query: 'missing' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/fallback.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
 });
 
 test('nontrivial semantic lookup closes evidence after the authoritative source read', () => {
@@ -369,6 +445,30 @@ test('dispatcher closes exploration after prepared context is loaded', () => {
   assert.equal(state.checkToolCall('submit_result', { classifications: [] }), undefined);
 });
 
+test('triage closes exploration after prepared context is loaded', () => {
+  const state = controller({
+    requiredFirstReadPath: 'agents/triage/AGENTS.md',
+    fixedResponseMaxTokens: 1000,
+    productiveProgress: {
+      activationReadSuffix: 'pi-triage-context.json',
+      actionResponseMaxTokens: 512,
+      actionResponseRetryMaxTokens: 128,
+      actionTools: ['submit_result'],
+      controlTools: [],
+    },
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('read', { path: 'agents/triage/AGENTS.md' }), undefined);
+  assert.equal(state.checkToolCall('read', { path: '/tmp/pi-triage-context.json' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(state.checkToolCall('read', { path: 'README.md' }).reason, /classification evidence is complete/);
+  assert.equal(state.checkToolCall('submit_result', {
+    ready: [1],
+    needs_human: [],
+    skipped: [],
+  }), undefined);
+});
+
 test('runtime-owned preparation uses one structured planner for plan and startup class', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
@@ -391,6 +491,8 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /PI_PRODUCTIVE_STATE/);
   assert.match(runtime, /actionResponseMaxTokens/);
   assert.match(runtime, /applyTokenCap/);
+  assert.match(runtime, /pi\.sendMessage/);
+  assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
@@ -639,6 +741,10 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
+  assert.equal(stageConfig('triage').productiveProgress.activationReadSuffix, 'pi-triage-context.json');
+  assert.equal(stageConfig('triage').productiveProgress.actionResponseMaxTokens, 512);
+  assert.equal(stageConfig('triage').productiveProgress.actionResponseRetryMaxTokens, 128);
+  assert.deepEqual(stageConfig('triage').productiveProgress.actionTools, ['submit_result']);
   assert.equal(stageConfig('implementer').directReadMaxLines, undefined);
   assert.equal(stageConfig('implementer').directReadCalls, undefined);
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
@@ -711,6 +817,7 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('dispatcher', env), /prepared context is sufficient and authoritative/i);
     assert.doesNotMatch(stagePrompt('dispatcher', env), /Read the project documentation once/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
+    assert.match(stagePrompt('triage', env), /runtime closes exploration/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

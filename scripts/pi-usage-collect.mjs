@@ -74,9 +74,16 @@ for (const job of jobs) {
   for (let retry = 0; retry < 5; retry++) {
     const response = await request(`/actions/jobs/${job.id}/logs`);
     if (response.ok) { log = await response.text(); break; }
-    if (retry === 4) throw new Error(`Failed to fetch job ${job.id} logs: ${response.status}`);
+    if (retry === 4) {
+      if (response.status === 404) {
+        console.log(`Job ${job.id} log is unavailable after completion; skipping usage collection for this job`);
+        break;
+      }
+      throw new Error(`Failed to fetch job ${job.id} logs: ${response.status}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 1000 * (retry + 1)));
   }
+  if (log == null) continue;
   const task = events(log, "PI_TASK")[0];
   const systemPhase = job.name === "dispatcher" || job.name === "triage" ? job.name : null;
   if ((!task || !integer(task.issue)) && !systemPhase) {
