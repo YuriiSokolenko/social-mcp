@@ -688,7 +688,7 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
     assert.match(stagePrompt('implementer', env), /Do not call `subagent\(action:"list"\)`/i);
     assert.match(stagePrompt('implementer', env), /768 output tokens/);
-    assert.match(stagePrompt('implementer', env), /lsp_start_server[\s\S]*workspace_root/);
+    assert.match(stagePrompt('implementer', env), /lsp_start_server[\s\S]*exact absolute workspace root/i);
     assert.doesNotMatch(stagePrompt('implementer', env), /limit <= 200/);
     const resumePatch = path.join(dir, 'resume.patch');
     fs.writeFileSync(resumePatch, 'diff --git a/src/example.py b/src/example.py\n');
