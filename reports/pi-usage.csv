@@ -155,3 +155,4 @@ attempt,0,dispatcher,36563770859,1,cancelled,0,0,0,0,0,0,0.0,12,https://github.c
 attempt,148,implementation,36565564926,1,failure,9,15337,8456,131847,0,155640,407.6,504,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36565564926/attempts/1
 attempt,0,dispatcher,36577481918,1,success,2,1906,802,15893,0,18601,39.2,74,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36577481918/attempts/1
 attempt,0,dispatcher,36586287168,1,success,0,0,0,0,0,0,0.0,11,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36586287168/attempts/1
+attempt,0,triage,36586287176,1,failure,6,16299,2458,60297,0,79054,141.8,169,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36586287176/attempts/1
