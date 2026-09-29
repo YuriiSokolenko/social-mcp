@@ -536,11 +536,6 @@ export default function (pi) {
     const actionRequired =
       productiveState === 'action_required' ||
       productiveState === 'recovery_action_required';
-    const proseOnlyActionTurn =
-      actionRequired &&
-      actionTurnAttemptedTool !== true &&
-      controller.turnMadeProgress !== true;
-
     actionRequiredProseOnlyTurns = nextActionRequiredProseOnlyTurns(
       actionRequiredProseOnlyTurns,
       {
