@@ -188,30 +188,19 @@ Relevant files:
 
 The follow-up Implementer #4 and Dispatcher runs showed that `madeProgress=false` was being measured but only affected response-budget selection. The model could therefore continue with different reads/searches or repeated prose while product state remained unchanged.
 
-The runtime now uses a state transition instead of a fixed "N turns without progress" counter:
+The runtime now uses a state transition instead of a fixed "N turns without progress" counter. The **normative current policy** lives in `docs/CI_RULES.md` and `agents/implementer/AGENTS.md`; this research index intentionally does not duplicate the full state machine.
+
+Current high-level shape:
 
 ```text
 prepare_implementation
-  -> EVIDENCE_ALLOWED
-  -> 2 evidence actions for trivial work
-     or 6 for normal/complex work
-  -> ACTION_REQUIRED
-       -> safe_edit/edit/write/submit_result
-       -> need_more_evidence -> one evidence action -> ACTION_REQUIRED
+  -> one planner result: steps + trivial|nontrivial
+  -> bounded evidence (2 or 6)
+  -> productive action
+  -> at most one explicit need_more_evidence escape per productive epoch
 ```
 
-Important properties:
-
-- `prepare_implementation` is runtime-enforced single-shot;
-- the initial evidence allowance is complexity-aware: **2 actions for trivial work, 6 for normal/complex work**;
-- an evidence permit is consumed at tool-call time, preventing parallel exploration fan-out;
-- `need_more_evidence({missing, reason})` must state one concrete blocker and unlocks exactly one evidence action;
-- an exact repeated blocker is rejected;
-- restored Implementer work starts in `ACTION_REQUIRED`;
-- Dispatcher moves to terminal-only classification after its prepared context is read;
-- `productiveState` is logged in `PI_BUDGET` / `PI_BUDGET_NEXT`.
-
-This makes productive progress a control-flow constraint rather than only a metric. See `2026-09-29-productive-progress-state-machine.md` for the incident data and design rationale.
+The historical incident/design record remains in `2026-09-29-productive-progress-state-machine.md`.
 
 ### Shared terminal-result gate
 

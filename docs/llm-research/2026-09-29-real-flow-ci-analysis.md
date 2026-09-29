@@ -297,7 +297,7 @@ prepare_implementation
             -> ACTION_REQUIRED
 ```
 
-This historical design was later superseded after issue #148 demonstrated that one bounded implementation chain could legitimately require more repository evidence. The runtime first moved to six initial evidence actions, then added a trivial fast path. The current allowance is **2 actions for trivial work and 6 for normal/complex work**; the one-shot `need_more_evidence` escape remains unchanged.
+This historical design was later superseded after issue #148 demonstrated that one bounded implementation chain could legitimately require more repository evidence. The runtime first moved to six initial evidence actions, then added a trivial fast path. The latest simplification keeps the same behavior with a binary Implementer startup class: **2 actions for trivial work and 6 for nontrivial work**; the one-shot `need_more_evidence` escape remains unchanged.
 
 Additional enforcement:
 

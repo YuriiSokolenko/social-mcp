@@ -623,7 +623,7 @@ Source: https://github.com/NousResearch/hermes-agent/blob/main/agent/tool_guardr
 
 The 2026-09-29 Implementer #4 and Dispatcher reproductions showed a semantic no-progress loop that exact-call and turn-count guards did not capture. Social MCP therefore implemented a transition-based guard:
 
-`EVIDENCE_ALLOWED -> 2 evidence actions for trivial work or 6 for normal/complex work -> ACTION_REQUIRED`
+`EVIDENCE_ALLOWED -> 2 evidence actions for trivial work or 6 for nontrivial work -> ACTION_REQUIRED`
 
 From `ACTION_REQUIRED`, Implementer must call `safe_edit`/`edit`/`write`/`submit_result` or declare one concrete `need_more_evidence` blocker, which unlocks exactly one additional evidence action. The extra unlock is one-shot within a productive epoch. Dispatcher becomes terminal-only after its prepared context is loaded. This intentionally constrains **legal transitions**, not the number of turns a difficult task is allowed to use.
 

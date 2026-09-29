@@ -146,12 +146,12 @@ This document is the human- and agent-readable text map of the current Social MC
                                               v                                 v
                                    prepare_implementation                 restored work
                                               |                                 |
-                                      planner + classifier                       |
+                                       planner                       |
                                               |                                 |
                                               v                                 |
                                        EVIDENCE_ALLOWED                          |
                                               |                                 |
-                          2 trivial / 6 normal+complex evidence actions           |
+                            2 trivial / 6 nontrivial evidence actions           |
                                               |                                 |
                                               v                                 |
                                        ACTION_REQUIRED <-------------------------+
@@ -188,10 +188,7 @@ This document is the human- and agent-readable text map of the current Social MC
     prepare_implementation (single-shot)
        |
        v
-    EVIDENCE_ALLOWED (up to 6 initial actions)
-       |
-       +--> unclear subsystem ................... RepoMap orientation
-       |      +--> repomap outline (one candidate when useful)
+    EVIDENCE_ALLOWED (2 trivial / 6 nontrivial)
        |
        +--> known path .......................... read directly
        |
@@ -210,8 +207,6 @@ This document is the human- and agent-readable text map of the current Social MC
        |
        +--> semantic missing fact after deterministic tools
               +--> scout/advisor
-       |
-       +--> trivial unknown target .............. trivial_repo_lookup
        |
        v
     ACTION_REQUIRED

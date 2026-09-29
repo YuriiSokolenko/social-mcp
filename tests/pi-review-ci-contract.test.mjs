@@ -398,7 +398,7 @@ test('every model-driven Pi workflow delegates model execution to one stage runn
 
 test('selected subagents inherit the main response ceiling through a child-only extension', () => {
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
-  for (const name of ['scout', 'complexity-classifier']) {
+  for (const name of ['scout', 'implementation-planner']) {
     assert.deepEqual(
       settings.subagents.agentOverrides[name].subagentOnlyExtensions,
       ['./scripts/pi-subagent-response-budget.mjs'],
@@ -516,89 +516,55 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
-test('fresh implementer prepares plan and complexity while restored work validates first', () => {
+test('fresh implementer uses one planner/classifier result while restored work validates first', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  const trivialLookup = fs.readFileSync('scripts/pi-common/trivial-repo-lookup.mjs', 'utf8');
   const repoSearchSource = fs.readFileSync('scripts/pi-common/repo-search.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
-  const classifier = fs.readFileSync('.pi/agents/complexity-classifier.md', 'utf8');
+  const settings = fs.readFileSync('.pi/settings.json', 'utf8');
+  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
 
-  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*complexityClassifierAgent: 'complexity-classifier'[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
+  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
+  assert.doesNotMatch(config, /complexityClassifierAgent|complexityClassifierTimeoutMs/);
+  assert.match(config, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
   assert.doesNotMatch(config, /directReadMaxLines|directReadCalls/);
   assert.match(config, /implementer:[\s\S]*boundedDirectBash: true/);
 
-  assert.match(agent, /### Restored work[\s\S]*Call \`submit_result\` with no arguments immediately[\s\S]*Do \*\*not\*\* call \`prepare_implementation\`/);
+  assert.match(agent, /### Restored work[\s\S]*Call `submit_result` with no arguments immediately[\s\S]*Do \*\*not\*\* call `prepare_implementation`/);
   assert.match(agent, /contract is embedded verbatim[\s\S]*Do not search for or re-read this file/i);
-  assert.match(agent, /Do not pass \`already_satisfied\` for restored work/);
+  assert.match(agent, /Do not pass `already_satisfied` for restored work/);
   assert.match(agent, /zero diff[\s\S]*records the issue as already satisfied automatically/);
-  assert.match(agent, /### Fresh work[\s\S]*Use the issue title\/body already supplied in the prompt[\s\S]*Call \`prepare_implementation\` exactly once/);
-  assert.match(agent, /Task complexity alone never requires delegation/);
+  assert.match(agent, /### Fresh work[\s\S]*Call `prepare_implementation` exactly once/);
+  assert.match(agent, /Task classification alone never requires delegation/);
+  assert.match(agent, /2 actions for trivial[\s\S]*6 for nontrivial/);
   assert.match(agent, /submit_result[\s\S]*both validation and submission/);
+  assert.doesNotMatch(agent, /trivial_repo_lookup|RepoMap|repo map orientation|complexity-classifier/);
+
+  assert.match(runtime, /IMPLEMENTATION_PREPARATION_SCHEMA/);
+  assert.match(runtime, /enum: \['trivial', 'nontrivial'\]/);
+  assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
+  assert.doesNotMatch(runtime, /trivial_repo_lookup|trivialRepoLookup|runStructuredComplexityClassifier|complexityClassifierAgent/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /freshBaseCommit/);
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.match(runtime, /lspWorkspaceRoot/);
-  assert.match(runtime, /LSP workspace root:/);
-  assert.match(runtime, /actionResponseMaxTokens/);
-  assert.match(runtime, /actionResponseRetryMaxTokens/);
-  assert.match(runtime, /nextActionResponseCap/);
-  assert.match(runtime, /attemptedTool: actionTurnAttemptedTool/);
-  assert.match(runtime, /actionCapEscalated/);
-  assert.match(runtime, /PI_PRODUCTIVE_STATE/);
   assert.match(runtime, /name: 'safe_edit'/);
-  assert.match(runtime, /safeEdit\(ctx\.cwd, params\)/);
-  assert.match(runtime, /\['safe_edit', 'edit', 'write'\]\.includes\(event\.toolName\)/);
-  assert.doesNotMatch(runtime, /Execute step 1 now/);
-  assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
-
-  assert.match(agent, /do not write a competing execution plan/i);
-  assert.match(agent, /Already-known files:[\s\S]*call `read` directly/i);
-  assert.match(agent, /no runtime line-count or per-task file-count limit/i);
-  assert.doesNotMatch(agent, /limit <= 200/);
-  assert.match(agent, /first sufficient/i);
-  assert.match(agent, /Do not use repeated guessed reads as a substitute for search/);
-  assert.match(agent, /repo_search/);
-  assert.doesNotMatch(agent, /more than one repository file must genuinely be inspected or compared/);
-  assert.match(agent, /Known-path diff\/status checks/);
-  assert.match(agent, /`grep`, `find`, and `ls` remain runtime-blocked/);
-  assert.match(agent, /trivial_repo_lookup/);
   assert.match(runtime, /name: 'repo_search'/);
   assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(runtime, /result: \{ kind: 'structured', schema \}/);
+
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);
   assert.match(repoSearchSource, /\['grep', '-n', '-I', '-F'/);
-  assert.match(runtime, /name: 'trivial_repo_lookup'/);
-  assert.match(runtime, /controller\.complexity !== 'trivial'/);
-  assert.match(runtime, /trivialLookupUsed/);
-  assert.match(runtime, /trivialRepoLookup/);
-  assert.match(trivialLookup, /const DEV_REF = 'origin\/dev'/);
-  assert.match(trivialLookup, /git', \['ls-tree', '-r', '-l', '-z', DEV_REF\]/);
-  assert.doesNotMatch(trivialLookup, /\['ls-files'/);
-  assert.match(agent, /exactTextFoundInDev/);
-  assert.match(agent, /resumed checkpoint\/current-worktree changes/);
   assert.match(planner, /inheritSkills: true/);
-  assert.match(planner, /1–8 ordered concrete steps/);
-  assert.match(planner, /do not classify complexity/i);
-  assert.match(planner, /already names a source symbol/);
-  assert.match(planner, /Do not phrase that step as "search for"/);
-  assert.match(planner, /do not name LSP, Zoekt, RepoMap, Orbit, Git Context/);
-  assert.match(classifier, /tools:\n/);
-  assert.match(classifier, /inheritProjectContext: false/);
-  assert.match(classifier, /Return only the requested structured result/);
-  assert.match(classifier, /rewrite or execute the plan/);
-  assert.match(classifier, /trivial[\s\S]*normal[\s\S]*complex/);
-  assert.match(agent, /direct reads of the current worktree are authoritative latest-dev evidence/i);
-  assert.match(agent, /action-required responses at 512 output tokens/i);
-  assert.match(agent, /submit_result\(\{already_satisfied: true, changes: \[\]\}\)/);
-  assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
-  assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
-  assert.match(runtime, /result: \{ kind: 'structured', schema \}/);
-  assert.doesNotMatch(agent, /call `subagent` with `agent: "complexity-classifier"`/);
+  assert.match(planner, /trivial \| nontrivial/);
+  assert.match(planner, /Dispatcher already owns Architect routing/);
+  assert.doesNotMatch(settings, /complexity-classifier/);
+  assert.match(runner, /if \(stage === 'architect'\) args\.push\('--extension', REPOMAP_PACKAGE\)/);
+  assert.doesNotMatch(runner, /\['implementer', 'architect'\]\.includes\(stage\)/);
 });
-
 test('semantic routing, Git Context lanes, and safe edit contracts stay explicit', () => {
   const mcp = JSON.parse(fs.readFileSync('.mcp.json', 'utf8'));
   const implementer = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
@@ -607,7 +573,6 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   const architect = fs.readFileSync('agents/architect/AGENTS.md', 'utf8');
   const dispatcher = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
-  const repoMapSkill = fs.readFileSync('.agents/skills/repomap-navigation/SKILL.md', 'utf8');
   const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const progress = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
   const safeEdit = fs.readFileSync('scripts/pi-common/safe-edit.mjs', 'utf8');
@@ -625,15 +590,13 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.match(implementer, /safe_edit.*bounded line\/range/i);
   assert.match(implementer, /post-edit preview[\s\S]*Do not spend another evidence action/i);
   assert.match(safeEdit, /POST_EDIT_PREVIEW_MAX_CHARS[\s\S]*post_edit:/);
-  assert.match(repoMapSkill, /known source-code symbol should bypass RepoMap/i);
-  assert.match(repoMapSkill, /Known source symbol: `semantic LSP → exact read → mutation`/);
   assert.match(reviewer, /Historical intent \/ provenance/);
   assert.match(reviewer, /prefer one narrow local Git Context MCP call/i);
   assert.match(repair, /prefer one narrow Git Context MCP call/i);
   assert.match(architect, /Do not use history by default/i);
   assert.doesNotMatch(dispatcher, /blame_context|commit_story|file_history|search_commits|file_contributors/);
   assert.doesNotMatch(triage, /blame_context|commit_story|file_history|search_commits|file_contributors/);
-  assert.match(stageConfig, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*normal: 6[\s\S]*complex: 6/);
+  assert.match(stageConfig, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
   assert.match(stageConfig, /controlTools: \['set_response_budget', 'subagents_enable', 'lsp_start_server'\]/);
   assert.match(stageConfig, /actionTools: \['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'\]/);
   assert.match(progress, /const MUTATION_TOOLS = new Set\(\['safe_edit', 'edit', 'write'\]\)/);

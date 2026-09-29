@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${GH_ADMIN_TOKEN:?GH_ADMIN_TOKEN is required}"
-: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}"
 
 MAX_RUNNERS="${MAX_RUNNERS:-4}"
 POLL_SECONDS="${POLL_SECONDS:-6}"
