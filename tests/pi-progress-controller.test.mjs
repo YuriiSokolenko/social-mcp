@@ -18,7 +18,6 @@ import {
 import { repoSearch } from '../scripts/pi-common/repo-search.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
 import subagentResponseBudget from '../scripts/pi-subagent-response-budget.mjs';
-import piAgentRuntime from '../scripts/pi-agent-runtime.mjs';
 
 const controller = (overrides = {}, env = {}) => new ProgressController({
   maxTurns: 100,
@@ -58,14 +57,21 @@ test('action-required prose-only streak resets on a tool attempt or progress', (
   }), 0);
 });
 
-test('action-required corrective cap shrinks any prose-only turn', () => {
+test('action-required corrective steering never shrinks below the executable action budget', () => {
   assert.equal(nextActionResponseCap({
     baseCap: 512,
     retryCap: 128,
     actionRequired: true,
     attemptedTool: false,
     madeProgress: false,
-  }), 128);
+  }), 512);
+  assert.equal(nextActionResponseCap({
+    baseCap: 512,
+    retryCap: 768,
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 768);
   assert.equal(nextActionResponseCap({
     baseCap: 512,
     retryCap: 128,
@@ -89,61 +95,13 @@ test('action-required corrective cap shrinks any prose-only turn', () => {
   }), 0);
 });
 
-test('action-required escalation queues a user steering message while the agent is active', async () => {
-  const previousStage = process.env.PI_STAGE;
-  const previousResumeActive = process.env.PI_RESUME_ACTIVE;
-  const handlers = new Map();
-  const userMessages = [];
-  let activeTools = ['read', 'safe_edit', 'submit_result', 'need_more_evidence', 'set_response_budget'];
-
-  const pi = {
-    on(name, callback) {
-      handlers.set(name, callback);
-    },
-    registerTool() {},
-    getActiveTools() {
-      return activeTools;
-    },
-    setActiveTools(tools) {
-      activeTools = tools;
-    },
-    async setModel() {
-      return true;
-    },
-    async sendUserMessage(content, options) {
-      userMessages.push({ content, options });
-    },
-    sendMessage() {
-      throw new Error('custom-message path should not be used for corrective escalation');
-    },
-  };
-
-  try {
-    process.env.PI_STAGE = 'implementer';
-    process.env.PI_RESUME_ACTIVE = 'true';
-    piAgentRuntime(pi);
-
-    const turnStart = handlers.get('turn_start');
-    const turnEnd = handlers.get('turn_end');
-    assert.equal(typeof turnStart, 'function');
-    assert.equal(typeof turnEnd, 'function');
-
-    turnStart({ turnIndex: 0 });
-    await turnEnd(
-      { turnIndex: 0, message: { usage: { output: 32 } } },
-      { model: { provider: 'test', id: 'model', maxTokens: 2048 }, abort() {} },
-    );
-
-    assert.equal(userMessages.length, 1);
-    assert.match(userMessages[0].content, /RUNTIME ACTION REQUIRED/);
-    assert.deepEqual(userMessages[0].options, { deliverAs: 'steer' });
-  } finally {
-    if (previousStage == null) delete process.env.PI_STAGE;
-    else process.env.PI_STAGE = previousStage;
-    if (previousResumeActive == null) delete process.env.PI_RESUME_ACTIVE;
-    else process.env.PI_RESUME_ACTIVE = previousResumeActive;
-  }
+test('action-required runtime steering uses a real user steer without importing runtime dependencies', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /PI_ACTION_REQUIRED_STEER/);
+  assert.match(runtime, /await pi\.sendUserMessage\(directive, \{ deliverAs: 'steer' \}\)/);
+  assert.doesNotMatch(runtime, /customType: 'pi-action-required'/);
 });
+
 test('action-required tool surface keeps only productive and control tools', () => {
   assert.deepEqual(
     actionRequiredToolNames(
@@ -608,7 +566,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /applyTokenCap/);
   assert.match(runtime, /pi\.setActiveTools/);
   assert.match(runtime, /actionRequiredToolNames/);
-  assert.match(runtime, /pi\.sendMessage/);
+  assert.doesNotMatch(runtime, /customType: 'pi-action-required'/);
   assert.match(runtime, /pi\.sendUserMessage/);
   assert.match(runtime, /maxTokens: appliedActionCap \|\| controller\.fixedMaxTokens/);
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
