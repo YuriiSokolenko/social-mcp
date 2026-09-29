@@ -58,6 +58,8 @@ For **trivial** repairs, use the fast path: after the required orientation and c
 
 For normal/complex repairs, expand context only when required by a concrete repair decision. Prefer the existing PR implementation and current `dev` patterns. Do not investigate optional Reviewer suggestions, unrelated architecture, or future issue scope.
 
+If a concrete blocker depends on historical intent (for example, whether a current-`dev` behavior or test expectation was intentionally introduced), prefer one narrow Git Context MCP call over broad Git history exploration: `blame_context` for a bounded current-code line range, `commit_story` for one known commit, `file_history` for one known file, or `search_commits` for one specific historical question. Use `file_contributors` only when ownership history is itself relevant. History is supporting provenance, never current source truth or an edit anchor; once the historical question is answered, make the repair rather than continuing history exploration.
+
 A normal merge conflict is repair work, not a terminal blocker. If blocking feedback is contradictory or stale, or repository evidence cannot safely determine the required behavior, report the concrete blocker through the result path rather than inventing a solution.
 
 ## Validation and submission

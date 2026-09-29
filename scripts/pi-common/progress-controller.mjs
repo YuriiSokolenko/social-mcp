@@ -45,7 +45,7 @@ export function isBoundedDirectBash(command) {
 }
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
 const ROLLBACK_TOOL = 'rollback_last_mutation';
-const MUTATION_TOOLS = new Set(['edit', 'write']);
+const MUTATION_TOOLS = new Set(['safe_edit', 'edit', 'write']);
 const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
 const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
 
@@ -247,7 +247,7 @@ export class ProgressController {
           if (!this.mutatedPaths.has(path)) {
             return {
               block: true,
-              reason: `BLOCKED: validation recovery may edit/write only files already mutated in this session. ${path || 'This path'} was not previously mutated. Use the single diagnostic evidence action, rollback_last_mutation, or retry submit_result.`,
+              reason: `BLOCKED: validation recovery may safe_edit/edit/write only files already mutated in this session. ${path || 'This path'} was not previously mutated. Use the single diagnostic evidence action, rollback_last_mutation, or retry submit_result.`,
             };
           }
         } else if (!this.productiveControlTools.has(toolName)) {
@@ -268,7 +268,7 @@ export class ProgressController {
           if (!this.mutatedPaths.has(path)) {
             return {
               block: true,
-              reason: `BLOCKED: validation recovery may edit/write only files already mutated in this session. ${path || 'This path'} was not previously mutated. Fix the touched file, rollback_last_mutation, or retry submit_result.`,
+              reason: `BLOCKED: validation recovery may safe_edit/edit/write only files already mutated in this session. ${path || 'This path'} was not previously mutated. Fix the touched file, rollback_last_mutation, or retry submit_result.`,
             };
           }
         } else if (!this.productiveControlTools.has(toolName)) {
@@ -289,7 +289,7 @@ export class ProgressController {
           if (this.evidenceUnlockUsedSinceProgress) {
             return {
               block: true,
-              reason: 'BLOCKED: an extra evidence permit was already used since the last successful edit/write/submit_result. Act on the evidence already gathered before requesting more.',
+              reason: 'BLOCKED: an extra evidence permit was already used since the last successful safe_edit/edit/write/submit_result. Act on the evidence already gathered before requesting more.',
             };
           }
           this.lastEvidenceRequestSignature = blockerSignature;
@@ -300,7 +300,7 @@ export class ProgressController {
           return {
             block: true,
             reason: this.productiveBlockerTool
-              ? `BLOCKED: productive progress requires an action now. ${toolName} did not execute. Use edit/write/submit_result, or call ${this.productiveBlockerTool} with one concrete missing fact to unlock exactly one evidence action.`
+              ? `BLOCKED: productive progress requires an action now. ${toolName} did not execute. Use safe_edit/edit/write/submit_result, or call ${this.productiveBlockerTool} with one concrete missing fact to unlock exactly one evidence action.`
               : `BLOCKED: classification evidence is complete. ${toolName} did not execute. Call submit_result now.`,
           };
         }

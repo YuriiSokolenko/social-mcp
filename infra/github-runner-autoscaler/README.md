@@ -200,7 +200,10 @@ host reboot. For index corruption, stop the service, remove the `.zoekt` shard
 files from `index/`, run the updater, and start the service again. Normal
 updates never delete the index. `indexed_repo_search`
 is discovery against indexed `dev`; `repo_search` and `read` remain authoritative
-for the current worktree, including after edits.
+for the current worktree, including after edits. For an already-known source-code
+symbol, semantic LSP lookup is the first hop: `lsp_find_symbol` resolves a symbol
+by name without a preliminary Zoekt/path search, while the existing position-based
+LSP tools remain appropriate when file + line/column are already known.
 
 
 ## GitLab Orbit Local for Pi
@@ -215,14 +218,18 @@ Orbit complements the host Zoekt service: Zoekt stays the fast shared `dev` text
 
 The Pi worker image also pins `git-context-mcp@1.0.0` and exposes it through the project `.mcp.json` as a lazy local stdio server. It reads the job checkout and `.git` directly; no separate service or container is required. The exposed tools are `blame_context`, `commit_story`, `file_history`, `search_commits`, and `file_contributors`.
 
-Use this layer only for historical intent/provenance questions that current source, RepoMap, Zoekt, LSP, and Orbit do not answer: why a bounded line range exists, what one commit changed, or how one known file evolved. Current source remains authoritative and must still be verified with `read` before mutation.
+Use this layer only for historical intent/provenance questions that current source, RepoMap, Zoekt, LSP, and Orbit do not answer: why a bounded line range exists, what one commit changed, or how one known file evolved. Do not use Git Context to locate a current symbol or as a mutation anchor. Current source remains authoritative and must still be verified with `read` before mutation.
 
 The upstream server can enrich local history with PR/issue metadata through the `gh` CLI. This integration intentionally does not add or forward a GitHub credential on its own; without authenticated `gh`, the local Git portion still works and PR/issue enrichment is skipped. This keeps the initial rollout read-only and avoids widening the Implementer credential surface.
+
+## Deterministic Implementer edits
+
+The Implementer runtime exposes `safe_edit` for bounded line/range mutations that would otherwise require the model to reproduce brittle multiline `oldText`. It re-reads the current worktree file immediately before mutation, validates the selected 1-based range and optional marker, preserves newline/final-newline state, writes atomically, and participates in the same productive-progress/rollback path as `edit` and `write`. Existing `edit`/`write` remain available when they are simpler.
 
 ## Pi RepoMap navigation context
 
 Implementer and Architect additionally load the pinned `pi-repomap` extension from `scripts/pi-run-stage.mjs`. It is intentionally not installed through project `.pi/settings.json`, because that would install/load the package for every Pi stage. The selected stages load the pinned git revision only for their own run.
 
-Project configuration lives in `.pi/repomap.json` with `refreshStrategy: "auto"` and a fixed **1536-token** map budget. RepoMap is a navigation hint, not authoritative source text: use it to choose a small reading order, then verify exact code with `read`/`repo_search`, use Zoekt for indexed literal discovery, and Orbit for precise graph questions. The repository skill `.agents/skills/repomap-navigation/SKILL.md` records the bounded routing policy.
+Project configuration lives in `.pi/repomap.json` with `refreshStrategy: "auto"` and a fixed **1536-token** map budget. RepoMap is a navigation hint for unclear repository areas, not authoritative source text: skip it for an already-known source symbol and use LSP first; otherwise use it to choose a small reading order, then verify exact code with `read`/`repo_search`, use Zoekt for indexed literal/path discovery, and Orbit for precise graph questions. The repository skill `.agents/skills/repomap-navigation/SKILL.md` records the bounded routing policy.
 
 RepoMap writes its incremental cache under `.pi/cache/`; that path is gitignored so ephemeral navigation state cannot be checkpointed or published with an implementation.

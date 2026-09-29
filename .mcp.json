@@ -12,6 +12,7 @@
         "lsp_goto_definition",
         "lsp_find_references",
         "lsp_find_implementations",
+        "lsp_find_symbol",
         "lsp_call_hierarchy",
         "lsp_smart_search"
       ],
@@ -20,6 +21,7 @@
         "lsp_goto_definition",
         "lsp_find_references",
         "lsp_find_implementations",
+        "lsp_find_symbol",
         "lsp_call_hierarchy",
         "lsp_smart_search"
       ]

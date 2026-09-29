@@ -541,6 +541,9 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.match(runtime, /actionResponseMaxTokens/);
   assert.match(runtime, /PI_PRODUCTIVE_STATE/);
+  assert.match(runtime, /name: 'safe_edit'/);
+  assert.match(runtime, /safeEdit\(ctx\.cwd, params\)/);
+  assert.match(runtime, /\['safe_edit', 'edit', 'write'\]\.includes\(event\.toolName\)/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
 
@@ -571,6 +574,9 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /1–8 ordered concrete steps/);
   assert.match(planner, /do not classify complexity/i);
+  assert.match(planner, /already names a source symbol/);
+  assert.match(planner, /Do not phrase that step as "search for"/);
+  assert.match(planner, /do not name LSP, Zoekt, RepoMap, Orbit, Git Context/);
   assert.match(classifier, /tools:\n/);
   assert.match(classifier, /inheritProjectContext: false/);
   assert.match(classifier, /Return only the requested structured result/);
@@ -584,6 +590,38 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /result: \{ kind: 'structured', schema \}/);
   assert.doesNotMatch(agent, /call `subagent` with `agent: "complexity-classifier"`/);
+});
+
+test('semantic routing, Git Context lanes, and safe edit contracts stay explicit', () => {
+  const mcp = JSON.parse(fs.readFileSync('.mcp.json', 'utf8'));
+  const implementer = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
+  const reviewer = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
+  const repair = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
+  const architect = fs.readFileSync('agents/architect/AGENTS.md', 'utf8');
+  const dispatcher = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
+  const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
+  const repoMapSkill = fs.readFileSync('.agents/skills/repomap-navigation/SKILL.md', 'utf8');
+  const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const progress = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
+  const resultTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+
+  assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_find_symbol'));
+  assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_find_symbol'));
+  assert.match(implementer, /If only the symbol name is known, call `lsp_find_symbol` directly/i);
+  assert.match(implementer, /Do not use it before LSP merely to rediscover an already-named source symbol/i);
+  assert.match(implementer, /Treat history as provenance evidence, never current source truth, current-symbol discovery, or an edit anchor/i);
+  assert.match(implementer, /safe_edit.*bounded line\/range/i);
+  assert.match(repoMapSkill, /known source-code symbol should bypass RepoMap/i);
+  assert.match(repoMapSkill, /Known source symbol: `semantic LSP → exact read → mutation`/);
+  assert.match(reviewer, /Historical intent \/ provenance/);
+  assert.match(reviewer, /prefer one narrow local Git Context MCP call/i);
+  assert.match(repair, /prefer one narrow Git Context MCP call/i);
+  assert.match(architect, /Do not use history by default/i);
+  assert.doesNotMatch(dispatcher, /blame_context|commit_story|file_history|search_commits|file_contributors/);
+  assert.doesNotMatch(triage, /blame_context|commit_story|file_history|search_commits|file_contributors/);
+  assert.match(stageConfig, /actionTools: \['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'\]/);
+  assert.match(progress, /const MUTATION_TOOLS = new Set\(\['safe_edit', 'edit', 'write'\]\)/);
+  assert.match(resultTool, /safe_edit\/edit\/write/);
 });
 
 test('implementer has an explicit already-satisfied terminal path without duplicate edits', () => {

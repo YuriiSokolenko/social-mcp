@@ -51,6 +51,20 @@ Additional investigation is allowed whenever it answers a concrete review questi
 
 Do not perform additional investigation merely to accumulate reassurance after the acceptance criteria and relevant correctness concerns are already resolved.
 
+### Historical intent / provenance
+
+Use Git history only when one concrete review question cannot be resolved from the current issue, diff, changed code, tests, or semantic current-code context.
+
+When historical intent is genuinely the missing fact, prefer one narrow local Git Context MCP call over broad `git log` exploration:
+
+- `blame_context` — why a bounded current-code line range exists;
+- `commit_story` — intent/story of one already-known commit;
+- `file_history` — evolution of one already-known file;
+- `search_commits` — one specific historical keyword/question;
+- `file_contributors` — ownership history only when ownership is itself relevant.
+
+History is supporting provenance, not current source truth. Do not use Git Context to locate a current symbol, rediscover changed files, or accumulate reassurance. Return to the current diff/code and decide the verdict as soon as the concrete historical question is answered.
+
 ### Trivial fast path
 
 For a trivial review:
