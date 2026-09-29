@@ -52,6 +52,27 @@ test('submit nudge repeats while terminal recovery is active', () => {
   assert.deepEqual(handler(), expected);
 });
 
+
+test('submit nudge can repeat only up to a configured cap', () => {
+  let handler;
+  const pi = { on(_event, fn) { handler = fn; } };
+  registerSubmitNudge(pi, {
+    isSubmitted: () => false,
+    customType: 'result-nudge',
+    content: 'act now',
+    repeatWhile: () => true,
+    maxNudges: 3,
+  });
+  const expected = {
+    continue: true,
+    entries: [{ type: 'custom_message', customType: 'result-nudge', content: 'act now', display: true }],
+  };
+  assert.deepEqual(handler(), expected);
+  assert.deepEqual(handler(), expected);
+  assert.deepEqual(handler(), expected);
+  assert.equal(handler(), undefined);
+});
+
 test('submit nudge stays silent after submission', () => {
   let handler;
   const pi = { on(_event, fn) { handler = fn; } };
