@@ -203,8 +203,7 @@ is discovery against indexed `dev`; `repo_search` and `read` remain authoritativ
 for the current worktree, including after edits. For an already-known source-code
 symbol, semantic LSP lookup is the first hop. Name-only workspace lookup needs
 an active language server: when the task already makes the language explicit,
-call `lsp_start_server` once with server id `python` or `kotlin` and
-`workspace_root: "."`, then call `lsp_find_symbol`. Do not add a
+call `lsp_start_server` once with server id `python` or `kotlin` and the exact absolute Implementer workspace root supplied by `prepare_implementation`, then call `lsp_find_symbol`. Do not add a
 `lsp_server_status` ritual first. Position-based LSP tools remain appropriate
 when file + line/column are already known and auto-start the routed server.
 
