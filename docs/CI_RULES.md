@@ -10,6 +10,25 @@ Issue -> Dispatcher -> Implementer -> checks -> PR -> Reviewer -> Merge Gate -> 
 
 Every green CI run on a `dev` push wakes Merge Gate, which reloads current PR state and either merges one eligible PR or exits. This avoids coupling queue progress to commit-message conventions. Red `dev` CI does not wake Merge Gate and therefore stops that merge sequence. Do not build a second pre-merge integration pipeline.
 
+## Responsibilities
+
+| Component | Responsibility |
+|---|---|
+| Dispatcher | Route currently eligible issues to Implementer or Architect |
+| Architect | Optional decomposition/planning; return tasks to Dispatcher |
+| Implementer | Change code/tests; integrate latest `dev` in the live session; resolve conflicts; verify and publish PR |
+| Reviewer | Independently review the exact PR HEAD after trusted deterministic checks pass |
+| PR Fix | Address reviewer feedback or late `dev` conflicts; trusted tooling re-validates before re-review |
+| Merge Gate | Validate ownership/safety and attempt one squash merge |
+| CI | Test the real commit on `dev`; exclusively owns CI/control-plane contract tests |
+| Reconciler | Recover stranded/orphaned state after the grace period; never schedules normal work |
+| Triage | Optional issue preparation before Dispatcher |
+| Usage | Diagnostics/metrics only |
+
+Every normal transition has one owner. Do not make Reconciler, Usage, or another diagnostic workflow a second scheduler.
+
+Workflows: `ci.yml`, `pi-dispatcher.yml`, `pi-architect.yml`, `pi-issue-agent.yml`, `pi-pr-review.yml`, `pi-pr-fix.yml`, `pi-auto-merge.yml`, `pi-reconcile.yml`, `pi-triage.yml`, `pi-automation-control.yml`, `pi-usage.yml`.
+
 ## Agent control-plane boundary
 
 No Pi agent may create, edit, delete, rename, review, repair, or auto-merge CI/control-plane files. Protected paths are `.github/workflows/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**`. `agents/**` is protected as control-plane, not product content, because it holds the runtime prompt every model stage reads before doing anything else; an agent editing its own instructions is a control-plane change, not a product change.
@@ -143,8 +162,25 @@ Do not silently substitute another task when selected work fails.
 
 ## Complexity guard
 
+Do not reintroduce pre-merge exact-pair orchestration: no captured dev SHAs, `integration_base_sha`, `repair_base_sha`, synthetic dev+PR merge commits, SHA-bound status contexts, or a custom pre-merge CI/review/repair state machine. Merge Gate may read the PR head SHA immediately before GitHub's merge call as optimistic concurrency; that is local operation data.
+
+Before adding CI machinery, ask:
+1. Can the receiver read this value from GitHub instead of receiving it?
+2. Can one existing owner perform this transition directly?
+3. Can ordinary post-merge `dev` CI validate this instead?
+4. Can GitHub's atomic API operation handle the race?
+5. Does this belong to recovery rather than the happy path?
+
+If yes, use the simpler path.
+
+## Implementer complexity class
+
 Routing to Architect is a Dispatcher decision made before Implementer starts. Implementer therefore needs only a binary startup class from its planner: **trivial** or **nontrivial**. That class changes exactly one bounded runtime parameter—the initial productive-progress evidence allowance (**2** or **6** actions). It does not change response budgets, turn quotas, workflow routing, or whether delegation is required. Reviewer and PR Fix keep their separate `trivial | normal | complex` review-depth classification.
 
+
+## Response budgets
+
+All model-driven stages share `scripts/pi-agent-runtime.mjs` and `scripts/pi-common/progress-controller.mjs`. Ceilings are the `RESPONSE_BUDGETS` constants (SHORT/NORMAL/DEEP) and per-stage values in `stage-config.mjs`; do not restate the numbers in prose. Ceilings must stay above the model server's reasoning budget, otherwise turns are cut mid-reasoning and lost. Automatic promotion needs the current turn to hit its ceiling *and* make concrete progress; a short tool-calling turn may keep an elevated level. `set_response_budget` is a one-response override. Triage uses a fixed ceiling and no promotion. Each call logs `PI_BUDGET` / `PI_BUDGET_NEXT`.
 
 ## Productive-progress guard
 

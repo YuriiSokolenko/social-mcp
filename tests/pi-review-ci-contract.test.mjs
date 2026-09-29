@@ -18,7 +18,7 @@ test('merge gate never waits for pre-merge CI, review, repair, or a dev SHA', ()
 });
 
 test('architecture guard documents that complexity must not return', () => {
-  const guard = fs.readFileSync('docs/ci-architecture.md', 'utf8');
+  const guard = fs.readFileSync('docs/CI_RULES.md', 'utf8');
   assert.match(guard, /merge.*dev.*CI/is);
   assert.match(guard, /Do not reintroduce/i);
   assert.match(guard, /dev SHA|exact-pair/i);
