@@ -209,7 +209,7 @@ export const STAGES = Object.freeze({
     productiveProgress: {
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
-      initialEvidenceBudget: 3,
+      initialEvidenceBudget: 6,
       actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
