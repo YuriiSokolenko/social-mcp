@@ -86,6 +86,36 @@ test("ignores a skipped Pi job without requesting its nonexistent log", () => {
   assert.match(result.stdout, /No Pi issue sessions found in completed run/);
 });
 
+test("treats a completed job with unavailable 404 logs as non-fatal telemetry loss", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-usage-missing-log-"));
+  const eventFile = join(dir, "event.json");
+  const mockFile = join(dir, "mock.mjs");
+  writeFileSync(eventFile, JSON.stringify({ workflow_run: {
+    id: 460, run_attempt: 1, status: "completed", name: "Pi dispatcher",
+    path: ".github/workflows/pi-dispatcher.yml",
+    head_repository: { full_name: "test/repo" },
+  } }));
+  writeFileSync(mockFile, `
+    globalThis.setTimeout = (callback) => { callback(); return 0; };
+    globalThis.fetch = async (url) => {
+      if (url.includes("/attempts/1/jobs")) return Response.json({ jobs: [{
+        id: 1001, name: "dispatcher", conclusion: "success",
+      }] });
+      if (url.endsWith("/jobs/1001/logs")) return new Response("missing", { status: 404 });
+      throw new Error("Unexpected URL " + url);
+    };
+  `);
+  const result = spawnSync(process.execPath, ["--import", pathToFileURL(mockFile).href, "scripts/pi-usage-collect.mjs"], {
+    encoding: "utf8", env: {
+      ...process.env, GITHUB_EVENT_PATH: eventFile, GITHUB_REPOSITORY: "test/repo",
+      GITHUB_TOKEN: "synthetic-token",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /log is unavailable after completion; skipping usage collection/);
+  assert.match(result.stdout, /No Pi issue sessions found in completed run/);
+});
+
 test("collects a Pi Architect run's usage under its 'architect' job name", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-usage-architect-"));
   const csvFile = join(dir, "usage.csv");
