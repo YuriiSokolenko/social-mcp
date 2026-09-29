@@ -548,6 +548,7 @@ test('productive progress allows only one extra evidence permit per productive e
   });
   assert.match(afterFailedEdit.reason, /already used since the last successful edit\/write\/submit_result/);
 
+  assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   state.onToolExecutionEnd('edit', false);
   assert.equal(state.checkToolCall('need_more_evidence', {
     missing: 'post-edit verification fact',
