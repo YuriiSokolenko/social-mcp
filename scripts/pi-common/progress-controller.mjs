@@ -78,7 +78,9 @@ export function nextActionResponseCap({
   const base = positiveInteger(Number(baseCap), 'actionResponseMaxTokens');
   const corrective = positiveInteger(Number(retryCap ?? base), 'actionResponseRetryMaxTokens');
   const proseOnlyTurn = attemptedTool !== true && madeProgress !== true;
-  return proseOnlyTurn ? corrective : base;
+  // Corrective steering must never reduce the model below the normal action
+  // budget: small retry caps can truncate reasoning before the tool call.
+  return proseOnlyTurn ? Math.max(base, corrective) : base;
 }
 
 export function nextActionRequiredProseOnlyTurns(
