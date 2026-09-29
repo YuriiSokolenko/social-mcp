@@ -576,7 +576,7 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(planner, /do not classify complexity/i);
   assert.match(planner, /already names a source symbol/);
   assert.match(planner, /Do not phrase that step as "search for"/);
-  assert.doesNotMatch(planner, /\bLSP\b|\bZoekt\b|\bRepoMap\b|\bOrbit\b|\bGit Context\b/);
+  assert.match(planner, /do not name LSP, Zoekt, RepoMap, Orbit, Git Context/);
   assert.match(classifier, /tools:\n/);
   assert.match(classifier, /inheritProjectContext: false/);
   assert.match(classifier, /Return only the requested structured result/);
