@@ -84,7 +84,7 @@ function finalizedToolUsage(result) {
   return normalizedUsage(result?.usage) ?? normalizedUsage(result?.details?.usage);
 }
 
-const sensitiveKey = /^(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie|gh_token|github_token|token|secret|private[_-]?key)$/i;
+const sensitiveKey = /(^|[_-])(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|credential|cookie|set-cookie|gh[_-]?token|github[_-]?token|token|secret|private[_-]?key)([_-]|$)/i;
 
 function redact(value, key = "") {
   if (sensitiveKey.test(key)) return "[REDACTED]";
@@ -96,7 +96,8 @@ function redact(value, key = "") {
     return value
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
       .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
-      .replace(/\b(access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|password|gh_token|github_token|cookie|set-cookie|token|secret|private[_-]?key)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/gi, "$1$2$3[REDACTED]")
+      .replace(/::add-mask::[^\r\n]*/gi, "::add-mask::[REDACTED]")
+      .replace(/\b([A-Za-z_][A-Za-z0-9_-]*(?:ACCESS[_-]?TOKEN|REFRESH[_-]?TOKEN|CLIENT[_-]?SECRET|API[_-]?KEY|AUTHORIZATION|PASSWORD|CREDENTIAL|COOKIE|SET-COOKIE|GH[_-]?TOKEN|GITHUB[_-]?TOKEN|TOKEN|SECRET|PRIVATE[_-]?KEY)[A-Za-z0-9_-]*)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/gi, "$1$2$3[REDACTED]")
       .replace(/\b(gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g, "[REDACTED]");
   }
   return value;
