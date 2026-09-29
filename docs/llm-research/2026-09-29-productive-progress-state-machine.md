@@ -94,11 +94,11 @@ That design was rejected because task complexity and required evidence vary too 
 
 The chosen design instead constrains the legal next state.
 
-## Implemented design
+## Initial implemented design
 
-The productive-progress watchdog is now a deterministic state machine.
+The first productive-progress watchdog was a deterministic state machine with one initial evidence action. This section records that historical version; the later **six-action initial evidence window** section is the current policy.
 
-### Fresh Implementer
+### Fresh Implementer — historical first version
 
 ```text
 prepare_implementation
@@ -106,7 +106,7 @@ prepare_implementation
         v
 EVIDENCE_ALLOWED
         |
-        | one evidence action
+        | one initial evidence action
         v
 ACTION_REQUIRED
         |
