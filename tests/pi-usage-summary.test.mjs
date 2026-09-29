@@ -62,7 +62,7 @@ test("the CLI includes finalized subagent usage without treating subagent runs a
     })),
   ];
   const stdout = run(metrics);
-  assert.match(stdout, /Pi usage: 81 responses · 14,015 tokens · 82\.0 s model time/);
+  assert.match(stdout, /Pi usage: 81 responses · fresh 8,010 in \/ 1,605 out · cache read 4,000 · total 14,015 · 82\.0 s model time/);
   assert.doesNotMatch(stdout, /::warning::/);
 });
 
