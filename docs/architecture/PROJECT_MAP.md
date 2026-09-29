@@ -196,7 +196,8 @@ This document is the human- and agent-readable text map of the current Social MC
        +--> known path .......................... read directly
        |
        +--> known source symbol ................. LSP first
-       |      +--> lsp_find_symbol (name-only)
+       |      +--> cold + language known: lsp_start_server -> lsp_find_symbol
+       |      +--> active/unknown-language name lookup: lsp_find_symbol
        |      +--> position-based LSP when file/line is known
        |
        +--> initial literal/path discovery
