@@ -53,6 +53,7 @@ Follow this sequence:
    - The runtime then sends issue title/body plus that plan to the separate `complexity-classifier` and schema-validates `{ complexity, reason }`.
    - The main agent receives only the prepared plan and complexity. Do not call either child manually and do not re-run task-level classification.
 3. Execute the first prepared plan step unless existing evidence already gives a more direct next action.
+4. Runtime creates fresh worktrees directly from the latest fetched `origin/dev`. Until the first successful `edit`/`write`, direct reads of the current worktree are authoritative latest-dev evidence. Do not spend Git/evidence calls re-proving whether HEAD or a clean known-path read came from latest dev.
 
 Once the next repository mutation is known and enough evidence exists, call `edit` or `write` immediately. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
 
@@ -145,7 +146,7 @@ Do not discard and rewrite the whole prepared plan merely because a local detail
 
 `scout` gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
 
-If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. Call `submit_result` with `already_satisfied: true` and `changes: []`. Never use `already_satisfied` for restored checkpoint/issue-branch work.
+If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. For fresh work call `submit_result({already_satisfied: true, changes: []})` immediately; runtime derives the remaining publication metadata from the trusted issue context. Never use `already_satisfied` for restored checkpoint/issue-branch work.
 
 For fresh work with a known target, prefer:
 
@@ -188,7 +189,7 @@ Do not run full pytest, full-repository Ruff, or CI/control-plane suites before 
 
 If it reports a conflict or failing check, fix only that concrete problem. If the failure was caused by the most recent mutation and the correct recovery is to undo it, call `rollback_last_mutation` instead of layering a workaround on top. Runtime permits at most one diagnostic evidence action for each failed validation attempt; then fix an already-mutated file, rollback, or retry `submit_result`.
 
-For restored work, the first call is `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields after validation. Fresh work continues to provide normal result metadata.
+For restored work, the first call is `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields after validation. Fresh work with real changes provides normal result metadata; fresh already-satisfied work uses only `submit_result({already_satisfied: true, changes: []})`.
 
 After successful `submit_result`, **stop immediately**.
 

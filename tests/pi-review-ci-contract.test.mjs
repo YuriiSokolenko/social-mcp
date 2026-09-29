@@ -537,6 +537,10 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(agent, /Task complexity alone never requires delegation/);
   assert.match(agent, /submit_result[\s\S]*both validation and submission/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
+  assert.match(runtime, /freshBaseCommit/);
+  assert.match(runtime, /freshWorktreeIsLatestDev/);
+  assert.match(runtime, /actionResponseMaxTokens/);
+  assert.match(runtime, /PI_PRODUCTIVE_STATE/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
 
@@ -572,6 +576,9 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(classifier, /Return only the requested structured result/);
   assert.match(classifier, /rewrite or execute the plan/);
   assert.match(classifier, /trivial[\s\S]*normal[\s\S]*complex/);
+  assert.match(agent, /direct reads of the current worktree are authoritative latest-dev evidence/i);
+  assert.match(agent, /action-required responses at 512 output tokens/i);
+  assert.match(agent, /submit_result\(\{already_satisfied: true, changes: \[\]\}\)/);
   assert.match(agent, /After successful `submit_result`, \*\*stop immediately\*\*/);
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
@@ -589,6 +596,9 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   assert.doesNotMatch(config, /Read and follow agents\/implementer\/AGENTS\.md first/);
   assert.doesNotMatch(tool, /If there is no real diff, implement the task/);
   assert.match(tool, /already_satisfied/);
+  assert.match(tool, /Latest dev already contains the exact requested end state/);
+  assert.match(tool, /nudgeMaxCount: 3/);
+  assert.match(tool, /PI_PRODUCTIVE_STATE/);
   assert.match(tool, /diff', '--name-only', 'origin\/dev'/);
   assert.match(tool, /already_satisfied requires zero diff against latest dev/);
   assert.match(workflow, /\.already_satisfied \/\/ false/);

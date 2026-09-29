@@ -6,12 +6,20 @@ export function terminalResult(text, details) {
   return { content: [{ type: 'text', text }], details, terminate: true };
 }
 
-export function registerSubmitNudge(pi, { isSubmitted, customType, content, repeatWhile = () => false }) {
-  let nudged = false;
+export function registerSubmitNudge(pi, {
+  isSubmitted,
+  customType,
+  content,
+  repeatWhile = () => false,
+  maxNudges = null,
+}) {
+  let nudgeCount = 0;
   pi.on('agent_before_settle', () => {
     if (isSubmitted()) return undefined;
-    if (nudged && !repeatWhile()) return undefined;
-    nudged = true;
+    if (nudgeCount > 0 && !repeatWhile()) return undefined;
+    const limit = typeof maxNudges === 'function' ? maxNudges() : maxNudges;
+    if (Number.isSafeInteger(limit) && limit >= 0 && nudgeCount >= limit) return undefined;
+    nudgeCount += 1;
     return {
       continue: true,
       entries: [{ type: 'custom_message', customType, content, display: true }],
@@ -27,6 +35,8 @@ export function registerTerminalTool(pi, {
   customType,
   nudgeType = 'pi-result-nudge',
   nudgeText,
+  nudgeRepeatWhile = () => false,
+  nudgeMaxCount = null,
   execute,
   successText = 'Result recorded. Stop now.',
 }) {
@@ -54,7 +64,8 @@ export function registerTerminalTool(pi, {
     isSubmitted: () => submitted,
     customType: nudgeType,
     content: nudgeText,
-    repeatWhile: () => terminalFailed,
+    repeatWhile: () => terminalFailed || nudgeRepeatWhile(),
+    maxNudges: () => terminalFailed ? null : nudgeMaxCount,
   });
 
   return { isSubmitted: () => submitted };

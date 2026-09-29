@@ -229,6 +229,9 @@ export default function (pi) {
     fs.existsSync(resumePatch) &&
     fs.statSync(resumePatch).size > 0
   );
+  const freshBaseCommit = stage === 'implementer'
+    ? String(process.env.PI_IMPLEMENTER_START_COMMIT ?? '').trim()
+    : '';
   const controller = new ProgressController(
     resumedImplementer
       ? {
@@ -241,6 +244,14 @@ export default function (pi) {
       : config
   );
 
+  let actionCapApplied = false;
+
+  function syncProductiveState() {
+    const state = controller.productiveProgressState();
+    process.env.PI_PRODUCTIVE_STATE = state;
+    return state;
+  }
+
   async function applyBudget(level, ctx) {
     if (!ctx.model) throw new Error('No active model is available for response budgeting');
     const budgetedModel = controller.modelFor(ctx.model, level);
@@ -248,6 +259,16 @@ export default function (pi) {
     const changed = await pi.setModel(budgetedModel);
     if (!changed) throw new Error(`Failed to apply ${level} response budget`);
   }
+
+  async function applyTokenCap(maxTokens, ctx) {
+    if (!ctx.model) throw new Error('No active model is available for response budgeting');
+    const cappedModel = { ...ctx.model, maxTokens };
+    process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(maxTokens);
+    const changed = await pi.setModel(cappedModel);
+    if (!changed) throw new Error(`Failed to apply action-required response cap of ${maxTokens} tokens`);
+  }
+
+  syncProductiveState();
 
   pi.on('session_start', async (_event, ctx) => {
     await applyBudget('short', ctx);
@@ -271,10 +292,13 @@ export default function (pi) {
           usage: classified.usage,
         })}`);
         const numberedPlan = plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
+        const provenance = stage === 'implementer' && !resumedImplementer
+          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched origin/dev${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful edit/write, direct reads of this worktree are authoritative latest-dev evidence; do not use extra Git/evidence calls to re-prove that provenance.`
+          : '';
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nPreparation complete. Continue according to the loaded Implementer contract. Complexity is metadata and does not by itself require delegation.`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nPreparation complete. Continue according to the loaded Implementer contract. Complexity is metadata and does not by itself require delegation.${provenance}`,
           }],
           details: {
             ...result,
@@ -282,6 +306,8 @@ export default function (pi) {
             plannerUsage: plan.usage,
             reason: classified.reason,
             classifierUsage: classified.usage,
+            freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
+            freshWorktreeIsLatestDev: stage === 'implementer' && !resumedImplementer,
           },
         };
       },
@@ -502,6 +528,7 @@ export default function (pi) {
 
   pi.on('turn_start', (event) => {
     controller.onTurnStart(event.turnIndex);
+    syncProductiveState();
     console.log(`PI_BUDGET ${JSON.stringify({
       turn: event.turnIndex,
       stage,
@@ -527,21 +554,40 @@ export default function (pi) {
       pendingMutationSnapshot = null;
     }
     controller.onToolExecutionEnd(event.toolName, event.isError);
+    syncProductiveState();
   });
 
   pi.on('turn_end', async (event, ctx) => {
     const outputTokens = Number(event.message?.usage?.output || 0);
     const next = controller.afterTurn(outputTokens);
-    if (next.changed) await applyBudget(next.level, ctx);
+    const productiveState = syncProductiveState();
+    const actionCap = Number(config.productiveProgress?.actionResponseMaxTokens ?? 0);
+    const actionRequired =
+      productiveState === 'action_required' ||
+      productiveState === 'recovery_action_required';
+
+    if (actionCap > 0 && actionRequired) {
+      if (!actionCapApplied || Number(ctx.model?.maxTokens) !== actionCap) {
+        await applyTokenCap(actionCap, ctx);
+      }
+      actionCapApplied = true;
+    } else if (actionCapApplied) {
+      await applyBudget(next.level, ctx);
+      actionCapApplied = false;
+    } else if (next.changed) {
+      await applyBudget(next.level, ctx);
+    }
+
     console.log(`PI_BUDGET_NEXT ${JSON.stringify({
       afterTurn: event.turnIndex,
       outputTokens,
       madeProgress: controller.turnMadeProgress,
       nextBudget: next.level,
-      maxTokens: next.maxTokens,
+      maxTokens: actionCapApplied ? actionCap : next.maxTokens,
       explicit: next.explicit === true,
       preservedForToolTurn: next.preservedForToolTurn === true,
-      productiveState: controller.productiveProgressState(),
+      productiveState,
+      actionCapApplied,
     })}`);
   });
 }

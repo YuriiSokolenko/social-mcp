@@ -15,14 +15,14 @@ function restoredWork() {
 
 function issueContext() {
   const file = process.env.PI_ISSUE_CONTEXT;
-  if (!file || !fs.existsSync(file)) throw new Error('PI_ISSUE_CONTEXT is required for restored-work submission');
+  if (!file || !fs.existsSync(file)) throw new Error('PI_ISSUE_CONTEXT is required for implementer submission');
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
 export default function (pi) {
   registerTerminalTool(pi, {
     label: 'Sync, validate, and submit implementation result',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately; trusted runtime code derives publication metadata from the issue context and validated diff. Fresh work supplies normal result metadata. On failure, fix only the reported problem and retry.',
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. Fresh changed work supplies normal result metadata. On failure, fix only the reported problem and retry.',
     parameters: Type.Object({
       title: Type.Optional(Type.String()),
       summary: Type.Optional(Type.String()),
@@ -32,7 +32,9 @@ export default function (pi) {
       limitations: Type.Optional(Type.String()),
     }),
     customType: 'implementer-result',
-    nudgeText: 'Productive action is required now. Do not continue free-form analysis. For restored work call submit_result({}) immediately. For fresh work call edit/write now when a change is required, or submit_result with already_satisfied: true and changes: [] only when latest dev already contains the exact requested end state. If exactly one concrete missing fact blocks a safe action, use need_more_evidence once, gather that one fact, then act.',
+    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. For restored work call submit_result({}) now. For fresh work call edit/write now when a change is required, or submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state. If exactly one concrete missing fact blocks safe action, call need_more_evidence once, gather exactly one fact, then act.',
+    nudgeRepeatWhile: () => ['action_required', 'recovery_action_required'].includes(process.env.PI_PRODUCTIVE_STATE ?? ''),
+    nudgeMaxCount: 3,
     successText: 'SUCCESS. Latest dev is integrated and final checks pass. Implementation result recorded. Stop now.',
     execute: async (params) => {
       integrateLatestDev({
@@ -59,17 +61,28 @@ export default function (pi) {
           security_notes: 'No additional security notes were supplied for restored work.',
           limitations: 'No additional limitations were supplied for restored work.',
         };
+      } else if (alreadySatisfied) {
+        const context = issueContext();
+        const issue = process.env.PI_ISSUE || process.env.ISSUE || context.number || '';
+        data = {
+          title: clean(context.title),
+          summary: `Latest dev already contains the exact requested end state${issue ? ` for issue #${issue}` : ''}; no duplicate implementation is required.`,
+          changes: [],
+          already_satisfied: true,
+          security_notes: 'No repository change was required.',
+          limitations: 'No implementation PR is created for an already-satisfied issue.',
+        };
       } else {
         data = {
           title: clean(params.title),
           summary: clean(params.summary),
           changes: Array.isArray(params.changes) ? params.changes.map(clean).filter(Boolean) : [],
-          already_satisfied: alreadySatisfied,
+          already_satisfied: false,
           security_notes: clean(params.security_notes),
           limitations: clean(params.limitations),
         };
         if (!data.title || !data.summary || !data.security_notes || !data.limitations) {
-          throw new Error('Fresh work requires title, summary, security_notes, and limitations');
+          throw new Error('Fresh changed work requires title, summary, security_notes, and limitations');
         }
       }
 
