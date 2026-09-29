@@ -93,6 +93,18 @@ export function nextActionRequiredProseOnlyTurns(
     : 0;
 }
 
+export function actionRequiredToolNames(
+  activeToolNames,
+  { actionTools = [], controlTools = [], blockerTool = null } = {},
+) {
+  if (!Array.isArray(activeToolNames)) {
+    throw new Error('activeToolNames must be an array');
+  }
+  const allowed = new Set([...actionTools, ...controlTools]);
+  if (blockerTool) allowed.add(blockerTool);
+  return activeToolNames.filter(name => allowed.has(name));
+}
+
 export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, madeProgress = true) {
   const ceiling = budgets[currentLevel];
   if (!ceiling) throw new Error(`Unknown response budget: ${currentLevel}`);
@@ -157,7 +169,9 @@ export class ProgressController {
     this.pendingMutationPath = null;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
+    this.requireLspStartBeforeFindSymbol = config.requireLspStartBeforeFindSymbol === true;
     this.lspServerStartPending = false;
+    this.lspServerReady = !this.requireLspStartBeforeFindSymbol;
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
     if (this.fixedMaxTokens && (!Number.isSafeInteger(this.fixedMaxTokens) || this.fixedMaxTokens < 1)) {
@@ -269,6 +283,12 @@ export class ProgressController {
       return {
         block: true,
         reason: 'BLOCKED: lsp_start_server is still running. Wait for that control action to finish successfully, then call lsp_find_symbol in the next turn.',
+      };
+    }
+    if (toolName === 'lsp_find_symbol' && this.requireLspStartBeforeFindSymbol && !this.lspServerReady) {
+      return {
+        block: true,
+        reason: 'BLOCKED: cold name-only LSP lookup requires one successful lsp_start_server call after preparation before lsp_find_symbol can execute.',
       };
     }
     if (toolName === 'lsp_start_server' && this.lspServerStartPending) {
@@ -414,7 +434,10 @@ export class ProgressController {
   }
 
   onToolExecutionEnd(toolName, isError) {
-    if (toolName === 'lsp_start_server') this.lspServerStartPending = false;
+    if (toolName === 'lsp_start_server') {
+      this.lspServerStartPending = false;
+      if (this.requireLspStartBeforeFindSymbol) this.lspServerReady = !isError;
+    }
     if (this.productiveProgress && toolName === 'lsp_find_symbol') {
       if (!isError && this.productiveState === 'evidence_allowed') {
         this.semanticLookupAwaitingRead = true;

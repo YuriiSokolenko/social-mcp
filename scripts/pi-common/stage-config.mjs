@@ -183,6 +183,7 @@ export const STAGES = Object.freeze({
     delegationTool: 'subagent',
     boundedDirectBash: true,
     singleUseTools: ['prepare_implementation'],
+    requireLspStartBeforeFindSymbol: true,
     productiveProgress: {
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
