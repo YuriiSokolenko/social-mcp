@@ -98,7 +98,7 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - Delegate to \`scout\` only when deterministic search plus direct reads are insufficient to decide the next safe action: semantic comparison, logs/diagnostics/history, or other evidence requiring interpretation. Complexity alone never requires delegation.
 - Direct \`grep\`, \`find\`, and \`ls\` remain blocked; use \`repo_search\` instead of simulating search through guessed reads.
 - For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.
-- Productive-progress runtime permits 2 bounded evidence actions for trivial work and 6 for normal/complex work after preparation. Use them as one narrow locate/read/anchor chain, then \`safe_edit\`, \`edit\`, \`write\`, or \`submit_result\`; if one concrete fact still blocks safe action after that window, call \`need_more_evidence\` to unlock exactly one further evidence action.
+- Productive-progress runtime permits 2 bounded evidence actions for trivial work and 6 for normal/complex work after preparation. Use them as one narrow locate/read/anchor chain, then \`safe_edit\`, \`edit\`, \`write\`, or \`submit_result\`; if one concrete fact still blocks safe action after that window, call \`need_more_evidence\` to unlock exactly one further evidence action.`;
     return `The complete Implementer operating contract is embedded below and is authoritative. Do not search for or re-read agents/implementer/AGENTS.md.
 
 <implementer_contract>
