@@ -539,6 +539,8 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /freshBaseCommit/);
   assert.match(runtime, /freshWorktreeIsLatestDev/);
+  assert.match(runtime, /lspWorkspaceRoot/);
+  assert.match(runtime, /LSP workspace root:/);
   assert.match(runtime, /actionResponseMaxTokens/);
   assert.match(runtime, /actionResponseRetryMaxTokens/);
   assert.match(runtime, /nextActionResponseCap/);
@@ -607,17 +609,21 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   const repoMapSkill = fs.readFileSync('.agents/skills/repomap-navigation/SKILL.md', 'utf8');
   const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const progress = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
+  const safeEdit = fs.readFileSync('scripts/pi-common/safe-edit.mjs', 'utf8');
   const resultTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
 
   assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_start_server'));
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_start_server'));
   assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_find_symbol'));
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_find_symbol'));
-  assert.match(implementer, /call `lsp_start_server` once.*workspace_root: "\.".*then call `lsp_find_symbol`/i);
+  assert.match(implementer, /call `lsp_start_server` once[\s\S]*exact absolute workspace root supplied by `prepare_implementation`[\s\S]*then call `lsp_find_symbol`/i);
   assert.match(implementer, /Do not call `lsp_server_status` first/i);
+  assert.match(implementer, /cold-start call is control-plane setup, not evidence/i);
   assert.match(implementer, /Do not use it before LSP merely to rediscover an already-named source symbol/i);
   assert.match(implementer, /Treat history as provenance evidence, never current source truth, current-symbol discovery, or an edit anchor/i);
   assert.match(implementer, /safe_edit.*bounded line\/range/i);
+  assert.match(implementer, /post-edit preview[\s\S]*Do not spend another evidence action/i);
+  assert.match(safeEdit, /POST_EDIT_PREVIEW_MAX_CHARS[\s\S]*post_edit:/);
   assert.match(repoMapSkill, /known source-code symbol should bypass RepoMap/i);
   assert.match(repoMapSkill, /Known source symbol: `semantic LSP → exact read → mutation`/);
   assert.match(reviewer, /Historical intent \/ provenance/);
@@ -626,6 +632,8 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.match(architect, /Do not use history by default/i);
   assert.doesNotMatch(dispatcher, /blame_context|commit_story|file_history|search_commits|file_contributors/);
   assert.doesNotMatch(triage, /blame_context|commit_story|file_history|search_commits|file_contributors/);
+  assert.match(stageConfig, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*normal: 6[\s\S]*complex: 6/);
+  assert.match(stageConfig, /controlTools: \['set_response_budget', 'subagents_enable', 'lsp_start_server'\]/);
   assert.match(stageConfig, /actionTools: \['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'\]/);
   assert.match(progress, /const MUTATION_TOOLS = new Set\(\['safe_edit', 'edit', 'write'\]\)/);
   assert.match(resultTool, /safe_edit\/edit\/write/);

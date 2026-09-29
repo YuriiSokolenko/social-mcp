@@ -148,6 +148,53 @@ test('single-shot tools cannot be retried after the first accepted call', () => 
   assert.match(state.checkToolCall('prepare_implementation', {}).reason, /single-shot/);
 });
 
+test('trivial productive progress treats LSP cold start as control and requires action after two evidence calls', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 6,
+      initialEvidenceBudgetByComplexity: {
+        trivial: 2,
+        normal: 6,
+        complex: 6,
+      },
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server'],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('trivial');
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  assert.equal(state.checkToolCall('lsp_start_server', {
+    server_id: 'python',
+    workspace_root: '/tmp/worktree',
+  }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_clamp_limit' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/social_mcp/platforms/threads/api.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(
+    state.checkToolCall('repo_search', { query: '_clamp_limit' }).reason,
+    /productive progress requires an action/,
+  );
+  assert.equal(state.checkToolCall('safe_edit', {
+    path: 'src/social_mcp/platforms/threads/api.py',
+    operation: 'insert_after',
+    start_line: 123,
+    text: '    """Docstring."""',
+  }), undefined);
+});
+
 test('productive progress allows a bounded initial evidence sequence before action', () => {
   const state = controller({
     requireComplexity: true,
@@ -608,9 +655,15 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.activationTool, 'prepare_implementation');
   assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
   assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 6);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.initialEvidenceBudgetByComplexity, {
+    trivial: 2,
+    normal: 6,
+    complex: 6,
+  });
   assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 512);
   assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 1024);
   assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
   assert.equal(stageConfig('implementer').directReadMaxLines, undefined);
@@ -655,6 +708,7 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
     assert.match(stagePrompt('implementer', env), /do not call subagent\(action:"list"\)/i);
     assert.match(stagePrompt('implementer', env), /768 max output tokens/);
+    assert.match(stagePrompt('implementer', env), /lsp_start_server[\s\S]*workspace_root/);
     assert.doesNotMatch(stagePrompt('implementer', env), /limit <= 200/);
     const resumePatch = path.join(dir, 'resume.patch');
     fs.writeFileSync(resumePatch, 'diff --git a/src/example.py b/src/example.py\n');
