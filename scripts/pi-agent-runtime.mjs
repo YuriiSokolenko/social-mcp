@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Type } from 'typebox';
 
-import { ProgressController } from './pi-common/progress-controller.mjs';
+import { ProgressController, nextActionResponseCap } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { trivialRepoLookup } from './pi-common/trivial-repo-lookup.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
@@ -245,7 +245,8 @@ export default function (pi) {
       : config
   );
 
-  let actionCapApplied = false;
+  let appliedActionCap = 0;
+  let actionTurnAttemptedTool = false;
 
   function syncProductiveState() {
     const state = controller.productiveProgressState();
@@ -553,6 +554,7 @@ export default function (pi) {
   }
 
   pi.on('turn_start', (event) => {
+    actionTurnAttemptedTool = false;
     controller.onTurnStart(event.turnIndex);
     syncProductiveState();
     console.log(`PI_BUDGET ${JSON.stringify({
@@ -565,6 +567,7 @@ export default function (pi) {
   });
 
   pi.on('tool_call', (event, ctx) => {
+    actionTurnAttemptedTool = true;
     const blocked = controller.checkToolCall(event.toolName, event.input);
     if (blocked) return blocked;
     if (stage === 'implementer' && ['safe_edit', 'edit', 'write'].includes(event.toolName)) {
@@ -588,18 +591,31 @@ export default function (pi) {
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
     const actionCap = Number(config.productiveProgress?.actionResponseMaxTokens ?? 0);
+    const actionRetryCap = Number(
+      config.productiveProgress?.actionResponseRetryMaxTokens ?? actionCap
+    );
     const actionRequired =
       productiveState === 'action_required' ||
       productiveState === 'recovery_action_required';
+    const targetActionCap = actionCap > 0
+      ? nextActionResponseCap({
+          baseCap: actionCap,
+          retryCap: actionRetryCap,
+          outputTokens,
+          actionRequired,
+          attemptedTool: actionTurnAttemptedTool,
+          madeProgress: controller.turnMadeProgress,
+        })
+      : 0;
 
-    if (actionCap > 0 && actionRequired) {
-      if (!actionCapApplied || Number(ctx.model?.maxTokens) !== actionCap) {
-        await applyTokenCap(actionCap, ctx);
+    if (targetActionCap > 0) {
+      if (appliedActionCap !== targetActionCap || Number(ctx.model?.maxTokens) !== targetActionCap) {
+        await applyTokenCap(targetActionCap, ctx);
       }
-      actionCapApplied = true;
-    } else if (actionCapApplied) {
+      appliedActionCap = targetActionCap;
+    } else if (appliedActionCap > 0) {
       await applyBudget(next.level, ctx);
-      actionCapApplied = false;
+      appliedActionCap = 0;
     } else if (next.changed) {
       await applyBudget(next.level, ctx);
     }
@@ -608,12 +624,14 @@ export default function (pi) {
       afterTurn: event.turnIndex,
       outputTokens,
       madeProgress: controller.turnMadeProgress,
+      attemptedTool: actionTurnAttemptedTool,
       nextBudget: next.level,
-      maxTokens: actionCapApplied ? actionCap : next.maxTokens,
+      maxTokens: appliedActionCap || next.maxTokens,
       explicit: next.explicit === true,
       preservedForToolTurn: next.preservedForToolTurn === true,
       productiveState,
-      actionCapApplied,
+      actionCapApplied: appliedActionCap > 0,
+      actionCapEscalated: appliedActionCap > actionCap,
     })}`);
   });
 }
