@@ -70,21 +70,15 @@ export function toolCallSignature(toolName, input) {
 export function nextActionResponseCap({
   baseCap,
   retryCap,
-  outputTokens,
   actionRequired,
   attemptedTool,
   madeProgress,
 }) {
   if (!actionRequired) return 0;
   const base = positiveInteger(Number(baseCap), 'actionResponseMaxTokens');
-  const retry = positiveInteger(Number(retryCap ?? base), 'actionResponseRetryMaxTokens');
-  if (retry < base) throw new Error('actionResponseRetryMaxTokens must be >= actionResponseMaxTokens');
-  const cappedProseOnlyTurn =
-    Number.isFinite(outputTokens) &&
-    outputTokens >= base &&
-    attemptedTool !== true &&
-    madeProgress !== true;
-  return cappedProseOnlyTurn ? retry : base;
+  const corrective = positiveInteger(Number(retryCap ?? base), 'actionResponseRetryMaxTokens');
+  const proseOnlyTurn = attemptedTool !== true && madeProgress !== true;
+  return proseOnlyTurn ? corrective : base;
 }
 
 export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, madeProgress = true) {
