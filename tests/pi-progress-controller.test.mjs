@@ -94,7 +94,7 @@ test('productive progress allows a bounded initial evidence sequence before acti
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 3,
-      actionTools: ['edit', 'write', 'submit_result'],
+      actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
   });
@@ -131,6 +131,63 @@ test('productive progress allows a bounded initial evidence sequence before acti
   assert.equal(state.checkToolCall('submit_result', {}), undefined);
 });
 
+
+test('failed validation enters bounded recovery and rollback resets the productive epoch', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 3,
+      actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      controlTools: ['set_response_budget', 'subagents_enable'],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('normal');
+  state.onToolExecutionEnd('prepare_implementation', false);
+
+  assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
+  state.onToolExecutionEnd('edit', false);
+  assert.equal(state.checkToolCall('submit_result', {}), undefined);
+  state.onToolExecutionEnd('submit_result', true);
+  assert.equal(state.productiveProgressState(), 'recovery_evidence_allowed');
+
+  assert.match(state.checkToolCall('need_more_evidence', {
+    missing: 'broader repository context',
+    reason: 'reconsider the implementation',
+  }).reason, /recovery already allows one diagnostic evidence action/);
+
+  assert.match(
+    state.checkToolCall('edit', { path: 'src/not-touched.py' }).reason,
+    /only files already mutated/,
+  );
+
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'recovery_action_required');
+  assert.match(
+    state.checkToolCall('repo_search', { query: 'alternative implementation' }).reason,
+    /validation recovery requires action now/,
+  );
+
+  assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
+  state.onToolExecutionEnd('edit', false);
+  assert.equal(state.productiveProgressState(), 'recovery_action_required');
+
+  assert.equal(state.checkToolCall('rollback_last_mutation', { reason: 'latest mutation caused the regression' }), undefined);
+  state.onToolExecutionEnd('rollback_last_mutation', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'replacement implementation anchor',
+    reason: 'rollback removed the harmful approach',
+  }), undefined);
+});
+
 test('dispatcher closes exploration after prepared context is loaded', () => {
   const state = controller({
     requiredFirstReadPath: 'agents/dispatcher/AGENTS.md',
@@ -164,6 +221,8 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
+  assert.match(runtime, /name: 'rollback_last_mutation'/);
+  assert.match(runtime, /captureMutationSnapshot/);
   assert.match(runtime, /productiveProgressState\(\)/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
@@ -445,7 +504,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.activationTool, 'prepare_implementation');
   assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
   assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 3);
-  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['edit', 'write', 'submit_result']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['edit', 'write', 'rollback_last_mutation', 'submit_result']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
   assert.equal(stageConfig('implementer').directReadMaxLines, undefined);
@@ -523,7 +582,7 @@ test('productive progress allows only one extra evidence permit per productive e
     productiveProgress: {
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
-      actionTools: ['edit', 'write', 'submit_result'],
+      actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
   });
