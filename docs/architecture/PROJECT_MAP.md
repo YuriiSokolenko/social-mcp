@@ -151,7 +151,7 @@ This document is the human- and agent-readable text map of the current Social MC
                                               v                                 |
                                        EVIDENCE_ALLOWED                          |
                                               |                                 |
-                                   up to six evidence actions                    |
+                          2 trivial / 6 normal+complex evidence actions           |
                                               |                                 |
                                               v                                 |
                                        ACTION_REQUIRED <-------------------------+
