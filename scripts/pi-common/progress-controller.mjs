@@ -107,6 +107,11 @@ export class ProgressController {
     this.productiveBlockerTool = this.productiveProgress?.blockerTool ?? null;
     this.productiveActionTools = new Set(this.productiveProgress?.actionTools ?? []);
     this.productiveControlTools = new Set(this.productiveProgress?.controlTools ?? []);
+    this.productiveInitialEvidenceBudget = positiveInteger(
+      Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
+      'productiveProgress.initialEvidenceBudget',
+    );
+    this.productiveEvidenceRemaining = 0;
     this.lastEvidenceRequestSignature = null;
     this.evidenceUnlockUsedSinceProgress = false;
 
@@ -239,6 +244,7 @@ export class ProgressController {
           }
           this.lastEvidenceRequestSignature = blockerSignature;
           this.evidenceUnlockUsedSinceProgress = true;
+          this.productiveEvidenceRemaining = 1;
           this.productiveState = 'evidence_allowed';
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
@@ -256,9 +262,11 @@ export class ProgressController {
           };
         }
         if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
-          // Consume the one evidence permit at call time so parallel exploration
-          // cannot fan out into multiple reads/searches/children in one response.
-          this.productiveState = 'action_required';
+          // Consume bounded evidence budget at accepted call time. This still
+          // prevents unbounded parallel exploration, while allowing a short
+          // locate -> read -> anchor sequence before mutation is required.
+          this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
+          if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
         }
       }
     }
@@ -285,6 +293,7 @@ export class ProgressController {
 
   onToolExecutionEnd(toolName, isError) {
     if (!isError && this.productiveProgress && toolName === this.productiveActivationTool) {
+      this.productiveEvidenceRemaining = this.productiveInitialEvidenceBudget;
       this.productiveState = 'evidence_allowed';
       this.evidenceUnlockUsedSinceProgress = false;
     }
