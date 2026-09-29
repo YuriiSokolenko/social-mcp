@@ -19,7 +19,14 @@ function resolveWorktreeFile(root, requestedPath) {
   if (absolutePath !== worktree && !absolutePath.startsWith(`${worktree}${path.sep}`)) {
     throw new Error('safe_edit path escapes the current worktree');
   }
-  if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+  if (!fs.existsSync(absolutePath)) {
+    throw new Error(`safe_edit target is not an existing file: ${requestedPath}`);
+  }
+  const targetStat = fs.lstatSync(absolutePath);
+  if (targetStat.isSymbolicLink()) {
+    throw new Error('safe_edit refuses symbolic-link targets');
+  }
+  if (!targetStat.isFile()) {
     throw new Error(`safe_edit target is not an existing file: ${requestedPath}`);
   }
   return absolutePath;
