@@ -192,3 +192,19 @@ test("redacts generic token, secret and PEM private-key material", () => {
   assert.match(output, /secret=\[REDACTED\]/);
   assert.match(output, /\[REDACTED PRIVATE KEY\]/);
 });
+
+
+test("redacts secret-bearing environment variable names and add-mask payloads", () => {
+  const output = render([
+    { type: "message_update", assistantMessageEvent: { type: "text_delta",
+      delta: "META_APP_SECRET=metaSynthetic\nTIKTOK_CLIENT_SECRET=tiktokSynthetic\nTOKEN_ENCRYPTION_KEY=fernetSynthetic\nDATABASE_PASSWORD=dbSynthetic\nMY_CREDENTIAL=credentialSynthetic\n::add-mask::maskSynthetic\n" } },
+    { type: "message_end", message: { role: "assistant", content: [] } },
+  ]);
+  assert.doesNotMatch(output, /metaSynthetic|tiktokSynthetic|fernetSynthetic|dbSynthetic|credentialSynthetic|maskSynthetic/);
+  assert.match(output, /META_APP_SECRET=\[REDACTED\]/);
+  assert.match(output, /TIKTOK_CLIENT_SECRET=\[REDACTED\]/);
+  assert.match(output, /TOKEN_ENCRYPTION_KEY=\[REDACTED\]/);
+  assert.match(output, /DATABASE_PASSWORD=\[REDACTED\]/);
+  assert.match(output, /MY_CREDENTIAL=\[REDACTED\]/);
+  assert.match(output, /::add-mask::\[REDACTED\]/);
+});
