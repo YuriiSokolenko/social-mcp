@@ -213,7 +213,7 @@ export const STAGES = Object.freeze({
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 6,
       actionResponseMaxTokens: 512,
-      actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
     prompt: promptBuilders.implementer,
