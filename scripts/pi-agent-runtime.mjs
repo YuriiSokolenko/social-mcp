@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Type } from 'typebox';
 
-import { ProgressController, nextActionResponseCap } from './pi-common/progress-controller.mjs';
+import { ProgressController, nextActionRequiredProseOnlyTurns, nextActionResponseCap } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
@@ -541,8 +541,14 @@ export default function (pi) {
       actionTurnAttemptedTool !== true &&
       controller.turnMadeProgress !== true;
 
-    if (proseOnlyActionTurn) actionRequiredProseOnlyTurns += 1;
-    else actionRequiredProseOnlyTurns = 0;
+    actionRequiredProseOnlyTurns = nextActionRequiredProseOnlyTurns(
+      actionRequiredProseOnlyTurns,
+      {
+        actionRequired,
+        attemptedTool: actionTurnAttemptedTool,
+        madeProgress: controller.turnMadeProgress,
+      },
+    );
 
     if (actionRequiredProseOnlyTurns >= 2) {
       console.error('PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn; aborting stage');
