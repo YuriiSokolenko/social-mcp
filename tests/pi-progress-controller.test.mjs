@@ -140,12 +140,13 @@ test('bounded local operations stay in main while exploration remains delegated'
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     directReadMaxLines: 200,
-    directReadCalls: 1,
     boundedDirectBash: true,
   });
   state.onTurnStart(0);
   assert.equal(state.checkToolCall('read', { path: 'src/known.py', limit: 120 }), undefined);
-  assert.match(state.checkToolCall('read', { path: 'src/second.py', limit: 120 }).reason, /read budget/);
+  assert.equal(state.checkToolCall('read', { path: 'src/second.py', limit: 120 }), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'src/third.py', limit: 200 }), undefined);
+  assert.match(state.checkToolCall('read', { path: 'src/too-large.py', limit: 201 }).reason, /limit <= 200/);
   assert.match(state.checkToolCall('grep', { pattern: 'token' }).reason, /subagent/);
   assert.equal(state.checkToolCall('bash', { command: 'git diff -- src/known.py' }), undefined);
   assert.equal(state.checkToolCall('bash', { command: 'git diff --check -- src/known.py' }), undefined);
@@ -338,7 +339,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
   assert.equal(stageConfig('implementer').directReadMaxLines, 200);
-  assert.equal(stageConfig('implementer').directReadCalls, 1);
+  assert.equal(stageConfig('implementer').directReadCalls, undefined);
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
     assert.match(stageConfig(name).resultTool, /-result-tool\.mjs$/);

@@ -7,6 +7,7 @@ Research date for the initial corpus: **2026-09-28**.
 ## Contents
 
 - [`llm_agent_looping_100_cases.md`](./llm_agent_looping_100_cases.md) — 100 external cases involving agent looping, excessive reasoning, repeated tool calls, loss of progress, failure to stop, tool/runtime protocol bugs, and related mitigations.
+- [`2026-09-29-real-flow-ci-analysis.md`](./2026-09-29-real-flow-ci-analysis.md) — analysis of the first real multi-issue Dispatcher/Implementer flow after enabling real tasks, including token/model-time costs and the reasoning-to-action failure pattern.
 - This README — conclusions drawn from the external corpus and from our own Pi/Laguna runs.
 
 ## Executive conclusions

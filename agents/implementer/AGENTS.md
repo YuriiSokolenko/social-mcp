@@ -65,13 +65,13 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 ### Main may do directly
 
-- **One already-known small file:** call `read` once with an explicit `limit <= 200`. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result.
+- **Already-known files:** call `read` directly with an explicit `limit <= 200` for each file. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result. There is no per-task file-count limit for bounded known-path reads.
 - **One known-path diff/status check:** use a bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>`.
 - **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target in `origin/dev`. The lookup never reads resumed checkpoint/current-worktree changes. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText`; the result fields `exactTextFoundInDev` / `exactTextPathsInDev` are evidence about latest dev only. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
 - `submit_result`.
 
-Do not use repeated guessed reads as a substitute for search. If the first bounded read is insufficient, delegate the remaining investigation.
+Do not use repeated guessed reads as a substitute for search. Delegate discovery/search when the path, symbol, or pattern is unknown; when paths are already known, continue with bounded direct reads as needed.
 
 ### Delegate
 
@@ -125,7 +125,7 @@ If evidence shows the **exact requested end state already exists in latest dev**
 
 For fresh work with a known target, prefer:
 
-`loaded contract → prepare_implementation → one bounded read if needed → edit/write → submit_result`
+`loaded contract → prepare_implementation → bounded known-path reads as needed → edit/write → submit_result`
 
 If a fresh trivial task has an unknown target:
 

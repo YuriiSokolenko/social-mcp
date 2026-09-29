@@ -97,14 +97,9 @@ export class ProgressController {
     this.delegatedTools = new Set(config.delegatedTools ?? []);
     this.delegationTool = config.delegationTool ?? 'subagent';
     this.directReadMaxLines = Number(config.directReadMaxLines ?? 0);
-    this.directReadCalls = Number(config.directReadCalls ?? 0);
-    this.directReadCount = 0;
     this.boundedDirectBash = config.boundedDirectBash === true;
     if (this.directReadMaxLines && (!Number.isSafeInteger(this.directReadMaxLines) || this.directReadMaxLines < 1)) {
       throw new Error('directReadMaxLines must be a positive integer');
-    }
-    if (this.directReadCalls && (!Number.isSafeInteger(this.directReadCalls) || this.directReadCalls < 1)) {
-      throw new Error('directReadCalls must be a positive integer');
     }
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
@@ -192,12 +187,8 @@ export class ProgressController {
     if (toolName === 'read' && this.directReadMaxLines) {
       const limit = Number(input?.limit);
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > this.directReadMaxLines) {
-        return { block: true, reason: `Direct main-agent read is only for one already-known small file and must set limit <= ${this.directReadMaxLines}; delegate broader reading to ${this.delegationTool}.` };
+        return { block: true, reason: `Direct main-agent reads must set limit <= ${this.directReadMaxLines}; delegate broad or unbounded repository reading to ${this.delegationTool}.` };
       }
-      if (this.directReadCalls && this.directReadCount >= this.directReadCalls) {
-        return { block: true, reason: `Direct main-agent read budget is ${this.directReadCalls} file per task; delegate additional repository reading to ${this.delegationTool}.` };
-      }
-      this.directReadCount += 1;
     }
 
     if (toolName === 'bash' && this.boundedDirectBash && !isBoundedDirectBash(input?.command)) {
@@ -229,7 +220,6 @@ export class ProgressController {
   }
 
   onToolExecutionEnd(toolName, isError) {
-    if (toolName === 'read' && isError && this.directReadCount > 0) this.directReadCount -= 1;
     if (!isError && (PROGRESS_TOOLS.has(toolName) || this.preComplexityTransitionTools.has(toolName))) {
       this.turnMadeProgress = true;
     }
