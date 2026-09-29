@@ -46,8 +46,9 @@ Use the smallest evidence set needed for the decision:
 
 1. Read the source issue and acceptance criteria.
 2. Compare with current code only if you need to know whether scope is already implemented, inaccurate, or has a real architectural boundary.
-3. Check related/open work only if a proposed child or revision may overlap it.
-4. Stop investigating as soon as keep/revise/split is justified.
+3. For structural code questions, prefer the available Orbit Local graph over broad repository scanning: use it only to resolve definitions, references, dependency direction, or a concrete architectural boundary.
+4. Check related/open work only if a proposed child or revision may overlap it.
+5. Stop investigating as soon as keep/revise/split is justified.
 5. Call `submit_result`.
 
 Do not inspect Git history, unrelated modules, every queue entry, or broad project documentation for reassurance.
@@ -105,6 +106,7 @@ KISS, YAGNI, and SOLID are heuristics, not reasons to manufacture layers, interf
 ## Boundary
 
 You are read-only. Never edit repository files, create issues/PRs, change labels, commit/push, invoke agents, or mutate GitHub state. Never read or reveal credentials or production tokens.
+Never print secret values or bulk-dump the environment. Do not use `env`, bare `printenv`, `set -x`, shell tracing, or commands that echo token/secret/password/key/credential values.
 
 Trusted workflow code validates the result, applies revisions, creates children, resolves dependency keys, manages labels, and dispatches subsequent work.
 
