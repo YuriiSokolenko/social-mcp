@@ -418,3 +418,51 @@ This run therefore strengthens, rather than weakens, the current architecture:
 - keep the explicit productive-progress state machine;
 - improve what actions are legal and preferred inside `ACTION_REQUIRED`;
 - measure future changes against time-to-first-mutation, no-progress streak length, and mutation-to-submit delay.
+
+
+## Follow-up: rollback and bounded validation recovery
+
+The successful-but-expensive issue #4 run showed that detection was correct but recovery behavior was still too permissive. Two runtime changes were added.
+
+### 1. Last-mutation rollback is a productive action
+
+Implementer now exposes `rollback_last_mutation`.
+
+Before each accepted `edit` or `write`, runtime captures the exact file state. After a successful mutation that snapshot becomes the rollback target. If the mutation created a new file, rollback removes that file; if it changed an existing file, rollback restores the exact previous bytes.
+
+This deliberately avoids a coarse `git restore <path>`, which could erase earlier valid work in the same file.
+
+A successful rollback is treated as productive progress and resets the productive epoch. The agent contract now explicitly prefers rollback when validation shows that the latest local mutation itself caused the regression, rather than layering compensating workarounds on top.
+
+### 2. Failed terminal validation enters bounded recovery
+
+A failed `submit_result` no longer returns the Implementer to ordinary exploration.
+
+Runtime enters a dedicated recovery state:
+
+```text
+submit_result fails
+        |
+        v
+RECOVERY_EVIDENCE_ALLOWED (1)
+        |
+        +--> at most one diagnostic evidence action
+        |
+        v
+RECOVERY_ACTION_REQUIRED
+        |
+        +--> edit/write an already-mutated file
+        +--> rollback_last_mutation
+        +--> retry submit_result
+```
+
+During recovery:
+
+- `need_more_evidence` cannot reopen a new exploration epoch;
+- only one diagnostic evidence action is available per failed validation attempt;
+- new unrelated file mutations are blocked;
+- after that diagnostic action, further read/search/scout work is blocked;
+- successful corrective edits remain in recovery until terminal validation succeeds;
+- rollback exits recovery and starts a new productive epoch from the restored state.
+
+This directly targets the `tests/__init__.py` failure pattern from job `109330983540`: once validation demonstrates that a mutation is harmful, the preferred trajectory becomes diagnose once -> fix or rollback -> validate, rather than repeated semantic reconsideration and workaround accumulation.
