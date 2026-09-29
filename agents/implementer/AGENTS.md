@@ -84,13 +84,14 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 
 - **Already-known files:** call `read` directly. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result. There is no runtime line-count or per-task file-count limit for known-path reads.
 - **Known-path diff/status checks:** use bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>` as needed.
-- **Deterministic repository search:** use `repo_search` directly for cheap literal path/content discovery in the current tracked worktree. Prefer it over a subagent when the question is mechanically answerable as “which path contains this name/text?”.
+- **Indexed repository search:** when `indexed_repo_search` is available, prefer it for initial literal/path/symbol discovery against the indexed `dev` snapshot. It is fast and does not launch a child model. Treat it as discovery evidence only because the index can lag the current worktree.
+- **Current-worktree search:** use `repo_search` for exact literal path/content discovery in the current tracked worktree, especially after mutations or when the indexed result must be verified.
 - **Trivial task only:** after `prepare_implementation` classifies the task as `trivial`, main may call `trivial_repo_lookup` exactly once to locate the first safe sufficient tracked-file target in `origin/dev`. The lookup never reads resumed checkpoint/current-worktree changes. Preserve the issue's preferred extension order. When the issue gives an exact requested literal, pass it as `exactText`; the result fields `exactTextFoundInDev` / `exactTextPathsInDev` are evidence about latest dev only. Do not enable subagents for this lookup.
 - `edit` / `write` after enough evidence exists.
 - `rollback_last_mutation` when the most recent mutation caused the current regression or was the wrong local approach.
 - `submit_result`.
 
-Do not use repeated guessed reads as a substitute for search. Use `repo_search` for deterministic literal path/content discovery; when paths are already known, continue with direct reads as needed. Delegate only when deterministic search plus direct reads are insufficient to decide the next safe action.
+Do not use repeated guessed reads as a substitute for search. Prefer `indexed_repo_search` for fast initial discovery when it is exposed, then read the discovered path directly. Use `repo_search` when the current worktree is authoritative or indexed evidence is absent/stale. Delegate only when indexed/literal search plus direct reads are insufficient to decide the next safe action.
 
 ### Delegate
 
@@ -105,7 +106,7 @@ Use `scout` with `async: false` only when the evidence already available to the 
 
 **Task complexity alone never requires delegation.** A `normal` or `complex` classification is metadata, not an instruction to call `scout`.
 
-`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `repo_search` for ordinary deterministic repository discovery and `trivial_repo_lookup` for the special trivial-target lookup when applicable. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
+`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `indexed_repo_search` when available for initial indexed discovery, `repo_search` for current-worktree deterministic discovery, and `trivial_repo_lookup` for the special trivial-target lookup when applicable. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
 
 For scout requests:
 
@@ -156,7 +157,7 @@ If a fresh trivial task has an unknown target:
 
 If literal discovery is needed:
 
-`loaded contract → prepare_implementation → repo_search → read discovered path → read exact anchor if needed → edit/write`
+`loaded contract → prepare_implementation → indexed_repo_search (when available) or repo_search → read discovered path → read exact anchor if needed → edit/write`
 
 If deterministic search still leaves one concrete semantic blocker:
 
