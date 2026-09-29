@@ -29,12 +29,11 @@ const promptBuilders = Object.freeze({
   dispatcher(env) {
     const root = env.RUNNER_TEMP;
     if (!root) throw new Error('RUNNER_TEMP is required for Dispatcher');
-    return `Read and follow agents/dispatcher/AGENTS.md.
-Read the project documentation once, before reading dispatcher candidates, to understand the project's architecture, conventions, component boundaries, and terminology.
-Then read ${root}/pi-dispatcher-context.json; each candidate already contains the current GitHub issue metadata and scope needed for classification.
-The candidates list is authoritative: do not re-check eligibility, dependencies, priority, ordering or capacity.
-For every candidate decide only IMPLEMENT or ARCHITECT based on scope.
-Call submit_result exactly once as your last action. Do not modify repository or GitHub state.`;
+    return `Read and follow agents/dispatcher/AGENTS.md, then read ${root}/pi-dispatcher-context.json.
+Each candidate already contains the current GitHub issue metadata and scope needed for classification; that prepared context is sufficient and authoritative.
+Do not read project documentation, repository code, Git history, queue state, or unrelated issues.
+For every candidate decide only IMPLEMENT or ARCHITECT based on its written scope, then call submit_result exactly once as your last action.
+After the prepared context is read, runtime closes exploration and only terminal submission remains valid. Do not modify repository or GitHub state.`;
   },
 
   triage(env) {
@@ -94,7 +93,8 @@ Call submit_result exactly once as your last action. Do not modify repository or
 - If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
 - Delegate to \`scout\` only when deterministic search plus direct reads are insufficient to decide the next safe action: semantic comparison, logs/diagnostics/history, or other evidence requiring interpretation. Complexity alone never requires delegation.
 - Direct \`grep\`, \`find\`, and \`ls\` remain blocked; use \`repo_search\` instead of simulating search through guessed reads.
-- For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.`;
+- For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.
+- Productive-progress runtime permits one evidence action after preparation. After any read/search/scout/evidence action, the next tool must be \`edit\`, \`write\`, or \`submit_result\`; if one concrete fact is still missing, call \`need_more_evidence\` to unlock exactly one more evidence action.`;
     return `The complete Implementer operating contract is embedded below and is authoritative. Do not search for or re-read agents/implementer/AGENTS.md.
 
 <implementer_contract>
@@ -142,6 +142,11 @@ export const STAGES = Object.freeze({
     repeatThreshold: 3,
     requiredFirstReadPath: 'agents/dispatcher/AGENTS.md',
     requireComplexity: false,
+    productiveProgress: {
+      activationReadSuffix: 'pi-dispatcher-context.json',
+      actionTools: ['submit_result'],
+      controlTools: ['set_response_budget'],
+    },
     prompt: promptBuilders.dispatcher,
   },
   triage: {
@@ -200,6 +205,13 @@ export const STAGES = Object.freeze({
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     boundedDirectBash: true,
+    singleUseTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'write', 'submit_result'],
+      controlTools: ['set_response_budget', 'subagents_enable'],
+    },
     prompt: promptBuilders.implementer,
   },
 });

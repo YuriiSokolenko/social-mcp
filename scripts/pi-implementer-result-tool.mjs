@@ -32,7 +32,7 @@ export default function (pi) {
       limitations: Type.Optional(Type.String()),
     }),
     customType: 'implementer-result',
-    nudgeText: 'Repository state is authoritative. If the initial prompt says restored work, call submit_result({}) immediately; runtime derives its publication metadata after validation. Resumed checkpoint/worktree changes are local in-progress work, not evidence about latest dev. For fresh work, if the exact requested end state exists in latest dev, call submit_result with already_satisfied: true and changes: []. Otherwise implement the smallest real diff and submit it.',
+    nudgeText: 'Productive action is required now. Do not continue free-form analysis. For restored work call submit_result({}) immediately. For fresh work call edit/write now when a change is required, or submit_result with already_satisfied: true and changes: [] only when latest dev already contains the exact requested end state. If exactly one concrete missing fact blocks a safe action, use need_more_evidence once, gather that one fact, then act.',
     successText: 'SUCCESS. Latest dev is integrated and final checks pass. Implementation result recorded. Stop now.',
     execute: async (params) => {
       integrateLatestDev({

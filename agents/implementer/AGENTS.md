@@ -57,6 +57,20 @@ Once the next repository mutation is known and enough evidence exists, call `edi
 
 For fresh work, do not modify repository files before preparation.
 
+### Productive-progress protocol
+
+The runtime enforces execution as a state machine rather than a turn counter.
+
+- After successful `prepare_implementation`, exactly one evidence action is permitted immediately.
+- An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, `trivial_repo_lookup`, scout/research delegation, or a bounded diagnostic command.
+- As soon as one evidence action is requested, exploration closes again. The next substantive tool must be `edit`, `write`, or `submit_result`.
+- If one concrete missing fact still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one further evidence action, after which action is required again.
+- Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion. Repeating the same blocker is runtime-blocked.
+- `set_response_budget` and the one-time `subagents_enable` control action do not consume an evidence permit.
+- Prefer completing `evidence → edit/write` in the same model response whenever the evidence is sufficient.
+
+This protocol deliberately permits long/complex tasks without an arbitrary turn quota while preventing open-ended exploration.
+
 The initial prompt already contains the relevant subagent catalog. Do not call `subagent(action:"list")`. If later delegation is actually needed and the generic tool is hidden, call `subagents_enable` once and then call the named agent directly.
 
 ## Repository access routing
@@ -126,19 +140,23 @@ If evidence shows the **exact requested end state already exists in latest dev**
 
 For fresh work with a known target, prefer:
 
-`loaded contract → prepare_implementation → known-path reads as needed → edit/write → submit_result`
+`loaded contract → prepare_implementation → read → edit/write → submit_result`
+
+If one more known fact is required after that read:
+
+`... → read → need_more_evidence → one evidence action → edit/write → submit_result`
 
 If a fresh trivial task has an unknown target:
 
-`loaded contract → prepare_implementation → trivial_repo_lookup → read target as needed → edit/write → submit_result`
+`loaded contract → prepare_implementation → trivial_repo_lookup → edit/write`
 
 If literal discovery is needed:
 
-`loaded contract → prepare_implementation → repo_search → read discovered paths → edit/write → submit_result`
+`loaded contract → prepare_implementation → repo_search → need_more_evidence → read discovered path → edit/write`
 
-If deterministic search and direct reads still leave the next safe action genuinely unknown:
+If deterministic search still leaves one concrete semantic blocker:
 
-`loaded contract → prepare_implementation → repo_search if useful → one compact evidence-gathering scout → edit/write → submit_result`
+`... → repo_search → need_more_evidence → one compact scout → edit/write`
 
 For restored work, prefer:
 

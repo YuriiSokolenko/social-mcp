@@ -97,6 +97,17 @@ export class ProgressController {
     this.delegatedTools = new Set(config.delegatedTools ?? []);
     this.delegationTool = config.delegationTool ?? 'subagent';
     this.boundedDirectBash = config.boundedDirectBash === true;
+    this.singleUseTools = new Set(config.singleUseTools ?? []);
+    this.usedSingleUseTools = new Set();
+
+    this.productiveProgress = config.productiveProgress ?? null;
+    this.productiveState = this.productiveProgress?.startState ?? 'inactive';
+    this.productiveActivationTool = this.productiveProgress?.activationTool ?? null;
+    this.productiveActivationReadSuffix = this.productiveProgress?.activationReadSuffix ?? null;
+    this.productiveBlockerTool = this.productiveProgress?.blockerTool ?? null;
+    this.productiveActionTools = new Set(this.productiveProgress?.actionTools ?? []);
+    this.productiveControlTools = new Set(this.productiveProgress?.controlTools ?? []);
+    this.lastEvidenceRequestSignature = null;
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
     if (this.fixedMaxTokens && (!Number.isSafeInteger(this.fixedMaxTokens) || this.fixedMaxTokens < 1)) {
@@ -131,6 +142,10 @@ export class ProgressController {
     const previous = this.complexity;
     this.complexity = name;
     return { complexity: name, previous, changed: previous !== name };
+  }
+
+  productiveProgressState() {
+    return this.productiveState;
   }
 
   onTurnStart(turnIndex) {
@@ -188,6 +203,58 @@ export class ProgressController {
       return { block: true, reason: `The main agent must not use ${toolName} directly. Delegate repository inspection, search, diagnostics, and verification through ${this.delegationTool}.` };
     }
 
+    if (this.singleUseTools.has(toolName)) {
+      if (this.usedSingleUseTools.has(toolName)) {
+        return { block: true, reason: `BLOCKED: ${toolName} is single-shot and has already been attempted in this session.` };
+      }
+      this.usedSingleUseTools.add(toolName);
+    }
+
+    if (this.productiveProgress) {
+      const requestedPath = typeof input?.path === 'string' ? input.path : '';
+      const activatesOnRead =
+        this.productiveState === 'inactive' &&
+        this.productiveActivationReadSuffix &&
+        toolName === 'read' &&
+        (requestedPath === this.productiveActivationReadSuffix ||
+          requestedPath.endsWith(`/${this.productiveActivationReadSuffix}`));
+
+      if (activatesOnRead) {
+        this.productiveState = 'action_required';
+      } else if (this.productiveState === 'action_required') {
+        if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+          const blockerSignature = toolCallSignature(toolName, input);
+          if (blockerSignature === this.lastEvidenceRequestSignature) {
+            return {
+              block: true,
+              reason: 'BLOCKED: the same missing-evidence request was already used. Act on the evidence already gathered or state a genuinely new concrete blocker.',
+            };
+          }
+          this.lastEvidenceRequestSignature = blockerSignature;
+          this.productiveState = 'evidence_allowed';
+        } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
+          return {
+            block: true,
+            reason: this.productiveBlockerTool
+              ? `BLOCKED: productive progress requires an action now. ${toolName} did not execute. Use edit/write/submit_result, or call ${this.productiveBlockerTool} with one concrete missing fact to unlock exactly one evidence action.`
+              : `BLOCKED: classification evidence is complete. ${toolName} did not execute. Call submit_result now.`,
+          };
+        }
+      } else if (this.productiveState === 'evidence_allowed') {
+        if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+          return {
+            block: true,
+            reason: 'BLOCKED: one evidence action is already permitted. Execute that evidence action before declaring another blocker.',
+          };
+        }
+        if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
+          // Consume the one evidence permit at call time so parallel exploration
+          // cannot fan out into multiple reads/searches/children in one response.
+          this.productiveState = 'action_required';
+        }
+      }
+    }
+
     if (this.absoluteTurn >= this.turnLimit && !finishTool && !pendingComplexityTransition) {
       return {
         block: true,
@@ -209,6 +276,9 @@ export class ProgressController {
   }
 
   onToolExecutionEnd(toolName, isError) {
+    if (!isError && this.productiveProgress && toolName === this.productiveActivationTool) {
+      this.productiveState = 'evidence_allowed';
+    }
     if (!isError && (PROGRESS_TOOLS.has(toolName) || this.preComplexityTransitionTools.has(toolName))) {
       this.turnMadeProgress = true;
     }

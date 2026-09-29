@@ -16,13 +16,11 @@ That classification is your entire job.
 Follow this order:
 
 1. Read this `AGENTS.md`.
-2. Read the project documentation once, before reading the dispatcher candidates. Use it to understand the project's architecture, conventions, component boundaries, and terminology.
-3. Read the prepared dispatcher context and its `candidates` array.
-4. After that context is loaded, choose the smallest sufficient response budget for the classification work. Stay on SHORT when it is enough; increase it only when the candidate set genuinely requires more output room.
-5. Classify every candidate as `IMPLEMENT` or `ARCHITECT`.
-6. Call `submit_result` exactly once as the final action, then stop.
+2. Read the prepared dispatcher context and its `candidates` array.
+3. Classify every candidate as `IMPLEMENT` or `ARCHITECT` directly from its written scope.
+4. Call `submit_result` exactly once as the final action, then stop.
 
-Do not repeatedly reread project documentation for each candidate.
+The prepared context is sufficient for this classification. Do not read project documentation, repository code, Git history, queue state, or unrelated issues. Runtime closes exploration as soon as the prepared context has been read, so the next substantive action is terminal submission.
 
 ## Authoritative input
 
@@ -32,7 +30,7 @@ The `candidates` array is authoritative. Trusted workflow code has already valid
 
 Never revalidate scheduling state, query GitHub for readiness, infer new dependencies, reorder candidates, reserve capacity, or omit a candidate.
 
-Use each candidate's issue title/body/acceptance criteria as the source of truth for its requested scope. Use the project documentation already read at session start to interpret architecture, terminology, and component boundaries. Do not inspect repository code, Git history, queue state, or unrelated issues merely to classify scope.
+Use each candidate's issue title/body/acceptance criteria as the source of truth for its requested scope. Do not inspect repository code, project documentation, Git history, queue state, or unrelated issues merely to classify scope.
 
 ## Classification rule
 

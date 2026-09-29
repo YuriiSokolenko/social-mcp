@@ -73,6 +73,77 @@ test('implementer exposes one runtime-owned preparation action before repository
   assert.equal(state.checkToolCall('subagent', { agent: 'scout', async: false }), undefined);
 });
 
+test('single-shot tools cannot be retried after the first accepted call', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    singleUseTools: ['prepare_implementation'],
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  assert.match(state.checkToolCall('prepare_implementation', {}).reason, /single-shot/);
+});
+
+test('productive progress requires action after one evidence action', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'write', 'submit_result'],
+      controlTools: ['set_response_budget', 'subagents_enable'],
+    },
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('normal');
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(state.checkToolCall('read', { path: 'src/b.py' }).reason, /productive progress requires an action/);
+  assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
+
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'exact helper signature',
+    reason: 'required to preserve the existing call shape',
+  }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('subagents_enable', {}), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('repo_search', { query: 'helper' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.match(state.checkToolCall('need_more_evidence', {
+    missing: 'exact helper signature',
+    reason: 'required to preserve the existing call shape',
+  }).reason, /same missing-evidence request/);
+  assert.equal(state.checkToolCall('write', { path: 'src/new.py' }), undefined);
+  assert.equal(state.checkToolCall('submit_result', {}), undefined);
+});
+
+test('dispatcher closes exploration after prepared context is loaded', () => {
+  const state = controller({
+    requiredFirstReadPath: 'agents/dispatcher/AGENTS.md',
+    productiveProgress: {
+      activationReadSuffix: 'pi-dispatcher-context.json',
+      actionTools: ['submit_result'],
+      controlTools: ['set_response_budget'],
+    },
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('read', { path: 'agents/dispatcher/AGENTS.md' }), undefined);
+  assert.equal(state.checkToolCall('read', { path: '/tmp/pi-dispatcher-context.json' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(state.checkToolCall('read', { path: 'README.md' }).reason, /classification evidence is complete/);
+  assert.equal(state.checkToolCall('set_response_budget', { level: 'short', reason: 'submit' }), undefined);
+  assert.equal(state.checkToolCall('submit_result', { classifications: [] }), undefined);
+});
+
 test('runtime-owned preparation delegates structured planner then classifier', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
@@ -87,6 +158,8 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
   assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
+  assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
+  assert.match(runtime, /productiveProgressState\(\)/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
   assert.match(runtime, /origin\/dev only/);
@@ -363,6 +436,12 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').complexityClassifierTimeoutMs, 120000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
+  assert.deepEqual(stageConfig('implementer').singleUseTools, ['prepare_implementation']);
+  assert.equal(stageConfig('implementer').productiveProgress.activationTool, 'prepare_implementation');
+  assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
+  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['edit', 'write', 'submit_result']);
+  assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
+  assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
   assert.equal(stageConfig('implementer').directReadMaxLines, undefined);
   assert.equal(stageConfig('implementer').directReadCalls, undefined);
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
@@ -421,6 +500,8 @@ test('stage configuration owns every model prompt', () => {
     assert.doesNotMatch(resumedPrompt, /For fresh work after preparation/);
     assert.match(stagePrompt('implementer', env), /Complexity alone never requires delegation/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
+    assert.match(stagePrompt('dispatcher', env), /prepared context is sufficient and authoritative/i);
+    assert.doesNotMatch(stagePrompt('dispatcher', env), /Read the project documentation once/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

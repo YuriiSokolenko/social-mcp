@@ -228,7 +228,15 @@ export default function (pi) {
     fs.statSync(resumePatch).size > 0
   );
   const controller = new ProgressController(
-    resumedImplementer ? { ...config, requireComplexity: false } : config
+    resumedImplementer
+      ? {
+          ...config,
+          requireComplexity: false,
+          productiveProgress: config.productiveProgress
+            ? { ...config.productiveProgress, startState: 'action_required' }
+            : null,
+        }
+      : config
   );
 
   async function applyBudget(level, ctx) {
@@ -328,6 +336,27 @@ export default function (pi) {
     });
   }
 
+  if (config.productiveProgress?.blockerTool) {
+    pi.registerTool({
+      name: config.productiveProgress.blockerTool,
+      label: 'Request one evidence action',
+      description: 'Use only when one concrete missing fact prevents the next edit/write/submit action. This unlocks exactly one evidence-gathering tool call; after that call productive action is required again.',
+      parameters: Type.Object({
+        missing: Type.String({ minLength: 1, maxLength: 300 }),
+        reason: Type.String({ minLength: 1, maxLength: 500 }),
+      }),
+      async execute(_toolCallId, params) {
+        return {
+          content: [{
+            type: 'text',
+            text: `One evidence action unlocked for: ${params.missing}. After that evidence call, edit/write/submit_result is required again.`,
+          }],
+          details: params,
+        };
+      },
+    });
+  }
+
   let trivialLookupUsed = false;
   if (stage === 'implementer') {
     pi.registerTool({
@@ -397,6 +426,7 @@ export default function (pi) {
       stage,
       budget: controller.fixedMaxTokens ? 'fixed' : controller.turnLevel,
       maxTokens: controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+      productiveState: controller.productiveProgressState(),
     })}`);
   });
 
@@ -415,6 +445,7 @@ export default function (pi) {
       maxTokens: next.maxTokens,
       explicit: next.explicit === true,
       preservedForToolTurn: next.preservedForToolTurn === true,
+      productiveState: controller.productiveProgressState(),
     })}`);
   });
 }
