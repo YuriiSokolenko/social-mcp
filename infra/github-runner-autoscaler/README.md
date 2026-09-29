@@ -135,3 +135,58 @@ Run the focused manager checks without contacting GitHub or Docker:
 ```bash
 bash tests/test_runner_autoscaler.sh
 ```
+
+## Local Zoekt index for Pi Implementer
+
+The optional indexed search service runs on the N150 host from
+`/home/yurasik/zoekt-social-mcp`. Its persistent index is in `index/`, and its
+local Git mirror is in `mirror/`. It indexes only the public `dev` branch
+of `YuriiSokolenko/social-mcp`. The Zoekt name is pinned by `repo.meta.json`.
+The webserver uses upstream `sourcegraph/zoekt`, enables the JSON API with
+`-rpc`, and publishes port 6070 on `127.0.0.1` only. Pi workers use host
+networking, so their `http://127.0.0.1:6070` reaches the service without
+publishing it to the LAN or internet.
+
+From a fresh checkout on N150, copy `infra/zoekt/compose.yaml`,
+`infra/zoekt/update-index.sh`, and `infra/zoekt/repo.meta.json` into
+`/home/yurasik/zoekt-social-mcp/`, then run:
+
+```bash
+cd /home/yurasik/zoekt-social-mcp
+chmod 750 update-index.sh
+./update-index.sh
+docker compose up -d
+```
+
+Add these two lines to the `yurasik` user's crontab (`crontab -e`) to schedule
+updates at boot and every 15 minutes:
+
+```cron
+@reboot /home/yurasik/zoekt-social-mcp/update-index.sh >> /home/yurasik/zoekt-social-mcp/update.log 2>&1
+*/15 * * * * /home/yurasik/zoekt-social-mcp/update-index.sh >> /home/yurasik/zoekt-social-mcp/update.log 2>&1
+```
+
+The updater fetches
+only `refs/heads/dev` and runs Zoekt's incremental Git indexer with ctags
+enabled. A failed or stopped Zoekt service does not block runner creation.
+The Pi manager passes `PI_ZOEKT_URL`, `PI_ZOEKT_REPOSITORY`, and
+`PI_ZOEKT_TIMEOUT_MS` to Pi workers; the general CI pool receives none of them.
+
+Health and search checks on N150:
+
+```bash
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"Q":"content:\"Threads\""}' http://127.0.0.1:6070/api/search
+docker compose ps
+docker stats social-mcp-zoekt --no-stream
+```
+
+To update manually, run `./update-index.sh`. To stop Zoekt fully, remove the
+two scheduled lines from `crontab -e` and run `docker compose down`. To start
+it again, run `./update-index.sh`, `docker compose up -d`, and restore those two
+crontab lines. Docker's `restart: unless-stopped` starts the webserver after
+host reboot. For index corruption, stop the service, remove the `.zoekt` shard
+files from `index/`, run the updater, and start the service again. Normal
+updates never delete the index. `indexed_repo_search`
+is discovery against indexed `dev`; `repo_search` and `read` remain authoritative
+for the current worktree, including after edits.

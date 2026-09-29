@@ -104,7 +104,7 @@ test('productive progress allows a bounded initial evidence sequence before acti
   state.onToolExecutionEnd('prepare_implementation', false);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
 
-  assert.equal(state.checkToolCall('repo_search', { kind: 'content', query: 'target' }), undefined);
+  assert.equal(state.checkToolCall('indexed_repo_search', { kind: 'content', query: 'target' }), undefined);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');

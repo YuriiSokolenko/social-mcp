@@ -192,7 +192,9 @@ This document is the human- and agent-readable text map of the current Social MC
        |
        +--> known path ......................... read directly
        |
-       +--> unknown literal path/content ....... repo_search
+       +--> initial path/content/symbol discovery
+       |      +--> indexed_repo_search (Zoekt, when configured)
+       |      +--> repo_search (current worktree / fallback)
        |
        +--> semantic missing fact ............... scout/advisor
        |
