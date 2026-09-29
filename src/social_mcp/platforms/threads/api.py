@@ -121,11 +121,6 @@ class ThreadsApiError(Exception):
 
 
 def _clamp_limit(limit: int) -> int:
-    """Validate and clamp a pagination limit to the supported bounds.
-
-    Booleans and non-integer values are rejected; valid integer limits are
-    clamped to the supported minimum/maximum bounds.
-    """
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise ThreadsApiError(f"limit must be an integer, got {type(limit).__name__}")
     return max(MIN_LIMIT, min(MAX_LIMIT, limit))
@@ -219,12 +214,6 @@ class ThreadsApiClient:
             self._platform_transport = None
 
     def _effective_transport(self) -> ThreadsApiTransport:
-        """Return the transport used for API calls.
-
-        Returns the injected transport when one was provided to the client;
-        otherwise lazily creates and reuses the platform transport, which
-        provides retry, rate-limit and timeout handling for real API calls.
-        """
         if self._transport is not None:
             return self._transport
         if self._platform_transport is None:
