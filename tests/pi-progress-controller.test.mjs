@@ -195,6 +195,32 @@ test('trivial productive progress treats LSP cold start as control and requires 
   }), undefined);
 });
 
+test('normal semantic lookup closes evidence after the authoritative source read', () => {
+  const state = controller({
+    requireComplexity: true,
+    preComplexityAllowedTools: ['prepare_implementation'],
+    preComplexityTransitionTools: ['prepare_implementation'],
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 6,
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      controlTools: ['lsp_start_server'],
+    },
+  });
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('normal');
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_check_active' }), undefined);
+  state.onToolExecutionEnd('lsp_find_symbol', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/social_mcp/platforms/reliability.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(state.checkToolCall('read', { path: 'src/other.py' }).reason, /productive progress requires an action/);
+});
+
 test('productive progress allows a bounded initial evidence sequence before action', () => {
   const state = controller({
     requireComplexity: true,
