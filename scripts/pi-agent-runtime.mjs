@@ -4,7 +4,12 @@ import { randomUUID } from 'node:crypto';
 
 import { Type } from 'typebox';
 
-import { ProgressController, nextActionRequiredProseOnlyTurns, nextActionResponseCap } from './pi-common/progress-controller.mjs';
+import {
+  ProgressController,
+  actionRequiredToolNames,
+  nextActionRequiredProseOnlyTurns,
+  nextActionResponseCap,
+} from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
@@ -205,11 +210,35 @@ export default function (pi) {
   let appliedActionCap = 0;
   let actionTurnAttemptedTool = false;
   let actionRequiredProseOnlyTurns = 0;
+  let unrestrictedActiveTools = null;
 
   function syncProductiveState() {
     const state = controller.productiveProgressState();
     process.env.PI_PRODUCTIVE_STATE = state;
     return state;
+  }
+
+  function syncActionToolSurface(productiveState) {
+    if (stage !== 'implementer' || !config.productiveProgress) return;
+    const actionRequired =
+      productiveState === 'action_required' ||
+      productiveState === 'recovery_action_required';
+
+    if (actionRequired) {
+      if (unrestrictedActiveTools == null) unrestrictedActiveTools = pi.getActiveTools();
+      const restricted = actionRequiredToolNames(unrestrictedActiveTools, {
+        actionTools: config.productiveProgress.actionTools,
+        controlTools: config.productiveProgress.controlTools,
+        blockerTool: config.productiveProgress.blockerTool,
+      });
+      pi.setActiveTools(restricted);
+      return;
+    }
+
+    if (unrestrictedActiveTools != null) {
+      pi.setActiveTools(unrestrictedActiveTools);
+      unrestrictedActiveTools = null;
+    }
   }
 
   async function applyBudget(level, ctx) {
@@ -232,6 +261,7 @@ export default function (pi) {
 
   pi.on('session_start', async (_event, ctx) => {
     await applyBudget('short', ctx);
+    syncActionToolSurface(syncProductiveState());
   });
 
   if (controller.requireComplexity && config.implementationPlannerAgent) {
@@ -495,13 +525,15 @@ export default function (pi) {
   pi.on('turn_start', (event) => {
     actionTurnAttemptedTool = false;
     controller.onTurnStart(event.turnIndex);
-    syncProductiveState();
+    const productiveState = syncProductiveState();
+    syncActionToolSurface(productiveState);
     console.log(`PI_BUDGET ${JSON.stringify({
       turn: event.turnIndex,
       stage,
       budget: controller.fixedMaxTokens ? 'fixed' : controller.turnLevel,
-      maxTokens: controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
-      productiveState: controller.productiveProgressState(),
+      maxTokens: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+      productiveState,
+      actionCapApplied: appliedActionCap > 0,
     })}`);
   });
 
@@ -522,13 +554,15 @@ export default function (pi) {
       pendingMutationSnapshot = null;
     }
     controller.onToolExecutionEnd(event.toolName, event.isError);
-    syncProductiveState();
+    const productiveState = syncProductiveState();
+    syncActionToolSurface(productiveState);
   });
 
   pi.on('turn_end', async (event, ctx) => {
     const outputTokens = Number(event.message?.usage?.output || 0);
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
+    syncActionToolSurface(productiveState);
     const actionCap = Number(config.productiveProgress?.actionResponseMaxTokens ?? 0);
     const actionRetryCap = Number(
       config.productiveProgress?.actionResponseRetryMaxTokens ?? actionCap
@@ -577,15 +611,20 @@ export default function (pi) {
       const directive = stage === 'implementer'
         ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result immediately. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
         : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
-      pi.sendMessage({
-        customType: 'pi-action-required',
-        content: directive,
-        display: false,
-        details: { stage, productiveState },
-      }, {
-        deliverAs: 'steer',
-        triggerTurn: true,
-      });
+      if (stage === 'implementer' && actionRequiredProseOnlyTurns > 0) {
+        console.log('PI_ACTION_REQUIRED_ESCALATE: prose-only turn; injecting user-level runtime directive');
+        pi.sendUserMessage(directive);
+      } else {
+        pi.sendMessage({
+          customType: 'pi-action-required',
+          content: directive,
+          display: false,
+          details: { stage, productiveState },
+        }, {
+          deliverAs: 'steer',
+          triggerTurn: true,
+        });
+      }
     }
 
     console.log(`PI_BUDGET_NEXT ${JSON.stringify({
