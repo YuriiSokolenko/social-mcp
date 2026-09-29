@@ -108,6 +108,7 @@ export class ProgressController {
     this.productiveActionTools = new Set(this.productiveProgress?.actionTools ?? []);
     this.productiveControlTools = new Set(this.productiveProgress?.controlTools ?? []);
     this.lastEvidenceRequestSignature = null;
+    this.evidenceUnlockUsedSinceProgress = false;
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
     if (this.fixedMaxTokens && (!Number.isSafeInteger(this.fixedMaxTokens) || this.fixedMaxTokens < 1)) {
@@ -223,14 +224,21 @@ export class ProgressController {
         this.productiveState = 'action_required';
       } else if (this.productiveState === 'action_required') {
         if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+          if (this.evidenceUnlockUsedSinceProgress) {
+            return {
+              block: true,
+              reason: 'BLOCKED: an extra evidence permit was already used since the last successful edit/write/submit_result. Act on the evidence already gathered before requesting more.',
+            };
+          }
           const blockerSignature = toolCallSignature(toolName, input);
           if (blockerSignature === this.lastEvidenceRequestSignature) {
             return {
               block: true,
-              reason: 'BLOCKED: the same missing-evidence request was already used. Act on the evidence already gathered or state a genuinely new concrete blocker.',
+              reason: 'BLOCKED: the same missing-evidence request was already used. Act on the evidence already gathered before requesting more.',
             };
           }
           this.lastEvidenceRequestSignature = blockerSignature;
+          this.evidenceUnlockUsedSinceProgress = true;
           this.productiveState = 'evidence_allowed';
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
@@ -278,6 +286,11 @@ export class ProgressController {
   onToolExecutionEnd(toolName, isError) {
     if (!isError && this.productiveProgress && toolName === this.productiveActivationTool) {
       this.productiveState = 'evidence_allowed';
+      this.evidenceUnlockUsedSinceProgress = false;
+    }
+    if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
+      this.evidenceUnlockUsedSinceProgress = false;
+      if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
     }
     if (!isError && (PROGRESS_TOOLS.has(toolName) || this.preComplexityTransitionTools.has(toolName))) {
       this.turnMadeProgress = true;
