@@ -109,6 +109,28 @@ test('safe_edit rejects stale markers and invalid ranges without changing the fi
   }
 });
 
+test('safe_edit refuses symbolic-link targets', () => {
+  const dir = tempRepo();
+  try {
+    const real = path.join(dir, 'real.txt');
+    const link = path.join(dir, 'link.txt');
+    fs.writeFileSync(real, 'real\n');
+    fs.symlinkSync(real, link);
+    assert.throws(
+      () => safeEdit(dir, {
+        path: 'link.txt',
+        operation: 'replace',
+        start_line: 1,
+        text: 'changed',
+      }),
+      /refuses symbolic-link targets/,
+    );
+    assert.equal(fs.readFileSync(real, 'utf8'), 'real\n');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('safe_edit cannot escape the current worktree', () => {
   const dir = tempRepo();
   const outside = path.join(path.dirname(dir), 'pi-safe-edit-outside.txt');
