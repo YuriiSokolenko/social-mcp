@@ -58,7 +58,7 @@ docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150
 ```
 
 The Pi worker tag `0.88.0-lsp` pins `pi-mcp-adapter@3.2.0`,
-`lsp-mcp-server@1.1.25`, BasedPyright `1.40.1`, and the official JetBrains
+`lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, BasedPyright `1.40.1`, and the official JetBrains
 Kotlin LSP `263.4702.0`. The general runner image and the base runner image
 remain on their existing tags. To roll the Pi pool back, set
 `RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
@@ -210,6 +210,14 @@ The `pi-agent` ephemeral worker image pins `@gitlab/orbit@0.130.0`. Architect an
 After changing the worker image, rebuild it on N150 with the existing image tag, restart the Pi runner manager, and verify a fresh Architect or Implementer job prints only the Orbit version plus the non-sensitive confirmation line. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
 
 Orbit complements the host Zoekt service: Zoekt stays the fast shared `dev` text index; Orbit supplies per-job structural code context for the current checkout/worktree.
+
+## Local Git history context for Pi
+
+The Pi worker image also pins `git-context-mcp@1.0.0` and exposes it through the project `.mcp.json` as a lazy local stdio server. It reads the job checkout and `.git` directly; no separate service or container is required. The exposed tools are `blame_context`, `commit_story`, `file_history`, `search_commits`, and `file_contributors`.
+
+Use this layer only for historical intent/provenance questions that current source, RepoMap, Zoekt, LSP, and Orbit do not answer: why a bounded line range exists, what one commit changed, or how one known file evolved. Current source remains authoritative and must still be verified with `read` before mutation.
+
+The upstream server can enrich local history with PR/issue metadata through the `gh` CLI. This integration intentionally does not add or forward a GitHub credential on its own; without authenticated `gh`, the local Git portion still works and PR/issue enrichment is skipped. This keeps the initial rollout read-only and avoids widening the Implementer credential surface.
 
 ## Pi RepoMap navigation context
 

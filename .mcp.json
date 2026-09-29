@@ -23,6 +23,28 @@
         "lsp_call_hierarchy",
         "lsp_smart_search"
       ]
+    },
+    "git-context": {
+      "command": "git-context-mcp",
+      "lifecycle": "lazy",
+      "idleTimeout": 30,
+      "requestTimeoutMs": 60000,
+      "exposeResources": false,
+      "toolPrefix": "none",
+      "includeTools": [
+        "blame_context",
+        "commit_story",
+        "file_history",
+        "search_commits",
+        "file_contributors"
+      ],
+      "directTools": [
+        "blame_context",
+        "commit_story",
+        "file_history",
+        "search_commits",
+        "file_contributors"
+      ]
     }
   }
 }
