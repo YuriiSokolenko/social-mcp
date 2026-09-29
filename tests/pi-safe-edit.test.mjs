@@ -74,6 +74,40 @@ test('safe_edit preserves CRLF and final-newline state while replacing a range',
   }
 });
 
+test('safe_edit insert_before preserves absence of final newline and rejects end_line for inserts', () => {
+  const dir = tempRepo();
+  try {
+    const file = path.join(dir, 'sample.txt');
+    fs.writeFileSync(file, 'alpha\nbeta');
+
+    const result = safeEdit(dir, {
+      path: 'sample.txt',
+      operation: 'insert_before',
+      start_line: 2,
+      expected_marker: 'beta',
+      text: 'middle',
+    });
+
+    assert.equal(result.changed_start_line, 2);
+    assert.equal(result.changed_end_line, 2);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'alpha\nmiddle\nbeta');
+    assert.equal(fs.readFileSync(file, 'utf8').endsWith('\n'), false);
+
+    assert.throws(
+      () => safeEdit(dir, {
+        path: 'sample.txt',
+        operation: 'insert_after',
+        start_line: 1,
+        end_line: 2,
+        text: 'ambiguous',
+      }),
+      /end_line is supported only for replace/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('safe_edit rejects stale markers and invalid ranges without changing the file', () => {
   const dir = tempRepo();
   try {
