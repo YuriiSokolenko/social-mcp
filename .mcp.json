@@ -9,6 +9,7 @@
       "toolPrefix": "none",
       "includeTools": [
         "lsp_server_status",
+        "lsp_start_server",
         "lsp_goto_definition",
         "lsp_find_references",
         "lsp_find_implementations",
@@ -18,6 +19,7 @@
       ],
       "directTools": [
         "lsp_server_status",
+        "lsp_start_server",
         "lsp_goto_definition",
         "lsp_find_references",
         "lsp_find_implementations",
