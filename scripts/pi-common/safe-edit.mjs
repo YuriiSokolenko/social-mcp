@@ -48,7 +48,7 @@ function atomicWrite(absolutePath, content) {
     `.${path.basename(absolutePath)}.pi-safe-edit-${process.pid}-${Date.now()}`,
   );
   try {
-    fs.writeFileSync(tempPath, content, { encoding: 'utf8', mode: stat.mode });
+    fs.writeFileSync(tempPath, content, { encoding: 'utf8', mode: stat.mode & 0o777 });
     fs.renameSync(tempPath, absolutePath);
   } finally {
     fs.rmSync(tempPath, { force: true });
@@ -63,6 +63,7 @@ export function safeEdit(root, params) {
 
   const absolutePath = resolveWorktreeFile(root, params.path);
   const source = fs.readFileSync(absolutePath, 'utf8');
+  if (source.length === 0) throw new Error('safe_edit requires an existing target line; use write for an empty file');
   const { lines, newline, hasFinalNewline } = splitLogicalLines(source);
   if (lines.length === 0) {
     throw new Error('safe_edit requires an existing target line; use write for an empty file');
