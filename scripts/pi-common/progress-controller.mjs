@@ -133,6 +133,15 @@ export class ProgressController {
       Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
       'productiveProgress.initialEvidenceBudget',
     );
+    this.productiveEvidenceBudgetByComplexity = Object.fromEntries(
+      Object.entries(this.productiveProgress?.initialEvidenceBudgetByComplexity ?? {}).map(([complexity, value]) => [
+        complexity,
+        positiveInteger(
+          Number(value),
+          `productiveProgress.initialEvidenceBudgetByComplexity.${complexity}`,
+        ),
+      ]),
+    );
     this.productiveEvidenceRemaining = 0;
     this.lastEvidenceRequestSignature = null;
     this.evidenceUnlockUsedSinceProgress = false;
@@ -178,6 +187,11 @@ export class ProgressController {
 
   productiveProgressState() {
     return this.productiveState;
+  }
+
+  productiveInitialEvidenceBudgetForComplexity() {
+    return this.productiveEvidenceBudgetByComplexity[this.complexity] ??
+      this.productiveInitialEvidenceBudget;
   }
 
   onTurnStart(turnIndex) {
@@ -377,7 +391,7 @@ export class ProgressController {
       this.evidenceUnlockUsedSinceProgress = true;
     }
     if (!isError && this.productiveProgress && toolName === this.productiveActivationTool) {
-      this.productiveEvidenceRemaining = this.productiveInitialEvidenceBudget;
+      this.productiveEvidenceRemaining = this.productiveInitialEvidenceBudgetForComplexity();
       this.productiveState = 'evidence_allowed';
       this.evidenceUnlockUsedSinceProgress = false;
     }
