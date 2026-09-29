@@ -6,19 +6,6 @@ function loadAgentContract(name, env = process.env) {
   return fs.readFileSync(path.join(workspace, 'agents', name, 'AGENTS.md'), 'utf8').trim();
 }
 
-const IMPLEMENTER_SUBAGENT_CATALOG = `Available delegated agents (already known; do not call subagent(action:"list")):
-- implementation-planner — creates the startup implementation plan for fresh work from issue title/body; prepare_implementation invokes it.
-- complexity-classifier — classifies fresh issue + prepared plan; prepare_implementation invokes it.
-- scout — fast repository reconnaissance for unknown paths, symbols, usages, docs, logs, or broader evidence.
-- delegate — lightweight focused helper for a narrow delegated question.
-- reviewer — independent read-only review of code, diffs, plans, or evidence.
-- oracle — high-context read-only advisor for difficult consistency or architecture decisions.
-- researcher — focused web research when external/current evidence is genuinely required.
-- evidence-auditor — checks whether research claims are supported by sources.
-- worker — implementation specialist; do not use it as mutation owner in Implementer because main owns edits and submission.
-
-The generic subagent tool may be hidden until subagents_enable is called. If delegation is actually needed, enable it once and then call the named agent directly. Never spend a turn listing agents.`;
-
 const promptBuilders = Object.freeze({
   architect(env) {
     const root = env.RUNNER_TEMP;
@@ -82,33 +69,18 @@ Call submit_result exactly once as your last action. Do not modify repository or
     const resumeNotice = resumed
       ? `Runtime resume state: restored ${resumeSource} work is already in this worktree. The operating contract is already loaded in this prompt. Call \`submit_result\` with no arguments immediately. Do not call \`prepare_implementation\` and do not inspect, summarize, or plan the restored files first. If \`submit_result\` fails, fix only the concrete reported problem and retry. Do not pass \`already_satisfied\` for restored work; if saved work is already contained in latest dev, \`submit_result\` detects that zero-diff state and completes it automatically.\n\n`
       : '';
-    const startupInstruction = resumed
-      ? 'This is restored work. Call `submit_result` with no arguments as your first tool action. Runtime validation and trusted repository state provide the publication metadata.'
-      : `This is fresh work. Runtime created this worktree directly from the latest fetched origin/dev${freshBaseCommit ? ` at commit ${freshBaseCommit}` : ''}, with no saved issue work applied. Until the first successful safe_edit/edit/write, a direct read of the current worktree is latest-dev evidence; do not spend tools re-proving HEAD/origin/dev provenance. Call \`prepare_implementation\` exactly once as your first tool action. The runtime sends only this issue title/body to the permanent \`implementation-planner\` subagent (768 max output tokens), then sends issue + returned plan to the separate \`complexity-classifier\`. The main agent receives only the prepared plan and complexity.`;
     const executionGuidance = resumed
-      ? `Restored work path:
-- Call \`submit_result\` with no arguments before inspecting restored files; it is both validation and submission.
-- Runtime derives restored-work publication metadata from the trusted issue context and validated diff.
-- If it reports a concrete failure, fix only that failure and retry.
-- Never pass \`already_satisfied\` for restored work. If replayed saved work has become a zero diff against latest dev, \`submit_result\` records it as already satisfied automatically.`
-      : `For fresh work after preparation:
-- The worktree started as an exact checkout of latest fetched \`origin/dev\`. Before the first successful \`safe_edit\`/\`edit\`/\`write\`, direct reads of the current worktree are authoritative latest-dev evidence. Do not run Git commands merely to prove that provenance again.
-- When the issue or prepared plan already names a source-code symbol, use semantic LSP lookup first. For a fresh name-only lookup when the language is explicit, call \`lsp_start_server\` once with server id \`python\` or \`kotlin\` and the exact absolute \`workspace_root: "${worktreeRoot}"\`, then \`lsp_find_symbol\`; this cold-start control action does not consume evidence budget. Do not call \`lsp_server_status\` first and do not precede this with RepoMap/Zoekt/repo_search/Git Context/scout. If language is unknown, use deterministic discovery to resolve the language rather than issuing a guaranteed-cold name-only query. If file + position are already known, use the narrow position-based LSP tool directly; it auto-starts the routed server.
-- Read already-known target files directly. There is no runtime line-count or per-task file-count limit for known-path reads.
-- After a mutation, the main agent may run bounded \`git diff\`/\`git status\` checks for known paths directly as needed.
-- Use \`repo_search\` for cheap deterministic literal path/content discovery in the current tracked worktree when the source symbol/path is not already known, before launching a scout.
-- If complexity is \`trivial\` and the path is unknown, call \`trivial_repo_lookup\` exactly once; it inspects \`origin/dev\` only and excludes resumed/current-worktree changes. Do not enable subagents for that lookup.
-- Delegate to \`scout\` only when deterministic search plus direct reads are insufficient to decide the next safe action: semantic comparison, logs/diagnostics/history, or other evidence requiring interpretation. Complexity alone never requires delegation.
-- Direct \`grep\`, \`find\`, and \`ls\` remain blocked; use \`repo_search\` instead of simulating search through guessed reads.
-- For scout requests, use \`async: false\`, ask for the first sufficient answer, and require compact fixed-shape output.
-- Productive-progress runtime permits 2 bounded evidence actions for trivial work and 6 for normal/complex work after preparation. Use them as one narrow locate/read/anchor chain, then \`safe_edit\`, \`edit\`, \`write\`, or \`submit_result\`; if one concrete fact still blocks safe action after that window, call \`need_more_evidence\` to unlock exactly one further evidence action.`;
+      ? `Runtime context: restored work is already present. Follow the embedded contract's restored-work path and submit immediately.`
+      : `Runtime context:
+- Fresh worktree base: latest fetched origin/dev${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.
+- LSP workspace root: ${worktreeRoot}.
+- prepare_implementation returns the startup plan and a trivial/nontrivial classification in one structured child call.
+Follow the embedded contract for evidence routing, productive-progress limits, mutation, validation, and submission.`;
     return `The complete Implementer operating contract is embedded below and is authoritative. Do not search for or re-read agents/implementer/AGENTS.md.
 
 <implementer_contract>
 ${contract}
 </implementer_contract>
-
-${startupInstruction}
 
 You are implementing GitHub issue #${issue} in the current repository.
 
@@ -118,15 +90,7 @@ ${title}
 Issue body:
 ${body}
 
-${resumeNotice}Work directly in the checked-out repository, always based on latest dev. dev is the only development base; never treat main as an alternative source tree.
-
-${executionGuidance}
-
-Main owns execution decisions, \`safe_edit\`/\`edit\`/\`write\`, conflict mutations, and \`submit_result\`. Planning and task-level complexity belong to the fresh-work startup subagents. If evidence shows the exact requested end state already exists in latest dev, call \`submit_result\` immediately with \`already_satisfied: true\` and \`changes: []\`. Never pass \`already_satisfied\` for restored work; runtime handles a zero-diff stale restore automatically.
-
-Use the smallest implementation satisfying the issue. \`submit_result\` is both validation and submission; do not independently prove correctness before calling it. Do not commit, push, create PRs, or modify GitHub state. A successful \`submit_result\` is terminal.
-
-${IMPLEMENTER_SUBAGENT_CATALOG}`;
+${resumeNotice}${executionGuidance}`;
   }
 });
 
@@ -204,8 +168,6 @@ export const STAGES = Object.freeze({
     implementationPlannerMaxTokens: 768,
     implementationPlannerStructuredRetry: 1,
     implementationPlannerTimeoutMs: 120000,
-    complexityClassifierAgent: 'complexity-classifier',
-    complexityClassifierTimeoutMs: 120000,
     preComplexityTurnLimit: 4,
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
@@ -219,8 +181,7 @@ export const STAGES = Object.freeze({
       initialEvidenceBudget: 6,
       initialEvidenceBudgetByComplexity: {
         trivial: 2,
-        normal: 6,
-        complex: 6,
+        nontrivial: 6,
       },
       actionResponseMaxTokens: 512,
       actionResponseRetryMaxTokens: 1024,

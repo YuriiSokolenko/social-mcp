@@ -38,7 +38,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `stage-config.mjs` — single source of per-agent runtime defaults and prompt builders (first contract read, turn/repeat limits, complexity mode, bash timeout, fixed token budget, result tool, stage prompt).
 - `repo-search.mjs` — exact literal path/content discovery in the current tracked worktree.
 - `zoekt-search.mjs` — optional read-only Zoekt client for fast indexed `dev` content/path/symbol discovery. The runtime exposes `indexed_repo_search` only when `PI_ZOEKT_URL` is configured; `PI_ZOEKT_REPOSITORY` can scope a shared index and `PI_ZOEKT_TIMEOUT_MS` controls the bounded request timeout.
-- `pi-run-stage.mjs` loads the pinned `pi-repomap` git extension only for Implementer and Architect. RepoMap supplies bounded structural orientation; `.pi/repomap.json` fixes its context budget, while `.pi/cache/` is runtime-only and gitignored. Other stages do not load RepoMap.
+- `pi-run-stage.mjs` loads the pinned `pi-repomap` git extension only for Architect. Implementer uses LSP, indexed/current-worktree search, Orbit, and exact reads instead. `.pi/repomap.json` fixes the Architect map budget, while `.pi/cache/` is runtime-only and gitignored.
 
 ## What does NOT belong here
 

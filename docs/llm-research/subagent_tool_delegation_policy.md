@@ -1,295 +1,102 @@
 # Subagent Tool Delegation Policy
 
-Research baseline: **2026-09-28**. Current runtime policy updated **2026-09-29**.
+Research baseline: **2026-09-28**. Simplified current model: **2026-09-29**.
 
-## Purpose
+This document records the rationale for delegation. It is **not** the normative runtime contract. Current rules live in:
 
-This document records the current Implementer boundary between the main Pi agent, deterministic repository tools, and native subagents.
+- `docs/CI_RULES.md`
+- `agents/implementer/AGENTS.md`
+- `scripts/pi-common/stage-config.mjs`
+- `scripts/pi-common/progress-controller.mjs`
 
-Core principle:
+## Principle
 
-> **Main owns mutations and terminal submission. Evidence gathering is bounded by runtime state, not by an arbitrary number of model turns.**
+> Main owns mutations and terminal submission. Use a child only when deterministic evidence cannot answer the next concrete question cheaply.
 
-Subagent launches have real fixed cost: a new child context, model turns, tool work, and handoff. The goal is not to maximize delegation. The goal is to obtain the minimum missing evidence needed for the next safe product action.
+The goal is not maximal delegation. A child has fixed cost: another context, model calls, tool work, and a handoff.
 
-## Startup planning and complexity
+## Startup
 
-Fresh Implementer work starts from the complete operating contract embedded in the initial prompt. Main must not re-read `agents/implementer/AGENTS.md`.
-
-The first tool action is the runtime-owned `prepare_implementation`.
-
-Runtime then:
-
-1. sends only issue title/body to the permanent `implementation-planner`;
-2. caps the planner at **768 output tokens** and schema-validates its ordered plan;
-3. sends issue title/body plus that plan to the separate `complexity-classifier`;
-4. schema-validates `{ complexity, reason }`;
-5. returns only the prepared plan and classification to main.
-
-`prepare_implementation` is runtime-enforced **single-shot**. Main cannot call the planner or classifier children directly as substitutes.
-
-Complexity remains planning metadata. It does not grant more tool calls, more response budget, or permission for broad exploration.
-
-## Productive-progress state machine
-
-The current runtime no longer permits an open-ended sequence of reads/searches/scouts after preparation.
+Fresh Implementer work starts with one runtime-owned call:
 
 ```text
 prepare_implementation
-        |
-        v
-EVIDENCE_ALLOWED
-        |
-        | 2 bounded actions for trivial; 6 for normal/complex
-        v
-ACTION_REQUIRED
-        |
-        +--> safe_edit / edit / write
-        +--> rollback_last_mutation when applicable
-        +--> submit_result
-        |
-        +--> need_more_evidence({missing, reason})
-                    |
-                    v
-              EVIDENCE_ALLOWED
-                    |
-                    | exactly one evidence action
-                    v
-              ACTION_REQUIRED
+  -> implementation-planner
+  -> { steps, complexity: trivial|nontrivial, reason }
 ```
 
-Each evidence permit is consumed when its tool call is accepted, not when it finishes. The initial allowance is complexity-aware: **2 actions for trivial work and 6 for normal/complex work**. It supports one bounded locate → inspect → anchor chain without reopening exploration indefinitely.
+There is no separate complexity-classifier. Dispatcher already owns IMPLEMENT-vs-ARCHITECT routing, so Implementer needs only the startup evidence class:
 
-### Evidence actions
+- `trivial` -> 2 initial evidence actions;
+- `nontrivial` -> 6 initial evidence actions.
 
-Examples include:
+That class does not alter response budgets, workflow routing, or delegation policy.
 
-- repo-map orientation or one `repomap outline` when the target area is unclear;
-- direct `read` of an already-known path;
-- `indexed_repo_search` for fast literal/path/symbol discovery on indexed `dev`;
-- `repo_search` for deterministic literal path/content discovery in the current worktree;
-- `trivial_repo_lookup` for the special trivial unknown-target path;
-- one scout/research/delegate call when semantic evidence is genuinely required;
-- an allowed bounded diagnostic command.
+## Direct evidence routing
 
-After the complexity-specific initial evidence window is exhausted, main is back in `ACTION_REQUIRED`.
+Use the cheapest sufficient route:
 
-### Concrete blocker escape
+```text
+known source symbol -> semantic LSP -> exact read
+known file/path     -> exact read
+unknown literal/path -> indexed_repo_search or repo_search -> exact read
+structural question -> Orbit -> exact read when source text matters
+history/provenance  -> one narrow Git Context call after current code is known
+hard semantic ambiguity -> one compact scout/advisor call
+```
 
-If the available evidence is insufficient for a safe mutation or submission, main may call:
+RepoMap is Architect-only. Implementer does not load the `pi-repomap` extension.
 
-`need_more_evidence({missing, reason})`
+Main may not use direct `grep`, `find`, or `ls`; deterministic repository search tools cover that role.
 
-The request must name one concrete missing fact and why it blocks the next safe action. Runtime then unlocks exactly one evidence action.
+## Scout
 
-An exact repeated blocker request is rejected. The runtime intentionally does not use another LLM to judge semantic equivalence.
+Use `scout` only when the currently missing fact requires interpretation rather than mechanical lookup, for example:
 
-`set_response_budget` and the one-time `subagents_enable` control action do not consume an evidence permit.
+- several plausible implementations need semantic comparison;
+- a stack trace/log needs analysis;
+- a broad relationship cannot be resolved with LSP, Orbit, or literal search;
+- one specific historical question still blocks the next safe action.
 
-## Keep in the main agent
+Ask one concrete question, request compact output, and stop at the first sufficient answer.
 
-Main retains:
-
-- issue/acceptance-criteria interpretation;
-- execution decisions after the prepared plan;
-- direct reads of already-known paths when an evidence permit is available;
-- deterministic `repo_search`;
-- the special `trivial_repo_lookup` path;
-- `safe_edit` / `edit` / `write`;
-- `rollback_last_mutation` when the latest mutation is proven harmful;
-- conflict-resolution mutations;
-- bounded known-path `git diff` / `git status`;
-- `submit_result`.
-
-Do not use repeated guessed reads as discovery. While the initial complexity-specific allowance still has permits, use them only for directly relevant steps in the same narrow evidence chain. Once that allowance is exhausted, another read/search/scout requires a concrete `need_more_evidence` blocker.
-
-## When to use scout
-
-Use `scout` only when the one missing fact cannot be obtained cheaply with deterministic search or one direct known-path read, for example:
-
-- a conceptual target cannot be identified by literal `repo_search`;
-- several candidates were found and choosing between them requires semantic comparison;
-- usages or related implementations require interpretation;
-- logs, diagnostics, stack traces, or history need analysis;
-- the missing evidence requires a broad repository view rather than a bounded read.
-
-Complexity alone never justifies scout.
-
-A scout request should answer one concrete question and stop at the first sufficient answer. Require compact fixed-shape output; do not ask for whole files or broad dumps.
-
-For a pre-edit scout, prefer asking for:
+For a pre-edit scout, prefer:
 
 1. target path;
-2. a 1-based line/range plus a short marker suitable for `safe_edit`, when line-based mutation fits;
-3. otherwise the exact minimal verbatim `oldText` needed by `edit`;
+2. a 1-based line/range plus a short marker for `safe_edit`;
+3. otherwise the smallest exact `oldText` for `edit`;
 4. one safety constraint, if any.
 
-A scout consumes one evidence permit. If that call exhausts the current allowance, runtime moves to `ACTION_REQUIRED`; otherwise use any remaining permits only for directly relevant evidence needed before the mutation.
+## Productive-progress interaction
 
-## Tool routing constraints
+Evidence is bounded by runtime state, not by a turn count.
 
-When the issue or prepared plan already names a source-code symbol, use semantic LSP first; do not spend RepoMap, Zoekt, Git Context, or scout calls merely rediscovering that symbol. Main may not use direct `grep`, `find`, or `ls`. For non-semantic discovery, prefer indexed search when available and `repo_search` for authoritative current-worktree literal/path discovery.
+After the initial 2/6 evidence allowance, main must mutate or submit. If one concrete missing fact still blocks that action, `need_more_evidence` unlocks exactly one evidence action. One extra unlock is allowed per productive epoch.
 
-Broad main-agent shell access remains blocked. Known-path read-only Git diff/status commands are the intended direct shell exception.
-
-Focused test/lint/type/compile work remains owned by the existing trusted/package workflows and terminal validation path rather than broad ad-hoc shell exploration.
+A successful `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result` resets the epoch according to runtime rules.
 
 ## Ownership
 
 Main owns:
 
-- mutation;
-- conflict resolution;
-- terminal submission.
+- acceptance-criteria interpretation;
+- local plan adaptation;
+- `safe_edit` / `edit` / `write`;
+- rollback/conflict mutations;
+- `submit_result`.
 
-Children do not become mutation owners in the Implementer flow.
-
-- `implementation-planner` plans.
-- `complexity-classifier` classifies.
-- `scout` gathers evidence.
-- `delegate`, `reviewer`, `oracle`, and `researcher` are optional focused advisors/evidence sources when the current blocker genuinely needs them.
-- `worker` is not the mutation owner for Implementer.
-
-Git/GitHub state ownership remains with trusted workflow tooling.
+The planner owns only startup plan + binary startup class. Scout/advisor children own only evidence gathering. They do not become mutation owners.
 
 ## Restored work
 
-Restored checkpoint/issue-branch work does not enter the fresh exploration path.
-
-It starts in `ACTION_REQUIRED` and should call:
-
-`submit_result({})`
-
-immediately.
-
-If submission reports a concrete conflict or validation failure, main fixes only that problem and retries. Restored work must not use `already_satisfied`.
-
-## Response budgets
-
-Selected child agents load `scripts/pi-subagent-response-budget.mjs` and mirror the parent's current per-response ceiling. The implementation planner is separately capped at 768 output tokens.
-
-The normal main response levels remain:
-
-- SHORT: 2048
-- NORMAL: 4096
-- DEEP: 8192
-
-Automatic promotion after hitting a ceiling occurs only when the turn made concrete progress. A reasoning-only ceiling hit does not earn a larger next response.
-
-These limits apply to individual responses. They are **not** a hard aggregate child-session token/turn/wall-time budget. Aggregate child-session cost remains an open reliability item.
-
-## Current intended flows
-
-Known source symbol:
+Restored checkpoint/issue-branch work skips startup exploration:
 
 ```text
-embedded contract
-  -> prepare_implementation
-  -> lsp_start_server when a cold name-only lookup needs it
-  -> lsp_find_symbol
-  -> read exact source
-  -> safe_edit/edit/write
-  -> submit_result
+submit_result({})
+  -> fix only a concrete reported failure if needed
+  -> submit_result({})
 ```
 
-Known file/path without a semantic lookup:
+## Historical note
 
-```text
-embedded contract
-  -> prepare_implementation
-  -> read known target
-  -> safe_edit/edit/write
-  -> submit_result
-```
-
-Literal discovery:
-
-```text
-embedded contract
-  -> prepare_implementation
-  -> repo map orientation when useful
-  -> indexed_repo_search or repo_search
-  -> read discovered target
-  -> read exact anchor when needed
-  -> safe_edit/edit/write
-  -> submit_result
-```
-
-Semantic blocker:
-
-```text
-embedded contract
-  -> prepare_implementation
-  -> first evidence action
-  -> need_more_evidence("one concrete semantic fact")
-  -> one compact scout/advisor call
-  -> safe_edit/edit/write
-  -> submit_result
-```
-
-Already satisfied in current `dev`:
-
-```text
-embedded contract
-  -> prepare_implementation
-  -> evidence establishing exact requested end state
-  -> submit_result(already_satisfied=true, changes=[])
-```
-
-## Historical successful reference — issue #139
-
-GitHub Actions run `36468466648`, job `109084405617`, was the first confirmed successful known-target run for the planner/classifier architecture before the productive-progress state machine was added.
-
-The task was deliberately minimal: append one exact line to already-known `tasks/README.md`.
-
-Observed behavior:
-
-- main called `prepare_implementation` once;
-- planner output: 195 tokens;
-- classifier output: 62 tokens, `trivial`;
-- no scout or generic subagent discovery;
-- one direct target read supplied the edit anchor;
-- main performed one `edit`;
-- bounded diff confirmed one line added;
-- `submit_result` validated and published PR #140;
-- 6 main responses;
-- 1,825 main output tokens;
-- 71,015 total reported tokens;
-- about 154.7 seconds model response time.
-
-The run also exposed a remaining inefficiency at that time: the model spent 1,188 output tokens and about 80.5 seconds reasoning about a trivial newline/edit anchor after the read had already supplied enough evidence.
-
-That observation directly motivated the later productive-progress design: once evidence is sufficient, the runtime should move the trajectory toward action rather than merely asking the prompt to be less verbose.
-
-## 2026-09-29 reasoning-to-action follow-up
-
-Implementer #4 and a Dispatcher run later reproduced the same class more strongly: both had sufficient evidence but continued reasoning/research without mutation or terminal submission.
-
-The resulting state-machine implementation is documented in:
-
-`docs/llm-research/2026-09-29-productive-progress-state-machine.md`
-
-Validated implementation commits:
-
-- `064a78a89e08401f425eae71073d35c87c75b707`
-- `6da3bc652a84fcfda2949aaf0b170d0a9e2ec134`
-
-Final CI run `36537093235` succeeded.
-
-## Measurement goals
-
-Future real-flow runs should compare:
-
-- time from `prepare_implementation` completion to first mutation;
-- number of evidence actions;
-- number of `need_more_evidence` calls;
-- attempts blocked while in `ACTION_REQUIRED`;
-- main-context tokens;
-- planner/classifier tokens;
-- exploratory child tokens;
-- total child-session time;
-- total model time;
-- mutation-to-`submit_result` delay;
-- whether differently worded blockers become a new loop surface.
-
-The current priority is no longer "add a productive-progress watchdog"; it is to validate this state machine under real tasks and add an aggregate child-session budget if child cost remains the dominant failure mode.
+Earlier revisions used RepoMap in Implementer, a special `trivial_repo_lookup`, and a separate `complexity-classifier` with `trivial | normal | complex`. Those paths were removed after the runtime had enough deterministic routing and evidence-budget controls to make them redundant.

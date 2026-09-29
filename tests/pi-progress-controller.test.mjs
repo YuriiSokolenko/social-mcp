@@ -13,7 +13,6 @@ import {
   nextResponseBudgetLevel,
   toolCallSignature,
 } from '../scripts/pi-common/progress-controller.mjs';
-import { trivialRepoLookup } from '../scripts/pi-common/trivial-repo-lookup.mjs';
 import { repoSearch } from '../scripts/pi-common/repo-search.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
 import subagentResponseBudget from '../scripts/pi-subagent-response-budget.mjs';
@@ -159,8 +158,7 @@ test('trivial productive progress treats LSP cold start as control and requires 
       initialEvidenceBudget: 6,
       initialEvidenceBudgetByComplexity: {
         trivial: 2,
-        normal: 6,
-        complex: 6,
+        nontrivial: 6,
       },
       actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server'],
@@ -195,7 +193,7 @@ test('trivial productive progress treats LSP cold start as control and requires 
   }), undefined);
 });
 
-test('normal semantic lookup closes evidence after the authoritative source read', () => {
+test('nontrivial semantic lookup closes evidence after the authoritative source read', () => {
   const state = controller({
     requireComplexity: true,
     preComplexityAllowedTools: ['prepare_implementation'],
@@ -210,7 +208,7 @@ test('normal semantic lookup closes evidence after the authoritative source read
   });
   state.onTurnStart(0);
   assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('normal');
+  state.setComplexity('nontrivial');
   state.onToolExecutionEnd('prepare_implementation', false);
   assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_check_active' }), undefined);
   state.onToolExecutionEnd('lsp_find_symbol', false);
@@ -379,19 +377,18 @@ test('dispatcher closes exploration after prepared context is loaded', () => {
   assert.equal(state.checkToolCall('submit_result', { classifications: [] }), undefined);
 });
 
-test('runtime-owned preparation delegates structured planner then classifier', () => {
+test('runtime-owned preparation uses one structured planner for plan and startup class', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
   assert.match(runtime, /prompt-template:subagent:request/);
   assert.match(runtime, /prompt-template:subagent:response/);
   assert.match(runtime, /name: 'prepare_implementation'/);
-  assert.match(runtime, /IMPLEMENTATION_PLAN_SCHEMA/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768/);
-  assert.match(runtime, /runStructuredImplementationPlanner[\s\S]*runStructuredComplexityClassifier/);
+  assert.match(runtime, /IMPLEMENTATION_PREPARATION_SCHEMA/);
+  assert.match(runtime, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
-  assert.match(runtime, /complexityClassifierTimeoutMs \?\? 120000[\s\S]*toolBudget: \{ hard: 1 \}/);
-  assert.match(runtime, /controller\.setComplexity\(classified\.complexity\)/);
+  assert.doesNotMatch(runtime, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
+  assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);
@@ -403,51 +400,10 @@ test('runtime-owned preparation delegates structured planner then classifier', (
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
-  assert.match(runtime, /origin\/dev only/);
   assert.match(planner, /inheritSkills: true/);
-  assert.match(planner, /do not classify complexity/i);
+  assert.match(planner, /trivial \| nontrivial/);
+  assert.match(planner, /Dispatcher already owns Architect routing/);
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
-});
-
-test('trivial repository lookup reads origin/dev and ignores resumed worktree changes', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-trivial-lookup-'));
-  try {
-    fs.mkdirSync(path.join(dir, '.agents', 'skills', 'sample'), { recursive: true });
-    fs.mkdirSync(path.join(dir, 'tasks'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.agents', 'skills', 'sample', 'LICENSE.txt'), 'license\n');
-    fs.writeFileSync(path.join(dir, 'notes.txt'), 'notes\n');
-    fs.writeFileSync(path.join(dir, 'tasks', 'README.md'), 'task notes\n');
-    fs.writeFileSync(path.join(dir, 'README.md'), 'root readme\n');
-    fs.writeFileSync(path.join(dir, 'COPYING.md'), 'copying\n');
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
-    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: dir });
-
-    fs.writeFileSync(path.join(dir, 'tasks', 'README.md'), 'checkpoint-only task notes\n');
-    fs.writeFileSync(path.join(dir, 'checkpoint.md'), 'checkpoint marker\n');
-    execFileSync('git', ['add', '.'], { cwd: dir });
-
-    const result = trivialRepoLookup(dir, {
-      extensions: ['md', 'txt'],
-      exactText: 'task notes',
-    });
-    assert.equal(result.candidate.path, 'tasks/README.md');
-    assert.equal(result.candidate.lastLine, 'task notes');
-    assert.equal(result.exactTextFoundInDev, true);
-    assert.deepEqual(result.exactTextPathsInDev, ['tasks/README.md']);
-
-    const resumedOnly = trivialRepoLookup(dir, {
-      extensions: ['md'],
-      exactText: 'checkpoint marker',
-    });
-    assert.equal(resumedOnly.exactTextFoundInDev, false);
-    assert.deepEqual(resumedOnly.exactTextPathsInDev, []);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test('repo search performs deterministic path and content discovery without a child model', () => {
@@ -673,8 +629,6 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
   assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 768);
   assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 120000);
-  assert.equal(stageConfig('implementer').complexityClassifierAgent, 'complexity-classifier');
-  assert.equal(stageConfig('implementer').complexityClassifierTimeoutMs, 120000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
   assert.deepEqual(stageConfig('implementer').singleUseTools, ['prepare_implementation']);
@@ -683,8 +637,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 6);
   assert.deepEqual(stageConfig('implementer').productiveProgress.initialEvidenceBudgetByComplexity, {
     trivial: 2,
-    normal: 6,
-    complex: 6,
+    nontrivial: 6,
   });
   assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 512);
   assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 1024);
@@ -730,7 +683,8 @@ test('stage configuration owns every model prompt', () => {
     assert.match(stagePrompt('implementer', env), /# Pi Implementer Agent[\s\S]*Example issue[\s\S]*Acceptance criteria/);
     assert.match(stagePrompt('implementer', env), /Do not search for or re-read agents\/implementer\/AGENTS\.md/);
     assert.doesNotMatch(stagePrompt('implementer', env), /Read and follow agents\/implementer\/AGENTS\.md first/);
-    assert.match(stagePrompt('implementer', env), /prepare_implementation[\s\S]*implementation-planner[\s\S]*complexity-classifier/);
+    assert.match(stagePrompt('implementer', env), /prepare_implementation[\s\S]*implementation-planner[\s\S]*trivial\/nontrivial/);
+    assert.doesNotMatch(stagePrompt('implementer', env), /complexity-classifier/);
     assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
     assert.match(stagePrompt('implementer', env), /do not call subagent\(action:"list"\)/i);
     assert.match(stagePrompt('implementer', env), /768 max output tokens/);
@@ -745,21 +699,20 @@ test('stage configuration owns every model prompt', () => {
       PI_CHECKPOINT_EXPECTED: 'checkpoint-sha',
     });
     assert.match(resumedPrompt, /restored checkpoint work is already in this worktree/);
-    assert.match(resumedPrompt, /Call `submit_result` with no arguments as your first tool action/);
-    assert.match(resumedPrompt, /Do \*\*not\*\* call `prepare_implementation`/);
+    assert.match(resumedPrompt, /Call `submit_result` with no arguments immediately/);
+    assert.match(resumedPrompt, /Do not call `prepare_implementation`/);
     assert.match(resumedPrompt, /Do not pass `already_satisfied` for restored work/);
-    assert.match(resumedPrompt, /Restored work path:[\s\S]*submit_result[\s\S]*fix only that failure/);
     assert.match(resumedPrompt, /zero-diff state[\s\S]*completes it automatically/);
-    assert.doesNotMatch(resumedPrompt, /For fresh work after preparation/);
+    assert.match(resumedPrompt, /restored work is already present[\s\S]*submit immediately/i);
     const staleResumePrompt = stagePrompt('implementer', {
       ...env,
       PI_RESUME_PATCH: resumePatch,
       PI_RESUME_ACTIVE: 'false',
       PI_ISSUE_BRANCH_EXPECTED: 'stale-branch-sha',
     });
-    assert.match(staleResumePrompt, /This is fresh work/);
+    assert.match(staleResumePrompt, /Fresh worktree base:/);
     assert.doesNotMatch(staleResumePrompt, /Runtime resume state/);
-    assert.match(stagePrompt('implementer', env), /Complexity alone never requires delegation/);
+    assert.match(stagePrompt('implementer', env), /Task classification alone never requires delegation/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('dispatcher', env), /prepared context is sufficient and authoritative/i);
     assert.doesNotMatch(stagePrompt('dispatcher', env), /Read the project documentation once/);

@@ -115,25 +115,17 @@ Each model call logs its active limit as `PI_BUDGET`; the automatic decision for
 
 ## Productive-progress state
 
-Response-budget state and execution-progress state are separate.
-
-For fresh Implementer work:
+The normative execution rules live in [CI_RULES.md](CI_RULES.md). The short Implementer shape is:
 
 ```text
 prepare_implementation
-  -> EVIDENCE_ALLOWED
-  -> 2 bounded evidence actions for trivial work
-     or 6 for normal/complex work
-  -> ACTION_REQUIRED
-       -> safe_edit / edit / write / submit_result
-       -> need_more_evidence -> exactly one evidence action -> ACTION_REQUIRED
+  -> one planner result: steps + trivial|nontrivial
+  -> 2 evidence actions if trivial, otherwise 6
+  -> safe_edit / edit / write / submit_result
+     or one need_more_evidence escape -> one evidence action -> action
 ```
 
-`prepare_implementation` is single-shot. Each evidence permit is consumed at accepted tool-call time, so exploration remains bounded. The startup window is complexity-aware: **2 evidence actions for trivial work and 6 for normal/complex work**. It is for one narrow locate → inspect → anchor chain, not unrelated searching. For an already-named source symbol, semantic LSP is the first discovery hop; do not spend RepoMap/Zoekt/search evidence rediscovering that symbol before LSP. Restored Implementer work starts in `ACTION_REQUIRED`.
-
-For Dispatcher, reading the prepared candidate context closes exploration and moves directly to terminal classification submission. Project docs/repository/history are not part of the normal Dispatcher classification path.
-
-The current execution state is logged as `productiveState` in `PI_BUDGET` and `PI_BUDGET_NEXT`.
+Known source symbol → LSP first. Unknown literal/path → indexed/current-worktree search. Structural question → Orbit. RepoMap is Architect-only. Restored work starts by calling `submit_result({})`.
 
 ## Automation modes
 

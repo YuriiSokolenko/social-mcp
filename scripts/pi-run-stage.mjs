@@ -110,7 +110,7 @@ export async function runStage({ stage, promptFile = null, raw = null }, env = p
   extensions.push(path.join(workspace, `scripts/${config.resultTool}`));
   const args = [];
   for (const extension of extensions) args.push('--extension', extension);
-  if (['implementer', 'architect'].includes(stage)) args.push('--extension', REPOMAP_PACKAGE);
+  if (stage === 'architect') args.push('--extension', REPOMAP_PACKAGE);
   args.push(
     '--provider', env.PI_PROVIDER || 'hp-laguna',
     '--model', modelId,

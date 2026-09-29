@@ -6,7 +6,6 @@ import { Type } from 'typebox';
 
 import { ProgressController, nextActionResponseCap } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
-import { trivialRepoLookup } from './pi-common/trivial-repo-lookup.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
@@ -14,17 +13,7 @@ import { zoektSearch } from './pi-common/zoekt-search.mjs';
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
 
-const COMPLEXITY_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    complexity: { type: 'string', enum: ['trivial', 'normal', 'complex'] },
-    reason: { type: 'string', minLength: 1, maxLength: 300 },
-  },
-  required: ['complexity', 'reason'],
-  additionalProperties: false,
-});
-
-const IMPLEMENTATION_PLAN_SCHEMA = Object.freeze({
+const IMPLEMENTATION_PREPARATION_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
     steps: {
@@ -33,14 +22,16 @@ const IMPLEMENTATION_PLAN_SCHEMA = Object.freeze({
       maxItems: 8,
       items: { type: 'string', minLength: 1, maxLength: 240 },
     },
+    complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
+    reason: { type: 'string', minLength: 1, maxLength: 300 },
   },
-  required: ['steps'],
+  required: ['steps', 'complexity', 'reason'],
   additionalProperties: false,
 });
 
 function implementerIssueContext(env = process.env) {
   const contextFile = env.PI_ISSUE_CONTEXT;
-  if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for runtime complexity classification');
+  if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for runtime implementation preparation');
   const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
   return {
     title: String(context.title ?? ''),
@@ -48,25 +39,13 @@ function implementerIssueContext(env = process.env) {
   };
 }
 
-function validateComplexityValue(value) {
+function validateImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Complexity classifier returned a non-object structured result');
+    throw new Error('Implementation planner returned a non-object structured result');
   }
   const keys = Object.keys(value);
-  if (keys.length !== 2 || !keys.includes('complexity') || !keys.includes('reason')) {
-    throw new Error('Complexity classifier returned unexpected structured fields');
-  }
-  if (!['trivial', 'normal', 'complex'].includes(value.complexity)) {
-    throw new Error(`Complexity classifier returned invalid complexity: ${String(value.complexity)}`);
-  }
-  const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
-  if (!reason || reason.length > 300) throw new Error('Complexity classifier returned an invalid reason');
-  return { complexity: value.complexity, reason };
-}
-
-function validateImplementationPlan(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1) {
-    throw new Error('Implementation planner returned an invalid structured result');
+  if (keys.length !== 3 || !keys.includes('steps') || !keys.includes('complexity') || !keys.includes('reason')) {
+    throw new Error('Implementation planner returned unexpected structured fields');
   }
   if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 8) {
     throw new Error('Implementation planner returned an invalid step list');
@@ -75,32 +54,23 @@ function validateImplementationPlan(value) {
   if (steps.some(step => !step || step.length > 240)) {
     throw new Error('Implementation planner returned an invalid plan step');
   }
-  return { steps };
+  if (!['trivial', 'nontrivial'].includes(value.complexity)) {
+    throw new Error(`Implementation planner returned invalid complexity: ${String(value.complexity)}`);
+  }
+  const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
+  if (!reason || reason.length > 300) throw new Error('Implementation planner returned an invalid reason');
+  return { steps, complexity: value.complexity, reason };
 }
 
 function plannerTask(env = process.env) {
   const issue = implementerIssueContext(env);
-  return `Create the concise top-level implementation plan for this issue. Do not classify it and do not implement it. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing; runtime complexity policy decides that after classification.
+  return `Create the concise top-level implementation plan for this issue and classify only whether it is trivial or nontrivial. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.
 
 Issue title:
 ${issue.title}
 
 Issue body:
 ${issue.body}`;
-}
-
-function classifierTask(plan, env = process.env) {
-  const issue = implementerIssueContext(env);
-  return `Classify only the supplied issue and implementation plan. Do not inspect the repository or solve the task.
-
-Issue title:
-${issue.title}
-
-Issue body:
-${issue.body}
-
-Implementation plan:
-${plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n')}`;
 }
 
 async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, timeoutMs, maxTokens = null, toolBudget = { hard: 1 } }, signal) {
@@ -174,7 +144,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
     task: plannerTask(),
-    schema: IMPLEMENTATION_PLAN_SCHEMA,
+    schema: IMPLEMENTATION_PREPARATION_SCHEMA,
     timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
     toolBudget: { hard: 3 },
@@ -197,26 +167,10 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
     }
   }
   return {
-    ...validateImplementationPlan(response.result.value),
+    ...validateImplementationPreparation(response.result.value),
     usage: response.usage ?? null,
   };
 }
-
-async function runStructuredComplexityClassifier(pi, ctx, config, plan, signal) {
-  const response = await runStructuredSubagent(pi, ctx, {
-    agent: config.complexityClassifierAgent,
-    nodeId: 'task-complexity',
-    task: classifierTask(plan),
-    schema: COMPLEXITY_SCHEMA,
-    timeoutMs: Number(config.complexityClassifierTimeoutMs ?? 120000),
-    toolBudget: { hard: 1 },
-  }, signal);
-  return {
-    ...validateComplexityValue(response.result.value),
-    usage: response.usage ?? null,
-  };
-}
-
 
 
 // Single runtime controller for every model-driven stage. It owns orientation,
@@ -278,24 +232,30 @@ export default function (pi) {
     await applyBudget('short', ctx);
   });
 
-  if (controller.requireComplexity && config.implementationPlannerAgent && config.complexityClassifierAgent) {
+  if (controller.requireComplexity && config.implementationPlannerAgent) {
     pi.registerTool({
       name: 'prepare_implementation',
       label: 'Prepare implementation',
-      description: 'Run the runtime-owned implementation planner and then the complexity classifier. Call exactly once as the first startup tool after the operating contract is loaded in the initial prompt; do not write a competing plan in the main agent.',
+      description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result; do not write a competing plan in the main agent.',
       parameters: Type.Object({}),
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-        const plan = await runStructuredImplementationPlanner(pi, ctx, config, signal);
-        const classified = await runStructuredComplexityClassifier(pi, ctx, config, plan, signal);
-        const result = controller.setComplexity(classified.complexity);
-        console.log(`PI_PLAN ${JSON.stringify({ stage, steps: plan.steps, usage: plan.usage })}`);
+        const prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal);
+        const result = controller.setComplexity(prepared.complexity);
+        console.log(`PI_PLAN ${JSON.stringify({
+          stage,
+          steps: prepared.steps,
+          complexity: prepared.complexity,
+          reason: prepared.reason,
+          usage: prepared.usage,
+        })}`);
         console.log(`PI_COMPLEXITY ${JSON.stringify({
           stage,
-          complexity: classified.complexity,
-          reason: classified.reason,
-          usage: classified.usage,
+          complexity: prepared.complexity,
+          reason: prepared.reason,
+          usage: prepared.usage,
+          source: 'implementation-planner',
         })}`);
-        const numberedPlan = plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
+        const numberedPlan = prepared.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
         const provenance = stage === 'implementer' && !resumedImplementer
           ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched origin/dev${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful safe_edit/edit/write, direct reads of this worktree are authoritative latest-dev evidence; do not use extra Git/evidence calls to re-prove that provenance.`
           : '';
@@ -305,42 +265,17 @@ export default function (pi) {
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${classified.reason}\nPreparation complete. Continue according to the loaded Implementer contract. Complexity is metadata and does not by itself require delegation.${provenance}${lspWorkspace}`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}`,
           }],
           details: {
             ...result,
-            plan: plan.steps,
-            plannerUsage: plan.usage,
-            reason: classified.reason,
-            classifierUsage: classified.usage,
+            plan: prepared.steps,
+            plannerUsage: prepared.usage,
+            reason: prepared.reason,
             freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
             freshWorktreeIsLatestDev: stage === 'implementer' && !resumedImplementer,
             lspWorkspaceRoot: stage === 'implementer' && !resumedImplementer ? ctx.cwd : null,
           },
-        };
-      },
-    });
-  } else if (controller.requireComplexity && config.complexityClassifierAgent) {
-    pi.registerTool({
-      name: 'classify_task_complexity',
-      label: 'Classify task complexity',
-      description: 'Classify task complexity through a runtime-owned structured child from the supplied plan.',
-      parameters: Type.Object({
-        plan: Type.String({ minLength: 1, maxLength: 6000 }),
-      }),
-      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-        const plan = { steps: params.plan.split('\n').map(line => line.trim()).filter(Boolean) };
-        const classified = await runStructuredComplexityClassifier(pi, ctx, config, plan, signal);
-        const result = controller.setComplexity(classified.complexity);
-        console.log(`PI_COMPLEXITY ${JSON.stringify({
-          stage,
-          complexity: classified.complexity,
-          reason: classified.reason,
-          usage: classified.usage,
-        })}`);
-        return {
-          content: [{ type: 'text', text: `Complexity set to ${result.complexity}: ${classified.reason} Execute the plan now.` }],
-          details: { ...result, reason: classified.reason, classifierUsage: classified.usage },
         };
       },
     });
@@ -393,7 +328,6 @@ export default function (pi) {
     });
   }
 
-  let trivialLookupUsed = false;
   let pendingMutationSnapshot = null;
   let lastSuccessfulMutationSnapshot = null;
 
@@ -516,27 +450,6 @@ export default function (pi) {
       },
     });
 
-    pi.registerTool({
-      name: 'trivial_repo_lookup',
-      label: 'Trivial repository lookup',
-      description: 'For TRIVIAL tasks only: inspect tracked files from origin/dev only, never resumed checkpoint/worktree changes. Honors extension preference order, excludes control/legal/generated-style targets, and reports exact-text idempotency explicitly as latest-dev evidence.',
-      parameters: Type.Object({
-        extensions: Type.Array(Type.String({ minLength: 1, maxLength: 12 }), { maxItems: 8 }),
-        exactText: Type.Optional(Type.String({ maxLength: 500 })),
-      }),
-      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        if (controller.complexity !== 'trivial') {
-          throw new Error('trivial_repo_lookup is available only after task complexity is classified as trivial');
-        }
-        if (trivialLookupUsed) throw new Error('trivial_repo_lookup may be called only once per task');
-        trivialLookupUsed = true;
-        const result = trivialRepoLookup(ctx.cwd, params);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-          details: result,
-        };
-      },
-    });
   }
 
   if (!controller.fixedMaxTokens) {

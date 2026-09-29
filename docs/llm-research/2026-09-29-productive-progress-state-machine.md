@@ -96,7 +96,7 @@ The chosen design instead constrains the legal next state.
 
 ## Initial implemented design
 
-The first productive-progress watchdog was a deterministic state machine with one initial evidence action. This section records that historical version. Later runs expanded the bounded startup window; the current policy is **2 initial evidence actions for trivial work and 6 for normal/complex work**.
+The first productive-progress watchdog was a deterministic state machine with one initial evidence action. This section records that historical version. Later runs expanded the bounded startup window; the current Implementer policy uses **2 initial evidence actions for trivial work and 6 for nontrivial work**.
 
 ### Fresh Implementer — historical first version
 
@@ -235,7 +235,7 @@ evidence
 -> no mutation/terminal action
 ```
 
-Under that first version, after one evidence action the agent could not keep expanding exploration without declaring one concrete blocker. The current runtime applies the same finite-state rule after its complexity-specific initial allowance (2 actions for trivial, 6 for normal/complex).
+Under that first version, after one evidence action the agent could not keep expanding exploration without declaring one concrete blocker. The current runtime applies the same finite-state rule after its binary startup allowance (2 actions for trivial, 6 for nontrivial).
 
 This changes productive progress from a passive metric into a control-plane state transition.
 
@@ -503,6 +503,6 @@ locate
 -> edit/write/submit_result
 ```
 
-The runtime still counts accepted evidence tool calls and transitions to `ACTION_REQUIRED` when the configured initial allowance is exhausted. The one-shot `need_more_evidence` escape hatch remains unchanged and is reserved for one concrete fact outside that bounded initial chain. Subsequent tuning made the allowance complexity-aware: **2 initial evidence actions for trivial work, 6 for normal work, and 6 for complex work**. This keeps the state machine finite while avoiding the #148 failure mode where the model was forced to choose between blind mutation and protocol deadlock.
+The runtime still counts accepted evidence tool calls and transitions to `ACTION_REQUIRED` when the configured initial allowance is exhausted. The one-shot `need_more_evidence` escape hatch remains unchanged and is reserved for one concrete fact outside that bounded initial chain. Subsequent tuning first made the allowance complexity-aware and then simplified the Implementer class to **2 initial evidence actions for trivial work or 6 for nontrivial work**. This keeps the state machine finite while avoiding the #148 failure mode where the model was forced to choose between blind mutation and protocol deadlock.
 
 Orbit remains complementary evidence. The #148 run confirmed that Orbit indexing completed successfully, but the main agent did not invoke Orbit graph queries; this benchmark therefore should not be interpreted as an Orbit failure. Future runs should prefer Orbit for bounded structural questions and Zoekt/repo search for literal/path discovery, but neither should consume the entire startup window before direct target inspection.

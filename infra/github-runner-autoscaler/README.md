@@ -97,7 +97,7 @@ If `.env` defines `WORKFLOW_FILES` (or, for the `general` pool, `GENERAL_WORKFLO
 add any newly introduced workflow file there too (e.g. `pi-triage.yml`);
 updating the tracked defaults does not override an existing host `.env`.
 Restart the autoscaler manager after changing its local environment.
-The tracked example and manager fallback default to four. A host may override this in its untracked `.env`; the local value is authoritative for that host.
+`manager.sh` is the single source of Pi-pool fallback values (including `MAX_RUNNERS=4` and `POLL_SECONDS=6`). `compose.yaml` only forwards Pi-pool overrides; `.env.example` shows recommended explicit host values. A host may override them in its untracked `.env`, and that local value is authoritative for that host.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
 Set `MODEL_STATUS_URL` in the N150 host's local `.env` to the active model
 server, reachable from the manager container. For a llama.cpp server, point it at that server's `/slots` endpoint. The endpoint returns the total slots and whether each is processing a request. Do not treat a historical host/port as part of the repository contract; `MODEL_STATUS_URL` must follow whichever model server is active on the N150 deployment. The manager
@@ -220,7 +220,7 @@ Orbit complements the host Zoekt service: Zoekt stays the fast shared `dev` text
 
 The Pi worker image also pins `git-context-mcp@1.0.0` and exposes it through the project `.mcp.json` as a lazy local stdio server. It reads the job checkout and `.git` directly; no separate service or container is required. The exposed tools are `blame_context`, `commit_story`, `file_history`, `search_commits`, and `file_contributors`.
 
-Use this layer only for historical intent/provenance questions that current source, RepoMap, Zoekt, LSP, and Orbit do not answer: why a bounded line range exists, what one commit changed, or how one known file evolved. Do not use Git Context to locate a current symbol or as a mutation anchor. Current source remains authoritative and must still be verified with `read` before mutation.
+Use this layer only for historical intent/provenance questions that current source, Zoekt, LSP, and Orbit do not answer: why a bounded line range exists, what one commit changed, or how one known file evolved. Do not use Git Context to locate a current symbol or as a mutation anchor. Current source remains authoritative and must still be verified with `read` before mutation.
 
 The upstream server can enrich local history with PR/issue metadata through the `gh` CLI. This integration intentionally does not add or forward a GitHub credential on its own; without authenticated `gh`, the local Git portion still works and PR/issue enrichment is skipped. This keeps the initial rollout read-only and avoids widening the Implementer credential surface.
 
@@ -230,8 +230,8 @@ The Implementer runtime exposes `safe_edit` for bounded line/range mutations tha
 
 ## Pi RepoMap navigation context
 
-Implementer and Architect additionally load the pinned `pi-repomap` extension from `scripts/pi-run-stage.mjs`. It is intentionally not installed through project `.pi/settings.json`, because that would install/load the package for every Pi stage. The selected stages load the pinned git revision only for their own run.
+Architect additionally loads the pinned `pi-repomap` extension from `scripts/pi-run-stage.mjs`. Implementer no longer loads it. The extension is intentionally not installed through project `.pi/settings.json`, because that would install/load the package for every Pi stage.
 
-Project configuration lives in `.pi/repomap.json` with `refreshStrategy: "auto"` and a fixed **1536-token** map budget. RepoMap is a navigation hint for unclear repository areas, not authoritative source text: skip it for an already-known source symbol and use LSP first; otherwise use it to choose a small reading order, then verify exact code with `read`/`repo_search`, use Zoekt for indexed literal/path discovery, and Orbit for precise graph questions. The repository skill `.agents/skills/repomap-navigation/SKILL.md` records the bounded routing policy.
+Project configuration lives in `.pi/repomap.json` with `refreshStrategy: "auto"` and a fixed **1536-token** map budget. RepoMap is an Architect-only navigation hint for unclear repository areas, not authoritative source text. The repository skill `.agents/skills/repomap-navigation/SKILL.md` records that bounded Architect policy.
 
-RepoMap writes its incremental cache under `.pi/cache/`; that path is gitignored so ephemeral navigation state cannot be checkpointed or published with an implementation.
+RepoMap writes its incremental cache under `.pi/cache/`; that path is gitignored so ephemeral Architect navigation state is never committed.
