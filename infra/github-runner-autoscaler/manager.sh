@@ -9,6 +9,9 @@ POLL_SECONDS="${POLL_SECONDS:-6}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
 RUNNER_LABELS="${RUNNER_LABELS:-n150,pi-agent}"
+PI_ZOEKT_URL="${PI_ZOEKT_URL:-}"
+PI_ZOEKT_REPOSITORY="${PI_ZOEKT_REPOSITORY:-YuriiSokolenko/social-mcp}"
+PI_ZOEKT_TIMEOUT_MS="${PI_ZOEKT_TIMEOUT_MS:-3000}"
 WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-pr-fix.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
 # Whether to seed the ephemeral worker with the Pi config (needed only by
@@ -256,6 +259,13 @@ spawn_runner() {
     -e "RUNNER_NAME=$name"
     -e "RUNNER_LABELS=${RUNNER_LABELS}"
   )
+  if [ "$MOUNT_PI_CONFIG" == true ] && [ -n "$PI_ZOEKT_URL" ]; then
+    docker_args+=(
+      -e "PI_ZOEKT_URL=${PI_ZOEKT_URL}"
+      -e "PI_ZOEKT_REPOSITORY=${PI_ZOEKT_REPOSITORY}"
+      -e "PI_ZOEKT_TIMEOUT_MS=${PI_ZOEKT_TIMEOUT_MS}"
+    )
+  fi
   if [ "$MOUNT_PI_CONFIG" == true ]; then
     docker_args+=(-v "${PI_CONFIG_DIR}:/pi-config-ro:ro")
   fi

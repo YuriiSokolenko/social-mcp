@@ -427,12 +427,14 @@ export default function (pi) {
           maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
         }),
         async execute(_toolCallId, params) {
+          const startedAt = performance.now();
           const result = await zoektSearch({
             endpoint: process.env.PI_ZOEKT_URL,
             repository: process.env.PI_ZOEKT_REPOSITORY || '',
             timeoutMs: Number(process.env.PI_ZOEKT_TIMEOUT_MS || 3000),
             ...params,
           });
+          console.info(`indexed_repo_search backend=zoekt query=${JSON.stringify(params.query)} matches=${result.matches.length} durationMs=${Math.round(performance.now() - startedAt)}`);
           return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
         },
       });

@@ -68,7 +68,9 @@ export function buildZoektQuery({
   const extensionList = normalizeExtensions(extensions);
   const parts = [];
 
-  if (repository) parts.push(`repo:${quotedRegexLiteral(`^${repository}$`)}`);
+  // Repo filters are regular expressions; quoting them makes the anchors
+  // literal and causes an otherwise valid query to return no repositories.
+  if (repository) parts.push(`repo:^${regexLiteral(repository)}$`);
   parts.push(...buildFileFilter(prefix, extensionList));
 
   if (kind === 'content') parts.push(`case:yes content:${quotedRegexLiteral(needle)}`);
@@ -88,7 +90,10 @@ function decodeBytes(value) {
 }
 
 function normalizeResponse(json, { kind, query, maxResults }) {
-  const files = Array.isArray(json?.Files) ? json.Files : [];
+  // Zoekt's JSON API wraps the SearchResult inside SearchResponse.Result.
+  // Accept a top-level Files array too for older versions and lightweight mocks.
+  const result = json?.Result ?? json;
+  const files = Array.isArray(result?.Files) ? result.Files : [];
   const matches = [];
 
   for (const file of files) {

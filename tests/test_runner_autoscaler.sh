@@ -232,6 +232,9 @@ trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG" "$DOCKER_RUN_LOG"' EXI
   RUNNER_PREFIX=n150-gen-eph
   RUNNER_IMAGE=test-general-image:tag
   RUNNER_LABELS=n150,general
+  PI_ZOEKT_URL=http://127.0.0.1:6070
+  PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp
+  PI_ZOEKT_TIMEOUT_MS=3000
   MOUNT_PI_CONFIG=false
   MOUNT_DOCKER_SOCKET=true
   registration_token() { printf 'tok\n'; }
@@ -244,6 +247,7 @@ trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG" "$DOCKER_RUN_LOG"' EXI
 grep -q -- '-e RUNNER_LABELS=n150,general' "$DOCKER_RUN_LOG" || fail 'spawn_runner must pass RUNNER_LABELS through'
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the docker socket when MOUNT_DOCKER_SOCKET=true'
 grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the Pi config when MOUNT_PI_CONFIG=false'
+grep -q -- 'PI_ZOEKT_' "$DOCKER_RUN_LOG" && fail 'general runners must not receive the optional Pi-only Zoekt configuration'
 
 : > "$DOCKER_RUN_LOG"
 (
@@ -253,6 +257,9 @@ grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not m
   PI_CONFIG_DIR=/some/pi/config
   MOUNT_PI_CONFIG=true
   MOUNT_DOCKER_SOCKET=false
+  PI_ZOEKT_URL=http://127.0.0.1:6070
+  PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp
+  PI_ZOEKT_TIMEOUT_MS=3000
   registration_token() { printf 'tok\n'; }
   run_with_timeout() {
     shift
@@ -262,5 +269,8 @@ grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not m
 )
 grep -q -- '/some/pi/config:/pi-config-ro:ro' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the Pi config when MOUNT_PI_CONFIG=true'
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the docker socket when MOUNT_DOCKER_SOCKET=false'
+grep -q -- '-e PI_ZOEKT_URL=http://127.0.0.1:6070' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive PI_ZOEKT_URL when configured'
+grep -q -- '-e PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the stable Zoekt repository name'
+grep -q -- '-e PI_ZOEKT_TIMEOUT_MS=3000' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the bounded Zoekt timeout'
 
 printf 'runner autoscaler checks passed\n'
