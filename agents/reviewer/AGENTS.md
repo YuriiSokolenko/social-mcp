@@ -77,7 +77,7 @@ Evaluate only dimensions relevant to the change:
 - **Correctness** — changed behavior is semantically correct, including important affected edge/error paths.
 - **Regression risk** — the change does not concretely break relevant existing behavior.
 - **Tests** — when executable behavior changes, tests meaningfully cover the changed behavior and important affected failure paths.
-- **Architecture/security** — evaluate these only when the diff touches them or creates a concrete concern.
+- **Architecture/security** — evaluate these only when the diff touches them or creates a concrete concern. If the PR adds/removes a high-level component, changes architectural ownership, or materially changes a relationship represented in `docs/architecture/PROJECT_MAP.md`, require the text map to be updated in the same PR; do not require map churn for ordinary local changes.
 - **Scope** — no unrelated product changes or generated/local artifacts are included.
 
 Do not request cosmetic changes, speculative abstractions, unrelated refactors, new dependencies, or broader test coverage without a concrete issue/correctness/maintenance/security reason.

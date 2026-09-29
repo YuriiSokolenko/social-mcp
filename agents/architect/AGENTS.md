@@ -76,6 +76,8 @@ Never make a child depend on its still-open parent/ancestor. Trusted workflow co
 
 Do not invent credentials, external access, production writes, product requirements, abstractions, or migrations merely to make a decomposition look complete.
 
+When a proposed child will add/remove a high-level component, change architectural ownership, or materially change a relationship represented in `docs/architecture/PROJECT_MAP.md`, keep the map update in that same implementation child rather than creating a separate documentation task. Do not require map updates for local implementation details.
+
 ## Revise rules
 
 For `revise`, return a complete corrected title/body plus priority and numeric dependencies.

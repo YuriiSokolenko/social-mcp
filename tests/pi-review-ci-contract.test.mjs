@@ -797,3 +797,22 @@ test('model workflows use native GITHUB_REPOSITORY instead of redundant reposito
   assert.match(issue, /\$\{GITHUB_REPOSITORY\}\/actions\/runs/);
   assert.match(architect, /\$\{GITHUB_REPOSITORY\}\/actions\/runs/);
 });
+
+
+test('text architecture map is maintained only for architecture-changing work', () => {
+  const map = fs.readFileSync('docs/architecture/PROJECT_MAP.md', 'utf8');
+  const implementer = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
+  const reviewer = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
+  const architect = fs.readFileSync('agents/architect/AGENTS.md', 'utf8');
+  const context = fs.readFileSync('docs/PROJECT_CONTEXT.md', 'utf8');
+
+  assert.match(map, /## Product architecture/);
+  assert.match(map, /## Pi development pipeline/);
+  assert.match(map, /## Component ownership/);
+  assert.match(map, /Update this file in the same PR/);
+  assert.doesNotMatch(map, /mermaid/i);
+  assert.match(implementer, /docs\/architecture\/PROJECT_MAP\.md/);
+  assert.match(reviewer, /docs\/architecture\/PROJECT_MAP\.md/);
+  assert.match(architect, /docs\/architecture\/PROJECT_MAP\.md/);
+  assert.match(context, /docs\/architecture\/PROJECT_MAP\.md/);
+});

@@ -33,8 +33,10 @@ The service uses Python, FastAPI for HTTP/admin, MCP for AI clients, platform-sp
 
 ## When to consult more context
 
-Use `README.md` for the broader product/architecture overview, `docs/threads-tool-contract.md` for the Threads MCP contract, `docs/oauth.md` for OAuth/token behavior, and `docs/CI_RULES.md` for pipeline/control-plane rules.
+Use `README.md` for the broader product/architecture overview, `docs/architecture/PROJECT_MAP.md` for the current text architecture/component map, `docs/threads-tool-contract.md` for the Threads MCP contract, `docs/oauth.md` for OAuth/token behavior, and `docs/CI_RULES.md` for pipeline/control-plane rules.
 
 Agents should load only the documents relevant to the decision at hand. Dispatcher/Triage normally need issue/queue data, not product architecture. Implementer/Reviewer/Repair need product context only when the changed behavior touches those boundaries. Architect needs it only when decomposition depends on product or architectural constraints.
 
 If documentation conflicts with executable behavior or granted platform capability, do not silently assume the document is current; resolve or report the discrepancy.
+
+When a change adds/removes a high-level component, changes architectural ownership, or materially changes a relationship shown in `docs/architecture/PROJECT_MAP.md`, update that text map in the same PR. Ordinary local implementation changes do not require map churn.

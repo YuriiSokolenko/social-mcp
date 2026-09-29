@@ -177,4 +177,6 @@ Selected exploratory child agents mirror the main agent's current response ceili
 
 Preserve existing architecture and project conventions. Prefer the smallest existing pattern over new layers/frameworks/dependencies. Avoid unrelated refactors, formatting churn, dependency upgrades, and generated artifacts.
 
+If the implementation adds/removes a high-level component, changes which layer owns a responsibility, or materially changes a component relationship represented in `docs/architecture/PROJECT_MAP.md`, update that text map in the same change. Do not touch the map for ordinary local implementation details that leave the represented architecture unchanged.
+
 Load a repository skill only when the current implementation decision actually needs it. KISS/YAGNI/SOLID-style guidance is advisory; correctness, explicit issue requirements, security, and repository conventions win.
