@@ -30,6 +30,7 @@ After the prepared context is read, runtime closes exploration and only terminal
 The candidate issues to review are at ${root}/pi-triage-context.json.
 The snapshot contains current issue body, Task metadata, labels, dependency states, and relevant comments.
 Classify every candidate exactly once as ready for Dispatcher, needing a person, or skipped. Do not reconsider a decided candidate.
+After the prepared context is read, runtime closes exploration. Put the complete classification directly into submit_result without narrating or printing an intermediate classification list.
 Call submit_result exactly once as your last action. Do not modify repository or GitHub state.`;
   },
 
@@ -129,6 +130,13 @@ export const STAGES = Object.freeze({
     requiredFirstReadPath: 'agents/triage/AGENTS.md',
     requireComplexity: false,
     fixedResponseMaxTokens: 1000,
+    productiveProgress: {
+      activationReadSuffix: 'pi-triage-context.json',
+      actionResponseMaxTokens: 512,
+      actionResponseRetryMaxTokens: 128,
+      actionTools: ['submit_result'],
+      controlTools: [],
+    },
     prompt: promptBuilders.triage,
   },
   reviewer: {
