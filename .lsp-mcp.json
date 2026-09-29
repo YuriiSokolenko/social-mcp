@@ -1,0 +1,37 @@
+{
+  "servers": [
+    {
+      "id": "python",
+      "extensions": [".py", ".pyi"],
+      "languageIds": ["python"],
+      "command": "basedpyright-langserver",
+      "args": ["--stdio"],
+      "rootPatterns": [
+        "pyproject.toml",
+        "setup.cfg",
+        "setup.py",
+        "requirements.txt",
+        ".git"
+      ]
+    },
+    {
+      "id": "kotlin",
+      "extensions": [".kt", ".kts"],
+      "languageIds": ["kotlin"],
+      "command": "kotlin-lsp",
+      "args": ["--stdio"],
+      "rootPatterns": [
+        "settings.gradle.kts",
+        "settings.gradle",
+        "build.gradle.kts",
+        "build.gradle",
+        ".git"
+      ]
+    }
+  ],
+  "requestTimeout": 120000,
+  "autoStart": true,
+  "idleTimeout": 900000,
+  "logLevel": "warn",
+  "minify": "full"
+}
