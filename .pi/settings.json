@@ -1,4 +1,7 @@
 {
+  "packages": [
+    "/opt/pi-repomap"
+  ],
   "subagents": {
     "agentOverrides": {
       "scout": {
