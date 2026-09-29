@@ -28,6 +28,7 @@ issue,154,all,,,,7,22087,2463,133150,0,157700,157.1,269,https://github.com/Yurii
 issue,157,all,,,,5,25379,4667,91693,0,121739,264.1,360,https://github.com/YuriiSokolenko/social-mcp/issues/157
 issue,158,all,,,,11,30802,4928,297282,0,333012,464.2,609,https://github.com/YuriiSokolenko/social-mcp/issues/158
 issue,160,all,,,,7,22817,1278,137189,0,161284,186.6,315,https://github.com/YuriiSokolenko/social-mcp/issues/160
+issue,165,all,,,,10,26075,2846,221133,0,250054,282.1,388,https://github.com/YuriiSokolenko/social-mcp/issues/165
 attempt,25,implementation,36039015936,1,cancelled,10,19537,2657,89273,0,111467,165.6,266,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36039015936/attempts/1
 attempt,10,implementation,36093253439,1,success,14,32423,59901,296631,0,388955,7281.5,7339,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093253439/attempts/1
 attempt,18,implementation,36093256959,1,success,78,61865,30747,2878475,0,2971087,3027.9,3130,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093256959/attempts/1
@@ -172,5 +173,6 @@ attempt,0,triage,36605731648,1,failure,5,21016,2404,62132,0,85552,154.8,186,http
 attempt,0,dispatcher,36605731763,1,success,0,0,0,0,0,0,0.0,15,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36605731763/attempts/1
 attempt,0,dispatcher,36606057033,1,success,0,0,0,0,0,0,0.0,12,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36606057033/attempts/1
 attempt,0,triage,36606057214,1,cancelled,3,806,147,39124,0,40077,10.3,78,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36606057214/attempts/1
+attempt,165,implementation,36606285910,1,success,10,26075,2846,221133,0,250054,282.1,388,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36606285910/attempts/1
 attempt,0,triage,36606575237,1,failure,3,5020,2121,44138,0,51279,196.1,222,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36606575237/attempts/1
 attempt,0,dispatcher,36606575252,1,success,0,0,0,0,0,0,0.0,11,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36606575252/attempts/1
