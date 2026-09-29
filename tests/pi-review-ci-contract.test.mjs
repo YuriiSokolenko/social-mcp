@@ -660,6 +660,17 @@ test('implementer has an explicit already-satisfied terminal path without duplic
 });
 
 
+test('fresh implementer result metadata is validated before expensive final checks', () => {
+  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const guard = tool.indexOf('Fresh changed work requires title, summary, security_notes, and limitations');
+  assert.ok(guard >= 0);
+  assert.ok(guard < tool.indexOf('integrateLatestDev({'));
+  assert.ok(guard < tool.indexOf('validateFinalProductTree()'));
+  for (const field of ['title', 'summary', 'security_notes', 'limitations']) {
+    assert.match(tool, new RegExp(field + ".*Required for fresh changed work"));
+  }
+});
+
 test('stage runner relies on installed pi-subagents instead of registering a duplicate subagent tool', () => {
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
   assert.doesNotMatch(runner, /pi-subagent\.mjs/);
@@ -668,10 +679,15 @@ test('stage runner relies on installed pi-subagents instead of registering a dup
 test('reviewer orients and plans before declaring complexity', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
-  assert.match(config, /reviewer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash'\]/);
+  assert.match(config, /reviewer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash', 'lsp_start_server', 'lsp_find_symbol'\]/);
   for (const value of ['Read `agents/reviewer/AGENTS.md`', 'Read the linked issue', 'Inspect the complete PR diff', 'Write a concise review plan', '1000 tokens', 'Call `declare_task_complexity`', 'Continue the semantic review']) {
     assert.ok(agent.includes(value), `reviewer startup marker missing: ${value}`);
   }
+  assert.match(agent, /Known-symbol semantic navigation/);
+  assert.match(agent, /lsp_start_server/);
+  assert.match(agent, /lsp_find_symbol/);
+  assert.match(agent, /Fall back to literal\/index search only when LSP/);
+  assert.match(config, /Reviewer LSP workspace root/);
 });
 
 test('repair orients and plans before declaring complexity', () => {
