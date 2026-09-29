@@ -44,8 +44,8 @@ EVIDENCE_ALLOWED
         v
 ACTION_REQUIRED
         |
-        +--> edit
-        +--> write
+        +--> safe_edit / edit / write
+        +--> rollback_last_mutation when applicable
         +--> submit_result
         |
         +--> need_more_evidence({missing, reason})
@@ -101,7 +101,7 @@ Main retains:
 - bounded known-path `git diff` / `git status`;
 - `submit_result`.
 
-Do not use repeated guessed reads as discovery. More importantly, do not treat "another useful read exists" as sufficient reason to reopen exploration: after the current evidence action, another read requires a concrete `need_more_evidence` blocker.
+Do not use repeated guessed reads as discovery. While the initial complexity-specific allowance still has permits, use them only for directly relevant steps in the same narrow evidence chain. Once that allowance is exhausted, another read/search/scout requires a concrete `need_more_evidence` blocker.
 
 ## When to use scout
 
@@ -124,7 +124,7 @@ For a pre-edit scout, prefer asking for:
 3. otherwise the exact minimal verbatim `oldText` needed by `edit`;
 4. one safety constraint, if any.
 
-After the scout returns, runtime is back in `ACTION_REQUIRED`.
+A scout consumes one evidence permit. If that call exhausts the current allowance, runtime moves to `ACTION_REQUIRED`; otherwise use any remaining permits only for directly relevant evidence needed before the mutation.
 
 ## Tool routing constraints
 
