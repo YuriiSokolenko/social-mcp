@@ -9,6 +9,7 @@ import {
   ProgressController,
   RESPONSE_BUDGETS,
   isBoundedDirectBash,
+  nextActionRequiredProseOnlyTurns,
   nextActionResponseCap,
   nextResponseBudgetLevel,
   toolCallSignature,
@@ -30,6 +31,29 @@ test('shared response budgets stay capped at 2k, 4k, and 8k', () => {
   assert.equal(nextResponseBudgetLevel('short', 2048), 'normal');
   assert.equal(nextResponseBudgetLevel('normal', 4096), 'deep');
   assert.equal(nextResponseBudgetLevel('deep', 8192), 'short');
+});
+
+test('action-required prose-only streak resets on a tool attempt or progress', () => {
+  assert.equal(nextActionRequiredProseOnlyTurns(0, {
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 1);
+  assert.equal(nextActionRequiredProseOnlyTurns(1, {
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 2);
+  assert.equal(nextActionRequiredProseOnlyTurns(1, {
+    actionRequired: true,
+    attemptedTool: true,
+    madeProgress: false,
+  }), 0);
+  assert.equal(nextActionRequiredProseOnlyTurns(1, {
+    actionRequired: false,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 0);
 });
 
 test('action-required corrective cap shrinks any prose-only turn', () => {
