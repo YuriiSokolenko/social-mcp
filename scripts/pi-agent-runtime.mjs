@@ -8,6 +8,7 @@ import { ProgressController } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { trivialRepoLookup } from './pi-common/trivial-repo-lookup.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
+import { safeEdit } from './pi-common/safe-edit.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
@@ -368,7 +369,7 @@ export default function (pi) {
     pi.registerTool({
       name: config.productiveProgress.blockerTool,
       label: 'Request one evidence action',
-      description: 'Use only when one concrete missing fact prevents the next edit/write/submit action. This unlocks exactly one evidence-gathering tool call; after that call productive action is required again.',
+      description: 'Use only when one concrete missing fact prevents the next safe_edit/edit/write/submit action. This unlocks exactly one evidence-gathering tool call; after that call productive action is required again.',
       parameters: Type.Object({
         missing: Type.String({ minLength: 1, maxLength: 300 }),
         reason: Type.String({ minLength: 1, maxLength: 500 }),
@@ -377,7 +378,7 @@ export default function (pi) {
         return {
           content: [{
             type: 'text',
-            text: `One evidence action unlocked for: ${params.missing}. After that evidence call, edit/write/submit_result is required again.`,
+            text: `One evidence action unlocked for: ${params.missing}. After that evidence call, safe_edit/edit/write/submit_result is required again.`,
           }],
           details: params,
         };
@@ -410,15 +411,40 @@ export default function (pi) {
 
   if (stage === 'implementer') {
     pi.registerTool({
+      name: 'safe_edit',
+      label: 'Safe line edit',
+      description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, and participates in normal rollback/progress handling.',
+      parameters: Type.Object({
+        path: Type.String({ minLength: 1, maxLength: 1000 }),
+        operation: Type.Union([
+          Type.Literal('insert_before'),
+          Type.Literal('insert_after'),
+          Type.Literal('replace'),
+        ]),
+        start_line: Type.Integer({ minimum: 1 }),
+        end_line: Type.Optional(Type.Integer({ minimum: 1 })),
+        text: Type.String({ minLength: 1, maxLength: 20000 }),
+        expected_marker: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const result = safeEdit(ctx.cwd, params);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          details: result,
+        };
+      },
+    });
+
+    pi.registerTool({
       name: 'rollback_last_mutation',
       label: 'Rollback last mutation',
-      description: 'Restore exactly the file state captured immediately before the most recent successful edit/write. Use when that mutation caused a regression or was the wrong approach. This is a productive recovery action and does not reset unrelated earlier changes.',
+      description: 'Restore exactly the file state captured immediately before the most recent successful safe_edit/edit/write. Use when that mutation caused a regression or was the wrong approach. This is a productive recovery action and does not reset unrelated earlier changes.',
       parameters: Type.Object({
         reason: Type.String({ minLength: 1, maxLength: 500 }),
       }),
       async execute(_toolCallId, params) {
         const snapshot = lastSuccessfulMutationSnapshot;
-        if (!snapshot) throw new Error('No successful edit/write is available to roll back');
+        if (!snapshot) throw new Error('No successful safe_edit/edit/write is available to roll back');
         if (snapshot.existed) {
           fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
           fs.writeFileSync(snapshot.absolutePath, snapshot.content);
@@ -440,7 +466,7 @@ export default function (pi) {
       pi.registerTool({
         name: 'indexed_repo_search',
         label: 'Indexed repository search',
-        description: 'Fast read-only search against the configured Zoekt index of dev. Prefer it for initial literal/path/symbol discovery when available. Results may lag the current worktree, so use direct read/repo_search for exact post-mutation verification.',
+        description: 'Fast read-only search against the configured Zoekt index of dev. Prefer it for literal/path discovery when the source symbol/path is not already known. For a known source-code symbol, use semantic LSP lookup first. Results may lag the current worktree, so use direct read/repo_search for exact post-mutation verification.',
         parameters: Type.Object({
           kind: Type.Optional(Type.Union([
             Type.Literal('content'),
@@ -541,13 +567,13 @@ export default function (pi) {
   pi.on('tool_call', (event, ctx) => {
     const blocked = controller.checkToolCall(event.toolName, event.input);
     if (blocked) return blocked;
-    if (stage === 'implementer' && (event.toolName === 'edit' || event.toolName === 'write')) {
+    if (stage === 'implementer' && ['safe_edit', 'edit', 'write'].includes(event.toolName)) {
       pendingMutationSnapshot = captureMutationSnapshot(ctx?.cwd || process.cwd(), event.input?.path);
     }
     return undefined;
   });
   pi.on('tool_execution_end', (event) => {
-    if (stage === 'implementer' && (event.toolName === 'edit' || event.toolName === 'write')) {
+    if (stage === 'implementer' && ['safe_edit', 'edit', 'write'].includes(event.toolName)) {
       if (!event.isError && pendingMutationSnapshot) {
         lastSuccessfulMutationSnapshot = pendingMutationSnapshot;
       }
