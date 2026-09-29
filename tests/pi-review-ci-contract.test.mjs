@@ -116,14 +116,15 @@ test('stale reviewer verdict is discarded without self-rescheduling', () => {
 
 
 test('implementer resume always rebases saved work onto latest dev and never uses main as a base', () => {
-  const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
   const worktree = fs.readFileSync('scripts/pi-common/issue-worktree.mjs', 'utf8');
   assert.match(worktree, /worktree', 'add', '-B'.*origin\/dev/s);
   assert.match(worktree, /merge-base', 'origin\/dev', resumeRef/);
   assert.match(worktree, /diff', '--binary', base, resumeRef/);
   assert.match(worktree, /apply', '--3way', patch/);
   assert.match(worktree, /checkpointExpected[\s\S]*issueBranchExpected/);
-  assert.match(stageConfig, /dev is the only development base/);
+  assert.match(agent, /latest fetched `origin\/dev`/);
+  assert.doesNotMatch(agent, /origin\/main/);
 });
 
 
