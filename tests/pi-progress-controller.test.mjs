@@ -94,7 +94,7 @@ test('productive progress allows a bounded initial evidence sequence before acti
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 6,
-      actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
   });
@@ -147,7 +147,7 @@ test('failed validation enters bounded recovery and rollback resets the producti
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 3,
-      actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
   });
@@ -192,6 +192,37 @@ test('failed validation enters bounded recovery and rollback resets the producti
     missing: 'replacement implementation anchor',
     reason: 'rollback removed the harmful approach',
   }), undefined);
+});
+
+test('safe_edit counts as a mutation and is constrained to touched paths during recovery', () => {
+  const state = controller({
+    productiveProgress: {
+      activationTool: 'prepare_implementation',
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 1,
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      controlTools: [],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.checkToolCall('safe_edit', { path: 'src/a.py', start_line: 1 }), undefined);
+  state.onToolExecutionEnd('safe_edit', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.equal(state.checkToolCall('submit_result', {}), undefined);
+  state.onToolExecutionEnd('submit_result', true);
+  assert.equal(state.productiveProgressState(), 'recovery_evidence_allowed');
+
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'recovery_action_required');
+  assert.equal(state.checkToolCall('safe_edit', { path: 'src/a.py', start_line: 1 }), undefined);
+  assert.match(
+    state.checkToolCall('safe_edit', { path: 'src/other.py', start_line: 1 }).reason,
+    /only files already mutated/,
+  );
 });
 
 test('dispatcher closes exploration after prepared context is loaded', () => {
@@ -515,7 +546,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
   assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 6);
   assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 512);
-  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['edit', 'write', 'rollback_last_mutation', 'submit_result']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
   assert.equal(stageConfig('implementer').directReadMaxLines, undefined);
@@ -593,7 +624,7 @@ test('productive progress allows only one extra evidence permit per productive e
     productiveProgress: {
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
-      actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
     },
   });
