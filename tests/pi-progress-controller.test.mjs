@@ -25,11 +25,11 @@ const controller = (overrides = {}, env = {}) => new ProgressController({
 }, env);
 
 test('shared response budgets stay capped at 2k, 4k, and 8k', () => {
-  assert.deepEqual(RESPONSE_BUDGETS, { short: 2048, normal: 4096, deep: 8192 });
+  assert.deepEqual(RESPONSE_BUDGETS, { short: 6144, normal: 8192, deep: 12288 });
   assert.equal(nextResponseBudgetLevel('short', 2047), 'short');
-  assert.equal(nextResponseBudgetLevel('short', 2048), 'normal');
-  assert.equal(nextResponseBudgetLevel('normal', 4096), 'deep');
-  assert.equal(nextResponseBudgetLevel('deep', 8192), 'short');
+  assert.equal(nextResponseBudgetLevel('short', 6144), 'normal');
+  assert.equal(nextResponseBudgetLevel('normal', 8192), 'deep');
+  assert.equal(nextResponseBudgetLevel('deep', 12288), 'short');
 });
 
 test('action-required retry cap escalates only after a capped prose-only turn', () => {
@@ -386,7 +386,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /name: 'prepare_implementation'/);
   assert.match(runtime, /IMPLEMENTATION_PREPARATION_SCHEMA/);
   assert.match(runtime, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 4096[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.doesNotMatch(runtime, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
@@ -569,21 +569,21 @@ test('repeat protection is consecutive and nested arguments are canonicalized', 
 test('ceiling hits escalate only when the turn made concrete progress', () => {
   const state = controller();
   state.onTurnStart(0);
-  const reasoningOnly = state.afterTurn(2048);
+  const reasoningOnly = state.afterTurn(6144);
   assert.equal(reasoningOnly.level, 'short');
   assert.equal(reasoningOnly.madeProgress, false);
 
   state.onTurnStart(1);
   assert.equal(state.checkToolCall('edit', { path: 'example.py' }), undefined);
   state.onToolExecutionEnd('edit', false);
-  const progressed = state.afterTurn(2048);
+  const progressed = state.afterTurn(6144);
   assert.equal(progressed.level, 'normal');
   assert.equal(progressed.madeProgress, true);
 
   state.onTurnStart(2);
   assert.equal(state.checkToolCall('edit', { path: 'example.py' }), undefined);
   state.onToolExecutionEnd('edit', true);
-  const failedTool = state.afterTurn(4096);
+  const failedTool = state.afterTurn(8192);
   assert.equal(failedTool.level, 'short');
   assert.equal(failedTool.madeProgress, false);
 });
@@ -593,7 +593,7 @@ test('elevated budget survives a short intermediate tool turn', () => {
   state.onTurnStart(0);
   assert.equal(state.checkToolCall('edit', { path: 'examples/new.py' }), undefined);
   state.onToolExecutionEnd('edit', false);
-  assert.equal(state.afterTurn(2048).level, 'normal');
+  assert.equal(state.afterTurn(6144).level, 'normal');
 
   state.onTurnStart(1);
   assert.equal(state.checkToolCall('read', { path: 'examples/new.py' }), undefined);
@@ -610,7 +610,7 @@ test('elevated budget survives a short intermediate tool turn', () => {
 test('explicit response budget applies to one next response', () => {
   const state = controller();
   state.onTurnStart(0);
-  assert.equal(state.setBudget('deep'), 8192);
+  assert.equal(state.setBudget('deep'), 12288);
   const afterRequest = state.afterTurn(50);
   assert.equal(afterRequest.explicit, true);
   assert.equal(afterRequest.level, 'deep');
@@ -620,7 +620,7 @@ test('explicit response budget applies to one next response', () => {
 
 test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('dispatcher').maxTurns, 30);
-  assert.equal(stageConfig('triage').fixedResponseMaxTokens, 1000);
+  assert.equal(stageConfig('triage').fixedResponseMaxTokens, 4096);
   for (const name of ['implementer', 'reviewer', 'repair']) assert.equal(stageConfig(name).requireComplexity, true);
   assert.deepEqual(stageConfig('reviewer').preComplexityAllowedTools, ['read', 'bash', 'lsp_start_server', 'lsp_find_symbol']);
   assert.deepEqual(stageConfig('reviewer').preComplexityTransitionTools, ['declare_task_complexity']);
@@ -629,7 +629,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['prepare_implementation']);
   assert.deepEqual(stageConfig('implementer').preComplexityTransitionTools, ['prepare_implementation']);
   assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
-  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 768);
+  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 4096);
   assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 120000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
@@ -641,8 +641,8 @@ test('stage configuration centralizes per-agent runtime policy', () => {
     trivial: 2,
     nontrivial: 6,
   });
-  assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 512);
-  assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 1024);
+  assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 4096);
+  assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 6144);
   assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result']);
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
@@ -689,7 +689,7 @@ test('stage configuration owns every model prompt', () => {
     assert.doesNotMatch(stagePrompt('implementer', env), /complexity-classifier/);
     assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
     assert.match(stagePrompt('implementer', env), /Do not call `subagent\(action:"list"\)`/i);
-    assert.match(stagePrompt('implementer', env), /768 output tokens/);
+    assert.match(stagePrompt('implementer', env), /4096 output tokens/);
     assert.match(stagePrompt('implementer', env), /lsp_start_server[\s\S]*exact absolute workspace root/i);
     assert.doesNotMatch(stagePrompt('implementer', env), /limit <= 200/);
     const resumePatch = path.join(dir, 'resume.patch');

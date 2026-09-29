@@ -417,9 +417,9 @@ test('selected subagents inherit the main response ceiling through a child-only 
 test('one progress controller owns loop safety, complexity, and response budgets', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const controller = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
-  assert.match(controller, /short: 2048/);
-  assert.match(controller, /normal: 4096/);
-  assert.match(controller, /deep: 8192/);
+  assert.match(controller, /short: 6144/);
+  assert.match(controller, /normal: 8192/);
+  assert.match(controller, /deep: 12288/);
   assert.match(controller, /checkToolCall/);
   assert.match(controller, /nextResponseBudgetLevel/);
   assert.match(runtime, /declare_task_complexity/);
@@ -479,21 +479,21 @@ test('stage configuration is the single source of per-agent runtime limits', () 
   );
   assert.doesNotMatch(implementerBlock, /requiredFirstReadPath/);
   assert.match(config, /dispatcher:[\s\S]*maxTurns: 30/);
-  assert.match(config, /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
+  assert.match(config, /triage:[\s\S]*fixedResponseMaxTokens: 4096/);
 });
 
 test('agent prompts document the shared response-budget contract', () => {
   for (const name of ['architect', 'implementer', 'repair', 'reviewer', 'dispatcher']) {
     const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
     assert.match(source, /set_response_budget/);
-    assert.match(source, /SHORT[\s\S]*2048/);
-    assert.match(source, /NORMAL[\s\S]*4096/);
-    assert.match(source, /DEEP[\s\S]*8192/);
+    assert.match(source, /SHORT[\s\S]*6144/);
+    assert.match(source, /NORMAL[\s\S]*8192/);
+    assert.match(source, /DEEP[\s\S]*12288/);
   }
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
-  assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
+  assert.match(triage, /fixed maximum of \*\*4096 output tokens\*\*/);
   assert.match(triage, /`set_response_budget` is intentionally unavailable/);
-  assert.match(fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8'), /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
+  assert.match(fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8'), /triage:[\s\S]*fixedResponseMaxTokens: 4096/);
 });
 
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
@@ -526,7 +526,7 @@ test('fresh implementer uses one planner/classifier result while restored work v
   const settings = fs.readFileSync('.pi/settings.json', 'utf8');
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
 
-  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
+  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 4096[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
   assert.doesNotMatch(config, /complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(config, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
@@ -556,7 +556,7 @@ test('fresh implementer uses one planner/classifier result while restored work v
   assert.match(runtime, /name: 'safe_edit'/);
   assert.match(runtime, /name: 'repo_search'/);
   assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(runtime, /implementationPlannerMaxTokens \?\? 4096[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(runtime, /result: \{ kind: 'structured', schema \}/);
 
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);

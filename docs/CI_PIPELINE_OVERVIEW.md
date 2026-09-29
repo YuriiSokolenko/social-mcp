@@ -92,24 +92,24 @@ Do not use workflow inputs as a message bus or state store.
 
 All model-driven stages use the shared `scripts/pi-agent-runtime.mjs` extension (backed by `scripts/pi-common/progress-controller.mjs`).
 
-The normal response levels are SHORT 2048, NORMAL 4096, and DEEP 8192, but a ceiling hit alone no longer earns a larger response. Automatic promotion requires the current turn to have made concrete progress:
+The normal response levels are SHORT 6144, NORMAL 8192, and DEEP 12288, but a ceiling hit alone no longer earns a larger response. Automatic promotion requires the current turn to have made concrete progress:
 
 ```text
-SHORT 2048
-  ├─ below ceiling OR no productive progress -> SHORT 2048
-  └─ ceiling hit + productive progress        -> NORMAL 4096
+SHORT 6144
+  ├─ below ceiling OR no productive progress -> SHORT 6144
+  └─ ceiling hit + productive progress        -> NORMAL 8192
 
-NORMAL 4096
-  ├─ below ceiling OR no productive progress -> SHORT 2048
-  └─ ceiling hit + productive progress        -> DEEP 8192
+NORMAL 8192
+  ├─ below ceiling OR no productive progress -> SHORT 6144
+  └─ ceiling hit + productive progress        -> DEEP 12288
 
-DEEP 8192
-  └─ automatic next level -> SHORT 2048
+DEEP 12288
+  └─ automatic next level -> SHORT 6144
 ```
 
 A short intermediate turn that actually invokes a tool may preserve an already elevated NORMAL/DEEP budget for the following response. `set_response_budget` remains a proactive one-response override. Task complexity and response size remain independent.
 
-Triage is the deliberate exception: `PI_FIXED_RESPONSE_MAX_TOKENS=1000` keeps every Triage response fixed at 1000 tokens, disables automatic promotion, and does not expose `set_response_budget`.
+Triage is the deliberate exception: `PI_FIXED_RESPONSE_MAX_TOKENS=4096` keeps every Triage response fixed at 4096 tokens, disables automatic promotion, and does not expose `set_response_budget`.
 
 Each model call logs its active limit as `PI_BUDGET`; the automatic decision for the following call is logged as `PI_BUDGET_NEXT`.
 

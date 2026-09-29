@@ -48,7 +48,7 @@ Follow this sequence:
 1. Use the issue title/body already supplied in the prompt as the authoritative requested outcome. Do not inspect repository files and do not write a competing execution plan.
 2. Call `prepare_implementation` exactly once as the first tool action.
    - The runtime sends only issue title/body to the permanent project `implementation-planner` subagent.
-   - The planner starts with its own planning contract plus inherited skill guidance; its response ceiling is **768 output tokens**.
+   - The planner starts with its own planning contract plus inherited skill guidance; its response ceiling is **4096 output tokens**.
    - One structured result contains the ordered plan plus `trivial | nontrivial` and one short reason.
    - The main agent receives that prepared result. Do not call the child manually and do not re-run task-level classification.
 3. Execute the first prepared plan step unless existing evidence already gives a more direct next action.
@@ -65,7 +65,7 @@ The runtime enforces execution as a state machine rather than a turn counter.
 - After successful `prepare_implementation`, the bounded evidence budget is **2 actions for trivial** work and **6 for nontrivial** work.
 - An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, scout/research delegation, or a bounded diagnostic command.
 - Use that budget only for one narrow implementation chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor`. Reading directly relevant files found during that chain is expected; do not mutate blindly merely to reopen evidence. Once the budget is exhausted, exploration closes and the next substantive tool must be `structural_edit`, `safe_edit`, `edit`, `write`, or `submit_result`.
-- While productive progress is in `action_required` or `recovery_action_required`, runtime normally caps action-required responses at 512 output tokens. If a prose-only action-required response actually reaches that ceiling without attempting any tool or making progress, the next response gets a bounded 1024-token retry ceiling so reasoning can finish and reach the required tool call. Any tool attempt/progress or exit from action-required state returns to the normal 512 cap. Use this budget for the required productive tool call, not another prose-only reconsideration.
+- While productive progress is in `action_required` or `recovery_action_required`, runtime normally caps action-required responses at 4096 output tokens. If a prose-only action-required response actually reaches that ceiling without attempting any tool or making progress, the next response gets a bounded 6144-token retry ceiling so reasoning can finish and reach the required tool call. Any tool attempt/progress or exit from action-required state returns to the normal 512 cap. Use this budget for the required productive tool call, not another prose-only reconsideration.
 - If one concrete fact outside the bounded initial chain still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one further evidence action, after which action is required again. Do not spend this escape hatch on target files that should have been covered by the initial evidence budget.
 - Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `structural_edit`, `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result` starts a new productive epoch.
 - Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion.
@@ -207,15 +207,15 @@ After successful `submit_result`, **stop immediately**.
 
 ## Response budget
 
-Every session starts at **SHORT (2048)**.
+Every session starts at **SHORT (6144)**.
 
-- **SHORT / 2048** — navigation, small reads/diffs, tool selection, trivial work.
-- **NORMAL / 4096** — ordinary diagnosis or modest implementation reasoning.
-- **DEEP / 8192** — difficult debugging/synthesis or conflict resolution.
+- **SHORT / 6144** — navigation, small reads/diffs, tool selection, trivial work.
+- **NORMAL / 8192** — ordinary diagnosis or modest implementation reasoning.
+- **DEEP / 12288** — difficult debugging/synthesis or conflict resolution.
 
 Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Hitting the active ceiling promotes the next response automatically: SHORT → NORMAL → DEEP; a DEEP ceiling hit resets to SHORT. A short intermediate turn that actually calls a tool preserves an already elevated NORMAL/DEEP budget for the following response; a short turn without a tool resets the following response to SHORT.
 
-Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 768 output tokens. If it misses the required structured-output call, the runtime retries that planner internally once; main still calls `prepare_implementation` only once.
+Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 4096 output tokens. If it misses the required structured-output call, the runtime retries that planner internally once; main still calls `prepare_implementation` only once.
 
 ## Engineering constraints
 

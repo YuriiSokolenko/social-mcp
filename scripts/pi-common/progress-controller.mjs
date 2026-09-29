@@ -1,5 +1,5 @@
 const COMPLEXITY_RANK = Object.freeze({ trivial: 0, nontrivial: 1, normal: 1, complex: 2 });
-export const RESPONSE_BUDGETS = Object.freeze({ short: 2048, normal: 4096, deep: 8192 });
+export const RESPONSE_BUDGETS = Object.freeze({ short: 6144, normal: 8192, deep: 12288 });
 
 function safePathToken(value) {
   return typeof value === 'string' &&

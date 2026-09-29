@@ -88,11 +88,11 @@ After successful `submit_repair`, **stop immediately**. Do not inspect more file
 
 ## Response budget
 
-Every session starts at **SHORT (2048)**. Keep it unless the next response genuinely needs more room. Never increase the response budget merely to continue investigation or planning before the first repair edit; use repository edits to express implementation code instead of generating long prose/code drafts.
+Every session starts at **SHORT (6144)**. Keep it unless the next response genuinely needs more room. Never increase the response budget merely to continue investigation or planning before the first repair edit; use repository edits to express implementation code instead of generating long prose/code drafts.
 
-- **SHORT / 2048** — navigation, inspection, tool selection, simple checks, trivial repairs.
-- **NORMAL / 4096** — ordinary localized diagnosis or repair decisions.
-- **DEEP / 8192** — difficult debugging/synthesis or substantial conflict resolution.
+- **SHORT / 6144** — navigation, inspection, tool selection, simple checks, trivial repairs.
+- **NORMAL / 8192** — ordinary localized diagnosis or repair decisions.
+- **DEEP / 12288** — difficult debugging/synthesis or substantial conflict resolution.
 
 Use `set_response_budget` only when needed and choose the smallest sufficient level. Repair complexity does not imply response size. DEEP is an absolute ceiling, not a default for complex repairs. If a response reaches its full token ceiling, the shared runtime promotes the next response one level only when that turn also made concrete action progress. A reasoning-only ceiling hit does not earn more budget. Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.
 

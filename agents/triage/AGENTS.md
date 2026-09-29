@@ -44,4 +44,4 @@ Do not edit files or mutate issues, labels, comments, PRs, branches, commits, or
 
 ## Response budget
 
-Every Triage model response has a fixed maximum of **1000 output tokens**. `set_response_budget` is intentionally unavailable. Keep reasoning compact, do not narrate deliberation, and spend the available output on classification and the final `submit_result`.
+Every Triage model response has a fixed maximum of **4096 output tokens**. `set_response_budget` is intentionally unavailable. Keep reasoning compact, do not narrate deliberation, and spend the available output on classification and the final `submit_result`.

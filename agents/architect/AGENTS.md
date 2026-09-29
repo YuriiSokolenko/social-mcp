@@ -137,10 +137,10 @@ If the tool is unavailable, fall back to one standalone `ARCHITECT_RESULT: <json
 
 ## Response budget
 
-Every session starts at **SHORT (2048)**.
+Every session starts at **SHORT (6144)**.
 
-- **SHORT / 2048** — issue/context inspection, obvious keep/revise decisions, simple decomposition.
-- **NORMAL / 4096** — ordinary architectural reasoning or several interacting child scopes.
-- **DEEP / 8192** — genuinely difficult multi-component synthesis.
+- **SHORT / 6144** — issue/context inspection, obvious keep/revise decisions, simple decomposition.
+- **NORMAL / 8192** — ordinary architectural reasoning or several interacting child scopes.
+- **DEEP / 12288** — genuinely difficult multi-component synthesis.
 
 Use `set_response_budget` only when the next response genuinely needs more room. Overall issue complexity does not imply a larger response. DEEP is an absolute ceiling. If a response reaches its full token ceiling, the shared runtime promotes the next response one level only when that turn also made concrete action progress. A reasoning-only ceiling hit does not earn more budget. Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.

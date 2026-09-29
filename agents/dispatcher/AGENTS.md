@@ -72,10 +72,10 @@ If the tool is unavailable, emit one final line:
 
 ## Response budget
 
-The session starts at **SHORT (2048)**. Dispatcher classification should normally remain SHORT.
+The session starts at **SHORT (6144)**. Dispatcher classification should normally remain SHORT.
 
-- **SHORT / 2048**
-- **NORMAL / 4096**
-- **DEEP / 8192**
+- **SHORT / 6144**
+- **NORMAL / 8192**
+- **DEEP / 12288**
 
 If a response reaches its full token ceiling, the shared runtime promotes exactly the next response one level (SHORT → NORMAL → DEEP). A response below its ceiling resets the following response to SHORT; DEEP also returns to SHORT after its one response. Use `set_response_budget` only to request a larger next response proactively; that override is one-response only.

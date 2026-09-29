@@ -147,7 +147,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
     task: plannerTask(),
     schema: IMPLEMENTATION_PREPARATION_SCHEMA,
     timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
-    maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
+    maxTokens: Number(config.implementationPlannerMaxTokens ?? 4096),
     toolBudget: { hard: 3 },
   };
   const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
