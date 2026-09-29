@@ -45,6 +45,14 @@ test('action-required retry cap escalates only after a capped prose-only turn', 
   assert.equal(nextActionResponseCap({
     baseCap: 512,
     retryCap: 1024,
+    outputTokens: 1024,
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+  }), 1024);
+  assert.equal(nextActionResponseCap({
+    baseCap: 512,
+    retryCap: 1024,
     outputTokens: 511,
     actionRequired: true,
     attemptedTool: false,
