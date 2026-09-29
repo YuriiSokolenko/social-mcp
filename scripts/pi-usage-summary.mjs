@@ -33,15 +33,20 @@ const records = file && existsSync(file)
   })
   : [];
 const unique = new Map(records.map((record) => [`${record.call}:${record.response}`, record]));
-const totals = { input: 0, output: 0, total: 0, responseMs: 0 };
+const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, responseMs: 0 };
 const calls = new Map();
 for (const record of unique.values()) {
   const usage = record.usage ?? {};
-  const row = calls.get(record.call) ?? { responses: 0, input: 0, output: 0, total: 0, responseMs: 0 };
+  const row = calls.get(record.call) ?? {
+    responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, responseMs: 0,
+  };
   for (const target of [row, totals]) {
     target.input += usage.input ?? 0;
     target.output += usage.output ?? 0;
-    target.total += usage.totalTokens ?? (usage.input ?? 0) + (usage.output ?? 0);
+    target.cacheRead += usage.cacheRead ?? 0;
+    target.cacheWrite += usage.cacheWrite ?? 0;
+    target.total += usage.totalTokens
+      ?? (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
     target.responseMs += record.responseMs ?? 0;
   }
   row.responses += 1;
@@ -51,17 +56,17 @@ const n = (value) => value.toLocaleString("en-US");
 const lines = [
   `### Pi usage · ${issue ? `issue #${issue}` : "issue unavailable"} · ${phase}`,
   "",
-  "| Call | Responses | Input | Output | Total tokens | Model time |",
-  "| --- | ---: | ---: | ---: | ---: | ---: |",
+  "| Call | Responses | Fresh input | Output | Cache read | Cache write | Total tokens | Model time |",
+  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
 ];
 for (const [call, row] of calls) {
-  lines.push(`| ${call} | ${row.responses} | ${n(row.input)} | ${n(row.output)} | ${n(row.total)} | ${(row.responseMs / 1000).toFixed(1)} s |`);
+  lines.push(`| ${call} | ${row.responses} | ${n(row.input)} | ${n(row.output)} | ${n(row.cacheRead)} | ${n(row.cacheWrite)} | ${n(row.total)} | ${(row.responseMs / 1000).toFixed(1)} s |`);
 }
-lines.push(`| **Total** | **${unique.size}** | **${n(totals.input)}** | **${n(totals.output)}** | **${n(totals.total)}** | **${(totals.responseMs / 1000).toFixed(1)} s** |`);
-lines.push("", "Completed main-model responses and finalized delegated-model usage are included. Runner time and all attempts are in the repository usage table.", "");
+lines.push(`| **Total** | **${unique.size}** | **${n(totals.input)}** | **${n(totals.output)}** | **${n(totals.cacheRead)}** | **${n(totals.cacheWrite)}** | **${n(totals.total)}** | **${(totals.responseMs / 1000).toFixed(1)} s** |`);
+lines.push("", "Total tokens include repeated cache reads. Fresh input/output and cache traffic are shown separately so cumulative cached context is not mistaken for newly consumed context.", "Completed main-model responses and finalized delegated-model usage are included. Runner time and all attempts are in the repository usage table.", "");
 const main = calls.get("main") ?? { responses: 0, responseMs: 0 };
 const warning = usageWarning(main.responses, main.responseMs / 1000);
 if (warning) lines.push(`> [!WARNING]`, `> ${warning}`, "");
 if (summary) appendFileSync(summary, lines.join("\n") + "\n");
-console.log(`Pi usage: ${unique.size} responses · ${n(totals.total)} tokens · ${(totals.responseMs / 1000).toFixed(1)} s model time`);
+console.log(`Pi usage: ${unique.size} responses · fresh ${n(totals.input)} in / ${n(totals.output)} out · cache read ${n(totals.cacheRead)} · total ${n(totals.total)} · ${(totals.responseMs / 1000).toFixed(1)} s model time`);
 if (warning) console.log(`::warning::${warning}`);
