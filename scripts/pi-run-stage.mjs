@@ -14,6 +14,8 @@ import { stageConfig, stagePrompt } from './pi-common/stage-config.mjs';
 // true by itself. verifyModelIsLoaded() below checks that claim against
 // reality and fails loudly instead of silently running the wrong model
 // under the requested model's name (see PR #118 for the bug this replaces).
+const REPOMAP_PACKAGE = 'git:github.com/EnTeQuAk/pi-repomap@a4a2c85685a7a06ec850b23a2ae1bb7c9ecde9ab';
+
 const MODEL_CHOICES = {
   laguna: { id: 'laguna-s-2.1-gguf', label: 'Laguna S 2.1' },
   qwen: { id: 'qwen3.8-flash-next', label: 'Qwen 3.8 Flash Next' },
@@ -108,7 +110,7 @@ export async function runStage({ stage, promptFile = null, raw = null }, env = p
   extensions.push(path.join(workspace, `scripts/${config.resultTool}`));
   const args = [];
   for (const extension of extensions) args.push('--extension', extension);
-  if (!['implementer', 'architect'].includes(stage)) args.push('--no-repomap');
+  if (['implementer', 'architect'].includes(stage)) args.push('--extension', REPOMAP_PACKAGE);
   args.push(
     '--provider', env.PI_PROVIDER || 'hp-laguna',
     '--model', modelId,
