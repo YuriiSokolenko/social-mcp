@@ -526,7 +526,8 @@ test('fresh implementer prepares plan and complexity while restored work validat
 
   assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*complexityClassifierAgent: 'complexity-classifier'[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
-  assert.match(config, /directReadMaxLines: 200[\s\S]*directReadCalls: 1[\s\S]*boundedDirectBash: true/);
+  assert.doesNotMatch(config, /directReadMaxLines|directReadCalls/);
+  assert.match(config, /implementer:[\s\S]*boundedDirectBash: true/);
 
   assert.match(agent, /### Restored work[\s\S]*Call \`submit_result\` with no arguments immediately[\s\S]*Do \*\*not\*\* call \`prepare_implementation\`/);
   assert.match(agent, /contract is embedded verbatim[\s\S]*Do not search for or re-read this file/i);
@@ -539,8 +540,9 @@ test('fresh implementer prepares plan and complexity while restored work validat
   assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
 
   assert.match(agent, /do not write a competing execution plan/i);
-  assert.match(agent, /one already-known small file/i);
-  assert.match(agent, /limit <= 200/);
+  assert.match(agent, /Already-known files:[\s\S]*call `read` directly/i);
+  assert.match(agent, /no runtime line-count or per-task file-count limit/i);
+  assert.doesNotMatch(agent, /limit <= 200/);
   assert.match(agent, /first sufficient/i);
   assert.match(agent, /Do not use repeated guessed reads as a substitute for search/);
   assert.match(agent, /`grep`, `find`, and `ls` remain runtime-blocked/);
