@@ -47,6 +47,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-architect.mjs" prepare "$ISSUE" "$RUNNER_TEMP/pi-architect-context.json"
 
+      - name: Prepare Orbit Local code graph
+        run: |
+          command -v orbit >/dev/null
+          orbit version
+          orbit setup pi --mcp --yes --no-index >/dev/null
+          orbit index "$GITHUB_WORKSPACE" >/dev/null
+          echo "Orbit Local MCP configured and trusted dev checkout indexed."
+
       - name: Ask Pi Architect
         run: node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" architect --raw "$RUNNER_TEMP/pi-architect-result.jsonl"
 
