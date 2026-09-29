@@ -14,7 +14,7 @@ services:
       RUNNER_IMAGE: ${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.87.1}
       RUNNER_PREFIX: ${RUNNER_PREFIX:-n150-pi-eph}
       RUNNER_LABELS: ${RUNNER_LABELS:-n150,pi-agent}
-      PI_ZOEKT_URL: ${PI_ZOEKT_URL:-http://127.0.0.1:6070}
+      PI_ZOEKT_URL: ${PI_ZOEKT_URL:-}
       PI_ZOEKT_REPOSITORY: ${PI_ZOEKT_REPOSITORY:-YuriiSokolenko/social-mcp}
       PI_ZOEKT_TIMEOUT_MS: ${PI_ZOEKT_TIMEOUT_MS:-3000}
       WORKFLOW_FILES: ${WORKFLOW_FILES:-pi-issue-agent.yml,pi-pr-review.yml,pi-pr-fix.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}
