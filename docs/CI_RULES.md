@@ -143,7 +143,7 @@ Do not silently substitute another task when selected work fails.
 
 ## Complexity guard
 
-Complexity is planning metadata for routing and response sizing: it does not alter response budgets, turn quotas, or route the task to another workflow. Routing to Architect is a Dispatcher decision made before those stages start. Implementer does use the classification for one bounded runtime parameter: the initial productive-progress evidence allowance is **2 actions for trivial work and 6 for normal/complex work**. Reviewer and PR Fix still use complexity only to guide the depth of relevant inspection.
+With respect to routing and response sizing, complexity remains planning metadata: it does not alter response budgets, turn quotas, or route the task to another workflow. Routing to Architect is a Dispatcher decision made before those stages start. Implementer does use the classification for one bounded runtime parameter: the initial productive-progress evidence allowance is **2 actions for trivial work and 6 for normal/complex work**. Reviewer and PR Fix still use complexity only to guide the depth of relevant inspection.
 
 
 ## Productive-progress guard
