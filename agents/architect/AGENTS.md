@@ -49,10 +49,11 @@ Use the smallest evidence set needed for the decision:
 3. When the relevant subsystem is unclear, use the injected repo map for a bounded first reading order; load `.agents/skills/repomap-navigation/SKILL.md` only for that navigation decision.
 4. For structural code questions, prefer the available Orbit Local graph over broad repository scanning: use it only to resolve definitions, references, dependency direction, or a concrete architectural boundary.
 5. Check related/open work only if a proposed child or revision may overlap it.
-6. Stop investigating as soon as keep/revise/split is justified.
-7. Call `submit_result`.
+6. If one concrete historical fact is genuinely required to decide an architectural boundary, use one narrow Git Context MCP call (`blame_context`, `commit_story`, `file_history`, or `search_commits`) and stop history exploration as soon as that fact is answered. Do not use history by default.
+7. Stop investigating as soon as keep/revise/split is justified.
+8. Call `submit_result`.
 
-Do not inspect Git history, unrelated modules, every queue entry, or broad project documentation for reassurance.
+Do not inspect broad Git history, unrelated modules, every queue entry, or broad project documentation for reassurance. Historical provenance is supporting evidence only; current `dev` remains authoritative.
 
 ## Split rules
 
