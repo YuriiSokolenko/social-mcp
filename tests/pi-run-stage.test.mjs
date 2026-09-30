@@ -247,6 +247,12 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.equal(result.durationMs, 3);
 });
 
+test('Pi and mini-swe use the same authoritative post-backend validation controller', () => {
+  const runner = readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  assert.match(runner, /backend === 'mini-swe'[\s\S]*runMiniSweStage[\s\S]*runPiStage/);
+  assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend\)/);
+});
+
 test('shared validation harness treats blocked implementer outcome as terminal without validation repair', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'stage-blocked-outcome-'));
   const resultFile = join(dir, 'implementer-result.json');

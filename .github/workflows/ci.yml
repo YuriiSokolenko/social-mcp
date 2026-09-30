@@ -39,7 +39,7 @@ jobs:
         run: pip install -e . pytest pytest-asyncio ruff
 
       - name: Ruff
-        run: ruff check .
+        run: ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
 
       - name: Pytest
         run: pytest
