@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { runRuffCheck } from '../scripts/pi-common/product-checks.mjs';
+import { runProductChecks, runRuffCheck } from '../scripts/pi-common/product-checks.mjs';
 
 function fixture(t, { semanticFailure = false } = {}) {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'product-checks-'));
@@ -22,6 +23,14 @@ function fixture(t, { semanticFailure = false } = {}) {
     '',
   ].join('\n'));
   fs.writeFileSync(path.join(root, 'sample.py'), 'import os\n');
+  fs.writeFileSync(path.join(root, 'untouched.py'), 'print("leave me alone")\n');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'Test']);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com']);
+  execFileSync('git', ['-C', root, 'add', '.']);
+  execFileSync('git', ['-C', root, 'commit', '-qm', 'base']);
+  execFileSync('git', ['-C', root, 'update-ref', 'refs/remotes/origin/dev', 'HEAD']);
+  fs.writeFileSync(path.join(root, 'sample.py'), 'import os\n# changed\n');
   const calls = path.join(parent, 'ruff-calls.jsonl');
   const executable = path.join(bin, 'ruff');
   fs.writeFileSync(executable, `#!/usr/bin/env node
@@ -32,10 +41,11 @@ if (args.includes('--fix')) {
   fs.writeFileSync('sample.py', 'print("fixed by shared safe fixer")\\n');
 } else if (process.env.RUFF_SEMANTIC_FAILURE === 'true') {
   process.stdout.write(JSON.stringify([{
-    filename: 'sample.py',
+    filename: process.env.RUFF_ABSOLUTE_DIAGNOSTIC === 'true' ? require('node:path').resolve('sample.py') : 'sample.py',
     location: { row: 3, column: 4 },
     code: 'F821',
     message: 'undefined name',
+    fix: process.env.RUFF_ABSOLUTE_DIAGNOSTIC === 'true' ? { applicability: 'unsafe' } : null,
   }]));
   process.exitCode = 1;
 } else {
@@ -58,7 +68,7 @@ if (args.includes('--fix')) {
     else process.env.RUFF_SEMANTIC_FAILURE = originalFailure;
     fs.rmSync(parent, { recursive: true, force: true });
   });
-  return { parent, root, calls };
+  return { parent, root, calls, bin };
 }
 
 test('Ruff uses only the repository config even when a parent config enables extra rules', t => {
@@ -68,15 +78,17 @@ test('Ruff uses only the repository config even when a parent config enables ext
   const invocations = fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(invocations.length, 2);
   for (const args of invocations) {
-    assert.equal(args[args.indexOf('--config') + 1], path.join(root, 'pyproject.toml'));
-    assert.ok(args.includes('.'));
+    assert.equal(args[args.indexOf('--config') + 1], path.join(fs.realpathSync(root), 'pyproject.toml'));
   }
   assert.ok(invocations[0].includes('--fix'));
+  assert.ok(invocations[0].includes('sample.py'));
+  assert.ok(!invocations[0].includes('untouched.py'));
+  assert.ok(invocations[1].includes('.'));
   assert.ok(invocations[1].includes('--output-format=json'));
 
-  const repositoryConfig = fs.readFileSync(path.join(root, 'pyproject.toml'), 'utf8');
+  const repositoryConfig = fs.readFileSync(new URL('../pyproject.toml', import.meta.url), 'utf8');
   assert.match(repositoryConfig, /select = \["E4", "E7", "E9", "F"\]/);
-  assert.doesNotMatch(repositoryConfig, /EXE|\bI\b|RUF/);
+  assert.doesNotMatch(repositoryConfig.match(/^select = .*$/m)?.[0] ?? '', /EXE|\bI\b|RUF/);
 });
 
 test('the shared validation safe-fix pass runs before the authoritative lint result', t => {
@@ -90,7 +102,65 @@ test('remaining semantic Ruff failures identify location, rule, and repair type'
   assert.throws(() => runRuffCheck(root), error => {
     assert.match(error.message, /check: Ruff/);
     assert.match(error.message, /sample\.py:3:4: F821: undefined name/);
-    assert.match(error.message, /mechanically fixable: no/);
+    assert.match(error.message, /no automatic fix available/);
     return true;
   });
+});
+
+test('a real Ruff run ignores a conflicting config in the checkout', t => {
+  if (spawnSync('ruff', ['--version']).status !== 0) return t.skip('ruff is not installed');
+  const realRuff = execFileSync('which', ['ruff'], { encoding: 'utf8' }).trim();
+  const { root } = fixture(t);
+  process.env.PATH = `${path.dirname(realRuff)}${path.delimiter}${process.env.PATH}`;
+  fs.writeFileSync(path.join(root, '.ruff.toml'), '[lint]\nselect = ["I"]\n');
+  fs.writeFileSync(path.join(root, 'sample.py'), 'import sys\nimport os\nprint(os.name, sys.version)\n');
+  runRuffCheck(root);
+  assert.match(fs.readFileSync(path.join(root, 'sample.py'), 'utf8'), /^import sys\nimport os\n/);
+});
+
+test('Ruff diagnostics report unsafe fixes and paths relative to the checkout', t => {
+  const { root } = fixture(t, { semanticFailure: true });
+  process.env.RUFF_ABSOLUTE_DIAGNOSTIC = 'true';
+  t.after(() => { delete process.env.RUFF_ABSOLUTE_DIAGNOSTIC; });
+  assert.throws(() => runRuffCheck(root), error => {
+    assert.match(error.message, /ruff: sample\.py:3:4: F821/);
+    assert.match(error.message, /unsafe fix available/);
+    assert.doesNotMatch(error.message, new RegExp(root));
+    return true;
+  });
+});
+
+test('successful product checks preserve pytest output', t => {
+  const { root, bin } = fixture(t);
+  const pytest = path.join(bin, 'pytest');
+  fs.writeFileSync(pytest, '#!/bin/sh\nprintf "561 passed, 3 skipped\\n"\n');
+  fs.chmodSync(pytest, 0o755);
+  const output = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `import { runProductChecks } from ${JSON.stringify(new URL('../scripts/pi-common/product-checks.mjs', import.meta.url).href)}; runProductChecks({ cwd: ${JSON.stringify(root)} });`,
+  ], { encoding: 'utf8', env: process.env });
+  assert.equal(output.status, 0, output.stderr);
+  assert.match(output.stdout, /561 passed, 3 skipped/);
+});
+
+test('failed product checks retain the beginning and end of long output', t => {
+  const { root, bin } = fixture(t);
+  const pytest = path.join(bin, 'pytest');
+  fs.writeFileSync(pytest, '#!/bin/sh\necho FIRST_FAILURE\nseq 1 80\necho LAST_FAILURE\nexit 1\n');
+  fs.chmodSync(pytest, 0o755);
+  assert.throws(() => runProductChecks({ cwd: root }), error => {
+    assert.match(error.message, /FIRST_FAILURE/);
+    assert.match(error.message, /LAST_FAILURE/);
+    return true;
+  });
+});
+
+test('missing Ruff is reported as a check infrastructure failure', t => {
+  const { root } = fixture(t);
+  const originalPath = process.env.PATH;
+  process.env.PATH = '/usr/bin:/bin';
+  try {
+    assert.throws(() => runRuffCheck(root), /check: ruff could not run:.*ENOENT/);
+  } finally {
+    process.env.PATH = originalPath;
+  }
 });

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 
 import { runProcess } from './process.mjs';
 
@@ -8,24 +9,24 @@ import { runProcess } from './process.mjs';
  * wedged test runner cannot consume the whole workflow timeout.
  */
 function run(command, args, cwd, { allowFailure = false } = {}) {
-  const result = runProcess(command, args, {
-    cwd,
-    allowFailure,
-    timeoutSeconds: Number(process.env.PI_PRODUCT_CHECK_TIMEOUT_SECONDS ?? 900),
-  });
-  return result;
+  try {
+    return runProcess(command, args, {
+      cwd,
+      allowFailure,
+      timeoutSeconds: Number(process.env.PI_PRODUCT_CHECK_TIMEOUT_SECONDS ?? 900),
+    });
+  } catch (error) {
+    throw new Error(`check: ${command} could not run: ${error.message}`, { cause: error });
+  }
 }
 
 function summarizedOutput(result) {
-  const lines = `${result.err}\n${result.out}`
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
-  const summary = lines.slice(-30).join('\n');
-  return summary.length <= 8000 ? summary : `${summary.slice(0, 4000)}\n... output truncated ...\n${summary.slice(-4000)}`;
+  const output = [result.out, result.err].filter(Boolean).join('\n');
+  if (output.length <= 16000) return output;
+  return `${output.slice(0, 8000)}\n... output truncated ...\n${output.slice(-8000)}`;
 }
 
-function formatRuffDiagnostics(output) {
+function formatRuffDiagnostics(output, root) {
   let diagnostics;
   try {
     diagnostics = JSON.parse(output);
@@ -37,7 +38,15 @@ function formatRuffDiagnostics(output) {
     const location = item.location
       ? `${item.location.row ?? '?'}:${item.location.column ?? '?'}`
       : '?:?';
-    return `ruff: ${item.filename ?? '<unknown>'}:${location}: ${item.code ?? 'unknown'}: ${item.message ?? 'lint failure'} (mechanically fixable: no; safe Ruff fixes were already applied)`;
+    const filename = item.filename && path.isAbsolute(item.filename)
+      ? path.relative(root, item.filename)
+      : item.filename ?? '<unknown>';
+    const repair = item.fix?.applicability === 'unsafe'
+      ? 'unsafe fix available'
+      : item.fix?.applicability === 'safe'
+        ? 'safe fix available'
+        : 'no automatic fix available';
+    return `ruff: ${filename}:${location}: ${item.code ?? 'unknown'}: ${item.message ?? 'lint failure'} (${repair})`;
   });
   if (diagnostics.length > formatted.length) {
     formatted.push(`... ${diagnostics.length - formatted.length} additional Ruff diagnostic(s) omitted`);
@@ -45,17 +54,36 @@ function formatRuffDiagnostics(output) {
   return formatted.join('\n');
 }
 
+function changedPythonPaths(root) {
+  const commands = [
+    ['diff', '--name-only', '-z', '--diff-filter=ACMRT', 'origin/dev...HEAD'],
+    ['diff', '--name-only', '-z', '--diff-filter=ACMRT'],
+    ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT'],
+    ['ls-files', '--others', '--exclude-standard', '-z'],
+  ];
+  const paths = new Set();
+  for (const args of commands) {
+    const result = run('git', args, root, { allowFailure: true });
+    if (result.status !== 0) throw new Error(`check: git ${args[0]} failed: ${result.err || result.out}`);
+    for (const filename of result.out.split('\0').filter(Boolean)) {
+      if (/\.pyi?$/.test(filename) && fs.existsSync(path.join(root, filename))) paths.add(filename);
+    }
+  }
+  return [...paths].sort();
+}
+
 export function runRuffCheck(cwd = process.cwd()) {
-  const root = path.resolve(cwd);
+  const root = fs.realpathSync(path.resolve(cwd));
   const config = path.join(root, 'pyproject.toml');
   // Ruff's default --fix mode applies only safe fixes. Run it before the
   // authoritative check so mechanical style/metadata fixes do not consume an
   // LLM repair attempt. Both invocations pin the repository config explicitly.
-  run('ruff', ['check', '--fix', '--config', config, '.'], root, { allowFailure: true });
+  const fixPaths = changedPythonPaths(root);
+  if (fixPaths.length) run('ruff', ['check', '--fix', '--config', config, ...fixPaths], root, { allowFailure: true });
 
   const check = run('ruff', ['check', '--output-format=json', '--config', config, '.'], root, { allowFailure: true });
   if (check.status !== 0) {
-    throw new Error(`check: Ruff\n${formatRuffDiagnostics(check.out || check.err)}`);
+    throw new Error(`check: Ruff\n${formatRuffDiagnostics(check.out || check.err, root)}`);
   }
 }
 
@@ -71,6 +99,8 @@ export function runProductChecks({ cwd } = {}) {
       const output = summarizedOutput(result);
       throw new Error(`check: ${name}\n${output || `${command} exited with code ${result.status}`}`);
     }
+    if (result.out) process.stdout.write(`${result.out}\n`);
+    if (result.err) process.stderr.write(`${result.err}\n`);
   }
 }
 

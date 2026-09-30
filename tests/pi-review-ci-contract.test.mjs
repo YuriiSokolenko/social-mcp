@@ -76,7 +76,8 @@ test('implementer integrates latest dev before shared post-backend validation an
   assert.doesNotMatch(tool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
   assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd \}\)/);
-  assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend\)/);
+  assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
+  assert.match(runner, /return runSelectedStage\(spec, \{ backend, workspace \}\)/);
   const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /issue-publication\.mjs" review/);
   assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
@@ -473,7 +474,8 @@ test('publication helpers reuse one trusted git runner', () => {
 test('stage runner delegates shared Pi extensions to the Pi backend once for all agents', () => {
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
   const backend = fs.readFileSync('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
-  assert.match(runner, /candidate => runPiStage\(candidate, \{ workspace \}\)/);
+  assert.match(runner, /runPi = runPiStage/);
+  assert.match(runner, /candidate => runPi\(candidate, \{ workspace \}\)/);
   assert.equal(backend.split('pi-bash-timeout.mjs').length - 1, 1);
   assert.equal(backend.split('pi-agent-runtime.mjs').length - 1, 1);
   assert.match(backend, /config\.resultTool/);

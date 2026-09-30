@@ -80,7 +80,7 @@ jobs:
           cd "$JOB_DIR"
           python -m venv .venv
           . .venv/bin/activate
-          pip install -e . pytest pytest-asyncio ruff
+          pip install -e . pytest pytest-asyncio ruff==0.12.12
           echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run repair agent
@@ -104,5 +104,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/repair-publication.mjs" review "$PR"
-
 

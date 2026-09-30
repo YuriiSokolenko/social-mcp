@@ -36,7 +36,7 @@ jobs:
           cache: pip
 
       - name: Install project and development dependencies
-        run: pip install -e . pytest pytest-asyncio ruff
+        run: pip install -e . pytest pytest-asyncio ruff==0.12.12
 
       - name: Ruff
         run: ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
