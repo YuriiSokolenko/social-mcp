@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 import { Type } from 'typebox';
@@ -18,6 +19,24 @@ import { zoektSearch } from './pi-common/zoekt-search.mjs';
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
+
+function restoredMutationPaths(worktreeRoot) {
+  try {
+    const output = execFileSync(
+      'git',
+      ['diff', '--name-only', '-z', 'origin/dev', '--'],
+      { cwd: worktreeRoot, encoding: 'utf8' },
+    );
+    const relativePaths = output.split('\0').filter(Boolean);
+    return relativePaths.flatMap(filePath => [
+      filePath,
+      path.resolve(worktreeRoot, filePath),
+    ]);
+  } catch (error) {
+    console.warn(`PI_RESUME_MUTATION_PROVENANCE: failed to inspect restored paths: ${error.message}`);
+    return [];
+  }
+}
 
 const IMPLEMENTATION_PREPARATION_SCHEMA = Object.freeze({
   type: 'object',
@@ -195,11 +214,21 @@ export default function (pi) {
   const freshBaseCommit = stage === 'implementer'
     ? String(process.env.PI_IMPLEMENTER_START_COMMIT ?? '').trim()
     : '';
+  const worktreeRoot = stage === 'implementer'
+    ? (process.env.JOB_DIR || process.cwd())
+    : process.cwd();
+  const restoredPaths = resumedImplementer
+    ? restoredMutationPaths(worktreeRoot)
+    : [];
+  if (resumedImplementer) {
+    console.log(`PI_RESUME_MUTATION_PROVENANCE ${JSON.stringify({ paths: restoredPaths })}`);
+  }
   const controller = new ProgressController(
     resumedImplementer
       ? {
           ...config,
           requireComplexity: false,
+          initialMutatedPaths: restoredPaths,
           productiveProgress: config.productiveProgress
             ? { ...config.productiveProgress, startState: 'action_required' }
             : null,
@@ -572,6 +601,10 @@ export default function (pi) {
 
   pi.on('turn_end', async (event, ctx) => {
     const outputTokens = Number(event.message?.usage?.output || 0);
+    const activeResponseCap =
+      appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel];
+    const responseHitOutputCeiling =
+      activeResponseCap > 0 && outputTokens >= activeResponseCap;
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
@@ -606,6 +639,7 @@ export default function (pi) {
         actionRequired: runtimeActionRequired,
         attemptedTool: actionTurnAttemptedTool,
         madeProgress: controller.turnMadeProgress,
+        responseHitOutputCeiling,
       },
     );
 
@@ -657,6 +691,7 @@ export default function (pi) {
       outputTokens,
       madeProgress: controller.turnMadeProgress,
       attemptedTool: actionTurnAttemptedTool,
+      responseHitOutputCeiling,
       nextBudget: next.level,
       maxTokens: appliedActionCap || next.maxTokens,
       explicit: next.explicit === true,
