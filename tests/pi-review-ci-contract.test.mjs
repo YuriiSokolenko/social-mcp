@@ -461,11 +461,13 @@ test('publication helpers reuse one trusted git runner', () => {
 });
 
 
-test('stage runner wires the shared safety/runtime extensions once for all agents', () => {
+test('stage runner delegates shared Pi extensions to the Pi backend once for all agents', () => {
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
-  assert.equal(runner.split('pi-bash-timeout.mjs').length - 1, 1);
-  assert.equal(runner.split('pi-agent-runtime.mjs').length - 1, 1);
-  assert.match(runner, /config\.resultTool/);
+  const backend = fs.readFileSync('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
+  assert.match(runner, /runPiStage\(spec, \{ workspace \}\)/);
+  assert.equal(backend.split('pi-bash-timeout.mjs').length - 1, 1);
+  assert.equal(backend.split('pi-agent-runtime.mjs').length - 1, 1);
+  assert.match(backend, /config\.resultTool/);
 });
 
 test('stage configuration is the single source of per-agent runtime limits', () => {
@@ -507,7 +509,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.match(guard, /loadIssue\(issueNumber\)/);
   assert.match(guard, /review:[\s\S]*issue:[\s\S]*changedFiles/);
   assert.match(runner, /PI_ISSUE: env\.PI_ISSUE \?\? env\.ISSUE \?\? ''/);
-  assert.match(runner, /writeGithubEnv\(env, 'PI_ISSUE', childEnv\.PI_ISSUE\)/);
+  assert.match(runner, /writeGithubEnv\(env, 'PI_ISSUE', spec\.environment\.PI_ISSUE\)/);
   assert.match(prompt, /\*\*trivial\*\* — tiny self-contained diff/);
   assert.match(stageConfig, /do not rerun pytest, Ruff, or git diff --check/);
   assert.match(prompt, /### Trivial fast path/);
@@ -525,6 +527,7 @@ test('fresh implementer uses one planner/classifier result while restored work v
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const settings = fs.readFileSync('.pi/settings.json', 'utf8');
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  const backend = fs.readFileSync('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
 
   assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
   assert.doesNotMatch(config, /complexityClassifierAgent|complexityClassifierTimeoutMs/);
@@ -565,7 +568,7 @@ test('fresh implementer uses one planner/classifier result while restored work v
   assert.match(planner, /trivial \| nontrivial/);
   assert.match(planner, /Dispatcher already owns Architect routing/);
   assert.doesNotMatch(settings, /complexity-classifier/);
-  assert.match(runner, /if \(stage === 'architect'\) args\.push\('--extension', REPOMAP_PACKAGE\)/);
+  assert.match(backend, /if \(spec\.stage === 'architect'\) extensions\.push\(REPOMAP_PACKAGE\)/);
   assert.doesNotMatch(runner, /\['implementer', 'architect'\]\.includes\(stage\)/);
 });
 test('semantic routing, Git Context lanes, and safe edit contracts stay explicit', () => {
@@ -712,10 +715,11 @@ test('deterministic review failure routes directly to PR Fix instead of stopping
   assert.match(workflow, /name: Apply review result\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
 });
 
-test('stage runner owns the terminal marker contract for every model-driven workflow', () => {
+test('stage execution owns the terminal marker contract for every model-driven workflow', () => {
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  const backend = fs.readFileSync('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
   assert.match(runner, /PI_TERMINAL_RESULT_FILE/);
-  assert.match(runner, /exited without its terminal tool/);
+  assert.match(backend, /exited without its terminal tool/);
   for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-triage.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-issue-agent.yml']) {
     const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
     assert.doesNotMatch(workflow, /Require terminal .* result|PI_TERMINAL_RESULT_FILE/);
@@ -814,7 +818,7 @@ test('stage runner owns model phase and issue metadata', () => {
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   assert.match(runner, /PI_PHASE: env\.PI_PHASE \?\? config\.phase \?\? stage/);
-  assert.match(runner, /writeGithubEnv\(env, 'PI_PHASE', childEnv\.PI_PHASE\)/);
+  assert.match(runner, /writeGithubEnv\(env, 'PI_PHASE', spec\.environment\.PI_PHASE\)/);
   for (const phase of ['architect', 'dispatcher', 'triage', 'review', 'repair', 'implementation']) {
     assert.ok(config.includes(`phase: '${phase}'`));
   }
