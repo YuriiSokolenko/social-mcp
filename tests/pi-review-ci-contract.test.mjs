@@ -638,7 +638,7 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   assert.match(tool, /PI_PRODUCTIVE_STATE/);
   assert.match(tool, /diff', '--name-only', 'origin\/dev'/);
   assert.match(tool, /already_satisfied requires zero diff against latest dev/);
-  assert.match(workflow, /if \\[ "\\$OUTCOME" = "already_satisfied" \\]; then/);
+  assert.match(workflow, /if \[ "\$OUTCOME" = "already_satisfied" \]; then/);
   assert.match(workflow, /issue satisfied/);
   assert.match(transition, /state: 'closed', state_reason: 'completed'/);
 });
