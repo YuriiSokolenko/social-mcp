@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 import { validateFinalProductTree } from './finalize-product-tree.mjs';
-import { createStageRunSpec } from './stage-run-contract.mjs';
+import { createStageRunResult, createStageRunSpec } from './stage-run-contract.mjs';
 
 const DEFAULT_REPAIR_ATTEMPTS = 1;
 const MAX_DIAGNOSTIC_CHARS = 20000;
@@ -53,11 +53,16 @@ export async function runStageWithValidationRecovery(
 
   let result = await runBackend(spec);
   if (spec.stage !== 'implementer') return result;
+  let durationMs = result.durationMs;
 
   for (let attempt = 0; ; attempt += 1) {
     try {
       validate({ cwd: spec.cwd });
-      return result;
+      return createStageRunResult({
+        backend: result.backend,
+        durationMs,
+        artifacts: result.artifacts,
+      });
     } catch (error) {
       if (attempt >= maxRepairAttempts) throw error;
 
@@ -69,6 +74,7 @@ export async function runStageWithValidationRecovery(
       fs.rmSync(spec.artifacts.terminalResultPath, { force: true });
       const repairSpec = createValidationRepairSpec(spec, error, repairAttempt);
       result = await runBackend(repairSpec);
+      durationMs += result.durationMs;
     }
   }
 }
