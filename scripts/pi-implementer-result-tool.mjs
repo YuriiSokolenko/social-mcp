@@ -23,7 +23,7 @@ function issueContext() {
 export default function (pi) {
   registerTerminalTool(pi, {
     label: 'Sync, validate, and submit implementation result',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. Fresh changed work must include title, summary, changes, security_notes, and limitations on the first call; metadata is preflight-validated before dev integration or expensive checks. On failure, fix only the reported problem with structural_edit/safe_edit/edit/write as appropriate and retry.',
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. If authoritative current-code evidence proves the issue requirements conflict with each other or with an explicit no-behavior-change constraint so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, security_notes, and limitations on the first call; metadata is preflight-validated before dev integration or expensive checks. On failure, fix only the reported problem with structural_edit/safe_edit/edit/write as appropriate and retry.',
     parameters: Type.Object({
       title: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
       summary: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
@@ -31,16 +31,44 @@ export default function (pi) {
       already_satisfied: Type.Optional(Type.Boolean()),
       security_notes: Type.Optional(Type.String({ description: 'Required for fresh changed work, including when there are no security-relevant changes.' })),
       limitations: Type.Optional(Type.String({ description: 'Required for fresh changed work, including when there are no known limitations.' })),
+      blocked_reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000, description: 'Fresh work only: concrete contradiction between authoritative current code and issue requirements/constraints that makes a compliant mutation impossible.' })),
     }),
     customType: 'implementer-result',
-    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. For restored work call submit_result({}) now. For fresh work call structural_edit/safe_edit/edit/write now when a change is required, or submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state. If exactly one concrete missing fact blocks safe action, call need_more_evidence once, gather exactly one fact, then act.',
+    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. For restored work call submit_result({}) now. For fresh work call structural_edit/safe_edit/edit/write now when a change is required, submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state, or submit_result({blocked_reason:"..."}) when authoritative current-code evidence proves the written requirements/constraints are mutually incompatible and no compliant mutation exists. If exactly one concrete missing fact blocks safe action, call need_more_evidence once, gather exactly one fact, then act.',
     nudgeRepeatWhile: () => ['action_required', 'recovery_action_required'].includes(process.env.PI_PRODUCTIVE_STATE ?? ''),
     nudgeMaxCount: 3,
     successText: 'SUCCESS. Latest dev is integrated and final checks pass. Implementation result recorded. Stop now.',
     execute: async (params) => {
       const restored = restoredWork();
       const alreadySatisfied = params.already_satisfied === true;
+      const blockedReason = clean(params.blocked_reason);
       if (restored && alreadySatisfied) throw new Error('Restored work cannot use already_satisfied');
+      if (restored && blockedReason) throw new Error('Restored work cannot use blocked_reason');
+      if (alreadySatisfied && blockedReason) throw new Error('already_satisfied and blocked_reason are mutually exclusive');
+
+      if (blockedReason) {
+        const dirty = lines(git(['status', '--porcelain', '--untracked-files=all']).out);
+        if (dirty.length) {
+          throw new Error('blocked_reason requires a clean worktree; rollback or resolve repository mutations before reporting a blocked task');
+        }
+        const context = issueContext();
+        const issue = process.env.PI_ISSUE || process.env.ISSUE || context.number || '';
+        const data = {
+          title: clean(context.title),
+          summary: `Implementation${issue ? ` for issue #${issue}` : ''} is blocked by a concrete contradiction in the requested requirements or constraints.`,
+          changes: [],
+          already_satisfied: false,
+          blocked: true,
+          blocked_reason: blockedReason,
+          security_notes: 'No repository change was made because the task is blocked pending human clarification.',
+          limitations: 'Human clarification is required before implementation can continue safely.',
+        };
+        if (!data.title) throw new Error('Blocked work requires the issue title from PI_ISSUE_CONTEXT');
+        const target = process.env.PI_IMPLEMENTER_RESULT_FILE;
+        if (!target) throw new Error('PI_IMPLEMENTER_RESULT_FILE is not configured');
+        fs.writeFileSync(target, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+        return { data };
+      }
 
       const freshChangedMetadata = !restored && !alreadySatisfied
         ? {
