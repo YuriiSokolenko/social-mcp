@@ -638,7 +638,7 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   assert.match(tool, /PI_PRODUCTIVE_STATE/);
   assert.match(tool, /diff', '--name-only', 'origin\/dev'/);
   assert.match(tool, /already_satisfied requires zero diff against latest dev/);
-  assert.match(workflow, /\.already_satisfied \/\/ false/);
+  assert.match(workflow, /if \\[ "\\$OUTCOME" = "already_satisfied" \\]; then/);
   assert.match(workflow, /issue satisfied/);
   assert.match(transition, /state: 'closed', state_reason: 'completed'/);
 });
@@ -649,7 +649,7 @@ test('fresh implementer metadata preflight stays before integration and shared e
   const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
   const guard = tool.indexOf("throw new Error('Fresh changed work requires title, summary, security_notes, and limitations')");
   assert.ok(guard >= 0);
-  assert.ok(guard < tool.indexOf('integrateLatestDev({'));
+  assert.ok(guard < tool.indexOf('integrateLatestDev({', guard));
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
   assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd \}\)/);
   for (const field of ['title', 'summary', 'security_notes', 'limitations']) {
