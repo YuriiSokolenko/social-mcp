@@ -8,7 +8,7 @@ The control plane intentionally uses a simple contract:
 4. Ordinary pull-request CI validates that exact PR HEAD, including control-plane and Docker checks that Reviewer does not own.
 5. Merge Gate requires both `review:passed` and successful PR CI for the current `pr.head.sha`, then attempts a GitHub squash merge for that SHA.
 6. Ordinary `push` CI tests the resulting `dev` commit.
-7. Green CI wakes Merge Gate; red CI blocks the merge sequence.
+7. Green CI wakes Merge Gate. Pending PR CI does not block other ready PRs; failed/cancelled PR CI invalidates that PR's review PASS and hands it to PR Fix while the gate continues scanning. Red post-merge `dev` CI still stops the merge sequence.
 
 The actual merged `dev` commit is the integration truth.
 
@@ -60,7 +60,7 @@ PR HEAD CI green -+        |                              |
                                              next merge      stop
 ```
 
-PR CI is not a synthetic integration approximation: it is the repository's ordinary pull-request workflow bound to the current PR HEAD. Post-merge `dev` CI remains the integration truth.
+PR CI is not a synthetic integration approximation: it is the repository's ordinary pull-request workflow bound to the current PR HEAD. Pending PR CI is skipped until its green wake; failed or cancelled PR CI transfers ownership to `review:changes-requested` + PR Fix and does not stall later ready PRs. Post-merge `dev` CI remains the integration truth.
 
 ## Workflow input rule
 

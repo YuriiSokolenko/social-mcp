@@ -26,34 +26,40 @@ function writeMock(mockFile, storeFile) {
 
     globalThis.fetch = async (url, options = {}) => {
       const method = options.method ?? 'GET';
-      const { pathname } = new URL(url);
+      const parsed = new URL(url);
+      const { pathname, searchParams } = parsed;
       const store = load();
 
       if (method === 'GET' && pathname.endsWith('/pulls')) {
         return Response.json(store.openPrs);
       }
       const filesMatch = /\\/pulls\\/(\\d+)\\/files$/.exec(pathname);
-      if (filesMatch) return Response.json(store.files);
+      if (filesMatch) return Response.json(store.filesByPr?.[filesMatch[1]] ?? store.files);
 
       if (method === 'GET' && pathname.endsWith('/actions/workflows/ci.yml/runs')) {
-        return Response.json({ workflow_runs: store.ciRuns ?? [] });
+        const headSha = searchParams.get('head_sha');
+        return Response.json({ workflow_runs: store.ciRunsBySha?.[headSha] ?? store.ciRuns ?? [] });
       }
 
       const mergeMatch = /\\/pulls\\/(\\d+)\\/merge$/.exec(pathname);
       if (mergeMatch && method === 'PUT') {
         if (store.mergeConflict) return new Response('merge conflicts, resolve and retry', { status: 405 });
-        store.merged = JSON.parse(options.body);
+        const body = JSON.parse(options.body);
+        store.merged = body;
+        store.merges = store.merges ?? [];
+        store.merges.push({ pr: Number(mergeMatch[1]), ...body });
         save(store);
         return Response.json({ merged: true, sha: 'merged-sha' });
       }
 
       const prMatch = /\\/pulls\\/(\\d+)$/.exec(pathname);
-      if (prMatch && method === 'GET') return Response.json(store.pr);
+      if (prMatch && method === 'GET') return Response.json(store.prs?.[prMatch[1]] ?? store.pr);
 
       const labelsMatch = /\\/issues\\/(\\d+)\\/labels$/.exec(pathname);
       if (labelsMatch && method === 'PUT') {
         const body = JSON.parse(options.body);
-        store.pr.labels = body.labels.map(name => ({ name }));
+        const target = store.prs?.[labelsMatch[1]] ?? store.pr;
+        target.labels = body.labels.map(name => ({ name }));
         save(store);
         return Response.json({});
       }
@@ -72,7 +78,7 @@ function writeMock(mockFile, storeFile) {
       }
 
       const issueMatch = /\\/issues\\/(\\d+)$/.exec(pathname);
-      if (issueMatch && method === 'GET') return Response.json(store.issue);
+      if (issueMatch && method === 'GET') return Response.json(store.issues?.[issueMatch[1]] ?? store.issue);
 
       const dispatchMatch = /\\/actions\\/workflows\\/([^/]+)\\/dispatches$/.exec(pathname);
       if (dispatchMatch && method === 'POST') {
@@ -176,7 +182,7 @@ test('merge gate blocks a passed PR while exact-head CI is still pending', () =>
   assert.equal(JSON.parse(readFileSync(storeFile, 'utf8')).merged, undefined);
 });
 
-test('merge gate blocks a passed PR whose exact-head CI failed', () => {
+test('failed exact-head CI invalidates PASS, dispatches PR Fix, and does not merge that PR', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
@@ -184,13 +190,111 @@ test('merge gate blocks a passed PR whose exact-head CI failed', () => {
     pr: basePr,
     files: [{ filename: 'src/social_mcp/app.py' }],
     issue: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
-    ciRuns: [{ id: 13, event: 'pull_request', head_sha: 'sha-1', status: 'completed', conclusion: 'failure' }],
+    ciRuns: [{
+      id: 13, event: 'pull_request', head_sha: 'sha-1', status: 'completed',
+      conclusion: 'failure', html_url: 'https://github.test/runs/13',
+    }],
   }));
 
   const result = run(storeFile);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /PR CI failure for sha-1; merge blocked/);
+  assert.match(result.stdout, /PR CI failure for sha-1; assigned review:changes-requested, dispatched PR Fix, checking the next PR/);
+
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.equal(store.merged, undefined);
+  assert.ok(store.pr.labels.some(label => label.name === 'review:changes-requested'));
+  assert.ok(!store.pr.labels.some(label => label.name === 'review:passed'));
+  assert.deepEqual(store.dispatched, [{ workflow: 'pi-pr-fix.yml', inputs: { pr_number: '7' } }]);
+  assert.match(store.comments[0].body, /https:\/\/github\.test\/runs\/13/);
+});
+
+test('stale green CI from a different head SHA cannot merge the current PR', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  writeFileSync(storeFile, JSON.stringify({
+    openPrs: [{ number: 7 }],
+    pr: basePr,
+    files: [{ filename: 'src/social_mcp/app.py' }],
+    issue: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    ciRuns: [{ id: 14, event: 'pull_request', head_sha: 'sha-old', status: 'completed', conclusion: 'success' }],
+  }));
+
+  const result = run(storeFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /waiting for green PR CI for sha-1; checking the next PR/);
   assert.equal(JSON.parse(readFileSync(storeFile, 'utf8')).merged, undefined);
+});
+
+test('failed CI on one PR is routed to repair while a later green PR can still merge', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  const secondPr = {
+    ...basePr,
+    number: 8,
+    body: 'Closes #43',
+    head: { ...basePr.head, ref: 'pi/issue-43', sha: 'sha-2' },
+  };
+  writeFileSync(storeFile, JSON.stringify({
+    openPrs: [{ number: 7 }, { number: 8 }],
+    prs: { 7: basePr, 8: secondPr },
+    filesByPr: {
+      7: [{ filename: 'src/social_mcp/app.py' }],
+      8: [{ filename: 'src/social_mcp/storage.py' }],
+    },
+    issues: {
+      42: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+      43: { number: 43, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    },
+    ciRunsBySha: {
+      'sha-1': [{ id: 15, event: 'pull_request', head_sha: 'sha-1', status: 'completed', conclusion: 'cancelled' }],
+      'sha-2': [{ id: 16, event: 'pull_request', head_sha: 'sha-2', status: 'completed', conclusion: 'success' }],
+    },
+  }));
+
+  const result = run(storeFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /PR CI cancelled for sha-1; assigned review:changes-requested, dispatched PR Fix, checking the next PR/);
+  assert.match(result.stdout, /merged sha-2 after green PR CI/);
+
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.ok(store.prs['7'].labels.some(label => label.name === 'review:changes-requested'));
+  assert.deepEqual(store.dispatched, [{ workflow: 'pi-pr-fix.yml', inputs: { pr_number: '7' } }]);
+  assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
+});
+
+test('pending CI on one PR does not block a later green PR', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  const secondPr = {
+    ...basePr,
+    number: 8,
+    body: 'Closes #43',
+    head: { ...basePr.head, ref: 'pi/issue-43', sha: 'sha-2' },
+  };
+  writeFileSync(storeFile, JSON.stringify({
+    openPrs: [{ number: 7 }, { number: 8 }],
+    prs: { 7: basePr, 8: secondPr },
+    filesByPr: {
+      7: [{ filename: 'src/social_mcp/app.py' }],
+      8: [{ filename: 'src/social_mcp/storage.py' }],
+    },
+    issues: {
+      42: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+      43: { number: 43, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    },
+    ciRunsBySha: {
+      'sha-1': [{ id: 17, event: 'pull_request', head_sha: 'sha-1', status: 'in_progress', conclusion: null }],
+      'sha-2': [{ id: 18, event: 'pull_request', head_sha: 'sha-2', status: 'completed', conclusion: 'success' }],
+    },
+  }));
+
+  const result = run(storeFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /waiting for green PR CI for sha-1; checking the next PR/);
+  assert.match(result.stdout, /merged sha-2 after green PR CI/);
+
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
 });
 
 test('a PR whose issue is not yet mr-created, or that lacks review:passed, is skipped without mutation', () => {

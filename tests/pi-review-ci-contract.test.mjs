@@ -15,10 +15,12 @@ test('CI validates the committed dev state without synthetic PR integration inpu
 
 test('merge gate requires green CI for the exact current PR head without synthetic integration state', () => {
   const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.match(gate, /workflowFile\('ci'\)/);
+  assert.match(gate, /actions\/workflows\/.*\/runs\?event=pull_request&head_sha=/);
   assert.match(gate, /head_sha=/);
   assert.match(gate, /pr\.head\.sha/);
-  assert.match(gate, /state !== 'success'/);
+  assert.match(gate, /ci\.state === 'pending'/);
+  assert.match(gate, /ci\.state === 'failed'/);
+  assert.match(gate, /review:changes-requested/);
   assert.doesNotMatch(gate, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\/integration|social-mcp\/pi-review/i);
   assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
   assert.match(gate, /merge_method: 'squash'/);

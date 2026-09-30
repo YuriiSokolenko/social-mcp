@@ -92,13 +92,28 @@ async function processPR(prSummary) {
   }
 
   const ci = await loadPrCiVerdict(sha);
-  if (ci.state !== 'success') {
-    if (ci.state === 'failed') {
-      console.log(`#${pr.number}: PR CI ${ci.run?.conclusion ?? 'failed'} for ${sha}; merge blocked`);
-    } else {
-      console.log(`#${pr.number}: waiting for green PR CI for ${sha}`);
+  if (ci.state === 'pending') {
+    console.log(`#${pr.number}: waiting for green PR CI for ${sha}; checking the next PR`);
+    return;
+  }
+  if (ci.state === 'failed') {
+    const conclusion = ci.run?.conclusion ?? 'failure';
+    const runId = ci.run?.id ?? 'unknown';
+    const marker = `<!-- merge-gate:ci-failure:${pr.number}:${sha}:${runId} -->`;
+    const comments = await pages(`/issues/${pr.number}/comments`);
+    if (!comments.some(item => (item.body ?? '').includes(marker))) {
+      const runUrl = ci.run?.html_url ? ` Run: ${ci.run.html_url}` : '';
+      await comment(
+        pr.number,
+        `Merge Gate blocked this PR because CI for the reviewed HEAD ${sha} completed with ${conclusion}.${runUrl} Review PASS is invalidated and PR Fix now owns repair.\n\n${marker}`,
+      );
     }
-    return 'blocked';
+    await replaceLabels(pr.number, withReviewVerdict([...prLabels], REVIEW_CHANGES_REQUESTED));
+    await dispatchWorkflow(workflowFile('repair'), { pr_number: String(pr.number) });
+    console.log(
+      `#${pr.number}: PR CI ${conclusion} for ${sha}; assigned ${REVIEW_CHANGES_REQUESTED}, dispatched PR Fix, checking the next PR`,
+    );
+    return;
   }
 
   try {

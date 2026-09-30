@@ -38,13 +38,17 @@ test('merge gate requires successful PR CI for the exact head SHA', () => {
     { id: 3, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'failure' },
   ], 'abc').state, 'failed');
   assert.equal(prCiVerdict([
-    { id: 4, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'success' },
+    { id: 4, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'cancelled' },
+  ], 'abc').state, 'failed');
+  assert.equal(prCiVerdict([
+    { id: 5, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'success' },
   ], 'abc').state, 'success');
 
   const source = readScript('scripts/pi-auto-merge.mjs', 'utf8');
-  assert.match(source, /workflowFile\('ci'\)/);
+  assert.match(source, /actions\/workflows\/.*\/runs\?event=pull_request&head_sha=/);
   assert.match(source, /head_sha=/);
   assert.match(source, /waiting for green PR CI/);
+  assert.match(source, /assigned .*review:changes-requested.*dispatched PR Fix/s);
   assert.match(source, /merge_method: 'squash'/);
   assert.doesNotMatch(source, /integration_base_sha|repair_base_sha|BASE_SHA|base\.object\.sha/);
   assert.doesNotMatch(source, /social-mcp\/(?:integration|integration-conflict|pi-review|repair-)/);
