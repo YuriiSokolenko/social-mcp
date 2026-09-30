@@ -98,6 +98,8 @@ test('action-required corrective steering never shrinks below the executable act
 test('action-required runtime steering uses a real user steer without importing runtime dependencies', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /PI_ACTION_REQUIRED_STEER/);
+  assert.match(runtime, /RUNTIME CLASSIFICATION REQUIRED/);
+  assert.match(runtime, /preComplexityActionRequired/);
   assert.match(runtime, /await pi\.sendUserMessage\(directive, \{ deliverAs: 'steer' \}\)/);
   assert.doesNotMatch(runtime, /customType: 'pi-action-required'/);
 });
@@ -155,6 +157,44 @@ test('implementer exposes one runtime-owned preparation action before repository
   assert.match(state.checkToolCall('subagent', { agent: 'implementation-planner', async: false }).reason, /configured preparation\/classification action/);
   state.setComplexity('trivial');
   assert.equal(state.checkToolCall('subagent', { agent: 'scout', async: false }), undefined);
+});
+
+test('reviewer startup evidence budget forces classification after three successful actions', () => {
+  const state = controller({
+    requireComplexity: true,
+    requiredFirstReadPath: 'agents/reviewer/AGENTS.md',
+    preComplexityTurnLimit: 8,
+    preComplexityEvidenceBudget: 3,
+    preComplexityAllowedTools: ['read', 'bash', 'lsp_start_server', 'lsp_find_symbol'],
+    preComplexityTransitionTools: ['declare_task_complexity'],
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('read', { path: 'agents/reviewer/AGENTS.md' }), undefined);
+  assert.equal(state.preComplexityActionRequired(), false);
+
+  assert.equal(state.checkToolCall('read', { path: '/tmp/pi-pr-context.json' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.preComplexityActionRequired(), false);
+
+  assert.equal(state.checkToolCall('bash', { command: 'git diff origin/dev -- src/example.py' }), undefined);
+  state.onToolExecutionEnd('bash', true);
+  assert.equal(state.preComplexityActionRequired(), false);
+
+  assert.equal(state.checkToolCall('bash', { command: 'git diff origin/dev -- src/example.py' }), undefined);
+  state.onToolExecutionEnd('bash', false);
+  assert.equal(state.preComplexityActionRequired(), false);
+
+  assert.equal(state.checkToolCall('read', { path: 'src/example.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.preComplexityActionRequired(), true);
+
+  const blocked = state.checkToolCall('read', { path: 'src/another.py' });
+  assert.match(blocked.reason, /3 evidence actions/);
+  assert.equal(state.checkToolCall('declare_task_complexity', { complexity: 'trivial' }), undefined);
+  state.setComplexity('trivial');
+  state.onToolExecutionEnd('declare_task_complexity', false);
+  assert.equal(state.preComplexityActionRequired(), false);
 });
 
 test('single-shot tools cannot be retried after the first accepted call', () => {
@@ -793,6 +833,9 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('dispatcher').maxTurns, 30);
   assert.equal(stageConfig('triage').fixedResponseMaxTokens, 1000);
   for (const name of ['implementer', 'reviewer', 'repair']) assert.equal(stageConfig(name).requireComplexity, true);
+  assert.equal(stageConfig('reviewer').preComplexityEvidenceBudget, 3);
+  assert.equal(stageConfig('reviewer').preComplexityActionResponseMaxTokens, 512);
+  assert.equal(stageConfig('reviewer').preComplexityActionResponseRetryMaxTokens, 512);
   assert.deepEqual(stageConfig('reviewer').preComplexityAllowedTools, ['read', 'bash', 'lsp_start_server', 'lsp_find_symbol']);
   assert.deepEqual(stageConfig('reviewer').preComplexityTransitionTools, ['declare_task_complexity']);
   assert.deepEqual(stageConfig('repair').preComplexityAllowedTools, ['read', 'bash']);
