@@ -101,6 +101,13 @@ def redact_message(text: str) -> str:
 
 
 def _redact_key_value(match: re.Match) -> str:
+    """Substitute a ``key=value`` match, redacting sensitive values.
+
+    When :func:`_is_sensitive_key` matches the ``key``, the value is replaced
+    by :data:`_REDACTED_MARKER`; otherwise the original match is returned
+    unchanged.
+    """
+
     key = match.group(1)
     if _is_sensitive_key(key):
         return f"{key}={_REDACTED_MARKER}"
