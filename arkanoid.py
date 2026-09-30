@@ -28,6 +28,15 @@ PLAY = "play"
 END = "end"
 
 
+def _clamp_paddle_x(position, play_w):
+    """Clamp a paddle x position to the playable area.
+
+    Preserves the original clamp semantics, including narrow board widths
+    where play_w - PADDLE_W may be negative (the paddle is then pinned to 0).
+    """
+    return max(0, min(play_w - PADDLE_W, position))
+
+
 class Game:
     def __init__(self, stdscr, width, height):
         self.stdscr = stdscr
@@ -77,7 +86,7 @@ class Game:
 
     # --- input ---------------------------------------------------------------
     def _move_paddle(self, delta):
-        self.paddle_x = max(0, min(self.play_w - PADDLE_W, self.paddle_x + delta))
+        self.paddle_x = _clamp_paddle_x(self.paddle_x + delta, self.play_w)
 
     def handle_key(self, key):
         """Process a key. Returns False if the program should quit."""
