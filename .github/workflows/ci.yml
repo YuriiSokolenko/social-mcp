@@ -132,7 +132,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-post-merge.mjs "$GITHUB_SHA"
 
-      - name: Continue merge queue after terminal PR CI or green dev CI
+      - name: Continue merge queue after green CI or terminal PR CI
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-common/workflow-dispatch.mjs pi-auto-merge.yml
