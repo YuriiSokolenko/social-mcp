@@ -141,6 +141,19 @@ test('write no-op does not clear an outstanding loop steer', () => {
   assert.equal(nextFailure.action, 'abort');
 });
 
+test('target-local no-op stays a no-op when another call changed repository state', () => {
+  const guard = new SemanticLoopGuard();
+  const result = observation(guard, {
+    tool: 'write',
+    input: { path: 'src/a.js', content: 'same content' },
+    repositoryStateBefore: 'repo-before',
+    repositoryStateAfter: 'repo-after-because-of-sibling-call',
+    mutationChanged: false,
+  });
+  assert.equal(result.classification, 'success_no_change');
+  assert.equal(result.tripped, false);
+});
+
 test('A B A C A repository cycle trips revisit protection', () => {
   const guard = new SemanticLoopGuard();
   assert.equal(observation(guard, {
