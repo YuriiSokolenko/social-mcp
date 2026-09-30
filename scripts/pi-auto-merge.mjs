@@ -63,6 +63,29 @@ export function prCiVerdict(runs, headSha, jobs = []) {
   };
 }
 
+export function devCiVerdict(runs, headSha) {
+  const matching = runs
+    .filter(run => run?.event === 'push' && run?.head_sha === headSha)
+    .sort((a, b) => Number(b.id ?? 0) - Number(a.id ?? 0));
+  if (!matching.length) return { state: 'pending', run: null };
+
+  const run = matching[0];
+  if (run.status !== 'completed') return { state: 'pending', run };
+  return { state: run.conclusion === 'success' ? 'success' : 'failed', run };
+}
+
+async function loadDevCiVerdict() {
+  const ref = await api(`/git/ref/heads/${encodeURIComponent(baseBranch())}`);
+  const sha = ref?.object?.sha;
+  if (!sha) throw new Error(`Cannot resolve current ${baseBranch()} HEAD`);
+
+  const workflow = workflowFile('ci');
+  const runs = await workflowRuns(
+    `/actions/workflows/${encodeURIComponent(workflow)}/runs?event=push&head_sha=${encodeURIComponent(sha)}`,
+  );
+  return { sha, ...devCiVerdict(runs, sha) };
+}
+
 async function loadPrCiVerdict(headSha) {
   const workflow = workflowFile('ci');
   const runs = await workflowRuns(
@@ -252,6 +275,12 @@ async function processPR(prSummary) {
 }
 
 export async function main() {
+  const devCi = await loadDevCiVerdict();
+  if (devCi.state !== 'success') {
+    console.log(`Merge gate waiting for green ${baseBranch()} CI for ${devCi.sha}; current state=${devCi.state}`);
+    return;
+  }
+
   const prs = await pages(`/pulls?state=open&base=${encodeURIComponent(baseBranch())}`);
   for (const pr of prs) {
     try {

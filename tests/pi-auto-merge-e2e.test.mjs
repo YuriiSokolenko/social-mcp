@@ -30,6 +30,10 @@ function writeMock(mockFile, storeFile) {
       const { pathname, searchParams } = parsed;
       const store = load();
 
+      if (method === 'GET' && pathname.endsWith('/git/ref/heads/dev')) {
+        return Response.json({ object: { sha: store.devSha ?? 'dev-sha' } });
+      }
+
       if (method === 'GET' && pathname.endsWith('/pulls')) {
         return Response.json(store.openPrs);
       }
@@ -38,6 +42,17 @@ function writeMock(mockFile, storeFile) {
 
       if (method === 'GET' && pathname.endsWith('/actions/workflows/ci.yml/runs')) {
         const headSha = searchParams.get('head_sha');
+        const event = searchParams.get('event');
+        if (event === 'push') {
+          const workflowRuns = store.devCiRuns ?? [{
+            id: 900,
+            event: 'push',
+            head_sha: headSha,
+            status: 'completed',
+            conclusion: 'success',
+          }];
+          return Response.json({ workflow_runs: workflowRuns });
+        }
         return Response.json({ workflow_runs: store.ciRunsBySha?.[headSha] ?? store.ciRuns ?? [] });
       }
 
@@ -182,6 +197,65 @@ test('a late merge conflict invalidates review and dispatches PR Fix', () => {
   assert.equal(store.comments.length, 1);
   assert.match(store.comments[0].body, /conflicts with current dev/);
   assert.deepEqual(store.dispatched, [{ workflow: 'pi-pr-fix.yml', inputs: { pr_number: '7' } }]);
+});
+
+test('a repeated wake cannot merge the next PR until the new dev HEAD has green CI', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  const secondPr = {
+    ...basePr,
+    number: 8,
+    body: 'Closes #43',
+    head: { ...basePr.head, ref: 'pi/issue-43', sha: 'sha-2' },
+  };
+  writeFileSync(storeFile, JSON.stringify({
+    devSha: 'dev-before',
+    devCiRuns: [{ id: 100, event: 'push', head_sha: 'dev-before', status: 'completed', conclusion: 'success' }],
+    openPrs: [{ number: 7 }, { number: 8 }],
+    prs: { 7: basePr, 8: secondPr },
+    filesByPr: {
+      7: [{ filename: 'src/social_mcp/app.py' }],
+      8: [{ filename: 'src/social_mcp/storage.py' }],
+    },
+    issues: {
+      42: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+      43: { number: 43, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    },
+    ciRunsBySha: {
+      'sha-1': [{ id: 101, event: 'pull_request', head_sha: 'sha-1', status: 'completed', conclusion: 'success' }],
+      'sha-2': [{ id: 102, event: 'pull_request', head_sha: 'sha-2', status: 'completed', conclusion: 'success' }],
+    },
+  }));
+
+  const first = run(storeFile);
+  assert.equal(first.status, 0, first.stderr);
+  let store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.deepEqual(store.merges, [{ pr: 7, sha: 'sha-1', merge_method: 'squash' }]);
+
+  // Simulate the immediate duplicate completion wake after PR #7 changed dev,
+  // before the new dev push CI has completed.
+  store.openPrs = [{ number: 8 }];
+  store.devSha = 'dev-after-7';
+  store.devCiRuns = [{ id: 103, event: 'push', head_sha: 'dev-after-7', status: 'in_progress', conclusion: null }];
+  writeFileSync(storeFile, JSON.stringify(store));
+
+  const duplicate = run(storeFile);
+  assert.equal(duplicate.status, 0, duplicate.stderr);
+  assert.match(duplicate.stdout, /waiting for green dev CI for dev-after-7; current state=pending/);
+  store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.deepEqual(store.merges, [{ pr: 7, sha: 'sha-1', merge_method: 'squash' }]);
+
+  // The normal green-dev wake now authorizes the next scan.
+  store.devCiRuns = [{ id: 104, event: 'push', head_sha: 'dev-after-7', status: 'completed', conclusion: 'success' }];
+  writeFileSync(storeFile, JSON.stringify(store));
+
+  const afterGreenDev = run(storeFile);
+  assert.equal(afterGreenDev.status, 0, afterGreenDev.stderr);
+  store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.deepEqual(store.merges, [
+    { pr: 7, sha: 'sha-1', merge_method: 'squash' },
+    { pr: 8, sha: 'sha-2', merge_method: 'squash' },
+  ]);
 });
 
 test('merge gate skips a passed PR while exact-head CI is still pending', () => {
