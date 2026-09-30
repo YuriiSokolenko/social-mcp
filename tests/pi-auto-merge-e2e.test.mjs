@@ -43,15 +43,18 @@ function writeMock(mockFile, storeFile) {
 
       const jobsMatch = /\\/actions\\/runs\\/(\\d+)\\/jobs$/.exec(pathname);
       if (jobsMatch && method === 'GET') {
+        if (store.jobsError) return new Response(store.jobsError, { status: 500 });
         const jobs = store.jobsByRun?.[jobsMatch[1]] ?? [];
         return Response.json({ total_count: jobs.length, jobs });
       }
 
-      const rerunMatch = /\\/actions\\/runs\\/(\\d+)\\/rerun$/.exec(pathname);
+      const rerunMatch = /\\/actions\\/runs\\/(\\d+)\\/(rerun|rerun-failed-jobs)$/.exec(pathname);
       if (rerunMatch && method === 'POST') {
         if (store.rerunError) return new Response(store.rerunError, { status: 500 });
         store.reruns = store.reruns ?? [];
+        store.rerunActions = store.rerunActions ?? [];
         store.reruns.push(Number(rerunMatch[1]));
+        store.rerunActions.push(rerunMatch[2]);
         save(store);
         return new Response(null, { status: 201 });
       }
@@ -97,6 +100,7 @@ function writeMock(mockFile, storeFile) {
 
       const dispatchMatch = /\\/actions\\/workflows\\/([^/]+)\\/dispatches$/.exec(pathname);
       if (dispatchMatch && method === 'POST') {
+        if (store.dispatchError) return new Response(store.dispatchError, { status: 500 });
         store.dispatched = store.dispatched ?? [];
         store.dispatched.push({ workflow: dispatchMatch[1], inputs: JSON.parse(options.body).inputs });
         save(store);
@@ -321,6 +325,7 @@ test('infrastructure failure retries once without PR Fix and does not block a la
 
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.reruns, [17]);
+  assert.deepEqual(store.rerunActions, ['rerun']);
   assert.equal(store.dispatched, undefined);
   assert.ok(store.prs['7'].labels.some(label => label.name === 'review:passed'));
   assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
@@ -348,6 +353,7 @@ test('infrastructure retry is bounded and repeated wakes are idempotent', () => 
 
   let store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.reruns, [19]);
+  assert.deepEqual(store.rerunActions, ['rerun']);
   assert.equal(store.comments.length, 1);
   assert.equal(store.dispatched, undefined);
 
@@ -393,9 +399,110 @@ test('failure before product checks is infrastructure and never dispatches PR Fi
 
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.reruns, [20]);
+  assert.deepEqual(store.rerunActions, ['rerun-failed-jobs']);
   assert.equal(store.dispatched, undefined);
   assert.ok(store.pr.labels.some(label => label.name === 'review:passed'));
 });
+
+test('jobs metadata API failure is conservative infrastructure and requests only failed-job retry', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  writeFileSync(storeFile, JSON.stringify({
+    openPrs: [{ number: 7 }],
+    pr: basePr,
+    files: [{ filename: 'src/social_mcp/app.py' }],
+    issue: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    ciRuns: [{
+      id: 23, event: 'pull_request', head_sha: 'sha-1', status: 'completed',
+      conclusion: 'failure', run_attempt: 1,
+    }],
+    jobsError: 'jobs API unavailable',
+  }));
+
+  const result = run(storeFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /treating it as infrastructure/);
+  assert.match(result.stdout, /requested bounded retry of run 23/);
+
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.deepEqual(store.reruns, [23]);
+  assert.deepEqual(store.rerunActions, ['rerun-failed-jobs']);
+  assert.equal(store.dispatched, undefined);
+  assert.ok(store.pr.labels.some(label => label.name === 'review:passed'));
+});
+
+test('failed infrastructure retry moves the PR to human recovery without a pre-action retry marker', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  writeFileSync(storeFile, JSON.stringify({
+    openPrs: [{ number: 7 }],
+    pr: basePr,
+    files: [{ filename: 'src/social_mcp/app.py' }],
+    issue: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    ciRuns: [{
+      id: 24, event: 'pull_request', head_sha: 'sha-1', status: 'completed',
+      conclusion: 'cancelled', run_attempt: 1,
+    }],
+    rerunError: 'runner service unavailable',
+  }));
+
+  const result = run(storeFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /infrastructure retry request failed; marked pi:needs-human/);
+
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.equal(store.reruns, undefined);
+  assert.equal(store.dispatched, undefined);
+  assert.ok(store.pr.labels.some(label => label.name === 'pi:needs-human'));
+  assert.equal(store.comments.length, 1);
+  assert.match(store.comments[0].body, /ci-infra-retry-failed/);
+  assert.doesNotMatch(store.comments[0].body, /merge-gate:ci-infra-retry:7:sha-1:24/);
+});
+
+test('PR Fix dispatch failure transfers ownership durably and does not block a later green PR', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  const secondPr = {
+    ...basePr,
+    number: 8,
+    body: 'Closes #43',
+    head: { ...basePr.head, ref: 'pi/issue-43', sha: 'sha-2' },
+  };
+  writeFileSync(storeFile, JSON.stringify({
+    openPrs: [{ number: 7 }, { number: 8 }],
+    prs: { 7: basePr, 8: secondPr },
+    filesByPr: {
+      7: [{ filename: 'src/social_mcp/app.py' }],
+      8: [{ filename: 'src/social_mcp/storage.py' }],
+    },
+    issues: {
+      42: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+      43: { number: 43, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    },
+    ciRunsBySha: {
+      'sha-1': [{ id: 25, event: 'pull_request', head_sha: 'sha-1', status: 'completed', conclusion: 'failure', run_attempt: 1 }],
+      'sha-2': [{ id: 26, event: 'pull_request', head_sha: 'sha-2', status: 'completed', conclusion: 'success' }],
+    },
+    jobsByRun: {
+      25: [{ name: 'test', steps: [{ name: 'Pytest', conclusion: 'failure' }] }],
+    },
+    dispatchError: 'dispatch unavailable',
+  }));
+
+  const result = run(storeFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /Reconciler will recover it/);
+  assert.match(result.stdout, /deferred repair to Reconciler, checking the next PR/);
+  assert.match(result.stdout, /merged sha-2 after green PR CI/);
+
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.ok(store.prs['7'].labels.some(label => label.name === 'review:changes-requested'));
+  assert.ok(!store.prs['7'].labels.some(label => label.name === 'review:passed'));
+  assert.equal(store.dispatched, undefined);
+  assert.match(store.comments[0].body, /Reconciler owns recovery/);
+  assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
+});
+
 
 test('pending CI on one PR does not block a later green PR', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
