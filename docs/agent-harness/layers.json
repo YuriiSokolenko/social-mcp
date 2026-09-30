@@ -34,6 +34,7 @@
     "scripts/pi-common/stage-validation-recovery.mjs",
     "scripts/pi-common/state-machine.mjs",
     "scripts/pi-common/task-metadata.mjs",
+    "scripts/pi-common/validation-ledger.mjs",
     "scripts/pi-common/workflow-dispatch.mjs",
     "scripts/pi-dispatcher.mjs",
     "scripts/pi-issue-reconcile.mjs",
