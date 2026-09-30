@@ -46,6 +46,7 @@ issue,217,all,,,,5,35731,2883,54254,0,92868,299.0,411,https://github.com/YuriiSo
 issue,220,all,,,,16,84482,22216,180508,0,287206,1706.8,1900,https://github.com/YuriiSokolenko/social-mcp/issues/220
 issue,222,all,,,,25,25163,21880,650218,0,697261,0.0,1458,https://github.com/YuriiSokolenko/social-mcp/issues/222
 issue,224,all,,,,63,132312,66744,1166486,0,1365542,5939.4,6053,https://github.com/YuriiSokolenko/social-mcp/issues/224
+issue,224,all,,,,8,21427,9109,163081,0,193617,875.7,988,https://github.com/YuriiSokolenko/social-mcp/issues/224
 attempt,25,implementation,36039015936,1,cancelled,10,19537,2657,89273,0,111467,165.6,266,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36039015936/attempts/1
 attempt,10,implementation,36093253439,1,success,14,32423,59901,296631,0,388955,7281.5,7339,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093253439/attempts/1
 attempt,18,implementation,36093256959,1,success,78,61865,30747,2878475,0,2971087,3027.9,3130,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093256959/attempts/1
@@ -261,3 +262,4 @@ attempt,0,triage,36734249845,1,cancelled,2,9293,605,26071,0,35969,81.8,139,https
 attempt,0,triage,36735878975,1,success,5,8207,2004,89681,0,99892,141.2,194,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36735878975/attempts/1
 attempt,0,dispatcher,36735878987,1,success,2,3197,525,26258,0,29980,78.7,114,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36735878987/attempts/1
 attempt,0,triage,36736412752,1,failure,7,6538,2062,112064,0,120664,108.4,144,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36736412752/attempts/1
+attempt,224,implementation,36737168224,1,cancelled,8,21427,9109,163081,0,193617,875.7,988,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36737168224/attempts/1
