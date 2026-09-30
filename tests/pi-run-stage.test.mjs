@@ -184,7 +184,7 @@ test('validation repair spec is backend-neutral and keeps the same worktree and 
   assert.match(repair.prompt, /previous implementation attempt finished/i);
   assert.match(repair.prompt, /ruff check \. failed/);
   assert.match(repair.prompt, /F841 unused variable/);
-  assert.doesNotMatch(repair.prompt, /restart or re-plan/i);
+  assert.match(repair.prompt, /Do not restart or re-plan/i);
 });
 
 test('shared validation recovery gives any implementer backend one focused repair attempt', async () => {
