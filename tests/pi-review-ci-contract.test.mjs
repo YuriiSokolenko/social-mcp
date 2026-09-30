@@ -656,7 +656,7 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.doesNotMatch(dispatcher, /blame_context|commit_story|file_history|search_commits|file_contributors/);
   assert.doesNotMatch(triage, /blame_context|commit_story|file_history|search_commits|file_contributors/);
   assert.match(stageConfig, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
-  assert.match(stageConfig, /controlTools: \['set_response_budget', 'subagents_enable', 'lsp_start_server'\]/);
+  assert.match(stageConfig, /controlTools: \['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'\]/);
   assert.match(stageConfig, /actionTools: \['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'\]/);
   assert.match(progress, /const MUTATION_TOOLS = new Set\(\['structural_edit', 'safe_edit', 'edit', 'write'\]\)/);
   assert.match(resultTool, /structural_edit\/safe_edit\/edit\/write/);

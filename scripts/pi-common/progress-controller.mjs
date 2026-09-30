@@ -1,6 +1,8 @@
 const COMPLEXITY_RANK = Object.freeze({ trivial: 0, nontrivial: 1, normal: 1, complex: 2 });
-// Completion budget for code-heavy agents: generated source is embedded in tool-call
-// arguments, so a small ceiling truncates `write`/`edit` calls before they execute.
+// Ceiling for the one-shot elevated mutation response: generated source is embedded in
+// tool-call arguments, so a small ceiling truncates a large `write`/`edit` before it executes.
+// This budget is granted for exactly one response (see `largeMutationBudgetTool`); normal
+// implementer turns use the small `RESPONSE_BUDGETS`/`actionResponseMaxTokens` ceiling.
 export const IMPLEMENTER_RESPONSE_MAX_TOKENS = 16384;
 export const RESPONSE_BUDGETS = Object.freeze({ short: 2048, normal: 4096, deep: 8192 });
 
@@ -49,7 +51,9 @@ export function isBoundedDirectBash(command) {
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
 const ROLLBACK_TOOL = 'rollback_last_mutation';
 const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
-const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
+// The set of tools a one-shot elevated mutation response is allowed to spend
+// its turn on: an actual mutation, a rollback, or a terminal submission.
+export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
 const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
 
 function positiveInteger(value, name) {
@@ -77,10 +81,14 @@ export function classifyTruncatedToolCall({ toolName, isError, text }) {
   return { kind: 'tool_call_truncated', toolName };
 }
 
-export function truncatedToolCallGuidance(toolName) {
+export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null } = {}) {
+  const splitAdvice = 'Make the next mutation smaller: split the change across several smaller write/edit/safe_edit calls '
+    + '(for a new file, write a minimal skeleton first, then add sections with separate edits).';
+  const budgetAdvice = largeMutationBudgetTool
+    ? ` If the full payload genuinely needs more room, call ${largeMutationBudgetTool} first, then retry once in that one elevated response.`
+    : '';
   return `Your previous "${toolName}" tool call was NOT executed: the response hit the completion-token limit, so its arguments were cut off and nothing was changed. `
-    + 'Make the next mutation smaller: split the change across several smaller write/edit/safe_edit calls '
-    + '(for a new file, write a minimal skeleton first, then add sections with separate edits). Do not resend the same large call.';
+    + `${splitAdvice}${budgetAdvice} Do not resend the same large call.`;
 }
 
 export function nextActionResponseCap({
@@ -193,12 +201,23 @@ export class ProgressController {
       ]),
     );
     this.productiveEvidenceRemaining = 0;
+    // Set by `setEvidenceBudget` from the planner's own per-task estimate. When present it
+    // takes priority over the by-complexity table: complexity is not a valid proxy for how
+    // much repository evidence a task actually needs before it is safe to mutate.
+    this.productiveEvidenceBudgetOverride = null;
     this.lastEvidenceRequestSignature = null;
     this.evidenceUnlockUsedSinceProgress = false;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
     this.requireLspStartBeforeFindSymbol = config.requireLspStartBeforeFindSymbol === true;
     this.lspServerStartPending = false;
+    // One-shot elevated mutation budget: 'idle' (default) -> 'pending' (grant tool call just
+    // succeeded; applies to the upcoming response) -> 'active' (the elevated response is the
+    // one currently in flight) -> back to 'idle' after that single response, regardless of
+    // whether it attempted the mutation it was granted for.
+    this.largeMutationBudgetTool = this.productiveProgress?.largeMutationBudgetTool ?? null;
+    this.largeMutationBudgetMaxTokens = this.productiveProgress?.largeMutationBudgetMaxTokens ?? null;
+    this.largeMutationBudgetState = 'idle';
     this.lspServerReady = !this.requireLspStartBeforeFindSymbol;
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
@@ -236,8 +255,49 @@ export class ProgressController {
     return { complexity: name, previous, changed: previous !== name };
   }
 
+  // Records the planner's own bounded evidence estimate for this task, independent of the
+  // trivial/nontrivial complexity classification. `null` clears any override and restores
+  // the by-complexity table as a fallback.
+  setEvidenceBudget(value) {
+    if (value == null) {
+      this.productiveEvidenceBudgetOverride = null;
+      return null;
+    }
+    const budget = Number(value);
+    if (!Number.isSafeInteger(budget) || budget < 0) {
+      throw new Error('evidence budget must be a non-negative integer');
+    }
+    this.productiveEvidenceBudgetOverride = budget;
+    return budget;
+  }
+
   verificationPermitted() {
     return this.verificationPermits > 0;
+  }
+
+  largeMutationBudgetPending() {
+    return this.largeMutationBudgetState === 'pending';
+  }
+
+  largeMutationBudgetActive() {
+    return this.largeMutationBudgetState === 'active';
+  }
+
+  // Moves a granted-but-not-yet-applied large mutation budget from 'pending' to 'active' once
+  // the runtime has actually applied the elevated ceiling to the upcoming response.
+  activateLargeMutationBudget() {
+    if (this.largeMutationBudgetState !== 'pending') return false;
+    this.largeMutationBudgetState = 'active';
+    return true;
+  }
+
+  // Ends the one-shot elevated window after the elevated response has happened, whether or
+  // not it attempted the mutation/terminal action it was granted for. Returns whether a grant
+  // was actually active, so the caller can log a policy-violation warning when it was not used.
+  resetLargeMutationBudget() {
+    const wasActive = this.largeMutationBudgetState === 'active';
+    this.largeMutationBudgetState = 'idle';
+    return wasActive;
   }
 
   productiveProgressState() {
@@ -262,6 +322,7 @@ export class ProgressController {
   }
 
   productiveInitialEvidenceBudgetForComplexity() {
+    if (this.productiveEvidenceBudgetOverride != null) return this.productiveEvidenceBudgetOverride;
     return this.productiveEvidenceBudgetByComplexity[this.complexity] ??
       this.productiveInitialEvidenceBudget;
   }
@@ -320,6 +381,13 @@ export class ProgressController {
           reason: `BLOCKED: ${toolName} did not execute. Before complexity is recorded, use only initial-orientation tools or the configured preparation/classification action.`,
         };
       }
+    }
+
+    if (this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool && this.largeMutationBudgetState !== 'idle') {
+      return {
+        block: true,
+        reason: `BLOCKED: ${toolName} did not execute. A large mutation budget is already granted or active; use it for the pending mutation before requesting another.`,
+      };
     }
 
     if (toolName === 'bash' && this.boundedDirectBash && !isBoundedDirectBash(input?.command)) {
@@ -487,9 +555,15 @@ export class ProgressController {
       if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
     }
     if (!isError && this.productiveProgress && toolName === this.productiveActivationTool) {
-      this.productiveEvidenceRemaining = this.productiveInitialEvidenceBudgetForComplexity();
-      this.productiveState = 'evidence_allowed';
+      const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
+      this.productiveEvidenceRemaining = evidenceBudget;
+      // A task whose planner-reported evidence need is zero has nothing to gather: go
+      // straight to action_required instead of granting one incidental evidence action.
+      this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
       this.evidenceUnlockUsedSinceProgress = false;
+    }
+    if (!isError && this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool) {
+      this.largeMutationBudgetState = 'pending';
     }
     if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
       this.verificationPermits = 1;

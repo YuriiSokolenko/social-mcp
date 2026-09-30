@@ -111,6 +111,36 @@ test('structural_edit rejects zero or multiple matches without changing the file
   }
 });
 
+test('structural_edit reports bounded per-match context for an ambiguous anchor', () => {
+  const dir = tempRepo();
+  try {
+    const file = path.join(dir, 'sample.py');
+    const source = 'def a():\n    return 1\n\n\ndef b():\n    return 1\n';
+    fs.writeFileSync(file, source);
+    const matchA = matchFor({ file, source, startText: 'return 1', replacement: 'return 2' });
+    const matchB = { ...matchA, range: { ...matchA.range, start: { line: 4, column: 4 }, end: { line: 4, column: 12 } } };
+
+    assert.throws(
+      () => structuralEdit(dir, {
+        path: 'sample.py',
+        pattern: 'return 1',
+        rewrite: 'return 2',
+      }, {
+        run: () => ({ status: 0, out: JSON.stringify([matchA, matchB]), err: '' }),
+      }),
+      (error) => {
+        assert.match(error.message, /exactly one AST match; found 2/);
+        assert.match(error.message, /line 1: return 1/);
+        assert.match(error.message, /line 5: return 1/);
+        return true;
+      },
+    );
+    assert.equal(fs.readFileSync(file, 'utf8'), source);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('structural_edit refuses stale ast-grep byte ranges', () => {
   const dir = tempRepo();
   try {

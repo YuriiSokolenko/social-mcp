@@ -3,6 +3,22 @@ import path from 'node:path';
 
 const OPERATIONS = new Set(['insert_before', 'insert_after', 'replace']);
 const POST_EDIT_PREVIEW_MAX_CHARS = 2000;
+const FAILURE_CONTEXT_PADDING_LINES = 3;
+const FAILURE_CONTEXT_MAX_CHARS = 2000;
+
+// Bounded current-worktree context around a failed deterministic anchor, so the caller can
+// retry the same local edit without opening broad repository evidence merely to see the
+// current few lines near the mismatch.
+function failureContext(lines, start, end) {
+  const from = Math.max(1, start - FAILURE_CONTEXT_PADDING_LINES);
+  const to = Math.min(lines.length, end + FAILURE_CONTEXT_PADDING_LINES);
+  const numbered = [];
+  for (let n = from; n <= to; n += 1) numbered.push(`${n}: ${lines[n - 1]}`);
+  const joined = numbered.join('\n');
+  const truncated = joined.length > FAILURE_CONTEXT_MAX_CHARS;
+  const text = truncated ? joined.slice(0, FAILURE_CONTEXT_MAX_CHARS) : joined;
+  return `Current lines ${from}-${to}:\n${text}`;
+}
 
 function positiveLine(value, name) {
   if (!Number.isSafeInteger(value) || value < 1) {
@@ -102,7 +118,8 @@ export function safeEdit(root, params) {
     : startLine;
   if (endLine < startLine) throw new Error('end_line must be >= start_line');
   if (startLine > lines.length || endLine > lines.length) {
-    throw new Error(`safe_edit range ${startLine}-${endLine} is outside the current file (1-${lines.length})`);
+    const tail = failureContext(lines, lines.length, lines.length);
+    throw new Error(`safe_edit range ${startLine}-${endLine} is outside the current file (1-${lines.length}). ${tail}`);
   }
 
   const selected = lines.slice(startLine - 1, endLine).join(newline);
@@ -110,7 +127,8 @@ export function safeEdit(root, params) {
     ? params.expected_marker
     : '';
   if (expectedMarker && !selected.includes(expectedMarker)) {
-    throw new Error(`safe_edit expected_marker was not found in current lines ${startLine}-${endLine}`);
+    const context = failureContext(lines, startLine, endLine);
+    throw new Error(`safe_edit expected_marker was not found in current lines ${startLine}-${endLine}. ${context}`);
   }
 
   const replacement = blockLines(params.text);

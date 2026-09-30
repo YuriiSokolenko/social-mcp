@@ -523,9 +523,11 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /name: 'prepare_implementation'/);
   assert.match(runtime, /IMPLEMENTATION_PREPARATION_SCHEMA/);
   assert.match(runtime, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
+  assert.match(runtime, /evidence_budget: \{ type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET \}/);
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.doesNotMatch(runtime, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
+  assert.match(runtime, /controller\.setEvidenceBudget\(prepared\.evidenceBudget\)/);
   assert.match(runtime, /directActionImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /validationRepair[\s\S]*PI_VALIDATION_REPAIR/);
   assert.match(runtime, /responseHitOutputCeiling/);
@@ -551,6 +553,21 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(planner, /trivial \| nontrivial/);
   assert.match(planner, /Dispatcher already owns Architect routing/);
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
+});
+
+test('runtime grants the large mutation budget for exactly one response and always collapses it back', () => {
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  assert.match(runtime, /FINISH_TOOLS/);
+  assert.match(runtime, /name: controller\.largeMutationBudgetTool/);
+  assert.match(runtime, /controller\.largeMutationBudgetPending\(\)/);
+  assert.match(runtime, /controller\.activateLargeMutationBudget\(\)/);
+  assert.match(runtime, /controller\.largeMutationBudgetActive\(\)/);
+  assert.match(runtime, /controller\.resetLargeMutationBudget\(\)/);
+  assert.match(runtime, /PI_LARGE_MUTATION_BUDGET/);
+  assert.match(runtime, /PI_LARGE_MUTATION_BUDGET_VIOLATION/);
+  assert.match(runtime, /elevatedTurnAttemptedFinishTool/);
+  assert.match(planner, /evidence_budget/);
 });
 
 test('repo search performs deterministic path and content discovery without a child model', () => {
@@ -791,10 +808,13 @@ test('stage configuration centralizes per-agent runtime policy', () => {
     trivial: 2,
     nontrivial: 6,
   });
-  assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 16384);
-  assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 16384);
+  assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, RESPONSE_BUDGETS.short);
+  assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, RESPONSE_BUDGETS.short);
+  assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetTool, 'request_large_mutation_budget');
+  assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetMaxTokens, IMPLEMENTER_RESPONSE_MAX_TOKENS);
+  assert.equal(stageConfig('implementer').fixedResponseMaxTokens, undefined);
   assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result']);
-  assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
   assert.equal(stageConfig('triage').productiveProgress.activationReadSuffix, 'pi-triage-context.json');
@@ -927,14 +947,104 @@ test('productive progress allows only one extra evidence permit per productive e
   }), undefined);
 });
 
-test('implementer requests use the shared 16k completion budget by default', () => {
+test('implementer normal turns stay small; the 16k ceiling is reserved for one-shot mutation elevation', () => {
   assert.equal(IMPLEMENTER_RESPONSE_MAX_TOKENS, 16384);
   const cfg = stageConfig('implementer');
-  assert.equal(cfg.fixedResponseMaxTokens, 16384);
-  assert.equal(cfg.productiveProgress.actionResponseMaxTokens, 16384);
-  assert.equal(cfg.productiveProgress.actionResponseRetryMaxTokens, 16384);
+  assert.equal(cfg.fixedResponseMaxTokens, undefined);
+  assert.equal(cfg.productiveProgress.actionResponseMaxTokens, RESPONSE_BUDGETS.short);
+  assert.equal(cfg.productiveProgress.actionResponseRetryMaxTokens, RESPONSE_BUDGETS.short);
+  assert.equal(cfg.productiveProgress.largeMutationBudgetMaxTokens, IMPLEMENTER_RESPONSE_MAX_TOKENS);
   const c = new ProgressController(cfg, {});
-  assert.equal(c.modelFor({ id: 'm', maxTokens: 2048 }).maxTokens, 16384);
+  assert.equal(c.modelFor({ id: 'm', maxTokens: 2048 }).maxTokens, RESPONSE_BUDGETS.short);
+});
+
+test('request_large_mutation_budget is one-shot: granted for exactly the next response, then collapses', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.onTurnStart(0);
+  // Mirrors the real call order: the tool's execute() records complexity/evidence
+  // before the runtime reports execution end for the same call.
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(0);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.equal(state.largeMutationBudgetState, 'idle');
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'large new file' }), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.largeMutationBudgetPending(), true);
+
+  // A second grant request before the elevated response is consumed is refused.
+  assert.match(state.checkToolCall('request_large_mutation_budget', { reason: 'again' }).reason, /already granted or active/);
+
+  assert.equal(state.activateLargeMutationBudget(), true);
+  assert.equal(state.largeMutationBudgetActive(), true);
+
+  // The elevated response spends its one shot on a real mutation.
+  assert.equal(state.checkToolCall('write', { path: 'arkanoid.py' }), undefined);
+  state.onToolExecutionEnd('write', false);
+
+  assert.equal(state.resetLargeMutationBudget(), true);
+  assert.equal(state.largeMutationBudgetState, 'idle');
+
+  // Idle again: requesting another elevated budget is allowed.
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'second large file' }), undefined);
+});
+
+test('a large mutation grant that ends without a finish-tool attempt still collapses to idle', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.largeMutationBudgetState = 'active';
+  assert.equal(state.resetLargeMutationBudget(), true);
+  assert.equal(state.largeMutationBudgetState, 'idle');
+  // Collapsing an already-idle budget reports no active grant was consumed.
+  assert.equal(state.resetLargeMutationBudget(), false);
+});
+
+test('a zero evidence_budget preparation transitions directly to action_required', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.onTurnStart(0);
+  state.checkToolCall('prepare_implementation', {});
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(0);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  // No incidental evidence action slips through: a non-action tool is blocked immediately.
+  assert.match(state.checkToolCall('read', { path: 'README.md' }).reason, /productive progress requires an action now/);
+});
+
+test('a positive planner evidence_budget overrides the by-complexity table and still allows gathering it', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.onTurnStart(0);
+  state.checkToolCall('prepare_implementation', {});
+  state.setComplexity('trivial');
+  state.setEvidenceBudget(1);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/known.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+});
+
+test('without a planner override, evidence budget still falls back to the by-complexity table', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.onTurnStart(0);
+  state.checkToolCall('prepare_implementation', {});
+  state.setComplexity('nontrivial');
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.productiveEvidenceRemaining, 6);
+});
+
+test('truncatedToolCallGuidance mentions the large mutation budget only when it is offered', () => {
+  const bare = truncatedToolCallGuidance('write');
+  assert.doesNotMatch(bare, /request_large_mutation_budget/);
+  const withOption = truncatedToolCallGuidance('write', { largeMutationBudgetTool: 'request_large_mutation_budget' });
+  assert.match(withOption, /request_large_mutation_budget/);
 });
 
 test('mini-swe backend inherits the shared completion budget', () => {

@@ -92,7 +92,16 @@ export function structuralEdit(root, params, options = {}) {
   });
   const matches = parseMatches(result);
   if (matches.length !== 1) {
-    throw new Error(`structural_edit requires exactly one AST match; found ${matches.length}`);
+    // Bounded per-match location/preview so an ambiguous anchor can be tightened without
+    // opening broad repository evidence merely to see where the extra matches landed.
+    const ambiguousContext = matches.length > 1
+      ? ` Matches:\n${matches.slice(0, 5).map(m => {
+          const line = m?.range?.start?.line;
+          const preview = bounded(String(m?.text ?? '')).text;
+          return `line ${Number.isSafeInteger(line) ? line + 1 : '?'}: ${preview}`;
+        }).join('\n')}${matches.length > 5 ? '\n...' : ''}`
+      : '';
+    throw new Error(`structural_edit requires exactly one AST match; found ${matches.length}${ambiguousContext}`);
   }
 
   const match = matches[0];
