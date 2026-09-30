@@ -8,7 +8,7 @@ The control plane intentionally uses a simple contract:
 4. Ordinary pull-request CI validates that exact PR HEAD, including control-plane and Docker checks that Reviewer does not own.
 5. Merge Gate requires both `review:passed` and successful PR CI for the current `pr.head.sha`, then attempts a GitHub squash merge for that SHA.
 6. Ordinary `push` CI tests the resulting `dev` commit.
-7. Green CI wakes Merge Gate. Pending PR CI does not block other ready PRs; failed/cancelled PR CI invalidates that PR's review PASS and hands it to PR Fix while the gate continues scanning. Red post-merge `dev` CI still stops the merge sequence.
+7. Every terminal PR CI result wakes Merge Gate. Pending PR CI does not block other ready PRs. A failed known product check invalidates review PASS and hands the PR to PR Fix; infrastructure failures are retried once and then require human recovery. Red post-merge `dev` CI still stops the merge sequence.
 
 The actual merged `dev` commit is the integration truth.
 
@@ -39,7 +39,7 @@ Do not make Reconciler, Usage, or another diagnostic workflow a second scheduler
 
 A wake event means only: "re-check your current work." It must not carry authoritative pipeline state.
 
-Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, successful PR CI -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler is not a normal Merge Gate scheduler; it may issue one recovery wake only when an already-`review:passed` PR outlives the PR recovery grace period without its normal PASS handoff.
+Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, terminal PR CI -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler is not a normal Merge Gate scheduler; it may issue one recovery wake only when an already-`review:passed` PR outlives the PR recovery grace period without its normal PASS handoff.
 
 ## Merge conflict rule
 
@@ -60,7 +60,15 @@ PR HEAD CI green -+        |                              |
                                              next merge      stop
 ```
 
-PR CI is not a synthetic integration approximation: it is the repository's ordinary pull-request workflow bound to the current PR HEAD. Pending PR CI is skipped until its green wake; failed or cancelled PR CI transfers ownership to `review:changes-requested` + PR Fix and does not stall later ready PRs. Post-merge `dev` CI remains the integration truth.
+PR CI is not a synthetic integration approximation: it is the repository's ordinary pull-request workflow bound to the current PR HEAD. Pending PR CI is skipped. Terminal PR CI always wakes Merge Gate, which reloads current PR and CI state from GitHub. A failure in a known deterministic product-check step transfers ownership to `review:changes-requested` + PR Fix and does not stall later ready PRs. Cancellation, timeout, setup/runner failures, missing job metadata, and Docker-job failures are treated conservatively as infrastructure instead of consuming an LLM repair run. Post-merge `dev` CI remains the integration truth.
+
+## PR CI failure classification
+
+Merge Gate classifies only trusted GitHub Actions run/job/step metadata. The repairable allowlist is intentionally narrow: Ruff, Pytest, Agent workflow checks, and Runner autoscaler checks. Docker build/start/smoke/integration failures are not auto-repairable because the same step can fail from a product change or transient Docker, registry, or network infrastructure.
+
+Infrastructure recovery is bounded to one automatic retry. For a completed workflow with conclusion `failure`, Merge Gate uses GitHub's `rerun-failed-jobs` endpoint so already-green jobs do not run again. For `cancelled` or `timed_out`, it re-runs the full workflow because there may be no failed job set to retry. A second infrastructure-classified terminal attempt moves the PR to `pi:needs-human`.
+
+A product test that hangs until the workflow or job timeout is deliberately classified as infrastructure because GitHub metadata cannot safely distinguish a product hang from runner or infrastructure loss. The policy is one retry and then `pi:needs-human`, not automatic PR Fix.
 
 ## Workflow input rule
 

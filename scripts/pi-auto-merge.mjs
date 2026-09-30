@@ -6,7 +6,18 @@ import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED, withoutReviewLabels, withRevie
 import { baseBranch, parseIssueBranch, workflowFile } from './pi-common/project-config.mjs';
 import { PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 
-const { api, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns } = githubClient();
+const { api, raw, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns } = githubClient();
+
+export const PRODUCT_CI_STEPS = new Set([
+  'Ruff',
+  'Pytest',
+  'Agent workflow checks',
+  'Runner autoscaler checks',
+]);
+
+export function infraRetryEndpoint(run) {
+  return run?.conclusion === 'failure' ? 'rerun-failed-jobs' : 'rerun';
+}
 
 export function linkedIssueNumber(pr, repository) {
   const number = parseIssueBranch(pr.head?.ref ?? '');
@@ -25,7 +36,13 @@ export function allowedFiles(files, changedCount) {
   return files.length === changedCount && controlPlanePaths(paths).length === 0;
 }
 
-export function prCiVerdict(runs, headSha) {
+export function failedProductCiSteps(jobs) {
+  return jobs.flatMap(job => job.steps ?? [])
+    .filter(step => step?.conclusion === 'failure' && PRODUCT_CI_STEPS.has(step.name))
+    .map(step => step.name);
+}
+
+export function prCiVerdict(runs, headSha, jobs = []) {
   const matching = runs
     .filter(run => run?.event === 'pull_request' && run?.head_sha === headSha)
     .sort((a, b) => Number(b.id ?? 0) - Number(a.id ?? 0));
@@ -33,7 +50,17 @@ export function prCiVerdict(runs, headSha) {
 
   const run = matching[0];
   if (run.status !== 'completed') return { state: 'pending', run };
-  return { state: run.conclusion === 'success' ? 'success' : 'failed', run };
+  if (run.conclusion === 'success') return { state: 'success', run };
+
+  // A failed workflow is repairable only when trusted Actions metadata shows
+  // that a product check itself failed. Cancellation, timeout, runner/setup
+  // failures, and failures before product checks execute are infrastructure.
+  const failedProductSteps = run.conclusion === 'failure' ? failedProductCiSteps(jobs) : [];
+  return {
+    state: failedProductSteps.length ? 'code_failure' : 'infra_failure',
+    run,
+    failedProductSteps,
+  };
 }
 
 async function loadPrCiVerdict(headSha) {
@@ -41,7 +68,72 @@ async function loadPrCiVerdict(headSha) {
   const runs = await workflowRuns(
     `/actions/workflows/${encodeURIComponent(workflow)}/runs?event=pull_request&head_sha=${encodeURIComponent(headSha)}`,
   );
-  return prCiVerdict(runs, headSha);
+  const initial = prCiVerdict(runs, headSha);
+  if (initial.state !== 'infra_failure' || initial.run?.conclusion !== 'failure') return initial;
+
+  try {
+    const jobsData = await api(`/actions/runs/${initial.run.id}/jobs?per_page=100`);
+    return prCiVerdict(runs, headSha, jobsData.jobs ?? []);
+  } catch (error) {
+    console.warn(`Cannot load CI jobs for run ${initial.run.id}; treating it as infrastructure: ${error.message}`);
+    return { ...initial, metadataError: error.message };
+  }
+}
+
+async function processInfraFailure(pr, prLabels, sha, ci) {
+  const conclusion = ci.run?.conclusion ?? 'unknown';
+  const runId = ci.run?.id;
+  const runAttempt = Number(ci.run?.run_attempt ?? 1);
+  const runUrl = ci.run?.html_url ? ` Run: ${ci.run.html_url}` : '';
+  const comments = await pages(`/issues/${pr.number}/comments`);
+
+  const retryMarker = `<!-- merge-gate:ci-infra-retry:${pr.number}:${sha}:${runId} -->`;
+  if (runAttempt <= 1) {
+    if (comments.some(item => (item.body ?? '').includes(retryMarker))) {
+      console.log(`#${pr.number}: infrastructure CI retry already requested for run ${runId}; checking the next PR`);
+      return;
+    }
+
+    const retryAction = infraRetryEndpoint(ci.run);
+    try {
+      const response = await raw(`/actions/runs/${runId}/${retryAction}`, 'POST');
+      if (!response.ok) throw new Error(`POST /actions/runs/${runId}/${retryAction}: ${response.status} ${await response.text()}`);
+      try {
+        await comment(
+          pr.number,
+          `Merge Gate classified CI for reviewed HEAD ${sha} as an infrastructure failure (${conclusion}), so PR Fix will not run. CI retry was requested once.${runUrl}\n\n${retryMarker}`,
+        );
+      } catch (error) {
+        console.warn(`#${pr.number}: CI retry succeeded but diagnostic comment failed: ${error.message}`);
+      }
+      console.log(`#${pr.number}: infrastructure CI ${conclusion} for ${sha}; requested bounded retry of run ${runId}, checking the next PR`);
+    } catch (error) {
+      const nextLabels = [...prLabels];
+      if (!nextLabels.includes(PIPELINE_LABELS.needsHuman)) nextLabels.push(PIPELINE_LABELS.needsHuman);
+      await replaceLabels(pr.number, nextLabels);
+      const marker = `<!-- merge-gate:ci-infra-retry-failed:${pr.number}:${sha}:${runId} -->`;
+      if (!comments.some(item => (item.body ?? '').includes(marker))) {
+        await comment(
+          pr.number,
+          `Merge Gate could not request the bounded CI retry for run ${runId}: ${error.message}. Human infrastructure recovery is required.\n\n${marker}`,
+        );
+      }
+      console.log(`#${pr.number}: infrastructure retry request failed; marked ${PIPELINE_LABELS.needsHuman}, checking the next PR`);
+    }
+    return;
+  }
+
+  const marker = `<!-- merge-gate:ci-infra-exhausted:${pr.number}:${sha}:${runId} -->`;
+  const nextLabels = [...prLabels];
+  if (!nextLabels.includes(PIPELINE_LABELS.needsHuman)) nextLabels.push(PIPELINE_LABELS.needsHuman);
+  await replaceLabels(pr.number, nextLabels);
+  if (!comments.some(item => (item.body ?? '').includes(marker))) {
+    await comment(
+      pr.number,
+      `Merge Gate classified CI for reviewed HEAD ${sha} as an infrastructure failure (${conclusion}) after the single automatic retry. PR Fix was not dispatched; human infrastructure recovery is required.${runUrl}\n\n${marker}`,
+    );
+  }
+  console.log(`#${pr.number}: infrastructure CI failure persisted after bounded retry; marked ${PIPELINE_LABELS.needsHuman}, checking the next PR`);
 }
 
 async function processPR(prSummary) {
@@ -96,22 +188,43 @@ async function processPR(prSummary) {
     console.log(`#${pr.number}: waiting for green PR CI for ${sha}; checking the next PR`);
     return;
   }
-  if (ci.state === 'failed') {
+  if (ci.state === 'infra_failure') {
+    await processInfraFailure(pr, [...prLabels], sha, ci);
+    return;
+  }
+  if (ci.state === 'code_failure') {
     const conclusion = ci.run?.conclusion ?? 'failure';
     const runId = ci.run?.id ?? 'unknown';
     const marker = `<!-- merge-gate:ci-failure:${pr.number}:${sha}:${runId} -->`;
-    const comments = await pages(`/issues/${pr.number}/comments`);
-    if (!comments.some(item => (item.body ?? '').includes(marker))) {
-      const runUrl = ci.run?.html_url ? ` Run: ${ci.run.html_url}` : '';
-      await comment(
-        pr.number,
-        `Merge Gate blocked this PR because CI for the reviewed HEAD ${sha} completed with ${conclusion}.${runUrl} Review PASS is invalidated and PR Fix now owns repair.\n\n${marker}`,
-      );
-    }
+    const runUrl = ci.run?.html_url ? ` Run: ${ci.run.html_url}` : '';
+    const failedChecks = ci.failedProductSteps?.length ? ` Failed product checks: ${ci.failedProductSteps.join(', ')}.` : '';
+
+    // The label is the durable ownership transfer. If dispatch fails, Reconciler
+    // sees review:changes-requested and restarts PR Fix after its recovery grace.
     await replaceLabels(pr.number, withReviewVerdict([...prLabels], REVIEW_CHANGES_REQUESTED));
-    await dispatchWorkflow(workflowFile('repair'), { pr_number: String(pr.number) });
+    let dispatched = false;
+    try {
+      await dispatchWorkflow(workflowFile('repair'), { pr_number: String(pr.number) });
+      dispatched = true;
+    } catch (error) {
+      console.error(`#${pr.number}: PR Fix dispatch failed after ownership transfer; Reconciler will recover it: ${error.message}`);
+    }
+
+    try {
+      const comments = await pages(`/issues/${pr.number}/comments`);
+      if (!comments.some(item => (item.body ?? '').includes(marker))) {
+        await comment(
+          pr.number,
+          dispatched
+            ? `Merge Gate blocked this PR because CI for the reviewed HEAD ${sha} failed a product check.${failedChecks}${runUrl} Review PASS is invalidated and PR Fix now owns repair.\n\n${marker}`
+            : `Merge Gate blocked this PR because CI for the reviewed HEAD ${sha} failed a product check.${failedChecks}${runUrl} Review PASS is invalidated; PR Fix dispatch failed and Reconciler owns recovery.\n\n${marker}`,
+        );
+      }
+    } catch (error) {
+      console.warn(`#${pr.number}: code-failure diagnostic comment failed: ${error.message}`);
+    }
     console.log(
-      `#${pr.number}: PR CI ${conclusion} for ${sha}; assigned ${REVIEW_CHANGES_REQUESTED}, dispatched PR Fix, checking the next PR`,
+      `#${pr.number}: PR CI ${conclusion} for ${sha}; assigned ${REVIEW_CHANGES_REQUESTED}, ${dispatched ? 'dispatched PR Fix' : 'deferred repair to Reconciler'}, checking the next PR`,
     );
     return;
   }

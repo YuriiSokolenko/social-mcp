@@ -39,7 +39,7 @@ jobs:
           cache: pip
 
       - name: Install project and development dependencies
-        run: pip install -e . pytest pytest-asyncio ruff==0.12.12
+        run: pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
 
       - name: Ruff
         run: ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
@@ -109,7 +109,13 @@ jobs:
 
 
   wake-merge-gate:
-    if: success() && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev'))
+    if: >-
+      always() &&
+      (github.event_name == 'pull_request' ||
+       (github.event_name == 'push' &&
+        github.ref == 'refs/heads/dev' &&
+        needs.test.result == 'success' &&
+        needs.docker.result == 'success'))
     needs: [test, docker]
     runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 2
@@ -126,7 +132,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-post-merge.mjs "$GITHUB_SHA"
 
-      - name: Continue merge queue after green CI
+      - name: Continue merge queue after green CI or terminal PR CI
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-common/workflow-dispatch.mjs pi-auto-merge.yml
