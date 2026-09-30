@@ -50,3 +50,7 @@ Dispatcher classification, Architect decomposition, Reviewer verdict parsing, re
 These files are part of the CI control plane. Pi agents have no permission to modify them. They are protected by `control-plane-policy.mjs` through the `scripts/pi-*` boundary because this directory itself is under `scripts/pi-common/**`.
 
 Prefer a small explicit helper with comments and tests over copying shell/API logic into multiple workflows.
+
+## Project policy
+
+Project-specific values (default branch, labels, workflow names, branch naming, control-plane paths, check commands, environment steps) are **not** spelled in these modules. They come from `.agent-harness.json` through `project-config.mjs`. See `docs/agent-harness/README.md`; `docs/agent-harness/layers.json` classifies every script and `tests/harness-boundary.test.mjs` enforces it.
