@@ -62,7 +62,7 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
 });
 
 
-test('implementer resolves latest-dev integration inside the live agent session before publication', () => {
+test('implementer integrates latest dev before shared post-backend validation and publication', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
   assert.doesNotMatch(workflow, /name: Integrate latest dev before publication/);
@@ -71,7 +71,12 @@ test('implementer resolves latest-dev integration inside the live agent session 
   assert.match(finalizer, /fetch', 'origin', 'dev/);
   assert.match(finalizer, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /Merge conflicts are still unresolved|Latest dev conflicts with the implementation/);
-  assert.match(tool, /validateFinalProductTree\(\)/);
+  const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
+  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  assert.doesNotMatch(tool, /validateFinalProductTree/);
+  assert.match(validation, /validateFinalProductTree/);
+  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd \}\)/);
+  assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend\)/);
   const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /issue-publication\.mjs" review/);
   assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
@@ -99,7 +104,7 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(finalizer, /fetch', 'origin', 'dev/);
   assert.match(finalizer, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /PR conflicts with current dev/);
-  assert.match(finalizer, /runProductChecks\(\)/);
+  assert.match(finalizer, /runProductChecks\(\{ cwd \}\)/);
   assert.match(workflow, /name: Start fresh review/);
   assert.match(fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8'), /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
@@ -324,8 +329,8 @@ test('product agent workflows use one shared product-check contract and never ru
     const workflow = fs.readFileSync(`.github/workflows/${name}`, 'utf8');
     assert.doesNotMatch(workflow, /node\s+--test|test_runner_autoscaler|tests\/[^^\s"']*\.test\.mjs/);
   }
-  // Reviewer validates in workflow. Implementer validates once inside its trusted
-  // terminal submit tool; publication must not rerun the same full product suite.
+  // Reviewer validates in workflow. Implementer validation is backend-neutral and
+  // runs after the selected backend submits; publication must not rerun the suite.
   assert.match(fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
   assert.doesNotMatch(fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
   const checks = fs.readFileSync('scripts/pi-common/product-checks.mjs', 'utf8');
@@ -334,9 +339,11 @@ test('product agent workflows use one shared product-check contract and never ru
   assert.match(checks, /ruff/);
   const repairTool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
   const implementerTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
   assert.match(repairTool, /validateFinalProductTree\(\)/);
-  assert.match(implementerTool, /validateFinalProductTree\(\)/);
-  assert.match(fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\)/);
+  assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
+  assert.match(validation, /validateFinalProductTree/);
+  assert.match(fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd \}\)/);
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(ci, /node --test tests\/\*\.test\.mjs/);
   assert.match(ci, /tests\/test_runner_autoscaler\.sh/);
@@ -356,10 +363,12 @@ test('all Pi agents are hard-blocked from CI control-plane changes', () => {
 
   const implementerTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
   const repairTool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
-  assert.match(implementerTool, /validateFinalProductTree\(\)/);
+  const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
+  assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
+  assert.match(validation, /validateFinalProductTree/);
   assert.match(repairTool, /validateFinalProductTree\(\)/);
   const finalizer = fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
-  assert.match(finalizer, /forbiddenAgentPaths\(base\)/);
+  assert.match(finalizer, /forbiddenAgentPaths\(base, cwd\)/);
   const agentChanges = fs.readFileSync('scripts/pi-common/agent-change-policy.mjs', 'utf8');
   for (const check of ["diff','--name-only", "diff','--cached','--name-only", "ls-files','--others','--exclude-standard"]) assert.ok(agentChanges.includes(check));
   assert.match(finalizer, /Agent changes to CI\/control-plane files are forbidden/);
@@ -464,7 +473,7 @@ test('publication helpers reuse one trusted git runner', () => {
 test('stage runner delegates shared Pi extensions to the Pi backend once for all agents', () => {
   const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
   const backend = fs.readFileSync('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
-  assert.match(runner, /runPiStage\(spec, \{ workspace \}\)/);
+  assert.match(runner, /candidate => runPiStage\(candidate, \{ workspace \}\)/);
   assert.equal(backend.split('pi-bash-timeout.mjs').length - 1, 1);
   assert.equal(backend.split('pi-agent-runtime.mjs').length - 1, 1);
   assert.match(backend, /config\.resultTool/);
@@ -519,7 +528,7 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.ok(prompt.includes('**Never rerun them.**'));
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
-test('fresh implementer uses one planner/classifier result while restored work validates first', () => {
+test('fresh implementer uses one planner/classifier result while restored and repair work submit directly', () => {
   const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
@@ -543,14 +552,16 @@ test('fresh implementer uses one planner/classifier result while restored work v
   assert.match(agent, /### Fresh work[\s\S]*Call `prepare_implementation` exactly once/);
   assert.match(agent, /Task classification alone never requires delegation/);
   assert.match(agent, /2 actions for trivial[\s\S]*6 for nontrivial/);
-  assert.match(agent, /submit_result[\s\S]*both validation and submission/);
+  assert.match(agent, /submit_result[\s\S]*records that the agent considers the implementation complete/);
+  assert.match(agent, /shared stage harness runs the authoritative checks/);
   assert.doesNotMatch(agent, /trivial_repo_lookup|RepoMap|repo map orientation|complexity-classifier/);
 
   assert.match(runtime, /IMPLEMENTATION_PREPARATION_SCHEMA/);
   assert.match(runtime, /enum: \['trivial', 'nontrivial'\]/);
   assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
   assert.doesNotMatch(runtime, /trivial_repo_lookup|trivialRepoLookup|runStructuredComplexityClassifier|complexityClassifierAgent/);
-  assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
+  assert.match(runtime, /directActionImplementer[\s\S]*requireComplexity: false/);
+  assert.match(runtime, /validationRepair[\s\S]*PI_VALIDATION_REPAIR/);
   assert.match(runtime, /freshBaseCommit/);
   assert.match(runtime, /freshWorktreeIsLatestDev/);
   assert.match(runtime, /lspWorkspaceRoot/);
@@ -633,12 +644,14 @@ test('implementer has an explicit already-satisfied terminal path without duplic
 });
 
 
-test('fresh implementer result metadata is validated before expensive final checks', () => {
+test('fresh implementer metadata preflight stays before integration and shared expensive checks stay outside Pi', () => {
   const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
   const guard = tool.indexOf("throw new Error('Fresh changed work requires title, summary, security_notes, and limitations')");
   assert.ok(guard >= 0);
   assert.ok(guard < tool.indexOf('integrateLatestDev({'));
-  assert.ok(guard < tool.indexOf('validateFinalProductTree()'));
+  assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
+  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd \}\)/);
   for (const field of ['title', 'summary', 'security_notes', 'limitations']) {
     assert.match(tool, new RegExp(field + ".*Required for fresh changed work"));
   }
