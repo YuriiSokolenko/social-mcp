@@ -8,15 +8,16 @@ import { PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 
 const { api, raw, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns } = githubClient();
 
-const PRODUCT_CI_STEPS = new Set([
+export const PRODUCT_CI_STEPS = new Set([
   'Ruff',
   'Pytest',
   'Agent workflow checks',
   'Runner autoscaler checks',
-  'Build and start isolated Compose environment',
-  'Smoke test built image',
-  'Integration tests against the running container',
 ]);
+
+export function infraRetryEndpoint(run) {
+  return run?.conclusion === 'failure' ? 'rerun-failed-jobs' : 'rerun';
+}
 
 export function linkedIssueNumber(pr, repository) {
   const number = parseIssueBranch(pr.head?.ref ?? '');
@@ -86,21 +87,6 @@ async function processInfraFailure(pr, prLabels, sha, ci) {
   const runUrl = ci.run?.html_url ? ` Run: ${ci.run.html_url}` : '';
   const comments = await pages(`/issues/${pr.number}/comments`);
 
-  if (!runId) {
-    const marker = `<!-- merge-gate:ci-infra-no-run:${pr.number}:${sha} -->`;
-    if (!comments.some(item => (item.body ?? '').includes(marker))) {
-      const nextLabels = [...prLabels];
-      if (!nextLabels.includes(PIPELINE_LABELS.needsHuman)) nextLabels.push(PIPELINE_LABELS.needsHuman);
-      await replaceLabels(pr.number, nextLabels);
-      await comment(
-        pr.number,
-        `Merge Gate classified CI for reviewed HEAD ${sha} as an infrastructure failure, but GitHub did not provide a rerunnable run id. Human recovery is required.${runUrl}\n\n${marker}`,
-      );
-    }
-    console.log(`#${pr.number}: infrastructure CI failure without run id; marked ${PIPELINE_LABELS.needsHuman}, checking the next PR`);
-    return;
-  }
-
   const retryMarker = `<!-- merge-gate:ci-infra-retry:${pr.number}:${sha}:${runId} -->`;
   if (runAttempt <= 1) {
     if (comments.some(item => (item.body ?? '').includes(retryMarker))) {
@@ -108,13 +94,18 @@ async function processInfraFailure(pr, prLabels, sha, ci) {
       return;
     }
 
-    await comment(
-      pr.number,
-      `Merge Gate classified CI for reviewed HEAD ${sha} as an infrastructure failure (${conclusion}), so PR Fix will not run. CI will be retried once.${runUrl}\n\n${retryMarker}`,
-    );
+    const retryAction = infraRetryEndpoint(ci.run);
     try {
-      const response = await raw(`/actions/runs/${runId}/rerun`, 'POST');
-      if (!response.ok) throw new Error(`POST /actions/runs/${runId}/rerun: ${response.status} ${await response.text()}`);
+      const response = await raw(`/actions/runs/${runId}/${retryAction}`, 'POST');
+      if (!response.ok) throw new Error(`POST /actions/runs/${runId}/${retryAction}: ${response.status} ${await response.text()}`);
+      try {
+        await comment(
+          pr.number,
+          `Merge Gate classified CI for reviewed HEAD ${sha} as an infrastructure failure (${conclusion}), so PR Fix will not run. CI retry was requested once.${runUrl}\n\n${retryMarker}`,
+        );
+      } catch (error) {
+        console.warn(`#${pr.number}: CI retry succeeded but diagnostic comment failed: ${error.message}`);
+      }
       console.log(`#${pr.number}: infrastructure CI ${conclusion} for ${sha}; requested bounded retry of run ${runId}, checking the next PR`);
     } catch (error) {
       const nextLabels = [...prLabels];
@@ -205,23 +196,35 @@ async function processPR(prSummary) {
     const conclusion = ci.run?.conclusion ?? 'failure';
     const runId = ci.run?.id ?? 'unknown';
     const marker = `<!-- merge-gate:ci-failure:${pr.number}:${sha}:${runId} -->`;
-    const comments = await pages(`/issues/${pr.number}/comments`);
-    const alreadyHandled = comments.some(item => (item.body ?? '').includes(marker));
+    const runUrl = ci.run?.html_url ? ` Run: ${ci.run.html_url}` : '';
+    const failedChecks = ci.failedProductSteps?.length ? ` Failed product checks: ${ci.failedProductSteps.join(', ')}.` : '';
 
-    // Ownership changes before dispatch. If a later API call fails, Reconciler
-    // can recover review:changes-requested without a duplicate Merge Gate repair.
+    // The label is the durable ownership transfer. If dispatch fails, Reconciler
+    // sees review:changes-requested and restarts PR Fix after its recovery grace.
     await replaceLabels(pr.number, withReviewVerdict([...prLabels], REVIEW_CHANGES_REQUESTED));
-    if (!alreadyHandled) {
-      const runUrl = ci.run?.html_url ? ` Run: ${ci.run.html_url}` : '';
-      const failedChecks = ci.failedProductSteps?.length ? ` Failed product checks: ${ci.failedProductSteps.join(', ')}.` : '';
-      await comment(
-        pr.number,
-        `Merge Gate blocked this PR because CI for the reviewed HEAD ${sha} failed a product check.${failedChecks}${runUrl} Review PASS is invalidated and PR Fix now owns repair.\n\n${marker}`,
-      );
+    let dispatched = false;
+    try {
       await dispatchWorkflow(workflowFile('repair'), { pr_number: String(pr.number) });
+      dispatched = true;
+    } catch (error) {
+      console.error(`#${pr.number}: PR Fix dispatch failed after ownership transfer; Reconciler will recover it: ${error.message}`);
+    }
+
+    try {
+      const comments = await pages(`/issues/${pr.number}/comments`);
+      if (!comments.some(item => (item.body ?? '').includes(marker))) {
+        await comment(
+          pr.number,
+          dispatched
+            ? `Merge Gate blocked this PR because CI for the reviewed HEAD ${sha} failed a product check.${failedChecks}${runUrl} Review PASS is invalidated and PR Fix now owns repair.\n\n${marker}`
+            : `Merge Gate blocked this PR because CI for the reviewed HEAD ${sha} failed a product check.${failedChecks}${runUrl} Review PASS is invalidated; PR Fix dispatch failed and Reconciler owns recovery.\n\n${marker}`,
+        );
+      }
+    } catch (error) {
+      console.warn(`#${pr.number}: code-failure diagnostic comment failed: ${error.message}`);
     }
     console.log(
-      `#${pr.number}: PR CI ${conclusion} for ${sha}; assigned ${REVIEW_CHANGES_REQUESTED}${alreadyHandled ? ', repair already handled' : ', dispatched PR Fix'}, checking the next PR`,
+      `#${pr.number}: PR CI ${conclusion} for ${sha}; assigned ${REVIEW_CHANGES_REQUESTED}, ${dispatched ? 'dispatched PR Fix' : 'deferred repair to Reconciler'}, checking the next PR`,
     );
     return;
   }
