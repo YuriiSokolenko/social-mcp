@@ -24,9 +24,16 @@ function fakeBin(dir, name, body) {
   return file;
 }
 
-const hasPython = (() => {
-  try { return fs.existsSync('/usr/bin/python3') || Boolean(process.env.PATH.split(':').find(p => fs.existsSync(path.join(p, 'python3')))); } catch { return false; }
+const pythonBin = (() => {
+  try {
+    if (fs.existsSync('/usr/bin/python3')) return '/usr/bin/python3';
+    const dir = process.env.PATH.split(path.delimiter).find(p => fs.existsSync(path.join(p, 'python3')));
+    return dir ? path.join(dir, 'python3') : null;
+  } catch {
+    return null;
+  }
 })();
+const hasPython = Boolean(pythonBin);
 
 const directSandbox = (_root, spec) => spec;
 const directOptions = (options = {}) => ({ ...options, sandboxFactory: directSandbox });
@@ -47,10 +54,10 @@ test('python_compile passes on valid source and reports a syntax error with file
   const dir = worktree();
   fs.writeFileSync(path.join(dir, 'ok.py'), 'x = 1\n');
   fs.writeFileSync(path.join(dir, 'bad.py'), 'def (\n');
-  const pass = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, directOptions());
+  const pass = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, directOptions({ bins: { python: pythonBin } }));
   assert.equal(pass.status, 'pass');
   assert.equal(fs.existsSync(path.join(dir, '__pycache__')), false);
-  const fail = await runCheck(dir, { kind: 'python_compile', paths: ['bad.py'] }, directOptions());
+  const fail = await runCheck(dir, { kind: 'python_compile', paths: ['bad.py'] }, directOptions({ bins: { python: pythonBin } }));
   assert.equal(fail.status, 'fail');
   assert.equal(fail.diagnostics[0].file, 'bad.py');
   assert.equal(fail.diagnostics[0].line, 1);
