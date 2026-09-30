@@ -8,7 +8,7 @@ The control plane intentionally uses a simple contract:
 4. Ordinary pull-request CI validates that exact PR HEAD, including control-plane and Docker checks that Reviewer does not own.
 5. Merge Gate requires both `review:passed` and successful PR CI for the current `pr.head.sha`, then attempts a GitHub squash merge for that SHA.
 6. Ordinary `push` CI tests the resulting `dev` commit.
-7. Green CI wakes Merge Gate. Pending PR CI does not block other ready PRs; failed/cancelled PR CI invalidates that PR's review PASS and hands it to PR Fix while the gate continues scanning. Red post-merge `dev` CI still stops the merge sequence.
+7. Every terminal PR CI result wakes Merge Gate. Pending PR CI does not block other ready PRs. A failed known product check invalidates review PASS and hands the PR to PR Fix; infrastructure failures are retried once and then require human recovery. Red post-merge `dev` CI still stops the merge sequence.
 
 The actual merged `dev` commit is the integration truth.
 
@@ -39,7 +39,7 @@ Do not make Reconciler, Usage, or another diagnostic workflow a second scheduler
 
 A wake event means only: "re-check your current work." It must not carry authoritative pipeline state.
 
-Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, successful PR CI -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler is not a normal Merge Gate scheduler; it may issue one recovery wake only when an already-`review:passed` PR outlives the PR recovery grace period without its normal PASS handoff.
+Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, terminal PR CI -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler is not a normal Merge Gate scheduler; it may issue one recovery wake only when an already-`review:passed` PR outlives the PR recovery grace period without its normal PASS handoff.
 
 ## Merge conflict rule
 
