@@ -95,6 +95,8 @@ For complex changes, inspect additional architecture/security context only for c
 
 ## What determines the verdict
 
+For factual claims about **existing current behavior**, the checked-out current code and relevant tests are authoritative. An issue can request a behavior change, but it cannot make an inaccurate description of already-existing behavior true. If the issue text and inspected current code conflict, do not approve documentation, comments, tests, or implementation that repeat the false factual claim merely because the issue asked for it. Treat a PR that introduces or preserves a materially misleading factual description of current behavior as a concrete correctness defect and use `CHANGES_REQUESTED` with the exact mismatch. Correcting that factual mismatch is not scope expansion.
+
 Evaluate only dimensions relevant to the change:
 
 - **Issue compliance** — every acceptance criterion is satisfied and no required behavior is omitted.

@@ -660,6 +660,11 @@ test('reviewer orients and plans before declaring complexity', () => {
   assert.match(agent, /lsp_start_server/);
   assert.match(agent, /lsp_find_symbol/);
   assert.match(agent, /Fall back to literal\/index search only when LSP/);
+  assert.match(agent, /current code and relevant tests are authoritative/i);
+  assert.match(agent, /issue text and inspected current code conflict/i);
+  assert.match(agent, /CHANGES_REQUESTED/);
+  assert.match(config, /current checked-out code is authoritative for factual behavior/i);
+  assert.match(config, /do not PASS a PR that repeats an issue's factual claim/i);
   assert.match(config, /Reviewer LSP workspace root/);
 });
 
