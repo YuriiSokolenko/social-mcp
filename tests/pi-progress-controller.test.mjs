@@ -99,7 +99,9 @@ test('action-required runtime steering uses a real user steer without importing 
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /PI_ACTION_REQUIRED_STEER/);
   assert.match(runtime, /RUNTIME CLASSIFICATION REQUIRED/);
+  assert.match(runtime, /RUNTIME REVIEW ACTION REQUIRED/);
   assert.match(runtime, /preComplexityActionRequired/);
+  assert.match(runtime, /postComplexityActionRequired/);
   assert.match(runtime, /await pi\.sendUserMessage\(directive, \{ deliverAs: 'steer' \}\)/);
   assert.doesNotMatch(runtime, /customType: 'pi-action-required'/);
 });
@@ -195,6 +197,7 @@ test('reviewer startup evidence budget forces classification after three success
   state.setComplexity('trivial');
   state.onToolExecutionEnd('declare_task_complexity', false);
   assert.equal(state.preComplexityActionRequired(), false);
+  assert.equal(state.complexityRecorded(), true);
 });
 
 test('single-shot tools cannot be retried after the first accepted call', () => {
@@ -836,6 +839,8 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('reviewer').preComplexityEvidenceBudget, 3);
   assert.equal(stageConfig('reviewer').preComplexityActionResponseMaxTokens, 512);
   assert.equal(stageConfig('reviewer').preComplexityActionResponseRetryMaxTokens, 512);
+  assert.equal(stageConfig('reviewer').postComplexityActionResponseMaxTokens, 1024);
+  assert.equal(stageConfig('reviewer').postComplexityActionResponseRetryMaxTokens, 1024);
   assert.deepEqual(stageConfig('reviewer').preComplexityAllowedTools, ['read', 'bash', 'lsp_start_server', 'lsp_find_symbol']);
   assert.deepEqual(stageConfig('reviewer').preComplexityTransitionTools, ['declare_task_complexity']);
   assert.deepEqual(stageConfig('repair').preComplexityAllowedTools, ['read', 'bash']);
