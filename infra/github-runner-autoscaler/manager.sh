@@ -7,12 +7,16 @@ GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}"
 MAX_RUNNERS="${MAX_RUNNERS:-4}"
 POLL_SECONDS="${POLL_SECONDS:-6}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.89.1-mini-swe}"
+RUN_CHECK_SANDBOX_IMAGE="${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.0}"
+RUN_CHECK_EXECUTOR_URL="${RUN_CHECK_EXECUTOR_URL:-http://127.0.0.1:17343}"
+RUN_CHECK_EXECUTOR_PORT="${RUN_CHECK_EXECUTOR_PORT:-17343}"
+RUN_CHECK_STAGE_VOLUME="${RUN_CHECK_STAGE_VOLUME:-social-mcp-run-check-stage}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
 RUNNER_LABELS="${RUNNER_LABELS:-n150,pi-agent}"
 PI_ZOEKT_URL="${PI_ZOEKT_URL:-}"
 PI_ZOEKT_REPOSITORY="${PI_ZOEKT_REPOSITORY:-YuriiSokolenko/social-mcp}"
 PI_ZOEKT_TIMEOUT_MS="${PI_ZOEKT_TIMEOUT_MS:-3000}"
-WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-pr-fix.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml}}"
+WORKFLOW_FILES="${WORKFLOW_FILES:-${WORKFLOW_FILE:-pi-issue-agent.yml,pi-pr-review.yml,pi-pr-fix.yml,pi-dispatcher.yml,pi-architect.yml,pi-triage.yml,verify-run-check-beelink.yml}}"
 PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
 # Whether to seed the ephemeral worker with the Pi config (needed only by
 # pool that actually runs the Pi/LLM agent) and whether to give it the host
@@ -22,6 +26,7 @@ PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
 # identical manager/worker pair apart.
 MOUNT_PI_CONFIG="${MOUNT_PI_CONFIG:-true}"
 MOUNT_DOCKER_SOCKET="${MOUNT_DOCKER_SOCKET:-false}"
+RUN_CHECK_EXECUTOR_ENABLED="${RUN_CHECK_EXECUTOR_ENABLED:-${MOUNT_PI_CONFIG}}"
 MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 # This loop has no external supervisor for a hang (only `restart: unless-stopped`,
 # which never fires for a process that is alive but stuck). Every network or
@@ -244,47 +249,65 @@ model_start_capacity() {
   esac
 }
 
-# Set once the runner image is proven to contain a working bubblewrap binary; a failure is
-# re-checked on the next spawn so that fixing the image (new tag) recovers without a restart.
-RUNNER_SANDBOX_VERIFIED=false
-verify_runner_sandbox_image() {
-  if [ "$RUNNER_SANDBOX_VERIFIED" == true ]; then
-    return 0
+# Set once the configured sandbox image and trusted executor have passed real checks.
+RUN_CHECK_SANDBOX_VERIFIED=false
+verify_run_check_sandbox() {
+  local image_id probe
+  if [ "$RUN_CHECK_SANDBOX_VERIFIED" != true ]; then
+    image_id="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker image inspect "$RUN_CHECK_SANDBOX_IMAGE" --format '{{.Id}}')" || {
+      log "error: run_check sandbox image ${RUN_CHECK_SANDBOX_IMAGE} is missing; build and configure that explicit version before starting Pi runners"
+      return 1
+    }
+    probe="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run --rm --pull=never --network none --cap-drop ALL \
+      --security-opt no-new-privileges --read-only --user 1001:1001 \
+      --tmpfs /tmp:rw,nosuid,nodev,size=16m --entrypoint python3 "$RUN_CHECK_SANDBOX_IMAGE" \
+      /usr/local/lib/run-check-sandbox-probe.py image 2>&1)" || {
+        log "error: run_check sandbox image ${RUN_CHECK_SANDBOX_IMAGE} (${image_id}) failed its hardened container probe: ${probe}"
+        return 1
+    }
+    RUN_CHECK_SANDBOX_IMAGE_ID="$image_id"
+    RUN_CHECK_SANDBOX_PROBE="$probe"
+    RUN_CHECK_SANDBOX_VERIFIED=true
+    log "run_check sandbox image verified image=${RUN_CHECK_SANDBOX_IMAGE} image_id=${image_id} probe=${probe}"
   fi
-  # Not just `bwrap --version`: create a real sandbox with the same namespace flags run_check uses
-  # and the same container settings spawn_runner gives workers (runner user, host network, seccomp),
-  # so a binary that exists but cannot create namespaces is rejected too.
-  if run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run --rm --network host --security-opt seccomp=unconfined --entrypoint bwrap "$RUNNER_IMAGE" \
-    --die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts --new-session \
-    --ro-bind / / --dev /dev --tmpfs /tmp -- true >/dev/null 2>&1; then
-    RUNNER_SANDBOX_VERIFIED=true
-    return 0
-  fi
-  log "error: image ${RUNNER_IMAGE} cannot create a bwrap sandbox, so run_check would fail with infra_error; not starting runners from it. Rebuild the worker image under a NEW tag (see infra/github-runner-autoscaler/README.md)"
+  local attempts=0
+  while [ "$attempts" -lt 10 ]; do
+    if curl -fsS --max-time 2 "${RUN_CHECK_EXECUTOR_URL}/healthz" >/dev/null; then
+      log "run_check backend ready image=${RUN_CHECK_SANDBOX_IMAGE} image_id=${RUN_CHECK_SANDBOX_IMAGE_ID:-unknown} executor=${RUN_CHECK_EXECUTOR_URL} probe=${RUN_CHECK_SANDBOX_PROBE:-cached}"
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  log "error: trusted run_check executor ${RUN_CHECK_EXECUTOR_URL} is unavailable"
   return 1
 }
 
 spawn_runner() {
-  local token name docker_args
-  # Agent pools run `run_check`, which needs bubblewrap inside the worker image; a stale local tag
-  # would start fine and then fail every check with "bwrap: ENOENT". Refuse it before consuming a token.
+  local token name docker_args run_check_token
   if [ "$MOUNT_PI_CONFIG" == true ]; then
-    verify_runner_sandbox_image || return 1
+    verify_run_check_sandbox || return 1
   fi
   token="$(registration_token)"
   name="${RUNNER_PREFIX}-$(date +%s)-$RANDOM"
+  run_check_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
   docker_args=(
     -d --rm
     --name "$name"
     --label social-mcp.pi-runner=ephemeral
     --network host
-    --security-opt seccomp=unconfined
     -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
     -e "RUNNER_TOKEN=$token"
     -e "RUNNER_NAME=$name"
     -e "RUNNER_LABELS=${RUNNER_LABELS}"
   )
+  if [ "$MOUNT_PI_CONFIG" == true ] && [ "$RUN_CHECK_EXECUTOR_ENABLED" == true ]; then
+    docker_args+=(
+      -e "PI_RUN_CHECK_EXECUTOR_URL=${RUN_CHECK_EXECUTOR_URL}"
+      -e "RUN_CHECK_EXECUTOR_TOKEN=${run_check_token}"
+    )
+  fi
   if [ "$MOUNT_PI_CONFIG" == true ] && [ -n "$PI_ZOEKT_URL" ]; then
     docker_args+=(
       -e "PI_ZOEKT_URL=${PI_ZOEKT_URL}"
@@ -357,5 +380,18 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  if [ "$MOUNT_PI_CONFIG" == true ] && [ "$RUN_CHECK_EXECUTOR_ENABLED" == true ]; then
+    env -i \
+      PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" \
+      RUN_CHECK_SANDBOX_IMAGE="$RUN_CHECK_SANDBOX_IMAGE" \
+      RUN_CHECK_EXECUTOR_PORT="$RUN_CHECK_EXECUTOR_PORT" \
+      RUN_CHECK_STAGE_VOLUME="$RUN_CHECK_STAGE_VOLUME" \
+      RUN_CHECK_STAGE_ROOT=/run-check-stage \
+      RUN_CHECK_RUNNER_PREFIX="$RUNNER_PREFIX" \
+      RUN_CHECK_HARNESS_ROOT=/opt/social-mcp \
+      node /usr/local/lib/run-check-executor.mjs &
+    RUN_CHECK_EXECUTOR_PID=$!
+    trap 'kill "$RUN_CHECK_EXECUTOR_PID" 2>/dev/null || true; wait "$RUN_CHECK_EXECUTOR_PID" 2>/dev/null || true' EXIT TERM INT
+  fi
   main
 fi

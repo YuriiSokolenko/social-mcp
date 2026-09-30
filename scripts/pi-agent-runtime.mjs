@@ -326,7 +326,7 @@ export default function (pi) {
   async function preflightRunCheckSandbox() {
     const result = await sandboxPreflight();
     const record = result.ok
-      ? { stage, ok: true, duration_ms: result.duration_ms }
+      ? { ...result, stage, ok: true }
       : { stage, ok: false, summary: result.summary, infrastructure: result.infrastructure, stderr_tail: result.stderr_tail };
     console[result.ok ? 'info' : 'error'](`PI_RUN_CHECK_PREFLIGHT ${JSON.stringify(record)}`);
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);

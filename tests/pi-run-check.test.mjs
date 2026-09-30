@@ -9,6 +9,7 @@ import { ProgressController, actionRequiredToolNames } from '../scripts/pi-commo
 import { runCheck, checkMetricRecord, sandboxPreflight, CHECK_KINDS, CHECK_STATUSES } from '../scripts/pi-common/run-check.mjs';
 import { ruffArgs } from '../scripts/pi-common/ruff-spec.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+import { createDockerSandboxBackend } from '../scripts/pi-common/run-check-docker-backend.mjs';
 
 function worktree(files = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-run-check-'));
@@ -47,9 +48,7 @@ function hasCommand(name) {
   }
 }
 
-const hasRealSandbox = process.platform === 'linux'
-  ? hasCommand('bwrap')
-  : process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec');
+const hasRealSandbox = process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec');
 
 test('python_compile passes on valid source and reports a syntax error with file/line', { skip: !hasPython }, async () => {
   const dir = worktree();
@@ -161,6 +160,58 @@ test('no arbitrary command is expressible through the public contract', async ()
   }
 });
 
+test('Docker backend sends structured check fields only and strips runner secrets from its environment', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (url, options) => {
+    captured = { url, options, body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({ exitCode: 0, durationMs: 4, stdout: '', stderr: '' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const backend = createDockerSandboxBackend({
+      PI_RUN_CHECK_EXECUTOR_URL: 'http://127.0.0.1:17343',
+      RUN_CHECK_EXECUTOR_TOKEN: 'a'.repeat(64),
+      RUNNER_NAME: 'n150-pi-eph-test',
+    });
+    const result = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, {
+      backend,
+      env: { PATH: '/bin', LANG: 'C.UTF-8', GITHUB_TOKEN: 'must-not-escape' },
+    });
+    assert.equal(result.status, 'pass');
+    assert.equal(captured.url, 'http://127.0.0.1:17343/v1/run-check');
+    assert.equal(captured.body.runner_name, 'n150-pi-eph-test');
+    assert.deepEqual(captured.body.params, { kind: 'python_compile', paths: ['ok.py'] });
+    assert.deepEqual(Object.keys(captured.body).sort(), ['env', 'params', 'root', 'runner_name', 'timeout_ms']);
+    assert.equal(captured.body.env.GITHUB_TOKEN, undefined);
+    assert.equal(captured.body.docker_args, undefined);
+    assert.equal(captured.body.mounts, undefined);
+    assert.equal(captured.body.command, undefined);
+    assert.equal(captured.options.headers.authorization, `Bearer ${'a'.repeat(64)}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Docker backend startup errors become infra_error rather than code failures', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: 'DOCKER_CREATE_FAILED', message: 'sandbox container create failed' } }), {
+    status: 503, headers: { 'content-type': 'application/json' },
+  });
+  try {
+    const result = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, {
+      backend: createDockerSandboxBackend({ RUN_CHECK_EXECUTOR_TOKEN: 'b'.repeat(64), RUNNER_NAME: 'n150-pi-eph-test' }),
+    });
+    assert.equal(result.status, 'infra_error');
+    assert.equal(result.infrastructure.component, 'sandbox');
+    assert.equal(result.infrastructure.code, 'DOCKER_CREATE_FAILED');
+    assert.match(result.summary, /sandbox container create failed/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('output is bounded deterministically and secrets are not inherited', async () => {
   const dir = worktree({ 'tests/test_big.py': '' });
   const big = fakeBin(dir, 'pytest-big', 'i=0\nwhile [ $i -lt 2000 ]; do echo "line $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; i=$((i+1)); done\necho "SECRET=$GITHUB_TOKEN" >&2\nexit 1');
@@ -203,48 +254,23 @@ test('missing sandbox binary reports the sandbox dependency as an infrastructure
   const result = await runCheck(
     dir,
     { kind: 'python_compile', paths: ['ok.py'] },
-    { sandboxFactory: () => ({ command: '/nonexistent/pi-check-sandbox', args: [] }) },
+    { backend: { run: async () => ({ infrastructure: { component: 'sandbox', code: 'SANDBOX_IMAGE_MISSING', command: 'docker-sandbox', message: 'sandbox image missing' } }) } },
   );
   assert.equal(result.status, 'infra_error');
-  assert.match(result.summary, /Could not start check sandbox \/nonexistent\/pi-check-sandbox: ENOENT/);
   assert.match(result.summary, /INFRASTRUCTURE ERROR/);
   assert.match(result.summary, /do not look for a shell or bash workaround/);
-  assert.deepEqual(result.infrastructure, { component: 'sandbox', code: 'ENOENT', command: '/nonexistent/pi-check-sandbox' });
+  assert.deepEqual(result.infrastructure, { component: 'sandbox', code: 'SANDBOX_IMAGE_MISSING', command: 'docker-sandbox' });
   assert.deepEqual(result.diagnostics, []);
 });
 
-test('bare bwrap missing from PATH (the Beelink ENOENT) is an infrastructure error naming bwrap', async () => {
-  const dir = worktree({ 'ok.py': 'x = 1\n' });
-  const result = await runCheck(
-    dir,
-    { kind: 'python_compile', paths: ['ok.py'] },
-    { env: { PATH: '/nonexistent-pi-bin' }, sandboxFactory: () => ({ command: 'bwrap', args: [] }) },
-  );
-  assert.equal(result.status, 'infra_error');
-  assert.match(result.summary, /Could not start check sandbox bwrap: ENOENT/);
-  assert.equal(result.infrastructure.component, 'sandbox');
-  assert.equal(result.infrastructure.code, 'ENOENT');
-});
-
-test('a sandbox that starts but cannot be set up is an infrastructure error, a failing check stays a fail', async () => {
+test('Docker backend failures are infrastructure errors; compiler failures stay normal failures', async () => {
   const dir = worktree({ 'ok.py': 'x = 1\n' });
   const request = { kind: 'python_compile', paths: ['ok.py'] };
-  const viaBwrap = body => ({ sandboxFactory: () => ({ command: fakeBin(dir, 'bwrap', body), args: [] }) });
-
-  const setup = await runCheck(dir, request, viaBwrap('echo "bwrap: No permissions to create new namespace" >&2\nexit 1'));
+  const setup = await runCheck(dir, request, { backend: { run: async () => ({ infrastructure: { component: 'sandbox', code: 'DOCKER_CREATE_FAILED', command: 'docker-sandbox', message: 'container create failed' } }) } });
   assert.equal(setup.status, 'infra_error');
   assert.equal(setup.infrastructure.component, 'sandbox');
-  assert.equal(setup.infrastructure.code, 'SANDBOX_SETUP');
-  assert.match(setup.summary, /Check sandbox could not be set up: No permissions to create new namespace/);
-  assert.equal(setup.exit_code, 1);
-  assert.match(setup.stderr_tail, /No permissions/);
-
-  const exec = await runCheck(dir, request, viaBwrap('echo "bwrap: execvp python3: No such file or directory" >&2\nexit 1'));
-  assert.equal(exec.status, 'infra_error');
-  assert.equal(exec.infrastructure.component, 'check_command');
-  assert.equal(exec.infrastructure.code, 'ENOENT');
-
-  const failing = await runCheck(dir, request, viaBwrap('echo "AssertionError: real failure, mentions bwrap: here" >&2\nexit 1'));
+  assert.equal(setup.infrastructure.code, 'DOCKER_CREATE_FAILED');
+  const failing = await runCheck(dir, request, { backend: { run: async () => ({ exitCode: 1, durationMs: 2, stdout: JSON.stringify({ file: 'ok.py', line: 1, message: 'invalid syntax' }) }) } });
   assert.equal(failing.status, 'fail');
   assert.equal(failing.infrastructure, undefined);
 });
@@ -252,10 +278,9 @@ test('a sandbox that starts but cannot be set up is an infrastructure error, a f
 test('a platform without any sandbox is an infrastructure error and never runs the check unsandboxed', async () => {
   const dir = worktree({ 'ok.py': 'x = 1\n' });
   const marker = path.join(dir, 'ran');
-  const ruff = fakeBin(dir, 'ruff', `touch ${marker}`);
-  const result = await runCheck(dir, { kind: 'ruff', paths: ['ok.py'] }, { bins: { ruff }, sandboxFactory: () => null });
+  const result = await runCheck(dir, { kind: 'ruff', paths: ['ok.py'] }, { backend: { run: async () => ({ infrastructure: { component: 'sandbox', code: 'UNAVAILABLE', command: null, message: 'executor unavailable' } }) } });
   assert.equal(result.status, 'infra_error');
-  assert.equal(result.infrastructure.code, 'UNSUPPORTED_PLATFORM');
+  assert.equal(result.infrastructure.code, 'UNAVAILABLE');
   assert.equal(fs.existsSync(marker), false);
 });
 
@@ -265,31 +290,11 @@ test('sandboxPreflight passes when the sandbox runs a no-op', async () => {
   assert.ok(result.duration_ms >= 0);
 });
 
-test('sandboxPreflight reports each infrastructure failure mode with a structured block', async () => {
-  const missing = await sandboxPreflight({ env: { PATH: '/nonexistent-pi-bin' }, sandboxFactory: () => ({ command: 'bwrap', args: [] }) });
+test('Docker sandbox preflight reports executor failures as structured infrastructure blocks', async () => {
+  const missing = await sandboxPreflight({ backend: { preflight: async () => ({ ok: false, status: 'infra_error', summary: 'Docker unavailable', infrastructure: { component: 'sandbox', code: 'EXECUTOR_UNAVAILABLE', command: 'trusted-run-check-executor' } }) } });
   assert.equal(missing.ok, false);
   assert.equal(missing.status, 'infra_error');
-  assert.deepEqual(missing.infrastructure, { component: 'sandbox', code: 'ENOENT', command: 'bwrap' });
-  assert.match(missing.summary, /Could not start check sandbox bwrap: ENOENT/);
-
-  const dir = worktree();
-  const setup = await sandboxPreflight({ sandboxFactory: () => ({ command: fakeBin(dir, 'bwrap', 'echo "bwrap: setting up uid map: Permission denied" >&2\nexit 1'), args: [] }) });
-  assert.equal(setup.ok, false);
-  assert.equal(setup.infrastructure.code, 'SANDBOX_SETUP');
-  assert.match(setup.stderr_tail, /uid map/);
-
-  const probe = await sandboxPreflight({ sandboxFactory: () => ({ command: fakeBin(dir, 'probe-fails', 'exit 3'), args: [] }) });
-  assert.equal(probe.ok, false);
-  assert.equal(probe.infrastructure.code, 'PROBE_FAILED');
-  assert.equal(probe.exit_code, 3);
-
-  const hung = await sandboxPreflight({ timeoutMs: 300, sandboxFactory: () => ({ command: fakeBin(dir, 'probe-hangs', 'sleep 30'), args: [] }) });
-  assert.equal(hung.ok, false);
-  assert.equal(hung.infrastructure.code, 'TIMEOUT');
-
-  const none = await sandboxPreflight({ sandboxFactory: () => null });
-  assert.equal(none.ok, false);
-  assert.equal(none.infrastructure.code, 'UNSUPPORTED_PLATFORM');
+  assert.deepEqual(missing.infrastructure, { component: 'sandbox', code: 'EXECUTOR_UNAVAILABLE', command: 'trusted-run-check-executor' });
 });
 
 test('sandboxPreflight succeeds through the real sandbox on this platform', { skip: !hasRealSandbox }, async () => {
@@ -329,7 +334,7 @@ test('Pi runtime preflights the sandbox at session start and fails the stage bef
       extension(pi);
       await assert.rejects(
         handlers.get('session_start')({}, { model: { provider: 'test', id: 'model', maxTokens: 32000 }, cwd: process.cwd() }),
-        /run_check sandbox preflight failed: INFRASTRUCTURE ERROR: Could not start check sandbox bwrap: ENOENT/,
+        /run_check sandbox preflight failed: INFRASTRUCTURE ERROR: trusted run_check executor identity is unavailable/,
       );
       assert.equal(modelSet, false, 'no agent budget/model work may start after a failed preflight');
     `;
@@ -352,11 +357,11 @@ test('Pi runtime preflights the sandbox at session start and fails the stage bef
   }
 });
 
-test('runner images declare the focused-check sandbox dependency', () => {
-  for (const dockerfile of ['worker.Dockerfile', 'worker-general.Dockerfile']) {
-    const source = fs.readFileSync(new URL(`../infra/github-runner-autoscaler/${dockerfile}`, import.meta.url), 'utf8');
-    assert.match(source, /apt-get install[\s\S]*\bbubblewrap\b/, dockerfile);
-  }
+test('focused-check tools live in the dedicated sandbox image, not the agent image', () => {
+  const source = fs.readFileSync(new URL('../infra/github-runner-autoscaler/run-check-sandbox.Dockerfile', import.meta.url), 'utf8');
+  assert.match(source, /FROM python:3\.12/);
+  assert.match(source, /USER 1001:1001/);
+  assert.doesNotMatch(fs.readFileSync(new URL('../infra/github-runner-autoscaler/worker.Dockerfile', import.meta.url), 'utf8'), /bubblewrap/);
 });
 
 test('failed check returns usable diagnostics even when output is unparsed', async () => {
@@ -393,11 +398,11 @@ test('metric record carries no raw output', () => {
 test('metric record marks infrastructure errors so they are countable apart from check failures', () => {
   const record = checkMetricRecord({
     kind: 'pytest', status: 'infra_error', duration_ms: 1, truncated: false, diagnostics: [], stderr_tail: 'secret',
-    infrastructure: { component: 'sandbox', code: 'ENOENT', command: 'bwrap' },
+    infrastructure: { component: 'sandbox', code: 'EXECUTOR_CONFIG', command: 'trusted-run-check-executor' },
   }, { backend: 'pi', stage: 'implementer' });
   assert.equal(record.status, 'infra_error');
   assert.equal(record.infrastructure, 'sandbox');
-  assert.equal(record.infrastructure_code, 'ENOENT');
+  assert.equal(record.infrastructure_code, 'EXECUTOR_CONFIG');
   assert.equal('stderr_tail' in record, false);
 });
 

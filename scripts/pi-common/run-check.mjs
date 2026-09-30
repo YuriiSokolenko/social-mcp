@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { ruffArgs } from './ruff-spec.mjs';
 import { expandCommand, projectConfig } from './project-config.mjs';
+import { createDockerSandboxBackend } from './run-check-docker-backend.mjs';
 
 /**
  * Backend-neutral focused verification for agents that have no unrestricted
@@ -93,32 +94,6 @@ function infraError(kind, info, extra = {}) {
   };
 }
 
-/**
- * Decide whether a finished run failed because the runner could not execute the check
- * (as opposed to the check itself failing). Returns an `info` object for `infraError`, or null.
- */
-function infrastructureFailure(isolated, spec, run) {
-  if (run.spawnError) {
-    const code = run.spawnError.code || run.spawnError.message;
-    return isolated.command === spec.command
-      ? { component: 'check_command', code, command: spec.command, message: `Could not start ${spec.command}: ${code}` }
-      : { component: 'sandbox', code, command: isolated.command, message: `Could not start check sandbox ${isolated.command}: ${code}` };
-  }
-  // bwrap reports its own setup/exec failures as a leading "bwrap: ..." stderr line, before the
-  // wrapped command has run; a check's own output never starts that way.
-  if (path.basename(isolated.command) === 'bwrap' && run.exitCode !== 0) {
-    const first = /^bwrap: (.*)$/.exec(String(run.stderr ?? '').trimStart().split('\n', 1)[0].trim());
-    if (first) {
-      if (first[1].startsWith('execvp ')) {
-        const code = /No such file or directory/.test(first[1]) ? 'ENOENT' : 'EXEC';
-        return { component: 'check_command', code, command: spec.command, message: `Could not start ${spec.command} inside the check sandbox: ${shorten(first[1])}` };
-      }
-      return { component: 'sandbox', code: 'SANDBOX_SETUP', command: isolated.command, message: `Check sandbox could not be set up: ${shorten(first[1])}` };
-    }
-  }
-  return null;
-}
-
 function rejectUnknownFields(params, allowed) {
   for (const key of Object.keys(params)) {
     if (!allowed.includes(key)) throw new InvalidCheck(`unsupported field "${key}"; allowed: ${allowed.join(', ')}`);
@@ -191,6 +166,18 @@ function commandFor(root, params, bins) {
   }
 }
 
+/** Validate the closed request contract and construct its trusted fixed-argv command. */
+export function buildRunCheckSpec(root, params, options = {}) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) throw new InvalidCheck('request must be an object');
+  const env = options.env ?? process.env;
+  const bins = {
+    python: options.bins?.python ?? env.PI_PYTHON_BIN ?? 'python3',
+    ruff: options.bins?.ruff ?? 'ruff',
+    pytest: options.bins?.pytest ?? 'pytest',
+  };
+  return { request: params, spec: commandFor(root, params, bins) };
+}
+
 function checkEnv(env) {
   const clean = { PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8', HOME: '/tmp', TMPDIR: '/tmp' };
   for (const name of ENV_ALLOWLIST) if (env[name] != null) clean[name] = env[name];
@@ -200,24 +187,8 @@ function checkEnv(env) {
 /** No focused check runs without OS-enforced network and filesystem isolation. */
 function isolatedCommand(root, spec) {
   const worktree = fs.realpathSync(root);
-  if (process.platform === 'linux') {
-    const args = ['--die-with-parent', '--unshare-user', '--unshare-net', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--new-session'];
-    for (const dir of ['/usr', '/bin', '/lib', '/lib64', '/opt']) {
-      if (fs.existsSync(dir)) args.push('--ro-bind', dir, dir);
-    }
-    args.push('--dir', '/etc');
-    for (const file of ['/etc/passwd', '/etc/group', '/etc/nsswitch.conf', '/etc/ld.so.cache', '/etc/localtime']) {
-      if (fs.existsSync(file)) args.push('--ro-bind', file, file);
-    }
-    args.push('--dev', '/dev', '--tmpfs', '/tmp');
-    const ancestors = [];
-    for (let parent = path.dirname(worktree); parent !== '/'; parent = path.dirname(parent)) ancestors.unshift(parent);
-    for (const ancestor of ancestors) {
-      if (ancestor !== '/tmp' && !['/usr', '/bin', '/lib', '/lib64', '/opt', '/etc'].includes(ancestor)) args.push('--dir', ancestor);
-    }
-    args.push('--bind', worktree, worktree, '--chdir', worktree, '--', spec.command, ...spec.args);
-    return { command: 'bwrap', args };
-  }
+  // Linux uses the trusted Docker executor below. Never invoke nested bwrap in
+  // the runner container, where namespace creation is blocked by production policy.
   if (process.platform === 'darwin') {
     // Keep the interpreter/toolchain readable while denying home credentials
     // and every network socket. The worktree is the sole exception in HOME.
@@ -352,7 +323,7 @@ function pytestSummary(text) {
   return null;
 }
 
-function analyze(request, run, root) {
+function analyze(request, run, root, sandboxRoot = root) {
   const combined = `${run.stdout}\n${run.stderr}`;
   let diagnostics = [];
   let summary = null;
@@ -360,10 +331,10 @@ function analyze(request, run, root) {
   if (request.kind === 'ruff') {
     const parsed = parseRuff(run.stdout);
     if (parsed) {
-      const real = fs.realpathSync(root);
+      const real = fs.realpathSync(sandboxRoot);
       diagnostics = parsed.map(item => ({
         ...item,
-        file: item.file && path.relative(real, item.file.startsWith(real) ? item.file : path.resolve(root, item.file)),
+        file: item.file && path.relative(real, item.file.startsWith(real) ? item.file : path.resolve(sandboxRoot, item.file)),
       }));
       summary = diagnostics.length ? `${diagnostics.length} Ruff violation(s)` : 'All checks passed';
     }
@@ -383,18 +354,11 @@ function analyze(request, run, root) {
  */
 export async function runCheck(root, params, options = {}) {
   const env = options.env ?? process.env;
-  const bins = {
-    python: options.bins?.python ?? env.PI_PYTHON_BIN ?? 'python3',
-    ruff: options.bins?.ruff ?? 'ruff',
-    pytest: options.bins?.pytest ?? 'pytest',
-  };
 
   let request;
   let spec;
   try {
-    if (!params || typeof params !== 'object' || Array.isArray(params)) throw new InvalidCheck('request must be an object');
-    request = params;
-    spec = commandFor(root, request, bins);
+    ({ request, spec } = buildRunCheckSpec(root, params, { bins: options.bins, env }));
   } catch (error) {
     if (error instanceof InvalidCheck) return invalid(params?.kind, error.message);
     throw error;
@@ -405,24 +369,19 @@ export async function runCheck(root, params, options = {}) {
     MAX_TIMEOUT_SECONDS,
   );
   const timeoutMs = options.timeoutMs ?? seconds * 1000;
-  const sandboxFactory = options.sandboxFactory ?? isolatedCommand;
-  const isolated = sandboxFactory(root, spec);
-  if (!isolated) {
-    return infraError(request.kind, {
-      component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}`,
-    });
-  }
-  if (path.isAbsolute(spec.command) && !fs.existsSync(spec.command)) {
-    return infraError(request.kind, {
-      component: 'check_command', code: 'ENOENT', command: spec.command, message: `Could not start ${spec.command}: ENOENT`,
-    });
-  }
-  const run = await execute({
-    command: isolated.command,
-    args: isolated.args,
-    cwd: path.resolve(root),
-    env: checkEnv(env),
-    timeoutMs,
+  const backend = options.backend
+    ?? (options.sandboxFactory ? createLocalSandboxBackend(options.sandboxFactory) : selectSandboxBackend(env));
+  if (!backend) return infraError(request.kind, {
+    component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}`,
+  });
+  const run = await backend.run({ root: path.resolve(root), request, spec, env: checkEnv(env), timeoutMs });
+  if (run.requestInvalid) return invalid(request.kind, run.requestInvalid.message || 'request rejected by trusted executor');
+  if (run.infrastructure) return infraError(request.kind, run.infrastructure, {
+    exit_code: run.exitCode ?? null,
+    duration_ms: run.durationMs ?? 0,
+    stdout_tail: cap(run.stdout, TAIL_CHARS).text,
+    stderr_tail: cap(run.stderr, TAIL_CHARS).text,
+    truncated: Boolean(run.truncated),
   });
 
   const kind = request.kind;
@@ -437,15 +396,21 @@ export async function runCheck(root, params, options = {}) {
     stdout_tail: stdoutTail.text,
     stderr_tail: stderrTail.text,
     truncated,
+    ...(run.image ? { sandbox_image: run.image } : {}),
+    ...(run.image_id ? { sandbox_image_id: run.image_id } : {}),
+    ...(run.sandbox_security ? { sandbox_security: run.sandbox_security } : {}),
+    ...(run.container_removed !== undefined ? { sandbox_container_removed: run.container_removed } : {}),
   };
 
   if (run.timedOut) {
     return { status: 'timeout', ...base, summary: `Timed out after ${Math.round(timeoutMs / 1000)}s; process tree killed`, diagnostics: [] };
   }
-  const infra = infrastructureFailure(isolated, spec, run);
-  if (infra) return infraError(kind, infra, base);
+  if (run.spawnError) return infraError(kind, {
+    component: 'check_command', code: run.spawnError.code || run.spawnError.message,
+    command: spec.command, message: `Could not start ${spec.command}: ${run.spawnError.code || run.spawnError.message}`,
+  }, base);
 
-  const { diagnostics, summary } = analyze(request, run, path.resolve(root));
+  const { diagnostics, summary } = analyze(request, run, path.resolve(root), run.sandboxRoot ?? path.resolve(root));
   const passed = run.exitCode === 0;
   return {
     status: passed ? 'pass' : 'fail',
@@ -457,49 +422,66 @@ export async function runCheck(root, params, options = {}) {
 }
 
 /**
- * Prove the check sandbox works before any agent work depends on it: run a no-op through the same
- * isolation wrapper real checks use. Never throws and never falls back to an unsandboxed run.
+ * Prove the check sandbox works before any agent work depends on it. The selected
+ * backend owns the probe and must never fall back to an unsandboxed run.
  * Resolves `{ ok: true, duration_ms }`, or `{ ok: false, ...infra_error result }` with the same
  * structured `infrastructure` block a failing `runCheck` would return.
  */
 export async function sandboxPreflight(options = {}) {
   const env = options.env ?? process.env;
-  const sandboxFactory = options.sandboxFactory ?? isolatedCommand;
   const timeoutMs = options.timeoutMs ?? PREFLIGHT_TIMEOUT_MS;
-  const spec = { command: options.probeCommand ?? 'true', args: [] };
   const fail = (info, extra = {}) => ({ ok: false, ...infraError('sandbox_preflight', info, extra) });
 
   const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-sandbox-preflight-'));
   try {
-    const isolated = sandboxFactory(probeRoot, spec);
-    if (!isolated) {
-      return fail({ component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}` });
+    fs.writeFileSync(path.join(probeRoot, '.pi-run-check-preflight'), 'readable\n', { mode: 0o444 });
+    const backend = options.backend ?? (options.sandboxFactory
+      ? createLocalSandboxBackend(options.sandboxFactory)
+      : selectSandboxBackend(env));
+    if (!backend) return fail({ component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}` });
+    if (backend.preflight) {
+      const result = await backend.preflight({ root: probeRoot, env: checkEnv(env), timeoutMs });
+      if (result?.ok) return result;
+      const summary = String(result?.summary || 'The trusted sandbox preflight failed');
+      return {
+        ...result,
+        ok: false,
+        status: 'infra_error',
+        summary: summary.includes('do not look for a shell') ? summary : `${summary}. ${INFRA_GUIDANCE}`,
+      };
     }
-    const run = await execute({
-      command: isolated.command,
-      args: isolated.args,
-      cwd: probeRoot,
-      env: checkEnv(env),
-      timeoutMs,
-    });
-    const details = {
-      exit_code: run.exitCode,
-      duration_ms: run.durationMs,
-      stdout_tail: cap(run.stdout, TAIL_CHARS).text,
-      stderr_tail: cap(run.stderr, TAIL_CHARS).text,
-    };
-    if (run.timedOut) {
-      return fail({ component: 'sandbox', code: 'TIMEOUT', command: isolated.command, message: `Check sandbox probe timed out after ${timeoutMs}ms` }, details);
-    }
-    const infra = infrastructureFailure(isolated, spec, run);
-    if (infra) return fail(infra, details);
-    if (run.exitCode !== 0) {
-      return fail({ component: 'sandbox', code: 'PROBE_FAILED', command: isolated.command, message: `Check sandbox probe exited with code ${run.exitCode}` }, details);
-    }
+    const isolated = (options.sandboxFactory ?? isolatedCommand)(probeRoot, { command: 'true', args: [] });
+    if (!isolated) return fail({ component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}` });
+    const run = await execute({ command: isolated.command, args: isolated.args, cwd: probeRoot, env: checkEnv(env), timeoutMs });
+    const details = { exit_code: run.exitCode, duration_ms: run.durationMs, stdout_tail: cap(run.stdout, TAIL_CHARS).text, stderr_tail: cap(run.stderr, TAIL_CHARS).text };
+    if (run.timedOut) return fail({ component: 'sandbox', code: 'TIMEOUT', command: isolated.command, message: `Check sandbox probe timed out after ${timeoutMs}ms` }, details);
+    if (run.spawnError) return fail({ component: 'sandbox', code: run.spawnError.code || 'SPAWN_FAILED', command: isolated.command, message: `Could not start sandbox ${isolated.command}: ${run.spawnError.code || run.spawnError.message}` }, details);
+    if (run.exitCode !== 0) return fail({ component: 'sandbox', code: 'PROBE_FAILED', command: isolated.command, message: `Check sandbox probe exited with code ${run.exitCode}` }, details);
     return { ok: true, duration_ms: run.durationMs };
   } finally {
     fs.rmSync(probeRoot, { recursive: true, force: true });
   }
+}
+
+function createLocalSandboxBackend(factory) {
+  return {
+    async run({ root, spec, env, timeoutMs }) {
+      const isolated = factory(root, spec);
+      if (!isolated) return { infrastructure: { component: 'sandbox', code: 'UNAVAILABLE', command: null, message: 'Sandbox backend is unavailable' } };
+      return execute({ command: isolated.command, args: isolated.args, cwd: root, env, timeoutMs });
+    },
+  };
+}
+
+function selectSandboxBackend(env) {
+  if (process.platform === 'linux') return createDockerSandboxBackend(env);
+  if (process.platform === 'darwin') return {
+    run({ root, spec, env: cleanEnv, timeoutMs }) {
+      const sandbox = isolatedCommand(root, spec);
+      return execute({ command: sandbox.command, args: sandbox.args, cwd: root, env: cleanEnv, timeoutMs });
+    },
+  };
+  return null;
 }
 
 /** Structured, bounded metric record (no raw output, no secrets). */

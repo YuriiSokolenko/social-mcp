@@ -245,88 +245,61 @@ trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG" "$DOCKER_RUN_LOG"' EXI
   spawn_runner
 )
 grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'ephemeral runners must use host networking for local model/Zoekt endpoints'
-grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'runners must allow focused-check namespace creation'
+! grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'general runners must keep Docker default seccomp'
 grep -q -- '-e RUNNER_LABELS=n150,general' "$DOCKER_RUN_LOG" || fail 'spawn_runner must pass RUNNER_LABELS through'
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the docker socket when MOUNT_DOCKER_SOCKET=true'
 grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the Pi config when MOUNT_PI_CONFIG=false'
 grep -q -- 'PI_ZOEKT_' "$DOCKER_RUN_LOG" && fail 'general runners must not receive the optional Pi-only Zoekt configuration'
-grep -q -- '--entrypoint bwrap' "$DOCKER_RUN_LOG" && fail 'general runners run no run_check, so their image is not probed for bwrap'
+grep -q -- 'run-check-sandbox' "$DOCKER_RUN_LOG" && fail 'general runners run no Pi focused checks, so they do not probe the Pi sandbox image'
 
+# Pi runners use the manager-side disposable Docker backend without receiving the Docker socket or
+# any namespace/security relaxation. The manager gate verifies a real sandbox image probe.
 : > "$DOCKER_RUN_LOG"
 (
   RUNNER_PREFIX=n150-pi-eph
   RUNNER_IMAGE=test-pi-image:tag
+  RUN_CHECK_SANDBOX_IMAGE=test-sandbox:0.1.0
+  RUN_CHECK_EXECUTOR_URL=http://127.0.0.1:17343
   RUNNER_LABELS=n150,pi-agent
   PI_CONFIG_DIR=/some/pi/config
   MOUNT_PI_CONFIG=true
   MOUNT_DOCKER_SOCKET=false
+  RUN_CHECK_EXECUTOR_ENABLED=true
   PI_ZOEKT_URL=http://127.0.0.1:6070
   PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp
   PI_ZOEKT_TIMEOUT_MS=3000
+  RUN_CHECK_SANDBOX_VERIFIED=false
   registration_token() { printf 'tok\n'; }
-  run_with_timeout() {
-    shift
+  docker() {
     printf '%s\n' "$*" >> "$DOCKER_RUN_LOG"
+    if [[ "$*" == "image inspect test-sandbox:0.1.0 --format {{.Id}}" ]]; then printf 'sha256:test-image-id\n'; return 0; fi
+    if [[ "$*" == run* ]]; then printf '{"ok":true}\n'; return 0; fi
+    fail "unexpected docker command in manager gate: $*"
   }
+  curl() { [[ "$*" == *'/healthz'* ]]; }
+  run_with_timeout() { shift; "$@"; }
   spawn_runner
 )
-grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'Pi runners must use host networking so 127.0.0.1 reaches host-local services'
+grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'Pi runners retain their existing host networking'
 grep -q -- '/some/pi/config:/pi-config-ro:ro' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the Pi config when MOUNT_PI_CONFIG=true'
-grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'Pi runners must allow the focused check sandbox to create namespaces'
-grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the docker socket when MOUNT_DOCKER_SOCKET=false'
-grep -q -- '-e PI_ZOEKT_URL=http://127.0.0.1:6070' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive PI_ZOEKT_URL when configured'
-grep -q -- '-e PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the stable Zoekt repository name'
-grep -q -- '-e PI_ZOEKT_TIMEOUT_MS=3000' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the bounded Zoekt timeout'
-grep -q -- '--network host --security-opt seccomp=unconfined --entrypoint bwrap test-pi-image:tag' "$DOCKER_RUN_LOG" || fail 'the image probe must use the same container settings as real runners'
-grep -q -- '--unshare-user --unshare-net .* -- true' "$DOCKER_RUN_LOG" || fail 'the image probe must create a real sandbox, not just run bwrap --version'
+! grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'Pi runners must use the default seccomp profile'
+! grep -q -- '--cap-add SYS_ADMIN\|--privileged\|apparmor=unconfined' "$DOCKER_RUN_LOG" || fail 'Pi runner launch must not widen privileges'
+grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail 'Pi runner must not receive the Docker socket'
+grep -q -- '-e PI_RUN_CHECK_EXECUTOR_URL=http://127.0.0.1:17343' "$DOCKER_RUN_LOG" || fail 'Pi runner must receive only the trusted executor endpoint'
+grep -q -- '-e RUN_CHECK_EXECUTOR_TOKEN=' "$DOCKER_RUN_LOG" || fail 'Pi runner must receive an ephemeral executor request token'
+grep -q -- 'run --rm --pull=never --network none --cap-drop ALL --security-opt no-new-privileges' "$DOCKER_RUN_LOG" || fail 'manager gate must execute a hardened real sandbox image probe'
+grep -q -- '^run --rm' "$DOCKER_RUN_LOG" || fail 'manager gate must run the sandbox image probe'
+grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi runner after the backend gate succeeds'
 
-# An agent-pool image without a working bwrap (e.g. a stale locally cached tag) starts fine but
-# fails every run_check with "bwrap: ENOENT"; the manager must refuse it, and must not spend a
-# registration token or start a container doing so.
-: > "$DOCKER_RUN_LOG"
+# Missing sandbox image: fail closed before requesting a runner registration token.
 (
   RUNNER_PREFIX=n150-pi-eph
-  RUNNER_IMAGE=stale-pi-image:tag
-  RUNNER_LABELS=n150,pi-agent
+  RUN_CHECK_SANDBOX_IMAGE=missing-sandbox:0.1.0
   MOUNT_PI_CONFIG=true
-  MOUNT_DOCKER_SOCKET=false
-  PI_ZOEKT_URL=
-  registration_token() { fail 'requested a registration token for an image without bwrap'; }
-  run_with_timeout() {
-    shift
-    printf '%s\n' "$*" >> "$DOCKER_RUN_LOG"
-    [[ "$*" != *'--entrypoint bwrap'* ]]
-  }
-  if spawn_runner >"$DOCKER_RUN_LOG.out"; then fail 'spawn_runner must refuse an image without a working bwrap'; fi
-  grep -q 'cannot create a bwrap sandbox' "$DOCKER_RUN_LOG.out" || fail 'the refusal must say why the image was rejected'
-  grep -q 'NEW tag' "$DOCKER_RUN_LOG.out" || fail 'the refusal must point at rebuilding under a new tag'
+  RUN_CHECK_SANDBOX_VERIFIED=false
+  docker() { return 1; }
+  registration_token() { fail 'manager requested a token without a sandbox image'; }
+  if spawn_runner >/dev/null 2>&1; then fail 'manager must refuse Pi runner startup when sandbox image is missing'; fi
 )
-rm -f "$DOCKER_RUN_LOG.out"
-grep -q -- '--entrypoint bwrap stale-pi-image:tag' "$DOCKER_RUN_LOG" || fail 'the image must be probed for bwrap'
-grep -q -- 'docker run -d' "$DOCKER_RUN_LOG" && fail 'no runner container may start from an image without bwrap'
-
-# A verified image is probed once; a rejected image is re-probed so a fixed tag recovers without a restart.
-: > "$DOCKER_RUN_LOG"
-(
-  RUNNER_PREFIX=n150-pi-eph
-  RUNNER_IMAGE=fixed-pi-image:tag
-  RUNNER_LABELS=n150,pi-agent
-  MOUNT_PI_CONFIG=true
-  MOUNT_DOCKER_SOCKET=false
-  PI_ZOEKT_URL=
-  probe_ok=false
-  registration_token() { printf 'tok\n'; }
-  run_with_timeout() {
-    shift
-    printf '%s\n' "$*" >> "$DOCKER_RUN_LOG"
-    if [[ "$*" == *'--entrypoint bwrap'* ]]; then [[ "$probe_ok" == true ]]; fi
-  }
-  if spawn_runner >/dev/null; then fail 'first spawn must be refused while bwrap is missing'; fi
-  probe_ok=true
-  spawn_runner >/dev/null || fail 'spawn must recover once the image has bwrap'
-  spawn_runner >/dev/null || fail 'second spawn from a verified image must succeed'
-)
-[[ "$(grep -c -- '--entrypoint bwrap' "$DOCKER_RUN_LOG")" == 2 ]] || fail 'expected one failed and one successful probe, then no re-probe of a verified image'
-[[ "$(grep -c -- 'docker run -d' "$DOCKER_RUN_LOG")" == 2 ]] || fail 'expected exactly the two post-recovery runners to start'
 
 printf 'runner autoscaler checks passed\n'
