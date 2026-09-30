@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { finished } from 'node:stream/promises';
 
+import { IMPLEMENTER_RESPONSE_MAX_TOKENS } from './progress-controller.mjs';
 import { baseRef } from './project-config.mjs';
 import { integrateLatestDev } from './finalize-product-tree.mjs';
 import { runGit as git } from './git.mjs';
@@ -47,6 +48,7 @@ export function buildMiniSweInvocation(spec) {
     '-c', 'model.model_kwargs.custom_llm_provider=openai',
     '-c', `model.model_kwargs.api_base=${spec.model.baseUrl}`,
     '-c', 'model.cost_tracking=ignore_errors',
+    '-c', `model.model_kwargs.max_completion_tokens=${IMPLEMENTER_RESPONSE_MAX_TOKENS}`,
     '-c', `environment.cwd=${spec.cwd}`,
     '-m', model,
     '-y',

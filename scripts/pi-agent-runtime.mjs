@@ -7,8 +7,10 @@ import { Type } from 'typebox';
 import {
   ProgressController,
   actionRequiredToolNames,
+  classifyTruncatedToolCall,
   nextActionRequiredProseOnlyTurns,
   nextActionResponseCap,
+  truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
@@ -749,6 +751,17 @@ export default function (pi) {
 
       await handleLoopResult(loopResult, ctx);
     }
+  });
+
+  pi.on('tool_result', (event) => {
+    const text = (event.content ?? []).map(part => part?.text ?? '').join('\n');
+    const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
+    if (!truncated) return undefined;
+    console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated })}`);
+    return {
+      content: [{ type: 'text', text: `${truncatedToolCallGuidance(event.toolName)}\n\n${text}` }],
+      isError: true,
+    };
   });
 
   pi.on('turn_end', async (event, ctx) => {
