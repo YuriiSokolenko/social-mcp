@@ -70,8 +70,13 @@ async function loadPrCiVerdict(headSha) {
   const initial = prCiVerdict(runs, headSha);
   if (initial.state !== 'infra_failure' || initial.run?.conclusion !== 'failure') return initial;
 
-  const jobsData = await api(`/actions/runs/${initial.run.id}/jobs?per_page=100`);
-  return prCiVerdict(runs, headSha, jobsData.jobs ?? []);
+  try {
+    const jobsData = await api(`/actions/runs/${initial.run.id}/jobs?per_page=100`);
+    return prCiVerdict(runs, headSha, jobsData.jobs ?? []);
+  } catch (error) {
+    console.warn(`Cannot load CI jobs for run ${initial.run.id}; treating it as infrastructure: ${error.message}`);
+    return { ...initial, metadataError: error.message };
+  }
 }
 
 async function processInfraFailure(pr, prLabels, sha, ci) {
