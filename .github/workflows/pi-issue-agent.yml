@@ -111,7 +111,7 @@ jobs:
           . .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install -e .
-          python -m pip install pytest pytest-asyncio ruff
+          python -m pip install pytest pytest-asyncio ruff==0.12.12
           echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
           pytest --version
           ruff --version

@@ -1,6 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { ruffArgs } from './ruff-spec.mjs';
 
 /**
  * Backend-neutral focused verification for agents that have no unrestricted
@@ -9,8 +11,7 @@ import { spawn } from 'node:child_process';
  * stdout/stderr tail so a failure is something the agent can debug from.
  *
  * This never replaces the authoritative validation in `product-checks.mjs`;
- * both build their Ruff invocation through `ruffArgs()` so they cannot
- * discover different configuration.
+ * both use the repository-owned Ruff spec.
  */
 
 export const CHECK_KINDS = Object.freeze(['python_compile', 'ruff', 'pytest', 'profile']);
@@ -24,7 +25,7 @@ const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_TIMEOUT_SECONDS = 600;
 
 // Only these variables reach a check subprocess: never the caller's token/secret environment.
-const ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'VIRTUAL_ENV', 'PYTHONPATH', 'NODE_PATH'];
+const ENV_ALLOWLIST = ['PATH', 'LANG', 'LC_ALL'];
 
 // Compiles in memory so a focused check never writes __pycache__ into the worktree.
 const PYTHON_COMPILE_SCRIPT = [
@@ -38,11 +39,6 @@ const PYTHON_COMPILE_SCRIPT = [
   '        print(json.dumps({"file": name, "line": e.lineno, "column": e.offset, "message": e.msg}))',
   'sys.exit(1 if bad else 0)',
 ].join('\n');
-
-/** Shared with product-checks.mjs: the one place Ruff's authoritative argv is built. */
-export function ruffArgs(targets) {
-  return ['check', '--no-cache', ...targets];
-}
 
 /** Named repository profiles. Fixed argv only; no model-supplied text reaches a shell. */
 export const PROFILES = Object.freeze({
@@ -117,7 +113,7 @@ function commandFor(root, params, bins) {
     case 'ruff': {
       rejectUnknownFields(params, ['kind', 'paths']);
       const files = pathList(root, params.paths, 'paths');
-      return { command: bins.ruff, args: [...ruffArgs(files), '--output-format=json'] };
+      return { command: bins.ruff, args: ruffArgs(root, files, { json: true }) };
     }
     case 'pytest': {
       rejectUnknownFields(params, ['kind', 'targets']);
@@ -147,9 +143,41 @@ function commandFor(root, params, bins) {
 }
 
 function checkEnv(env) {
-  const clean = { PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' };
+  const clean = { PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8', HOME: '/tmp', TMPDIR: '/tmp' };
   for (const name of ENV_ALLOWLIST) if (env[name] != null) clean[name] = env[name];
   return clean;
+}
+
+/** No focused check runs without OS-enforced network and filesystem isolation. */
+function isolatedCommand(root, spec) {
+  const worktree = fs.realpathSync(root);
+  if (process.platform === 'linux') {
+    const args = ['--die-with-parent', '--unshare-user', '--unshare-net', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--new-session'];
+    for (const dir of ['/usr', '/bin', '/lib', '/lib64', '/opt']) {
+      if (fs.existsSync(dir)) args.push('--ro-bind', dir, dir);
+    }
+    args.push('--dir', '/etc');
+    for (const file of ['/etc/passwd', '/etc/group', '/etc/nsswitch.conf', '/etc/ld.so.cache', '/etc/localtime']) {
+      if (fs.existsSync(file)) args.push('--ro-bind', file, file);
+    }
+    args.push('--dev', '/dev', '--tmpfs', '/tmp');
+    const ancestors = [];
+    for (let parent = path.dirname(worktree); parent !== '/'; parent = path.dirname(parent)) ancestors.unshift(parent);
+    for (const ancestor of ancestors) {
+      if (ancestor !== '/tmp' && !['/usr', '/bin', '/lib', '/lib64', '/opt', '/etc'].includes(ancestor)) args.push('--dir', ancestor);
+    }
+    args.push('--bind', worktree, worktree, '--chdir', worktree, '--', spec.command, ...spec.args);
+    return { command: 'bwrap', args };
+  }
+  if (process.platform === 'darwin') {
+    // Keep the interpreter/toolchain readable while denying home credentials
+    // and every network socket. The worktree is the sole exception in HOME.
+    const home = os.homedir().replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+    const allowed = worktree.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+    const profile = `(version 1) (allow default) (deny network*) (deny file-read* (subpath "${home}")) (allow file-read* (subpath "${allowed}"))`;
+    return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, spec.command, ...spec.args] };
+  }
+  return null;
 }
 
 function cap(text, limit) {
@@ -174,12 +202,16 @@ function execute({ command, args, cwd, env, timeoutMs }) {
 
     const child = spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const collect = (name) => (data) => {
-      if (sizes[name] >= CAPTURE_LIMIT_BYTES) { dropped = true; return; }
-      const room = CAPTURE_LIMIT_BYTES - sizes[name];
-      const piece = data.length > room ? data.subarray(0, room) : data;
-      if (piece.length < data.length) dropped = true;
-      sizes[name] += piece.length;
-      chunks[name].push(piece);
+      chunks[name].push(data);
+      sizes[name] += data.length;
+      while (sizes[name] > CAPTURE_LIMIT_BYTES) {
+        dropped = true;
+        const excess = sizes[name] - CAPTURE_LIMIT_BYTES;
+        const first = chunks[name][0];
+        if (first.length <= excess) chunks[name].shift();
+        else chunks[name][0] = first.subarray(excess);
+        sizes[name] -= Math.min(first.length, excess);
+      }
     };
     child.stdout.on('data', collect('stdout'));
     child.stderr.on('data', collect('stderr'));
@@ -324,9 +356,14 @@ export async function runCheck(root, params, options = {}) {
     MAX_TIMEOUT_SECONDS,
   );
   const timeoutMs = options.timeoutMs ?? seconds * 1000;
+  const isolated = isolatedCommand(root, spec);
+  if (!isolated) return invalid(request.kind, `No check sandbox is available on ${process.platform}`);
+  if (path.isAbsolute(spec.command) && !fs.existsSync(spec.command)) {
+    return { ...invalid(request.kind, `Could not start ${spec.command}: ENOENT`), status: 'fail' };
+  }
   const run = await execute({
-    command: spec.command,
-    args: spec.args,
+    command: isolated.command,
+    args: isolated.args,
     cwd: path.resolve(root),
     env: checkEnv(env),
     timeoutMs,

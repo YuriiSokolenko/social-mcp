@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { runCheck, ruffArgs, checkMetricRecord, CHECK_KINDS } from '../scripts/pi-common/run-check.mjs';
+import { runCheck, checkMetricRecord, CHECK_KINDS } from '../scripts/pi-common/run-check.mjs';
+import { ruffArgs } from '../scripts/pi-common/ruff-spec.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 function worktree(files = {}) {
@@ -52,7 +53,7 @@ test('ruff pass and parsed failure use the fixed shared argv', async () => {
   assert.deepEqual(fail.diagnostics, [{ file: 'a.py', line: 1, column: 8, code: 'F401', message: '`os` imported but unused' }]);
   assert.equal(fail.summary, '1 Ruff violation(s)');
   // Same base argv as the authoritative validator, only the output format differs.
-  assert.equal(fs.readFileSync(argvLog, 'utf8').trim(), `${ruffArgs(['a.py']).join(' ')} --output-format=json`);
+  assert.equal(fs.readFileSync(argvLog, 'utf8').trim(), ruffArgs(dir, ['a.py'], { json: true }).join(' '));
 
   const passBin = fakeBin(dir, 'ruff-ok', 'echo "[]"\nexit 0');
   const pass = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, { bins: { ruff: passBin } });
@@ -60,11 +61,11 @@ test('ruff pass and parsed failure use the fixed shared argv', async () => {
   assert.deepEqual(pass.diagnostics, []);
 });
 
-test('focused and authoritative Ruff share one argv builder and no private config flag', () => {
-  assert.deepEqual(ruffArgs(['.']), ['check', '--no-cache', '.']);
-  assert.ok(!ruffArgs(['x']).some(arg => arg.startsWith('--config')));
+test('focused and authoritative Ruff share the repository config builder', () => {
+  const dir = worktree({ 'pyproject.toml': '[tool.ruff]\n' });
+  assert.deepEqual(ruffArgs(dir, ['.'], { json: true }), ['check', '--output-format=json', '--config', path.join(fs.realpathSync(dir), 'pyproject.toml'), '.']);
   const productChecks = fs.readFileSync(new URL('../scripts/pi-common/product-checks.mjs', import.meta.url), 'utf8');
-  assert.match(productChecks, /ruffArgs\(\['\.'\]\)/);
+  assert.match(productChecks, /ruffArgs\(root, \['\.'\], \{ json: true \}\)/);
 });
 
 test('pytest pass and failing-test diagnostics with node id, line and message', async () => {
@@ -99,7 +100,7 @@ test('timeout kills the whole subprocess tree', async () => {
   const dir = worktree({ 'tests/test_slow.py': '' });
   const pidFile = path.join(dir, 'grandchild.pid');
   const slow = fakeBin(dir, 'pytest-slow', `sleep 30 &\necho $! > ${pidFile}\nwait`);
-  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_slow.py'] }, { bins: { pytest: slow }, timeoutMs: 400 });
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_slow.py'] }, { bins: { pytest: slow }, timeoutMs: 1500 });
   assert.equal(result.status, 'timeout');
   assert.match(result.summary, /process tree killed/);
   const pid = Number(fs.readFileSync(pidFile, 'utf8'));
@@ -147,6 +148,31 @@ test('output is bounded deterministically and secrets are not inherited', async 
   assert.match(result.stdout_tail, /line 1999/);
   assert.equal(result.stderr_tail.trim(), 'SECRET=');
   assert.ok(result.diagnostics.length <= 20);
+});
+
+test('output beyond four MiB retains the final failure, not the first chunk', async () => {
+  const dir = worktree({ 'tests/test_big.py': '' });
+  const big = fakeBin(dir, 'pytest-huge', 'head -c 4500000 /dev/zero | tr "\\000" x\nprintf "\\nFINAL_TRACEBACK\\n"\nexit 1');
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, { bins: { pytest: big } });
+  assert.equal(result.status, 'fail');
+  assert.equal(result.truncated, true);
+  assert.match(result.stdout_tail, /FINAL_TRACEBACK/);
+  assert.ok(result.stdout_tail.length <= 3000);
+});
+
+test('check subprocess cannot use the network or read home credentials', async () => {
+  const dir = worktree({ 'tests/test_guard.py': '' });
+  const marker = path.join(os.homedir(), '.pi-run-check-secret-test');
+  fs.writeFileSync(marker, 'secret');
+  try {
+    const probe = fakeBin(dir, 'pytest-probe', `python3 -c 'import pathlib,socket; p=pathlib.Path(${JSON.stringify(marker)}); print("secret=" + str(p.exists())); s=socket.socket(); print("network=" + str(s.connect_ex(("127.0.0.1", 1))))'`);
+    const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_guard.py'] }, { bins: { pytest: probe } });
+    assert.equal(result.status, 'pass');
+    assert.match(result.stdout_tail, /secret=False/);
+    assert.match(result.stdout_tail, /network=[1-9][0-9]*/);
+  } finally {
+    fs.rmSync(marker, { force: true });
+  }
 });
 
 test('failed check returns usable diagnostics even when output is unparsed', async () => {

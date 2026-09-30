@@ -179,6 +179,17 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
   return { spec, workspace, backend };
 }
 
+export function runSelectedStage(spec, { backend, workspace }, {
+  runPi = runPiStage,
+  runMiniSwe = runMiniSweStage,
+  validate,
+} = {}) {
+  const runBackend = backend === 'mini-swe'
+    ? candidate => runMiniSwe(candidate)
+    : candidate => runPi(candidate, { workspace });
+  return runStageWithValidationRecovery(spec, runBackend, validate ? { validate } : {});
+}
+
 export async function runStage(options, env = process.env) {
   const { spec, workspace, backend } = buildStageRunSpec(options, env);
   if (backend === 'pi') forcePiProviderBaseUrl(spec.model, env);
@@ -190,10 +201,7 @@ export async function runStage(options, env = process.env) {
   fs.rmSync(spec.artifacts.terminalResultPath, { force: true });
 
   await verifyModelIsLoaded(spec.model.baseUrl, spec.model.id);
-  const runBackend = backend === 'mini-swe'
-    ? candidate => runMiniSweStage(candidate)
-    : candidate => runPiStage(candidate, { workspace });
-  return runStageWithValidationRecovery(spec, runBackend);
+  return runSelectedStage(spec, { backend, workspace });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

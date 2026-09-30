@@ -254,6 +254,7 @@ spawn_runner() {
     --name "$name"
     --label social-mcp.pi-runner=ephemeral
     --network host
+    --security-opt seccomp=unconfined
     -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
     -e "RUNNER_TOKEN=$token"
     -e "RUNNER_NAME=$name"

@@ -24,7 +24,7 @@ dependencies = [
 dev = [
   "pytest>=8.4,<10",
   "pytest-asyncio>=1.1,<2",
-  "ruff>=0.12,<1",
+  "ruff==0.12.12",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -37,3 +37,10 @@ asyncio_mode = "auto"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+
+[tool.ruff.lint]
+# Keep product validation independent of Ruff's evolving defaults and any
+# configuration discovered outside this checkout. These are Ruff's original
+# default correctness rules; import sorting, executable-bit checks, and the
+# broader RUF family are not part of this repository's product contract.
+select = ["E4", "E7", "E9", "F"]

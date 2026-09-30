@@ -89,7 +89,7 @@ jobs:
           cd "$JOB_DIR"
           python -m venv .venv
           . .venv/bin/activate
-          pip install -e . pytest pytest-asyncio ruff
+          pip install -e . pytest pytest-asyncio ruff==0.12.12
           echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run deterministic review checks
@@ -146,5 +146,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" PASS
-
 
