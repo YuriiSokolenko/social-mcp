@@ -120,7 +120,7 @@ test('StageRunResult exposes backend-neutral success metadata and artifact paths
 });
 
 
-test('mini-swe backend receives only the issue task instead of the Pi operating contract', () => {
+test('mini-swe backend receives issue task plus worktree routing instead of the Pi operating contract', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mini-swe-stage-'));
   const issueContext = join(dir, 'issue.json');
   writeFileSync(issueContext, JSON.stringify({
