@@ -41,7 +41,11 @@ test('semantic loop guard detects repeated repo_search results across harmless a
     result: { matches: [{ path: 'src/a.js', line: 7 }] },
   });
   assert.equal(search().tripped, false);
-  observation(guard, { tool: 'set_response_budget', result: { budget: 'short' } });
+  observation(guard, {
+    tool: 'read',
+    input: { path: 'src/other.js' },
+    result: { source: 'different useful evidence' },
+  });
   assert.equal(search().tripped, false);
   observation(guard, { tool: 'set_response_budget', result: { budget: 'normal' } });
   assert.equal(search().action, 'steer');
@@ -195,6 +199,22 @@ test('a genuinely new repository state relaxes an outstanding stuck trip', () =>
     });
   }
   assert.equal(failure.action, 'steer');
+});
+
+test('new repository progress clears stale observation strikes after a steer', () => {
+  const guard = new SemanticLoopGuard();
+  assert.equal(observation(guard).tripped, false);
+  assert.equal(observation(guard).tripped, false);
+  assert.equal(observation(guard).action, 'steer');
+  const changed = observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js' },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+    mutationChanged: true,
+  });
+  assert.equal(changed.classification, 'success_changed');
+  assert.equal(observation(guard).tripped, false);
 });
 
 test('one rollback to an earlier state is allowed', () => {

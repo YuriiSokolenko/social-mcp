@@ -30,7 +30,8 @@ function positiveInteger(value, name) {
 }
 
 function digest(value) {
-  return createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
+  const input = Buffer.isBuffer(value) ? value : String(value);
+  return createHash('sha256').update(input).digest('hex').slice(0, 16);
 }
 
 function normalizeValue(value, depth = 0) {
@@ -168,9 +169,20 @@ export class SemanticLoopGuard {
     return window.reduce((count, item) => count + (item === value ? 1 : 0), 0);
   }
 
-  _markNovelState() {
+  _markNovelEvidence() {
+    const recoveringFromSteer = this.steerOutstanding;
     this.steerOutstanding = false;
     this.failureWindow = [];
+    if (recoveringFromSteer) this.observationWindow = [];
+  }
+
+  _markNovelRepositoryState() {
+    this.steerOutstanding = false;
+    this.failureWindow = [];
+    // Repository mutations can invalidate the meaning of prior observations.
+    // Start evidence repetition tracking fresh, but preserve repository history
+    // so A -> B -> A -> C -> A remains detectable.
+    this.observationWindow = [];
   }
 
   _trip(base, reason, fingerprintClass, revisitCount, flags = {}) {
@@ -201,6 +213,7 @@ export class SemanticLoopGuard {
     productiveState = 'inactive',
     repositoryStateBefore = null,
     repositoryStateAfter = null,
+    mutationChanged = null,
   }) {
     const base = {
       stage,
@@ -240,16 +253,18 @@ export class SemanticLoopGuard {
         this._push(this.repositoryWindow, repositoryStateBefore, this.windowSize + 1);
       }
 
-      const changed = Boolean(
-        repositoryStateBefore &&
-        repositoryStateAfter &&
-        repositoryStateBefore !== repositoryStateAfter
-      );
+      const changed = typeof mutationChanged === 'boolean'
+        ? mutationChanged
+        : Boolean(
+            repositoryStateBefore &&
+            repositoryStateAfter &&
+            repositoryStateBefore !== repositoryStateAfter
+          );
       const seenBefore = repositoryStateAfter
         ? this._count(this.repositoryWindow, repositoryStateAfter)
         : 0;
 
-      if (changed && seenBefore === 0) this._markNovelState();
+      if (changed && seenBefore === 0) this._markNovelRepositoryState();
       if (repositoryStateAfter) {
         this._push(this.repositoryWindow, repositoryStateAfter, this.windowSize + 1);
       }
@@ -304,7 +319,7 @@ export class SemanticLoopGuard {
       productiveState,
     });
     const seenBefore = this._count(this.observationWindow, fingerprint);
-    if (seenBefore === 0) this._markNovelState();
+    if (seenBefore === 0) this._markNovelEvidence();
     this._push(this.observationWindow, fingerprint);
     const count = this._count(this.observationWindow, fingerprint);
     const observed = {

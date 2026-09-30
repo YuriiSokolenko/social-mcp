@@ -389,6 +389,14 @@ export default function (pi) {
   const pendingLoopCalls = new Map();
   let lastSuccessfulMutationSnapshot = null;
 
+  function mutationSnapshotChanged(before, after) {
+    if (!before || !after) return true;
+    if (before.existed !== after.existed) return true;
+    if (!before.existed) return false;
+    if (before.mode !== after.mode) return true;
+    return !before.content.equals(after.content);
+  }
+
   function captureMutationSnapshot(cwd, requestedPath) {
     if (typeof requestedPath !== 'string' || !requestedPath) return null;
     const root = path.resolve(cwd);
@@ -596,15 +604,31 @@ export default function (pi) {
   });
   pi.on('tool_execution_end', async (event, ctx) => {
     const pendingLoopCall = pendingLoopCalls.get(event.toolCallId) ?? null;
-    let repositoryStateAfter = null;
+    const contentMutation =
+      stage === 'implementer' &&
+      ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName);
+    const mutationSnapshot = contentMutation
+      ? (pendingMutationSnapshots.get(event.toolCallId) ?? null)
+      : null;
+
     let mutationChanged = null;
-    if (loopGuard && pendingLoopCall && isSemanticMutationTool(event.toolName)) {
-      repositoryStateAfter = repositoryStateFingerprint(pendingLoopCall.cwd);
-      mutationChanged = pendingLoopCall.repositoryStateBefore !== repositoryStateAfter;
+    if (contentMutation && pendingLoopCall && mutationSnapshot) {
+      const afterSnapshot = captureMutationSnapshot(
+        pendingLoopCall.cwd,
+        mutationSnapshot.path,
+      );
+      mutationChanged = mutationSnapshotChanged(mutationSnapshot, afterSnapshot);
     }
 
-    if (stage === 'implementer' && ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName)) {
-      const mutationSnapshot = pendingMutationSnapshots.get(event.toolCallId) ?? null;
+    let repositoryStateAfter = null;
+    if (loopGuard && pendingLoopCall && isSemanticMutationTool(event.toolName)) {
+      repositoryStateAfter = repositoryStateFingerprint(pendingLoopCall.cwd);
+      if (mutationChanged == null) {
+        mutationChanged = pendingLoopCall.repositoryStateBefore !== repositoryStateAfter;
+      }
+    }
+
+    if (contentMutation) {
       if (!event.isError && mutationChanged === true && mutationSnapshot) {
         lastSuccessfulMutationSnapshot = mutationSnapshot;
       }
@@ -626,6 +650,7 @@ export default function (pi) {
         productiveState: pendingLoopCall.productiveState,
         repositoryStateBefore: pendingLoopCall.repositoryStateBefore,
         repositoryStateAfter,
+        mutationChanged,
       });
       pendingLoopCalls.delete(event.toolCallId);
 
