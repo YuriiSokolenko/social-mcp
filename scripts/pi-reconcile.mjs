@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { issueTargetAfterRemovals, replaceIssueState } from './pi-common/github-state.mjs';
-import { inspectIssueState, issueStateLabels, safeRemovals } from './pi-common/state-machine.mjs';
+import { PIPELINE_LABELS, inspectIssueState, issueStateLabels, safeRemovals } from './pi-common/state-machine.mjs';
+import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED } from './pi-common/pr-labels.mjs';
+import { baseBranch, issueBranchPrefix, parseCheckpointRef, parseIssueBranch, checkpointBranch, workflowFile } from './pi-common/project-config.mjs';
 import { checkpointGcDecision, issueRecoveryTarget } from './pi-common/recovery-policy.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
 
@@ -33,12 +35,12 @@ const [allIssues, prs, runGroups, refs] = await Promise.all([
   pages('/issues?state=all'),
   pages('/pulls?state=all'),
   Promise.all(liveStatuses.map(status => workflowRuns(`/actions/runs?exclude_pull_requests=true&status=${status}`))),
-  pages('/git/matching-refs/heads/pi/'),
+  pages(`/git/matching-refs/heads/${issueBranchPrefix().split('/')[0]}/`),
 ]);
 const runs = runGroups.flat();
 const issues = allIssues.filter(item => !item.pull_request);
-const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.ref === 'dev' &&
-  pr.head.repo?.full_name === repo).map(pr => Number(pr.head.ref.match(/^pi\/issue-(\d+)$/)?.[1])).filter(Number.isSafeInteger));
+const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.ref === baseBranch() &&
+  pr.head.repo?.full_name === repo).map(pr => parseIssueBranch(pr.head.ref, { strict: false })).filter(Number.isSafeInteger));
 
 const liveImplementers = new Set();
 const liveArchitects = new Set();
@@ -55,7 +57,7 @@ for (const run of runs) {
   const fix = /^🔧 (?:Repair|Fix) PR #(\d+)\b/.exec(run.display_title ?? run.name ?? '');
   if (fix) liveFixes.add(Number(fix[1]));
 }
-const checkpoints = new Set(refs.map(ref => Number(ref.ref.match(/^refs\/heads\/pi\/issue-(\d+)-checkpoint$/)?.[1])).filter(Number.isSafeInteger));
+const checkpoints = new Set(refs.map(ref => parseCheckpointRef(ref.ref)).filter(Number.isSafeInteger));
 const report = [];
 for (const issue of issues) {
   const findings = inspectIssueState(issue, {
@@ -66,7 +68,7 @@ for (const issue of issues) {
   });
   const labels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   const issueAgeMs = Date.now() - Date.parse(issue.updated_at ?? issue.created_at);
-  const strandedReady = issue.state === 'open' && labels.has('pi:ready') &&
+  const strandedReady = issue.state === 'open' && labels.has(PIPELINE_LABELS.ready) &&
     Number.isFinite(issueAgeMs) && issueAgeMs >= RECOVERY_GRACE_MS &&
     !liveImplementers.has(issue.number) && !openPiPrIssues.has(issue.number);
 
@@ -86,9 +88,9 @@ for (const issue of issues) {
       recovery = {
         add: target,
         dispatch: null,
-        reason: target === 'pi:mr-created'
+        reason: target === PIPELINE_LABELS.pr
           ? 'published PR is the durable owner'
-          : target === 'dispatcher:ready'
+          : target === PIPELINE_LABELS.queued
             ? 'return lost issue ownership to the normal Dispatcher'
             : `${automationMode}: clear lost issue ownership without re-queueing`,
       };
@@ -108,14 +110,14 @@ const childrenOfEpic = (body) => {
 };
 for (const parent of issues) {
   const labels = new Set((parent.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
-  if (parent.state !== 'open' || !labels.has('architect:epic')) continue;
+  if (parent.state !== 'open' || !labels.has(PIPELINE_LABELS.epic)) continue;
   for (const number of childrenOfEpic(parent.body)) {
     const child = issues.find(item => item.number === number);
     if (!child || child.state !== 'open' || issueStateLabels(child).length) continue;
     let recovery = null;
     if (apply && issueRecoveryAllowed) {
-      await replaceStateLabels(number, child, 'dispatcher:ready', 'issue');
-      recovery = { add: 'dispatcher:ready', dispatch: null, reason: 'complete interrupted Architect split publication' };
+      await replaceStateLabels(number, child, PIPELINE_LABELS.queued, 'issue');
+      recovery = { add: PIPELINE_LABELS.queued, dispatch: null, reason: 'complete interrupted Architect split publication' };
     }
     report.push({
       type: 'issue', number, title: child.title,
@@ -128,13 +130,13 @@ for (const parent of issues) {
 let mergeGateRecoveryNeeded = false;
 if (apply && prRecoveryAllowed) {
   for (const pr of prs) {
-    if (pr.state !== 'open' || pr.draft || pr.base.ref !== 'dev' || pr.head.repo?.full_name !== repo ||
-        !/^pi\/issue-[1-9]\d*$/.test(pr.head.ref ?? '')) continue;
+    if (pr.state !== 'open' || pr.draft || pr.base.ref !== baseBranch() || pr.head.repo?.full_name !== repo ||
+        parseIssueBranch(pr.head.ref ?? '') === null) continue;
     const labels = new Set((pr.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
     const prAgeMs = Date.now() - Date.parse(pr.updated_at ?? pr.created_at);
     if (!Number.isFinite(prAgeMs) || prAgeMs < RECOVERY_GRACE_MS) continue;
-    if (labels.has('pi:needs-human') || liveReviews.has(pr.number) || liveFixes.has(pr.number)) continue;
-    if (labels.has('review:passed')) {
+    if (labels.has(PIPELINE_LABELS.needsHuman) || liveReviews.has(pr.number) || liveFixes.has(pr.number)) continue;
+    if (labels.has(REVIEW_PASSED)) {
       mergeGateRecoveryNeeded = true;
       report.push({
         type: 'pr',
@@ -142,12 +144,13 @@ if (apply && prRecoveryAllowed) {
         title: pr.title,
         findings: [{ code: 'passed-pr-needs-merge-gate', severity: 'repair' }],
         removals: [],
-        recovery: { add: 'review:passed', dispatch: 'Merge Gate', reason: 'wake shared merge scan after lost PASS handoff' },
+        recovery: { add: REVIEW_PASSED, dispatch: 'Merge Gate', reason: 'wake shared merge scan after lost PASS handoff' },
       });
       continue;
     }
-    const workflow = labels.has('review:changes-requested') ? 'pi-pr-fix.yml' : 'pi-pr-review.yml';
-    const owner = workflow === 'pi-pr-fix.yml' ? 'PR Fix' : 'Reviewer';
+    const needsFix = labels.has(REVIEW_CHANGES_REQUESTED);
+    const workflow = workflowFile(needsFix ? 'repair' : 'reviewer');
+    const owner = needsFix ? 'PR Fix' : 'Reviewer';
     const dispatched = await tryDispatchWorkflow(workflow, { pr_number: String(pr.number) }, `PR #${pr.number}`);
     report.push({
       type: 'pr',
@@ -156,14 +159,14 @@ if (apply && prRecoveryAllowed) {
       findings: [{ code: 'orphaned-pr-pipeline', severity: 'repair' }],
       removals: [],
       recovery: {
-        add: labels.has('review:changes-requested') ? 'review:changes-requested' : 'unreviewed',
+        add: needsFix ? REVIEW_CHANGES_REQUESTED : 'unreviewed',
         dispatch: dispatched ? owner : null,
         reason: dispatched ? `restart stranded ${owner}` : `${owner} recovery dispatch failed`,
       },
     });
   }
   if (mergeGateRecoveryNeeded) {
-    await tryDispatchWorkflow('pi-auto-merge.yml', undefined, 'passed PR merge gate');
+    await tryDispatchWorkflow(workflowFile('mergeGate'), undefined, 'passed PR merge gate');
   }
 }
 
@@ -172,7 +175,7 @@ if (apply) {
     const issue = issues.find(item => item.number === number);
     const decision = checkpointGcDecision(issue, { hasOpenPiPr: openPiPrIssues.has(number) });
     if (decision.remove) {
-      await deleteRef(`heads/pi/issue-${number}-checkpoint`);
+      await deleteRef(`heads/${checkpointBranch(number)}`);
       report.push({ type: 'checkpoint', number, title: decision.reason, findings: [{ code: 'checkpoint-gc', severity: 'repair' }], removals: [], recovery: null });
     }
   }

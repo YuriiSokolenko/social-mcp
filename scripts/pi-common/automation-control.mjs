@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 import { githubClient } from './github-api.mjs';
+import { projectConfig, workflowFile } from './project-config.mjs';
 
 const MODES = new Set(['RUNNING','DRAINING','PAUSED']);
 
 /**
- * Change the repository automation mode using the dedicated PI_CONTROL_TOKEN.
+ * Change the repository automation mode (a repository variable named by the
+ * project config) using the dedicated control token.
  * The value is read back immediately; a successful PATCH without the expected
  * value is not accepted as success.
  */
 export async function setAutomationMode(mode) {
   if (!MODES.has(mode)) throw new Error(`invalid automation mode: ${mode}`);
   const { api } = githubClient();
-  await api('/actions/variables/PI_AUTOMATION_MODE','PATCH',{value:mode});
-  const actual = await api('/actions/variables/PI_AUTOMATION_MODE');
+  const variable = projectConfig().automation.modeVariable;
+  await api(`/actions/variables/${variable}`,'PATCH',{value:mode});
+  const actual = await api(`/actions/variables/${variable}`);
   if (actual.value !== mode) throw new Error(`Automation mode verification failed: expected ${mode}, got ${actual.value}`);
 }
 
@@ -22,7 +25,7 @@ export async function setAutomationMode(mode) {
  */
 export async function resumeDispatcher() {
   const { dispatchWorkflow } = githubClient();
-  await dispatchWorkflow('pi-dispatcher.yml');
+  await dispatchWorkflow(workflowFile('dispatcher'));
 }
 
 async function main(){

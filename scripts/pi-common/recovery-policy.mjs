@@ -4,10 +4,12 @@
  * Dispatcher, DRAINING/PAUSED clears it, and an existing PR remains durable.
  */
 
+import { PIPELINE_LABELS } from './state-machine.mjs';
+
 export function issueRecoveryTarget(issue, { hasOpenPiPr = false, automationMode = 'PAUSED' } = {}) {
   if (!issue || issue.state !== 'open') return null;
-  if (hasOpenPiPr) return 'pi:mr-created';
-  return automationMode === 'RUNNING' ? 'dispatcher:ready' : null;
+  if (hasOpenPiPr) return PIPELINE_LABELS.pr;
+  return automationMode === 'RUNNING' ? PIPELINE_LABELS.queued : null;
 }
 
 export function checkpointGcDecision(issue, { hasOpenPiPr = false } = {}) {

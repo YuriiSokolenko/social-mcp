@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { childNumbers, parentOf } from './pi-architect.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
+import { PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
@@ -17,7 +18,7 @@ while (childNumber && !visited.has(childNumber)) {
   const parentNumber = parentOf(child.body);
   if (!parentNumber || visited.has(parentNumber)) break;
   const parent = await api(`/issues/${parentNumber}`);
-  if (!parent.labels.some(label => label.name === 'architect:epic')) break;
+  if (!parent.labels.some(label => label.name === PIPELINE_LABELS.epic)) break;
   const numbers = childNumbers(parent.body);
   if (!numbers.includes(childNumber)) break;
   const siblings = await Promise.all(numbers.map(number => api(`/issues/${number}`)));

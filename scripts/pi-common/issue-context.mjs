@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import { githubClient } from './github-api.mjs';
+import { PIPELINE_LABELS } from './state-machine.mjs';
 
 /**
  * Load the Implementer's GitHub issue once and validate dispatch ownership.
@@ -21,8 +22,8 @@ export async function loadIssue(issue) {
 
 export async function loadReadyIssue(issue) {
   const data = await loadIssue(issue);
-  if (data.state !== 'open' || !data.labels.includes('pi:ready')) {
-    throw new Error(`Issue #${issue} is not an open pi:ready issue`);
+  if (data.state !== 'open' || !data.labels.includes(PIPELINE_LABELS.ready)) {
+    throw new Error(`Issue #${issue} is not an open ${PIPELINE_LABELS.ready} issue`);
   }
   return { number: data.number, title: data.title, body: data.body };
 }

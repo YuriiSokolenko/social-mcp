@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "git": {
+    "defaultBranch": "dev",
+    "issueBranchPrefix": "pi/issue-",
+    "checkpointBranchSuffix": "-checkpoint",
+    "identity": {
+      "name": "social-mcp-pi",
+      "email": "social-mcp-pi@users.noreply.github.com"
+    }
+  },
+  "labels": {
+    "queued": "dispatcher:ready",
+    "ready": "pi:ready",
+    "running": "pi:running",
+    "pr": "pi:mr-created",
+    "needsHuman": "pi:needs-human",
+    "architectReady": "architect:ready",
+    "epic": "architect:epic",
+    "reviewPassed": "review:passed",
+    "reviewChangesRequested": "review:changes-requested"
+  },
+  "workflows": {
+    "dispatcher": "pi-dispatcher.yml",
+    "architect": "pi-architect.yml",
+    "implementer": "pi-issue-agent.yml",
+    "reviewer": "pi-pr-review.yml",
+    "repair": "pi-pr-fix.yml",
+    "mergeGate": "pi-auto-merge.yml",
+    "triage": "pi-triage.yml"
+  },
+  "automation": {
+    "modeVariable": "PI_AUTOMATION_MODE"
+  },
+  "agents": {
+    "promptsDir": "agents"
+  },
+  "workspace": {
+    "cleanDirectories": [
+      ".pytest_cache",
+      ".ruff_cache",
+      "htmlcov",
+      "build",
+      "dist"
+    ],
+    "cleanFiles": [
+      ".coverage",
+      "coverage.xml"
+    ]
+  },
+  "pullRequest": {
+    "validationLines": [
+      "pytest: passed",
+      "ruff check .: passed",
+      "git diff --check: passed"
+    ]
+  },
+  "controlPlane": {
+    "prefixes": [
+      ".github/workflows/",
+      ".pi/",
+      "agents/",
+      "infra/github-runner-autoscaler/"
+    ],
+    "exact": [
+      "tests/test_runner_autoscaler.sh"
+    ],
+    "patterns": [
+      "^scripts/pi-(?:[^/]+\\.(?:mjs|sh)|[^/]+/)",
+      "^tests/[^/]+\\.test\\.mjs$"
+    ]
+  },
+  "checks": {
+    "final": [
+      {
+        "name": "ruff",
+        "builtin": "ruff"
+      },
+      {
+        "name": "git diff --check",
+        "command": "git",
+        "args": [
+          "diff",
+          "--check"
+        ]
+      },
+      {
+        "name": "pytest",
+        "command": "pytest",
+        "args": []
+      }
+    ],
+    "profiles": {
+      "node_tests": {
+        "command": "node",
+        "args": [
+          "--test",
+          {
+            "files": {
+              "dir": "tests",
+              "pattern": "\\.test\\.mjs$"
+            }
+          }
+        ]
+      },
+      "pytest_all": {
+        "command": "pytest",
+        "args": [
+          "-q",
+          "--tb=short",
+          "-rfE",
+          "--no-header",
+          "-p",
+          "no:cacheprovider"
+        ]
+      }
+    }
+  },
+  "environment": {
+    "pathPrepend": [
+      ".venv/bin"
+    ],
+    "stages": {
+      "implementer": [
+        {
+          "name": "python version",
+          "command": "python",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "sqlite version",
+          "command": "sqlite3",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "create venv",
+          "command": "python",
+          "args": [
+            "-m",
+            "venv",
+            ".venv"
+          ]
+        },
+        {
+          "name": "upgrade pip",
+          "command": "python",
+          "args": [
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "pip"
+          ]
+        },
+        {
+          "name": "install project",
+          "command": "python",
+          "args": [
+            "-m",
+            "pip",
+            "install",
+            "-e",
+            "."
+          ]
+        },
+        {
+          "name": "install dev tools",
+          "command": "python",
+          "args": [
+            "-m",
+            "pip",
+            "install",
+            "pytest",
+            "pytest-asyncio",
+            "ruff==0.12.12"
+          ]
+        },
+        {
+          "name": "pytest version",
+          "command": "pytest",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "ruff version",
+          "command": "ruff",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "reviewer": [
+        {
+          "name": "create venv",
+          "command": "python",
+          "args": [
+            "-m",
+            "venv",
+            ".venv"
+          ]
+        },
+        {
+          "name": "install project and dev tools",
+          "command": "pip",
+          "args": [
+            "install",
+            "-e",
+            ".",
+            "pytest",
+            "pytest-asyncio",
+            "ruff==0.12.12"
+          ]
+        }
+      ],
+      "repair": [
+        {
+          "name": "create venv",
+          "command": "python",
+          "args": [
+            "-m",
+            "venv",
+            ".venv"
+          ]
+        },
+        {
+          "name": "install project and dev tools",
+          "command": "pip",
+          "args": [
+            "install",
+            "-e",
+            ".",
+            "pytest",
+            "pytest-asyncio",
+            "ruff==0.12.12"
+          ]
+        }
+      ]
+    }
+  }
+}

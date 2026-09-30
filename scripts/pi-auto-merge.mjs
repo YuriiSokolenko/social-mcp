@@ -2,15 +2,16 @@ import { pathToFileURL } from 'node:url';
 
 import { githubClient } from './pi-common/github-api.mjs';
 import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
-import { withoutReviewLabels, withReviewVerdict } from './pi-common/pr-labels.mjs';
+import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED, withoutReviewLabels, withReviewVerdict } from './pi-common/pr-labels.mjs';
+import { baseBranch, parseIssueBranch, workflowFile } from './pi-common/project-config.mjs';
+import { PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 
 const { api, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow } = githubClient();
 
 export function linkedIssueNumber(pr, repository) {
-  const match = /^pi\/issue-([1-9]\d*)$/.exec(pr.head?.ref ?? '');
-  if (pr.draft || pr.base?.ref !== 'dev' ||
-      pr.base?.repo?.full_name !== repository || pr.head?.repo?.full_name !== repository || !match) return null;
-  const number = Number(match[1]);
+  const number = parseIssueBranch(pr.head?.ref ?? '');
+  if (pr.draft || pr.base?.ref !== baseBranch() ||
+      pr.base?.repo?.full_name !== repository || pr.head?.repo?.full_name !== repository || number === null) return null;
   if (!Number.isSafeInteger(number) || !new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${number}\\b`, 'i').test(pr.body ?? '')) return null;
   return number;
 }
@@ -30,19 +31,19 @@ async function processPR(prSummary) {
   if (!issue) return;
 
   const prLabels = new Set((pr.labels ?? []).map(label => label.name));
-  if (prLabels.has('pi:needs-human')) {
+  if (prLabels.has(PIPELINE_LABELS.needsHuman)) {
     console.log(`#${pr.number}: PR requires human attention; automation skipped`);
     return;
   }
 
   const issueData = await loadIssue(issue);
   const labels = new Set(issueData.labels.map(label => label.name));
-  if (issueData.state !== 'open' || !labels.has('pi:mr-created') || labels.has('pi:needs-human')) {
+  if (issueData.state !== 'open' || !labels.has(PIPELINE_LABELS.pr) || labels.has(PIPELINE_LABELS.needsHuman)) {
     console.log(`#${pr.number}: issue #${issue} is not ready for merge`);
     return;
   }
 
-  if (!prLabels.has('review:passed')) {
+  if (!prLabels.has(REVIEW_PASSED)) {
     console.log(`#${pr.number}: waiting for independent review PASS`);
     return;
   }
@@ -51,7 +52,7 @@ async function processPR(prSummary) {
   if (!allowedFiles(files, pr.changed_files)) {
     console.log(`#${pr.number}: changed control files or incomplete file list; human review required`);
     const nextLabels = withoutReviewLabels([...prLabels]);
-    if (!nextLabels.includes('pi:needs-human')) nextLabels.push('pi:needs-human');
+    if (!nextLabels.includes(PIPELINE_LABELS.needsHuman)) nextLabels.push(PIPELINE_LABELS.needsHuman);
     await replaceLabels(pr.number, nextLabels);
     const marker = `<!-- merge-gate:unsafe-pr:${pr.number} -->`;
     const comments = await pages(`/issues/${issue}/comments`);
@@ -87,16 +88,16 @@ async function processPR(prSummary) {
       await comment(issue, `Merge Gate found that PR #${pr.number} conflicts with current dev. The approved HEAD can no longer be merged unchanged, so the old review is invalidated and PR Fix will integrate current dev, resolve conflicts, validate the result, and send the new HEAD through Reviewer again.\n\n${marker}`);
     }
 
-    const nextLabels = withReviewVerdict([...prLabels], 'review:changes-requested');
+    const nextLabels = withReviewVerdict([...prLabels], REVIEW_CHANGES_REQUESTED);
     await replaceLabels(pr.number, nextLabels);
-    await dispatchWorkflow('pi-pr-fix.yml', { pr_number: String(pr.number) });
-    console.log(`#${pr.number}: merge conflict; assigned review:changes-requested ownership and dispatched PR Fix`);
+    await dispatchWorkflow(workflowFile('repair'), { pr_number: String(pr.number) });
+    console.log(`#${pr.number}: merge conflict; assigned ${REVIEW_CHANGES_REQUESTED} ownership and dispatched PR Fix`);
     return 'blocked';
   }
 }
 
 export async function main() {
-  const prs = await pages('/pulls?state=open&base=dev');
+  const prs = await pages(`/pulls?state=open&base=${encodeURIComponent(baseBranch())}`);
   for (const pr of prs) {
     try {
       if (await processPR(pr)) break;

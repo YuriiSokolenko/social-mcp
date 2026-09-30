@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { githubClient } from "./pi-common/github-api.mjs";
 import { replaceIssueState } from "./pi-common/github-state.mjs";
-import { validateIssueTransition } from "./pi-common/state-machine.mjs";
+import { PIPELINE_LABELS, validateIssueTransition } from "./pi-common/state-machine.mjs";
 import { acceptanceCriteria, taskMetadata } from "./pi-common/task-metadata.mjs";
 import { readPiJsonl } from "./pi-common/result-jsonl.mjs";
 
@@ -37,8 +37,8 @@ async function transitionIssue(number, action) {
 // pipeline; triage never re-classifies them. `pi:needs-human` is handled
 // separately below, since triage is exactly what re-reviews those.
 const pipelineLabels = [
-  "dispatcher:ready", "pi:ready", "pi:running", "pi:mr-created",
-  "architect:ready", "architect:epic",
+  PIPELINE_LABELS.queued, PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr,
+  PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic,
 ];
 
 function hash(value) {
@@ -85,7 +85,7 @@ async function candidates() {
   for (const issue of issues) {
     const owned = labelsOf(issue);
     if (pipelineLabels.some(label => owned.has(label))) continue;
-    const needsHuman = owned.has("pi:needs-human");
+    const needsHuman = owned.has(PIPELINE_LABELS.needsHuman);
     const task = issueMetadata(issue);
     let comments = [];
     if (needsHuman) {
@@ -159,8 +159,8 @@ async function main() {
   const [mode, file] = process.argv.slice(2);
   if (!["prepare", "apply"].includes(mode) || !file) usage();
   if (mode === "prepare") {
-    await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
-    await ensureLabel("pi:needs-human", "fbca04", "Pi finished without a usable repository change");
+    await ensureLabel(PIPELINE_LABELS.queued, "d4c5f9", "Eligible for Pi dispatcher selection");
+    await ensureLabel(PIPELINE_LABELS.needsHuman, "fbca04", "Pi finished without a usable repository change");
     const list = await candidates();
     const batchSize = Number(process.env.PI_TRIAGE_BATCH_SIZE ?? 8);
     if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("PI_TRIAGE_BATCH_SIZE must be a positive integer");
@@ -201,7 +201,7 @@ async function main() {
     const ac = acceptanceCriteria(issue.body ?? "");
     if (!ac.valid) throw new Error(`#${number} cannot be ready: ${ac.error}`);
     await transitionIssue(number, "queued");
-    console.log(`Marked #${number} dispatcher:ready`);
+    console.log(`Marked #${number} ${PIPELINE_LABELS.queued}`);
   }
 
   for (const { issue: number, comment } of result.needs_human) {
@@ -212,9 +212,9 @@ async function main() {
       continue;
     }
     const marker = markerFor(issue.body);
-    if (!owned.has("pi:needs-human")) await transitionIssue(number, "needs-human");
+    if (!owned.has(PIPELINE_LABELS.needsHuman)) await transitionIssue(number, "needs-human");
     await postIssueComment(number, `Pi Triage: needs a person before this can be dispatched.\n\n${comment}\n\n${marker}`);
-    console.log(`Flagged #${number} pi:needs-human`);
+    console.log(`Flagged #${number} ${PIPELINE_LABELS.needsHuman}`);
   }
 
   if (result.skipped.length) {

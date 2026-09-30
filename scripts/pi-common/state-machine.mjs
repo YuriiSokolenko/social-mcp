@@ -8,14 +8,18 @@
  * This module is deterministic and has no GitHub/network side effects.
  */
 
+import { projectConfig } from './project-config.mjs';
+
+// Label NAMES are project configuration; the roles below are the harness vocabulary.
+const configuredLabels = projectConfig().labels;
 export const PIPELINE_LABELS = Object.freeze({
-  queued: 'dispatcher:ready',
-  ready: 'pi:ready',
-  running: 'pi:running',
-  pr: 'pi:mr-created',
-  needsHuman: 'pi:needs-human',
-  architectReady: 'architect:ready',
-  epic: 'architect:epic',
+  queued: configuredLabels.queued,
+  ready: configuredLabels.ready,
+  running: configuredLabels.running,
+  pr: configuredLabels.pr,
+  needsHuman: configuredLabels.needsHuman,
+  architectReady: configuredLabels.architectReady,
+  epic: configuredLabels.epic,
 });
 
 export const ISSUE_ACTIVE = new Set([
@@ -112,16 +116,16 @@ export function validateIssueTransition(issue, action) {
   if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target ?? 'unowned'}`);
   if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target ?? 'unowned'}`);
   if (action === 'satisfied' && !labels.has(PIPELINE_LABELS.running)) {
-    throw new Error('satisfied requires pi:running');
+    throw new Error(`satisfied requires ${PIPELINE_LABELS.running}`);
   }
   if (action === 'stopped' && !labels.has(PIPELINE_LABELS.running) && !labels.has(PIPELINE_LABELS.architectReady)) {
-    throw new Error('stopped requires pi:running or architect:ready');
+    throw new Error(`stopped requires ${PIPELINE_LABELS.running} or ${PIPELINE_LABELS.architectReady}`);
   }
   if (action === 'ready' && !labels.has(PIPELINE_LABELS.queued) && !labels.has(PIPELINE_LABELS.ready)) {
-    throw new Error('ready requires dispatcher:ready or an idempotent pi:ready state');
+    throw new Error(`ready requires ${PIPELINE_LABELS.queued} or an idempotent ${PIPELINE_LABELS.ready} state`);
   }
   if (action === 'architect-ready' && !labels.has(PIPELINE_LABELS.queued) && !labels.has(PIPELINE_LABELS.architectReady)) {
-    throw new Error('architect-ready requires dispatcher:ready or an idempotent architect:ready state');
+    throw new Error(`architect-ready requires ${PIPELINE_LABELS.queued} or an idempotent ${PIPELINE_LABELS.architectReady} state`);
   }
   if (action === 'queued') {
     const owned = [...ISSUE_STATE_LABELS].filter(label => labels.has(label));
@@ -131,21 +135,21 @@ export function validateIssueTransition(issue, action) {
       labels.has(PIPELINE_LABELS.needsHuman) ||
       labels.has(PIPELINE_LABELS.queued);
     if (!allowedSource) {
-      throw new Error('queued requires an unowned issue, pi:ready, architect:ready, pi:needs-human, or an idempotent dispatcher:ready state');
+      throw new Error(`queued requires an unowned issue, ${PIPELINE_LABELS.ready}, ${PIPELINE_LABELS.architectReady}, ${PIPELINE_LABELS.needsHuman}, or an idempotent ${PIPELINE_LABELS.queued} state`);
     }
   }
   if (action === 'running' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running)) {
-    throw new Error('running requires pi:ready or an idempotent pi:running state');
+    throw new Error(`running requires ${PIPELINE_LABELS.ready} or an idempotent ${PIPELINE_LABELS.running} state`);
   }
   if (action === 'running-manual' &&
       (labels.has(PIPELINE_LABELS.pr) || labels.has(PIPELINE_LABELS.architectReady))) {
-    throw new Error('running-manual cannot steal pi:mr-created or architect:ready ownership');
+    throw new Error(`running-manual cannot steal ${PIPELINE_LABELS.pr} or ${PIPELINE_LABELS.architectReady} ownership`);
   }
   if (action === 'mr-created' && !labels.has(PIPELINE_LABELS.running) && !labels.has(PIPELINE_LABELS.pr)) {
-    throw new Error('mr-created requires pi:running or an idempotent pi:mr-created state');
+    throw new Error(`mr-created requires ${PIPELINE_LABELS.running} or an idempotent ${PIPELINE_LABELS.pr} state`);
   }
   if (action === 'needs-human' && labels.has(PIPELINE_LABELS.pr)) {
-    throw new Error('needs-human cannot replace pi:mr-created; published PR ownership remains with the PR pipeline');
+    throw new Error(`needs-human cannot replace ${PIPELINE_LABELS.pr}; published PR ownership remains with the PR pipeline`);
   }
   return target;
 }

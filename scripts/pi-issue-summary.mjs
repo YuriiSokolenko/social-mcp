@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import { githubClient } from './pi-common/github-api.mjs';
+import { baseBranch, issueBranch } from './pi-common/project-config.mjs';
+import { PIPELINE_LABELS as L } from './pi-common/state-machine.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY ?? process.env.REPO;
 const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
@@ -9,19 +11,19 @@ if (!repo || !token || !Number.isSafeInteger(issueNumber)) throw new Error('repo
 
 const { api, pages } = githubClient({ repo, token });
 const issue = await api(`/issues/${issueNumber}`);
-const prs = await pages('/pulls?state=all&base=dev');
-const pr = prs.find(item => item.head.repo?.full_name === repo && item.head.ref === `pi/issue-${issueNumber}`) ?? null;
+const prs = await pages(`/pulls?state=all&base=${encodeURIComponent(baseBranch())}`);
+const pr = prs.find(item => item.head.repo?.full_name === repo && item.head.ref === issueBranch(issueNumber)) ?? null;
 const labelNames = issue.labels.map(label => label.name);
 
 const stage = issue.state === 'closed' && issue.state_reason === 'completed' ? 'COMPLETED'
   : pr?.merged_at ? 'MERGED / DEV CI'
-  : labelNames.includes('pi:mr-created') ? 'READY TO MERGE'
-  : labelNames.includes('pi:running') ? 'IMPLEMENTING'
-  : labelNames.includes('pi:ready') ? 'READY'
-  : labelNames.includes('architect:ready') ? 'ARCHITECTING'
-  : labelNames.includes('dispatcher:ready') ? 'DISPATCHABLE'
-  : labelNames.includes('architect:epic') ? 'EPIC'
-  : labelNames.includes('pi:needs-human') ? 'NEEDS HUMAN' : 'BACKLOG';
+  : labelNames.includes(L.pr) ? 'READY TO MERGE'
+  : labelNames.includes(L.running) ? 'IMPLEMENTING'
+  : labelNames.includes(L.ready) ? 'READY'
+  : labelNames.includes(L.architectReady) ? 'ARCHITECTING'
+  : labelNames.includes(L.queued) ? 'DISPATCHABLE'
+  : labelNames.includes(L.epic) ? 'EPIC'
+  : labelNames.includes(L.needsHuman) ? 'NEEDS HUMAN' : 'BACKLOG';
 
 const lines = [
   `## Issue #${issueNumber} pipeline`,
@@ -32,10 +34,10 @@ const lines = [
   '',
   '| Step | State | Details |',
   '| --- | --- | --- |',
-  `| Dispatch | ${labelNames.includes('dispatcher:ready') ? 'queued' : '—'} | labels: ${labelNames.join(', ') || 'none'} |`,
-  `| Implement | ${labelNames.includes('pi:running') ? 'running' : labelNames.includes('pi:mr-created') || issue.state === 'closed' ? 'done' : '—'} | branch: \`pi/issue-${issueNumber}\` |`,
+  `| Dispatch | ${labelNames.includes(L.queued) ? 'queued' : '—'} | labels: ${labelNames.join(', ') || 'none'} |`,
+  `| Implement | ${labelNames.includes(L.running) ? 'running' : labelNames.includes(L.pr) || issue.state === 'closed' ? 'done' : '—'} | branch: \`${issueBranch(issueNumber)}\` |`,
   `| Pull request | ${pr ? pr.state : '—'} | ${pr ? `#${pr.number} · ${pr.title} · \`${pr.head.sha.slice(0,12)}\`` : 'not created'} |`,
-  `| Merge | ${pr?.merged_at ? 'merged' : labelNames.includes('pi:mr-created') ? 'ready' : '—'} | ${pr?.merged_at ?? ''} |`,
+  `| Merge | ${pr?.merged_at ? 'merged' : labelNames.includes(L.pr) ? 'ready' : '—'} | ${pr?.merged_at ?? ''} |`,
   `| Dev CI | ${pr?.merged_at ? 'runs on merged dev push' : 'after merge'} | no pre-merge dev-SHA gate |`,
   '',
 ];

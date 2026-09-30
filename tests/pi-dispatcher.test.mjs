@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { readScript } from './helpers/resolved-source.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classificationLists, dispatchFromJsonl, finalText, issueMetadata, validateDispatch } from '../scripts/pi-dispatcher.mjs';
@@ -58,7 +59,7 @@ test('finalText uses the last non-empty assistant message across agent_end event
 
 
 test('architect dispatch failure returns issue ownership to dispatcher queue', () => {
-  const source = fs.readFileSync('scripts/pi-dispatcher.mjs', 'utf8');
+  const source = readScript('scripts/pi-dispatcher.mjs', 'utf8');
   assert.match(source, /dispatchWorkflow\("pi-architect\.yml"[\s\S]*transitionIssue\(number, "queued"\)/);
   assert.match(source, /Could not roll back architect:ready/);
 });

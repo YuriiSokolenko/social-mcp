@@ -1,26 +1,30 @@
+import { projectConfig } from './project-config.mjs';
+
 /**
  * Single path-security boundary separating product changes from CI control plane.
  *
- * Every trusted publication/review/merge guard must use this policy. Pi agents
+ * Every trusted publication/review/merge guard must use this policy. Agents
  * are forbidden from changing, reviewing, repairing or auto-merging matching
  * paths. Keeping one matcher prevents a path from being protected in Reviewer
  * but accidentally allowed by Implementer or Merge Gate.
  *
- * IMPORTANT: scripts/pi-common/** is intentionally protected by scripts/pi-*.
+ * WHICH paths are control plane is project configuration (`controlPlane` in
+ * `.agent-harness.json`). The harness only owns the rule below: the
+ * configuration file itself is always protected, because it defines the
+ * boundary and an agent that could edit it could widen its own permissions.
  */
 
-export function isControlPlanePath(path) {
-  return path.startsWith('.github/workflows/') ||
-    path.startsWith('.pi/') ||
-    path.startsWith('agents/') ||
-    /^scripts\/pi-(?:[^/]+\.(?:mjs|sh)|[^/]+\/)/.test(path) ||
-    /^tests\/[^/]+\.test\.mjs$/.test(path) ||
-    path === 'tests/test_runner_autoscaler.sh' ||
-    path.startsWith('infra/github-runner-autoscaler/');
+const ALWAYS_PROTECTED = new Set(['.agent-harness.json', '.agent-harness.yml', '.agent-harness.yaml']);
+
+export function isControlPlanePath(path, config = projectConfig().controlPlane) {
+  return ALWAYS_PROTECTED.has(path) ||
+    config.exact.includes(path) ||
+    config.prefixes.some(prefix => path.startsWith(prefix)) ||
+    config.patterns.some(pattern => pattern.test(path));
 }
 
-export function controlPlanePaths(paths) {
-  return [...new Set(paths.filter(Boolean).filter(isControlPlanePath))];
+export function controlPlanePaths(paths, config = projectConfig().controlPlane) {
+  return [...new Set(paths.filter(Boolean).filter(path => isControlPlanePath(path, config)))];
 }
 
 if (process.argv[2] === '--stdin') {

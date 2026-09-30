@@ -2,6 +2,7 @@ import { runGit as git } from './git.mjs';
 
 import { forbiddenAgentPaths } from './agent-change-policy.mjs';
 import { runProductChecks } from './product-checks.mjs';
+import { baseBranch, baseRef, gitIdentity } from './project-config.mjs';
 
 
 function conflictedFiles() {
@@ -14,8 +15,9 @@ function mergeInProgress() {
 }
 
 export function integrateLatestDev({ conflictMessage, allowConflicts = false }) {
-  git(['config', 'user.name', 'social-mcp-pi']);
-  git(['config', 'user.email', 'social-mcp-pi@users.noreply.github.com']);
+  const identity = gitIdentity();
+  git(['config', 'user.name', identity.name]);
+  git(['config', 'user.email', identity.email]);
 
   if (mergeInProgress()) {
     const conflicts = conflictedFiles();
@@ -29,21 +31,21 @@ export function integrateLatestDev({ conflictMessage, allowConflicts = false }) 
     return;
   }
 
-  git(['fetch', 'origin', 'dev']);
-  const merge = git(['merge', '--no-edit', 'origin/dev'], { allowFailure: true });
+  git(['fetch', 'origin', baseBranch()]);
+  const merge = git(['merge', '--no-edit', baseRef()], { allowFailure: true });
   if (merge.status !== 0) {
     const conflicts = conflictedFiles();
     if (conflicts.length) {
       if (allowConflicts) return { conflicts };
       throw new Error(conflictMessage(conflicts));
     }
-    throw new Error(merge.out || 'Failed to merge latest dev');
+    throw new Error(merge.out || `Failed to merge latest ${baseBranch()}`);
   }
   return { conflicts: [] };
 }
 
 export function validateFinalProductTree({ cwd } = {}) {
-  const base = git(['merge-base', 'origin/dev', 'HEAD'], { cwd }).out;
+  const base = git(['merge-base', baseRef(), 'HEAD'], { cwd }).out;
   const forbidden = forbiddenAgentPaths(base, cwd);
   if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
   runProductChecks({ cwd });

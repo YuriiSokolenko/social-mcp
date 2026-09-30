@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { githubClient } from "./pi-common/github-api.mjs";
+import { baseBranch, parseIssueBranch, workflowFile } from "./pi-common/project-config.mjs";
 import { readQueueContext } from "./pi-common/queue-context.mjs";
 import { replaceIssueState } from "./pi-common/github-state.mjs";
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-common/state-machine.mjs";
@@ -38,9 +39,9 @@ async function snapshot(includeQueue = false) {
   const openIssues = allIssues.filter(issue => issue.state === "open");
   const openPrIssues = new Set();
   for (const pr of prs) {
-    if (pr.head.repo?.full_name !== repo || pr.base.ref !== "dev") continue;
-    const match = pr.head.ref.match(/^pi\/issue-(\d+)$/);
-    if (match) openPrIssues.add(Number(match[1]));
+    if (pr.head.repo?.full_name !== repo || pr.base.ref !== baseBranch()) continue;
+    const number = parseIssueBranch(pr.head.ref, { strict: false });
+    if (number !== null) openPrIssues.add(number);
   }
   const active = new Set(openPrIssues);
   for (const issue of openIssues) {
@@ -107,8 +108,8 @@ async function main() {
   const [mode, file] = process.argv.slice(2);
   if (!["prepare", "apply"].includes(mode) || !file) usage();
   if (mode === "prepare") {
-    await ensureLabel("dispatcher:ready", "d4c5f9", "Eligible for Pi dispatcher selection");
-    await ensureLabel("architect:ready", "c5def5", "Needs Pi Architect to split the issue");
+    await ensureLabel(PIPELINE_LABELS.queued, "d4c5f9", "Eligible for Pi dispatcher selection");
+    await ensureLabel(PIPELINE_LABELS.architectReady, "c5def5", "Needs Pi Architect to split the issue");
     const data = await snapshot(true);
     fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
     console.log(`Dispatcher: ${data.active.length} active, ${data.candidates.length} ready candidates`);
@@ -150,12 +151,12 @@ async function main() {
       // dispatcher instead of misclassifying an infrastructure failure as
       // architect/human work.
       try {
-        await dispatchWorkflow("pi-architect.yml", { issue_number: String(number) });
+        await dispatchWorkflow(workflowFile("architect"), { issue_number: String(number) });
       } catch (error) {
         try {
           await transitionIssue(number, "queued");
         } catch (rollbackError) {
-          console.error(`Could not roll back architect:ready on #${number}: ${rollbackError}`);
+          console.error(`Could not roll back ${PIPELINE_LABELS.architectReady} on #${number}: ${rollbackError}`);
         }
         throw error;
       }
@@ -165,12 +166,12 @@ async function main() {
 
     await transitionIssue(number, "ready");
     try {
-      await dispatchWorkflow("pi-issue-agent.yml", { issue_number: String(number), require_ready: true });
+      await dispatchWorkflow(workflowFile("implementer"), { issue_number: String(number), require_ready: true });
     } catch (error) {
       try {
         await transitionIssue(number, "queued");
       } catch (rollbackError) {
-        console.error(`Could not roll back pi:ready on #${number}: ${rollbackError}`);
+        console.error(`Could not roll back ${PIPELINE_LABELS.ready} on #${number}: ${rollbackError}`);
       }
       throw error;
     }

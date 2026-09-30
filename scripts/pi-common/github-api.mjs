@@ -9,8 +9,10 @@
  * ensureLabel() treats "already exists" as success.
  *
  * NOT FOR: agent worktrees or untrusted PR code. Callers must run this module
- * from the trusted dev control-plane checkout.
+ * from the trusted control-plane checkout of the default branch.
  */
+
+import { baseBranch } from './project-config.mjs';
 
 export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.env.REPO, token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN } = {}) {
   const requireConfig = () => {
@@ -65,10 +67,11 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
   const updateIssue = (number, body) => api(`/issues/${number}`, 'PATCH', body);
   const replaceLabels = (number, labels) => api(`/issues/${number}/labels`, 'PUT', { labels });
   const comment = (number, body) => api(`/issues/${number}/comments`, 'POST', { body });
+  // Always dispatch the trusted default branch, never a caller-chosen ref.
   const dispatchWorkflow = (workflow, inputs) => api(
     `/actions/workflows/${workflow}/dispatches`,
     'POST',
-    inputs === undefined ? { ref: 'dev' } : { ref: 'dev', inputs },
+    inputs === undefined ? { ref: baseBranch() } : { ref: baseBranch(), inputs },
   );
   async function workflowRuns(path) {
     const all = [];

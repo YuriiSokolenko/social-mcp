@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
 import { runGit as git } from './git.mjs';
+import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projectConfig, workflowFile } from './project-config.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -56,22 +57,25 @@ export function pushWithMissingObjectRetry(args, {
 }
 
 /**
- * After submit_result succeeds, origin/dev is an ancestor of HEAD because the
- * finalizer has integrated the latest dev. Compare publication content against
- * that integrated dev, not the older run-start SHA; otherwise control-plane
- * commits that landed on dev while the agent was running are falsely attributed
- * to the Implementer. Cancelled/pre-submit runs have not necessarily integrated
- * latest dev, so they keep using the run-start commit for checkpoint recovery.
+ * After submit_result succeeds, the remote default branch is an ancestor of HEAD
+ * because the finalizer has integrated it. Compare publication content against
+ * that integrated base, not the older run-start SHA; otherwise control-plane
+ * commits that landed on the base while the agent was running are falsely
+ * attributed to the Implementer. Cancelled/pre-submit runs have not necessarily
+ * integrated the latest base, so they keep using the run-start commit for
+ * checkpoint recovery.
  */
 function publicationBase(cwd, startCommit) {
-  const integrated = git(['merge-base','--is-ancestor','origin/dev','HEAD'], { cwd, allowFailure:true }).status === 0;
-  return integrated ? 'origin/dev' : startCommit;
+  const integrated = git(['merge-base','--is-ancestor',baseRef(),'HEAD'], { cwd, allowFailure:true }).status === 0;
+  return integrated ? baseRef() : startCommit;
 }
 
 export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) {
-  for (const p of ['.pytest_cache','.ruff_cache','htmlcov','build','dist']) fs.rmSync(`${cwd}/${p}`, { recursive: true, force: true });
-  for (const p of ['.coverage','coverage.xml']) fs.rmSync(`${cwd}/${p}`, { force: true });
-  git(['config','user.name','social-mcp-pi'], { cwd }); git(['config','user.email','social-mcp-pi@users.noreply.github.com'], { cwd });
+  const { cleanDirectories, cleanFiles } = projectConfig().workspace;
+  for (const p of cleanDirectories) fs.rmSync(`${cwd}/${p}`, { recursive: true, force: true });
+  for (const p of cleanFiles) fs.rmSync(`${cwd}/${p}`, { force: true });
+  const identity = gitIdentity();
+  git(['config','user.name',identity.name], { cwd }); git(['config','user.email',identity.email], { cwd });
   if (lines(git(['diff','--name-only','--diff-filter=U'], { cwd }).out).length) return { changed:false, reason:'conflicts' };
   git(['add','-A'], { cwd });
   const staged = lines(git(['diff','--cached','--name-only'], { cwd }).out);
@@ -84,7 +88,8 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Implementer attempted to modify protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
-  git(['push',`--force-with-lease=refs/heads/pi/issue-${issue}-checkpoint:${expectedSha ?? ''}`,'origin',`${commit}:refs/heads/pi/issue-${issue}-checkpoint`], { cwd, token });
+  const ref = `refs/heads/${checkpointBranch(issue)}`;
+  git(['push',`--force-with-lease=${ref}:${expectedSha ?? ''}`,'origin',`${commit}:${ref}`], { cwd, token });
   return { changed:true, commit };
 }
 
@@ -95,8 +100,9 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Refusing to publish protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
+  const ref = `refs/heads/${issueBranch(issue)}`;
   pushWithMissingObjectRetry(
-    ['push',`--force-with-lease=refs/heads/pi/issue-${issue}:${expectedSha ?? ''}`,'--set-upstream','origin',`${commit}:refs/heads/pi/issue-${issue}`],
+    ['push',`--force-with-lease=${ref}:${expectedSha ?? ''}`,'--set-upstream','origin',`${commit}:${ref}`],
     { cwd, token },
   );
   return { commit };
@@ -104,7 +110,7 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
 
 export async function upsertPullRequest({ issue, resultFile, owner }) {
   const { api } = githubClient();
-  const existing = await api(`/pulls?state=open&head=${encodeURIComponent(owner + ':pi/issue-' + issue)}&base=dev`);
+  const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   if (!resultFile || !fs.existsSync(resultFile) || !fs.statSync(resultFile).size) {
     throw new Error('Implementer result metadata is required before PR publication');
   }
@@ -116,19 +122,22 @@ export async function upsertPullRequest({ issue, resultFile, owner }) {
     throw new Error('Implementer result metadata is incomplete');
   }
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
-  const tests = '- pytest: passed\n- ruff check .: passed\n- git diff --check: passed\n- The merged result is validated by the normal CI run on dev after merge.';
+  const tests = [
+    ...projectConfig().pullRequest.validationLines.map(line => `- ${line}`),
+    `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
+  ].join('\n');
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
   if (existing[0]) {
     const pr = await api(`/pulls/${existing[0].number}`,'PATCH',{title:metadata.title,body});
     return { number:pr.number, url:pr.html_url };
   }
-  const pr = await api('/pulls','POST',{title:metadata.title,head:`pi/issue-${issue}`,base:'dev',body});
+  const pr = await api('/pulls','POST',{title:metadata.title,head:issueBranch(issue),base:baseBranch(),body});
   return { number:pr.number, url:pr.html_url };
 }
 
 export async function dispatchReviewer(prNumber) {
   const { dispatchWorkflow } = githubClient();
-  await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(prNumber) });
+  await dispatchWorkflow(workflowFile('reviewer'), { pr_number: String(prNumber) });
 }
 
 async function main() {

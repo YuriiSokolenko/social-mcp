@@ -2,13 +2,13 @@
 import { pathToFileURL } from 'node:url';
 
 import { githubClient } from './pi-common/github-api.mjs';
+import { baseBranch, checkpointBranch, issueBranch, parseIssueBranch } from './pi-common/project-config.mjs';
 import { ISSUE_STATE_LABELS } from './pi-common/state-machine.mjs';
 
 export function linkedIssueNumber(pr, repository) {
-  const match = /^pi\/issue-([1-9]\d*)$/.exec(pr.head?.ref ?? '');
-  if (pr.base?.ref !== 'dev' || pr.base?.repo?.full_name !== repository ||
-      pr.head?.repo?.full_name !== repository || !match) return null;
-  const number = Number(match[1]);
+  const number = parseIssueBranch(pr.head?.ref ?? '');
+  if (pr.base?.ref !== baseBranch() || pr.base?.repo?.full_name !== repository ||
+      pr.head?.repo?.full_name !== repository || number === null) return null;
   return new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${number}\\b`, 'i').test(pr.body ?? '') ? number : null;
 }
 
@@ -35,8 +35,8 @@ export async function finalizeMergedPush(sha, client = githubClient()) {
     await updateIssue(issueNumber, { state: 'closed', state_reason: 'completed', labels });
   }
 
-  await deleteRef(`heads/pi/issue-${issueNumber}`);
-  await deleteRef(`heads/pi/issue-${issueNumber}-checkpoint`);
+  await deleteRef(`heads/${issueBranch(issueNumber)}`);
+  await deleteRef(`heads/${checkpointBranch(issueNumber)}`);
   console.log(`#${issueNumber}: green dev CI confirmed merged PR #${pr.number}; issue closed and Pi refs cleaned`);
   return { issue: issueNumber, pr: pr.number };
 }

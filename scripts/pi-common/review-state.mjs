@@ -2,7 +2,9 @@
 import fs from 'node:fs';
 
 import { githubClient } from './github-api.mjs';
-import { prLabelNames, withoutReviewLabels, withReviewVerdict } from './pr-labels.mjs';
+import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED, prLabelNames, withoutReviewLabels, withReviewVerdict } from './pr-labels.mjs';
+import { workflowFile } from './project-config.mjs';
+import { PIPELINE_LABELS } from './state-machine.mjs';
 
 
 async function replaceReviewLabels(prNumber, target = null) {
@@ -32,12 +34,12 @@ export async function applyReview({ prNumber, reviewedHead, verdict, text }) {
   const { loadPullRequest, replaceLabels, comment } = githubClient();
   const pr = await loadPullRequest(prNumber);
   const currentLabels = prLabelNames(pr);
-  if (currentLabels.includes('pi:needs-human')) return { status: 'human' };
+  if (currentLabels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
   if (pr.head.sha !== reviewedHead) {
     await replaceReviewLabels(prNumber);
     return { status: 'stale' };
   }
-  const target = verdict === 'PASS' ? 'review:passed' : 'review:changes-requested';
+  const target = verdict === 'PASS' ? REVIEW_PASSED : REVIEW_CHANGES_REQUESTED;
   await replaceLabels(prNumber, withReviewVerdict(currentLabels, target));
   await comment(prNumber, text);
   return { status: 'applied', verdict };
@@ -45,7 +47,7 @@ export async function applyReview({ prNumber, reviewedHead, verdict, text }) {
 
 export async function dispatchAfterReview(prNumber, verdict) {
   const { dispatchWorkflow } = githubClient();
-  const workflow = verdict === 'PASS' ? 'pi-auto-merge.yml' : 'pi-pr-fix.yml';
+  const workflow = workflowFile(verdict === 'PASS' ? 'mergeGate' : 'repair');
   const inputs = verdict === 'PASS' ? undefined : { pr_number: String(prNumber) };
   await dispatchWorkflow(workflow, inputs);
 }
