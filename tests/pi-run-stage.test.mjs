@@ -120,7 +120,7 @@ test('StageRunResult exposes backend-neutral success metadata and artifact paths
 });
 
 
-test('mini-swe backend receives only the issue task instead of the Pi operating contract', () => {
+test('mini-swe backend receives issue task plus worktree routing instead of the Pi operating contract', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mini-swe-stage-'));
   const issueContext = join(dir, 'issue.json');
   writeFileSync(issueContext, JSON.stringify({
@@ -141,6 +141,8 @@ test('mini-swe backend receives only the issue task instead of the Pi operating 
   const { spec, backend } = buildStageRunSpec({ stage: 'implementer', cwd: '/work' }, env);
 
   assert.equal(backend, 'mini-swe');
+  assert.match(spec.prompt, /issue worktree is already the current working directory/i);
+  assert.match(spec.prompt, /Do not search for or modify other repository checkouts/i);
   assert.match(spec.prompt, /GitHub issue #77/);
   assert.match(spec.prompt, /Implement a focused change/);
   assert.match(spec.prompt, /Acceptance criteria/);
@@ -151,11 +153,12 @@ test('mini-swe invocation uses upstream yolo CLI with local OpenAI-compatible mo
   const invocation = buildMiniSweInvocation(specFor('implementer'));
 
   assert.equal(invocation.command, 'mini');
-  assert.deepEqual(invocation.args.slice(0, 12), [
+  assert.deepEqual(invocation.args.slice(0, 14), [
     '-c', 'mini.yaml',
     '-c', 'model.model_kwargs.custom_llm_provider=openai',
     '-c', 'model.model_kwargs.api_base=http://model/v1',
     '-c', 'model.cost_tracking=ignore_errors',
+    '-c', 'environment.cwd=/work',
     '-m', 'openai/model-x',
     '-y',
     '--exit-immediately',
@@ -165,6 +168,8 @@ test('mini-swe invocation uses upstream yolo CLI with local OpenAI-compatible mo
   assert.ok(invocation.args.includes('-t'));
   assert.ok(invocation.args.includes('do the task'));
   assert.equal(invocation.options.cwd, '/work');
+  assert.equal(invocation.options.env.GITHUB_WORKSPACE, '/work');
+  assert.equal(invocation.options.env.PWD, '/work');
   assert.equal(invocation.options.env.MSWEA_CONFIGURED, 'true');
   assert.equal(invocation.options.env.MSWEA_COST_TRACKING, 'ignore_errors');
   assert.equal(invocation.options.env.OPENAI_API_KEY, 'local-mini-swe');
