@@ -26,7 +26,7 @@ test('Pi cannot change the workflow definitions used for its own merge', () => {
   assert.equal(allowedFiles([{ filename: 'app/server.py' }], 2), false);
 });
 
-test('merge gate requires successful PR CI for the exact head SHA', () => {
+test('merge gate requires successful PR CI for the exact head SHA and classifies terminal failures from trusted step metadata', () => {
   assert.deepEqual(prCiVerdict([], 'abc'), { state: 'pending', run: null });
   assert.equal(prCiVerdict([
     { id: 1, event: 'pull_request', head_sha: 'old', status: 'completed', conclusion: 'success' },
@@ -36,22 +36,47 @@ test('merge gate requires successful PR CI for the exact head SHA', () => {
   ], 'abc').state, 'pending');
   assert.equal(prCiVerdict([
     { id: 3, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'failure' },
-  ], 'abc').state, 'failed');
+  ], 'abc', [{
+    name: 'test',
+    steps: [{ name: 'Pytest', conclusion: 'failure' }],
+  }]).state, 'code_failure');
   assert.equal(prCiVerdict([
-    { id: 4, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'cancelled' },
-  ], 'abc').state, 'failed');
+    { id: 4, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'failure' },
+  ], 'abc', [{
+    name: 'test',
+    steps: [{ name: 'Set up Python', conclusion: 'failure' }],
+  }]).state, 'infra_failure');
   assert.equal(prCiVerdict([
-    { id: 5, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'success' },
+    { id: 5, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'cancelled' },
+  ], 'abc').state, 'infra_failure');
+  assert.equal(prCiVerdict([
+    { id: 6, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'timed_out' },
+  ], 'abc').state, 'infra_failure');
+  assert.equal(prCiVerdict([
+    { id: 7, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'success' },
   ], 'abc').state, 'success');
 
   const source = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(source, /actions\/workflows\/.*\/runs\?event=pull_request&head_sha=/);
+  assert.match(source, /actions\/runs\/\$\{initial\.run\.id\}\/jobs/);
   assert.match(source, /head_sha=/);
   assert.match(source, /waiting for green PR CI/);
+  assert.match(source, /code_failure/);
+  assert.match(source, /infra_failure/);
+  assert.match(source, /actions\/runs\/\$\{runId\}\/rerun/);
   assert.match(source, /assigned .*review:changes-requested.*dispatched PR Fix/s);
   assert.match(source, /merge_method: 'squash'/);
   assert.doesNotMatch(source, /integration_base_sha|repair_base_sha|BASE_SHA|base\.object\.sha/);
   assert.doesNotMatch(source, /social-mcp\/(?:integration|integration-conflict|pi-review|repair-)/);
+});
+
+test('terminal PR CI wakes merge gate while dev pushes still require both CI jobs green', () => {
+  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(ci, /wake-merge-gate:[\s\S]*?always\(\)/);
+  assert.match(ci, /github\.event_name == 'pull_request'/);
+  assert.match(ci, /needs\.test\.result == 'success'/);
+  assert.match(ci, /needs\.docker\.result == 'success'/);
+  assert.match(ci, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
 });
 
 test('unsafe control-plane PRs leave one explicit human-attention comment', () => {
