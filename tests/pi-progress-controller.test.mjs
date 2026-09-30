@@ -9,6 +9,9 @@ import { execFileSync } from 'node:child_process';
 import {
   ProgressController,
   RESPONSE_BUDGETS,
+  IMPLEMENTER_RESPONSE_MAX_TOKENS,
+  classifyTruncatedToolCall,
+  truncatedToolCallGuidance,
   actionRequiredToolNames,
   isBoundedDirectBash,
   nextActionRequiredProseOnlyTurns,
@@ -922,4 +925,39 @@ test('productive progress allows only one extra evidence permit per productive e
     missing: 'post-edit verification fact',
     reason: 'a successful mutation starts a new productive epoch',
   }), undefined);
+});
+
+test('implementer requests use the shared 16k completion budget by default', () => {
+  assert.equal(IMPLEMENTER_RESPONSE_MAX_TOKENS, 16384);
+  const cfg = stageConfig('implementer');
+  assert.equal(cfg.fixedResponseMaxTokens, 16384);
+  assert.equal(cfg.productiveProgress.actionResponseMaxTokens, 16384);
+  assert.equal(cfg.productiveProgress.actionResponseRetryMaxTokens, 16384);
+  const c = new ProgressController(cfg, {});
+  assert.equal(c.modelFor({ id: 'm', maxTokens: 2048 }).maxTokens, 16384);
+});
+
+test('mini-swe backend inherits the shared completion budget', () => {
+  const src = fs.readFileSync('scripts/pi-common/mini-swe-stage-backend.mjs', 'utf8');
+  assert.match(src, /max_completion_tokens=\$\{IMPLEMENTER_RESPONSE_MAX_TOKENS\}/);
+});
+
+test('a tool call cut off by the completion limit is classified as recoverable truncation', () => {
+  const text = 'Tool call "write" was not executed: the response hit the output token limit, so its arguments may be truncated.';
+  assert.deepEqual(
+    classifyTruncatedToolCall({ toolName: 'write', isError: true, text }),
+    { kind: 'tool_call_truncated', toolName: 'write' },
+  );
+  assert.equal(classifyTruncatedToolCall({ toolName: 'write', isError: true, text: 'ENOENT' }), null);
+  assert.equal(classifyTruncatedToolCall({ toolName: 'read', isError: false, text }), null);
+  const guidance = truncatedToolCallGuidance('write');
+  assert.match(guidance, /NOT executed/);
+  assert.match(guidance, /smaller/);
+  assert.match(guidance, /write\/edit\/safe_edit/);
+});
+
+test('runtime surfaces truncated tool calls through the tool_result hook', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /pi\.on\('tool_result'/);
+  assert.match(runtime, /truncatedToolCallGuidance/);
 });

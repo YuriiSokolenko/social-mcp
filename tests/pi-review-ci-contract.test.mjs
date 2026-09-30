@@ -914,7 +914,7 @@ test('blocked implementer outcome is a deliberate human gate', () => {
   assert.match(tool, /blocked_reason requires a clean worktree/);
   assert.match(runtime, /submit_result with blocked_reason now/);
   assert.match(agent, /submit_result\(\{blocked_reason:/);
-  assert.match(agent, /2048 output tokens/);
+  assert.match(agent, /16,384-token/);
   assert.match(recovery, /outcome !== IMPLEMENTER_OUTCOMES\.changed/);
   assert.match(miniSwe, /writeImplementerResult/);
 

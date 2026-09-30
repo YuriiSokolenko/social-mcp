@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { IMPLEMENTER_RESPONSE_MAX_TOKENS } from './progress-controller.mjs';
 import { baseBranch, baseRef, projectConfig } from './project-config.mjs';
 
 /** Role prompt location, relative to the checkout (`agents.promptsDir`). */
@@ -182,6 +183,7 @@ export const STAGES = Object.freeze({
     maxTurns: 100,
     repeatThreshold: 3,
     requireComplexity: true,
+    fixedResponseMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
     implementationPlannerAgent: 'implementation-planner',
     implementationPlannerMaxTokens: 768,
     implementationPlannerStructuredRetry: 1,
@@ -203,8 +205,8 @@ export const STAGES = Object.freeze({
         trivial: 2,
         nontrivial: 6,
       },
-      actionResponseMaxTokens: 2048,
-      actionResponseRetryMaxTokens: 2048,
+      actionResponseMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
+      actionResponseRetryMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
       actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server'],
     },

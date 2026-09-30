@@ -1,4 +1,7 @@
 const COMPLEXITY_RANK = Object.freeze({ trivial: 0, nontrivial: 1, normal: 1, complex: 2 });
+// Completion budget for code-heavy agents: generated source is embedded in tool-call
+// arguments, so a small ceiling truncates `write`/`edit` calls before they execute.
+export const IMPLEMENTER_RESPONSE_MAX_TOKENS = 16384;
 export const RESPONSE_BUDGETS = Object.freeze({ short: 2048, normal: 4096, deep: 8192 });
 
 function safePathToken(value) {
@@ -65,6 +68,19 @@ function canonicalize(value, key = '') {
 
 export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
+}
+
+const TRUNCATED_TOOL_CALL_PATTERN = /output token limit|arguments may be truncated/i;
+
+export function classifyTruncatedToolCall({ toolName, isError, text }) {
+  if (!isError || !TRUNCATED_TOOL_CALL_PATTERN.test(String(text ?? ''))) return null;
+  return { kind: 'tool_call_truncated', toolName };
+}
+
+export function truncatedToolCallGuidance(toolName) {
+  return `Your previous "${toolName}" tool call was NOT executed: the response hit the completion-token limit, so its arguments were cut off and nothing was changed. `
+    + 'Make the next mutation smaller: split the change across several smaller write/edit/safe_edit calls '
+    + '(for a new file, write a minimal skeleton first, then add sections with separate edits). Do not resend the same large call.';
 }
 
 export function nextActionResponseCap({
