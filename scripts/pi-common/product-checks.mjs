@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { runProcess } from './process.mjs';
 import { baseRef, expandCommand, projectConfig } from './project-config.mjs';
 import { ruffArgs } from './ruff-spec.mjs';
+import { appendCheckRecord, FINAL_PIPELINE_COMPLETE_SOURCE } from './validation-ledger.mjs';
 
 /**
  * Run the deterministic checks that validate PRODUCT CODE before a Pi stage
@@ -88,23 +89,78 @@ export function runRuffCheck(cwd = process.cwd()) {
   }
 }
 
+function finalCheckKind(step) {
+  return step.builtin === 'ruff' ? 'ruff' : step.name.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+}
+
+function recordFinalCheck(ledgerPath, step, status, error) {
+  if (!ledgerPath) return;
+  appendCheckRecord(ledgerPath, {
+    kind: finalCheckKind(step),
+    scope: { whole_repo: true },
+    status,
+    exit_code: null,
+    source: 'checks_final',
+    stage: 'implementer',
+    backend: 'pi',
+    run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
+    summary: status === 'pass' ? 'Check passed' : String(error?.message ?? '').slice(0, 400),
+    infrastructure: status === 'infra_error' ? { component: 'check_command', code: 'PRODUCT_CHECK_SPAWN_ERROR' } : null,
+  });
+}
+
 /**
  * Final checks come from `checks.final` in the project config: fixed argv
  * commands run in order, plus the `ruff` builtin (which owns the pinned-config,
  * autofix-then-verify behavior above and is not expressible as plain argv).
+ *
+ * Every step is recorded into the validation ledger (when `ledgerPath` is
+ * given) so PR/job "Validation" text can be rendered from what actually ran
+ * rather than restated as a static claim. A step is never skipped or its
+ * result withheld from the ledger just because an earlier step failed: the
+ * remaining steps are recorded `not_run` before rethrowing. A single step's
+ * own `pass` record is not proof the whole pipeline ran -- only after every
+ * step has completed without error is a dedicated completion marker
+ * appended, so a process that dies partway through (e.g. after Ruff passes
+ * but before `pytest` runs) cannot be read back as "final checks ran."
  */
-export function runProductChecks({ cwd } = {}) {
+export function runProductChecks({ cwd, ledgerPath } = {}) {
   const root = cwd ?? process.cwd();
-  for (const step of projectConfig().checks.final) {
-    if (step.builtin === 'ruff') { runRuffCheck(cwd); continue; }
-    const { command, args } = expandCommand(step, root);
-    const result = run(command, args, cwd, { allowFailure: true });
-    if (result.status !== 0) {
-      const output = summarizedOutput(result);
-      throw new Error(`check: ${step.name}\n${output || `${command} exited with code ${result.status}`}`);
+  const steps = projectConfig().checks.final;
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    try {
+      if (step.builtin === 'ruff') {
+        runRuffCheck(cwd);
+      } else {
+        const { command, args } = expandCommand(step, root);
+        const result = run(command, args, cwd, { allowFailure: true });
+        if (result.status !== 0) {
+          const output = summarizedOutput(result);
+          throw new Error(`check: ${step.name}\n${output || `${command} exited with code ${result.status}`}`);
+        }
+        if (result.out) process.stdout.write(`${result.out}\n`);
+        if (result.err) process.stderr.write(`${result.err}\n`);
+      }
+      recordFinalCheck(ledgerPath, step, 'pass');
+    } catch (error) {
+      const infra = /could not run:/.test(error.message);
+      recordFinalCheck(ledgerPath, step, infra ? 'infra_error' : 'fail', error);
+      for (const remaining of steps.slice(i + 1)) recordFinalCheck(ledgerPath, remaining, 'not_run');
+      throw error;
     }
-    if (result.out) process.stdout.write(`${result.out}\n`);
-    if (result.err) process.stderr.write(`${result.err}\n`);
+  }
+  if (ledgerPath) {
+    appendCheckRecord(ledgerPath, {
+      kind: 'checks_final',
+      scope: { whole_repo: true },
+      status: 'pass',
+      source: FINAL_PIPELINE_COMPLETE_SOURCE,
+      stage: 'implementer',
+      backend: 'pi',
+      run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
+      summary: 'All checks.final steps completed',
+    });
   }
 }
 

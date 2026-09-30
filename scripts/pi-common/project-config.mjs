@@ -30,7 +30,7 @@ const LABEL_ROLES = Object.freeze([
 // wiring (the caller workflows live in the project repository), not harness names.
 const WORKFLOW_ROLES = Object.freeze(['dispatcher', 'architect', 'implementer', 'reviewer', 'repair', 'ci', 'mergeGate', 'triage']);
 const TOP_LEVEL = new Set([
-  'version', 'git', 'labels', 'workflows', 'automation', 'agents', 'controlPlane', 'checks', 'environment', 'workspace', 'pullRequest',
+  'version', 'git', 'labels', 'workflows', 'automation', 'agents', 'controlPlane', 'checks', 'environment', 'workspace',
 ]);
 
 class ConfigError extends Error {
@@ -126,9 +126,6 @@ export function validateConfig(raw) {
   const workspace = object(raw.workspace ?? {}, 'workspace');
   rejectUnknown(workspace, ['cleanDirectories', 'cleanFiles'], 'workspace');
 
-  const pullRequest = object(raw.pullRequest ?? {}, 'pullRequest');
-  rejectUnknown(pullRequest, ['validationLines'], 'pullRequest');
-
   const controlPlane = object(raw.controlPlane ?? {}, 'controlPlane');
   rejectUnknown(controlPlane, ['prefixes', 'exact', 'patterns'], 'controlPlane');
   const patterns = stringList(controlPlane.patterns, 'controlPlane.patterns', { optional: true }).map((source, index) => {
@@ -164,9 +161,6 @@ export function validateConfig(raw) {
     workspace: Object.freeze({
       cleanDirectories: Object.freeze(stringList(workspace.cleanDirectories, 'workspace.cleanDirectories', { optional: true })),
       cleanFiles: Object.freeze(stringList(workspace.cleanFiles, 'workspace.cleanFiles', { optional: true })),
-    }),
-    pullRequest: Object.freeze({
-      validationLines: Object.freeze(stringList(pullRequest.validationLines, 'pullRequest.validationLines', { optional: true })),
     }),
     automation: Object.freeze({ modeVariable: string(automation.modeVariable, 'automation.modeVariable') }),
     agents: Object.freeze({ promptsDir: string(agents.promptsDir, 'agents.promptsDir') }),

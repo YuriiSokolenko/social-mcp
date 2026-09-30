@@ -16,6 +16,7 @@ import {
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
+import { appendCheckRecord, normalizeScope } from './pi-common/validation-ledger.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { structuralEdit } from './pi-common/structural-edit.mjs';
 import { baseRef } from './pi-common/project-config.mjs';
@@ -553,6 +554,19 @@ export default function (pi) {
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const result = await runCheck(ctx.cwd, params);
         console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
+        appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+          kind: result.kind,
+          scope: normalizeScope(params, ctx.cwd),
+          status: result.status,
+          exit_code: result.exit_code,
+          source: 'run_check',
+          stage,
+          backend: 'pi',
+          run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
+          diagnostics_count: result.diagnostics.length,
+          summary: result.summary,
+          infrastructure: result.infrastructure ?? null,
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
       },
     });

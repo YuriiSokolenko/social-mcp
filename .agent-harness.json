@@ -49,13 +49,6 @@
       "coverage.xml"
     ]
   },
-  "pullRequest": {
-    "validationLines": [
-      "pytest: passed",
-      "ruff check .: passed",
-      "git diff --check: passed"
-    ]
-  },
   "controlPlane": {
     "prefixes": [
       ".github/workflows/",

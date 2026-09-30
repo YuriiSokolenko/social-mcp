@@ -207,7 +207,7 @@ test('shared validation recovery gives any implementer backend one focused repai
     cwd: dir,
     prompt: 'implement the task',
     model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
-    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation', PI_VALIDATION_LEDGER_FILE: join(dir, 'ledger.jsonl') },
     artifacts: {
       terminalResultPath: join(dir, 'terminal'),
       metricsPath: join(dir, 'metrics.jsonl'),
@@ -229,8 +229,9 @@ test('shared validation recovery gives any implementer backend one focused repai
       });
     },
     {
-      validate: ({ cwd }) => {
+      validate: ({ cwd, ledgerPath }) => {
         assert.equal(cwd, dir);
+        assert.equal(ledgerPath, spec.environment.PI_VALIDATION_LEDGER_FILE);
         validations += 1;
         if (validations === 1) throw new Error('ruff check . failed\nBLE001 blind exception');
       },
@@ -242,6 +243,7 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.equal(attempts[0].environment.PI_VALIDATION_REPAIR, undefined);
   assert.equal(attempts[1].environment.PI_VALIDATION_REPAIR, 'true');
   assert.equal(attempts[1].environment.PI_CALL, 'repair');
+  assert.equal(attempts[1].environment.PI_VALIDATION_LEDGER_FILE, spec.environment.PI_VALIDATION_LEDGER_FILE);
   assert.match(attempts[1].prompt, /BLE001 blind exception/);
   assert.equal(result.backend, 'fake');
   assert.equal(result.durationMs, 3);

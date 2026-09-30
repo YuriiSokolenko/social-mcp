@@ -57,6 +57,8 @@ ruff check .
 
 Product agents (Implementer, Reviewer, PR Fix) do not run CI/control-plane contract suites such as `node --test tests/*.test.mjs`, runner-autoscaler checks, or workflow self-tests. Those belong exclusively to `ci.yml`. Product-agent validation covers application behavior; `ci.yml` validates both product code and the CI/control plane.
 
+Both these final checks and any focused `run_check` calls the Implementer makes during the session are recorded in one validation ledger (`scripts/pi-common/validation-ledger.mjs`). PR bodies and job summaries render their "Validation" text from that ledger, never from model prose or a static template, and a focused check that ends in `infra_error`/`timeout`/`not_run` leaves verification incomplete even when the broad checks above pass.
+
 A checkpoint branch may exist for recovery; it is never a merge candidate. Checkpoints are replayed onto the latest `dev`. If replay leaves unresolved conflicts, cancellation must preserve the previous good checkpoint rather than commit conflict markers. The published branch is `pi/issue-<number>`, its PR targets `dev`, and links the issue with `Closes #<number>`.
 
 ## Reviewer and PR Fix

@@ -5,6 +5,7 @@ import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
 import { runGit as git } from './git.mjs';
 import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projectConfig, workflowFile } from './project-config.mjs';
+import { readValidationLedger, renderValidationSection } from './validation-ledger.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -108,7 +109,7 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
   return { commit };
 }
 
-export async function upsertPullRequest({ issue, resultFile, owner }) {
+export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }) {
   const { api } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   if (!resultFile || !fs.existsSync(resultFile) || !fs.statSync(resultFile).size) {
@@ -122,8 +123,9 @@ export async function upsertPullRequest({ issue, resultFile, owner }) {
     throw new Error('Implementer result metadata is incomplete');
   }
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
+  const { records: ledgerRecords, corrupted: ledgerCorrupted } = readValidationLedger(ledgerFile);
   const tests = [
-    ...projectConfig().pullRequest.validationLines.map(line => `- ${line}`),
+    renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted }),
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
   ].join('\n');
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
@@ -144,7 +146,7 @@ async function main() {
   const [cmd, ...a] = process.argv.slice(2);
   if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
-  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2]})));
+  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
   throw new Error('unknown publication command');
 }
