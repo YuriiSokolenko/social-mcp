@@ -15,6 +15,7 @@ import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck } from './pi-common/run-check.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { structuralEdit } from './pi-common/structural-edit.mjs';
+import { baseRef } from './pi-common/project-config.mjs';
 import {
   SemanticLoopGuard,
   isSemanticMutationTool,
@@ -347,7 +348,7 @@ export default function (pi) {
         })}`);
         const numberedPlan = prepared.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
         const provenance = stage === 'implementer' && !resumedImplementer
-          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched origin/dev${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful safe_edit/edit/write, direct reads of this worktree are authoritative latest-dev evidence; do not use extra Git/evidence calls to re-prove that provenance.`
+          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful safe_edit/edit/write, direct reads of this worktree are authoritative latest-base evidence; do not use extra Git/evidence calls to re-prove that provenance.`
           : '';
         const lspWorkspace = stage === 'implementer' && !resumedImplementer
           ? `\n\nLSP workspace root: ${ctx.cwd}. For a cold name-only lookup with an explicit language, call lsp_start_server once with the matching server_id and this exact absolute workspace_root before lsp_find_symbol; lsp_start_server is a control action and does not consume evidence budget.`

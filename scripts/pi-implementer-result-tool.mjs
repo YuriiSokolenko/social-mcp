@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { Type } from 'typebox';
 
 import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
+import { baseRef } from './pi-common/project-config.mjs';
 import { runGit as git } from './pi-common/git.mjs';
 import { writeImplementerResult } from './pi-common/implementer-result.mjs';
 import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
@@ -63,7 +64,7 @@ export default function (pi) {
         integrateLatestDev({
           conflictMessage: files => `Latest dev conflicts while verifying blocked work: ${files.join(', ')}`,
         });
-        const changedPaths = lines(git(['diff', '--name-only', 'origin/dev']).out);
+        const changedPaths = lines(git(['diff', '--name-only', baseRef()]).out);
         const dirty = lines(git(['status', '--porcelain', '--untracked-files=all']).out);
         if (changedPaths.length || dirty.length) {
           throw new Error('blocked_reason requires a clean worktree with zero diff against latest dev');
@@ -104,7 +105,7 @@ export default function (pi) {
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
       });
-      const changedPaths = lines(git(['diff', '--name-only', 'origin/dev']).out);
+      const changedPaths = lines(git(['diff', '--name-only', baseRef()]).out);
       const hasDiff = changedPaths.length > 0;
       let data;
 

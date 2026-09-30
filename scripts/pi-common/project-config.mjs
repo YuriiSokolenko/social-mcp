@@ -273,3 +273,23 @@ export function parseCheckpointRef(ref) {
 
 export const isIssueBranch = ref => parseIssueBranch(ref) !== null;
 export const issueBranchPrefix = () => projectConfig().git.issueBranchPrefix;
+
+/**
+ * Expand a configured command into concrete `{ command, args }` for a checkout.
+ * `{files:{dir,pattern}}` argument tokens become the sorted matching files of
+ * `dir` (relative to `root`), so a profile can say "run every test file"
+ * without a shell glob.
+ */
+export function expandCommand(spec, root) {
+  const args = [];
+  for (const arg of spec.args ?? []) {
+    if (typeof arg === 'string') { args.push(arg); continue; }
+    const dir = path.join(root, arg.files.dir);
+    const pattern = new RegExp(arg.files.pattern);
+    if (!fs.existsSync(dir)) continue;
+    for (const name of fs.readdirSync(dir).filter(n => pattern.test(n)).sort()) {
+      args.push(path.relative(root, path.join(dir, name)));
+    }
+  }
+  return { command: spec.command, args };
+}

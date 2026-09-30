@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { ruffArgs } from './ruff-spec.mjs';
+import { expandCommand, projectConfig } from './project-config.mjs';
 
 /**
  * Backend-neutral focused verification for agents that have no unrestricted
@@ -41,18 +42,11 @@ const PYTHON_COMPILE_SCRIPT = [
 ].join('\n');
 
 /** Named repository profiles. Fixed argv only; no model-supplied text reaches a shell. */
-export const PROFILES = Object.freeze({
-  node_tests: (root) => ({
-    command: 'node',
-    args: ['--test', ...listFiles(path.join(root, 'tests'), /\.test\.mjs$/).map(f => path.relative(root, f))],
-  }),
-  pytest_all: () => ({ command: 'pytest', args: ['-q', '--tb=short', '-rfE', '--no-header', '-p', 'no:cacheprovider'] }),
-});
-
-function listFiles(dir, pattern) {
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter(name => pattern.test(name)).sort().map(name => path.join(dir, name));
-}
+// Profiles are project configuration (`checks.profiles` in .agent-harness.json):
+// fixed argv only, so a caller can pick a name but never supply a command.
+export const PROFILES = Object.freeze(Object.fromEntries(
+  Object.entries(projectConfig().checks.profiles).map(([name, spec]) => [name, root => expandCommand(spec, root)]),
+));
 
 class InvalidCheck extends Error {}
 

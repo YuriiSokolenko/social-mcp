@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { readScript } from './helpers/resolved-source.mjs';
 
-import { issueBranch, checkpointBranch } from '../scripts/pi-common/project-config.mjs';
+import { issueBranch, checkpointBranch, projectConfig } from '../scripts/pi-common/project-config.mjs';
 import { isControlPlanePath } from '../scripts/pi-common/control-plane-policy.mjs';
 
 test('CI validates the committed dev state without synthetic PR integration inputs', () => {
@@ -342,10 +342,8 @@ test('product agent workflows use one shared product-check contract and never ru
   // runs after the selected backend submits; publication must not rerun the suite.
   assert.match(fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
   assert.doesNotMatch(fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
-  const checks = readScript('scripts/pi-common/product-checks.mjs', 'utf8');
-  assert.match(checks, /git.*diff.*--check/s);
-  assert.match(checks, /pytest/);
-  assert.match(checks, /ruff/);
+  const finalChecks = projectConfig().checks.final.map(step => step.builtin ?? [step.command, ...step.args].join(' '));
+  assert.deepEqual(finalChecks, ['ruff', 'git diff --check', 'pytest']);
   const repairTool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
   const implementerTool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
   const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');

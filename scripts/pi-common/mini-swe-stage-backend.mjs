@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { finished } from 'node:stream/promises';
 
+import { baseRef } from './project-config.mjs';
 import { integrateLatestDev } from './finalize-product-tree.mjs';
 import { runGit as git } from './git.mjs';
 import { writeImplementerResult } from './implementer-result.mjs';
@@ -128,7 +129,7 @@ function writeImplementationResult(spec) {
   integrateLatestDev({
     conflictMessage: files => `Latest dev conflicts with the mini-swe implementation: ${files.join(', ')}`,
   });
-  const changedPaths = git(['diff', '--name-only', 'origin/dev']).out
+  const changedPaths = git(['diff', '--name-only', baseRef()]).out
     .split(/\r?\n/)
     .map(item => item.trim())
     .filter(Boolean);
