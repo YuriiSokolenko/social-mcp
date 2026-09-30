@@ -5,6 +5,24 @@ import { execFileSync } from 'node:child_process';
 
 export const LOOP_GUARD_WINDOW_SIZE = 8;
 export const LOOP_GUARD_REVISIT_THRESHOLD = 3;
+export const LOOP_GUARD_MAX_WINDOW_SIZE = 64;
+export const LOOP_GUARD_UNTRACKED_HASH_MAX_BYTES = 1024 * 1024;
+
+export function loopGuardLimits(env = process.env) {
+  const configured = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+  };
+  const windowSize = Math.min(
+    configured(env.PI_LOOP_GUARD_WINDOW, LOOP_GUARD_WINDOW_SIZE),
+    LOOP_GUARD_MAX_WINDOW_SIZE,
+  );
+  const revisitThreshold = Math.min(
+    configured(env.PI_LOOP_GUARD_THRESHOLD, LOOP_GUARD_REVISIT_THRESHOLD),
+    windowSize,
+  );
+  return { windowSize, revisitThreshold };
+}
 
 const MUTATION_TOOLS = new Set([
   'structural_edit',
@@ -102,29 +120,45 @@ function untrackedEntry(root, relativePath) {
     return { path: relativePath, mode, type: 'symlink', digest: digest(fs.readlinkSync(absolutePath)) };
   }
   if (stat.isFile()) {
-    return { path: relativePath, mode, type: 'file', digest: digest(fs.readFileSync(absolutePath)) };
+    if (stat.size <= LOOP_GUARD_UNTRACKED_HASH_MAX_BYTES) {
+      return { path: relativePath, mode, type: 'file', digest: digest(fs.readFileSync(absolutePath)) };
+    }
+    return {
+      path: relativePath,
+      mode,
+      type: 'file',
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      digest: 'metadata-only',
+    };
   }
   return { path: relativePath, mode, type: 'other' };
 }
 
 export function repositoryStateFingerprint(root) {
-  const cwd = path.resolve(root);
-  const diff = execFileSync(
-    'git',
-    ['diff', '--binary', '--no-ext-diff', '--full-index', '--no-renames', 'HEAD', '--'],
-    { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  const untrackedRaw = execFileSync(
-    'git',
-    ['ls-files', '--others', '--exclude-standard', '-z'],
-    { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
-  );
-  const untracked = untrackedRaw
-    .split('\0')
-    .filter(Boolean)
-    .sort()
-    .map(relativePath => untrackedEntry(cwd, relativePath));
-  return digest(JSON.stringify({ diff: digest(diff), untracked }));
+  try {
+    const cwd = path.resolve(root);
+    const diff = execFileSync(
+      'git',
+      ['diff', '--binary', '--no-ext-diff', '--full-index', '--no-renames', 'HEAD', '--'],
+      { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const untrackedRaw = execFileSync(
+      'git',
+      ['ls-files', '--others', '--exclude-standard', '-z'],
+      { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const untracked = untrackedRaw
+      .split('\0')
+      .filter(Boolean)
+      .sort()
+      .map(relativePath => untrackedEntry(cwd, relativePath));
+    return digest(JSON.stringify({ diff: digest(diff), untracked }));
+  } catch {
+    // Fingerprinting is advisory. A transient Git/filesystem failure must not
+    // prevent the requested tool from running or complete its progress hook.
+    return null;
+  }
 }
 
 export function isSemanticMutationTool(toolName) {
@@ -172,7 +206,6 @@ export class SemanticLoopGuard {
   _markNovelEvidence() {
     const recoveringFromSteer = this.steerOutstanding;
     this.steerOutstanding = false;
-    this.failureWindow = [];
     if (recoveringFromSteer) this.observationWindow = [];
   }
 

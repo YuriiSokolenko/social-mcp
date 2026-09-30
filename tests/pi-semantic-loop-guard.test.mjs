@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 
 import { ProgressController } from '../scripts/pi-common/progress-controller.mjs';
 import { safeEdit } from '../scripts/pi-common/safe-edit.mjs';
 import {
+  loopGuardLimits,
   SemanticLoopGuard,
   repositoryStateFingerprint,
 } from '../scripts/pi-common/semantic-loop-guard.mjs';
@@ -262,6 +264,55 @@ test('slightly different failed anchors share one failed-strategy family', () =>
   assert.equal(calls[2].reason, 'repeated_failed_strategy');
 });
 
+test('new reads do not clear repeated failed-strategy strikes', () => {
+  const guard = new SemanticLoopGuard();
+  for (let index = 0; index < 12; index += 1) {
+    const failed = observation(guard, {
+      tool: 'edit',
+      input: { path: 'src/a.js', oldText: `missing-${index}` },
+      result: { content: [{ type: 'text', text: 'oldText not found' }] },
+      isError: true,
+    });
+    if (index === 2) assert.equal(failed.action, 'steer');
+    if (index > 2) assert.equal(failed.tripped, true);
+    observation(guard, {
+      tool: 'read',
+      input: { path: 'src/a.js', offset: index * 20 },
+      result: { text: `new slice ${index}` },
+    });
+  }
+});
+
+test('blocked tool calls are classified as repeated failed strategies', () => {
+  const guard = new SemanticLoopGuard();
+  const call = () => guard.observe({
+    stage: 'implementer',
+    tool: 'read',
+    input: { path: 'src/a.js' },
+    result: { block: true, reason: 'not allowed' },
+    blocked: true,
+    productiveState: 'action_required',
+  });
+  assert.equal(call().classification, 'blocked');
+  assert.equal(call().classification, 'blocked');
+  assert.equal(call().action, 'steer');
+});
+
+test('loop guard environment limits fall back and threshold is bounded by window', () => {
+  assert.deepEqual(loopGuardLimits({ PI_LOOP_GUARD_WINDOW: 'abc', PI_LOOP_GUARD_THRESHOLD: '0' }), {
+    windowSize: 8,
+    revisitThreshold: 3,
+  });
+  assert.deepEqual(loopGuardLimits({ PI_LOOP_GUARD_WINDOW: '4', PI_LOOP_GUARD_THRESHOLD: '10' }), {
+    windowSize: 4,
+    revisitThreshold: 4,
+  });
+  assert.deepEqual(loopGuardLimits({ PI_LOOP_GUARD_WINDOW: '1000', PI_LOOP_GUARD_THRESHOLD: '1000' }), {
+    windowSize: 64,
+    revisitThreshold: 64,
+  });
+});
+
 test('exact repeated-call protection remains active', () => {
   const controller = new ProgressController({
     maxTurns: 100,
@@ -305,6 +356,39 @@ test('repository fingerprint includes tracked file mode changes', () => {
   }
 });
 
+test('repository fingerprint includes untracked file content and mode changes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-untracked-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'base');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir });
+    const file = path.join(dir, 'new-file.txt');
+    fs.writeFileSync(file, 'content one', { mode: 0o644 });
+    const initial = repositoryStateFingerprint(dir);
+    fs.writeFileSync(file, 'content two', { mode: 0o644 });
+    const changedContent = repositoryStateFingerprint(dir);
+    assert.notEqual(changedContent, initial);
+    fs.chmodSync(file, 0o755);
+    const changedMode = repositoryStateFingerprint(dir);
+    assert.notEqual(changedMode, changedContent);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('repository fingerprint failure returns null instead of throwing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-no-head-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    assert.equal(repositoryStateFingerprint(dir), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('terminal submission is never flagged as a loop', () => {
   const guard = new SemanticLoopGuard();
   for (let index = 0; index < 3; index += 1) observation(guard);
@@ -325,6 +409,66 @@ test('runtime wires semantic loop metrics, repository state, and result observat
   assert.match(runtime, /PI_LOOP_GUARD_STEER/);
   assert.match(runtime, /PI_LOOP_GUARD_ABORT/);
   assert.match(runtime, /madeProgress: effectiveProgress/);
+});
+
+test('runtime mock classifies blocked tool calls without tool_execution_end', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-'));
+  const issueContext = path.join(dir, 'issue.json');
+  const loader = path.join(dir, 'loader.mjs');
+  try {
+    fs.writeFileSync(issueContext, JSON.stringify({ title: 'test', body: 'test' }));
+    fs.writeFileSync(loader, `
+      export async function resolve(specifier, context, nextResolve) {
+        if (specifier === 'typebox') {
+          const source = 'export const Type = new Proxy({}, { get: () => (...args) => ({}) });';
+          return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      }
+    `);
+    const runtimeUrl = new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href;
+    const script = `
+      import assert from 'node:assert/strict';
+      const { default: install } = await import(${JSON.stringify(runtimeUrl)});
+      const handlers = new Map();
+      const messages = [];
+      const pi = {
+        on: (name, handler) => handlers.set(name, handler),
+        registerTool: () => {},
+        getActiveTools: () => [],
+        setActiveTools: () => {},
+        sendUserMessage: async (...args) => messages.push(args),
+        setModel: async () => true,
+      };
+      install(pi);
+      const result = await handlers.get('tool_call')(
+        { toolName: 'read', toolCallId: 'blocked-1', input: { path: 'other.md' } },
+        { abort: () => {} },
+      );
+      assert.equal(result.block, true);
+      assert.equal(messages.length, 1);
+      console.log('BLOCKED_LOOP_INTEGRATION_OK');
+    `;
+    const result = spawnSync(process.execPath, [
+      '--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script,
+    ], {
+      cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PI_STAGE: 'implementer',
+        PI_ISSUE: '1',
+        PI_ISSUE_CONTEXT: issueContext,
+        GITHUB_WORKSPACE: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+        PI_LOOP_GUARD_WINDOW: '2',
+        PI_LOOP_GUARD_THRESHOLD: '1',
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /BLOCKED_LOOP_INTEGRATION_OK/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('control scenario read semantic lookup source edit verify submit completes without a warning', () => {

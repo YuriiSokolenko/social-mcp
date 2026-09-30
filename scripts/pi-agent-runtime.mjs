@@ -17,6 +17,7 @@ import { structuralEdit } from './pi-common/structural-edit.mjs';
 import {
   SemanticLoopGuard,
   isSemanticMutationTool,
+  loopGuardLimits,
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
@@ -214,10 +215,7 @@ export default function (pi) {
       : config
   );
   const loopGuard = stage === 'implementer'
-    ? new SemanticLoopGuard({
-        windowSize: Number(process.env.PI_LOOP_GUARD_WINDOW || 8),
-        revisitThreshold: Number(process.env.PI_LOOP_GUARD_THRESHOLD || 3),
-      })
+    ? new SemanticLoopGuard(loopGuardLimits())
     : null;
 
   let appliedActionCap = 0;
@@ -263,6 +261,37 @@ export default function (pi) {
     if (unrestrictedActiveTools != null) {
       pi.setActiveTools(unrestrictedActiveTools);
       unrestrictedActiveTools = null;
+    }
+  }
+
+  async function handleLoopResult(loopResult, ctx) {
+    if (!loopResult?.tripped) return;
+    const metric = {
+      stage: loopResult.stage,
+      tool: loopResult.tool,
+      reason: loopResult.reason,
+      fingerprintClass: loopResult.fingerprintClass,
+      repositoryState: loopResult.repositoryState,
+      revisitCount: loopResult.revisitCount,
+      window: loopResult.window,
+      classification: loopResult.classification,
+      noOp: loopResult.noOp,
+      repeatedObservation: loopResult.repeatedObservation,
+      repeatedFailure: loopResult.repeatedFailure,
+      returnedToSeenState: loopResult.returnedToSeenState,
+      action: loopResult.action,
+    };
+    console.log('PI_LOOP_GUARD ' + JSON.stringify(metric));
+    if (loopResult.action === 'steer') {
+      loopGuardSteeredThisTurn = true;
+      console.warn('PI_LOOP_GUARD_STEER ' + JSON.stringify(metric));
+      await pi.sendUserMessage(
+        'RUNTIME LOOP GUARD: the current strategy is cycling through previously seen evidence or repository state. Do not repeat or cosmetically vary the same approach. Choose a genuinely different action that can create new evidence/state, or submit/stop if the task is already complete or blocked.',
+        { deliverAs: 'steer' },
+      );
+    } else {
+      console.error('PI_LOOP_GUARD_ABORT ' + JSON.stringify(metric));
+      ctx.abort();
     }
   }
 
@@ -439,7 +468,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'safe_edit',
       label: 'Safe line edit',
-      description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, returns a bounded post-edit preview of what landed on disk, and participates in normal rollback/progress handling. Do not re-read merely to verify a successful result.',
+      description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, returns a bounded post-edit preview of what landed on disk, and participates in normal rollback/progress handling. A result with changed=false means no edit occurred. Do not re-read merely to verify a successful change.',
       parameters: Type.Object({
         path: Type.String({ minLength: 1, maxLength: 1000 }),
         operation: Type.Union([
@@ -455,7 +484,12 @@ export default function (pi) {
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const result = safeEdit(ctx.cwd, params);
         return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
+          content: [{
+            type: 'text',
+            text: result.changed
+              ? JSON.stringify(result)
+              : `NO CHANGE: replacement is identical to the existing content. ${JSON.stringify(result)}`,
+          }],
           details: result,
         };
       },
@@ -574,11 +608,27 @@ export default function (pi) {
     })}`);
   });
 
-  pi.on('tool_call', (event, ctx) => {
+  pi.on('tool_call', async (event, ctx) => {
     actionTurnAttemptedTool = true;
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
-    if (blocked) return blocked;
+    if (blocked) {
+      if (loopGuard) {
+        const loopResult = loopGuard.observe({
+          stage,
+          tool: event.toolName,
+          input: event.input ?? {},
+          result: blocked,
+          blocked: true,
+          productiveState,
+        });
+        // A blocked tool has no tool_execution_end event, so classify it here.
+        await handleLoopResult(loopResult, ctx).catch(error => {
+          console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
+        });
+      }
+      return blocked;
+    }
 
     const cwd = ctx?.cwd || process.cwd();
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);
@@ -587,10 +637,17 @@ export default function (pi) {
       : null;
 
     if (stage === 'implementer' && ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName)) {
-      pendingMutationSnapshots.set(
-        event.toolCallId,
-        captureMutationSnapshot(cwd, event.input?.path),
-      );
+      try {
+        pendingMutationSnapshots.set(
+          event.toolCallId,
+          captureMutationSnapshot(cwd, event.input?.path),
+        );
+      } catch (error) {
+        console.warn('PI_MUTATION_SNAPSHOT_UNAVAILABLE ' + JSON.stringify({
+          tool: event.toolName,
+          reason: String(error?.message ?? error),
+        }));
+      }
     }
     if (loopGuard) {
       pendingLoopCalls.set(event.toolCallId, {
@@ -613,11 +670,18 @@ export default function (pi) {
 
     let mutationChanged = null;
     if (contentMutation && pendingLoopCall && mutationSnapshot) {
-      const afterSnapshot = captureMutationSnapshot(
-        pendingLoopCall.cwd,
-        mutationSnapshot.path,
-      );
-      mutationChanged = mutationSnapshotChanged(mutationSnapshot, afterSnapshot);
+      try {
+        const afterSnapshot = captureMutationSnapshot(
+          pendingLoopCall.cwd,
+          mutationSnapshot.path,
+        );
+        mutationChanged = mutationSnapshotChanged(mutationSnapshot, afterSnapshot);
+      } catch (error) {
+        console.warn('PI_MUTATION_SNAPSHOT_UNAVAILABLE ' + JSON.stringify({
+          tool: event.toolName,
+          reason: String(error?.message ?? error),
+        }));
+      }
     }
 
     let repositoryStateAfter = null;
@@ -654,36 +718,7 @@ export default function (pi) {
       });
       pendingLoopCalls.delete(event.toolCallId);
 
-      if (loopResult.tripped) {
-        const metric = {
-          stage: loopResult.stage,
-          tool: loopResult.tool,
-          reason: loopResult.reason,
-          fingerprintClass: loopResult.fingerprintClass,
-          repositoryState: loopResult.repositoryState,
-          revisitCount: loopResult.revisitCount,
-          window: loopResult.window,
-          classification: loopResult.classification,
-          noOp: loopResult.noOp,
-          repeatedObservation: loopResult.repeatedObservation,
-          repeatedFailure: loopResult.repeatedFailure,
-          returnedToSeenState: loopResult.returnedToSeenState,
-          action: loopResult.action,
-        };
-        console.log('PI_LOOP_GUARD ' + JSON.stringify(metric));
-        if (loopResult.action === 'steer') {
-          loopGuardSteeredThisTurn = true;
-          console.warn('PI_LOOP_GUARD_STEER ' + JSON.stringify(metric));
-          await pi.sendUserMessage(
-            'RUNTIME LOOP GUARD: the current strategy is cycling through previously seen evidence or repository state. Do not repeat or cosmetically vary the same approach. Choose a genuinely different action that can create new evidence/state, or submit/stop if the task is already complete or blocked.',
-            { deliverAs: 'steer' },
-          );
-        } else {
-          console.error('PI_LOOP_GUARD_ABORT ' + JSON.stringify(metric));
-          ctx.abort();
-          return;
-        }
-      }
+      await handleLoopResult(loopResult, ctx);
     }
   });
 
