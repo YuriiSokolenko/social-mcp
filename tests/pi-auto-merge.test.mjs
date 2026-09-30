@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { readScript } from './helpers/resolved-source.mjs';
 import { allowedFiles, issueNumber } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
@@ -26,7 +27,7 @@ test('Pi cannot change the workflow definitions used for its own merge', () => {
 });
 
 test('merge gate follows the simple merge-then-test contract', () => {
-  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const source = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(source, /merge_method: 'squash'/);
   assert.match(source, /dev push CI now validates the merged result/);
   assert.doesNotMatch(source, /integration_base_sha|repair_base_sha|BASE_SHA|base\.object\.sha/);
@@ -36,7 +37,7 @@ test('merge gate follows the simple merge-then-test contract', () => {
 });
 
 test('unsafe control-plane PRs leave one explicit human-attention comment', () => {
-  const source = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const source = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(source, /Human review is required/);
   assert.match(source, /merge-gate:unsafe-pr:/);
   assert.match(source, /comments\.some/);
@@ -57,7 +58,7 @@ test('agent workflows execute control scripts only from fresh GITHUB_WORKSPACE c
 
 
 test('merge gate merges at most one PR per dev CI cycle', () => {
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(gate, /if \(await processPR\(pr\)\) break/);
   assert.match(ci, /needs: \[test, docker\]/);
@@ -67,7 +68,7 @@ test('merge gate merges at most one PR per dev CI cycle', () => {
 
 
 test('late merge conflict invalidates review, dispatches PR Fix, and blocks the queue', () => {
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /merge conflicts/i);
   assert.match(gate, /merge-gate:conflict-pr:\$\{pr\.number\}:\$\{sha\}/);
   assert.match(gate, /withoutReviewLabels/);

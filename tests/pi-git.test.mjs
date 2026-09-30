@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { readScript } from './helpers/resolved-source.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { runGit } from '../scripts/pi-common/git.mjs';
@@ -21,7 +22,7 @@ test('runGit throws on failure by default and exposes failures when allowed', ()
 });
 
 test('git authentication is kept out of argv and every git process has a deadline', () => {
-  const source = fs.readFileSync('scripts/pi-common/git.mjs', 'utf8');
+  const source = readScript('scripts/pi-common/git.mjs', 'utf8');
   assert.doesNotMatch(source, /credential\.helper/);
   assert.match(source, /GIT_CONFIG_VALUE_/);
   assert.match(source, /PI_GIT_TIMEOUT_SECONDS/);

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { readScript } from './helpers/resolved-source.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { finalText, triageFromJsonl, validateTriage } from '../scripts/pi-triage.mjs';
@@ -61,7 +62,7 @@ test('finalText uses the last non-empty assistant message across agent_end event
 
 
 test('triage no longer depends on deleted task files', () => {
-  const source = fs.readFileSync('scripts/pi-triage.mjs', 'utf8');
+  const source = readScript('scripts/pi-triage.mjs', 'utf8');
   assert.doesNotMatch(source, /readTask\s*\(/);
   assert.match(source, /taskMetadata\(issue, \{ required: false \}\)/);
 });

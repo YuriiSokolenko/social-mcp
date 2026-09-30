@@ -5,24 +5,28 @@ import { runGit as git } from './git.mjs';
 import { githubClient } from './github-api.mjs';
 import { controlPlanePaths } from './control-plane-policy.mjs';
 import { prLabelNames, withoutReviewLabels } from './pr-labels.mjs';
+import { environmentDirectories, gitIdentity, projectConfig, workflowFile } from './project-config.mjs';
+import { PIPELINE_LABELS } from './state-machine.mjs';
 
 
 /**
  * Publish an already validated PR repair. The PR is re-read immediately before
- * mutation: pi:needs-human is a hard stop and HEAD must still equal the SHA the
+ * mutation: the needs-human label is a hard stop and HEAD must still equal the SHA the
  * repair session started from. The exact-ref lease is the final race guard.
  */
 export async function publishRepair({ prNumber, issue, cwd, headRef, expectedHead, token }) {
   const { loadPullRequest } = githubClient();
   const pr = await loadPullRequest(prNumber);
   const labels = prLabelNames(pr);
-  if (labels.includes('pi:needs-human')) return { published:false, reason:'human' };
+  if (labels.includes(PIPELINE_LABELS.needsHuman)) return { published:false, reason:'human' };
   if (pr.head.sha !== expectedHead) throw new Error(`PR #${prNumber} HEAD moved during repair`);
 
   git(['diff','--check'], { cwd });
-  for (const p of ['.venv','.pytest_cache','.ruff_cache','htmlcov','build','dist']) fs.rmSync(`${cwd}/${p}`, { recursive:true, force:true });
-  for (const p of ['.coverage','coverage.xml']) fs.rmSync(`${cwd}/${p}`, { force:true });
-  git(['config','user.name','social-mcp-pi'],{cwd}); git(['config','user.email','social-mcp-pi@users.noreply.github.com'],{cwd});
+  const { cleanDirectories, cleanFiles } = projectConfig().workspace;
+  for (const p of [...environmentDirectories(), ...cleanDirectories]) fs.rmSync(`${cwd}/${p}`, { recursive:true, force:true });
+  for (const p of cleanFiles) fs.rmSync(`${cwd}/${p}`, { force:true });
+  const identity = gitIdentity();
+  git(['config','user.name',identity.name],{cwd}); git(['config','user.email',identity.email],{cwd});
   git(['add','-A'],{cwd});
   if (git(['diff','--cached','--quiet'],{cwd,allowFailure:true}).status !== 0) {
     const changed = git(['diff','--cached','--name-only'],{cwd}).out.split(/\r?\n/).filter(Boolean);
@@ -52,7 +56,7 @@ export async function handoffToReviewer(prNumber) {
   const pr = await loadPullRequest(prNumber);
   const labels = withoutReviewLabels(pr);
   await replaceLabels(prNumber, labels);
-  await dispatchWorkflow('pi-pr-review.yml', { pr_number: String(prNumber) });
+  await dispatchWorkflow(workflowFile('reviewer'), { pr_number: String(prNumber) });
 }
 async function main(){
  const [cmd,...a]=process.argv.slice(2);

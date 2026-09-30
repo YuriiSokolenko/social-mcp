@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runGit as git } from './git.mjs';
+import { baseBranch, baseRef, checkpointBranch, issueBranch as issueBranchName } from './project-config.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -8,7 +9,7 @@ import path from 'node:path';
  *
  * WHY: worktree creation/resume used to be a large shell block in YAML. This
  * helper makes the resume rule explicit and testable: every attempt starts from
- * current origin/dev, then replays saved issue work as a patch. A checkpoint is
+ * the current remote default branch, then replays saved issue work as a patch. A checkpoint is
  * preferred over the published issue branch because it may contain newer work.
  *
  * IMPORTANT: saved work is CONTENT only. It is never treated as a base branch
@@ -20,10 +21,10 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
   if (!Number.isSafeInteger(issue) || issue < 1) throw new Error('issue must be a positive integer');
   if (!jobDir || !tempDir) throw new Error('jobDir and tempDir are required');
   fs.rmSync(jobDir, { recursive: true, force: true });
-  git(['fetch', 'origin', 'dev']);
-  const start = git(['rev-parse', 'origin/dev']).out;
-  const checkpoint = `pi/issue-${issue}-checkpoint`;
-  const issueBranch = `pi/issue-${issue}`;
+  git(['fetch', 'origin', baseBranch()]);
+  const start = git(['rev-parse', baseRef()]).out;
+  const checkpoint = checkpointBranch(issue);
+  const issueBranch = issueBranchName(issue);
   const remoteSha = (ref) => git(['ls-remote', 'origin', `refs/heads/${ref}`]).out.split(/\s+/)[0] ?? '';
   const checkpointExpected = remoteSha(checkpoint);
   const issueBranchExpected = remoteSha(issueBranch);
@@ -38,17 +39,17 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
   }
 
   git(['worktree', 'prune']);
-  git(['worktree', 'add', '-B', issueBranch, jobDir, 'origin/dev']);
+  git(['worktree', 'add', '-B', issueBranch, jobDir, baseRef()]);
   const patch = path.join(tempDir, `pi-resume-${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}.patch`);
   let resumed = false;
   if (resumeRef) {
-    const base = git(['merge-base', 'origin/dev', resumeRef]).out;
+    const base = git(['merge-base', baseRef(), resumeRef]).out;
     const diff = git(['diff', '--binary', base, resumeRef]).out;
     fs.writeFileSync(patch, diff ? diff + '\n' : '');
     if (diff) {
       const applied = git(['apply', '--3way', patch], { cwd: jobDir, allowFailure: true });
       if (applied.status !== 0) console.log('Saved work does not apply cleanly to latest dev; conflicts are left for the live Implementer session');
-      resumed = git(['diff', '--quiet', 'origin/dev', '--'], { cwd: jobDir, allowFailure: true }).status !== 0;
+      resumed = git(['diff', '--quiet', baseRef(), '--'], { cwd: jobDir, allowFailure: true }).status !== 0;
       if (!resumed) {
         fs.writeFileSync(patch, '');
         console.log('Saved issue work is already contained in latest dev; treating this attempt as fresh work');

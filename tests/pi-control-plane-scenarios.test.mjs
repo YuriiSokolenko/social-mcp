@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { checkpointBranch } from '../scripts/pi-common/project-config.mjs';
+import { readScript } from './helpers/resolved-source.mjs';
 import { inspectIssueState, safeRemovals } from '../scripts/pi-common/state-machine.mjs';
 import { checkpointGcDecision, issueRecoveryTarget } from '../scripts/pi-common/recovery-policy.mjs';
 
@@ -26,7 +28,7 @@ test('completed issue makes checkpoint garbage collectable', () => {
 
 test('RUNNING control wakes only the normal Dispatcher scheduler', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-automation-control.yml', 'utf8');
-  const control = fs.readFileSync('scripts/pi-common/automation-control.mjs', 'utf8');
+  const control = readScript('scripts/pi-common/automation-control.mjs', 'utf8');
   assert.match(workflow, /automation-control\.mjs" resume/);
   assert.match(control, /dispatchWorkflow\('pi-dispatcher\.yml'\)/);
   assert.doesNotMatch(control, /dispatchWorkflow\('pi-reconcile\.yml'\)/);
@@ -40,9 +42,11 @@ test('agent concurrency never cancels active work', () => {
 
 test('implementer checkpoint uses compare-and-swap lease and exact deletion', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /PI_CHECKPOINT_EXPECTED/);
-  assert.match(publication, /--force-with-lease=refs\/heads\/pi\/issue-\$\{issue\}-checkpoint:\$\{expectedSha/);
+  assert.match(publication, /const ref = `refs\/heads\/\$\{checkpointBranch\(issue\)\}`/);
+  assert.match(publication, /--force-with-lease=\$\{ref\}:\$\{expectedSha/);
+  assert.equal(checkpointBranch(42), 'pi/issue-42-checkpoint');
   assert.match(workflow, /PI_CHECKPOINT_PUBLISHED/);
   assert.match(workflow, /--force-with-lease="refs\/heads\/pi\/issue-\$\{ISSUE\}-checkpoint:\$\{PI_CHECKPOINT_PUBLISHED\}"/);
 });
@@ -50,7 +54,7 @@ test('implementer checkpoint uses compare-and-swap lease and exact deletion', ()
 test('published PR state is durable before independent review starts', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   assert.ok(workflow.indexOf('- name: Mark pull request created') < workflow.indexOf('- name: Start independent PR review'));
-  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /issue-publication\.mjs" review/);
   assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(publication, /dispatchWorkflow\('pi-auto-merge\.yml'/);
@@ -67,8 +71,8 @@ test('published PR state is durable before independent review starts', () => {
 
 
 test('closed unmerged Pi PR is a normal review skip and immediately enters issue recovery', () => {
-  const guard = fs.readFileSync('scripts/pi-common/pr-guard.mjs', 'utf8');
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const guard = readScript('scripts/pi-common/pr-guard.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   const workflow = fs.readFileSync('.github/workflows/pi-reconcile.yml', 'utf8');
   assert.match(guard, /pr\.state !== 'open'[\s\S]*reason: pr\.merged \? 'merged' : 'closed'/);
   assert.match(reconcile, /safeRemovals\(findings\)/);
@@ -80,7 +84,7 @@ test('closed unmerged Pi PR is a normal review skip and immediately enters issue
 
 
 test('issue state family is intentionally small', () => {
-  const source = fs.readFileSync('scripts/pi-common/state-machine.mjs', 'utf8');
+  const source = readScript('scripts/pi-common/state-machine.mjs', 'utf8');
   for (const label of ['dispatcher:ready', 'pi:ready', 'pi:running', 'pi:mr-created', 'pi:needs-human', 'architect:ready']) {
     assert.match(source, new RegExp(label.replace(':', '\\:')));
   }
@@ -92,8 +96,8 @@ test('issue state family is intentionally small', () => {
 
 
 test('architect and reconciler contain no removed terminal-state machinery', () => {
-  const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const architect = readScript('scripts/pi-architect.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.doesNotMatch(architect, /pi:failed|pi:blocked|pi:cancelled/);
   assert.doesNotMatch(reconcile, /repairCheckpointRefs|liveRepairs|repair-pr-/);
 });
@@ -109,7 +113,7 @@ test('architect and reconciler contain no removed terminal-state machinery', () 
 
 
 test('reconciler may recover a lost PASS-to-merge-gate handoff without becoming the normal scheduler', () => {
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /passed-pr-needs-merge-gate/);
   assert.match(reconcile, /tryDispatchWorkflow\('pi-auto-merge\.yml'/);
   assert.match(reconcile, /RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
@@ -133,7 +137,7 @@ test('stateful control workflows serialize without cancelling active work', () =
 
 
 test('orphaned architect ownership is infrastructure recovery, not human escalation', () => {
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /orphaned-architect-state[\s\S]*dispatcher:ready/);
   assert.doesNotMatch(reconcile, /orphaned-architect-state[\s\S]{0,600}pi-dispatcher\.yml/);
   assert.doesNotMatch(reconcile, /orphaned-architect-state[\s\S]{0,180}pi:needs-human/);
@@ -141,20 +145,20 @@ test('orphaned architect ownership is infrastructure recovery, not human escalat
 
 
 test('implementer structured result requires at least one concrete change', () => {
-  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const tool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
   assert.match(tool, /at least one concrete change is required/);
 });
 
 
 test('Reconciler never schedules Implementer directly', () => {
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.doesNotMatch(reconcile, /pi-issue-agent\.yml/);
   assert.match(reconcile, /issueRecoveryTarget/);
   assert.match(reconcile, /dispatcher:ready/);
 });
 
 test('merge gate owns only eligibility and merge; dev CI owns validation', () => {
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /merge_method: 'squash'/);
   assert.doesNotMatch(gate, /pi-pr-review|social-mcp\/integration|social-mcp\/pi-review|statuses/);
   assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
@@ -169,7 +173,7 @@ test('manual review and repair contain no captured dev-base state', () => {
 
 
 test('stranded pi:ready work returns through the normal Dispatcher round trip', () => {
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /strandedReady/);
   assert.match(reconcile, /issueRecoveryTarget/);
   assert.doesNotMatch(reconcile, /dispatchWorkflow\('pi-issue-agent\.yml'/);
@@ -178,7 +182,7 @@ test('stranded pi:ready work returns through the normal Dispatcher round trip', 
 });
 
 test('dispatcher-ready label event is the only normal wake after architect publication', () => {
-  const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
+  const architect = readScript('scripts/pi-architect.mjs', 'utf8');
   const dispatcher = fs.readFileSync('.github/workflows/pi-dispatcher.yml', 'utf8');
   assert.match(dispatcher, /github\.event\.label\.name == 'dispatcher:ready'/);
   assert.doesNotMatch(architect, /dispatchWorkflow\('pi-dispatcher\.yml'/);
@@ -186,7 +190,7 @@ test('dispatcher-ready label event is the only normal wake after architect publi
 
 test('manual Implementer dispatch bypasses pi:ready while Dispatcher keeps the strict ready gate', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const dispatcher = fs.readFileSync('scripts/pi-dispatcher.mjs', 'utf8');
+  const dispatcher = readScript('scripts/pi-dispatcher.mjs', 'utf8');
   assert.match(workflow, /require_ready:/);
   assert.match(workflow, /MODE="plain"/);
   assert.match(workflow, /ACTION="running-manual"/);
@@ -195,10 +199,10 @@ test('manual Implementer dispatch bypasses pi:ready while Dispatcher keeps the s
 
 
 test('stale implementation refs do not create restored work when latest dev already contains them', () => {
-  const worktree = fs.readFileSync('scripts/pi-common/issue-worktree.mjs', 'utf8');
+  const worktree = readScript('scripts/pi-common/issue-worktree.mjs', 'utf8');
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  const resultTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  const resultTool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
   assert.match(worktree, /diff', '--quiet', 'origin\/dev', '--'/);
   assert.match(worktree, /if \(!resumed\)[\s\S]*writeFileSync\(patch, ''\)/);
   assert.match(workflow, /PI_RESUME_ACTIVE=.*\.resumed/);
@@ -209,7 +213,7 @@ test('stale implementation refs do not create restored work when latest dev alre
 });
 
 test('merged implementation PR is terminal before a repeated Implementer run becomes expensive', () => {
-  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
+  const transition = readScript('scripts/pi-transition.mjs', 'utf8');
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   assert.match(transition, /mergedImplementationPr/);
   assert.match(transition, /state: 'closed', state_reason: 'completed'/);

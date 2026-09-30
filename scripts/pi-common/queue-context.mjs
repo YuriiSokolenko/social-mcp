@@ -8,20 +8,21 @@
  * Actions lookup failures are surfaced as runs_incomplete rather than hidden.
  */
 
+import { baseBranch, parseIssueBranch, workflowFile } from './project-config.mjs';
 import { ISSUE_ACTIVE, PIPELINE_LABELS } from './state-machine.mjs';
 const phases = new Map([
-  ['pi-issue-agent.yml', 'implementation'],
-  ['pi-architect.yml', 'architect'],
-  ['pi-dispatcher.yml', 'dispatcher'],
+  [workflowFile('implementer'), 'implementation'],
+  [workflowFile('architect'), 'architect'],
+  [workflowFile('dispatcher'), 'dispatcher'],
 ]);
 const statuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
 
 export function summarizeQueue(issues, prs, runs, repo) {
-  const openPrs = prs.filter(pr => pr.base?.ref === 'dev').map(pr => {
+  const openPrs = prs.filter(pr => pr.base?.ref === baseBranch()).map(pr => {
     const branch = pr.head?.repo?.full_name === repo ? pr.head.ref : '';
-    const issue = /^pi\/issue-([1-9]\d*)$/.exec(branch);
+    const issue = parseIssueBranch(branch);
     return {
-      number: pr.number, issue: issue ? Number(issue[1]) : null,
+      number: pr.number, issue,
       title: pr.title, draft: pr.draft, head: pr.head?.sha,
       labels: (pr.labels ?? []).map(label => label.name),
     };

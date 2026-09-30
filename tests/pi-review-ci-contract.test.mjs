@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { readScript } from './helpers/resolved-source.mjs';
+
+import { issueBranch, checkpointBranch, projectConfig } from '../scripts/pi-common/project-config.mjs';
+import { isControlPlanePath } from '../scripts/pi-common/control-plane-policy.mjs';
 
 test('CI validates the committed dev state without synthetic PR integration inputs', () => {
   const workflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
@@ -10,7 +14,7 @@ test('CI validates the committed dev state without synthetic PR integration inpu
 });
 
 test('merge gate never waits for pre-merge CI, review, repair, or a dev SHA', () => {
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.doesNotMatch(gate, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\/integration|social-mcp\/pi-review/i);
   assert.doesNotMatch(gate, /pi-pr-review|statuses|social-mcp\/integration|social-mcp\/pi-review/);
   assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
@@ -64,21 +68,21 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
 
 test('implementer integrates latest dev before shared post-backend validation and publication', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const tool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
   assert.doesNotMatch(workflow, /name: Integrate latest dev before publication/);
-  const finalizer = fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
+  const finalizer = readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
   assert.match(tool, /integrateLatestDev/);
   assert.match(finalizer, /fetch', 'origin', 'dev/);
   assert.match(finalizer, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /Merge conflicts are still unresolved|Latest dev conflicts with the implementation/);
-  const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
-  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
+  const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   assert.doesNotMatch(tool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
   assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd \}\)/);
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
   assert.match(runner, /return runSelectedStage\(spec, \{ backend, workspace \}\)/);
-  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /issue-publication\.mjs" review/);
   assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
@@ -86,20 +90,20 @@ test('implementer integrates latest dev before shared post-backend validation an
 
 test('review PASS is required before merge gate can merge', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(review, /Run deterministic review checks/);
-  assert.match(fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8'), /review:passed/);
+  assert.match(readScript('scripts/pi-common/review-state.mjs', 'utf8'), /review:passed/);
   assert.match(review, /Wake merge gate after PASS/);
   assert.match(gate, /review:passed/);
 });
 
 test('PR fix resolves current-dev conflicts in the live repair session and returns to fresh review', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  const tool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
-  const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const tool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
+  const stageConfig = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   assert.match(workflow, /pi-run-stage\.mjs" repair/);
   assert.match(stageConfig, /repair:[\s\S]*resultTool: 'pi-repair-result-tool\.mjs'/);
-  const finalizer = fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
+  const finalizer = readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
   assert.match(tool, /integrateLatestDev/);
   assert.match(tool, /validateFinalProductTree/);
   assert.match(finalizer, /fetch', 'origin', 'dev/);
@@ -107,13 +111,13 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(tool, /PR conflicts with current dev/);
   assert.match(finalizer, /runProductChecks\(\{ cwd \}\)/);
   assert.match(workflow, /name: Start fresh review/);
-  assert.match(fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8'), /dispatchWorkflow\('pi-pr-review\.yml'/);
+  assert.match(readScript('scripts/pi-common/repair-publication.mjs', 'utf8'), /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
 });
 
 test('stale reviewer verdict is discarded without self-rescheduling', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  const state = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
+  const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
   assert.match(state, /pr\.head\.sha !== reviewedHead/);
   assert.match(state, /status: 'stale'/);
   assert.match(workflow, /STALE_REVIEW=true/);
@@ -123,7 +127,7 @@ test('stale reviewer verdict is discarded without self-rescheduling', () => {
 
 test('implementer resume always rebases saved work onto latest dev and never uses main as a base', () => {
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  const worktree = fs.readFileSync('scripts/pi-common/issue-worktree.mjs', 'utf8');
+  const worktree = readScript('scripts/pi-common/issue-worktree.mjs', 'utf8');
   assert.match(worktree, /worktree', 'add', '-B'.*origin\/dev/s);
   assert.match(worktree, /merge-base', 'origin\/dev', resumeRef/);
   assert.match(worktree, /diff', '--binary', base, resumeRef/);
@@ -135,7 +139,7 @@ test('implementer resume always rebases saved work onto latest dev and never use
 
 
 test('Pi usage is isolated from dev and metrics pushes do not run project CI', () => {
-  const collector = fs.readFileSync('scripts/pi-usage-collect.mjs', 'utf8');
+  const collector = readScript('scripts/pi-usage-collect.mjs', 'utf8');
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(collector, /const metricsBranch = "pi-metrics"/);
   assert.match(collector, /ref=\$\{metricsBranch\}/);
@@ -147,7 +151,7 @@ test('Pi usage is isolated from dev and metrics pushes do not run project CI', (
 
 test('merge gate has permission for its late-conflict PR Fix dispatch', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-auto-merge.yml', 'utf8');
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
   assert.match(workflow, /permissions:\n(?:\s+.*\n)*?\s+actions: write/);
 });
@@ -161,10 +165,10 @@ test('green dev CI wakes merge gate without parsing commit-message conventions',
 
 
 test('pi:needs-human on a PR stops review, repair, and merge automation', () => {
-  const guard = fs.readFileSync('scripts/pi-common/pr-guard.mjs', 'utf8');
-  const reviewState = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
-  const repairPublication = fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8');
-  const merge = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const guard = readScript('scripts/pi-common/pr-guard.mjs', 'utf8');
+  const reviewState = readScript('scripts/pi-common/review-state.mjs', 'utf8');
+  const repairPublication = readScript('scripts/pi-common/repair-publication.mjs', 'utf8');
+  const merge = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(guard, /pi:needs-human/);
   assert.match(reviewState, /pi:needs-human/);
   assert.match(repairPublication, /pi:needs-human/);
@@ -202,7 +206,7 @@ test('human-required PR exits before reviewer or repair model work', () => {
 
 
 test('implementer checkpoint never commits unresolved replay conflicts', () => {
-  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   const conflictCheck = publication.indexOf("'diff','--name-only','--diff-filter=U'");
   const stage = publication.indexOf("'add','-A'", conflictCheck);
   assert.ok(conflictCheck >= 0 && stage > conflictCheck);
@@ -213,8 +217,8 @@ test('implementer checkpoint never commits unresolved replay conflicts', () => {
 test('review verdict exists only for the unchanged reviewed PR head', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const repair = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
-  const reviewState = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
-  const repairPublication = fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8');
+  const reviewState = readScript('scripts/pi-common/review-state.mjs', 'utf8');
+  const repairPublication = readScript('scripts/pi-common/repair-publication.mjs', 'utf8');
   assert.match(review, /PR #\$PR changed during review; stale verdict cleared/);
   assert.match(reviewState, /pr\.head\.sha !== reviewedHead/);
   assert.match(reviewState, /pi:needs-human/);
@@ -228,12 +232,13 @@ test('review verdict exists only for the unchanged reviewed PR head', () => {
 
 
 test('reconciler recovers stranded PR pipeline without touching human-gated PRs', () => {
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /liveReviews/);
   assert.match(reconcile, /liveFixes/);
   assert.match(reconcile, /labels\.has\('pi:needs-human'\)/);
   assert.match(reconcile, /labels\.has\('review:passed'\)/);
-  assert.match(reconcile, /labels\.has\('review:changes-requested'\) \? 'pi-pr-fix\.yml' : 'pi-pr-review\.yml'/);
+  assert.match(reconcile, /needsFix = labels\.has\('review:changes-requested'\)/);
+  assert.match(reconcile, /workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
 });
 
 
@@ -263,7 +268,7 @@ test('workflow concurrency uses only supported GitHub Actions keys', () => {
 
 test('reviewer rechecks the human gate before publishing a verdict', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  const state = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
+  const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
   assert.match(review, /review-state\.mjs" apply/);
   assert.match(state, /pi:needs-human/);
   assert.match(state, /pr\.head\.sha !== reviewedHead/);
@@ -272,7 +277,7 @@ test('reviewer rechecks the human gate before publishing a verdict', () => {
 
 
 test('reconciler gives normal PR handoffs a grace period before recovery dispatch', () => {
-  const source = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const source = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(source, /RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
   assert.match(source, /pr\.updated_at \?\? pr\.created_at/);
   assert.match(source, /prAgeMs < RECOVERY_GRACE_MS/);
@@ -281,7 +286,7 @@ test('reconciler gives normal PR handoffs a grace period before recovery dispatc
 
 test('PR head changes invalidate verdict without creating a second review scheduler', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  const state = fs.readFileSync('scripts/pi-common/review-state.mjs', 'utf8');
+  const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
   assert.match(review, /pull_request:[\s\S]*types: \[synchronize\]/);
   assert.match(review, /review-state\.mjs" invalidate/);
   assert.match(state, /replaceReviewLabels\(prNumber\)/);
@@ -293,26 +298,29 @@ test('PR head changes invalidate verdict without creating a second review schedu
 
 
 test('late merge conflict leaves recoverable PR Fix ownership', () => {
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /withReviewVerdict\(\[\.\.\.prLabels\], 'review:changes-requested'\)/);
   assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
-  assert.match(reconcile, /labels\.has\('review:changes-requested'\) \? 'pi-pr-fix\.yml' : 'pi-pr-review\.yml'/);
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconcile, /needsFix = labels\.has\('review:changes-requested'\)/);
+  assert.match(reconcile, /workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
 });
 
 
 test('issue publication safely replaces only the branch head observed at run start', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /PI_ISSUE_BRANCH_EXPECTED/);
-  assert.match(publication, /--force-with-lease=refs\/heads\/pi\/issue-\$\{issue\}:\$\{expectedSha/);
+  assert.match(publication, /const ref = `refs\/heads\/\$\{issueBranch\(issue\)\}`/);
+  assert.match(publication, /--force-with-lease=\$\{ref\}:\$\{expectedSha/);
+  assert.equal(issueBranch(42), 'pi/issue-42');
   assert.match(publication, /Refusing to publish protected control-plane files/);
   assert.match(workflow, /PI_IMPLEMENTER_START_COMMIT.*PI_ISSUE_BRANCH_EXPECTED/);
   assert.doesNotMatch(publication, /push --set-upstream origin/);
 });
 
 test('issue publication attributes only changes beyond integrated latest dev to the Implementer', () => {
-  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(publication, /merge-base','--is-ancestor','origin\/dev','HEAD'/);
   assert.match(publication, /return integrated \? 'origin\/dev' : startCommit/);
   assert.match(publication, /diff','--name-only',base,'HEAD'/);
@@ -334,17 +342,15 @@ test('product agent workflows use one shared product-check contract and never ru
   // runs after the selected backend submits; publication must not rerun the suite.
   assert.match(fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
   assert.doesNotMatch(fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
-  const checks = fs.readFileSync('scripts/pi-common/product-checks.mjs', 'utf8');
-  assert.match(checks, /git.*diff.*--check/s);
-  assert.match(checks, /pytest/);
-  assert.match(checks, /ruff/);
-  const repairTool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
-  const implementerTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
-  const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
+  const finalChecks = projectConfig().checks.final.map(step => step.builtin ?? [step.command, ...step.args].join(' '));
+  assert.deepEqual(finalChecks, ['ruff', 'git diff --check', 'pytest']);
+  const repairTool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
+  const implementerTool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
   assert.match(repairTool, /validateFinalProductTree\(\)/);
   assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd \}\)/);
+  assert.match(readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd \}\)/);
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(ci, /node --test tests\/\*\.test\.mjs/);
   assert.match(ci, /tests\/test_runner_autoscaler\.sh/);
@@ -352,25 +358,30 @@ test('product agent workflows use one shared product-check contract and never ru
 
 
 test('all Pi agents are hard-blocked from CI control-plane changes', () => {
-  const policy = fs.readFileSync('scripts/pi-common/control-plane-policy.mjs', 'utf8');
-  for (const fragment of [
-    ".github/workflows/",
-    "agents/",
-    "scripts\\/pi-",
-    "tests\\/[^/]+\\.test\\.mjs",
-    "tests/test_runner_autoscaler.sh",
-    "infra/github-runner-autoscaler/",
-  ]) assert.ok(policy.includes(fragment), `missing protected control-plane path: ${fragment}`);
+  for (const protectedPath of [
+    '.github/workflows/ci.yml',
+    'agents/implementer/AGENTS.md',
+    'scripts/pi-run-stage.mjs',
+    'scripts/pi-common/state-machine.mjs',
+    'tests/pi-run-stage.test.mjs',
+    'tests/test_runner_autoscaler.sh',
+    'infra/github-runner-autoscaler/manager.sh',
+    '.pi/settings.json',
+    '.agent-harness.json',
+  ]) assert.equal(isControlPlanePath(protectedPath), true, `missing protected control-plane path: ${protectedPath}`);
+  for (const productPath of ['src/social_mcp/app.py', 'tests/test_app.py', 'docs/CI_RULES.md', 'scripts/other.mjs']) {
+    assert.equal(isControlPlanePath(productPath), false, `product path must stay editable: ${productPath}`);
+  }
 
-  const implementerTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
-  const repairTool = fs.readFileSync('scripts/pi-repair-result-tool.mjs', 'utf8');
-  const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
+  const implementerTool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const repairTool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
+  const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
   assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
   assert.match(repairTool, /validateFinalProductTree\(\)/);
-  const finalizer = fs.readFileSync('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
+  const finalizer = readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
   assert.match(finalizer, /forbiddenAgentPaths\(base, cwd\)/);
-  const agentChanges = fs.readFileSync('scripts/pi-common/agent-change-policy.mjs', 'utf8');
+  const agentChanges = readScript('scripts/pi-common/agent-change-policy.mjs', 'utf8');
   for (const check of ["diff','--name-only", "diff','--cached','--name-only", "ls-files','--others','--exclude-standard"]) assert.ok(agentChanges.includes(check));
   assert.match(finalizer, /Agent changes to CI\/control-plane files are forbidden/);
 
@@ -380,11 +391,11 @@ test('all Pi agents are hard-blocked from CI control-plane changes', () => {
     assert.match(workflow, /steps\.load\.outputs\.skip/);
   }
 
-  const guard = fs.readFileSync('scripts/pi-common/pr-guard.mjs', 'utf8');
+  const guard = readScript('scripts/pi-common/pr-guard.mjs', 'utf8');
   assert.match(guard, /pages\(\`\/pulls\/\$\{prNumber\}\/files\`\)/);
   assert.match(guard, /pi:needs-human/);
 
-  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(gate, /controlPlanePaths\(paths\)/);
 });
 
@@ -415,18 +426,17 @@ test('selected subagents inherit the main response ceiling through a child-only 
       ['./scripts/pi-subagent-response-budget.mjs'],
     );
   }
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  const child = fs.readFileSync('scripts/pi-subagent-response-budget.mjs', 'utf8');
-  const policy = fs.readFileSync('scripts/pi-common/control-plane-policy.mjs', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  const child = readScript('scripts/pi-subagent-response-budget.mjs', 'utf8');
   assert.match(runtime, /PI_SUBAGENT_RESPONSE_MAX_TOKENS/);
   assert.match(child, /PI_SUBAGENT_RESPONSE_MAX_TOKENS/);
   assert.match(child, /Math\.min\(requested, modelLimit\)/);
-  assert.match(policy, /path\.startsWith\('\.pi\/'\)/);
+  assert.equal(isControlPlanePath('.pi/settings.json'), true);
 });
 
 test('one progress controller owns loop safety, complexity, and response budgets', () => {
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  const controller = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  const controller = readScript('scripts/pi-common/progress-controller.mjs', 'utf8');
   assert.match(controller, /short: 2048/);
   assert.match(controller, /normal: 4096/);
   assert.match(controller, /deep: 8192/);
@@ -442,13 +452,13 @@ test('all Pi result tools reuse one terminal-tool helper', () => {
     assert.match(source, /registerTerminalTool/);
     assert.doesNotMatch(source, /registerSubmitNudge|terminalResult|agent_before_settle/);
   }
-  const helper = fs.readFileSync('scripts/pi-common/terminal-tool.mjs', 'utf8');
+  const helper = readScript('scripts/pi-common/terminal-tool.mjs', 'utf8');
   assert.match(helper, /registerSubmitNudge/);
   assert.match(helper, /terminalResult/);
 });
 
 test('Triage submission uses the shared terminal contract', () => {
-  const source = fs.readFileSync('scripts/pi-triage-result-tool.mjs', 'utf8');
+  const source = readScript('scripts/pi-triage-result-tool.mjs', 'utf8');
   const agent = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
   assert.match(source, /registerTerminalTool/);
   assert.match(source, /customType: 'triage-result'/);
@@ -472,8 +482,8 @@ test('publication helpers reuse one trusted git runner', () => {
 
 
 test('stage runner delegates shared Pi extensions to the Pi backend once for all agents', () => {
-  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
-  const backend = fs.readFileSync('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
+  const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
+  const backend = readScript('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
   assert.match(runner, /runPi = runPiStage/);
   assert.match(runner, /candidate => runPi\(candidate, \{ workspace \}\)/);
   assert.equal(backend.split('pi-bash-timeout.mjs').length - 1, 1);
@@ -482,7 +492,7 @@ test('stage runner delegates shared Pi extensions to the Pi backend once for all
 });
 
 test('stage configuration is the single source of per-agent runtime limits', () => {
-  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair']) {
     assert.match(config, new RegExp(`${name}:[\\s\\S]*requiredFirstReadPath`));
   }
@@ -506,14 +516,14 @@ test('agent prompts document the shared response-budget contract', () => {
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
   assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
   assert.match(triage, /`set_response_budget` is intentionally unavailable/);
-  assert.match(fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8'), /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
+  assert.match(readScript('scripts/pi-common/stage-config.mjs', 'utf8'), /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
 });
 
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
-  const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
-  const guard = fs.readFileSync('scripts/pi-common/pr-guard.mjs', 'utf8');
+  const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
+  const stageConfig = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
+  const guard = readScript('scripts/pi-common/pr-guard.mjs', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.ok(workflow.includes('ISSUE=$(jq -r \'\.issue\' "$CONTEXT")'));
   assert.ok(workflow.includes('REVIEW_CONTEXT=$CONTEXT'));
@@ -531,14 +541,14 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
 test('fresh implementer uses one planner/classifier result while restored and repair work submit directly', () => {
-  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  const repoSearchSource = fs.readFileSync('scripts/pi-common/repo-search.mjs', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  const repoSearchSource = readScript('scripts/pi-common/repo-search.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const settings = fs.readFileSync('.pi/settings.json', 'utf8');
-  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
-  const backend = fs.readFileSync('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
+  const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
+  const backend = readScript('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
 
   assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
   assert.doesNotMatch(config, /complexityClassifierAgent|complexityClassifierTimeoutMs/);
@@ -592,11 +602,11 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   const architect = fs.readFileSync('agents/architect/AGENTS.md', 'utf8');
   const dispatcher = fs.readFileSync('agents/dispatcher/AGENTS.md', 'utf8');
   const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
-  const stageConfig = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
-  const progress = fs.readFileSync('scripts/pi-common/progress-controller.mjs', 'utf8');
-  const structuralEdit = fs.readFileSync('scripts/pi-common/structural-edit.mjs', 'utf8');
-  const safeEdit = fs.readFileSync('scripts/pi-common/safe-edit.mjs', 'utf8');
-  const resultTool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const stageConfig = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
+  const progress = readScript('scripts/pi-common/progress-controller.mjs', 'utf8');
+  const structuralEdit = readScript('scripts/pi-common/structural-edit.mjs', 'utf8');
+  const safeEdit = readScript('scripts/pi-common/safe-edit.mjs', 'utf8');
+  const resultTool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
 
   assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_start_server'));
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_start_server'));
@@ -627,9 +637,9 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
 
 test('implementer has an explicit already-satisfied terminal path without duplicate edits', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
-  const transition = fs.readFileSync('scripts/pi-transition.mjs', 'utf8');
-  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const tool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const transition = readScript('scripts/pi-transition.mjs', 'utf8');
+  const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
 
   assert.match(config, /complete Implementer operating contract is embedded below/);
   assert.doesNotMatch(config, /Read and follow agents\/implementer\/AGENTS\.md first/);
@@ -647,8 +657,8 @@ test('implementer has an explicit already-satisfied terminal path without duplic
 
 
 test('fresh implementer metadata preflight stays before integration and shared expensive checks stay outside Pi', () => {
-  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
-  const validation = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
+  const tool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
   const guard = tool.indexOf("throw new Error('Fresh changed work requires title, summary, security_notes, and limitations')");
   assert.ok(guard >= 0);
   assert.ok(guard < tool.indexOf('integrateLatestDev({', guard));
@@ -660,12 +670,12 @@ test('fresh implementer metadata preflight stays before integration and shared e
 });
 
 test('stage runner relies on installed pi-subagents instead of registering a duplicate subagent tool', () => {
-  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
+  const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   assert.doesNotMatch(runner, /pi-subagent\.mjs/);
 });
 
 test('reviewer orients and plans before declaring complexity', () => {
-  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.match(config, /reviewer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash', 'lsp_start_server', 'lsp_find_symbol'\]/);
   for (const value of ['Read `agents/reviewer/AGENTS.md`', 'Read the linked issue', 'Inspect the complete PR diff', 'Write a concise review plan', '1000 tokens', 'Call `declare_task_complexity`', 'Continue the semantic review']) {
@@ -684,7 +694,7 @@ test('reviewer orients and plans before declaring complexity', () => {
 });
 
 test('repair orients and plans before declaring complexity', () => {
-  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
   assert.match(config, /repair:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash'\]/);
   for (const value of ['Read `agents/repair/AGENTS.md`', 'Read the concrete blocking Reviewer finding', 'Inspect the PR diff', 'Write a short repair plan', '1000 output tokens', 'Call `declare_task_complexity`', 'Immediately execute the first plan item']) {
@@ -736,8 +746,8 @@ test('deterministic review failure routes directly to PR Fix instead of stopping
 });
 
 test('stage execution owns the terminal marker contract for every model-driven workflow', () => {
-  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
-  const backend = fs.readFileSync('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
+  const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
+  const backend = readScript('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
   assert.match(runner, /PI_TERMINAL_RESULT_FILE/);
   assert.match(backend, /exited without its terminal tool/);
   for (const name of ['pi-architect.yml', 'pi-dispatcher.yml', 'pi-triage.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-issue-agent.yml']) {
@@ -757,7 +767,7 @@ test('DRAINING cannot create new issue work but still recovers published PR work
     assert.ok(index >= 0, `${name}: missing ${step}`);
     assert.match(workflow.slice(index, index + 220), /if: vars\.PI_AUTOMATION_MODE == 'RUNNING'/);
   }
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /issueRecoveryAllowed = automationMode === 'RUNNING'/);
   assert.match(reconcile, /prRecoveryAllowed = automationMode === 'RUNNING' \|\| automationMode === 'DRAINING'/);
   assert.match(reconcile, /issueRecoveryTarget/);
@@ -767,8 +777,8 @@ test('DRAINING cannot create new issue work but still recovers published PR work
 });
 
 test('Architect split publication is two-phase and Dispatcher wakes only from ready labels', () => {
-  const architect = fs.readFileSync('scripts/pi-architect.mjs', 'utf8');
-  const reconcile = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  const architect = readScript('scripts/pi-architect.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   const workflow = fs.readFileSync('.github/workflows/pi-architect.yml', 'utf8');
   assert.match(architect, /architect-children:/);
   assert.match(architect, /body: parentBody[\s\S]*architect:epic/);
@@ -788,24 +798,24 @@ test('terminal result parsers do not accept legacy free-text markers', () => {
     assert.match(source, /expected submit_result tool output|Expected submit_result tool output/);
     assert.doesNotMatch(source, new RegExp("startsWith\\(['\"]" + forbidden.replace(/[.*+?^$\{\}()|[\]\\]/g, '\\$&')));
   }
-  const review = fs.readFileSync('scripts/pi-review-result.mjs', 'utf8');
+  const review = readScript('scripts/pi-review-result.mjs', 'utf8');
   assert.match(review, /did not call submit_result/);
   assert.doesNotMatch(review, /matchAll\(\/\^\[ \\t\]/);
 });
 
 test('publication never invents a successful result and PR Fix publishes a clean integrated HEAD', () => {
-  const issuePublication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const issuePublication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(issuePublication, /Implementer result metadata is required before PR publication/);
   assert.doesNotMatch(issuePublication, /See the diff for implementation details/);
 
-  const repair = fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8');
+  const repair = readScript('scripts/pi-common/repair-publication.mjs', 'utf8');
   assert.match(repair, /const localHead = git\(\['rev-parse','HEAD'\]/);
   assert.match(repair, /if \(localHead === expectedHead\) return/);
   assert.match(repair, /\$\{localHead\}:refs\/heads\/\$\{headRef\}/);
 });
 
 test('trusted subprocess and GitHub IO share bounded infrastructure helpers', () => {
-  const processHelper = fs.readFileSync('scripts/pi-common/process.mjs', 'utf8');
+  const processHelper = readScript('scripts/pi-common/process.mjs', 'utf8');
   assert.match(processHelper, /spawnSync/);
   assert.match(processHelper, /timeout:/);
   assert.match(processHelper, /SIGKILL/);
@@ -815,19 +825,19 @@ test('trusted subprocess and GitHub IO share bounded infrastructure helpers', ()
     assert.match(source, /\.\/git\.mjs/);
     assert.doesNotMatch(source, /node:child_process/);
   }
-  const repair = fs.readFileSync('scripts/pi-common/repair-publication.mjs', 'utf8');
+  const repair = readScript('scripts/pi-common/repair-publication.mjs', 'utf8');
   assert.doesNotMatch(repair, /spawnSync\('rm'/);
 
-  const github = fs.readFileSync('scripts/pi-common/github-api.mjs', 'utf8');
+  const github = readScript('scripts/pi-common/github-api.mjs', 'utf8');
   assert.match(github, /AbortSignal\.timeout/);
   assert.match(github, /PI_GITHUB_HTTP_TIMEOUT_MS/);
-  const usage = fs.readFileSync('scripts/pi-usage-collect.mjs', 'utf8');
+  const usage = readScript('scripts/pi-usage-collect.mjs', 'utf8');
   assert.match(usage, /githubClient/);
   assert.doesNotMatch(usage, /https:\/\/api\.github\.com/);
 });
 
 test('log rendering finalizes after continuations and redacts generic secret fields', () => {
-  const source = fs.readFileSync('scripts/pi-log-filter.mjs', 'utf8');
+  const source = readScript('scripts/pi-log-filter.mjs', 'utf8');
   assert.match(source, /lastAgentEndSeen/);
   assert.match(source, /reportFinal\(lastAgentEndSeen \? "completed" : "interrupted"\)/);
   assert.match(source, /private\[_-\]\?key/);
@@ -835,8 +845,8 @@ test('log rendering finalizes after continuations and redacts generic secret fie
 
 
 test('stage runner owns model phase and issue metadata', () => {
-  const runner = fs.readFileSync('scripts/pi-run-stage.mjs', 'utf8');
-  const config = fs.readFileSync('scripts/pi-common/stage-config.mjs', 'utf8');
+  const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
+  const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   assert.match(runner, /PI_PHASE: env\.PI_PHASE \?\? config\.phase \?\? stage/);
   assert.match(runner, /writeGithubEnv\(env, 'PI_PHASE', spec\.environment\.PI_PHASE\)/);
   for (const phase of ['architect', 'dispatcher', 'triage', 'review', 'repair', 'implementation']) {
@@ -852,8 +862,8 @@ test('stage runner owns model phase and issue metadata', () => {
 
 test('implementer publication does not transport unused issue title or deleted task files', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const publication = fs.readFileSync('scripts/pi-common/issue-publication.mjs', 'utf8');
-  const worktree = fs.readFileSync('scripts/pi-common/issue-worktree.mjs', 'utf8');
+  const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
+  const worktree = readScript('scripts/pi-common/issue-worktree.mjs', 'utf8');
   assert.doesNotMatch(workflow, /PI_ISSUE_TITLE|pi-task-/);
   assert.doesNotMatch(publication, /issueTitle/);
   assert.doesNotMatch(worktree, /taskFile|\[task-file\]/);
@@ -892,12 +902,12 @@ test('text architecture map is maintained only for architecture-changing work', 
 
 test('blocked implementer outcome is a deliberate human gate', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  const tool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
   const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
-  const shared = fs.readFileSync('scripts/pi-common/implementer-result.mjs', 'utf8');
-  const recovery = fs.readFileSync('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
-  const miniSwe = fs.readFileSync('scripts/pi-common/mini-swe-stage-backend.mjs', 'utf8');
+  const shared = readScript('scripts/pi-common/implementer-result.mjs', 'utf8');
+  const recovery = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
+  const miniSwe = readScript('scripts/pi-common/mini-swe-stage-backend.mjs', 'utf8');
 
   assert.match(shared, /changed.*already_satisfied.*blocked/s);
   assert.match(tool, /blocked_reason/);

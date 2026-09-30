@@ -4,6 +4,7 @@
 // idempotent record; issue rows are derived from those records on every update.
 import { readFileSync } from "node:fs";
 import { githubClient } from "./pi-common/github-api.mjs";
+import { workflowFile } from "./pi-common/project-config.mjs";
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
@@ -49,14 +50,9 @@ if (!run && /^\d+$/.test(process.env.MANUAL_RUN_ID ?? "")) {
   run = await response.json();
 }
 if (!run?.id || !run?.run_attempt || run.status !== "completed") throw new Error("Expected a completed Pi workflow run");
-const trustedWorkflows = new Set([
-  ".github/workflows/pi-issue-agent.yml",
-  ".github/workflows/pi-pr-review.yml",
-  ".github/workflows/pi-pr-fix.yml",
-  ".github/workflows/pi-architect.yml",
-  ".github/workflows/pi-dispatcher.yml",
-  ".github/workflows/pi-triage.yml",
-]);
+const trustedWorkflows = new Set(
+  ["implementer", "reviewer", "repair", "architect", "dispatcher", "triage"].map(role => `.github/workflows/${workflowFile(role)}`),
+);
 if (run.head_repository?.full_name !== repo || !trustedWorkflows.has(run.path)) {
   throw new Error("The requested run is not a trusted Pi workflow from this repository");
 }

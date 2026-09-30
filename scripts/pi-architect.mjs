@@ -111,22 +111,22 @@ async function transitionIssue(issue, action) {
 async function prepare(issue, filename) {
   const parent = await api(`/issues/${issue}`);
   const labels = new Set(parent?.labels?.map(label => label.name));
-  const wasDispatcherReady = labels.has('dispatcher:ready');
-  if (parent?.state === 'open' && !labels.has('architect:ready') &&
+  const wasDispatcherReady = labels.has(PIPELINE_LABELS.queued);
+  if (parent?.state === 'open' && !labels.has(PIPELINE_LABELS.architectReady) &&
       process.env.GITHUB_EVENT_NAME === 'workflow_dispatch') {
-    await ensureLabel('architect:ready', 'c5def5', 'Large issue approved for Pi Architect');
-    if (labels.has('dispatcher:ready')) {
+    await ensureLabel(PIPELINE_LABELS.architectReady, 'c5def5', 'Large issue approved for Pi Architect');
+    if (labels.has(PIPELINE_LABELS.queued)) {
       await transitionIssue(issue, 'architect-ready');
     } else {
-      throw new Error('Manual Architect dispatch requires dispatcher:ready');
+      throw new Error(`Manual Architect dispatch requires ${PIPELINE_LABELS.queued}`);
     }
-    labels.delete('dispatcher:ready');
-    labels.add('architect:ready');
+    labels.delete(PIPELINE_LABELS.queued);
+    labels.add(PIPELINE_LABELS.architectReady);
   }
-  if (!parent || parent.state !== 'open' || !labels.has('architect:ready') ||
+  if (!parent || parent.state !== 'open' || !labels.has(PIPELINE_LABELS.architectReady) ||
       [...ISSUE_ACTIVE, ...ISSUE_TERMINAL, PIPELINE_LABELS.epic]
         .filter(x => x !== PIPELINE_LABELS.architectReady).some(x => labels.has(x))) {
-    throw new Error('Parent must be an open, inactive issue labeled architect:ready');
+    throw new Error(`Parent must be an open, inactive issue labeled ${PIPELINE_LABELS.architectReady}`);
   }
   const openIssues = (await allIssues()).filter(x => x.state === 'open');
   const known = openIssues
@@ -172,8 +172,8 @@ async function publishSplit(issue, parent, children) {
   if (childNumbers(parent.body).length && !parent.body.includes(marker)) {
     throw new Error('Parent already has a different decomposition');
   }
-  await ensureLabel('architect:epic', '7057ff', 'Parent issue split into linked work items');
-  await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
+  await ensureLabel(PIPELINE_LABELS.epic, '7057ff', 'Parent issue split into linked work items');
+  await ensureLabel(PIPELINE_LABELS.queued, 'd4c5f9', 'Eligible for Pi dispatcher selection');
 
   // Phase 1: make the exact child set durable on the parent.
   const latestParent = await api(`/issues/${issue}`);
@@ -188,13 +188,13 @@ async function publishSplit(issue, parent, children) {
     load: number => api(`/issues/${number}`),
     validateCurrent: current => {
       const state = issueStateLabels(current);
-      if (current.state !== 'open' || state.length !== 1 || state[0] !== 'architect:ready') {
+      if (current.state !== 'open' || state.length !== 1 || state[0] !== PIPELINE_LABELS.architectReady) {
         throw new Error(`Parent state changed before split publish: [${state}]`);
       }
     },
     patch: (number, labels) => api(`/issues/${number}`, 'PATCH', {
       body: parentBody,
-      labels: [...new Set([...labels, 'architect:epic'])],
+      labels: [...new Set([...labels, PIPELINE_LABELS.epic])],
     }),
   });
 
@@ -203,12 +203,12 @@ async function publishSplit(issue, parent, children) {
     const child = await api(`/issues/${number}`);
     const state = issueStateLabels(child);
     if (child.state !== 'open') throw new Error(`Child #${number} is no longer open`);
-    if (state.length === 1 && state[0] === 'dispatcher:ready') continue;
+    if (state.length === 1 && state[0] === PIPELINE_LABELS.queued) continue;
     if (state.length) throw new Error(`Child #${number} acquired incompatible pipeline state: [${state}]`);
     await replaceIssueState({
       number,
       expected: child,
-      target: 'dispatcher:ready',
+      target: PIPELINE_LABELS.queued,
       context: 'Architect split child',
       load: childNumber => api(`/issues/${childNumber}`),
       validateCurrent: current => {
@@ -224,8 +224,8 @@ async function publishSplit(issue, parent, children) {
 async function publish(issue, jsonl, contextFile) {
   const parent = await api(`/issues/${issue}`);
   const labels = new Set(parent?.labels?.map(label => label.name));
-  if (parent?.state !== 'open' || !labels.has('architect:ready') ||
-      ['pi:running', 'pi:ready', 'pi:mr-created', 'pi:needs-human'].some(x => labels.has(x))) {
+  if (parent?.state !== 'open' || !labels.has(PIPELINE_LABELS.architectReady) ||
+      [PIPELINE_LABELS.running, PIPELINE_LABELS.ready, PIPELINE_LABELS.pr, PIPELINE_LABELS.needsHuman].some(x => labels.has(x))) {
     throw new Error('Parent changed while Architect was planning');
   }
   const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
@@ -256,9 +256,9 @@ async function publish(issue, jsonl, contextFile) {
       body: `Pi Architect review: **${plan.action}**. ${plan.reason}`,
     });
     // A successful Architect keep/revise decision makes the issue executable.
-    // This also covers manual workflow_dispatch reviews, where dispatcher:ready
+    // This also covers manual workflow_dispatch reviews, where the queued label
     // may not have existed before Architect temporarily claimed the issue.
-    await ensureLabel('dispatcher:ready', 'd4c5f9', 'Eligible for Pi dispatcher selection');
+    await ensureLabel(PIPELINE_LABELS.queued, 'd4c5f9', 'Eligible for Pi dispatcher selection');
     await transitionIssue(issue, 'queued');
     console.log(`Reviewed #${issue}: ${plan.action}`);
     return;

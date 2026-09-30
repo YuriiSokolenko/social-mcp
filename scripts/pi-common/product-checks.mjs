@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 import { runProcess } from './process.mjs';
+import { baseRef, expandCommand, projectConfig } from './project-config.mjs';
 import { ruffArgs } from './ruff-spec.mjs';
 
 /**
@@ -57,7 +58,7 @@ function formatRuffDiagnostics(output, root) {
 
 function changedPythonPaths(root) {
   const commands = [
-    ['diff', '--name-only', '-z', '--diff-filter=ACMRT', 'origin/dev...HEAD'],
+    ['diff', '--name-only', '-z', '--diff-filter=ACMRT', `${baseRef()}...HEAD`],
     ['diff', '--name-only', '-z', '--diff-filter=ACMRT'],
     ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT'],
     ['ls-files', '--others', '--exclude-standard', '-z'],
@@ -87,17 +88,20 @@ export function runRuffCheck(cwd = process.cwd()) {
   }
 }
 
+/**
+ * Final checks come from `checks.final` in the project config: fixed argv
+ * commands run in order, plus the `ruff` builtin (which owns the pinned-config,
+ * autofix-then-verify behavior above and is not expressible as plain argv).
+ */
 export function runProductChecks({ cwd } = {}) {
-  runRuffCheck(cwd);
-
-  for (const [name, command, args] of [
-    ['git diff --check', 'git', ['diff', '--check']],
-    ['pytest', 'pytest', []],
-  ]) {
+  const root = cwd ?? process.cwd();
+  for (const step of projectConfig().checks.final) {
+    if (step.builtin === 'ruff') { runRuffCheck(cwd); continue; }
+    const { command, args } = expandCommand(step, root);
     const result = run(command, args, cwd, { allowFailure: true });
     if (result.status !== 0) {
       const output = summarizedOutput(result);
-      throw new Error(`check: ${name}\n${output || `${command} exited with code ${result.status}`}`);
+      throw new Error(`check: ${step.name}\n${output || `${command} exited with code ${result.status}`}`);
     }
     if (result.out) process.stdout.write(`${result.out}\n`);
     if (result.err) process.stderr.write(`${result.err}\n`);

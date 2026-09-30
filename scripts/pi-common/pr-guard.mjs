@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import { githubClient } from './github-api.mjs';
 import { controlPlanePaths } from './control-plane-policy.mjs';
 import { prLabelNames, withoutReviewLabels } from './pr-labels.mjs';
+import { baseBranch, issueBranchPrefix, parseIssueBranch } from './project-config.mjs';
+import { PIPELINE_LABELS } from './state-machine.mjs';
 
 /**
  * Shared PRE-MODEL gate for PR-based Pi stages.
@@ -11,8 +13,8 @@ import { prLabelNames, withoutReviewLabels } from './pr-labels.mjs';
  * The Reviewer and PR Fix must make the same security decision before any
  * model code runs:
  *   1. the PR still exists and comes from this repo; closed/merged PRs are a normal skip, while open PRs must target dev;
- *   2. its branch is exactly pi/issue-N;
- *   3. pi:needs-human is a hard stop;
+ *   2. its branch is exactly <issue branch prefix>N;
+ *   3. the needs-human label is a hard stop;
  *   4. the COMPLETE changed-file list contains no protected control-plane path.
  *
  * Keeping this here avoids two independent curl/jq/pagination implementations
@@ -29,12 +31,11 @@ export async function preparePr(prNumber) {
   if (!Number.isSafeInteger(prNumber) || prNumber < 1) throw new Error('PR number must be a positive integer');
   const pr = await loadPullRequest(prNumber);
   const branch = pr.head?.ref ?? '';
-  const match = /^pi\/issue-([1-9]\d*)$/.exec(branch);
-  if (pr.head?.repo?.full_name !== repo || !match) {
-    throw new Error(`PR #${prNumber} is not a same-repository pi/issue-N PR`);
+  const issueNumber = parseIssueBranch(branch);
+  if (pr.head?.repo?.full_name !== repo || issueNumber === null) {
+    throw new Error(`PR #${prNumber} is not a same-repository ${issueBranchPrefix()}N PR`);
   }
 
-  const issueNumber = Number(match[1]);
   if (pr.state !== 'open') {
     return {
       skip: true,
@@ -45,11 +46,11 @@ export async function preparePr(prNumber) {
       branch,
     };
   }
-  if (pr.base?.ref !== 'dev' || pr.base?.repo?.full_name !== repo) {
-    throw new Error(`PR #${prNumber} is not an open same-repository pi/issue-N PR targeting dev`);
+  if (pr.base?.ref !== baseBranch() || pr.base?.repo?.full_name !== repo) {
+    throw new Error(`PR #${prNumber} is not an open same-repository ${issueBranchPrefix()}N PR targeting ${baseBranch()}`);
   }
   const labels = prLabelNames(pr);
-  if (labels.includes('pi:needs-human')) {
+  if (labels.includes(PIPELINE_LABELS.needsHuman)) {
     return { skip: true, reason: 'needs-human', pr: prNumber, issue: issueNumber, head: pr.head.sha, branch };
   }
 
@@ -59,7 +60,7 @@ export async function preparePr(prNumber) {
   if (forbidden.length) {
     // Remove stale review verdicts and make human ownership durable.
     const next = withoutReviewLabels(labels);
-    if (!next.includes('pi:needs-human')) next.push('pi:needs-human');
+    if (!next.includes(PIPELINE_LABELS.needsHuman)) next.push(PIPELINE_LABELS.needsHuman);
     await replaceLabels(prNumber, next);
     return {
       skip: true, reason: 'control-plane', pr: prNumber, issue: issueNumber,

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { replaceIssueState } from './pi-common/github-state.mjs';
 import { ISSUE_STATE_LABELS, isIssueTransitionNoop, validateIssueTransition } from './pi-common/state-machine.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
+import { baseBranch, issueBranch } from './pi-common/project-config.mjs';
 
 const [kind, action, ...commentParts] = process.argv.slice(2);
 const comment = commentParts.join(' ');
@@ -38,8 +39,8 @@ function markTerminalOutput() {
 async function mergedImplementationPr() {
   const owner = String(process.env.GITHUB_REPOSITORY ?? '').split('/')[0];
   if (!owner) return null;
-  const head = encodeURIComponent(`${owner}:pi/issue-${number}`);
-  const prs = await api(`/pulls?state=closed&head=${head}&base=dev&per_page=100`);
+  const head = encodeURIComponent(`${owner}:${issueBranch(number)}`);
+  const prs = await api(`/pulls?state=closed&head=${head}&base=${encodeURIComponent(baseBranch())}&per_page=100`);
   return prs.find(pr => pr.merged_at) ?? null;
 }
 async function completeFromMergedImplementation(item) {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { readScript } from './helpers/resolved-source.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -108,7 +109,7 @@ test('action-required corrective steering never shrinks below the executable act
 });
 
 test('action-required runtime steering uses a real user steer without importing runtime dependencies', () => {
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /PI_ACTION_REQUIRED_STEER/);
   assert.match(runtime, /RUNTIME CLASSIFICATION REQUIRED/);
   assert.match(runtime, /RUNTIME REVIEW ACTION REQUIRED/);
@@ -511,7 +512,7 @@ test('triage closes exploration after prepared context is loaded', () => {
 });
 
 test('runtime-owned preparation uses one structured planner for plan and startup class', () => {
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
   assert.match(runtime, /prompt-template:subagent:request/);
