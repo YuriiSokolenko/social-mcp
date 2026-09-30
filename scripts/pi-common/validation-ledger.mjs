@@ -62,13 +62,41 @@ export function groupKey(kind, scope) {
   return `${kind}:${stableStringify(scope)}`;
 }
 
+const RECORD_SOURCES = Object.freeze(['run_check', 'checks_final']);
+
+/**
+ * Fail-closed ingestion: a record missing the fields that identify what was
+ * checked and where it came from is rejected outright rather than accepted
+ * with holes. `status` is checked against `LEDGER_STATUSES` separately by
+ * the caller, before this runs.
+ */
+function assertIngestible(record) {
+  if (typeof record.kind !== 'string' || !record.kind.trim()) {
+    throw new Error('validation ledger record requires a non-empty kind');
+  }
+  if (!record.scope || typeof record.scope !== 'object' || Array.isArray(record.scope)) {
+    throw new Error('validation ledger record requires an object scope');
+  }
+  if (!RECORD_SOURCES.includes(record.source)) {
+    throw new Error(`validation ledger record has an unknown source: ${record.source}`);
+  }
+  if (typeof record.stage !== 'string' || !record.stage.trim()) {
+    throw new Error('validation ledger record requires a non-empty stage');
+  }
+  if (typeof record.backend !== 'string' || !record.backend.trim()) {
+    throw new Error('validation ledger record requires a non-empty backend');
+  }
+}
+
 export function appendCheckRecord(ledgerPath, record) {
   if (!ledgerPath) throw new Error('validation ledger path is not configured');
   if (!LEDGER_STATUSES.includes(record.status)) {
     throw new Error(`Unknown validation ledger status: ${record.status}`);
   }
+  assertIngestible(record);
+  const { records: existing } = readValidationLedger(ledgerPath);
   const entry = {
-    seq: readValidationLedger(ledgerPath).length,
+    seq: existing.length,
     timestamp: new Date().toISOString(),
     exit_code: null,
     diagnostics_count: 0,
@@ -80,20 +108,29 @@ export function appendCheckRecord(ledgerPath, record) {
   return entry;
 }
 
+/**
+ * Returns every well-formed record plus a `corrupted` flag. A ledger is the
+ * authoritative record of what actually ran; a line that cannot be parsed —
+ * including a partially-written trailing line from a killed process — is
+ * never silently dropped, because the dropped line could be exactly the
+ * fail/infra_error record that made an unrelated `pass` untrustworthy.
+ * Callers must treat `corrupted: true` as "verification cannot be trusted,"
+ * never as "proceed with what parsed."
+ */
 export function readValidationLedger(ledgerPath) {
-  if (!ledgerPath || !fs.existsSync(ledgerPath)) return [];
+  if (!ledgerPath || !fs.existsSync(ledgerPath)) return { records: [], corrupted: false };
   const lines = fs.readFileSync(ledgerPath, 'utf8').split('\n');
   const records = [];
+  let corrupted = false;
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
       records.push(JSON.parse(line));
     } catch {
-      // A partially-written trailing line (e.g. a killed process) is skipped,
-      // never treated as a parse failure for the whole ledger.
+      corrupted = true;
     }
   }
-  return records;
+  return { records, corrupted };
 }
 
 /**
@@ -116,11 +153,22 @@ export function reconcile(records) {
   return [...groups.values()];
 }
 
-export function computeVerificationState(records, { finalChecksRan = true } = {}) {
+/**
+ * `corrupted` (from `readValidationLedger`) always wins: a ledger that lost
+ * even one line cannot be trusted to have kept every fail/infra_error record,
+ * so it is never treated as evidence of VERIFIED. "Did the final checks.final
+ * pipeline run" is likewise derived from the ledger's own contents (a
+ * `checks_final`-sourced record), never assumed true by default — a focused
+ * `run_check` pass alone, with no final-pipeline record, is PENDING, not
+ * VERIFIED.
+ */
+export function computeVerificationState(records, { corrupted = false } = {}) {
+  if (corrupted) return VERIFICATION_STATES.BLOCKED_INFRA;
   const groups = reconcile(records);
   if (!groups.length) return VERIFICATION_STATES.NOT_APPLICABLE;
   if (groups.some(group => group.status === 'fail')) return VERIFICATION_STATES.FAILED;
   if (groups.some(group => BLOCKING_STATUSES.has(group.status))) return VERIFICATION_STATES.BLOCKED_INFRA;
+  const finalChecksRan = records.some(record => record.source === 'checks_final');
   if (!finalChecksRan) return VERIFICATION_STATES.PENDING;
   return VERIFICATION_STATES.VERIFIED;
 }
@@ -152,9 +200,15 @@ function describeGroup(group) {
  * only. Never accepts model metadata/prose: there is nothing here for a
  * model-authored claim to override.
  */
-export function renderValidationSection(records, { finalChecksRan = true } = {}) {
+export function renderValidationSection(records, { corrupted = false } = {}) {
+  const state = computeVerificationState(records, { corrupted });
+  if (corrupted) {
+    return [
+      '- The validation ledger could not be fully read (a record failed to parse).',
+      `- Overall verification state: ${state}`,
+    ].join('\n');
+  }
   const groups = reconcile(records);
-  const state = computeVerificationState(records, { finalChecksRan });
   if (!groups.length) {
     return ['- No authoritative checks were recorded for this change.', `- Overall verification state: ${state}`].join('\n');
   }

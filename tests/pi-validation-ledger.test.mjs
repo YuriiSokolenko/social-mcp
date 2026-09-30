@@ -47,7 +47,8 @@ test('appendCheckRecord/readValidationLedger round-trip preserves order and assi
   const ledgerPath = tempLedger();
   appendCheckRecord(ledgerPath, focused());
   appendCheckRecord(ledgerPath, finalCheck());
-  const records = readValidationLedger(ledgerPath);
+  const { records, corrupted } = readValidationLedger(ledgerPath);
+  assert.equal(corrupted, false);
   assert.equal(records.length, 2);
   assert.equal(records[0].kind, 'python_compile');
   assert.equal(records[1].kind, 'pytest');
@@ -55,9 +56,9 @@ test('appendCheckRecord/readValidationLedger round-trip preserves order and assi
   assert.equal(records[1].seq, 1);
 });
 
-test('readValidationLedger on a missing path returns an empty array without throwing', () => {
+test('readValidationLedger on a missing path returns an empty, uncorrupted result without throwing', () => {
   const ledgerPath = tempLedger();
-  assert.deepEqual(readValidationLedger(ledgerPath), []);
+  assert.deepEqual(readValidationLedger(ledgerPath), { records: [], corrupted: false });
 });
 
 test('normalizeScope treats an absolute in-worktree path and the equivalent relative path as the same scope', () => {
@@ -67,9 +68,16 @@ test('normalizeScope treats an absolute in-worktree path and the equivalent rela
   assert.deepEqual(absolute, relative);
 });
 
-test('a passing focused check is recorded and yields VERIFIED', () => {
+test('a passing focused check plus a passing final-checks run yields VERIFIED', () => {
   const records = [focused({ status: 'pass' }), finalCheck({ status: 'pass' })];
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.VERIFIED);
+});
+
+test('a passing focused check with no final-checks record yields PENDING, never VERIFIED', () => {
+  // "Did checks.final run" must come from the ledger itself, never be assumed
+  // true: a lone focused pass is not proof the authoritative pipeline ran.
+  const records = [focused({ status: 'pass' })];
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.PENDING);
 });
 
 test('a failing focused check yields VERIFICATION_FAILED', () => {
@@ -96,6 +104,7 @@ test('a later equivalent authoritative check resolves an earlier infra_error', (
   const records = [
     focused({ status: 'infra_error' }),
     focused({ status: 'pass' }),
+    finalCheck({ status: 'pass' }),
   ];
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.VERIFIED);
 });
@@ -110,10 +119,26 @@ test('an unrelated broad pytest pass does not satisfy a failed/infra-error focus
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.BLOCKED_INFRA);
 });
 
+test('a ledger with an unparseable line is treated as blocked, never as evidence of VERIFIED', () => {
+  // All records that DID parse look fully green. Fail-closed means the
+  // corrupted flag alone must still force BLOCKED_INFRA: the dropped line
+  // could have been exactly the fail/infra_error record that made this
+  // "pass" untrustworthy, and the ledger has no way to know it wasn't.
+  const ledgerPath = tempLedger();
+  appendCheckRecord(ledgerPath, focused({ status: 'pass' }));
+  appendCheckRecord(ledgerPath, finalCheck({ status: 'pass' }));
+  fs.appendFileSync(ledgerPath, '{"kind":"pytest","scope":{whole_repo\n');
+  const { records, corrupted } = readValidationLedger(ledgerPath);
+  assert.equal(records.length, 2);
+  assert.equal(corrupted, true);
+  assert.equal(computeVerificationState(records, { corrupted }), VERIFICATION_STATES.BLOCKED_INFRA);
+  assert.match(renderValidationSection(records, { corrupted }), /could not be fully read/);
+});
+
 test('renderValidationSection renders only from ledger records, never from model-provided text', () => {
   const core = fs.readFileSync(new URL('../scripts/pi-common/validation-ledger.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(core, /\.title\b|\.changes\b|\.security_notes\b/);
-  const records = [focused({ status: 'pass' })];
+  const records = [focused({ status: 'pass' }), finalCheck({ status: 'pass' })];
   const text = renderValidationSection(records);
   assert.match(text, /python_compile\(arkanoid\.py\): passed/);
   assert.match(text, /Overall verification state: VERIFIED/);
@@ -130,6 +155,7 @@ test('duplicate/equivalent checks reconcile deterministically by recency, not by
     focused({ status: 'fail' }),
     focused({ status: 'infra_error' }),
     focused({ status: 'pass' }),
+    finalCheck({ status: 'pass' }),
   ];
   assert.equal(reconcile(forward)[0].status, 'pass');
   assert.equal(computeVerificationState(forward), VERIFICATION_STATES.VERIFIED);
@@ -138,9 +164,32 @@ test('duplicate/equivalent checks reconcile deterministically by recency, not by
     focused({ status: 'pass' }),
     focused({ status: 'infra_error' }),
     focused({ status: 'fail' }),
+    finalCheck({ status: 'pass' }),
   ];
   assert.equal(reconcile(backward)[0].status, 'fail');
   assert.equal(computeVerificationState(backward), VERIFICATION_STATES.FAILED);
+});
+
+test('appendCheckRecord is fail-closed: it rejects a record missing kind, scope, source, stage, or backend', () => {
+  const ledgerPath = tempLedger();
+  const cases = [
+    ['kind', { ...focused(), kind: undefined }],
+    ['kind', { ...focused(), kind: '' }],
+    ['scope', { ...focused(), scope: undefined }],
+    ['scope', { ...focused(), scope: ['not', 'an', 'object'] }],
+    ['source', { ...focused(), source: 'model_claim' }],
+    ['stage', { ...focused(), stage: undefined }],
+    ['backend', { ...focused(), backend: '' }],
+  ];
+  for (const [field, record] of cases) {
+    assert.throws(() => appendCheckRecord(ledgerPath, record), new RegExp(field), `expected rejection for missing/invalid ${field}`);
+  }
+  assert.deepEqual(readValidationLedger(ledgerPath), { records: [], corrupted: false });
+});
+
+test('appendCheckRecord rejects an unknown status', () => {
+  const ledgerPath = tempLedger();
+  assert.throws(() => appendCheckRecord(ledgerPath, focused({ status: 'maybe' })), /Unknown validation ledger status/);
 });
 
 test('the core stays backend-neutral: no Pi-specific or project-specific coupling', () => {
