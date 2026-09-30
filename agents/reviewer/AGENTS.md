@@ -41,7 +41,7 @@ Choose complexity from the review scope:
 - **normal** — ordinary code/test change requiring local semantic context.
 - **complex** — broad multi-component, architectural, conflict-heavy, or security-sensitive change requiring substantial synthesis.
 
-After complexity is declared, follow this evidence-driven loop:
+After complexity is declared, follow this evidence-driven loop. Runtime caps these action-oriented review responses at 1024 output tokens and does not allow repeated prose-only deliberation: each turn must either call `submit_result` or call one concrete evidence tool for an unresolved question.
 
 1. Ask: **can every acceptance criterion and relevant correctness concern already be judged from the issue, diff, and changed code already inspected?**
 2. If yes, decide the verdict immediately and call `submit_result`.
