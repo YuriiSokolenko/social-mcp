@@ -25,6 +25,7 @@ dev = [
   "pytest>=8.4,<10",
   "pytest-asyncio>=1.1,<2",
   "ruff==0.12.12",
+  "PyYAML>=6,<7",
 ]
 
 [tool.hatch.build.targets.wheel]
