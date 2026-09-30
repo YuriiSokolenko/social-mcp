@@ -219,7 +219,9 @@ export default function (pi) {
   }
 
   function syncActionToolSurface(productiveState) {
-    const preComplexityRequired = controller.preComplexityActionRequired();
+    const preComplexityRequired =
+      config.preComplexityActionResponseMaxTokens != null &&
+      controller.preComplexityActionRequired();
     const productiveActionRequired =
       stage === 'implementer' &&
       config.productiveProgress &&
@@ -573,7 +575,9 @@ export default function (pi) {
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
-    const preComplexityRequired = controller.preComplexityActionRequired();
+    const preComplexityRequired =
+      config.preComplexityActionResponseMaxTokens != null &&
+      controller.preComplexityActionRequired();
     const productiveActionRequired =
       productiveState === 'action_required' ||
       productiveState === 'recovery_action_required';
