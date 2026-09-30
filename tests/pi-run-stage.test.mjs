@@ -8,6 +8,7 @@ import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, reso
 import { buildMiniSweInvocation, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
+import { createValidationRepairSpec, runStageWithValidationRecovery, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
 
 function specFor(stage) {
   return createStageRunSpec({
@@ -168,6 +169,112 @@ test('StageRunResult exposes backend-neutral success metadata and artifact paths
   assert.ok(Object.isFrozen(result));
 });
 
+
+test('validation repair spec is backend-neutral and keeps the same worktree and artifacts', () => {
+  const spec = specFor('implementer');
+  const repair = createValidationRepairSpec(spec, new Error('ruff check . failed\nF841 unused variable'), 1);
+
+  assert.equal(repair.stage, 'implementer');
+  assert.equal(repair.cwd, spec.cwd);
+  assert.deepEqual(repair.model, spec.model);
+  assert.deepEqual(repair.artifacts, spec.artifacts);
+  assert.equal(repair.environment.PI_VALIDATION_REPAIR, 'true');
+  assert.equal(repair.environment.PI_VALIDATION_REPAIR_ATTEMPT, '1');
+  assert.equal(repair.environment.PI_CALL, 'repair');
+  assert.match(repair.prompt, /previous implementation attempt finished/i);
+  assert.match(repair.prompt, /ruff check \. failed/);
+  assert.match(repair.prompt, /F841 unused variable/);
+  assert.doesNotMatch(repair.prompt, /restart or re-plan/i);
+});
+
+test('shared validation recovery gives any implementer backend one focused repair attempt', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'stage-validation-recovery-'));
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: join(dir, 'raw.jsonl'),
+    },
+  });
+
+  const attempts = [];
+  let validations = 0;
+  const result = await runStageWithValidationRecovery(
+    spec,
+    async candidate => {
+      attempts.push(candidate);
+      writeFileSync(candidate.artifacts.terminalResultPath, 'submitted\n');
+      return createStageRunResult({
+        backend: 'fake',
+        durationMs: attempts.length,
+        artifacts: candidate.artifacts,
+      });
+    },
+    {
+      validate: ({ cwd }) => {
+        assert.equal(cwd, dir);
+        validations += 1;
+        if (validations === 1) throw new Error('ruff check . failed\nBLE001 blind exception');
+      },
+    },
+  );
+
+  assert.equal(attempts.length, 2);
+  assert.equal(validations, 2);
+  assert.equal(attempts[0].environment.PI_VALIDATION_REPAIR, undefined);
+  assert.equal(attempts[1].environment.PI_VALIDATION_REPAIR, 'true');
+  assert.equal(attempts[1].environment.PI_CALL, 'repair');
+  assert.match(attempts[1].prompt, /BLE001 blind exception/);
+  assert.equal(result.backend, 'fake');
+  assert.equal(result.durationMs, 2);
+});
+
+test('shared validation recovery stops after one failed repair attempt', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'stage-validation-failure-'));
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+
+  let attempts = 0;
+  await assert.rejects(
+    runStageWithValidationRecovery(
+      spec,
+      async candidate => {
+        attempts += 1;
+        writeFileSync(candidate.artifacts.terminalResultPath, 'submitted\n');
+        return createStageRunResult({
+          backend: 'fake',
+          durationMs: attempts,
+          artifacts: candidate.artifacts,
+        });
+      },
+      { validate: () => { throw new Error('still failing'); } },
+    ),
+    /still failing/,
+  );
+  assert.equal(attempts, 2);
+});
+
+test('validation repair prompt keeps diagnostics bounded and focused', () => {
+  const prompt = validationRepairPrompt(new Error('pytest failed: test_example'));
+  assert.match(prompt, /pytest failed: test_example/);
+  assert.match(prompt, /harness will run the authoritative checks again/i);
+  assert.match(prompt, /Fix only the concrete validation failures/i);
+});
 
 test('mini-swe backend receives issue task plus worktree routing instead of the Pi operating contract', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mini-swe-stage-'));
