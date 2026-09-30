@@ -3,6 +3,8 @@ run-name: "🧪 CI · ${{ github.event.head_commit.message || github.ref_name }}
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [dev]
   push:
     branches: [dev]
 
@@ -18,6 +20,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 15
 
@@ -51,6 +54,7 @@ jobs:
         run: bash tests/test_runner_autoscaler.sh
 
   docker:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 15
     env:
