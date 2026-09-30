@@ -112,7 +112,7 @@ test('current dev CI must be green before a merge attempt, making repeated wakes
   const source = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(source, /git\/ref\/heads/);
   assert.match(source, /runs\?event=push&head_sha=/);
-  assert.match(source, /Merge gate waiting for green/);
+  assert.match(source, /waiting for green .* CI/);
 });
 
 test('terminal PR CI wakes merge gate only after workflow completion while dev pushes keep their green-CI wake', () => {
