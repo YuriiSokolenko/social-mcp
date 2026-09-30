@@ -164,15 +164,27 @@ test('merge gate has permission for its late-conflict PR Fix dispatch', () => {
 });
 
 
-test('terminal PR CI and green dev CI both wake merge gate without parsing commit-message conventions', () => {
-  const workflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
-  assert.match(workflow, /always\(\)/);
-  assert.match(workflow, /github\.event_name == 'pull_request'/);
-  assert.match(workflow, /github\.event_name == 'push' && github\.ref == 'refs\/heads\/dev'/);
-  assert.match(workflow, /Continue merge queue after green CI/);
-  assert.doesNotMatch(workflow, /contains\(github\.event\.head_commit\.message/);
-});
+test('terminal PR CI wakes only from completed workflow_run while green dev CI keeps its direct continuation', () => {
+  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  const terminalWake = fs.readFileSync('.github/workflows/ci-terminal-wake.yml', 'utf8');
 
+  assert.match(ci, /always\(\)/);
+  assert.match(ci, /github\.event_name == 'push' &&/);
+  assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
+  assert.match(ci, /Continue merge queue after green dev CI/);
+  assert.doesNotMatch(ci, /github\.event_name == 'pull_request' \|\|/);
+
+  assert.match(terminalWake, /workflow_run:/);
+  assert.match(terminalWake, /workflows: \["CI"\]/);
+  assert.match(terminalWake, /types: \[completed\]/);
+  assert.match(terminalWake, /workflow_run\.event == 'pull_request'/);
+  assert.match(terminalWake, /workflow_run\.head_repository\.full_name == github\.repository/);
+  assert.match(terminalWake, /ref: dev/);
+  assert.match(terminalWake, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
+  assert.doesNotMatch(terminalWake, /workflow_run\.head_sha|workflow_run\.pull_requests/);
+  assert.doesNotMatch(terminalWake, /workflows: \["CI Terminal Wake"\]/);
+  assert.doesNotMatch(ci, /contains\(github\.event\.head_commit\.message/);
+});
 
 test('pi:needs-human on a PR stops review, repair, and merge automation', () => {
   const guard = readScript('scripts/pi-common/pr-guard.mjs', 'utf8');

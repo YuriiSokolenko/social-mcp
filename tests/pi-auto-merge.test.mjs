@@ -94,7 +94,7 @@ test('merge gate requires successful PR CI for the exact head SHA and classifies
   assert.doesNotMatch(source, /social-mcp\/(?:integration|integration-conflict|pi-review|repair-)/);
 });
 
-test('terminal PR CI wakes merge gate while dev pushes require both CI jobs green', () => {
+test('terminal PR CI wakes merge gate only after workflow completion while dev pushes keep their green-CI wake', () => {
   const workflow = parseWorkflow('.github/workflows/ci.yml');
   const wake = workflow.jobs['wake-merge-gate'];
   assert.deepEqual(wake.needs, ['test', 'docker']);
@@ -102,11 +102,25 @@ test('terminal PR CI wakes merge gate while dev pushes require both CI jobs gree
   const condition = wake.if.replace(/\s+/g, ' ').trim();
   assert.equal(
     condition,
-    "always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success'))",
+    "always() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success'",
+  );
+  assert.ok(wake.steps.map(step => step.name).includes('Continue merge queue after green dev CI'));
+
+  const terminal = parseWorkflow('.github/workflows/ci-terminal-wake.yml');
+  assert.deepEqual(terminal.on.workflow_run.workflows, ['CI']);
+  assert.deepEqual(terminal.on.workflow_run.types, ['completed']);
+
+  const prWake = terminal.jobs['wake-pr-merge-gate'];
+  assert.equal(
+    prWake.if.replace(/\s+/g, ' ').trim(),
+    "github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository",
   );
 
-  const wakeSteps = wake.steps.map(step => step.name);
-  assert.ok(wakeSteps.includes('Continue merge queue after green CI or terminal PR CI'));
+  const terminalSource = fs.readFileSync('.github/workflows/ci-terminal-wake.yml', 'utf8');
+  assert.match(terminalSource, /ref: dev/);
+  assert.match(terminalSource, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
+  assert.doesNotMatch(terminalSource, /workflow_run\.head_sha|workflow_run\.pull_requests/);
+  assert.doesNotMatch(terminalSource, /workflow_run\.conclusion/);
 });
 
 test('repairable CI step names are present in the parsed workflow and Docker failures stay conservative', () => {

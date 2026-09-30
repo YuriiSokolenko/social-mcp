@@ -63,6 +63,7 @@ A late merge conflict invalidates the old PASS, sets `review:changes-requested` 
 Normal wake sources are deliberately narrow:
 - `dispatcher:ready` can wake Dispatcher;
 - successful review can wake Merge Gate;
+- terminal PR CI wakes Merge Gate only from `ci-terminal-wake.yml` after GitHub emits `workflow_run: completed` for `CI`; the wake carries no PR/SHA/verdict and Merge Gate reloads current state;
 - successful CI on a `dev` push wakes Merge Gate, which reloads current PR state;
 - explicit/manual control can wake the relevant owner.
 
@@ -145,7 +146,8 @@ Manual cancellation is not a failure state. Before PR publication, cancelled Imp
 
 | Workflow | Purpose |
 |---|---|
-| `ci.yml` | Test the merged `dev` commit: product checks, control-plane contracts, autoscaler tests, Docker integration; green CI continues the merge queue |
+| `ci.yml` | Test PR HEADs and the merged `dev` commit: product checks, control-plane contracts, autoscaler tests, Docker integration; green `dev` CI continues the merge queue |
+| `ci-terminal-wake.yml` | Observe completed PR `CI` workflow runs and issue a state-free Merge Gate wake only after GitHub exposes the terminal result |
 | `pi-dispatcher.yml` | Queue routing |
 | `pi-architect.yml` | Optional decomposition/planning |
 | `pi-issue-agent.yml` | Implementation |
