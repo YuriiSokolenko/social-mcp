@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runGit } from '../scripts/pi-common/git.mjs';
+import { pushWithMissingObjectRetry } from '../scripts/pi-common/issue-publication.mjs';
 
 test('runGit returns status and trimmed stdout', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-git-'));
@@ -25,4 +26,50 @@ test('git authentication is kept out of argv and every git process has a deadlin
   assert.match(source, /GIT_CONFIG_VALUE_/);
   assert.match(source, /PI_GIT_TIMEOUT_SECONDS/);
   assert.match(source, /runProcess\('git'/);
+});
+
+
+test('issue publication retries only transient missing-object push failures', () => {
+  const calls = [];
+  const sleeps = [];
+  const results = [
+    { status: 1, out: '', err: 'remote rejected: missing necessary objects' },
+    { status: 1, out: '', err: 'remote rejected: missing necessary objects' },
+    { status: 0, out: 'ok', err: '' },
+  ];
+  const result = pushWithMissingObjectRetry(['push', 'origin', 'HEAD:refs/heads/pi/issue-1'], {
+    cwd: '/tmp/worktree',
+    token: 'secret',
+    run(args, options) {
+      calls.push({ args, options });
+      return results.shift();
+    },
+    sleep(ms) {
+      sleeps.push(ms);
+    },
+    delaysMs: [10, 20],
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(sleeps, [10, 20]);
+  assert.equal(calls.every(call => call.options.allowFailure === true), true);
+  assert.equal(calls.every(call => call.options.token === 'secret'), true);
+});
+
+test('issue publication does not retry unrelated push failures', () => {
+  const sleeps = [];
+  assert.throws(
+    () => pushWithMissingObjectRetry(['push', 'origin', 'HEAD:refs/heads/pi/issue-1'], {
+      run() {
+        return { status: 1, out: '', err: 'stale info: force-with-lease rejected' };
+      },
+      sleep(ms) {
+        sleeps.push(ms);
+      },
+      delaysMs: [10, 20],
+    }),
+    /force-with-lease rejected/,
+  );
+  assert.deepEqual(sleeps, []);
 });
