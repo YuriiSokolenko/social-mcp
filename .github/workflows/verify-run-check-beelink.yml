@@ -8,9 +8,43 @@ permissions:
   contents: read
 
 jobs:
+  rebuild-configured-pi-image:
+    runs-on: [self-hosted, linux, x64, n150, general]
+    timeout-minutes: 30
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Checkout dispatched revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Rebuild the configured worker image on Beelink
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          manager="$(docker ps --filter name=pi-runner-manager --format '{{.Names}}' | head -n 1)"
+          test -n "$manager" || { echo "pi-runner-manager not found on this Beelink Docker host" >&2; exit 1; }
+          image="$(docker inspect "$manager" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^RUNNER_IMAGE=//p' | head -n 1)"
+          test -n "$image" || { echo "RUNNER_IMAGE is not explicit in pi-runner-manager configuration" >&2; exit 1; }
+          echo "Beelink manager configured worker image: $image"
+          echo "Building current worker.Dockerfile with bubblewrap into the configured image tag."
+          docker build --pull -f infra/github-runner-autoscaler/worker.Dockerfile -t "$image" .
+          echo "Built image identity: $(docker image inspect "$image" --format '{{.Id}}')"
+          docker run --rm --network host --security-opt seccomp=unconfined --entrypoint bwrap "$image" \
+            --die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts \
+            --new-session --ro-bind / / --dev /dev --tmpfs /tmp -- true
+          echo "CONFIGURED_IMAGE_BWRAP_PROBE_OK=true"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
   beelink-sandbox-smoke:
+    needs: rebuild-configured-pi-image
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 10
+    env:
+      PI_RUNNER_IMAGE: ${{ needs.rebuild-configured-pi-image.outputs.image }}
     steps:
       - name: Checkout dispatched revision
         uses: actions/checkout@v5
@@ -36,6 +70,7 @@ jobs:
           rg -n '^(RUNNER_IMAGE|RUNNER_PREFIX|RUNNER_LABELS)=' infra/github-runner-autoscaler/.env.example || true
           echo "Worker Dockerfile base image:"
           head -n 1 infra/github-runner-autoscaler/worker.Dockerfile
+          echo "Configured worker image rebuilt immediately before this smoke: $PI_RUNNER_IMAGE"
           echo "bwrap version:"
           bwrap --version
 
