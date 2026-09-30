@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, resolveStageBackend } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
+import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
 import { createValidationRepairSpec, runStageWithValidationRecovery, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
 
@@ -244,6 +245,57 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.match(attempts[1].prompt, /BLE001 blind exception/);
   assert.equal(result.backend, 'fake');
   assert.equal(result.durationMs, 3);
+});
+
+test('shared validation harness treats blocked implementer outcome as terminal without validation repair', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'stage-blocked-outcome-'));
+  const resultFile = join(dir, 'implementer-result.json');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: {
+      PI_STAGE: 'implementer',
+      PI_PHASE: 'implementation',
+      PI_IMPLEMENTER_RESULT_FILE: resultFile,
+    },
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+
+  let validations = 0;
+  let attempts = 0;
+  const result = await runStageWithValidationRecovery(
+    spec,
+    async candidate => {
+      attempts += 1;
+      writeFileSync(candidate.artifacts.terminalResultPath, 'submitted\n');
+      writeImplementerResult(resultFile, {
+        title: 'Contradictory task',
+        summary: 'The task cannot be implemented without violating an explicit constraint.',
+        changes: [],
+        outcome: 'blocked',
+        blocked_reason: 'Requirement A requires behavior that constraint B explicitly forbids.',
+        security_notes: 'No repository change was made.',
+        limitations: 'Human clarification is required.',
+      });
+      return createStageRunResult({
+        backend: 'fake',
+        durationMs: 7,
+        artifacts: candidate.artifacts,
+      });
+    },
+    { validate: () => { validations += 1; } },
+  );
+
+  assert.equal(attempts, 1);
+  assert.equal(validations, 0);
+  assert.equal(result.backend, 'fake');
+  assert.equal(result.durationMs, 7);
 });
 
 test('shared validation recovery stops after one failed repair attempt', async () => {
