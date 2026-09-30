@@ -79,8 +79,9 @@ _REDACTED_MARKER = "REDACTED"
 def _is_sensitive_key(key: str) -> bool:
     """Return whether ``key`` names a sensitive field.
 
-    The key is normalized to lowercase, then treated as sensitive when it equals
-    or ends with one of the configured ``_SENSITIVE_KEY_SUFFIX`` values.
+    The key is normalized to lowercase, then treated as sensitive when, against
+    any of the configured ``_SENSITIVE_KEY_SUFFIXES`` values, the lowered key
+    equals it, ends with it, or contains it as a substring.
     """
     lowered = key.lower()
     return any(
