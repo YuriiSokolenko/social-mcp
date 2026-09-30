@@ -241,7 +241,7 @@ test('a repeated wake cannot merge the next PR until the new dev HEAD has green 
 
   const duplicate = run(storeFile);
   assert.equal(duplicate.status, 0, duplicate.stderr);
-  assert.match(duplicate.stdout, /waiting for green dev CI for dev-after-7; current state=pending/);
+  assert.match(duplicate.stdout, /#8: waiting for green dev CI for dev-after-7; current state=pending/);
   store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.merges, [{ pr: 7, sha: 'sha-1', merge_method: 'squash' }]);
 

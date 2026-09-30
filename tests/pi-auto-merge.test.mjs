@@ -94,7 +94,7 @@ test('merge gate requires successful PR CI for the exact head SHA and classifies
   assert.doesNotMatch(source, /social-mcp\/(?:integration|integration-conflict|pi-review|repair-)/);
 });
 
-test('current dev CI must be green before any merge scan, making repeated wakes harmless', () => {
+test('current dev CI must be green before a merge attempt, making repeated wakes harmless', () => {
   assert.deepEqual(devCiVerdict([], 'dev-sha'), { state: 'pending', run: null });
   assert.equal(devCiVerdict([
     { id: 1, event: 'push', head_sha: 'dev-old', status: 'completed', conclusion: 'success' },
@@ -184,6 +184,7 @@ test('merge gate merges at most one PR per dev CI cycle', () => {
   assert.match(gate, /if \(await processPR\(pr\)\) break/);
   assert.match(gate, /const devCi = await loadDevCiVerdict\(\)/);
   assert.match(gate, /if \(devCi\.state !== 'success'\)/);
+  assert.match(gate, /return 'blocked'/);
   assert.match(ci, /needs: \[test, docker\]/);
   assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
   assert.match(ci, /workflow-dispatch\.mjs pi-auto-merge\.yml/);

@@ -252,6 +252,12 @@ async function processPR(prSummary) {
     return;
   }
 
+  const devCi = await loadDevCiVerdict();
+  if (devCi.state !== 'success') {
+    console.log(`#${pr.number}: waiting for green ${baseBranch()} CI for ${devCi.sha}; current state=${devCi.state}`);
+    return 'blocked';
+  }
+
   try {
     const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
     if (!merged.merged) throw new Error(`merge API did not confirm merge`);
@@ -275,12 +281,6 @@ async function processPR(prSummary) {
 }
 
 export async function main() {
-  const devCi = await loadDevCiVerdict();
-  if (devCi.state !== 'success') {
-    console.log(`Merge gate waiting for green ${baseBranch()} CI for ${devCi.sha}; current state=${devCi.state}`);
-    return;
-  }
-
   const prs = await pages(`/pulls?state=open&base=${encodeURIComponent(baseBranch())}`);
   for (const pr of prs) {
     try {
