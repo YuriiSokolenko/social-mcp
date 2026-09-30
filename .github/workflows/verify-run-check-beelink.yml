@@ -30,8 +30,9 @@ jobs:
           image="$(docker inspect "$manager" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^RUNNER_IMAGE=//p' | head -n 1)"
           test -n "$image" || { echo "RUNNER_IMAGE is not explicit in pi-runner-manager configuration" >&2; exit 1; }
           echo "Beelink manager configured worker image: $image"
+          echo "Host-local base image identity: $(docker image inspect n150/github-pi-runner:0.87.1 --format '{{.Id}}')"
           echo "Building current worker.Dockerfile with bubblewrap into the configured image tag."
-          docker build --pull -f infra/github-runner-autoscaler/worker.Dockerfile -t "$image" .
+          docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t "$image" .
           echo "Built image identity: $(docker image inspect "$image" --format '{{.Id}}')"
           docker run --rm --network host --security-opt seccomp=unconfined --entrypoint bwrap "$image" \
             --die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts \
