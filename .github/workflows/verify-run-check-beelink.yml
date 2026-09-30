@@ -1,0 +1,127 @@
+name: Verify run_check on Beelink
+run-name: "Sandbox smoke · ${{ github.sha }}"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  beelink-sandbox-smoke:
+    runs-on: [self-hosted, linux, x64, n150, pi-agent]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout dispatched revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Record runner and image evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PR commit tested: $(git rev-parse HEAD)"
+          echo "Runner name: ${RUNNER_NAME:-unavailable}"
+          echo "Runner labels: ${RUNNER_LABELS:-not exposed in job environment}"
+          echo "Runner OS/arch: ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}"
+          echo "Hostname: $(hostname)"
+          echo "Container identity:"
+          cat /etc/hostname 2>/dev/null || true
+          cat /proc/1/cgroup 2>/dev/null || true
+          echo "OS image identity:"
+          cat /etc/os-release
+          echo "Configured Pi runner image/tag:"
+          rg -n '^(RUNNER_IMAGE|RUNNER_PREFIX|RUNNER_LABELS)=' infra/github-runner-autoscaler/.env.example || true
+          echo "Worker Dockerfile base image:"
+          head -n 1 infra/github-runner-autoscaler/worker.Dockerfile
+          echo "bwrap version:"
+          bwrap --version
+
+      - name: Create a real bubblewrap sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Namespace and device/temp settings mirror run-check.mjs; the manager starts
+          # this pool with host networking and seccomp=unconfined.
+          bwrap --die-with-parent \
+            --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts \
+            --new-session \
+            --ro-bind /usr /usr --ro-bind /bin /bin \
+            --dev /dev --tmpfs /tmp \
+            -- true
+          echo "REAL_BWRAP_SANDBOX_OK=true"
+
+      - name: Run the PR runtime preflight and shared run_check cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pi-sandbox-smoke"
+          cat > "$RUNNER_TEMP/pi-sandbox-smoke/valid.py" <<'PY'
+          print("valid")
+          PY
+          cat > "$RUNNER_TEMP/pi-sandbox-smoke/invalid.py" <<'PY'
+          def broken(:
+              pass
+          PY
+
+          # Exercise the real extension's session_start handler. Only typebox is stubbed,
+          # matching the focused runtime integration test; sandboxPreflight is not mocked.
+          cat > "$RUNNER_TEMP/pi-sandbox-smoke/loader.mjs" <<'JS'
+          export async function resolve(specifier, context, nextResolve) {
+            if (specifier === 'typebox') {
+              const source = 'export const Type = new Proxy({}, { get: () => (...args) => ({}) });';
+              return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true };
+            }
+            return nextResolve(specifier, context);
+          }
+          JS
+          cat > "$RUNNER_TEMP/pi-sandbox-smoke/runtime.mjs" <<'JS'
+          import assert from 'node:assert/strict';
+          const handlers = new Map();
+          const pi = {
+            on: (name, handler) => handlers.set(name, handler),
+            registerTool: () => {}, getActiveTools: () => [], setActiveTools: () => {},
+            sendUserMessage: async () => {}, setModel: async () => true,
+          };
+          const { default: extension } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/pi-agent-runtime.mjs`);
+          extension(pi);
+          assert.equal(typeof handlers.get('session_start'), 'function');
+          await handlers.get('session_start')({}, {
+            model: { provider: 'smoke', id: 'smoke', maxTokens: 32000 },
+            cwd: process.env.GITHUB_WORKSPACE,
+          });
+          JS
+          printf '{"title":"sandbox smoke","body":"runtime preflight"}\n' > "$RUNNER_TEMP/pi-sandbox-smoke/issue.json"
+          PI_STAGE=implementer \
+          PI_ISSUE=242 \
+          PI_ISSUE_CONTEXT="$RUNNER_TEMP/pi-sandbox-smoke/issue.json" \
+          GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            node --no-warnings --experimental-loader "$RUNNER_TEMP/pi-sandbox-smoke/loader.mjs" \
+              "$RUNNER_TEMP/pi-sandbox-smoke/runtime.mjs" 2>&1 | tee "$RUNNER_TEMP/pi-sandbox-smoke/runtime.log"
+          grep -F 'PI_RUN_CHECK_PREFLIGHT {"stage":"implementer","ok":true' "$RUNNER_TEMP/pi-sandbox-smoke/runtime.log"
+
+          cat > "$RUNNER_TEMP/pi-sandbox-smoke/checks.mjs" <<'JS'
+          import assert from 'node:assert/strict';
+          const { runCheck } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/pi-common/run-check.mjs`);
+          const root = `${process.env.RUNNER_TEMP}/pi-sandbox-smoke`;
+          const valid = await runCheck(root, { kind: 'python_compile', paths: ['valid.py'] });
+          const invalid = await runCheck(root, { kind: 'python_compile', paths: ['invalid.py'] });
+          console.log(`RUN_CHECK_VALID ${JSON.stringify(valid)}`);
+          console.log(`RUN_CHECK_INVALID ${JSON.stringify(invalid)}`);
+          assert.equal(valid.status, 'pass');
+          assert.equal(valid.exit_code, 0);
+          assert.equal(invalid.status, 'fail');
+          assert.notEqual(invalid.exit_code, 0);
+          assert.notEqual(invalid.status, 'infra_error');
+          assert.match(`${invalid.stdout_tail}\n${invalid.stderr_tail}`, /SyntaxError|invalid syntax|expected/i);
+          JS
+          node "$RUNNER_TEMP/pi-sandbox-smoke/checks.mjs"
+          echo "NO_BASH_FALLBACK=true; both results came from scripts/pi-common/run-check.mjs"
+
+      - name: State historical log limitation
+        if: always()
+        run: |
+          echo "Historical Rabbit/Beelink logs for the original ENOENT run are not available from this GitHub Actions job."
+          echo "The checked-in documentation/config mentions old rollback tag 0.87.1, but does not prove that it was the image used by the historical failed run."
