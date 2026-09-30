@@ -43,6 +43,13 @@ jobs:
           else
             echo "SETUID_RUNNER_BWRAP_PROBE_OK=false apparmor=unconfined"
           fi
+          if docker run --rm --network host --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            --cap-add SYS_ADMIN --cap-add NET_ADMIN --user 0 --entrypoint sh "$image" -c \
+            'chmod u+s /usr/bin/bwrap && su runner -s /bin/sh -c "/usr/bin/bwrap --die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts --new-session --ro-bind / / --dev /dev --tmpfs /tmp -- true"'; then
+            echo "SETUID_RUNNER_BWRAP_PROBE_OK=true apparmor=unconfined+sys_admin+net_admin"
+          else
+            echo "SETUID_RUNNER_BWRAP_PROBE_OK=false apparmor=unconfined+sys_admin+net_admin"
+          fi
           passed=0
           for mode in seccomp apparmor net_admin apparmor_net apparmor_sys apparmor_sys_net sys_net root root_apparmor root_apparmor_net root_apparmor_sys_net; do
             options=(--security-opt seccomp=unconfined)
