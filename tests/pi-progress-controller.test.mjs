@@ -812,8 +812,8 @@ test('stage configuration centralizes per-agent runtime policy', () => {
     trivial: 2,
     nontrivial: 6,
   });
-  assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 512);
-  assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 512);
+  assert.equal(stageConfig('implementer').productiveProgress.actionResponseMaxTokens, 2048);
+  assert.equal(stageConfig('implementer').productiveProgress.actionResponseRetryMaxTokens, 2048);
   assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result']);
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
