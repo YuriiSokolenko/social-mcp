@@ -19,7 +19,8 @@ test('merge gate requires green CI for the exact current PR head without synthet
   assert.match(gate, /head_sha=/);
   assert.match(gate, /pr\.head\.sha/);
   assert.match(gate, /ci\.state === 'pending'/);
-  assert.match(gate, /ci\.state === 'failed'/);
+  assert.match(gate, /ci\.state === 'code_failure'/);
+  assert.match(gate, /ci\.state === 'infra_failure'/);
   assert.match(gate, /review:changes-requested/);
   assert.doesNotMatch(gate, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\/integration|social-mcp\/pi-review/i);
   assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
