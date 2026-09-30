@@ -192,6 +192,7 @@ export const STAGES = Object.freeze({
     productiveProgress: {
       activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
+      verificationTool: 'run_check',
       initialEvidenceBudget: 6,
       initialEvidenceBudgetByComplexity: {
         trivial: 2,

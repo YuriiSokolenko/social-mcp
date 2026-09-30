@@ -12,6 +12,7 @@ import {
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
+import { CHECK_KINDS, checkMetricRecord, runCheck } from './pi-common/run-check.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { structuralEdit } from './pi-common/structural-edit.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
@@ -243,6 +244,9 @@ export default function (pi) {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
             blockerTool: config.productiveProgress.blockerTool,
+            verificationTools: controller.verificationPermitted()
+              ? [config.productiveProgress.verificationTool].filter(Boolean)
+              : [],
           });
       pi.setActiveTools(restricted);
       return;
@@ -436,6 +440,23 @@ export default function (pi) {
           content: [{ type: 'text', text: JSON.stringify(result) }],
           details: result,
         };
+      },
+    });
+
+    pi.registerTool({
+      name: 'run_check',
+      label: 'Run focused check',
+      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check. Available once after each successful mutation. Passing does not replace final validation; still call submit_result.',
+      parameters: Type.Object({
+        kind: Type.Union(CHECK_KINDS.map(kind => Type.Literal(kind))),
+        paths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),
+        targets: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),
+        profile: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const result = await runCheck(ctx.cwd, params);
+        console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
       },
     });
 
@@ -647,7 +668,7 @@ export default function (pi) {
         : postComplexityRequired
           ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
           : stage === 'implementer'
-            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result immediately. If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
+            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
             : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
       const reason = actionRequiredProseOnlyTurns > 0
         ? 'prose-only retry'

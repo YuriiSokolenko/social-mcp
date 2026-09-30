@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 import { runProcess } from './process.mjs';
+import { ruffArgs } from './ruff-spec.mjs';
 
 /**
  * Run the deterministic checks that validate PRODUCT CODE before a Pi stage
@@ -74,14 +75,13 @@ function changedPythonPaths(root) {
 
 export function runRuffCheck(cwd = process.cwd()) {
   const root = fs.realpathSync(path.resolve(cwd));
-  const config = path.join(root, 'pyproject.toml');
   // Ruff's default --fix mode applies only safe fixes. Run it before the
   // authoritative check so mechanical style/metadata fixes do not consume an
   // LLM repair attempt. Both invocations pin the repository config explicitly.
   const fixPaths = changedPythonPaths(root);
-  if (fixPaths.length) run('ruff', ['check', '--fix', '--config', config, ...fixPaths], root, { allowFailure: true });
+  if (fixPaths.length) run('ruff', ruffArgs(root, fixPaths, { fix: true }), root, { allowFailure: true });
 
-  const check = run('ruff', ['check', '--output-format=json', '--config', config, '.'], root, { allowFailure: true });
+  const check = run('ruff', ruffArgs(root, ['.'], { json: true }), root, { allowFailure: true });
   if (check.status !== 0) {
     throw new Error(`check: Ruff\n${formatRuffDiagnostics(check.out || check.err, root)}`);
   }

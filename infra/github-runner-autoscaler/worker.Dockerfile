@@ -13,6 +13,8 @@ USER root
 COPY infra/github-runner-autoscaler/worker-entrypoint.sh /usr/local/bin/pi-runner-entrypoint
 COPY infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs /usr/local/bin/lsp-mcp-server
 RUN chmod +x /usr/local/bin/pi-runner-entrypoint /usr/local/bin/lsp-mcp-server \
+    && apt-get update && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/* \
     && npm install -g @gitlab/orbit@0.130.0 "lsp-mcp-server@${LSP_MCP_SERVER_VERSION}" "git-context-mcp@${GIT_CONTEXT_MCP_VERSION}" \
     && npm install --prefix /opt/ast-grep "@ast-grep/cli@${AST_GREP_VERSION}" \
     && ln -s /opt/ast-grep/node_modules/.bin/ast-grep /usr/local/bin/ast-grep \
