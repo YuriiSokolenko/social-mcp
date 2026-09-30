@@ -36,12 +36,15 @@ jobs:
           echo "Built image identity: $(docker image inspect "$image" --format '{{.Id}}')"
           probe=(--die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts --new-session --ro-bind / / --dev /dev --tmpfs /tmp -- true)
           passed=0
-          for mode in seccomp apparmor cap_sys_admin apparmor_and_cap; do
+          for mode in seccomp apparmor net_admin apparmor_net apparmor_sys apparmor_sys_net sys_net; do
             options=(--security-opt seccomp=unconfined)
             case "$mode" in
               apparmor) options+=(--security-opt apparmor=unconfined) ;;
-              cap_sys_admin) options+=(--cap-add SYS_ADMIN) ;;
-              apparmor_and_cap) options+=(--security-opt apparmor=unconfined --cap-add SYS_ADMIN) ;;
+              net_admin) options+=(--cap-add NET_ADMIN) ;;
+              apparmor_net) options+=(--security-opt apparmor=unconfined --cap-add NET_ADMIN) ;;
+              apparmor_sys) options+=(--security-opt apparmor=unconfined --cap-add SYS_ADMIN) ;;
+              apparmor_sys_net) options+=(--security-opt apparmor=unconfined --cap-add SYS_ADMIN --cap-add NET_ADMIN) ;;
+              sys_net) options+=(--cap-add SYS_ADMIN --cap-add NET_ADMIN) ;;
             esac
             if docker run --rm --network host "${options[@]}" --entrypoint bwrap "$image" "${probe[@]}"; then
               echo "CONFIGURED_IMAGE_BWRAP_PROBE_OK=true mode=$mode"
