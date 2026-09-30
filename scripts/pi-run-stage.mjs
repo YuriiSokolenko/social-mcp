@@ -8,6 +8,7 @@ import { runMiniSweStage } from './pi-common/mini-swe-stage-backend.mjs';
 import { runPiStage } from './pi-common/pi-stage-backend.mjs';
 import { stageConfig, stagePrompt } from './pi-common/stage-config.mjs';
 import { createStageRunSpec } from './pi-common/stage-run-contract.mjs';
+import { runStageWithValidationRecovery } from './pi-common/stage-validation-recovery.mjs';
 
 // The hp-laguna backend (llama-server on nano) can only ever have ONE of
 // these loaded at a time -- switching model here is a *claim* about what a
@@ -189,8 +190,10 @@ export async function runStage(options, env = process.env) {
   fs.rmSync(spec.artifacts.terminalResultPath, { force: true });
 
   await verifyModelIsLoaded(spec.model.baseUrl, spec.model.id);
-  if (backend === 'mini-swe') return runMiniSweStage(spec);
-  return runPiStage(spec, { workspace });
+  const runBackend = backend === 'mini-swe'
+    ? candidate => runMiniSweStage(candidate)
+    : candidate => runPiStage(candidate, { workspace });
+  return runStageWithValidationRecovery(spec, runBackend);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -49,7 +49,7 @@ export function buildPiInvocation(spec, workspace) {
       args: [path.join(workspace, 'scripts/pi-log-filter.mjs')],
       options: {
         cwd: spec.cwd,
-        env: { ...spec.environment, PI_CALL: 'main' },
+        env: { ...spec.environment, PI_CALL: spec.environment.PI_CALL || 'main' },
         stdio: ['pipe', 'inherit', 'inherit'],
       },
     },
@@ -70,7 +70,7 @@ export async function runPiStage(spec, { workspace }) {
   let rawStream = null;
   let rawDone = Promise.resolve();
   if (spec.artifacts.rawLogPath) {
-    rawStream = fs.createWriteStream(spec.artifacts.rawLogPath, { flags: 'w', mode: 0o600 });
+    rawStream = fs.createWriteStream(spec.artifacts.rawLogPath, { flags: spec.environment.PI_VALIDATION_REPAIR === 'true' ? 'a' : 'w', mode: 0o600 });
     rawDone = finished(rawStream);
     tee.pipe(rawStream);
   }

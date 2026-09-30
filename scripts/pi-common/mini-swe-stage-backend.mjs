@@ -3,7 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { finished } from 'node:stream/promises';
 
-import { integrateLatestDev, validateFinalProductTree } from './finalize-product-tree.mjs';
+import { integrateLatestDev } from './finalize-product-tree.mjs';
 import { runGit as git } from './git.mjs';
 import { createStageRunResult } from './stage-run-contract.mjs';
 
@@ -92,7 +92,7 @@ export function miniSweMetricRecords(trajectory, env) {
     records.push({
       issue,
       phase,
-      call: 'main',
+      call: env.PI_CALL || 'main',
       response: ++response,
       backend: BACKEND,
       usage: {
@@ -110,7 +110,7 @@ export function miniSweMetricRecords(trajectory, env) {
 
 function writeMetrics(spec, trajectory) {
   const records = miniSweMetricRecords(trajectory, spec.environment);
-  fs.writeFileSync(
+  fs.appendFileSync(
     spec.artifacts.metricsPath,
     records.map(record => JSON.stringify(record)).join('\n') + (records.length ? '\n' : ''),
     { encoding: 'utf8', mode: 0o600 },
@@ -127,8 +127,6 @@ function writeImplementationResult(spec) {
   integrateLatestDev({
     conflictMessage: files => `Latest dev conflicts with the mini-swe implementation: ${files.join(', ')}`,
   });
-  validateFinalProductTree();
-
   const changedPaths = git(['diff', '--name-only', 'origin/dev']).out
     .split(/\r?\n/)
     .map(item => item.trim())
@@ -144,11 +142,11 @@ function writeImplementationResult(spec) {
 
   const metadata = {
     title: String(context.title ?? '').trim(),
-    summary: `Experimental mini-swe-agent implementation${issue ? ` for issue #${issue}` : ''} was validated against latest dev.`,
+    summary: `Experimental mini-swe-agent implementation${issue ? ` for issue #${issue}` : ''} was prepared against latest dev.`,
     changes: changedPaths,
     already_satisfied: false,
     security_notes: 'No dedicated security assessment was supplied by the experimental mini-swe-agent backend; independent review remains authoritative.',
-    limitations: 'PR metadata is generated deterministically from the validated diff rather than from Pi submit_result.',
+    limitations: 'PR metadata is generated deterministically from the current diff rather than from Pi submit_result.',
   };
   if (!metadata.title) throw new Error('Issue title is required for mini-swe publication');
 
@@ -169,7 +167,7 @@ export async function runMiniSweStage(spec) {
   const streamDone = [];
   let rawStream = null;
   if (spec.artifacts.rawLogPath) {
-    rawStream = fs.createWriteStream(spec.artifacts.rawLogPath, { flags: 'w', mode: 0o600 });
+    rawStream = fs.createWriteStream(spec.artifacts.rawLogPath, { flags: spec.environment.PI_VALIDATION_REPAIR === 'true' ? 'a' : 'w', mode: 0o600 });
   }
 
   for (const [stream, destination] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {

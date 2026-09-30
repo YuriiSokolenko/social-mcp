@@ -468,129 +468,6 @@ test('productive progress allows a bounded initial evidence sequence before acti
 });
 
 
-test('failed validation enters bounded recovery and rollback resets the productive epoch', () => {
-  const state = controller({
-    requireComplexity: true,
-    preComplexityAllowedTools: ['prepare_implementation'],
-    preComplexityTransitionTools: ['prepare_implementation'],
-    productiveProgress: {
-      activationTool: 'prepare_implementation',
-      blockerTool: 'need_more_evidence',
-      initialEvidenceBudget: 3,
-      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
-      controlTools: ['set_response_budget', 'subagents_enable'],
-    },
-  });
-
-  state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('normal');
-  state.onToolExecutionEnd('prepare_implementation', false);
-
-  assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
-  state.onToolExecutionEnd('edit', false);
-  assert.equal(state.checkToolCall('submit_result', {}), undefined);
-  state.onToolExecutionEnd('submit_result', true);
-  assert.equal(state.productiveProgressState(), 'recovery_evidence_allowed');
-
-  assert.match(state.checkToolCall('need_more_evidence', {
-    missing: 'broader repository context',
-    reason: 'reconsider the implementation',
-  }).reason, /recovery already allows one diagnostic evidence action/);
-
-  assert.match(
-    state.checkToolCall('edit', { path: 'src/not-touched.py' }).reason,
-    /only files already mutated/,
-  );
-
-  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
-  assert.equal(state.productiveProgressState(), 'recovery_action_required');
-  assert.match(
-    state.checkToolCall('repo_search', { query: 'alternative implementation' }).reason,
-    /validation recovery requires action now/,
-  );
-
-  assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
-  state.onToolExecutionEnd('edit', false);
-  assert.equal(state.productiveProgressState(), 'recovery_action_required');
-
-  assert.equal(state.checkToolCall('rollback_last_mutation', { reason: 'latest mutation caused the regression' }), undefined);
-  state.onToolExecutionEnd('rollback_last_mutation', false);
-  assert.equal(state.productiveProgressState(), 'action_required');
-
-  assert.equal(state.checkToolCall('need_more_evidence', {
-    missing: 'replacement implementation anchor',
-    reason: 'rollback removed the harmful approach',
-  }), undefined);
-});
-
-test('resumed mutation provenance permits recovery edits only on restored paths', () => {
-  const restoredAbsolute = '/tmp/worktree/arkanoid.py';
-  const state = controller({
-    initialMutatedPaths: ['arkanoid.py', restoredAbsolute],
-    productiveProgress: {
-      startState: 'action_required',
-      blockerTool: 'need_more_evidence',
-      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
-      controlTools: [],
-    },
-  });
-
-  state.onTurnStart(0);
-  assert.equal(state.checkToolCall('submit_result', {}), undefined);
-  state.onToolExecutionEnd('submit_result', true);
-  assert.equal(state.productiveProgressState(), 'recovery_evidence_allowed');
-
-  assert.equal(state.checkToolCall('read', { path: restoredAbsolute }), undefined);
-  assert.equal(state.productiveProgressState(), 'recovery_action_required');
-  assert.equal(state.checkToolCall('safe_edit', {
-    path: restoredAbsolute,
-    start_line: 1,
-    operation: 'insert_after',
-    text: 'import sys',
-  }), undefined);
-  assert.match(
-    state.checkToolCall('safe_edit', {
-      path: '/tmp/worktree/unrelated.py',
-      start_line: 1,
-      operation: 'insert_after',
-      text: 'x = 1',
-    }).reason,
-    /only files already mutated/,
-  );
-});
-
-test('safe_edit counts as a mutation and is constrained to touched paths during recovery', () => {
-  const state = controller({
-    productiveProgress: {
-      activationTool: 'prepare_implementation',
-      blockerTool: 'need_more_evidence',
-      initialEvidenceBudget: 1,
-      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
-      controlTools: [],
-    },
-  });
-
-  state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.onToolExecutionEnd('prepare_implementation', false);
-  assert.equal(state.checkToolCall('safe_edit', { path: 'src/a.py', start_line: 1 }), undefined);
-  state.onToolExecutionEnd('safe_edit', false);
-  assert.equal(state.productiveProgressState(), 'action_required');
-
-  assert.equal(state.checkToolCall('submit_result', {}), undefined);
-  state.onToolExecutionEnd('submit_result', true);
-  assert.equal(state.productiveProgressState(), 'recovery_evidence_allowed');
-
-  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
-  assert.equal(state.productiveProgressState(), 'recovery_action_required');
-  assert.equal(state.checkToolCall('safe_edit', { path: 'src/a.py', start_line: 1 }), undefined);
-  assert.match(
-    state.checkToolCall('safe_edit', { path: 'src/other.py', start_line: 1 }).reason,
-    /only files already mutated/,
-  );
-});
-
 test('dispatcher closes exploration after prepared context is loaded', () => {
   const state = controller({
     requiredFirstReadPath: 'agents/dispatcher/AGENTS.md',
@@ -645,10 +522,8 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.doesNotMatch(runtime, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
-  assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
-  assert.match(runtime, /restoredMutationPaths/);
-  assert.match(runtime, /git'[\s\S]*diff'[\s\S]*--name-only'[\s\S]*origin\/dev/);
-  assert.match(runtime, /initialMutatedPaths: restoredPaths/);
+  assert.match(runtime, /directActionImplementer[\s\S]*requireComplexity: false/);
+  assert.match(runtime, /validationRepair[\s\S]*PI_VALIDATION_REPAIR/);
   assert.match(runtime, /responseHitOutputCeiling/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);

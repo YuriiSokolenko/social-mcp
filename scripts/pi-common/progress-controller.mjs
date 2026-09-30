@@ -174,16 +174,6 @@ export class ProgressController {
     this.productiveEvidenceRemaining = 0;
     this.lastEvidenceRequestSignature = null;
     this.evidenceUnlockUsedSinceProgress = false;
-    this.recoveryMode = false;
-    this.recoveryEvidenceRemaining = 0;
-    const initialMutatedPaths = config.initialMutatedPaths ?? [];
-    if (!Array.isArray(initialMutatedPaths)) {
-      throw new Error('initialMutatedPaths must be an array');
-    }
-    this.mutatedPaths = new Set(
-      initialMutatedPaths.filter(value => typeof value === 'string' && value.length > 0),
-    );
-    this.pendingMutationPath = null;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
     this.requireLspStartBeforeFindSymbol = config.requireLspStartBeforeFindSymbol === true;
@@ -352,50 +342,6 @@ export class ProgressController {
 
       if (activatesOnRead) {
         this.productiveState = 'action_required';
-      } else if (this.productiveState === 'recovery_evidence_allowed') {
-        if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
-          return {
-            block: true,
-            reason: 'BLOCKED: recovery already allows one diagnostic evidence action. Use that evidence action, fix/rollback the failed mutation, or retry submit_result.',
-          };
-        }
-        if (toolName === ROLLBACK_TOOL || TERMINAL_TOOLS.has(toolName)) {
-          // Productive recovery actions are always allowed.
-        } else if (MUTATION_TOOLS.has(toolName)) {
-          const path = typeof input?.path === 'string' ? input.path : '';
-          if (!this.mutatedPaths.has(path)) {
-            return {
-              block: true,
-              reason: `BLOCKED: validation recovery may structural_edit/safe_edit/edit/write only files already mutated in this session. ${path || 'This path'} was not previously mutated. Use the single diagnostic evidence action, rollback_last_mutation, or retry submit_result.`,
-            };
-          }
-        } else if (!this.productiveControlTools.has(toolName)) {
-          this.recoveryEvidenceRemaining = Math.max(0, this.recoveryEvidenceRemaining - 1);
-          if (this.recoveryEvidenceRemaining === 0) this.productiveState = 'recovery_action_required';
-        }
-      } else if (this.productiveState === 'recovery_action_required') {
-        if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
-          return {
-            block: true,
-            reason: 'BLOCKED: validation recovery evidence is exhausted. Fix an already-mutated file, call rollback_last_mutation, or retry submit_result.',
-          };
-        }
-        if (toolName === ROLLBACK_TOOL || TERMINAL_TOOLS.has(toolName)) {
-          // Productive recovery actions are always allowed.
-        } else if (MUTATION_TOOLS.has(toolName)) {
-          const path = typeof input?.path === 'string' ? input.path : '';
-          if (!this.mutatedPaths.has(path)) {
-            return {
-              block: true,
-              reason: `BLOCKED: validation recovery may structural_edit/safe_edit/edit/write only files already mutated in this session. ${path || 'This path'} was not previously mutated. Fix the touched file, rollback_last_mutation, or retry submit_result.`,
-            };
-          }
-        } else if (!this.productiveControlTools.has(toolName)) {
-          return {
-            block: true,
-            reason: `BLOCKED: validation recovery requires action now. ${toolName} did not execute. Fix an already-mutated file, call rollback_last_mutation, or retry submit_result.`,
-          };
-        }
       } else if (this.productiveState === 'action_required') {
         if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
           const blockerSignature = toolCallSignature(toolName, input);
@@ -458,10 +404,6 @@ export class ProgressController {
       };
     }
 
-    if (MUTATION_TOOLS.has(toolName)) {
-      this.pendingMutationPath = typeof input?.path === 'string' ? input.path : null;
-    }
-
     const signature = toolCallSignature(toolName, input);
     if (signature === this.lastSignature) this.repeatCount += 1;
     else {
@@ -517,16 +459,6 @@ export class ProgressController {
       this.productiveEvidenceRemaining = 0;
       if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
     }
-    if (this.productiveProgress && MUTATION_TOOLS.has(toolName)) {
-      if (!isError && this.pendingMutationPath) this.mutatedPaths.add(this.pendingMutationPath);
-      this.pendingMutationPath = null;
-    }
-    if (this.productiveProgress && TERMINAL_TOOLS.has(toolName) && isError) {
-      this.recoveryMode = true;
-      this.recoveryEvidenceRemaining = 1;
-      this.productiveState = 'recovery_evidence_allowed';
-      this.evidenceUnlockUsedSinceProgress = true;
-    }
     if (!isError && this.productiveProgress && toolName === this.productiveActivationTool) {
       this.productiveEvidenceRemaining = this.productiveInitialEvidenceBudgetForComplexity();
       this.productiveState = 'evidence_allowed';
@@ -535,19 +467,9 @@ export class ProgressController {
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
       this.semanticFallbackEvidenceUsed = false;
-      if (toolName === ROLLBACK_TOOL) {
-        this.recoveryMode = false;
-        this.recoveryEvidenceRemaining = 0;
-        this.evidenceUnlockUsedSinceProgress = false;
+      this.evidenceUnlockUsedSinceProgress = false;
+      if (toolName === ROLLBACK_TOOL || this.productiveState === 'evidence_allowed') {
         this.productiveState = 'action_required';
-      } else if (!this.recoveryMode) {
-        this.evidenceUnlockUsedSinceProgress = false;
-        if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
-      } else if (TERMINAL_TOOLS.has(toolName)) {
-        this.recoveryMode = false;
-        this.recoveryEvidenceRemaining = 0;
-      } else {
-        this.productiveState = 'recovery_action_required';
       }
     }
     if (!isError && (PROGRESS_TOOLS.has(toolName) || this.preComplexityTransitionTools.has(toolName))) {
