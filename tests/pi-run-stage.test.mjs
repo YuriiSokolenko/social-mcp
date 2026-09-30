@@ -133,6 +133,18 @@ test('Pi backend invocation keeps the legacy extension and CLI argument order', 
   assert.deepEqual(invocation.filter.options.stdio, ['pipe', 'inherit', 'inherit']);
 });
 
+test('Pi repair invocation is labelled separately in shared metrics', () => {
+  const repair = createValidationRepairSpec(
+    specFor('implementer'),
+    new Error('ruff failed'),
+    1,
+  );
+  const invocation = buildPiInvocation(repair, '/control');
+
+  assert.equal(invocation.filter.options.env.PI_CALL, 'repair');
+  assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR, 'true');
+});
+
 test('Pi architect invocation still loads repomap after the standard extensions', () => {
   const invocation = buildPiInvocation(specFor('architect'), '/control');
   const extensionValues = invocation.pi.args
@@ -383,4 +395,12 @@ test('mini-swe trajectory usage maps into the shared PI_METRIC schema', () => {
       responseMs: 0,
     },
   ]);
+  const repairRecords = miniSweMetricRecords({
+    messages: [{
+      role: 'assistant',
+      extra: { response: { usage: { prompt_tokens: 10, completion_tokens: 5 } } },
+    }],
+  }, { PI_ISSUE: '77', PI_PHASE: 'implementation', PI_CALL: 'repair' });
+  assert.equal(repairRecords[0].call, 'repair');
+
 });
