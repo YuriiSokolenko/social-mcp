@@ -58,7 +58,7 @@ jobs:
       - name: Create PR worktree
         if: steps.load.outputs.skip != 'true'
         run: |
-          JOB_DIR="$RUNNER_TEMP/social-mcp-fix-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          JOB_DIR="$RUNNER_TEMP/agent-repair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
           git fetch origin "$HEAD_REF"
           git worktree add -B "$HEAD_REF" "$JOB_DIR" "$HEAD_SHA"
@@ -76,12 +76,7 @@ jobs:
 
       - name: Prepare environment
         if: steps.load.outputs.skip != 'true'
-        run: |
-          cd "$JOB_DIR"
-          python -m venv .venv
-          . .venv/bin/activate
-          pip install -e . pytest pytest-asyncio ruff==0.12.12
-          echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/prepare-environment.mjs" repair "$JOB_DIR"
 
       - name: Run repair agent
         if: steps.load.outputs.skip != 'true'

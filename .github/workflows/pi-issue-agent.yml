@@ -92,7 +92,7 @@ jobs:
         id: worktree
         if: steps.claim.outputs.terminal != 'true'
         run: |
-          JOB_DIR="$RUNNER_TEMP/social-mcp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          JOB_DIR="$RUNNER_TEMP/agent-implementer-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
           CONTEXT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-worktree.mjs" prepare "$ISSUE" "$JOB_DIR" "$RUNNER_TEMP")"
           echo "PI_IMPLEMENTER_START_COMMIT=$(jq -r '.start' <<<"$CONTEXT")" >> "$GITHUB_ENV"
@@ -103,18 +103,7 @@ jobs:
 
       - name: Prepare Python environment
         if: steps.claim.outputs.terminal != 'true'
-        run: |
-          cd "$JOB_DIR"
-          python --version
-          sqlite3 --version
-          python -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install -e .
-          python -m pip install pytest pytest-asyncio ruff==0.12.12
-          echo "$JOB_DIR/.venv/bin" >> "$GITHUB_PATH"
-          pytest --version
-          ruff --version
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/prepare-environment.mjs" implementer "$JOB_DIR"
 
       - name: Prepare Orbit Local code graph
         if: steps.claim.outputs.terminal != 'true' && env.PI_STAGE_BACKEND == 'pi'
