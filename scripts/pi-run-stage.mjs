@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { runMiniSweStage } from './pi-common/mini-swe-stage-backend.mjs';
 import { runPiStage } from './pi-common/pi-stage-backend.mjs';
 import { stageConfig, stagePrompt } from './pi-common/stage-config.mjs';
 import { createStageRunSpec } from './pi-common/stage-run-contract.mjs';
@@ -47,6 +48,31 @@ async function verifyModelIsLoaded(baseUrl, expectedId) {
   }
 }
 
+export function resolveStageBackend(env = process.env) {
+  const backend = env.PI_STAGE_BACKEND || 'pi';
+  if (!['pi', 'mini-swe'].includes(backend)) {
+    throw new Error(`Unknown PI_STAGE_BACKEND "${backend}", expected pi or mini-swe`);
+  }
+  return backend;
+}
+
+function miniSwePrompt(stage, env) {
+  if (stage !== 'implementer') {
+    throw new Error('mini-swe backend is experimental and currently supports only the implementer stage');
+  }
+  const contextFile = env.PI_ISSUE_CONTEXT;
+  if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for mini-swe implementer');
+  const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
+  const issue = env.PI_ISSUE ?? env.ISSUE ?? context.number ?? '';
+  return `GitHub issue${issue ? ` #${issue}` : ''}
+
+Title:
+${String(context.title ?? '').trim()}
+
+Body:
+${String(context.body ?? '').trim()}`;
+}
+
 function parseArgs(argv) {
   const [stage, ...rest] = argv;
   const options = { stage, promptFile: null, raw: null };
@@ -66,8 +92,13 @@ function writeGithubEnv(env, name, value) {
 
 export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = process.cwd() }, env = process.env) {
   const config = stageConfig(stage);
-  const prompt = promptFile ? fs.readFileSync(promptFile, 'utf8') : stagePrompt(stage, env);
-  if (!prompt.trim()) throw new Error('Pi prompt is empty');
+  const backend = resolveStageBackend(env);
+  const prompt = promptFile
+    ? fs.readFileSync(promptFile, 'utf8')
+    : backend === 'mini-swe'
+      ? miniSwePrompt(stage, env)
+      : stagePrompt(stage, env);
+  if (!prompt.trim()) throw new Error('Stage prompt is empty');
 
   const runnerTemp = env.RUNNER_TEMP || cwd;
   const suffix = `${env.GITHUB_RUN_ID ?? process.pid}-${env.GITHUB_RUN_ATTEMPT ?? 1}`;
@@ -99,17 +130,18 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
     },
   });
 
-  return { spec, workspace };
+  return { spec, workspace, backend };
 }
 
 export async function runStage(options, env = process.env) {
-  const { spec, workspace } = buildStageRunSpec(options, env);
+  const { spec, workspace, backend } = buildStageRunSpec(options, env);
   writeGithubEnv(env, 'PI_METRICS_FILE', spec.artifacts.metricsPath);
   writeGithubEnv(env, 'PI_PHASE', spec.environment.PI_PHASE);
   if (spec.environment.PI_ISSUE) writeGithubEnv(env, 'PI_ISSUE', spec.environment.PI_ISSUE);
   fs.rmSync(spec.artifacts.terminalResultPath, { force: true });
 
   await verifyModelIsLoaded(spec.model.baseUrl, spec.model.id);
+  if (backend === 'mini-swe') return runMiniSweStage(spec);
   return runPiStage(spec, { workspace });
 }
 
