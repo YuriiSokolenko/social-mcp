@@ -20,7 +20,7 @@ const MODEL_CHOICES = {
   qwen: { id: 'qwen3.8-flash-next', label: 'Qwen 3.8 Flash Next' },
 };
 
-export const DEFAULT_MODEL_BASE_URL = 'http://192.168.8.210:4001/v1';
+export const DEFAULT_MODEL_BASE_URL = 'http://192.168.8.184:4001/v1';
 
 function resolveModelId(env) {
   if (env.PI_MODEL) return env.PI_MODEL;

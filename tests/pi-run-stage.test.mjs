@@ -74,6 +74,7 @@ test('model endpoint defaults to the shared Open Responses server on port 4001',
   });
 
   assert.equal(spec.model.baseUrl, DEFAULT_MODEL_BASE_URL);
+  assert.equal(new URL(spec.model.baseUrl).hostname, '192.168.8.184');
   assert.equal(new URL(spec.model.baseUrl).port, '4001');
 });
 
