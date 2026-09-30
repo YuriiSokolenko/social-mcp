@@ -33,13 +33,13 @@ Choose the path from the initial prompt.
 
 If the initial prompt says saved checkpoint or issue-branch changes were replayed into the worktree:
 
-1. Call `submit_result` with no arguments immediately. Runtime derives publication metadata from the trusted issue context and validated diff.
+1. Call `submit_result` with no arguments immediately. Runtime derives candidate publication metadata from the trusted issue context and current diff.
 2. Do **not** call `prepare_implementation`, inspect repository files, summarize restored changes, or prove the restored implementation correct first.
-3. If `submit_result` reports a concrete conflict or failing check, fix only that reported problem and retry `submit_result`. Delegate only when the failure does not contain enough evidence to make the next safe change.
+3. If `submit_result` reports a concrete integration/metadata problem, fix only that reported problem and retry it. Authoritative product checks run outside the agent after submission; if they fail, the harness starts one focused repair attempt on the same worktree with the exact diagnostics.
 
 Do not pass `already_satisfied` for restored work. If replayed saved work is already contained in latest `dev`, `submit_result` detects the resulting zero diff and records the issue as already satisfied automatically; that runtime recovery is not a model claim.
 
-`submit_result` is the first validation step for restored work. Do not summarize, re-plan, or independently verify restored files before that first call.
+`submit_result` is the first submission step for restored work. Do not summarize, re-plan, or independently verify restored files before that first call; the outer harness owns authoritative validation.
 
 ### Fresh work
 
@@ -65,14 +65,13 @@ The runtime enforces execution as a state machine rather than a turn counter.
 - After successful `prepare_implementation`, the bounded evidence budget is **2 actions for trivial** work and **6 for nontrivial** work.
 - An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, scout/research delegation, or a bounded diagnostic command.
 - Use that budget only for one narrow implementation chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor`. Reading directly relevant files found during that chain is expected; do not mutate blindly merely to reopen evidence. Once the budget is exhausted, exploration closes and the next substantive tool must be `structural_edit`, `safe_edit`, `edit`, `write`, or `submit_result`.
-- While productive progress is in `action_required` or `recovery_action_required`, runtime caps action-required responses at 512 output tokens and injects a hidden runtime directive telling the next turn to call a productive tool immediately without narrating. Any prose-only action-required turn immediately shrinks the next corrective response to 128 tokens so it must reach a productive tool call quickly. If that corrective turn is also prose-only, runtime aborts the stage instead of allowing a reasoning loop. Any tool attempt/progress or exit from action-required state resets this guard.
+- While productive progress is in `action_required`, runtime caps action-required responses at 512 output tokens and injects a hidden runtime directive telling the next turn to call a productive tool immediately without narrating. Any prose-only action-required turn immediately shrinks the next corrective response to 128 tokens so it must reach a productive tool call quickly. If that corrective turn is also prose-only, runtime aborts the stage instead of allowing a reasoning loop. Any tool attempt/progress or exit from action-required state resets this guard.
 - If one concrete fact outside the bounded initial chain still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one further evidence action, after which action is required again. Do not spend this escape hatch on target files that should have been covered by the initial evidence budget.
 - Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `structural_edit`, `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result` starts a new productive epoch.
 - Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion.
 - `set_response_budget`, the one-time `subagents_enable`, and `lsp_start_server` are control actions and do not consume an evidence permit.
 - Prefer completing `evidence → structural_edit/safe_edit/edit/write` in the same model response whenever the evidence is sufficient.
 - If your latest successful `structural_edit`/`safe_edit`/`edit`/`write` is shown by validation to be the wrong approach or to cause a regression, prefer `rollback_last_mutation` over compensating workarounds. It restores the exact file state from immediately before that mutation and leaves earlier unrelated changes intact.
-- If `submit_result` fails validation, runtime enters recovery mode. You get at most one diagnostic evidence action for that failure; after it, only fix an already-mutated file, call `rollback_last_mutation`, or retry `submit_result`. Do not reopen general repository exploration or use `need_more_evidence` during validation recovery.
 
 This protocol deliberately permits long/complex tasks without an arbitrary turn quota while preventing open-ended exploration. It also avoids forcing a mutation before the agent has enough repository evidence to identify a safe target.
 
@@ -186,22 +185,21 @@ If deterministic search still leaves one concrete semantic blocker:
 
 For restored work, prefer:
 
-`loaded contract → submit_result → fix only a reported failure if any → submit_result`
+`loaded contract → submit_result → harness validation → one focused repair attempt only if validation fails`
 
 ## Validation and submission
 
 Do not run full pytest, full-repository Ruff, or CI/control-plane suites before submission as a ritual.
 
-`submit_result` is both validation and submission. You do not need to prove correctness before calling it. It never resets/checks out away current implementation changes; it merges latest `dev` into the current worktree and reports conflicts instead of discarding work. It:
+`submit_result` records that the agent considers the implementation complete. It never resets/checks out away current implementation changes; it merges latest `dev` into the current worktree and reports integration conflicts instead of discarding work. After the backend exits, the shared stage harness runs the authoritative checks:
 
-- integrates latest `dev`;
-- runs `git diff --check`;
-- runs the full product pytest suite;
-- runs `ruff check .`.
+- `git diff --check`;
+- the full product pytest suite;
+- `ruff check .`.
 
-If it reports a conflict or failing check, fix only that concrete problem. If the failure was caused by the most recent mutation and the correct recovery is to undo it, call `rollback_last_mutation` instead of layering a workaround on top. Runtime permits at most one diagnostic evidence action for each failed validation attempt; then fix an already-mutated file, rollback, or retry `submit_result`.
+If those checks fail, the shared harness starts exactly one focused repair attempt with the same backend on the same worktree and provides the concrete validation diagnostics. That repair attempt must fix only the reported problem and submit normally; the harness then reruns the authoritative checks. A second validation failure ends the stage and preserves the normal checkpoint/needs-human behavior.
 
-For restored work, the first call is `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields after validation. If the replayed saved implementation is already contained in latest `dev`, that same call succeeds as an automatic already-satisfied result instead of entering validation recovery. Fresh work with real changes provides normal result metadata; fresh already-satisfied work uses only `submit_result({already_satisfied: true, changes: []})`.
+For restored work and harness validation-repair work, call `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields from the issue context and current diff. If the implementation is already contained in latest `dev`, the call records an automatic already-satisfied result. Fresh work with real changes provides normal result metadata; fresh already-satisfied work uses only `submit_result({already_satisfied: true, changes: []})`.
 
 After successful `submit_result`, **stop immediately**.
 
