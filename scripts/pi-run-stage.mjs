@@ -64,7 +64,11 @@ function miniSwePrompt(stage, env) {
   if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for mini-swe implementer');
   const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
   const issue = env.PI_ISSUE ?? env.ISSUE ?? context.number ?? '';
-  return `GitHub issue${issue ? ` #${issue}` : ''}
+  return `Repository execution context:
+- The issue worktree is already the current working directory.
+- Work only inside this current working directory. Do not search for or modify other repository checkouts.
+
+GitHub issue${issue ? ` #${issue}` : ''}
 
 Title:
 ${String(context.title ?? '').trim()}
