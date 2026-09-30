@@ -151,6 +151,8 @@ export const STAGES = Object.freeze({
     preComplexityEvidenceBudget: 3,
     preComplexityActionResponseMaxTokens: 512,
     preComplexityActionResponseRetryMaxTokens: 512,
+    postComplexityActionResponseMaxTokens: 1024,
+    postComplexityActionResponseRetryMaxTokens: 1024,
     preComplexityAllowedTools: ['read', 'bash', 'lsp_start_server', 'lsp_find_symbol'],
     preComplexityTransitionTools: ['declare_task_complexity'],
     prompt: promptBuilders.reviewer,
