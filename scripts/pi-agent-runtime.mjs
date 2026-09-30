@@ -258,6 +258,8 @@ export default function (pi) {
       config.productiveProgress &&
       productiveState === 'action_required';
 
+    const largeMutationBudgetActive = stage === 'implementer' && controller.largeMutationBudgetActive();
+
     if (preComplexityRequired || productiveActionRequired) {
       if (unrestrictedActiveTools == null) unrestrictedActiveTools = pi.getActiveTools();
       const restricted = preComplexityRequired
@@ -268,7 +270,11 @@ export default function (pi) {
               'submit_repair',
             ]).has(name)
           )
-        : actionRequiredToolNames(unrestrictedActiveTools, {
+        : largeMutationBudgetActive
+          // UX on top of the controller's own hard gate: while the elevated budget is active,
+          // don't even show tools this turn is not allowed to call.
+          ? unrestrictedActiveTools.filter(name => FINISH_TOOLS.has(name))
+          : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
             blockerTool: config.productiveProgress.blockerTool,
@@ -688,7 +694,6 @@ export default function (pi) {
 
   pi.on('tool_call', async (event, ctx) => {
     actionTurnAttemptedTool = true;
-    if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
     if (blocked) {
@@ -708,6 +713,9 @@ export default function (pi) {
       }
       return blocked;
     }
+    // Only a call the controller actually let through counts as an attempted finish tool: a
+    // blocked call never reached execution, so it must not suppress the violation warning.
+    if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
 
     const cwd = ctx?.cwd || process.cwd();
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);

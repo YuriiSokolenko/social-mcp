@@ -567,6 +567,11 @@ test('runtime grants the large mutation budget for exactly one response and alwa
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET/);
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET_VIOLATION/);
   assert.match(runtime, /elevatedTurnAttemptedFinishTool/);
+  // Tool-surface restriction during the elevated turn is UX on top of the controller's own
+  // hard gate; the finish-tool attempt marker must only be set for a call the controller
+  // actually let through, never for one it blocked.
+  assert.match(runtime, /largeMutationBudgetActive[\s\S]*unrestrictedActiveTools\.filter\(name => FINISH_TOOLS\.has\(name\)\)/);
+  assert.match(runtime, /return blocked;\s*\}[\s\S]{0,200}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
   assert.match(planner, /evidence_budget/);
 });
 
@@ -990,6 +995,50 @@ test('request_large_mutation_budget is one-shot: granted for exactly the next re
 
   // Idle again: requesting another elevated budget is allowed.
   assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'second large file' }), undefined);
+});
+
+test('request_large_mutation_budget is refused before evidence is exhausted (evidence_allowed)', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(3);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  // Granting the elevated budget here would apply 16k to a response that can still see the
+  // full evidence/search tool surface, bypassing the mutation-only guarantee entirely.
+  assert.match(
+    state.checkToolCall('request_large_mutation_budget', { reason: 'too early' }).reason,
+    /only be requested once productive progress is action_required/,
+  );
+  assert.equal(state.largeMutationBudgetState, 'idle');
+});
+
+test('while the elevated mutation budget is active, only a finish tool may execute', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(0);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'large new file' }), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.activateLargeMutationBudget(), true);
+  assert.equal(state.largeMutationBudgetActive(), true);
+
+  const blockedReason = /elevated mutation budget is active this turn/;
+  assert.match(state.checkToolCall('read', { path: 'src/known.py' }).reason, blockedReason);
+  assert.match(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }).reason, blockedReason);
+  assert.match(state.checkToolCall('set_response_budget', { level: 'deep', reason: 'z' }).reason, blockedReason);
+  assert.match(state.checkToolCall('subagents_enable', {}).reason, blockedReason);
+  assert.match(state.checkToolCall('lsp_start_server', {}).reason, blockedReason);
+  assert.match(state.checkToolCall('run_check', { kind: 'ruff' }).reason, blockedReason);
+
+  // A finish tool (mutation, rollback, or terminal submit) is still allowed.
+  assert.equal(state.checkToolCall('write', { path: 'arkanoid.py' }), undefined);
 });
 
 test('a large mutation grant that ends without a finish-tool attempt still collapses to idle', () => {

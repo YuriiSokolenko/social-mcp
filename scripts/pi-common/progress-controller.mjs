@@ -350,6 +350,17 @@ export class ProgressController {
       return undefined;
     }
 
+    // Absolute gate: while the one-shot elevated mutation budget is active, this response may
+    // spend it on nothing but an actual mutation, rollback, or terminal submission. This is
+    // the real guarantee; the runtime's tool-surface restriction is UX on top of it, not a
+    // substitute for it.
+    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !FINISH_TOOLS.has(toolName)) {
+      return {
+        block: true,
+        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only structural_edit, safe_edit, edit, write, rollback_last_mutation, or a terminal submit action are allowed.`,
+      };
+    }
+
     const pendingComplexityTransition =
       this.requireComplexity &&
       !this.complexity &&
@@ -383,11 +394,22 @@ export class ProgressController {
       }
     }
 
-    if (this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool && this.largeMutationBudgetState !== 'idle') {
-      return {
-        block: true,
-        reason: `BLOCKED: ${toolName} did not execute. A large mutation budget is already granted or active; use it for the pending mutation before requesting another.`,
-      };
+    if (this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool) {
+      if (this.largeMutationBudgetState !== 'idle') {
+        return {
+          block: true,
+          reason: `BLOCKED: ${toolName} did not execute. A large mutation budget is already granted or active; use it for the pending mutation before requesting another.`,
+        };
+      }
+      // Evidence is not yet exhausted: granting the elevated budget here would apply it to a
+      // response that can still see the full evidence/search tool surface, defeating the
+      // mutation-only guarantee. Require action_required first.
+      if (this.productiveState !== 'action_required') {
+        return {
+          block: true,
+          reason: `BLOCKED: ${toolName} did not execute. A large mutation budget can only be requested once productive progress is action_required; finish gathering evidence first.`,
+        };
+      }
     }
 
     if (toolName === 'bash' && this.boundedDirectBash && !isBoundedDirectBash(input?.command)) {
