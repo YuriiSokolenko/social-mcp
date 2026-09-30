@@ -397,7 +397,7 @@ test('mini-swe invocation uses upstream yolo CLI with local OpenAI-compatible mo
   const invocation = buildMiniSweInvocation(specFor('implementer'));
 
   assert.equal(invocation.command, 'mini');
-  assert.deepEqual(invocation.args.slice(0, 14), [
+  assert.deepEqual(invocation.args.slice(0, 16), [
     '-c', 'mini.yaml',
     '-c', 'model.model_kwargs.custom_llm_provider=openai',
     '-c', 'model.model_kwargs.api_base=http://model/v1',
