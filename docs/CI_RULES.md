@@ -8,7 +8,7 @@ GitHub repository state is the source of truth. Workflow inputs and SHAs are not
 Issue -> Dispatcher -> Implementer -> checks -> PR -> Reviewer -> Merge Gate -> dev -> CI -> next PR
 ```
 
-Every green CI run on a `dev` push wakes Merge Gate, which reloads current PR state and either merges one eligible PR or exits. This avoids coupling queue progress to commit-message conventions. Red `dev` CI does not wake Merge Gate and therefore stops that merge sequence. Do not build a second pre-merge integration pipeline.
+Every green CI run on a `dev` push wakes Merge Gate, which reloads current PR state and either merges one eligible PR or exits. Terminal PR CI uses a separate completion boundary: `ci-terminal-wake.yml` listens only for `workflow_run: completed` from `CI` and then issues a state-free Merge Gate wake, so the gate never depends on a wake emitted while that same PR CI run can still be `in_progress`. The wake transports no PR number, SHA, or CI verdict; Merge Gate reloads the current PR and exact-head CI state from GitHub. Merge Gate also verifies that push-CI for the current `dev` HEAD is green immediately before each merge attempt, so duplicate/stale wake delivery cannot merge a second PR before the newly merged `dev` commit is validated while failure/repair classification remains non-blocking. Red `dev` CI does not wake Merge Gate and therefore stops that merge sequence. Do not build a second pre-merge integration pipeline.
 
 ## Agent control-plane boundary
 
