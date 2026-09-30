@@ -57,7 +57,7 @@ docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.1 .
 ```
 
-The Pi worker tag `0.88.0-lsp` pins `pi-mcp-adapter@3.2.0`,
+The Pi worker tag `0.89.0-mini-swe` pins `mini-swe-agent==2.4.6`, `pi-mcp-adapter@3.2.0`,
 `lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`, BasedPyright `1.40.1`, and the official JetBrains
 Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The general runner image and the base runner image
 remain on their existing tags. To roll the Pi pool back, set
