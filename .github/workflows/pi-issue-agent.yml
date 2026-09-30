@@ -181,11 +181,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ALREADY_SATISFIED=false
+          BLOCKED=false
+          BLOCKED_REASON=""
           if [ -s "$PI_IMPLEMENTER_RESULT_FILE" ]; then
             ALREADY_SATISFIED="$(jq -r '.already_satisfied // false' "$PI_IMPLEMENTER_RESULT_FILE")"
+            BLOCKED="$(jq -r '.blocked // false' "$PI_IMPLEMENTER_RESULT_FILE")"
+            BLOCKED_REASON="$(jq -r '.blocked_reason // empty' "$PI_IMPLEMENTER_RESULT_FILE")"
           fi
           if [ "$ALREADY_SATISFIED" = "true" ]; then
             node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue satisfied               "Pi verified that the exact requested end state already exists in latest dev; no duplicate change or PR is needed."
+            exit 0
+          fi
+          if [ "$BLOCKED" = "true" ]; then
+            node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human               "Pi stopped because implementation is blocked pending human clarification: $BLOCKED_REASON"
             exit 0
           fi
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human             "Pi completed the task but produced no repository changes. Human review is required."
