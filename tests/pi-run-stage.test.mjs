@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, resolveStageBackend } from '../scripts/pi-run-stage.mjs';
+import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
@@ -245,6 +245,30 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.match(attempts[1].prompt, /BLE001 blind exception/);
   assert.equal(result.backend, 'fake');
   assert.equal(result.durationMs, 3);
+});
+
+test('Pi and mini-swe both run post-backend validation', async () => {
+  for (const backend of ['pi', 'mini-swe']) {
+    const spec = specFor('implementer');
+    let calls = 0;
+    let validations = 0;
+    const fake = async candidate => {
+      calls += 1;
+      assert.equal(candidate, spec);
+      return createStageRunResult({ backend, durationMs: 1, artifacts: candidate.artifacts });
+    };
+    const result = await runSelectedStage(spec, { backend, workspace: '/control' }, {
+      runPi: fake,
+      runMiniSwe: fake,
+      validate: ({ cwd }) => {
+        assert.equal(cwd, '/work');
+        validations += 1;
+      },
+    });
+    assert.equal(result.backend, backend);
+    assert.equal(calls, 1);
+    assert.equal(validations, 1);
+  }
 });
 
 test('shared validation harness treats blocked implementer outcome as terminal without validation repair', async () => {
