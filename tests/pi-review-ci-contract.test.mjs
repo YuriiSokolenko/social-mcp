@@ -164,8 +164,9 @@ test('merge gate has permission for its late-conflict PR Fix dispatch', () => {
 });
 
 
-test('green PR CI and green dev CI both wake merge gate without parsing commit-message conventions', () => {
+test('terminal PR CI and green dev CI both wake merge gate without parsing commit-message conventions', () => {
   const workflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(workflow, /always\(\)/);
   assert.match(workflow, /github\.event_name == 'pull_request'/);
   assert.match(workflow, /github\.event_name == 'push' && github\.ref == 'refs\/heads\/dev'/);
   assert.match(workflow, /Continue merge queue after green CI/);
@@ -246,6 +247,18 @@ test('reconciler recovers stranded PR pipeline without touching human-gated PRs'
   assert.match(reconcile, /liveFixes/);
   assert.match(reconcile, /labels\.has\('pi:needs-human'\)/);
   assert.match(reconcile, /labels\.has\('review:passed'\)/);
+  assert.match(reconcile, /needsFix = labels\.has\('review:changes-requested'\)/);
+  assert.match(reconcile, /workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
+});
+
+test('code-failure ownership remains recoverable when immediate PR Fix dispatch fails', () => {
+  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
+  const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
+
+  const ownership = gate.indexOf('withReviewVerdict([...prLabels], REVIEW_CHANGES_REQUESTED)');
+  const dispatch = gate.indexOf("dispatchWorkflow(workflowFile('repair')");
+  assert.ok(ownership >= 0 && dispatch > ownership, 'ownership must transfer before PR Fix dispatch');
+  assert.match(gate, /PR Fix dispatch failed after ownership transfer; Reconciler will recover it/);
   assert.match(reconcile, /needsFix = labels\.has\('review:changes-requested'\)/);
   assert.match(reconcile, /workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
 });
