@@ -24,18 +24,40 @@ function fakeBin(dir, name, body) {
   return file;
 }
 
-const hasPython = (() => {
-  try { return fs.existsSync('/usr/bin/python3') || Boolean(process.env.PATH.split(':').find(p => fs.existsSync(path.join(p, 'python3')))); } catch { return false; }
+const pythonBin = (() => {
+  try {
+    if (fs.existsSync('/usr/bin/python3')) return '/usr/bin/python3';
+    const dir = process.env.PATH.split(path.delimiter).find(p => fs.existsSync(path.join(p, 'python3')));
+    return dir ? path.join(dir, 'python3') : null;
+  } catch {
+    return null;
+  }
 })();
+const hasPython = Boolean(pythonBin);
+
+const directSandbox = (_root, spec) => spec;
+const directOptions = (options = {}) => ({ ...options, sandboxFactory: directSandbox });
+
+function hasCommand(name) {
+  try {
+    return process.env.PATH.split(path.delimiter).some(dir => fs.existsSync(path.join(dir, name)));
+  } catch {
+    return false;
+  }
+}
+
+const hasRealSandbox = process.platform === 'linux'
+  ? hasCommand('bwrap')
+  : process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec');
 
 test('python_compile passes on valid source and reports a syntax error with file/line', { skip: !hasPython }, async () => {
   const dir = worktree();
   fs.writeFileSync(path.join(dir, 'ok.py'), 'x = 1\n');
   fs.writeFileSync(path.join(dir, 'bad.py'), 'def (\n');
-  const pass = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] });
+  const pass = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, directOptions({ bins: { python: pythonBin } }));
   assert.equal(pass.status, 'pass');
   assert.equal(fs.existsSync(path.join(dir, '__pycache__')), false);
-  const fail = await runCheck(dir, { kind: 'python_compile', paths: ['bad.py'] });
+  const fail = await runCheck(dir, { kind: 'python_compile', paths: ['bad.py'] }, directOptions({ bins: { python: pythonBin } }));
   assert.equal(fail.status, 'fail');
   assert.equal(fail.diagnostics[0].file, 'bad.py');
   assert.equal(fail.diagnostics[0].line, 1);
@@ -48,7 +70,7 @@ test('ruff pass and parsed failure use the fixed shared argv', async () => {
   const argvLog = path.join(dir, 'argv.txt');
   const json = JSON.stringify([{ filename: path.join(fs.realpathSync(dir), 'a.py'), code: 'F401', message: '`os` imported but unused', location: { row: 1, column: 8 } }]);
   const ruff = fakeBin(dir, 'ruff', `echo "$@" > ${argvLog}\nif [ "$FAIL" = 1 ]; then :; fi\necho '${json}'\nexit 1`);
-  const fail = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, { bins: { ruff } });
+  const fail = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, directOptions({ bins: { ruff } }));
   assert.equal(fail.status, 'fail');
   assert.deepEqual(fail.diagnostics, [{ file: 'a.py', line: 1, column: 8, code: 'F401', message: '`os` imported but unused' }]);
   assert.equal(fail.summary, '1 Ruff violation(s)');
@@ -56,7 +78,7 @@ test('ruff pass and parsed failure use the fixed shared argv', async () => {
   assert.equal(fs.readFileSync(argvLog, 'utf8').trim(), ruffArgs(dir, ['a.py'], { json: true }).join(' '));
 
   const passBin = fakeBin(dir, 'ruff-ok', 'echo "[]"\nexit 0');
-  const pass = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, { bins: { ruff: passBin } });
+  const pass = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, directOptions({ bins: { ruff: passBin } }));
   assert.equal(pass.status, 'pass');
   assert.deepEqual(pass.diagnostics, []);
 });
@@ -82,7 +104,7 @@ test('pytest pass and failing-test diagnostics with node id, line and message', 
     '1 failed, 4 passed in 0.12s',
   ].join('\n');
   const bad = fakeBin(dir, 'pytest-bad', `cat <<'EOT'\n${failOut}\nEOT\nexit 1`);
-  const fail = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_bar.py::test_a'] }, { bins: { pytest: bad } });
+  const fail = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_bar.py::test_a'] }, directOptions({ bins: { pytest: bad } }));
   assert.equal(fail.status, 'fail');
   assert.equal(fail.summary, '1 failed, 4 passed in 0.12s');
   assert.equal(fail.diagnostics[0].file, 'tests/test_bar.py');
@@ -91,7 +113,7 @@ test('pytest pass and failing-test diagnostics with node id, line and message', 
   assert.match(fail.stdout_tail, /short test summary/);
 
   const good = fakeBin(dir, 'pytest-ok', 'echo "5 passed in 0.1s"\nexit 0');
-  const pass = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_bar.py'] }, { bins: { pytest: good } });
+  const pass = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_bar.py'] }, directOptions({ bins: { pytest: good } }));
   assert.equal(pass.status, 'pass');
   assert.equal(pass.summary, '5 passed in 0.1s');
 });
@@ -100,7 +122,7 @@ test('timeout kills the whole subprocess tree', async () => {
   const dir = worktree({ 'tests/test_slow.py': '' });
   const pidFile = path.join(dir, 'grandchild.pid');
   const slow = fakeBin(dir, 'pytest-slow', `sleep 30 &\necho $! > ${pidFile}\nwait`);
-  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_slow.py'] }, { bins: { pytest: slow }, timeoutMs: 1500 });
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_slow.py'] }, directOptions({ bins: { pytest: slow }, timeoutMs: 1500 }));
   assert.equal(result.status, 'timeout');
   assert.match(result.summary, /process tree killed/);
   const pid = Number(fs.readFileSync(pidFile, 'utf8'));
@@ -142,7 +164,7 @@ test('output is bounded deterministically and secrets are not inherited', async 
   const dir = worktree({ 'tests/test_big.py': '' });
   const big = fakeBin(dir, 'pytest-big', 'i=0\nwhile [ $i -lt 2000 ]; do echo "line $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; i=$((i+1)); done\necho "SECRET=$GITHUB_TOKEN" >&2\nexit 1');
   const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] },
-    { bins: { pytest: big }, env: { ...process.env, GITHUB_TOKEN: 'ghp_topsecret' } });
+    directOptions({ bins: { pytest: big }, env: { ...process.env, GITHUB_TOKEN: 'ghp_topsecret' } }));
   assert.equal(result.truncated, true);
   assert.ok(result.stdout_tail.length <= 3000);
   assert.match(result.stdout_tail, /line 1999/);
@@ -153,14 +175,14 @@ test('output is bounded deterministically and secrets are not inherited', async 
 test('output beyond four MiB retains the final failure, not the first chunk', async () => {
   const dir = worktree({ 'tests/test_big.py': '' });
   const big = fakeBin(dir, 'pytest-huge', 'head -c 4500000 /dev/zero | tr "\\000" x\nprintf "\\nFINAL_TRACEBACK\\n"\nexit 1');
-  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, { bins: { pytest: big } });
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, directOptions({ bins: { pytest: big } }));
   assert.equal(result.status, 'fail');
   assert.equal(result.truncated, true);
   assert.match(result.stdout_tail, /FINAL_TRACEBACK/);
   assert.ok(result.stdout_tail.length <= 3000);
 });
 
-test('check subprocess cannot use the network or read home credentials', async () => {
+test('check subprocess cannot use the network or read home credentials', { skip: !hasRealSandbox }, async () => {
   const dir = worktree({ 'tests/test_guard.py': '' });
   const marker = path.join(os.homedir(), '.pi-run-check-secret-test');
   fs.writeFileSync(marker, 'secret');
@@ -175,10 +197,28 @@ test('check subprocess cannot use the network or read home credentials', async (
   }
 });
 
+test('missing sandbox binary reports the sandbox dependency, not the check command', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const result = await runCheck(
+    dir,
+    { kind: 'python_compile', paths: ['ok.py'] },
+    { sandboxFactory: () => ({ command: '/nonexistent/pi-check-sandbox', args: [] }) },
+  );
+  assert.equal(result.status, 'fail');
+  assert.match(result.summary, /Could not start check sandbox \/nonexistent\/pi-check-sandbox: ENOENT/);
+});
+
+test('runner images declare the focused-check sandbox dependency', () => {
+  for (const dockerfile of ['worker.Dockerfile', 'worker-general.Dockerfile']) {
+    const source = fs.readFileSync(new URL(`../infra/github-runner-autoscaler/${dockerfile}`, import.meta.url), 'utf8');
+    assert.match(source, /apt-get install[\s\S]*\bbubblewrap\b/, dockerfile);
+  }
+});
+
 test('failed check returns usable diagnostics even when output is unparsed', async () => {
   const dir = worktree({ 'tests/test_x.py': '' });
   const odd = fakeBin(dir, 'pytest-odd', 'echo "collected 0 items"\necho "ImportError: no module foo" >&2\nexit 2');
-  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_x.py'] }, { bins: { pytest: odd } });
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_x.py'] }, directOptions({ bins: { pytest: odd } }));
   assert.equal(result.status, 'fail');
   assert.equal(result.exit_code, 2);
   assert.match(result.stderr_tail, /ImportError/);
@@ -187,14 +227,14 @@ test('failed check returns usable diagnostics even when output is unparsed', asy
 
 test('named node_tests profile runs a fixed argv', async () => {
   const dir = worktree({ 'tests/a.test.mjs': "import test from 'node:test'; test('t', () => {});\n" });
-  const result = await runCheck(dir, { kind: 'profile', profile: 'node_tests' });
+  const result = await runCheck(dir, { kind: 'profile', profile: 'node_tests' }, directOptions());
   assert.equal(result.status, 'pass');
   assert.equal(result.profile, 'node_tests');
 });
 
 test('missing binary is a fail result, not a thrown error', async () => {
   const dir = worktree({ 'a.py': '' });
-  const result = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, { bins: { ruff: '/nonexistent/ruff' } });
+  const result = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, directOptions({ bins: { ruff: '/nonexistent/ruff' } }));
   assert.equal(result.status, 'fail');
   assert.match(result.summary, /Could not start/);
 });
