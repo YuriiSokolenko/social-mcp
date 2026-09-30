@@ -865,3 +865,25 @@ test('text architecture map is maintained only for architecture-changing work', 
   assert.match(architect, /docs\/architecture\/PROJECT_MAP\.md/);
   assert.match(context, /docs\/architecture\/PROJECT_MAP\.md/);
 });
+
+
+test('implementer can terminate a contradictory task as a deliberate human gate', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  const tool = fs.readFileSync('scripts/pi-implementer-result-tool.mjs', 'utf8');
+  const agent = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
+
+  assert.match(tool, /blocked_reason/);
+  assert.match(tool, /blocked_reason requires a clean worktree/);
+  assert.match(tool, /blocked:\s*true/);
+  assert.match(runtime, /submit_result with blocked_reason now/);
+  assert.match(agent, /submit_result\(\{blocked_reason:/);
+  assert.match(agent, /pi:needs-human/);
+
+  assert.match(workflow, /BLOCKED="\$\(jq -r '\.blocked \/\/ false'/);
+  assert.match(workflow, /BLOCKED_REASON="\$\(jq -r '\.blocked_reason \/\/ empty'/);
+  assert.match(
+    workflow,
+    /if \[ "\$BLOCKED" = "true" \]; then[\s\S]*?issue needs-human[\s\S]*?\$BLOCKED_REASON[\s\S]*?exit 0/,
+  );
+});
