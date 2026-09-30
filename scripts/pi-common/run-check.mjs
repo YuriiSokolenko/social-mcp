@@ -356,7 +356,8 @@ export async function runCheck(root, params, options = {}) {
     MAX_TIMEOUT_SECONDS,
   );
   const timeoutMs = options.timeoutMs ?? seconds * 1000;
-  const isolated = isolatedCommand(root, spec);
+  const sandboxFactory = options.sandboxFactory ?? isolatedCommand;
+  const isolated = sandboxFactory(root, spec);
   if (!isolated) return invalid(request.kind, `No check sandbox is available on ${process.platform}`);
   if (path.isAbsolute(spec.command) && !fs.existsSync(spec.command)) {
     return { ...invalid(request.kind, `Could not start ${spec.command}: ENOENT`), status: 'fail' };
@@ -387,7 +388,8 @@ export async function runCheck(root, params, options = {}) {
     return { status: 'timeout', ...base, summary: `Timed out after ${Math.round(timeoutMs / 1000)}s; process tree killed`, diagnostics: [] };
   }
   if (run.spawnError) {
-    return { status: 'fail', ...base, summary: `Could not start ${spec.command}: ${run.spawnError.code || run.spawnError.message}`, diagnostics: [] };
+    const failedTarget = isolated.command === spec.command ? spec.command : `check sandbox ${isolated.command}`;
+    return { status: 'fail', ...base, summary: `Could not start ${failedTarget}: ${run.spawnError.code || run.spawnError.message}`, diagnostics: [] };
   }
 
   const { diagnostics, summary } = analyze(request, run, path.resolve(root));
