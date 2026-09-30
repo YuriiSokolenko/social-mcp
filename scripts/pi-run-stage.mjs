@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import { runMiniSweStage } from './pi-common/mini-swe-stage-backend.mjs';
@@ -19,6 +20,8 @@ const MODEL_CHOICES = {
   qwen: { id: 'qwen3.8-flash-next', label: 'Qwen 3.8 Flash Next' },
 };
 
+export const DEFAULT_MODEL_BASE_URL = 'http://192.168.8.210:4001/v1';
+
 function resolveModelId(env) {
   if (env.PI_MODEL) return env.PI_MODEL;
   const choice = env.PI_MODEL_CHOICE || 'laguna';
@@ -27,6 +30,44 @@ function resolveModelId(env) {
     throw new Error(`Unknown PI_MODEL_CHOICE "${choice}", expected one of: ${Object.keys(MODEL_CHOICES).join(', ')}`);
   }
   return entry.id;
+}
+
+export function forcePiProviderBaseUrl(model, env = process.env) {
+  if (model.provider !== 'hp-laguna') return;
+
+  const agentDir = env.PI_AGENT_CONFIG_DIR || path.join(env.HOME || homedir(), '.pi', 'agent');
+  const modelsFile = path.join(agentDir, 'models.json');
+  if (!fs.existsSync(modelsFile)) {
+    throw new Error(`Pi provider config is missing: ${modelsFile}`);
+  }
+
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(modelsFile, 'utf8'));
+  } catch (error) {
+    throw new Error(`Could not parse Pi provider config at ${modelsFile}: ${error.message}`);
+  }
+
+  const provider = config.providers?.[model.provider];
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
+    throw new Error(`Pi provider "${model.provider}" is missing from ${modelsFile}`);
+  }
+
+  provider.baseUrl = model.baseUrl;
+
+  if (Array.isArray(provider.models)) {
+    for (const entry of provider.models) {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) entry.baseUrl = model.baseUrl;
+    }
+  }
+
+  if (provider.modelOverrides && typeof provider.modelOverrides === 'object' && !Array.isArray(provider.modelOverrides)) {
+    for (const entry of Object.values(provider.modelOverrides)) {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) entry.baseUrl = model.baseUrl;
+    }
+  }
+
+  fs.writeFileSync(modelsFile, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
 async function verifyModelIsLoaded(baseUrl, expectedId) {
@@ -124,7 +165,7 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
     model: {
       id: resolveModelId(env),
       provider: env.PI_PROVIDER || 'hp-laguna',
-      baseUrl: env.PI_MODEL_BASE_URL || 'http://192.168.8.210:3009/v1',
+      baseUrl: env.PI_MODEL_BASE_URL || DEFAULT_MODEL_BASE_URL,
     },
     environment: childEnv,
     artifacts: {
@@ -139,6 +180,9 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
 
 export async function runStage(options, env = process.env) {
   const { spec, workspace, backend } = buildStageRunSpec(options, env);
+  if (backend === 'pi') forcePiProviderBaseUrl(spec.model, env);
+  console.log(`PI_MODEL_ENDPOINT backend=${backend} provider=${spec.model.provider} base_url=${spec.model.baseUrl}`);
+
   writeGithubEnv(env, 'PI_METRICS_FILE', spec.artifacts.metricsPath);
   writeGithubEnv(env, 'PI_PHASE', spec.environment.PI_PHASE);
   if (spec.environment.PI_ISSUE) writeGithubEnv(env, 'PI_ISSUE', spec.environment.PI_ISSUE);

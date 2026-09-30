@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { buildStageRunSpec, resolveStageBackend } from '../scripts/pi-run-stage.mjs';
+import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, resolveStageBackend } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
@@ -61,6 +61,54 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
   assert.ok(Object.isFrozen(spec));
   assert.ok(Object.isFrozen(spec.model));
   assert.ok(Object.isFrozen(spec.artifacts));
+});
+
+test('model endpoint defaults to the shared Open Responses server on port 4001', () => {
+  const { spec } = buildStageRunSpec({
+    stage: 'dispatcher',
+    cwd: '/work',
+  }, {
+    RUNNER_TEMP: '/tmp/runner',
+    GITHUB_WORKSPACE: '/control',
+    PI_MODEL: 'model-x',
+  });
+
+  assert.equal(spec.model.baseUrl, DEFAULT_MODEL_BASE_URL);
+  assert.equal(new URL(spec.model.baseUrl).port, '4001');
+});
+
+test('Pi hp-laguna provider config is forced to the same stage endpoint', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pi-model-route-'));
+  const agentDir = join(home, '.pi', 'agent');
+  mkdirSync(agentDir, { recursive: true });
+  const modelsFile = join(agentDir, 'models.json');
+  writeFileSync(modelsFile, JSON.stringify({
+    providers: {
+      'hp-laguna': {
+        baseUrl: 'http://192.168.8.210:4000/v1',
+        models: [
+          { id: 'laguna-s-2.1-gguf', baseUrl: 'http://192.168.8.210:3009/v1' },
+          { id: 'qwen3.8-flash-next' },
+        ],
+        modelOverrides: {
+          'laguna-s-2.1-gguf': { baseUrl: 'http://192.168.8.210:4000/v1' },
+        },
+      },
+      other: { baseUrl: 'http://example.invalid/v1' },
+    },
+  }));
+
+  forcePiProviderBaseUrl({
+    provider: 'hp-laguna',
+    baseUrl: DEFAULT_MODEL_BASE_URL,
+  }, { HOME: home });
+
+  const config = JSON.parse(readFileSync(modelsFile, 'utf8'));
+  assert.equal(config.providers['hp-laguna'].baseUrl, DEFAULT_MODEL_BASE_URL);
+  assert.equal(config.providers['hp-laguna'].models[0].baseUrl, DEFAULT_MODEL_BASE_URL);
+  assert.equal(config.providers['hp-laguna'].models[1].baseUrl, DEFAULT_MODEL_BASE_URL);
+  assert.equal(config.providers['hp-laguna'].modelOverrides['laguna-s-2.1-gguf'].baseUrl, DEFAULT_MODEL_BASE_URL);
+  assert.equal(config.providers.other.baseUrl, 'http://example.invalid/v1');
 });
 
 test('Pi backend invocation keeps the legacy extension and CLI argument order', () => {
