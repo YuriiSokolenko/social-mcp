@@ -5,6 +5,7 @@ import { finished } from 'node:stream/promises';
 
 import { integrateLatestDev } from './finalize-product-tree.mjs';
 import { runGit as git } from './git.mjs';
+import { writeImplementerResult } from './implementer-result.mjs';
 import { createStageRunResult } from './stage-run-contract.mjs';
 
 const BACKEND = 'mini-swe';
@@ -150,7 +151,7 @@ function writeImplementationResult(spec) {
   };
   if (!metadata.title) throw new Error('Issue title is required for mini-swe publication');
 
-  fs.writeFileSync(target, JSON.stringify(metadata, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  writeImplementerResult(target, { ...metadata, outcome: 'changed' });
   fs.writeFileSync(
     spec.artifacts.terminalResultPath,
     JSON.stringify({ backend: BACKEND, status: 'submitted', changes: changedPaths }) + '\n',
