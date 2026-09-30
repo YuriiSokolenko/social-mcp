@@ -28,7 +28,7 @@ const LABEL_ROLES = Object.freeze([
 ]);
 // Workflow files the harness dispatches or watches, by ROLE. Filenames are project
 // wiring (the caller workflows live in the project repository), not harness names.
-const WORKFLOW_ROLES = Object.freeze(['dispatcher', 'architect', 'implementer', 'reviewer', 'repair', 'mergeGate', 'triage']);
+const WORKFLOW_ROLES = Object.freeze(['dispatcher', 'architect', 'implementer', 'reviewer', 'repair', 'ci', 'mergeGate', 'triage']);
 const TOP_LEVEL = new Set([
   'version', 'git', 'labels', 'workflows', 'automation', 'agents', 'controlPlane', 'checks', 'environment', 'workspace', 'pullRequest',
 ]);

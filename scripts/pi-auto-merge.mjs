@@ -6,7 +6,7 @@ import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED, withoutReviewLabels, withRevie
 import { baseBranch, parseIssueBranch, workflowFile } from './pi-common/project-config.mjs';
 import { PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 
-const { api, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow } = githubClient();
+const { api, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns } = githubClient();
 
 export function linkedIssueNumber(pr, repository) {
   const number = parseIssueBranch(pr.head?.ref ?? '');
@@ -23,6 +23,25 @@ export function issueNumber(pr, repository) {
 export function allowedFiles(files, changedCount) {
   const paths = files.flatMap(file => [file.filename, file.previous_filename].filter(Boolean));
   return files.length === changedCount && controlPlanePaths(paths).length === 0;
+}
+
+export function prCiVerdict(runs, headSha) {
+  const matching = runs
+    .filter(run => run?.event === 'pull_request' && run?.head_sha === headSha)
+    .sort((a, b) => Number(b.id ?? 0) - Number(a.id ?? 0));
+  if (!matching.length) return { state: 'pending', run: null };
+
+  const run = matching[0];
+  if (run.status !== 'completed') return { state: 'pending', run };
+  return { state: run.conclusion === 'success' ? 'success' : 'failed', run };
+}
+
+async function loadPrCiVerdict(headSha) {
+  const workflow = workflowFile('ci');
+  const runs = await workflowRuns(
+    `/actions/workflows/${encodeURIComponent(workflow)}/runs?event=pull_request&head_sha=${encodeURIComponent(headSha)}`,
+  );
+  return prCiVerdict(runs, headSha);
 }
 
 async function processPR(prSummary) {
@@ -62,11 +81,9 @@ async function processPR(prSummary) {
     return;
   }
 
-  // Deliberately simple contract:
-  // 1. Merge the ready PR.
-  // 2. The resulting push to dev runs CI.
-  // 3. CI success means the merged result is good; CI failure stops the pipeline for repair/human action.
-  // Do not reintroduce pre-merge dev-SHA/exact-pair integration or review status state.
+  // Reviewer and CI must both validate the exact PR HEAD that will be merged.
+  // The gate reads the current HEAD directly from GitHub; no SHA is transported
+  // between workflows and no synthetic dev+PR integration commit is created.
   const sha = pr.head.sha;
   const fresh = await loadPullRequest(pr.number);
   if (fresh.state !== 'open' || fresh.head.sha !== sha) {
@@ -74,10 +91,35 @@ async function processPR(prSummary) {
     return;
   }
 
+  const ci = await loadPrCiVerdict(sha);
+  if (ci.state === 'pending') {
+    console.log(`#${pr.number}: waiting for green PR CI for ${sha}; checking the next PR`);
+    return;
+  }
+  if (ci.state === 'failed') {
+    const conclusion = ci.run?.conclusion ?? 'failure';
+    const runId = ci.run?.id ?? 'unknown';
+    const marker = `<!-- merge-gate:ci-failure:${pr.number}:${sha}:${runId} -->`;
+    const comments = await pages(`/issues/${pr.number}/comments`);
+    if (!comments.some(item => (item.body ?? '').includes(marker))) {
+      const runUrl = ci.run?.html_url ? ` Run: ${ci.run.html_url}` : '';
+      await comment(
+        pr.number,
+        `Merge Gate blocked this PR because CI for the reviewed HEAD ${sha} completed with ${conclusion}.${runUrl} Review PASS is invalidated and PR Fix now owns repair.\n\n${marker}`,
+      );
+    }
+    await replaceLabels(pr.number, withReviewVerdict([...prLabels], REVIEW_CHANGES_REQUESTED));
+    await dispatchWorkflow(workflowFile('repair'), { pr_number: String(pr.number) });
+    console.log(
+      `#${pr.number}: PR CI ${conclusion} for ${sha}; assigned ${REVIEW_CHANGES_REQUESTED}, dispatched PR Fix, checking the next PR`,
+    );
+    return;
+  }
+
   try {
     const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
     if (!merged.merged) throw new Error(`merge API did not confirm merge`);
-    console.log(`#${pr.number}: merged ${sha}; dev push CI now validates the merged result`);
+    console.log(`#${pr.number}: merged ${sha} after green PR CI; dev push CI now validates the merged result`);
     return true;
   } catch (error) {
     if (!/merge conflicts/i.test(error.message)) throw error;
