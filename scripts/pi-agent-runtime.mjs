@@ -219,18 +219,30 @@ export default function (pi) {
   }
 
   function syncActionToolSurface(productiveState) {
-    if (stage !== 'implementer' || !config.productiveProgress) return;
-    const actionRequired =
-      productiveState === 'action_required' ||
-      productiveState === 'recovery_action_required';
+    const preComplexityRequired =
+      config.preComplexityActionResponseMaxTokens != null &&
+      controller.preComplexityActionRequired();
+    const productiveActionRequired =
+      stage === 'implementer' &&
+      config.productiveProgress &&
+      (productiveState === 'action_required' ||
+        productiveState === 'recovery_action_required');
 
-    if (actionRequired) {
+    if (preComplexityRequired || productiveActionRequired) {
       if (unrestrictedActiveTools == null) unrestrictedActiveTools = pi.getActiveTools();
-      const restricted = actionRequiredToolNames(unrestrictedActiveTools, {
-        actionTools: config.productiveProgress.actionTools,
-        controlTools: config.productiveProgress.controlTools,
-        blockerTool: config.productiveProgress.blockerTool,
-      });
+      const restricted = preComplexityRequired
+        ? unrestrictedActiveTools.filter(name =>
+            new Set([
+              ...(config.preComplexityTransitionTools ?? []),
+              'submit_result',
+              'submit_repair',
+            ]).has(name)
+          )
+        : actionRequiredToolNames(unrestrictedActiveTools, {
+            actionTools: config.productiveProgress.actionTools,
+            controlTools: config.productiveProgress.controlTools,
+            blockerTool: config.productiveProgress.blockerTool,
+          });
       pi.setActiveTools(restricted);
       return;
     }
@@ -563,17 +575,35 @@ export default function (pi) {
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
-    const actionCap = Number(config.productiveProgress?.actionResponseMaxTokens ?? 0);
-    const actionRetryCap = Number(
-      config.productiveProgress?.actionResponseRetryMaxTokens ?? actionCap
-    );
-    const actionRequired =
+    const preComplexityRequired =
+      config.preComplexityActionResponseMaxTokens != null &&
+      controller.preComplexityActionRequired();
+    const postComplexityRequired =
+      config.postComplexityActionResponseMaxTokens != null &&
+      controller.complexityRecorded();
+    const productiveActionRequired =
       productiveState === 'action_required' ||
       productiveState === 'recovery_action_required';
+    const runtimeActionRequired =
+      preComplexityRequired || postComplexityRequired || productiveActionRequired;
+    const actionCap = Number(
+      preComplexityRequired
+        ? (config.preComplexityActionResponseMaxTokens ?? 0)
+        : postComplexityRequired
+          ? (config.postComplexityActionResponseMaxTokens ?? 0)
+          : (config.productiveProgress?.actionResponseMaxTokens ?? 0)
+    );
+    const actionRetryCap = Number(
+      preComplexityRequired
+        ? (config.preComplexityActionResponseRetryMaxTokens ?? actionCap)
+        : postComplexityRequired
+          ? (config.postComplexityActionResponseRetryMaxTokens ?? actionCap)
+          : (config.productiveProgress?.actionResponseRetryMaxTokens ?? actionCap)
+    );
     actionRequiredProseOnlyTurns = nextActionRequiredProseOnlyTurns(
       actionRequiredProseOnlyTurns,
       {
-        actionRequired,
+        actionRequired: runtimeActionRequired,
         attemptedTool: actionTurnAttemptedTool,
         madeProgress: controller.turnMadeProgress,
       },
@@ -589,7 +619,7 @@ export default function (pi) {
       ? nextActionResponseCap({
           baseCap: actionCap,
           retryCap: actionRetryCap,
-          actionRequired,
+          actionRequired: runtimeActionRequired,
           attemptedTool: actionTurnAttemptedTool,
           madeProgress: controller.turnMadeProgress,
         })
@@ -607,10 +637,14 @@ export default function (pi) {
       await applyBudget(next.level, ctx);
     }
 
-    if (actionRequired && !controller.turnMadeProgress) {
-      const directive = stage === 'implementer'
-        ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result immediately. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
-        : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
+    if (runtimeActionRequired && !controller.turnMadeProgress) {
+      const directive = preComplexityRequired
+        ? 'RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. Call declare_task_complexity immediately with the classification already supported by the issue, diff, and changed code.'
+        : postComplexityRequired
+          ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
+          : stage === 'implementer'
+            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result immediately. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
+            : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
       const reason = actionRequiredProseOnlyTurns > 0
         ? 'prose-only retry'
         : 'action-required transition';
@@ -628,6 +662,8 @@ export default function (pi) {
       explicit: next.explicit === true,
       preservedForToolTurn: next.preservedForToolTurn === true,
       productiveState,
+      preComplexityActionRequired: preComplexityRequired,
+      postComplexityActionRequired: postComplexityRequired,
       actionCapApplied: appliedActionCap > 0,
       actionCapEscalated: appliedActionCap > actionCap,
     })}`);
