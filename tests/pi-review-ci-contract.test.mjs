@@ -255,10 +255,15 @@ test('code-failure ownership remains recoverable when immediate PR Fix dispatch 
   const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
 
-  const ownership = gate.indexOf('withReviewVerdict([...prLabels], REVIEW_CHANGES_REQUESTED)');
-  const dispatch = gate.indexOf("dispatchWorkflow(workflowFile('repair')");
+  const branchStart = gate.indexOf("if (ci.state === 'code_failure')");
+  const branchEnd = gate.indexOf('\n  try {\n    const merged = await api(', branchStart);
+  assert.ok(branchStart >= 0 && branchEnd > branchStart, 'code-failure branch must be present');
+  const branch = gate.slice(branchStart, branchEnd);
+
+  const ownership = branch.indexOf('withReviewVerdict([...prLabels], REVIEW_CHANGES_REQUESTED)');
+  const dispatch = branch.indexOf("dispatchWorkflow(workflowFile('repair')");
   assert.ok(ownership >= 0 && dispatch > ownership, 'ownership must transfer before PR Fix dispatch');
-  assert.match(gate, /PR Fix dispatch failed after ownership transfer; Reconciler will recover it/);
+  assert.match(branch, /PR Fix dispatch failed after ownership transfer; Reconciler will recover it/);
   assert.match(reconcile, /needsFix = labels\.has\('review:changes-requested'\)/);
   assert.match(reconcile, /workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
 });
