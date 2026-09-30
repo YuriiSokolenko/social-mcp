@@ -177,6 +177,37 @@ function hardenStage(stage) {
   return { bytes, entries };
 }
 
+// Requests originate in the runner's filesystem namespace, while the shared
+// builder runs against the staged copy. Translate only paths rooted at the
+// canonical runner worktree; the builder then performs its normal existence,
+// symlink, and containment checks against the staged tree.
+export function remapRunnerPaths(root, params) {
+  const remap = value => {
+    if (typeof value !== 'string' || !path.posix.isAbsolute(value)) return value;
+    const relative = path.posix.relative(root, value);
+    if (relative === '..' || relative.startsWith(`..${path.posix.sep}`) || path.posix.isAbsolute(relative)) {
+      throw Object.assign(new Error(`path escapes the current worktree: ${value}`), { name: 'InvalidCheck' });
+    }
+    return relative || '.';
+  };
+  if (params?.kind === 'python_compile' || params?.kind === 'ruff') {
+    return { ...params, paths: Array.isArray(params.paths) ? params.paths.map(remap) : params.paths };
+  }
+  if (params?.kind === 'pytest') {
+    return { ...params, targets: Array.isArray(params.targets) ? params.targets.map(target => {
+      if (typeof target !== 'string') return target;
+      const [file, ...selectors] = target.split('::');
+      return [remap(file), ...selectors].join('::');
+    }) : params.targets };
+  }
+  return params;
+}
+
+/** The executor boundary: translate runner paths, then validate/build against the staged tree. */
+export function buildStagedRunCheckSpec(canonicalRoot, stageRoot, params, options) {
+  return buildRunCheckSpec(stageRoot, remapRunnerPaths(canonicalRoot, params), options);
+}
+
 async function stageWorktree(runnerName, root, operation) {
   const canonical = await canonicalWorkspace(runnerName, root, operation);
   const stage = fs.mkdtempSync(path.join(STAGE_ROOT, 'check-'));
@@ -184,7 +215,7 @@ async function stageWorktree(runnerName, root, operation) {
     await runCommand(['cp', '-a', `${runnerName}:${canonical}/.`, stage], { timeoutMs: 60000, maxOutputBytes: 256 * 1024 });
     for (const entry of fs.readdirSync(stage)) removeExcluded(stage, entry);
     const stats = hardenStage(stage);
-    return { stage, subpath: path.relative(STAGE_ROOT, stage), stats };
+    return { stage, canonicalRoot: canonical, subpath: path.relative(STAGE_ROOT, stage), stats };
   } catch (error) {
     fs.rmSync(stage, { recursive: true, force: true });
     throw error;
@@ -257,9 +288,15 @@ async function runSandbox({ runnerName, root, operation, params, requestedEnv, t
     stageInfo = await stageWorktree(runnerName, root, operation);
     const env = operation === 'preflight' ? FIXED_ENV : safeCheckEnvironment(requestedEnv);
     const sandboxRoot = '/workspace';
+    const stagedParams = operation === 'preflight'
+      ? { kind: 'python_compile', paths: [`${stageInfo.canonicalRoot}/.pi-run-check-preflight.py`] }
+      : params;
+    // Preflight must exercise the same absolute runner-root translation and
+    // staged path validation used for real focused checks.
+    const validation = buildStagedRunCheckSpec(stageInfo.canonicalRoot, stageInfo.stage, stagedParams, { bins: { python: '/usr/local/bin/python3', ruff: '/usr/local/bin/ruff', pytest: '/usr/local/bin/pytest' }, env: { PATH: FIXED_PATH } });
     const built = operation === 'preflight'
       ? { spec: { command: '/usr/local/bin/python3', args: ['/usr/local/lib/run-check-sandbox-probe.py', 'worktree'] } }
-      : buildRunCheckSpec(stageInfo.stage, params, { bins: { python: '/usr/local/bin/python3', ruff: '/usr/local/bin/ruff', pytest: '/usr/local/bin/pytest' }, env: { PATH: FIXED_PATH } });
+      : validation;
     if (operation !== 'preflight' && built.spec) {
       built.spec.args = built.spec.args.map(arg => typeof arg === 'string' ? arg.replaceAll(stageInfo.stage, sandboxRoot) : arg);
     }

@@ -435,6 +435,7 @@ export async function sandboxPreflight(options = {}) {
   const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-sandbox-preflight-'));
   try {
     fs.writeFileSync(path.join(probeRoot, '.pi-run-check-preflight'), 'readable\n', { mode: 0o444 });
+    fs.writeFileSync(path.join(probeRoot, '.pi-run-check-preflight.py'), 'probe = True\n', { mode: 0o444 });
     const backend = options.backend ?? (options.sandboxFactory
       ? createLocalSandboxBackend(options.sandboxFactory)
       : selectSandboxBackend(env));
