@@ -1,4 +1,5 @@
 import { runProcess } from './process.mjs';
+import { ruffArgs } from './run-check.mjs';
 
 /**
  * Run the deterministic checks that validate PRODUCT CODE before a Pi stage
@@ -17,7 +18,7 @@ function run(command, args, cwd) {
 export function runProductChecks({ cwd } = {}) {
   run('git', ['diff', '--check'], cwd);
   run('pytest', [], cwd);
-  run('ruff', ['check', '.'], cwd);
+  run('ruff', ruffArgs(['.']), cwd);
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {

@@ -125,7 +125,7 @@ Use `scout` with `async: false` only when the evidence already available to the 
 
 **Task classification alone never requires delegation.** `nontrivial` means only that the startup evidence allowance is six actions; it is not an instruction to call `scout`.
 
-`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `indexed_repo_search` when available for initial indexed discovery and `repo_search` for current-worktree deterministic discovery. Broad `bash` is also blocked. Use the package-owned `run-ci` workflow for focused tests/lint/type/compile commands when useful.
+`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `indexed_repo_search` when available for initial indexed discovery and `repo_search` for current-worktree deterministic discovery. Broad `bash` is also blocked. After a successful edit you may call `run_check` (`python_compile`, `ruff`, `pytest`, or a named `profile`) for focused verification. A failing result is evidence: fix the reported diagnostic and re-check. It does not replace final validation; still call `submit_result`.
 
 For scout requests:
 

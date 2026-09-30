@@ -100,12 +100,12 @@ export function nextActionRequiredProseOnlyTurns(
 
 export function actionRequiredToolNames(
   activeToolNames,
-  { actionTools = [], controlTools = [], blockerTool = null } = {},
+  { actionTools = [], controlTools = [], blockerTool = null, verificationTools = [] } = {},
 ) {
   if (!Array.isArray(activeToolNames)) {
     throw new Error('activeToolNames must be an array');
   }
-  const allowed = new Set([...actionTools, ...controlTools]);
+  const allowed = new Set([...actionTools, ...controlTools, ...verificationTools]);
   if (blockerTool) allowed.add(blockerTool);
   return activeToolNames.filter(name => allowed.has(name));
 }
@@ -158,6 +158,11 @@ export class ProgressController {
     this.productiveBlockerTool = this.productiveProgress?.blockerTool ?? null;
     this.productiveActionTools = new Set(this.productiveProgress?.actionTools ?? []);
     this.productiveControlTools = new Set(this.productiveProgress?.controlTools ?? []);
+    // Focused verification (run_check) is evidence about a mutation, not progress:
+    // one permit is granted per successful mutation, so it cannot become an
+    // unlimited escape hatch from the action-required state.
+    this.productiveVerificationTool = this.productiveProgress?.verificationTool ?? null;
+    this.verificationPermits = 0;
     this.productiveInitialEvidenceBudget = positiveInteger(
       Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
       'productiveProgress.initialEvidenceBudget',
@@ -213,6 +218,10 @@ export class ProgressController {
     const previous = this.complexity;
     this.complexity = name;
     return { complexity: name, previous, changed: previous !== name };
+  }
+
+  verificationPermitted() {
+    return this.verificationPermits > 0;
   }
 
   productiveProgressState() {
@@ -361,6 +370,8 @@ export class ProgressController {
           this.evidenceUnlockUsedSinceProgress = true;
           this.productiveEvidenceRemaining = 1;
           this.productiveState = 'evidence_allowed';
+        } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool && this.verificationPermits > 0) {
+          this.verificationPermits -= 1;
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
             block: true,
@@ -463,6 +474,9 @@ export class ProgressController {
       this.productiveEvidenceRemaining = this.productiveInitialEvidenceBudgetForComplexity();
       this.productiveState = 'evidence_allowed';
       this.evidenceUnlockUsedSinceProgress = false;
+    }
+    if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
+      this.verificationPermits = 1;
     }
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
