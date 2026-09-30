@@ -53,14 +53,13 @@ repository code, same trust boundary as the `pi-agent` pool.
 Build both ephemeral worker images first:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.0-mini-swe .
-docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.1 .
+docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.2 .
 ```
 
-The Pi worker tag `0.89.0-mini-swe` pins `mini-swe-agent==2.4.6`, `pi-mcp-adapter@3.2.0`,
+The Pi worker tag `0.89.1-mini-swe` pins `mini-swe-agent==2.4.6`, `pi-mcp-adapter@3.2.0`,
 `lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`, BasedPyright `1.40.1`, and the official JetBrains
-Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The general runner image and the base runner image
-remain on their existing tags. To roll the Pi pool back, set
+Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. Both ephemeral worker images include `bubblewrap` for `run_check` isolation; the general worker tag is `0.87.2`. System-package changes must use a new worker tag rather than silently reusing an already-built local tag. To roll the Pi pool back, set
 `RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
 untracked `.env` and recreate only `pi-runner-manager`:
 
@@ -212,7 +211,7 @@ when file + line/column are already known and auto-start the routed server.
 
 The `pi-agent` ephemeral worker image pins `@gitlab/orbit@0.130.0`. Architect and Implementer workflows run `orbit setup pi --mcp --yes --no-index` before Pi starts, then index only the checkout authoritative for that job. No GitLab login, PAT, or Orbit Remote service is required: Orbit Local runs against the worker's local checkout and local DuckDB graph.
 
-After changing the worker image, rebuild it on N150 with the existing image tag, restart the Pi runner manager, and verify a fresh Architect or Implementer job prints only the Orbit version plus the non-sensitive confirmation line. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
+After changing a worker image, bump its tracked image tag, rebuild that tag on N150, update the host `.env` to the same tag, restart the affected runner manager, and verify a fresh Architect or Implementer job prints only the Orbit version plus the non-sensitive confirmation line. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
 
 Orbit complements the host Zoekt service: Zoekt stays the fast shared `dev` text index; Orbit supplies per-job structural code context for the current checkout/worktree.
 
