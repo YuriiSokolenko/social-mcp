@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { Type } from 'typebox';
 
-import { integrateLatestDev, validateFinalProductTree } from './pi-common/finalize-product-tree.mjs';
+import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
 import { runGit as git } from './pi-common/git.mjs';
 import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
 
@@ -22,8 +22,8 @@ function issueContext() {
 
 export default function (pi) {
   registerTerminalTool(pi, {
-    label: 'Sync, validate, and submit implementation result',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, then run authoritative final validation. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. Fresh changed work must include title, summary, changes, security_notes, and limitations on the first call; metadata is preflight-validated before dev integration or expensive checks. On failure, fix only the reported problem with structural_edit/safe_edit/edit/write as appropriate and retry.',
+    label: 'Sync and submit implementation candidate',
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]} and trusted runtime code derives publication metadata from the issue context. Fresh changed work must include title, summary, changes, security_notes, and limitations on the first call.',
     parameters: Type.Object({
       title: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
       summary: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
@@ -34,9 +34,9 @@ export default function (pi) {
     }),
     customType: 'implementer-result',
     nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. For restored work call submit_result({}) now. For fresh work call structural_edit/safe_edit/edit/write now when a change is required, or submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state. If exactly one concrete missing fact blocks safe action, call need_more_evidence once, gather exactly one fact, then act.',
-    nudgeRepeatWhile: () => ['action_required', 'recovery_action_required'].includes(process.env.PI_PRODUCTIVE_STATE ?? ''),
+    nudgeRepeatWhile: () => process.env.PI_PRODUCTIVE_STATE === 'action_required',
     nudgeMaxCount: 3,
-    successText: 'SUCCESS. Latest dev is integrated and final checks pass. Implementation result recorded. Stop now.',
+    successText: 'SUCCESS. Latest dev is integrated and the implementation candidate is recorded. The harness will run authoritative final checks. Stop now.',
     execute: async (params) => {
       const restored = restoredWork();
       const alreadySatisfied = params.already_satisfied === true;
@@ -63,8 +63,6 @@ export default function (pi) {
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
       });
-      validateFinalProductTree();
-
       const changedPaths = lines(git(['diff', '--name-only', 'origin/dev']).out);
       const hasDiff = changedPaths.length > 0;
       let data;
@@ -75,7 +73,7 @@ export default function (pi) {
         data = hasDiff
           ? {
               title: clean(context.title),
-              summary: `Restored implementation${issue ? ` for issue #${issue}` : ''} was validated against latest dev.`,
+              summary: `Restored implementation${issue ? ` for issue #${issue}` : ''} was prepared against latest dev.`,
               changes: changedPaths,
               already_satisfied: false,
               security_notes: 'No additional security notes were supplied for restored work.',
