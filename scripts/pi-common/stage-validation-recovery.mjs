@@ -43,16 +43,20 @@ export function createValidationRepairSpec(spec, error, attempt = 1) {
 export async function runStageWithValidationRecovery(
   spec,
   runBackend,
-  { maxRepairAttempts = DEFAULT_REPAIR_ATTEMPTS } = {},
+  {
+    maxRepairAttempts = DEFAULT_REPAIR_ATTEMPTS,
+    validate = validateFinalProductTree,
+  } = {},
 ) {
   if (typeof runBackend !== 'function') throw new Error('runBackend is required');
+  if (typeof validate !== 'function') throw new Error('validate is required');
 
   let result = await runBackend(spec);
   if (spec.stage !== 'implementer') return result;
 
   for (let attempt = 0; ; attempt += 1) {
     try {
-      validateFinalProductTree({ cwd: spec.cwd });
+      validate({ cwd: spec.cwd });
       return result;
     } catch (error) {
       if (attempt >= maxRepairAttempts) throw error;
