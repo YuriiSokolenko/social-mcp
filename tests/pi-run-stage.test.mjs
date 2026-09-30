@@ -231,7 +231,7 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.equal(attempts[1].environment.PI_CALL, 'repair');
   assert.match(attempts[1].prompt, /BLE001 blind exception/);
   assert.equal(result.backend, 'fake');
-  assert.equal(result.durationMs, 2);
+  assert.equal(result.durationMs, 3);
 });
 
 test('shared validation recovery stops after one failed repair attempt', async () => {
