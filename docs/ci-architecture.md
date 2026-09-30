@@ -60,7 +60,15 @@ PR HEAD CI green -+        |                              |
                                              next merge      stop
 ```
 
-PR CI is not a synthetic integration approximation: it is the repository's ordinary pull-request workflow bound to the current PR HEAD. Pending PR CI is skipped until its green wake; failed or cancelled PR CI transfers ownership to `review:changes-requested` + PR Fix and does not stall later ready PRs. Post-merge `dev` CI remains the integration truth.
+PR CI is not a synthetic integration approximation: it is the repository's ordinary pull-request workflow bound to the current PR HEAD. Pending PR CI is skipped. Terminal PR CI always wakes Merge Gate, which reloads current PR and CI state from GitHub. A failure in a known deterministic product-check step transfers ownership to `review:changes-requested` + PR Fix and does not stall later ready PRs. Cancellation, timeout, setup/runner failures, missing job metadata, and Docker-job failures are treated conservatively as infrastructure instead of consuming an LLM repair run. Post-merge `dev` CI remains the integration truth.
+
+## PR CI failure classification
+
+Merge Gate classifies only trusted GitHub Actions run/job/step metadata. The repairable allowlist is intentionally narrow: Ruff, Pytest, Agent workflow checks, and Runner autoscaler checks. Docker build/start/smoke/integration failures are not auto-repairable because the same step can fail from a product change or transient Docker, registry, or network infrastructure.
+
+Infrastructure recovery is bounded to one automatic retry. For a completed workflow with conclusion `failure`, Merge Gate uses GitHub's `rerun-failed-jobs` endpoint so already-green jobs do not run again. For `cancelled` or `timed_out`, it re-runs the full workflow because there may be no failed job set to retry. A second infrastructure-classified terminal attempt moves the PR to `pi:needs-human`.
+
+A product test that hangs until the workflow or job timeout is deliberately classified as infrastructure because GitHub metadata cannot safely distinguish a product hang from runner or infrastructure loss. The policy is one retry and then `pi:needs-human`, not automatic PR Fix.
 
 ## Workflow input rule
 
