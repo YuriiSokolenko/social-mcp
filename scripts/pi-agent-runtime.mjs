@@ -687,7 +687,14 @@ export default function (pi) {
     let repositoryStateAfter = null;
     if (loopGuard && pendingLoopCall && isSemanticMutationTool(event.toolName)) {
       repositoryStateAfter = repositoryStateFingerprint(pendingLoopCall.cwd);
-      if (mutationChanged == null) {
+      // Compare fingerprints only when both are known. A failed fingerprint
+      // (null) means "unknown", not "unchanged": keep mutationChanged null so
+      // progress accounting is not downgraded to a no-op.
+      if (
+        mutationChanged == null &&
+        pendingLoopCall.repositoryStateBefore &&
+        repositoryStateAfter
+      ) {
         mutationChanged = pendingLoopCall.repositoryStateBefore !== repositoryStateAfter;
       }
     }

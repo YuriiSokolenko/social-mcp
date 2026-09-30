@@ -401,17 +401,11 @@ test('terminal submission is never flagged as a loop', () => {
   assert.equal(terminal.tripped, false);
 });
 
-test('runtime wires semantic loop metrics, repository state, and result observation', () => {
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  assert.match(runtime, /SemanticLoopGuard/);
-  assert.match(runtime, /repositoryStateFingerprint/);
-  assert.match(runtime, /event\.result/);
-  assert.match(runtime, /PI_LOOP_GUARD_STEER/);
-  assert.match(runtime, /PI_LOOP_GUARD_ABORT/);
-  assert.match(runtime, /madeProgress: effectiveProgress/);
-});
+const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
-test('runtime mock classifies blocked tool calls without tool_execution_end', () => {
+// Runs the real runtime extension against a mock `pi` in a child process.
+// `typebox` is stubbed because only handler wiring is exercised here.
+function runRuntimeScenario(body, env = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-'));
   const issueContext = path.join(dir, 'issue.json');
   const loader = path.join(dir, 'loader.mjs');
@@ -427,9 +421,13 @@ test('runtime mock classifies blocked tool calls without tool_execution_end', ()
       }
     `);
     const runtimeUrl = new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href;
+    const controllerUrl = new URL('../scripts/pi-common/progress-controller.mjs', import.meta.url).href;
     const script = `
       import assert from 'node:assert/strict';
-      const { default: install } = await import(${JSON.stringify(runtimeUrl)});
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const RUNTIME_URL = ${JSON.stringify(runtimeUrl)};
+      const CONTROLLER_URL = ${JSON.stringify(controllerUrl)};
       const handlers = new Map();
       const messages = [];
       const pi = {
@@ -440,35 +438,127 @@ test('runtime mock classifies blocked tool calls without tool_execution_end', ()
         sendUserMessage: async (...args) => messages.push(args),
         setModel: async () => true,
       };
-      install(pi);
-      const result = await handlers.get('tool_call')(
-        { toolName: 'read', toolCallId: 'blocked-1', input: { path: 'other.md' } },
-        { abort: () => {} },
-      );
-      assert.equal(result.block, true);
-      assert.equal(messages.length, 1);
-      console.log('BLOCKED_LOOP_INTEGRATION_OK');
+      ${body}
     `;
     const result = spawnSync(process.execPath, [
       '--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script,
     ], {
-      cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+      cwd: REPO_ROOT,
       encoding: 'utf8',
       env: {
         ...process.env,
         PI_STAGE: 'implementer',
         PI_ISSUE: '1',
         PI_ISSUE_CONTEXT: issueContext,
-        GITHUB_WORKSPACE: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
-        PI_LOOP_GUARD_WINDOW: '2',
-        PI_LOOP_GUARD_THRESHOLD: '1',
+        GITHUB_WORKSPACE: REPO_ROOT,
+        ...env,
       },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /BLOCKED_LOOP_INTEGRATION_OK/);
+    return result;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+test('runtime mock attributes interleaved mutations by toolCallId and aborts after a steer', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-repo-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      // Isolate handler wiring from the productive-progress gating rules.
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      let aborts = 0;
+      const ctx = { cwd: repo, abort: () => { aborts += 1; } };
+      const call = (toolCallId, toolName, input) =>
+        handlers.get('tool_call')({ toolCallId, toolName, input }, ctx);
+      const end = (toolCallId, toolName, isError = false) =>
+        handlers.get('tool_execution_end')({ toolCallId, toolName, isError, result: { content: [] } }, ctx);
+
+      // Two mutations start before either finishes. Only b.txt changes.
+      assert.equal(await call('edit-a', 'safe_edit', { path: 'a.txt', operation: 'replace' }), undefined);
+      assert.equal(await call('write-b', 'write', { path: 'b.txt' }), undefined);
+      fs.writeFileSync(path.join(repo, 'b.txt'), 'b changed\\n');
+      await end('write-b', 'write');
+      assert.equal(messages.length, 0, 'real change on b.txt must not trip');
+      await end('edit-a', 'safe_edit');
+      assert.equal(messages.length, 1, 'a.txt no-op must be attributed to edit-a and steer');
+      assert.match(messages[0][0], /RUNTIME LOOP GUARD/);
+      assert.equal(aborts, 0);
+
+      // Repeating the no-op after the steer aborts the stage.
+      await call('edit-a-2', 'safe_edit', { path: 'a.txt', operation: 'replace' });
+      await end('edit-a-2', 'safe_edit');
+      assert.equal(aborts, 1);
+      console.log('INTERLEAVED_LOOP_INTEGRATION_OK');
+    `, {
+      PI_LOOP_GUARD_WINDOW: '4',
+      PI_LOOP_GUARD_THRESHOLD: '1',
+    });
+    assert.match(result.stdout, /INTERLEAVED_LOOP_INTEGRATION_OK/);
+    assert.match(result.stdout, /PI_LOOP_GUARD .*"tool":"safe_edit".*"noOp":true/);
+    assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('runtime mock does not treat unknown repository state as a no-op', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-nogit-'));
+  try {
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      let aborts = 0;
+      const ctx = { cwd: ${JSON.stringify(dir)}, abort: () => { aborts += 1; } };
+      // Not a git repository: fingerprints are null and rollback has no snapshot.
+      for (let index = 0; index < 3; index += 1) {
+        const id = 'rollback-' + index;
+        assert.equal(await handlers.get('tool_call')({ toolCallId: id, toolName: 'rollback_last_mutation', input: {} }, ctx), undefined);
+        await handlers.get('tool_execution_end')({ toolCallId: id, toolName: 'rollback_last_mutation', isError: false, result: {} }, ctx);
+      }
+      assert.equal(messages.length, 0);
+      assert.equal(aborts, 0);
+      console.log('UNKNOWN_STATE_INTEGRATION_OK');
+    `, {
+      PI_LOOP_GUARD_WINDOW: '4',
+      PI_LOOP_GUARD_THRESHOLD: '1',
+    });
+    assert.match(result.stdout, /UNKNOWN_STATE_INTEGRATION_OK/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runtime mock classifies blocked tool calls without tool_execution_end', () => {
+  const result = runRuntimeScenario(`
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+    const result = await handlers.get('tool_call')(
+      { toolName: 'read', toolCallId: 'blocked-1', input: { path: 'other.md' } },
+      { abort: () => {} },
+    );
+    assert.equal(result.block, true);
+    assert.equal(messages.length, 1);
+    console.log('BLOCKED_LOOP_INTEGRATION_OK');
+  `, {
+    PI_LOOP_GUARD_WINDOW: '2',
+    PI_LOOP_GUARD_THRESHOLD: '1',
+  });
+  assert.match(result.stdout, /BLOCKED_LOOP_INTEGRATION_OK/);
 });
 
 test('control scenario read semantic lookup source edit verify submit completes without a warning', () => {

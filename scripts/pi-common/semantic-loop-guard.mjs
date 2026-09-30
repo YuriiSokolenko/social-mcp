@@ -277,6 +277,18 @@ export class SemanticLoopGuard {
     }
 
     if (MUTATION_TOOLS.has(tool)) {
+      if (
+        typeof mutationChanged !== 'boolean' &&
+        (!repositoryStateBefore || !repositoryStateAfter)
+      ) {
+        // Fingerprinting failed and no target-local snapshot is available:
+        // the effect is unknown, so do not classify it as a no-op or revisit.
+        return {
+          ...base,
+          classification: 'success_unclassified',
+          repositoryState: repositoryStateAfter ?? repositoryStateBefore,
+        };
+      }
       if (repositoryStateBefore && this.repositoryWindow.length === 0) {
         this._push(this.repositoryWindow, repositoryStateBefore, this.windowSize + 1);
       } else if (
