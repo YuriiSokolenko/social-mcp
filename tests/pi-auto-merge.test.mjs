@@ -1,10 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { readScript } from './helpers/resolved-source.mjs';
-import { allowedFiles, issueNumber, prCiVerdict } from '../scripts/pi-auto-merge.mjs';
+import { PRODUCT_CI_STEPS, allowedFiles, infraRetryEndpoint, issueNumber, prCiVerdict } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
+
+function parseWorkflow(path) {
+  const python = [
+    'import json, sys, yaml',
+    'with open(sys.argv[1], encoding="utf-8") as fh:',
+    '    data = yaml.load(fh, Loader=yaml.BaseLoader)',
+    'print(json.dumps(data))',
+  ].join('\n');
+  const result = spawnSync('python', ['-c', python, path], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
 const pr = {
   state: 'open', draft: false, body: 'Closes #42',
   base: { ref: 'dev', repo: { full_name: repo } },
@@ -55,6 +69,16 @@ test('merge gate requires successful PR CI for the exact head SHA and classifies
   assert.equal(prCiVerdict([
     { id: 7, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'success' },
   ], 'abc').state, 'success');
+  assert.equal(prCiVerdict([
+    { id: 8, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'failure' },
+  ], 'abc', [{
+    name: 'docker',
+    steps: [{ name: 'Build and start isolated Compose environment', conclusion: 'failure' }],
+  }]).state, 'infra_failure');
+
+  assert.equal(infraRetryEndpoint({ conclusion: 'failure' }), 'rerun-failed-jobs');
+  assert.equal(infraRetryEndpoint({ conclusion: 'cancelled' }), 'rerun');
+  assert.equal(infraRetryEndpoint({ conclusion: 'timed_out' }), 'rerun');
 
   const source = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(source, /actions\/workflows\/.*\/runs\?event=pull_request&head_sha=/);
@@ -63,20 +87,39 @@ test('merge gate requires successful PR CI for the exact head SHA and classifies
   assert.match(source, /waiting for green PR CI/);
   assert.match(source, /code_failure/);
   assert.match(source, /infra_failure/);
-  assert.match(source, /actions\/runs\/\$\{runId\}\/rerun/);
+  assert.match(source, /actions\/runs\/\$\{runId\}\/\$\{retryAction\}/);
   assert.match(source, /assigned .*review:changes-requested.*dispatched PR Fix/s);
   assert.match(source, /merge_method: 'squash'/);
   assert.doesNotMatch(source, /integration_base_sha|repair_base_sha|BASE_SHA|base\.object\.sha/);
   assert.doesNotMatch(source, /social-mcp\/(?:integration|integration-conflict|pi-review|repair-)/);
 });
 
-test('terminal PR CI wakes merge gate while dev pushes still require both CI jobs green', () => {
-  const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
-  assert.match(ci, /wake-merge-gate:[\s\S]*?always\(\)/);
-  assert.match(ci, /github\.event_name == 'pull_request'/);
-  assert.match(ci, /needs\.test\.result == 'success'/);
-  assert.match(ci, /needs\.docker\.result == 'success'/);
-  assert.match(ci, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
+test('terminal PR CI wakes merge gate while dev pushes require both CI jobs green', () => {
+  const workflow = parseWorkflow('.github/workflows/ci.yml');
+  const wake = workflow.jobs['wake-merge-gate'];
+  assert.deepEqual(wake.needs, ['test', 'docker']);
+
+  const condition = wake.if.replace(/\s+/g, ' ').trim();
+  assert.equal(
+    condition,
+    "always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success'))",
+  );
+
+  const wakeSteps = wake.steps.map(step => step.name);
+  assert.ok(wakeSteps.includes('Continue merge queue after green CI or terminal PR CI'));
+});
+
+test('repairable CI step names are present in the parsed workflow and Docker failures stay conservative', () => {
+  const workflow = parseWorkflow('.github/workflows/ci.yml');
+  const testStepNames = new Set(workflow.jobs.test.steps.map(step => step.name));
+  for (const name of PRODUCT_CI_STEPS) {
+    assert.ok(testStepNames.has(name), `PRODUCT_CI_STEPS contains unknown CI step: ${name}`);
+  }
+
+  const dockerStepNames = new Set(workflow.jobs.docker.steps.map(step => step.name));
+  for (const name of PRODUCT_CI_STEPS) {
+    assert.ok(!dockerStepNames.has(name), `Docker step must not be auto-classified as repairable: ${name}`);
+  }
 });
 
 test('unsafe control-plane PRs leave one explicit human-attention comment', () => {
