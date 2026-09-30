@@ -142,12 +142,12 @@ export function safeEdit(root, params) {
   }
 
   const output = lines.join(newline) + (hasFinalNewline ? newline : '');
-  atomicWrite(absolutePath, output);
+  const changed = output !== source;
+  if (changed) atomicWrite(absolutePath, output);
 
-  // Re-read the written file so the mutation result itself proves what landed
-  // on disk. Keep the preview bounded so a large replacement cannot inflate
-  // the next model response or tempt a redundant verification read.
-  const written = fs.readFileSync(absolutePath, 'utf8');
+  // Re-read only after an effective mutation. A successful no-op is explicit
+  // so runtime progress and rollback state are not reset by identical content.
+  const written = changed ? fs.readFileSync(absolutePath, 'utf8') : source;
   const { lines: writtenLines } = splitLogicalLines(written);
   const postEditText = writtenLines.slice(changedStart - 1, changedEnd).join('\n');
   const postEditTruncated = postEditText.length > POST_EDIT_PREVIEW_MAX_CHARS;
@@ -155,6 +155,7 @@ export function safeEdit(root, params) {
   return {
     path: params.path,
     operation,
+    changed,
     selected_start_line: startLine,
     selected_end_line: endLine,
     changed_start_line: changedStart,

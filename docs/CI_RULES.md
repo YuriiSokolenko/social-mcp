@@ -158,6 +158,12 @@ Dispatcher is narrower: after reading its prepared candidate context, exploratio
 
 The productive-progress state is independent from response-token budgeting and is logged as `productiveState` in `PI_BUDGET` / `PI_BUDGET_NEXT`. Prompt prose does not override this state machine.
 
+## Semantic loop guard
+
+Implementer also tracks repeated failed strategies, repeated observations, no-op mutations, and revisits to earlier repository states. A first trip emits `PI_LOOP_GUARD` and `PI_LOOP_GUARD_STEER`; a repeated trip after steering emits `PI_LOOP_GUARD_ABORT` and aborts the stage. These checks are advisory around tool execution: Git or filesystem fingerprint failures skip repository-state classification and must not block a tool call or progress accounting. Blocked tool calls are counted as failed strategies even though they do not produce `tool_execution_end`.
+
+`PI_LOOP_GUARD_WINDOW` sets the bounded history size (default **8**, maximum **64**); `PI_LOOP_GUARD_THRESHOLD` sets the revisit count (default **3**). Invalid or non-positive values use their defaults, and threshold is capped at the window size. Repository fingerprints include tracked diffs and untracked paths; untracked files up to 1 MiB are content-hashed, while larger files use size and modification time to bound synchronous work.
+
 Before adding a workflow, input, status, SHA field, synchronization step, or recovery path, ask whether fresh GitHub state plus the existing owner can solve the problem.
 
 Prefer current GitHub state over transported state, IDs over metadata payloads, direct ownership over relay workflows, ordinary `dev` CI over synthetic integration, one wake owner over duplicate wake sources, and explicit failure/blocking over hidden repair.

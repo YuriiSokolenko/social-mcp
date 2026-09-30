@@ -432,7 +432,7 @@ export class ProgressController {
     return undefined;
   }
 
-  onToolExecutionEnd(toolName, isError) {
+  onToolExecutionEnd(toolName, isError, { madeProgress = true } = {}) {
     if (
       isError &&
       this.requireComplexity &&
@@ -481,12 +481,12 @@ export class ProgressController {
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
       this.semanticFallbackEvidenceUsed = false;
-      this.evidenceUnlockUsedSinceProgress = false;
+      if (madeProgress) this.evidenceUnlockUsedSinceProgress = false;
       if (toolName === ROLLBACK_TOOL || this.productiveState === 'evidence_allowed') {
         this.productiveState = 'action_required';
       }
     }
-    if (!isError && (PROGRESS_TOOLS.has(toolName) || this.preComplexityTransitionTools.has(toolName))) {
+    if (!isError && madeProgress && (PROGRESS_TOOLS.has(toolName) || this.preComplexityTransitionTools.has(toolName))) {
       this.turnMadeProgress = true;
     }
   }

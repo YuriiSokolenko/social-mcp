@@ -113,6 +113,8 @@ Triage is the deliberate exception: `PI_FIXED_RESPONSE_MAX_TOKENS=1000` keeps ev
 
 Each model call logs its active limit as `PI_BUDGET`; the automatic decision for the following call is logged as `PI_BUDGET_NEXT`.
 
+Implementer loop protection logs `PI_LOOP_GUARD` for a repeated observation, failed strategy, no-op mutation, or repository-state revisit. The first trip steers the model (`PI_LOOP_GUARD_STEER`); a repeated trip aborts the stage (`PI_LOOP_GUARD_ABORT`). `PI_LOOP_GUARD_WINDOW` defaults to 8 (maximum 64) and `PI_LOOP_GUARD_THRESHOLD` defaults to 3; invalid values fall back to defaults and threshold is capped at the window.
+
 ## Productive-progress state
 
 The normative execution rules live in [CI_RULES.md](CI_RULES.md). The short Implementer shape is:

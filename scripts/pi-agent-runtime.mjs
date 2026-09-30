@@ -15,6 +15,12 @@ import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck } from './pi-common/run-check.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { structuralEdit } from './pi-common/structural-edit.mjs';
+import {
+  SemanticLoopGuard,
+  isSemanticMutationTool,
+  loopGuardLimits,
+  repositoryStateFingerprint,
+} from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
@@ -209,10 +215,14 @@ export default function (pi) {
         }
       : config
   );
+  const loopGuard = stage === 'implementer'
+    ? new SemanticLoopGuard(loopGuardLimits())
+    : null;
 
   let appliedActionCap = 0;
   let actionTurnAttemptedTool = false;
   let actionRequiredProseOnlyTurns = 0;
+  let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
 
   function syncProductiveState() {
@@ -255,6 +265,37 @@ export default function (pi) {
     if (unrestrictedActiveTools != null) {
       pi.setActiveTools(unrestrictedActiveTools);
       unrestrictedActiveTools = null;
+    }
+  }
+
+  async function handleLoopResult(loopResult, ctx) {
+    if (!loopResult?.tripped) return;
+    const metric = {
+      stage: loopResult.stage,
+      tool: loopResult.tool,
+      reason: loopResult.reason,
+      fingerprintClass: loopResult.fingerprintClass,
+      repositoryState: loopResult.repositoryState,
+      revisitCount: loopResult.revisitCount,
+      window: loopResult.window,
+      classification: loopResult.classification,
+      noOp: loopResult.noOp,
+      repeatedObservation: loopResult.repeatedObservation,
+      repeatedFailure: loopResult.repeatedFailure,
+      returnedToSeenState: loopResult.returnedToSeenState,
+      action: loopResult.action,
+    };
+    console.log('PI_LOOP_GUARD ' + JSON.stringify(metric));
+    if (loopResult.action === 'steer') {
+      loopGuardSteeredThisTurn = true;
+      console.warn('PI_LOOP_GUARD_STEER ' + JSON.stringify(metric));
+      await pi.sendUserMessage(
+        'RUNTIME LOOP GUARD: the current strategy is cycling through previously seen evidence or repository state. Do not repeat or cosmetically vary the same approach. Choose a genuinely different action that can create new evidence/state, or submit/stop if the task is already complete or blocked.',
+        { deliverAs: 'steer' },
+      );
+    } else {
+      console.error('PI_LOOP_GUARD_ABORT ' + JSON.stringify(metric));
+      ctx.abort();
     }
   }
 
@@ -377,8 +418,17 @@ export default function (pi) {
     });
   }
 
-  let pendingMutationSnapshot = null;
+  const pendingMutationSnapshots = new Map();
+  const pendingLoopCalls = new Map();
   let lastSuccessfulMutationSnapshot = null;
+
+  function mutationSnapshotChanged(before, after) {
+    if (!before || !after) return true;
+    if (before.existed !== after.existed) return true;
+    if (!before.existed) return false;
+    if (before.mode !== after.mode) return true;
+    return !before.content.equals(after.content);
+  }
 
   function captureMutationSnapshot(cwd, requestedPath) {
     if (typeof requestedPath !== 'string' || !requestedPath) return null;
@@ -396,6 +446,7 @@ export default function (pi) {
       absolutePath,
       existed,
       content: existed ? fs.readFileSync(absolutePath) : null,
+      mode: existed ? fs.statSync(absolutePath).mode & 0o7777 : null,
     };
   }
 
@@ -421,7 +472,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'safe_edit',
       label: 'Safe line edit',
-      description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, returns a bounded post-edit preview of what landed on disk, and participates in normal rollback/progress handling. Do not re-read merely to verify a successful result.',
+      description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, returns a bounded post-edit preview of what landed on disk, and participates in normal rollback/progress handling. A result with changed=false means no edit occurred. Do not re-read merely to verify a successful change.',
       parameters: Type.Object({
         path: Type.String({ minLength: 1, maxLength: 1000 }),
         operation: Type.Union([
@@ -437,7 +488,12 @@ export default function (pi) {
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const result = safeEdit(ctx.cwd, params);
         return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
+          content: [{
+            type: 'text',
+            text: result.changed
+              ? JSON.stringify(result)
+              : `NO CHANGE: replacement is identical to the existing content. ${JSON.stringify(result)}`,
+          }],
           details: result,
         };
       },
@@ -473,6 +529,7 @@ export default function (pi) {
         if (snapshot.existed) {
           fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
           fs.writeFileSync(snapshot.absolutePath, snapshot.content);
+          if (snapshot.mode != null) fs.chmodSync(snapshot.absolutePath, snapshot.mode);
         } else if (fs.existsSync(snapshot.absolutePath)) {
           fs.rmSync(snapshot.absolutePath, { force: true });
         }
@@ -558,6 +615,7 @@ export default function (pi) {
 
   pi.on('turn_start', (event) => {
     actionTurnAttemptedTool = false;
+    loopGuardSteeredThisTurn = false;
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
@@ -571,25 +629,125 @@ export default function (pi) {
     })}`);
   });
 
-  pi.on('tool_call', (event, ctx) => {
+  pi.on('tool_call', async (event, ctx) => {
     actionTurnAttemptedTool = true;
+    const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
-    if (blocked) return blocked;
+    if (blocked) {
+      if (loopGuard) {
+        const loopResult = loopGuard.observe({
+          stage,
+          tool: event.toolName,
+          input: event.input ?? {},
+          result: blocked,
+          blocked: true,
+          productiveState,
+        });
+        // A blocked tool has no tool_execution_end event, so classify it here.
+        await handleLoopResult(loopResult, ctx).catch(error => {
+          console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
+        });
+      }
+      return blocked;
+    }
+
+    const cwd = ctx?.cwd || process.cwd();
+    const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);
+    const repositoryStateBefore = semanticMutation
+      ? repositoryStateFingerprint(cwd)
+      : null;
+
     if (stage === 'implementer' && ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName)) {
-      pendingMutationSnapshot = captureMutationSnapshot(ctx?.cwd || process.cwd(), event.input?.path);
+      try {
+        pendingMutationSnapshots.set(
+          event.toolCallId,
+          captureMutationSnapshot(cwd, event.input?.path),
+        );
+      } catch (error) {
+        console.warn('PI_MUTATION_SNAPSHOT_UNAVAILABLE ' + JSON.stringify({
+          tool: event.toolName,
+          reason: String(error?.message ?? error),
+        }));
+      }
+    }
+    if (loopGuard) {
+      pendingLoopCalls.set(event.toolCallId, {
+        cwd,
+        input: structuredClone(event.input ?? {}),
+        productiveState,
+        repositoryStateBefore,
+      });
     }
     return undefined;
   });
-  pi.on('tool_execution_end', (event) => {
-    if (stage === 'implementer' && ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName)) {
-      if (!event.isError && pendingMutationSnapshot) {
-        lastSuccessfulMutationSnapshot = pendingMutationSnapshot;
+  pi.on('tool_execution_end', async (event, ctx) => {
+    const pendingLoopCall = pendingLoopCalls.get(event.toolCallId) ?? null;
+    const contentMutation =
+      stage === 'implementer' &&
+      ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName);
+    const mutationSnapshot = contentMutation
+      ? (pendingMutationSnapshots.get(event.toolCallId) ?? null)
+      : null;
+
+    let mutationChanged = null;
+    if (contentMutation && pendingLoopCall && mutationSnapshot) {
+      try {
+        const afterSnapshot = captureMutationSnapshot(
+          pendingLoopCall.cwd,
+          mutationSnapshot.path,
+        );
+        mutationChanged = mutationSnapshotChanged(mutationSnapshot, afterSnapshot);
+      } catch (error) {
+        console.warn('PI_MUTATION_SNAPSHOT_UNAVAILABLE ' + JSON.stringify({
+          tool: event.toolName,
+          reason: String(error?.message ?? error),
+        }));
       }
-      pendingMutationSnapshot = null;
     }
-    controller.onToolExecutionEnd(event.toolName, event.isError);
+
+    let repositoryStateAfter = null;
+    if (loopGuard && pendingLoopCall && isSemanticMutationTool(event.toolName)) {
+      repositoryStateAfter = repositoryStateFingerprint(pendingLoopCall.cwd);
+      // Compare fingerprints only when both are known. A failed fingerprint
+      // (null) means "unknown", not "unchanged": keep mutationChanged null so
+      // progress accounting is not downgraded to a no-op.
+      if (
+        mutationChanged == null &&
+        pendingLoopCall.repositoryStateBefore &&
+        repositoryStateAfter
+      ) {
+        mutationChanged = pendingLoopCall.repositoryStateBefore !== repositoryStateAfter;
+      }
+    }
+
+    if (contentMutation) {
+      if (!event.isError && mutationChanged === true && mutationSnapshot) {
+        lastSuccessfulMutationSnapshot = mutationSnapshot;
+      }
+      pendingMutationSnapshots.delete(event.toolCallId);
+    }
+
+    const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
+    controller.onToolExecutionEnd(event.toolName, event.isError, { madeProgress: effectiveProgress });
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
+
+    if (loopGuard && pendingLoopCall) {
+      const loopResult = loopGuard.observe({
+        stage,
+        tool: event.toolName,
+        input: pendingLoopCall.input,
+        result: event.result,
+        isError: event.isError,
+        productiveState: pendingLoopCall.productiveState,
+        repositoryStateBefore: pendingLoopCall.repositoryStateBefore,
+        repositoryStateAfter,
+        mutationChanged,
+      });
+      pendingLoopCalls.delete(event.toolCallId);
+
+      await handleLoopResult(loopResult, ctx);
+    }
   });
 
   pi.on('turn_end', async (event, ctx) => {
@@ -662,7 +820,7 @@ export default function (pi) {
       await applyBudget(next.level, ctx);
     }
 
-    if (runtimeActionRequired && !controller.turnMadeProgress) {
+    if (runtimeActionRequired && !controller.turnMadeProgress && !loopGuardSteeredThisTurn) {
       const directive = preComplexityRequired
         ? 'RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. Call declare_task_complexity immediately with the classification already supported by the issue, diff, and changed code.'
         : postComplexityRequired

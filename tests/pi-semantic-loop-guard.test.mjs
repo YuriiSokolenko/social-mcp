@@ -1,0 +1,580 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+
+import { ProgressController } from '../scripts/pi-common/progress-controller.mjs';
+import { safeEdit } from '../scripts/pi-common/safe-edit.mjs';
+import {
+  loopGuardLimits,
+  SemanticLoopGuard,
+  repositoryStateFingerprint,
+} from '../scripts/pi-common/semantic-loop-guard.mjs';
+
+function observation(guard, overrides = {}) {
+  return guard.observe({
+    stage: 'implementer',
+    tool: 'read',
+    input: { path: 'src/a.js' },
+    result: { content: [{ type: 'text', text: 'same source' }] },
+    productiveState: 'evidence_allowed',
+    ...overrides,
+  });
+}
+
+test('semantic loop guard detects three identical read observations', () => {
+  const guard = new SemanticLoopGuard();
+  assert.equal(observation(guard).tripped, false);
+  assert.equal(observation(guard).classification, 'success_same_observation');
+  const third = observation(guard);
+  assert.equal(third.action, 'steer');
+  assert.equal(third.reason, 'repeated_observation');
+  assert.equal(third.revisitCount, 3);
+});
+
+test('semantic loop guard detects repeated repo_search results across harmless actions', () => {
+  const guard = new SemanticLoopGuard();
+  const search = () => observation(guard, {
+    tool: 'repo_search',
+    input: { query: 'Foo' },
+    result: { matches: [{ path: 'src/a.js', line: 7 }] },
+  });
+  assert.equal(search().tripped, false);
+  observation(guard, {
+    tool: 'read',
+    input: { path: 'src/other.js' },
+    result: { source: 'different useful evidence' },
+  });
+  assert.equal(search().tripped, false);
+  observation(guard, { tool: 'set_response_budget', result: { budget: 'normal' } });
+  assert.equal(search().action, 'steer');
+});
+
+test('healthy read LSP git-context edit progression is not treated as a loop', () => {
+  const guard = new SemanticLoopGuard();
+  const steps = [
+    observation(guard, { tool: 'read', result: { text: 'target' } }),
+    observation(guard, { tool: 'lsp_find_symbol', input: { symbol: 'Foo' }, result: { path: 'src/foo.js' } }),
+    observation(guard, { tool: 'commit_story', input: { path: 'src/foo.js' }, result: { commits: ['abc'] } }),
+    observation(guard, {
+      tool: 'edit',
+      input: { path: 'src/foo.js', oldText: 'a', newText: 'b' },
+      repositoryStateBefore: 'state-a',
+      repositoryStateAfter: 'state-b',
+    }),
+  ];
+  assert.equal(steps.some(step => step.tripped), false);
+  assert.equal(steps.at(-1).classification, 'success_changed');
+});
+
+test('safe_edit identical replacement is an explicit no-op', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-safe-edit-noop-'));
+  try {
+    const file = path.join(dir, 'sample.txt');
+    fs.writeFileSync(file, 'alpha\nbeta\n');
+    const before = fs.statSync(file).mtimeMs;
+    const result = safeEdit(dir, {
+      path: 'sample.txt',
+      operation: 'replace',
+      start_line: 2,
+      end_line: 2,
+      text: 'beta',
+    });
+    assert.equal(result.changed, false);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'alpha\nbeta\n');
+    assert.equal(fs.statSync(file).mtimeMs, before);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('no-op mutation does not grant a new productive evidence epoch', () => {
+  const controller = new ProgressController({
+    maxTurns: 100,
+    repeatThreshold: 3,
+    requireComplexity: false,
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  }, {});
+  controller.onTurnStart(0);
+  assert.equal(controller.checkToolCall('need_more_evidence', { missing: 'x', reason: 'x' }), undefined);
+  assert.equal(controller.checkToolCall('read', { path: 'src/a.js' }), undefined);
+  assert.equal(controller.checkToolCall('edit', { path: 'src/a.js' }), undefined);
+  controller.onToolExecutionEnd('edit', false, { madeProgress: false });
+  assert.equal(controller.turnMadeProgress, false);
+  assert.match(
+    controller.checkToolCall('need_more_evidence', { missing: 'y', reason: 'y' }).reason,
+    /already used since the last successful/,
+  );
+});
+
+test('write no-op does not clear an outstanding loop steer', () => {
+  const guard = new SemanticLoopGuard();
+  for (let index = 0; index < 3; index += 1) {
+    var failure = observation(guard, {
+      tool: 'edit',
+      input: { path: 'src/a.js', oldText: 'variant-' + index },
+      result: { content: [{ type: 'text', text: 'oldText not found at line ' + (10 + index) }] },
+      isError: true,
+    });
+  }
+  assert.equal(failure.action, 'steer');
+  const noOp = observation(guard, {
+    tool: 'write',
+    input: { path: 'src/a.js', content: 'same' },
+    repositoryStateBefore: 'state-a',
+    repositoryStateAfter: 'state-a',
+  });
+  assert.equal(noOp.classification, 'success_no_change');
+  const nextFailure = observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js', oldText: 'variant-4' },
+    result: { content: [{ type: 'text', text: 'oldText not found at line 99' }] },
+    isError: true,
+  });
+  assert.equal(nextFailure.action, 'abort');
+});
+
+test('target-local no-op stays a no-op when another call changed repository state', () => {
+  const guard = new SemanticLoopGuard();
+  const result = observation(guard, {
+    tool: 'write',
+    input: { path: 'src/a.js', content: 'same content' },
+    repositoryStateBefore: 'repo-before',
+    repositoryStateAfter: 'repo-after-because-of-sibling-call',
+    mutationChanged: false,
+  });
+  assert.equal(result.classification, 'success_no_change');
+  assert.equal(result.tripped, false);
+});
+
+test('A B A C A repository cycle trips revisit protection', () => {
+  const guard = new SemanticLoopGuard();
+  assert.equal(observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js' },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+  }).tripped, false);
+  assert.equal(observation(guard, {
+    tool: 'rollback_last_mutation',
+    input: { reason: 'undo B' },
+    repositoryStateBefore: 'B',
+    repositoryStateAfter: 'A',
+  }).tripped, false);
+  assert.equal(observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js', oldText: 'different' },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'C',
+  }).tripped, false);
+  const revisit = observation(guard, {
+    tool: 'rollback_last_mutation',
+    input: { reason: 'undo C' },
+    repositoryStateBefore: 'C',
+    repositoryStateAfter: 'A',
+  });
+  assert.equal(revisit.action, 'steer');
+  assert.equal(revisit.reason, 'repository_state_revisit');
+  assert.equal(revisit.revisitCount, 3);
+});
+
+test('a genuinely new repository state relaxes an outstanding stuck trip', () => {
+  const guard = new SemanticLoopGuard();
+  for (let index = 0; index < 3; index += 1) {
+    var failure = observation(guard, {
+      tool: 'edit',
+      input: { path: 'src/a.js', oldText: 'variant-' + index },
+      result: { content: [{ type: 'text', text: 'oldText not found at line ' + index }] },
+      isError: true,
+    });
+  }
+  assert.equal(failure.action, 'steer');
+  const changed = observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js' },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+  });
+  assert.equal(changed.classification, 'success_changed');
+  for (let index = 0; index < 3; index += 1) {
+    failure = observation(guard, {
+      tool: 'edit',
+      input: { path: 'src/a.js', oldText: 'new-' + index },
+      result: { content: [{ type: 'text', text: 'oldText not found at line ' + (20 + index) }] },
+      isError: true,
+    });
+  }
+  assert.equal(failure.action, 'steer');
+});
+
+test('new repository progress clears stale observation strikes after a steer', () => {
+  const guard = new SemanticLoopGuard();
+  assert.equal(observation(guard).tripped, false);
+  assert.equal(observation(guard).tripped, false);
+  assert.equal(observation(guard).action, 'steer');
+  const changed = observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js' },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+    mutationChanged: true,
+  });
+  assert.equal(changed.classification, 'success_changed');
+  assert.equal(observation(guard).tripped, false);
+});
+
+test('one rollback to an earlier state is allowed', () => {
+  const guard = new SemanticLoopGuard();
+  observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js' },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+  });
+  const rollback = observation(guard, {
+    tool: 'rollback_last_mutation',
+    input: { reason: 'wrong approach' },
+    repositoryStateBefore: 'B',
+    repositoryStateAfter: 'A',
+  });
+  assert.equal(rollback.tripped, false);
+  assert.equal(rollback.classification, 'returned_to_seen_state');
+});
+
+test('slightly different failed anchors share one failed-strategy family', () => {
+  const guard = new SemanticLoopGuard();
+  const calls = [1, 2, 3].map(index => observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js', oldText: 'anchor variant ' + index },
+    result: { content: [{ type: 'text', text: 'oldText not found near line ' + (40 + index) }] },
+    isError: true,
+  }));
+  assert.equal(calls[0].tripped, false);
+  assert.equal(calls[1].tripped, false);
+  assert.equal(calls[2].action, 'steer');
+  assert.equal(calls[2].reason, 'repeated_failed_strategy');
+});
+
+test('new reads do not clear repeated failed-strategy strikes', () => {
+  const guard = new SemanticLoopGuard();
+  for (let index = 0; index < 12; index += 1) {
+    const failed = observation(guard, {
+      tool: 'edit',
+      input: { path: 'src/a.js', oldText: `missing-${index}` },
+      result: { content: [{ type: 'text', text: 'oldText not found' }] },
+      isError: true,
+    });
+    if (index === 2) assert.equal(failed.action, 'steer');
+    if (index > 2) assert.equal(failed.tripped, true);
+    observation(guard, {
+      tool: 'read',
+      input: { path: 'src/a.js', offset: index * 20 },
+      result: { text: `new slice ${index}` },
+    });
+  }
+});
+
+test('blocked tool calls are classified as repeated failed strategies', () => {
+  const guard = new SemanticLoopGuard();
+  const call = () => guard.observe({
+    stage: 'implementer',
+    tool: 'read',
+    input: { path: 'src/a.js' },
+    result: { block: true, reason: 'not allowed' },
+    blocked: true,
+    productiveState: 'action_required',
+  });
+  assert.equal(call().classification, 'blocked');
+  assert.equal(call().classification, 'blocked');
+  assert.equal(call().action, 'steer');
+});
+
+test('loop guard environment limits fall back and threshold is bounded by window', () => {
+  assert.deepEqual(loopGuardLimits({ PI_LOOP_GUARD_WINDOW: 'abc', PI_LOOP_GUARD_THRESHOLD: '0' }), {
+    windowSize: 8,
+    revisitThreshold: 3,
+  });
+  assert.deepEqual(loopGuardLimits({ PI_LOOP_GUARD_WINDOW: '4', PI_LOOP_GUARD_THRESHOLD: '10' }), {
+    windowSize: 4,
+    revisitThreshold: 4,
+  });
+  assert.deepEqual(loopGuardLimits({ PI_LOOP_GUARD_WINDOW: '1000', PI_LOOP_GUARD_THRESHOLD: '1000' }), {
+    windowSize: 64,
+    revisitThreshold: 64,
+  });
+});
+
+test('exact repeated-call protection remains active', () => {
+  const controller = new ProgressController({
+    maxTurns: 100,
+    repeatThreshold: 3,
+    requireComplexity: false,
+  }, {});
+  controller.onTurnStart(0);
+  assert.equal(controller.checkToolCall('read', { path: 'src/a.js' }), undefined);
+  assert.equal(controller.checkToolCall('read', { path: 'src/a.js' }), undefined);
+  assert.equal(controller.checkToolCall('read', { path: 'src/a.js' }), undefined);
+  assert.match(controller.checkToolCall('read', { path: 'src/a.js' }).reason, /exact read call/);
+});
+
+test('failed tool execution is never productive progress', () => {
+  const controller = new ProgressController({
+    maxTurns: 100,
+    repeatThreshold: 3,
+    requireComplexity: false,
+  }, {});
+  controller.onTurnStart(0);
+  controller.onToolExecutionEnd('edit', true, { madeProgress: true });
+  assert.equal(controller.turnMadeProgress, false);
+});
+
+test('repository fingerprint includes tracked file mode changes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-mode-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+    execFileSync('git', ['config', 'core.filemode', 'true'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'run.sh'), '#!/bin/sh\necho ok\n', { mode: 0o644 });
+    execFileSync('git', ['add', 'run.sh'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir });
+    const before = repositoryStateFingerprint(dir);
+    fs.chmodSync(path.join(dir, 'run.sh'), 0o755);
+    const after = repositoryStateFingerprint(dir);
+    assert.notEqual(after, before);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('repository fingerprint includes untracked file content and mode changes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-untracked-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'base');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir });
+    const file = path.join(dir, 'new-file.txt');
+    fs.writeFileSync(file, 'content one', { mode: 0o644 });
+    const initial = repositoryStateFingerprint(dir);
+    fs.writeFileSync(file, 'content two', { mode: 0o644 });
+    const changedContent = repositoryStateFingerprint(dir);
+    assert.notEqual(changedContent, initial);
+    fs.chmodSync(file, 0o755);
+    const changedMode = repositoryStateFingerprint(dir);
+    assert.notEqual(changedMode, changedContent);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('repository fingerprint failure returns null instead of throwing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-no-head-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    assert.equal(repositoryStateFingerprint(dir), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('terminal submission is never flagged as a loop', () => {
+  const guard = new SemanticLoopGuard();
+  for (let index = 0; index < 3; index += 1) observation(guard);
+  const terminal = observation(guard, {
+    tool: 'submit_result',
+    input: { summary: 'done' },
+    result: { ok: true },
+  });
+  assert.equal(terminal.classification, 'terminal');
+  assert.equal(terminal.tripped, false);
+});
+
+const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+
+// Runs the real runtime extension against a mock `pi` in a child process.
+// `typebox` is stubbed because only handler wiring is exercised here.
+function runRuntimeScenario(body, env = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-'));
+  const issueContext = path.join(dir, 'issue.json');
+  const loader = path.join(dir, 'loader.mjs');
+  try {
+    fs.writeFileSync(issueContext, JSON.stringify({ title: 'test', body: 'test' }));
+    fs.writeFileSync(loader, `
+      export async function resolve(specifier, context, nextResolve) {
+        if (specifier === 'typebox') {
+          const source = 'export const Type = new Proxy({}, { get: () => (...args) => ({}) });';
+          return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      }
+    `);
+    const runtimeUrl = new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href;
+    const controllerUrl = new URL('../scripts/pi-common/progress-controller.mjs', import.meta.url).href;
+    const script = `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const RUNTIME_URL = ${JSON.stringify(runtimeUrl)};
+      const CONTROLLER_URL = ${JSON.stringify(controllerUrl)};
+      const handlers = new Map();
+      const messages = [];
+      const pi = {
+        on: (name, handler) => handlers.set(name, handler),
+        registerTool: () => {},
+        getActiveTools: () => [],
+        setActiveTools: () => {},
+        sendUserMessage: async (...args) => messages.push(args),
+        setModel: async () => true,
+      };
+      ${body}
+    `;
+    const result = spawnSync(process.execPath, [
+      '--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script,
+    ], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PI_STAGE: 'implementer',
+        PI_ISSUE: '1',
+        PI_ISSUE_CONTEXT: issueContext,
+        GITHUB_WORKSPACE: REPO_ROOT,
+        ...env,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    return result;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('runtime mock attributes interleaved mutations by toolCallId and aborts after a steer', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-repo-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      // Isolate handler wiring from the productive-progress gating rules.
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      let aborts = 0;
+      const ctx = { cwd: repo, abort: () => { aborts += 1; } };
+      const call = (toolCallId, toolName, input) =>
+        handlers.get('tool_call')({ toolCallId, toolName, input }, ctx);
+      const end = (toolCallId, toolName, isError = false) =>
+        handlers.get('tool_execution_end')({ toolCallId, toolName, isError, result: { content: [] } }, ctx);
+
+      // Two mutations start before either finishes. Only b.txt changes.
+      assert.equal(await call('edit-a', 'safe_edit', { path: 'a.txt', operation: 'replace' }), undefined);
+      assert.equal(await call('write-b', 'write', { path: 'b.txt' }), undefined);
+      fs.writeFileSync(path.join(repo, 'b.txt'), 'b changed\\n');
+      await end('write-b', 'write');
+      assert.equal(messages.length, 0, 'real change on b.txt must not trip');
+      await end('edit-a', 'safe_edit');
+      assert.equal(messages.length, 1, 'a.txt no-op must be attributed to edit-a and steer');
+      assert.match(messages[0][0], /RUNTIME LOOP GUARD/);
+      assert.equal(aborts, 0);
+
+      // Repeating the no-op after the steer aborts the stage.
+      await call('edit-a-2', 'safe_edit', { path: 'a.txt', operation: 'replace' });
+      await end('edit-a-2', 'safe_edit');
+      assert.equal(aborts, 1);
+      console.log('INTERLEAVED_LOOP_INTEGRATION_OK');
+    `, {
+      PI_LOOP_GUARD_WINDOW: '4',
+      PI_LOOP_GUARD_THRESHOLD: '1',
+    });
+    assert.match(result.stdout, /INTERLEAVED_LOOP_INTEGRATION_OK/);
+    assert.match(result.stdout, /PI_LOOP_GUARD .*"tool":"safe_edit".*"noOp":true/);
+    assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('runtime mock does not treat unknown repository state as a no-op', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-nogit-'));
+  try {
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      let aborts = 0;
+      const ctx = { cwd: ${JSON.stringify(dir)}, abort: () => { aborts += 1; } };
+      // Not a git repository: fingerprints are null and rollback has no snapshot.
+      for (let index = 0; index < 3; index += 1) {
+        const id = 'rollback-' + index;
+        assert.equal(await handlers.get('tool_call')({ toolCallId: id, toolName: 'rollback_last_mutation', input: {} }, ctx), undefined);
+        await handlers.get('tool_execution_end')({ toolCallId: id, toolName: 'rollback_last_mutation', isError: false, result: {} }, ctx);
+      }
+      assert.equal(messages.length, 0);
+      assert.equal(aborts, 0);
+      console.log('UNKNOWN_STATE_INTEGRATION_OK');
+    `, {
+      PI_LOOP_GUARD_WINDOW: '4',
+      PI_LOOP_GUARD_THRESHOLD: '1',
+    });
+    assert.match(result.stdout, /UNKNOWN_STATE_INTEGRATION_OK/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runtime mock classifies blocked tool calls without tool_execution_end', () => {
+  const result = runRuntimeScenario(`
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+    const result = await handlers.get('tool_call')(
+      { toolName: 'read', toolCallId: 'blocked-1', input: { path: 'other.md' } },
+      { abort: () => {} },
+    );
+    assert.equal(result.block, true);
+    assert.equal(messages.length, 1);
+    console.log('BLOCKED_LOOP_INTEGRATION_OK');
+  `, {
+    PI_LOOP_GUARD_WINDOW: '2',
+    PI_LOOP_GUARD_THRESHOLD: '1',
+  });
+  assert.match(result.stdout, /BLOCKED_LOOP_INTEGRATION_OK/);
+});
+
+test('control scenario read semantic lookup source edit verify submit completes without a warning', () => {
+  const guard = new SemanticLoopGuard();
+  const results = [
+    observation(guard, { tool: 'read', result: { source: 'target' } }),
+    observation(guard, { tool: 'lsp_find_symbol', input: { symbol: 'Foo' }, result: { path: 'src/foo.js' } }),
+    observation(guard, { tool: 'read', input: { path: 'src/foo.js' }, result: { source: 'resolved source' } }),
+    observation(guard, {
+      tool: 'safe_edit',
+      input: { path: 'src/foo.js', operation: 'replace' },
+      repositoryStateBefore: 'A',
+      repositoryStateAfter: 'B',
+    }),
+    observation(guard, { tool: 'read', input: { path: 'src/foo.test.js' }, result: { verification: 'focused pass' } }),
+    observation(guard, { tool: 'submit_result', result: { ok: true } }),
+  ];
+  assert.equal(results.some(result => result.tripped), false);
+});
