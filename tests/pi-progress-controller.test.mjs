@@ -55,6 +55,18 @@ test('action-required prose-only streak resets on a tool attempt or progress', (
     attemptedTool: false,
     madeProgress: false,
   }), 0);
+  assert.equal(nextActionRequiredProseOnlyTurns(1, {
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+    responseHitOutputCeiling: true,
+  }), 1);
+  assert.equal(nextActionRequiredProseOnlyTurns(0, {
+    actionRequired: true,
+    attemptedTool: false,
+    madeProgress: false,
+    responseHitOutputCeiling: true,
+  }), 0);
 });
 
 test('action-required corrective steering never shrinks below the executable action budget', () => {
@@ -512,6 +524,42 @@ test('failed validation enters bounded recovery and rollback resets the producti
   }), undefined);
 });
 
+test('resumed mutation provenance permits recovery edits only on restored paths', () => {
+  const restoredAbsolute = '/tmp/worktree/arkanoid.py';
+  const state = controller({
+    initialMutatedPaths: ['arkanoid.py', restoredAbsolute],
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      controlTools: [],
+    },
+  });
+
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('submit_result', {}), undefined);
+  state.onToolExecutionEnd('submit_result', true);
+  assert.equal(state.productiveProgressState(), 'recovery_evidence_allowed');
+
+  assert.equal(state.checkToolCall('read', { path: restoredAbsolute }), undefined);
+  assert.equal(state.productiveProgressState(), 'recovery_action_required');
+  assert.equal(state.checkToolCall('safe_edit', {
+    path: restoredAbsolute,
+    start_line: 1,
+    operation: 'insert_after',
+    text: 'import sys',
+  }), undefined);
+  assert.match(
+    state.checkToolCall('safe_edit', {
+      path: '/tmp/worktree/unrelated.py',
+      start_line: 1,
+      operation: 'insert_after',
+      text: 'x = 1',
+    }).reason,
+    /only files already mutated/,
+  );
+});
+
 test('safe_edit counts as a mutation and is constrained to touched paths during recovery', () => {
   const state = controller({
     productiveProgress: {
@@ -598,6 +646,10 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.doesNotMatch(runtime, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
   assert.match(runtime, /resumedImplementer[\s\S]*requireComplexity: false/);
+  assert.match(runtime, /restoredMutationPaths/);
+  assert.match(runtime, /git'[\s\S]*diff'[\s\S]*--name-only'[\s\S]*origin\/dev/);
+  assert.match(runtime, /initialMutatedPaths: restoredPaths/);
+  assert.match(runtime, /responseHitOutputCeiling/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);
   assert.match(runtime, /most recent successful structural_edit\/safe_edit\/edit\/write/);
