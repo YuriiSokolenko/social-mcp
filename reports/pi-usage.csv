@@ -273,4 +273,5 @@ attempt,245,implementation,36766438850,1,cancelled,0,0,0,0,0,0,0.0,86,https://gi
 attempt,245,implementation,36767137512,1,success,6,47847,2292,53421,0,103560,190.3,321,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36767137512/attempts/1
 attempt,0,dispatcher,36769197036,1,success,0,0,0,0,0,0,0.0,11,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36769197036/attempts/1
 attempt,0,triage,36769197439,1,success,3,11015,388,50131,0,61534,41.6,102,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36769197439/attempts/1
+attempt,0,triage,36769206603,1,failure,5,4550,1583,78899,0,85032,82.2,118,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36769206603/attempts/1
 attempt,0,dispatcher,36769206629,1,success,0,0,0,0,0,0,0.0,17,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36769206629/attempts/1
