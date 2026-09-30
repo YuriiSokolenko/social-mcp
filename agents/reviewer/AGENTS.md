@@ -31,7 +31,7 @@ Use this order. Complexity must be based on evidence from the actual review targ
 5. Call `declare_task_complexity` immediately based on the issue, diff, changed code, and plan. Do not repeatedly reconsider the classification once that evidence is available.
 6. Continue the semantic review using the evidence-driven loop below.
 
-Before `declare_task_complexity`, stay within initial orientation: the agent instructions, linked issue, PR diff, changed code, and the short plan. Do not inspect repository structure, git history, branches, PR body, issue comments, unrelated code, optional skills, or speculative context unless the issue + diff leave one concrete ambiguity that prevents classification.
+Before `declare_task_complexity`, stay within initial orientation: the agent instructions, linked issue, PR diff, changed code, and the short plan. After the required contract read, runtime permits exactly **3 successful startup evidence actions** for this orientation, normally `review context → PR diff → changed code`. Failed evidence calls do not consume the budget. Once those three actions are complete, runtime closes orientation, restricts the available tools to classification/terminal actions, caps the classification-required response at 512 output tokens, and requires `declare_task_complexity` immediately. Do not inspect repository structure, git history, branches, PR body, issue comments, unrelated code, optional skills, or speculative context before classification.
 
 A blocked or failed tool call **did not execute**. Never mark it as completed, never claim its state transition happened, and never proceed as though it succeeded. Follow the returned error and retry only an allowed classification or terminal action.
 
