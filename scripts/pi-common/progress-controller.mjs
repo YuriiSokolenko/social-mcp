@@ -220,6 +220,10 @@ export class ProgressController {
     return this.productiveState;
   }
 
+  complexityRecorded() {
+    return !this.requireComplexity || Boolean(this.complexity);
+  }
+
   preComplexityActionRequired() {
     if (!this.requireComplexity || this.complexity || !this.requiredFirstReadDone) return false;
     const preComplexityTurns = Math.max(
