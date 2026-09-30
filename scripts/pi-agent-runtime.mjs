@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 import { Type } from 'typebox';
@@ -19,24 +18,6 @@ import { zoektSearch } from './pi-common/zoekt-search.mjs';
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
-
-function restoredMutationPaths(worktreeRoot) {
-  try {
-    const output = execFileSync(
-      'git',
-      ['diff', '--name-only', '-z', 'origin/dev', '--'],
-      { cwd: worktreeRoot, encoding: 'utf8' },
-    );
-    const relativePaths = output.split('\0').filter(Boolean);
-    return relativePaths.flatMap(filePath => [
-      filePath,
-      path.resolve(worktreeRoot, filePath),
-    ]);
-  } catch (error) {
-    console.warn(`PI_RESUME_MUTATION_PROVENANCE: failed to inspect restored paths: ${error.message}`);
-    return [];
-  }
-}
 
 const IMPLEMENTATION_PREPARATION_SCHEMA = Object.freeze({
   type: 'object',
@@ -211,24 +192,16 @@ export default function (pi) {
         fs.existsSync(resumePatch) &&
         fs.statSync(resumePatch).size > 0
       );
+  const validationRepair = stage === 'implementer' && process.env.PI_VALIDATION_REPAIR === 'true';
   const freshBaseCommit = stage === 'implementer'
     ? String(process.env.PI_IMPLEMENTER_START_COMMIT ?? '').trim()
     : '';
-  const worktreeRoot = stage === 'implementer'
-    ? (process.env.JOB_DIR || process.cwd())
-    : process.cwd();
-  const restoredPaths = resumedImplementer
-    ? restoredMutationPaths(worktreeRoot)
-    : [];
-  if (resumedImplementer) {
-    console.log(`PI_RESUME_MUTATION_PROVENANCE ${JSON.stringify({ paths: restoredPaths })}`);
-  }
+  const directActionImplementer = resumedImplementer || validationRepair;
   const controller = new ProgressController(
-    resumedImplementer
+    directActionImplementer
       ? {
           ...config,
           requireComplexity: false,
-          initialMutatedPaths: restoredPaths,
           productiveProgress: config.productiveProgress
             ? { ...config.productiveProgress, startState: 'action_required' }
             : null,
@@ -254,8 +227,7 @@ export default function (pi) {
     const productiveActionRequired =
       stage === 'implementer' &&
       config.productiveProgress &&
-      (productiveState === 'action_required' ||
-        productiveState === 'recovery_action_required');
+      productiveState === 'action_required';
 
     if (preComplexityRequired || productiveActionRequired) {
       if (unrestrictedActiveTools == null) unrestrictedActiveTools = pi.getActiveTools();
@@ -614,9 +586,7 @@ export default function (pi) {
     const postComplexityRequired =
       config.postComplexityActionResponseMaxTokens != null &&
       controller.complexityRecorded();
-    const productiveActionRequired =
-      productiveState === 'action_required' ||
-      productiveState === 'recovery_action_required';
+    const productiveActionRequired = productiveState === 'action_required';
     const runtimeActionRequired =
       preComplexityRequired || postComplexityRequired || productiveActionRequired;
     const actionCap = Number(
