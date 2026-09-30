@@ -252,7 +252,7 @@ test('reconciler recovers stranded PR pipeline without touching human-gated PRs'
 });
 
 test('code-failure ownership remains recoverable when immediate PR Fix dispatch fails', () => {
-  const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
+  const gate = fs.readFileSync('scripts/pi-auto-merge.mjs', 'utf8');
   const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
 
   const branchStart = gate.indexOf("if (ci.state === 'code_failure')");
