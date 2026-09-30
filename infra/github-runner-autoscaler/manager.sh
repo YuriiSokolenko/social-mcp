@@ -244,8 +244,28 @@ model_start_capacity() {
   esac
 }
 
+# Set once the runner image is proven to contain a working bubblewrap binary; a failure is
+# re-checked on the next spawn so that fixing the image (new tag) recovers without a restart.
+RUNNER_SANDBOX_VERIFIED=false
+verify_runner_sandbox_image() {
+  if [ "$RUNNER_SANDBOX_VERIFIED" == true ]; then
+    return 0
+  fi
+  if run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run --rm --entrypoint bwrap "$RUNNER_IMAGE" --version >/dev/null 2>&1; then
+    RUNNER_SANDBOX_VERIFIED=true
+    return 0
+  fi
+  log "error: image ${RUNNER_IMAGE} has no working bwrap, so run_check would fail with infra_error; not starting runners from it. Rebuild the worker image under a NEW tag (see infra/github-runner-autoscaler/README.md)"
+  return 1
+}
+
 spawn_runner() {
   local token name docker_args
+  # Agent pools run `run_check`, which needs bubblewrap inside the worker image; a stale local tag
+  # would start fine and then fail every check with "bwrap: ENOENT". Refuse it before consuming a token.
+  if [ "$MOUNT_PI_CONFIG" == true ]; then
+    verify_runner_sandbox_image || return 1
+  fi
   token="$(registration_token)"
   name="${RUNNER_PREFIX}-$(date +%s)-$RANDOM"
 

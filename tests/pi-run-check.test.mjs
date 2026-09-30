@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { runCheck, checkMetricRecord, CHECK_KINDS } from '../scripts/pi-common/run-check.mjs';
+import { runCheck, checkMetricRecord, sandboxPreflight, CHECK_KINDS, CHECK_STATUSES } from '../scripts/pi-common/run-check.mjs';
 import { ruffArgs } from '../scripts/pi-common/ruff-spec.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
@@ -197,15 +198,158 @@ test('check subprocess cannot use the network or read home credentials', { skip:
   }
 });
 
-test('missing sandbox binary reports the sandbox dependency, not the check command', async () => {
+test('missing sandbox binary reports the sandbox dependency as an infrastructure error, not a check failure', async () => {
   const dir = worktree({ 'ok.py': 'x = 1\n' });
   const result = await runCheck(
     dir,
     { kind: 'python_compile', paths: ['ok.py'] },
     { sandboxFactory: () => ({ command: '/nonexistent/pi-check-sandbox', args: [] }) },
   );
-  assert.equal(result.status, 'fail');
+  assert.equal(result.status, 'infra_error');
   assert.match(result.summary, /Could not start check sandbox \/nonexistent\/pi-check-sandbox: ENOENT/);
+  assert.match(result.summary, /INFRASTRUCTURE ERROR/);
+  assert.match(result.summary, /do not look for a shell or bash workaround/);
+  assert.deepEqual(result.infrastructure, { component: 'sandbox', code: 'ENOENT', command: '/nonexistent/pi-check-sandbox' });
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('bare bwrap missing from PATH (the Beelink ENOENT) is an infrastructure error naming bwrap', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const result = await runCheck(
+    dir,
+    { kind: 'python_compile', paths: ['ok.py'] },
+    { env: { PATH: '/nonexistent-pi-bin' }, sandboxFactory: () => ({ command: 'bwrap', args: [] }) },
+  );
+  assert.equal(result.status, 'infra_error');
+  assert.match(result.summary, /Could not start check sandbox bwrap: ENOENT/);
+  assert.equal(result.infrastructure.component, 'sandbox');
+  assert.equal(result.infrastructure.code, 'ENOENT');
+});
+
+test('a sandbox that starts but cannot be set up is an infrastructure error, a failing check stays a fail', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const request = { kind: 'python_compile', paths: ['ok.py'] };
+  const viaBwrap = body => ({ sandboxFactory: () => ({ command: fakeBin(dir, 'bwrap', body), args: [] }) });
+
+  const setup = await runCheck(dir, request, viaBwrap('echo "bwrap: No permissions to create new namespace" >&2\nexit 1'));
+  assert.equal(setup.status, 'infra_error');
+  assert.equal(setup.infrastructure.component, 'sandbox');
+  assert.equal(setup.infrastructure.code, 'SANDBOX_SETUP');
+  assert.match(setup.summary, /Check sandbox could not be set up: No permissions to create new namespace/);
+  assert.equal(setup.exit_code, 1);
+  assert.match(setup.stderr_tail, /No permissions/);
+
+  const exec = await runCheck(dir, request, viaBwrap('echo "bwrap: execvp python3: No such file or directory" >&2\nexit 1'));
+  assert.equal(exec.status, 'infra_error');
+  assert.equal(exec.infrastructure.component, 'check_command');
+  assert.equal(exec.infrastructure.code, 'ENOENT');
+
+  const failing = await runCheck(dir, request, viaBwrap('echo "AssertionError: real failure, mentions bwrap: here" >&2\nexit 1'));
+  assert.equal(failing.status, 'fail');
+  assert.equal(failing.infrastructure, undefined);
+});
+
+test('a platform without any sandbox is an infrastructure error and never runs the check unsandboxed', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const marker = path.join(dir, 'ran');
+  const ruff = fakeBin(dir, 'ruff', `touch ${marker}`);
+  const result = await runCheck(dir, { kind: 'ruff', paths: ['ok.py'] }, { bins: { ruff }, sandboxFactory: () => null });
+  assert.equal(result.status, 'infra_error');
+  assert.equal(result.infrastructure.code, 'UNSUPPORTED_PLATFORM');
+  assert.equal(fs.existsSync(marker), false);
+});
+
+test('sandboxPreflight passes when the sandbox runs a no-op', async () => {
+  const result = await sandboxPreflight({ sandboxFactory: directSandbox });
+  assert.equal(result.ok, true);
+  assert.ok(result.duration_ms >= 0);
+});
+
+test('sandboxPreflight reports each infrastructure failure mode with a structured block', async () => {
+  const missing = await sandboxPreflight({ env: { PATH: '/nonexistent-pi-bin' }, sandboxFactory: () => ({ command: 'bwrap', args: [] }) });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.status, 'infra_error');
+  assert.deepEqual(missing.infrastructure, { component: 'sandbox', code: 'ENOENT', command: 'bwrap' });
+  assert.match(missing.summary, /Could not start check sandbox bwrap: ENOENT/);
+
+  const dir = worktree();
+  const setup = await sandboxPreflight({ sandboxFactory: () => ({ command: fakeBin(dir, 'bwrap', 'echo "bwrap: setting up uid map: Permission denied" >&2\nexit 1'), args: [] }) });
+  assert.equal(setup.ok, false);
+  assert.equal(setup.infrastructure.code, 'SANDBOX_SETUP');
+  assert.match(setup.stderr_tail, /uid map/);
+
+  const probe = await sandboxPreflight({ sandboxFactory: () => ({ command: fakeBin(dir, 'probe-fails', 'exit 3'), args: [] }) });
+  assert.equal(probe.ok, false);
+  assert.equal(probe.infrastructure.code, 'PROBE_FAILED');
+  assert.equal(probe.exit_code, 3);
+
+  const hung = await sandboxPreflight({ timeoutMs: 300, sandboxFactory: () => ({ command: fakeBin(dir, 'probe-hangs', 'sleep 30'), args: [] }) });
+  assert.equal(hung.ok, false);
+  assert.equal(hung.infrastructure.code, 'TIMEOUT');
+
+  const none = await sandboxPreflight({ sandboxFactory: () => null });
+  assert.equal(none.ok, false);
+  assert.equal(none.infrastructure.code, 'UNSUPPORTED_PLATFORM');
+});
+
+test('sandboxPreflight succeeds through the real sandbox on this platform', { skip: !hasRealSandbox }, async () => {
+  const result = await sandboxPreflight();
+  assert.equal(result.ok, true, result.summary);
+});
+
+test('Pi runtime preflights the sandbox at session start and fails the stage before any agent turn', { skip: process.platform !== 'linux' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-preflight-runtime-'));
+  try {
+    const issueContext = path.join(dir, 'issue.json');
+    const loader = path.join(dir, 'loader.mjs');
+    fs.writeFileSync(issueContext, JSON.stringify({ title: 'test', body: 'test' }));
+    // `typebox` is stubbed: only the session_start wiring is exercised here.
+    fs.writeFileSync(loader, `
+      export async function resolve(specifier, context, nextResolve) {
+        if (specifier === 'typebox') {
+          const source = 'export const Type = new Proxy({}, { get: () => (...args) => ({}) });';
+          return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      }
+    `);
+    const script = `
+      import assert from 'node:assert/strict';
+      const handlers = new Map();
+      let modelSet = false;
+      const pi = {
+        on: (name, handler) => handlers.set(name, handler),
+        registerTool: () => {},
+        getActiveTools: () => [],
+        setActiveTools: () => {},
+        sendUserMessage: async () => {},
+        setModel: async () => { modelSet = true; return true; },
+      };
+      const { default: extension } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
+      extension(pi);
+      await assert.rejects(
+        handlers.get('session_start')({}, { model: { provider: 'test', id: 'model', maxTokens: 32000 }, cwd: process.cwd() }),
+        /run_check sandbox preflight failed: INFRASTRUCTURE ERROR: Could not start check sandbox bwrap: ENOENT/,
+      );
+      assert.equal(modelSet, false, 'no agent budget/model work may start after a failed preflight');
+    `;
+    const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
+      cwd: new URL('..', import.meta.url).pathname,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: '/nonexistent-pi-bin',
+        PI_STAGE: 'implementer',
+        PI_ISSUE: '1',
+        PI_ISSUE_CONTEXT: issueContext,
+        GITHUB_WORKSPACE: new URL('..', import.meta.url).pathname,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stderr, /PI_RUN_CHECK_PREFLIGHT \{"stage":"implementer","ok":false/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('runner images declare the focused-check sandbox dependency', () => {
@@ -232,17 +376,29 @@ test('named node_tests profile runs a fixed argv', async () => {
   assert.equal(result.profile, 'node_tests');
 });
 
-test('missing binary is a fail result, not a thrown error', async () => {
+test('missing check binary is an infrastructure error result, not a thrown error or a code failure', async () => {
   const dir = worktree({ 'a.py': '' });
   const result = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, directOptions({ bins: { ruff: '/nonexistent/ruff' } }));
-  assert.equal(result.status, 'fail');
+  assert.equal(result.status, 'infra_error');
   assert.match(result.summary, /Could not start/);
+  assert.equal(result.infrastructure.component, 'check_command');
 });
 
 test('metric record carries no raw output', () => {
   const record = checkMetricRecord({ kind: 'ruff', status: 'fail', duration_ms: 5, truncated: false, diagnostics: [{}, {}], stdout_tail: 'secret' },
     { backend: 'pi', stage: 'implementer' });
   assert.deepEqual(record, { backend: 'pi', stage: 'implementer', kind: 'ruff', profile: null, status: 'fail', duration_ms: 5, truncated: false, diagnostics: 2 });
+});
+
+test('metric record marks infrastructure errors so they are countable apart from check failures', () => {
+  const record = checkMetricRecord({
+    kind: 'pytest', status: 'infra_error', duration_ms: 1, truncated: false, diagnostics: [], stderr_tail: 'secret',
+    infrastructure: { component: 'sandbox', code: 'ENOENT', command: 'bwrap' },
+  }, { backend: 'pi', stage: 'implementer' });
+  assert.equal(record.status, 'infra_error');
+  assert.equal(record.infrastructure, 'sandbox');
+  assert.equal(record.infrastructure_code, 'ENOENT');
+  assert.equal('stderr_tail' in record, false);
 });
 
 // --- progress-controller integration -------------------------------------------------------
@@ -297,4 +453,27 @@ test('Pi exposes run_check without enabling unrestricted bash, and the core stay
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
   const core = fs.readFileSync(new URL('../scripts/pi-common/run-check.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(core, /typebox|pi-agent-runtime|registerTool/);
+});
+
+test('infrastructure errors are a distinct status and no shell fallback exists in the check core or the runtime tool', () => {
+  assert.deepEqual(CHECK_STATUSES, ['pass', 'fail', 'timeout', 'invalid', 'infra_error']);
+  const core = fs.readFileSync(new URL('../scripts/pi-common/run-check.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(core, /['"`](?:\/bin\/)?(?:ba|z|da)?sh['"`]|bash -c|shell:\s*true/);
+  const runtime = fs.readFileSync(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url), 'utf8');
+  assert.match(runtime, /status: pass\|fail\|timeout\|invalid\|infra_error/);
+  assert.match(runtime, /if \(config\.productiveProgress\?\.verificationTool === 'run_check'\) await preflightRunCheckSandbox\(\);/);
+  // Preflight must run before the response budget/model work of the session starts.
+  assert.ok(runtime.indexOf('await preflightRunCheckSandbox();') < runtime.indexOf("await applyBudget('short', ctx);"));
+});
+
+test('an infra_error result is a normal tool result: it consumes the permit and grants no progress', () => {
+  const c = implementer();
+  c.onTurnStart(0);
+  c.checkToolCall('safe_edit', { path: 'a.py' });
+  c.onToolExecutionEnd('safe_edit', false);
+  c.onTurnStart(1);
+  assert.equal(c.checkToolCall('run_check', { kind: 'ruff', paths: ['a.py'] }), undefined);
+  c.onToolExecutionEnd('run_check', false);
+  assert.equal(c.turnMadeProgress, false);
+  assert.equal(c.verificationPermitted(), false);
 });

@@ -250,6 +250,7 @@ grep -q -- '-e RUNNER_LABELS=n150,general' "$DOCKER_RUN_LOG" || fail 'spawn_runn
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the docker socket when MOUNT_DOCKER_SOCKET=true'
 grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the Pi config when MOUNT_PI_CONFIG=false'
 grep -q -- 'PI_ZOEKT_' "$DOCKER_RUN_LOG" && fail 'general runners must not receive the optional Pi-only Zoekt configuration'
+grep -q -- '--entrypoint bwrap' "$DOCKER_RUN_LOG" && fail 'general runners run no run_check, so their image is not probed for bwrap'
 
 : > "$DOCKER_RUN_LOG"
 (
@@ -276,5 +277,55 @@ grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail
 grep -q -- '-e PI_ZOEKT_URL=http://127.0.0.1:6070' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive PI_ZOEKT_URL when configured'
 grep -q -- '-e PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the stable Zoekt repository name'
 grep -q -- '-e PI_ZOEKT_TIMEOUT_MS=3000' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the bounded Zoekt timeout'
+grep -q -- '--entrypoint bwrap test-pi-image:tag --version' "$DOCKER_RUN_LOG" || fail 'Pi runners must verify the worker image contains bwrap before starting'
+
+# An agent-pool image without a working bwrap (e.g. a stale locally cached tag) starts fine but
+# fails every run_check with "bwrap: ENOENT"; the manager must refuse it, and must not spend a
+# registration token or start a container doing so.
+: > "$DOCKER_RUN_LOG"
+(
+  RUNNER_PREFIX=n150-pi-eph
+  RUNNER_IMAGE=stale-pi-image:tag
+  RUNNER_LABELS=n150,pi-agent
+  MOUNT_PI_CONFIG=true
+  MOUNT_DOCKER_SOCKET=false
+  PI_ZOEKT_URL=
+  registration_token() { fail 'requested a registration token for an image without bwrap'; }
+  run_with_timeout() {
+    shift
+    printf '%s\n' "$*" >> "$DOCKER_RUN_LOG"
+    [[ "$*" != *'--entrypoint bwrap'* ]]
+  }
+  if spawn_runner >"$DOCKER_RUN_LOG.out"; then fail 'spawn_runner must refuse an image without a working bwrap'; fi
+  grep -q 'has no working bwrap' "$DOCKER_RUN_LOG.out" || fail 'the refusal must say why the image was rejected'
+  grep -q 'NEW tag' "$DOCKER_RUN_LOG.out" || fail 'the refusal must point at rebuilding under a new tag'
+)
+rm -f "$DOCKER_RUN_LOG.out"
+grep -q -- '--entrypoint bwrap stale-pi-image:tag --version' "$DOCKER_RUN_LOG" || fail 'the image must be probed for bwrap'
+grep -q -- 'docker run -d' "$DOCKER_RUN_LOG" && fail 'no runner container may start from an image without bwrap'
+
+# A verified image is probed once; a rejected image is re-probed so a fixed tag recovers without a restart.
+: > "$DOCKER_RUN_LOG"
+(
+  RUNNER_PREFIX=n150-pi-eph
+  RUNNER_IMAGE=fixed-pi-image:tag
+  RUNNER_LABELS=n150,pi-agent
+  MOUNT_PI_CONFIG=true
+  MOUNT_DOCKER_SOCKET=false
+  PI_ZOEKT_URL=
+  probe_ok=false
+  registration_token() { printf 'tok\n'; }
+  run_with_timeout() {
+    shift
+    printf '%s\n' "$*" >> "$DOCKER_RUN_LOG"
+    if [[ "$*" == *'--entrypoint bwrap'* ]]; then [[ "$probe_ok" == true ]]; fi
+  }
+  if spawn_runner >/dev/null; then fail 'first spawn must be refused while bwrap is missing'; fi
+  probe_ok=true
+  spawn_runner >/dev/null || fail 'spawn must recover once the image has bwrap'
+  spawn_runner >/dev/null || fail 'second spawn from a verified image must succeed'
+)
+[[ "$(grep -c -- '--entrypoint bwrap' "$DOCKER_RUN_LOG")" == 2 ]] || fail 'expected one failed and one successful probe, then no re-probe of a verified image'
+[[ "$(grep -c -- 'docker run -d' "$DOCKER_RUN_LOG")" == 2 ]] || fail 'expected exactly the two post-recovery runners to start'
 
 printf 'runner autoscaler checks passed\n'

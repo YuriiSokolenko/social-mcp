@@ -17,6 +17,10 @@ import { expandCommand, projectConfig } from './project-config.mjs';
 
 export const CHECK_KINDS = Object.freeze(['python_compile', 'ruff', 'pytest', 'profile']);
 
+// `infra_error` means the runner could not run the check at all (sandbox or tool missing/broken).
+// It is never a verdict on the agent's change, unlike `fail`, and must not be answered with a retry or a shell.
+export const CHECK_STATUSES = Object.freeze(['pass', 'fail', 'timeout', 'invalid', 'infra_error']);
+
 const MAX_PATHS = 20;
 const MAX_DIAGNOSTICS = 20;
 const MAX_MESSAGE_CHARS = 400;
@@ -24,6 +28,7 @@ const TAIL_CHARS = 3000;
 const CAPTURE_LIMIT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_TIMEOUT_SECONDS = 600;
+const PREFLIGHT_TIMEOUT_MS = 15000;
 
 // Only these variables reach a check subprocess: never the caller's token/secret environment.
 const ENV_ALLOWLIST = ['PATH', 'LANG', 'LC_ALL'];
@@ -62,6 +67,56 @@ function invalid(kind, message) {
     stderr_tail: '',
     truncated: false,
   };
+}
+
+const INFRA_GUIDANCE = 'This is a runner infrastructure failure, not a verification result for your change. '
+  + 'Do not retry it, do not look for a shell or bash workaround, and do not treat the code as failing; '
+  + 'report it as an infrastructure blocker.';
+
+/**
+ * Structured runner-infrastructure failure. `info` = { component, code, command, message }, where
+ * component is 'sandbox' or 'check_command'. `extra` may carry run details (tails, duration, kind fields).
+ */
+function infraError(kind, info, extra = {}) {
+  return {
+    status: 'infra_error',
+    kind: typeof kind === 'string' ? kind : null,
+    exit_code: null,
+    duration_ms: 0,
+    summary: `INFRASTRUCTURE ERROR: ${info.message}. ${INFRA_GUIDANCE}`,
+    infrastructure: { component: info.component, code: info.code, command: info.command ?? null },
+    diagnostics: [],
+    stdout_tail: '',
+    stderr_tail: '',
+    truncated: false,
+    ...extra,
+  };
+}
+
+/**
+ * Decide whether a finished run failed because the runner could not execute the check
+ * (as opposed to the check itself failing). Returns an `info` object for `infraError`, or null.
+ */
+function infrastructureFailure(isolated, spec, run) {
+  if (run.spawnError) {
+    const code = run.spawnError.code || run.spawnError.message;
+    return isolated.command === spec.command
+      ? { component: 'check_command', code, command: spec.command, message: `Could not start ${spec.command}: ${code}` }
+      : { component: 'sandbox', code, command: isolated.command, message: `Could not start check sandbox ${isolated.command}: ${code}` };
+  }
+  // bwrap reports its own setup/exec failures as a leading "bwrap: ..." stderr line, before the
+  // wrapped command has run; a check's own output never starts that way.
+  if (path.basename(isolated.command) === 'bwrap' && run.exitCode !== 0) {
+    const first = /^bwrap: (.*)$/.exec(String(run.stderr ?? '').trimStart().split('\n', 1)[0].trim());
+    if (first) {
+      if (first[1].startsWith('execvp ')) {
+        const code = /No such file or directory/.test(first[1]) ? 'ENOENT' : 'EXEC';
+        return { component: 'check_command', code, command: spec.command, message: `Could not start ${spec.command} inside the check sandbox: ${shorten(first[1])}` };
+      }
+      return { component: 'sandbox', code: 'SANDBOX_SETUP', command: isolated.command, message: `Check sandbox could not be set up: ${shorten(first[1])}` };
+    }
+  }
+  return null;
 }
 
 function rejectUnknownFields(params, allowed) {
@@ -352,9 +407,15 @@ export async function runCheck(root, params, options = {}) {
   const timeoutMs = options.timeoutMs ?? seconds * 1000;
   const sandboxFactory = options.sandboxFactory ?? isolatedCommand;
   const isolated = sandboxFactory(root, spec);
-  if (!isolated) return invalid(request.kind, `No check sandbox is available on ${process.platform}`);
+  if (!isolated) {
+    return infraError(request.kind, {
+      component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}`,
+    });
+  }
   if (path.isAbsolute(spec.command) && !fs.existsSync(spec.command)) {
-    return { ...invalid(request.kind, `Could not start ${spec.command}: ENOENT`), status: 'fail' };
+    return infraError(request.kind, {
+      component: 'check_command', code: 'ENOENT', command: spec.command, message: `Could not start ${spec.command}: ENOENT`,
+    });
   }
   const run = await execute({
     command: isolated.command,
@@ -381,10 +442,8 @@ export async function runCheck(root, params, options = {}) {
   if (run.timedOut) {
     return { status: 'timeout', ...base, summary: `Timed out after ${Math.round(timeoutMs / 1000)}s; process tree killed`, diagnostics: [] };
   }
-  if (run.spawnError) {
-    const failedTarget = isolated.command === spec.command ? spec.command : `check sandbox ${isolated.command}`;
-    return { status: 'fail', ...base, summary: `Could not start ${failedTarget}: ${run.spawnError.code || run.spawnError.message}`, diagnostics: [] };
-  }
+  const infra = infrastructureFailure(isolated, spec, run);
+  if (infra) return infraError(kind, infra, base);
 
   const { diagnostics, summary } = analyze(request, run, path.resolve(root));
   const passed = run.exitCode === 0;
@@ -395,6 +454,52 @@ export async function runCheck(root, params, options = {}) {
     diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS),
     ...(diagnostics.length > MAX_DIAGNOSTICS ? { truncated: true } : {}),
   };
+}
+
+/**
+ * Prove the check sandbox works before any agent work depends on it: run a no-op through the same
+ * isolation wrapper real checks use. Never throws and never falls back to an unsandboxed run.
+ * Resolves `{ ok: true, duration_ms }`, or `{ ok: false, ...infra_error result }` with the same
+ * structured `infrastructure` block a failing `runCheck` would return.
+ */
+export async function sandboxPreflight(options = {}) {
+  const env = options.env ?? process.env;
+  const sandboxFactory = options.sandboxFactory ?? isolatedCommand;
+  const timeoutMs = options.timeoutMs ?? PREFLIGHT_TIMEOUT_MS;
+  const spec = { command: options.probeCommand ?? 'true', args: [] };
+  const fail = (info, extra = {}) => ({ ok: false, ...infraError('sandbox_preflight', info, extra) });
+
+  const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-sandbox-preflight-'));
+  try {
+    const isolated = sandboxFactory(probeRoot, spec);
+    if (!isolated) {
+      return fail({ component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}` });
+    }
+    const run = await execute({
+      command: isolated.command,
+      args: isolated.args,
+      cwd: probeRoot,
+      env: checkEnv(env),
+      timeoutMs,
+    });
+    const details = {
+      exit_code: run.exitCode,
+      duration_ms: run.durationMs,
+      stdout_tail: cap(run.stdout, TAIL_CHARS).text,
+      stderr_tail: cap(run.stderr, TAIL_CHARS).text,
+    };
+    if (run.timedOut) {
+      return fail({ component: 'sandbox', code: 'TIMEOUT', command: isolated.command, message: `Check sandbox probe timed out after ${timeoutMs}ms` }, details);
+    }
+    const infra = infrastructureFailure(isolated, spec, run);
+    if (infra) return fail(infra, details);
+    if (run.exitCode !== 0) {
+      return fail({ component: 'sandbox', code: 'PROBE_FAILED', command: isolated.command, message: `Check sandbox probe exited with code ${run.exitCode}` }, details);
+    }
+    return { ok: true, duration_ms: run.durationMs };
+  } finally {
+    fs.rmSync(probeRoot, { recursive: true, force: true });
+  }
 }
 
 /** Structured, bounded metric record (no raw output, no secrets). */
@@ -408,5 +513,6 @@ export function checkMetricRecord(result, { backend, stage }) {
     duration_ms: result.duration_ms,
     truncated: result.truncated,
     diagnostics: result.diagnostics.length,
+    ...(result.infrastructure ? { infrastructure: result.infrastructure.component, infrastructure_code: result.infrastructure.code } : {}),
   };
 }

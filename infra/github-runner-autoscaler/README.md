@@ -67,6 +67,16 @@ untracked `.env` and recreate only `pi-runner-manager`:
 docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
 ```
 
+### `run_check` sandbox (`bwrap`) checks
+
+`run_check` needs a working `bwrap` inside the worker image. A local tag built before `bubblewrap` was added to `worker.Dockerfile` (or an old rollback tag such as `0.87.1`) still starts and registers a runner, but every check then fails with `Could not start check sandbox bwrap: ENOENT`. Three layers now catch this instead of leaving the agent to discover it mid-task:
+
+- **Manager:** before starting a `pi-agent` runner, `manager.sh` runs `docker run --rm --entrypoint bwrap "$RUNNER_IMAGE" --version`. If it fails, no runner starts and the manager logs `image ... has no working bwrap`; rebuild the worker image under a **new** tag and update `RUNNER_IMAGE` in the host `.env`. The result is cached once it succeeds, and a rejected image is re-checked on the next spawn, so no manager restart is needed after the fix.
+- **Runtime:** the Pi runtime runs `sandboxPreflight()` at `session_start` for stages that expose `run_check` (the Implementer) and fails the stage before any agent turn, logging `PI_RUN_CHECK_PREFLIGHT {"ok":false,...}` with the `infrastructure` component and code. This also covers runners where `bwrap` exists but cannot create namespaces (the pool needs `--security-opt seccomp=unconfined`, which the manager passes).
+- **Tool result:** if the sandbox breaks after startup, `run_check` returns `status: "infra_error"` with an `infrastructure` block instead of `fail`, so it is distinguishable from a real check failure (`PI_RUN_CHECK` metrics carry `infrastructure`/`infrastructure_code`). There is deliberately no unrestricted-shell fallback.
+
+To verify a worker image by hand: `docker run --rm --security-opt seccomp=unconfined --entrypoint bwrap "$RUNNER_IMAGE" --unshare-user --unshare-net --ro-bind / / -- true`.
+
 Create the local manager environment:
 
 ```bash
