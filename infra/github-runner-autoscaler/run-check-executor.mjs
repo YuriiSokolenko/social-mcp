@@ -227,6 +227,7 @@ export function verifySandboxContainerConfig(container, subpath) {
   const mounts = container.Mounts || [];
   const workspace = mounts.find(mount => mount.Destination === '/workspace');
   const security = host.SecurityOpt || [];
+  const noNewPrivileges = security.some(option => option === 'no-new-privileges' || option === 'no-new-privileges:true');
   const secretEnv = (config.Env || []).filter(entry => /(?:TOKEN|SECRET|API_KEY|ACCESS_KEY|SSH_AUTH_SOCK|GITHUB|MODEL|OPENAI|ANTHROPIC)/i.test(entry.split('=', 1)[0]));
   const noDockerMount = !mounts.some(mount => /docker\.sock/.test(`${mount.Source || ''} ${mount.Destination || ''}`));
   const expectedMount = workspace?.Type === 'volume' && workspace.Name === STAGE_VOLUME && workspace.RW === false && workspace.Destination === '/workspace';
@@ -236,13 +237,13 @@ export function verifySandboxContainerConfig(container, subpath) {
     && host.Privileged === false
     && host.ReadonlyRootfs === true
     && config.User === `${SANDBOX_UID}:${SANDBOX_GID}`
-    && security.includes('no-new-privileges:true')
+    && noNewPrivileges
     && host.PidMode !== 'host'
     && host.IpcMode !== 'host'
     && expectedMount
     && noDockerMount
     && secretEnv.length === 0;
-  return { ok, network: host.NetworkMode, capabilities_dropped: (host.CapDrop || []).includes('ALL'), privileged: host.Privileged === true, readonly_rootfs: host.ReadonlyRootfs === true, user: config.User, no_new_privileges: security.includes('no-new-privileges:true'), workspace_readonly: Boolean(expectedMount), docker_socket_absent: noDockerMount, credentials_absent: secretEnv.length === 0, workspace_subpath: subpath };
+  return { ok, network: host.NetworkMode, capabilities_dropped: (host.CapDrop || []).includes('ALL'), privileged: host.Privileged === true, readonly_rootfs: host.ReadonlyRootfs === true, user: config.User, no_new_privileges: noNewPrivileges, workspace_readonly: Boolean(expectedMount), docker_socket_absent: noDockerMount, credentials_absent: secretEnv.length === 0, workspace_subpath: subpath };
 }
 
 async function runSandbox({ runnerName, root, operation, params, requestedEnv, timeoutMs }) {

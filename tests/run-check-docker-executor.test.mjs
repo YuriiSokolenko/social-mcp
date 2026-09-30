@@ -35,6 +35,9 @@ test('sandbox command fixes image, network, capabilities, user, rootfs and mount
 
 test('container inspection rejects any loss of the required sandbox isolation', () => {
   assert.equal(verifySandboxContainerConfig(safeContainer(), 'check-abc').ok, true);
+  const dockerInspectShortName = safeContainer();
+  dockerInspectShortName.HostConfig.SecurityOpt = ['no-new-privileges'];
+  assert.equal(verifySandboxContainerConfig(dockerInspectShortName, 'check-abc').ok, true);
   for (const mutate of [
     item => { item.HostConfig.NetworkMode = 'host'; },
     item => { item.HostConfig.CapDrop = []; },
