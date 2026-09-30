@@ -6,7 +6,7 @@ GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}"
 
 MAX_RUNNERS="${MAX_RUNNERS:-4}"
 POLL_SECONDS="${POLL_SECONDS:-6}"
-RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.89.0-mini-swe}"
+RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.89.1-mini-swe}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
 RUNNER_LABELS="${RUNNER_LABELS:-n150,pi-agent}"
 PI_ZOEKT_URL="${PI_ZOEKT_URL:-}"
