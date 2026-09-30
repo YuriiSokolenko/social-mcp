@@ -67,7 +67,7 @@ export default function (pi) {
         const target = process.env.PI_IMPLEMENTER_RESULT_FILE;
         if (!target) throw new Error('PI_IMPLEMENTER_RESULT_FILE is not configured');
         fs.writeFileSync(target, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
-        return { data };
+        return { data, text: 'BLOCKED. Human clarification is required before implementation can continue. Stop now.' };
       }
 
       const freshChangedMetadata = !restored && !alreadySatisfied
