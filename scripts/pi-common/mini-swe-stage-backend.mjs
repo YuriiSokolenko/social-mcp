@@ -45,6 +45,7 @@ export function buildMiniSweInvocation(spec) {
     '-c', 'model.model_kwargs.custom_llm_provider=openai',
     '-c', `model.model_kwargs.api_base=${spec.model.baseUrl}`,
     '-c', 'model.cost_tracking=ignore_errors',
+    '-c', `environment.cwd=${spec.cwd}`,
     '-m', model,
     '-y',
     '--exit-immediately',
@@ -61,6 +62,8 @@ export function buildMiniSweInvocation(spec) {
       cwd: spec.cwd,
       env: {
         ...spec.environment,
+        GITHUB_WORKSPACE: spec.cwd,
+        PWD: spec.cwd,
         MSWEA_CONFIGURED: 'true',
         MSWEA_COST_TRACKING: 'ignore_errors',
         OPENAI_API_KEY: spec.environment.OPENAI_API_KEY || 'local-mini-swe',
