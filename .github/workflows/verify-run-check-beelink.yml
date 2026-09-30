@@ -40,6 +40,7 @@ jobs:
           set -euo pipefail
           smoke="$RUNNER_TEMP/pi-run-check-sandbox-smoke"
           mkdir -p "$smoke/tests"
+          cp "$GITHUB_WORKSPACE/pyproject.toml" "$smoke/pyproject.toml"
           cat > "$smoke/valid.py" <<'PY'
           print("valid")
           PY
@@ -154,7 +155,7 @@ jobs:
             pytest_valid: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_pass'] }),
             pytest_invalid: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_fail'] }),
             pytest_policy: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_sandbox_policy'] }),
-            pytest_timeout: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_timeout'], timeoutSeconds: 2 }),
+            pytest_timeout: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_timeout'] }, { timeoutSeconds: 2 }),
           };
           for (const [name, result] of Object.entries(cases)) console.log(`RUN_CHECK_${name.toUpperCase()} ${JSON.stringify(result)}`);
           assert.equal(cases.python_valid.status, 'pass');
