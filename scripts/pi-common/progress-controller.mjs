@@ -133,6 +133,12 @@ export class ProgressController {
         ? env.PI_PRE_COMPLEXITY_TRANSITION_TOOLS.split(',').map(x => x.trim()).filter(Boolean)
         : (config.preComplexityTransitionTools ?? []),
     );
+    const configuredPreComplexityEvidenceBudget =
+      env.PI_PRE_COMPLEXITY_EVIDENCE_BUDGET ?? config.preComplexityEvidenceBudget ?? null;
+    this.preComplexityEvidenceBudget = configuredPreComplexityEvidenceBudget == null
+      ? null
+      : positiveInteger(Number(configuredPreComplexityEvidenceBudget), 'PI_PRE_COMPLEXITY_EVIDENCE_BUDGET');
+    this.preComplexityEvidenceRemaining = this.preComplexityEvidenceBudget;
     this.requiredFirstReadPath = env.PI_REQUIRED_FIRST_READ_PATH || config.requiredFirstReadPath || null;
     this.requiredFirstReadDone = !this.requiredFirstReadPath;
     this.complexityTurnBase = this.requiredFirstReadDone ? 0 : null;
@@ -214,6 +220,19 @@ export class ProgressController {
     return this.productiveState;
   }
 
+  preComplexityActionRequired() {
+    if (!this.requireComplexity || this.complexity || !this.requiredFirstReadDone) return false;
+    const preComplexityTurns = Math.max(
+      0,
+      this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn),
+    );
+    const turnDeadlineReached = preComplexityTurns >= this.preComplexityTurnLimit;
+    const evidenceExhausted =
+      this.preComplexityEvidenceBudget != null &&
+      this.preComplexityEvidenceRemaining <= 0;
+    return turnDeadlineReached || evidenceExhausted;
+  }
+
   productiveInitialEvidenceBudgetForComplexity() {
     return this.productiveEvidenceBudgetByComplexity[this.complexity] ??
       this.productiveInitialEvidenceBudget;
@@ -249,13 +268,22 @@ export class ProgressController {
     const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
 
+    const preComplexityEvidenceTool =
+      this.requireComplexity &&
+      !this.complexity &&
+      !pendingComplexityTransition &&
+      !terminalTool &&
+      this.preComplexityAllowedTools.has(toolName);
+
     if (this.requireComplexity && !this.complexity) {
-      const preComplexityTurns = Math.max(0, this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn));
-      const orientationDeadlineReached = preComplexityTurns >= this.preComplexityTurnLimit;
+      const orientationDeadlineReached = this.preComplexityActionRequired();
       if (orientationDeadlineReached && !pendingComplexityTransition && !terminalTool) {
+        const reason = this.preComplexityEvidenceBudget != null && this.preComplexityEvidenceRemaining <= 0
+          ? `Startup orientation used its ${this.preComplexityEvidenceBudget} evidence actions after the required contract read.`
+          : `Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read.`;
         return {
           block: true,
-          reason: `BLOCKED: ${toolName} did not execute. Startup orientation used ${this.preComplexityTurnLimit} model turns after the required contract read. Use only the configured preparation/classification action or terminal submit tool now.`,
+          reason: `BLOCKED: ${toolName} did not execute. ${reason} Use only the configured preparation/classification action or terminal submit tool now.`,
         };
       }
       if (!orientationDeadlineReached && !pendingComplexityTransition && !this.preComplexityAllowedTools.has(toolName)) {
@@ -430,12 +458,28 @@ export class ProgressController {
     if (this.repeatCount > this.repeatThreshold) {
       return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
     }
+    if (preComplexityEvidenceTool && this.preComplexityEvidenceRemaining != null) {
+      this.preComplexityEvidenceRemaining = Math.max(0, this.preComplexityEvidenceRemaining - 1);
+    }
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
     this.turnUsedTool = true;
     return undefined;
   }
 
   onToolExecutionEnd(toolName, isError) {
+    if (
+      isError &&
+      this.requireComplexity &&
+      !this.complexity &&
+      this.preComplexityEvidenceBudget != null &&
+      this.preComplexityAllowedTools.has(toolName) &&
+      !this.preComplexityTransitionTools.has(toolName)
+    ) {
+      this.preComplexityEvidenceRemaining = Math.min(
+        this.preComplexityEvidenceBudget,
+        this.preComplexityEvidenceRemaining + 1,
+      );
+    }
     if (toolName === 'lsp_start_server') {
       this.lspServerStartPending = false;
       if (this.requireLspStartBeforeFindSymbol) this.lspServerReady = !isError;
