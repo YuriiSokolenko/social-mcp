@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 
 import { validateFinalProductTree } from './finalize-product-tree.mjs';
+import { IMPLEMENTER_OUTCOMES, readImplementerResult } from './implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from './stage-run-contract.mjs';
 
 const DEFAULT_REPAIR_ATTEMPTS = 1;
@@ -56,6 +57,18 @@ export async function runStageWithValidationRecovery(
   let durationMs = result.durationMs;
 
   for (let attempt = 0; ; attempt += 1) {
+    const implementerResult = readImplementerResult(spec.environment.PI_IMPLEMENTER_RESULT_FILE);
+    if (
+      implementerResult &&
+      implementerResult.outcome !== IMPLEMENTER_OUTCOMES.changed
+    ) {
+      return createStageRunResult({
+        backend: result.backend,
+        durationMs,
+        artifacts: result.artifacts,
+      });
+    }
+
     try {
       validate({ cwd: spec.cwd });
       return createStageRunResult({
