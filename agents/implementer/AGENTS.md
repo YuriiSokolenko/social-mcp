@@ -125,7 +125,7 @@ Use `scout` with `async: false` only when the evidence already available to the 
 
 **Task classification alone never requires delegation.** `nontrivial` means only that the startup evidence allowance is six actions; it is not an instruction to call `scout`.
 
-`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `indexed_repo_search` when available for initial indexed discovery and `repo_search` for current-worktree deterministic discovery. Broad `bash` is also blocked. After a successful edit you may call `run_check` (`python_compile`, `ruff`, `pytest`, or a named `profile`) for focused verification. A failing result is evidence: fix the reported diagnostic and re-check. It does not replace final validation; still call `submit_result`.
+`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `indexed_repo_search` when available for initial indexed discovery and `repo_search` for current-worktree deterministic discovery. Broad `bash` is also blocked. After a successful edit you may call `run_check` (`python_compile`, `ruff`, `pytest`, or a named `profile`) for focused verification. A failing result is evidence: fix the reported diagnostic and re-check. `status: infra_error` is different: the runner could not run the check, which says nothing about your change — do not retry it, do not look for a shell workaround, and do not treat the code as failing. It does not replace final validation; still call `submit_result`.
 
 For scout requests:
 

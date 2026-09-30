@@ -45,27 +45,70 @@ same base runner image, and the host's `/var/run/docker.sock` is bind-mounted
 into each ephemeral worker (sibling-container pattern) so `ci.yml`'s `docker`
 job can run `docker compose up/down` itself. This means anything with access
 to that pool's ephemeral runner also has Docker-socket-level access to the
-host -- keep `ci.yml`'s `docker` job restricted to trusted, already-checked-out
-repository code, same trust boundary as the `pi-agent` pool.
+host -- keep `ci.yml`'s Docker job restricted to trusted, already-checked-out
+repository code. The `pi-agent` pool does not receive the Docker socket.
+
+Linux `run_check` uses a separate trusted executor process inside
+`pi-runner-manager`. The manager already has Docker daemon access; the Pi worker
+does not. The executor is published only on host loopback and authenticates each
+Pi worker using a per-runner token. It accepts only the existing structured
+`run_check` request, copies that worker's current worktree into a dedicated
+temporary Docker volume, removes `.git` and local tool environments, then starts
+the fixed sandbox image with that volume mounted read-only. The sandbox gets no
+Docker socket, host bind mounts, runner tokens, GitHub token, model credentials,
+or inherited runner environment. The executor never accepts Docker flags,
+image names, commands, or mount paths from the caller.
 
 ## N150 setup
 
-Build both ephemeral worker images first:
+Build the Pi worker, the general worker, and the separate check sandbox first:
 
 ```bash
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.2 .
+docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
 The Pi worker tag `0.89.1-mini-swe` pins `mini-swe-agent==2.4.6`, `pi-mcp-adapter@3.2.0`,
 `lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`, BasedPyright `1.40.1`, and the official JetBrains
-Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. Both ephemeral worker images include `bubblewrap` for `run_check` isolation; the general worker tag is `0.87.2`. System-package changes must use a new worker tag rather than silently reusing an already-built local tag. To roll the Pi pool back, set
+Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The Pi and general worker tags are `0.89.1-mini-swe` and `0.87.2`; `run_check` tooling lives in the separate `0.1.0` sandbox image. System-package changes must use a new image tag rather than silently reusing an already-built local tag. The sandbox image independently contains Python 3.12, the repository's pinned Ruff and pytest tooling, Node for the configured `node_tests` profile, and Git for repository tests; it contains no runner registration, GitHub CLI, SSH client, or agent runtime. To roll the Pi pool back, set
 `RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
 untracked `.env` and recreate only `pi-runner-manager`:
 
 ```bash
 docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
 ```
+
+### `run_check` sandbox backend
+
+`RUN_CHECK_SANDBOX_IMAGE` independently selects the versioned sandbox image; it
+defaults to `n150/run-check-sandbox:0.1.0`. Set it in the host's untracked
+`.env`, build that exact tag, and restart only `pi-runner-manager` when changing
+the sandbox version. The manager refuses to start Pi workers unless the image
+exists locally, a hardened no-network container can run the image probe, and
+the trusted executor's health endpoint is reachable. It logs both the selected
+tag and the image ID. Runtime `sandboxPreflight()` stages a real temporary
+worktree marker, starts a sandbox with the same read-only worktree mount as a
+real check, and verifies non-root UID, zero effective capabilities, disabled
+network, no Docker socket, and the expected mount before logging
+`PI_RUN_CHECK_PREFLIGHT {"ok":true,...}`. Docker startup and executor failures
+remain structured `infra_error`; normal compiler and test failures remain
+`fail`. There is no unrestricted-shell fallback.
+
+The manager also launches a local executor process with a Docker socket inside
+its trusted container. The Pi runner itself remains non-root, unprivileged,
+under the default Docker security profile, and has no socket mount. Sandbox
+containers use `--network none`, `--cap-drop ALL`, `--security-opt
+no-new-privileges`, a read-only root filesystem, UID 1001, a 128 MiB `/tmp`
+tmpfs, a 2 GiB memory limit, a 2 CPU limit, and a read-only subpath of the
+temporary staging volume. No host filesystem bind or secrets are passed through.
+
+Upgrade procedure: choose a new immutable-by-convention tag, build
+`run-check-sandbox.Dockerfile` under that tag, set `RUN_CHECK_SANDBOX_IMAGE` in
+the N150 host `.env`, and recreate only `pi-runner-manager`. Check the manager
+log for `run_check backend ready image=... image_id=...` before dispatching a
+Pi job. The runtime preflight log includes the same image ID and sandbox
+security evidence.
 
 Create the local manager environment:
 

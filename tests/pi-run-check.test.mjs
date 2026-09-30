@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { runCheck, checkMetricRecord, CHECK_KINDS } from '../scripts/pi-common/run-check.mjs';
+import { runCheck, checkMetricRecord, sandboxPreflight, CHECK_KINDS, CHECK_STATUSES } from '../scripts/pi-common/run-check.mjs';
 import { ruffArgs } from '../scripts/pi-common/ruff-spec.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+import { createDockerSandboxBackend } from '../scripts/pi-common/run-check-docker-backend.mjs';
 
 function worktree(files = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-run-check-'));
@@ -46,9 +48,7 @@ function hasCommand(name) {
   }
 }
 
-const hasRealSandbox = process.platform === 'linux'
-  ? hasCommand('bwrap')
-  : process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec');
+const hasRealSandbox = process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec');
 
 test('python_compile passes on valid source and reports a syntax error with file/line', { skip: !hasPython }, async () => {
   const dir = worktree();
@@ -160,6 +160,58 @@ test('no arbitrary command is expressible through the public contract', async ()
   }
 });
 
+test('Docker backend sends structured check fields only and strips runner secrets from its environment', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (url, options) => {
+    captured = { url, options, body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({ exitCode: 0, durationMs: 4, stdout: '', stderr: '' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const backend = createDockerSandboxBackend({
+      PI_RUN_CHECK_EXECUTOR_URL: 'http://127.0.0.1:17343',
+      RUN_CHECK_EXECUTOR_TOKEN: 'a'.repeat(64),
+      RUNNER_NAME: 'n150-pi-eph-test',
+    });
+    const result = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, {
+      backend,
+      env: { PATH: '/bin', LANG: 'C.UTF-8', GITHUB_TOKEN: 'must-not-escape' },
+    });
+    assert.equal(result.status, 'pass');
+    assert.equal(captured.url, 'http://127.0.0.1:17343/v1/run-check');
+    assert.equal(captured.body.runner_name, 'n150-pi-eph-test');
+    assert.deepEqual(captured.body.params, { kind: 'python_compile', paths: ['ok.py'] });
+    assert.deepEqual(Object.keys(captured.body).sort(), ['env', 'params', 'root', 'runner_name', 'timeout_ms']);
+    assert.equal(captured.body.env.GITHUB_TOKEN, undefined);
+    assert.equal(captured.body.docker_args, undefined);
+    assert.equal(captured.body.mounts, undefined);
+    assert.equal(captured.body.command, undefined);
+    assert.equal(captured.options.headers.authorization, `Bearer ${'a'.repeat(64)}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Docker backend startup errors become infra_error rather than code failures', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: 'DOCKER_CREATE_FAILED', message: 'sandbox container create failed' } }), {
+    status: 503, headers: { 'content-type': 'application/json' },
+  });
+  try {
+    const result = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, {
+      backend: createDockerSandboxBackend({ RUN_CHECK_EXECUTOR_TOKEN: 'b'.repeat(64), RUNNER_NAME: 'n150-pi-eph-test' }),
+    });
+    assert.equal(result.status, 'infra_error');
+    assert.equal(result.infrastructure.component, 'sandbox');
+    assert.equal(result.infrastructure.code, 'DOCKER_CREATE_FAILED');
+    assert.match(result.summary, /sandbox container create failed/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('output is bounded deterministically and secrets are not inherited', async () => {
   const dir = worktree({ 'tests/test_big.py': '' });
   const big = fakeBin(dir, 'pytest-big', 'i=0\nwhile [ $i -lt 2000 ]; do echo "line $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; i=$((i+1)); done\necho "SECRET=$GITHUB_TOKEN" >&2\nexit 1');
@@ -197,22 +249,119 @@ test('check subprocess cannot use the network or read home credentials', { skip:
   }
 });
 
-test('missing sandbox binary reports the sandbox dependency, not the check command', async () => {
+test('missing sandbox binary reports the sandbox dependency as an infrastructure error, not a check failure', async () => {
   const dir = worktree({ 'ok.py': 'x = 1\n' });
   const result = await runCheck(
     dir,
     { kind: 'python_compile', paths: ['ok.py'] },
-    { sandboxFactory: () => ({ command: '/nonexistent/pi-check-sandbox', args: [] }) },
+    { backend: { run: async () => ({ infrastructure: { component: 'sandbox', code: 'SANDBOX_IMAGE_MISSING', command: 'docker-sandbox', message: 'sandbox image missing' } }) } },
   );
-  assert.equal(result.status, 'fail');
-  assert.match(result.summary, /Could not start check sandbox \/nonexistent\/pi-check-sandbox: ENOENT/);
+  assert.equal(result.status, 'infra_error');
+  assert.match(result.summary, /INFRASTRUCTURE ERROR/);
+  assert.match(result.summary, /do not look for a shell or bash workaround/);
+  assert.deepEqual(result.infrastructure, { component: 'sandbox', code: 'SANDBOX_IMAGE_MISSING', command: 'docker-sandbox' });
+  assert.deepEqual(result.diagnostics, []);
 });
 
-test('runner images declare the focused-check sandbox dependency', () => {
-  for (const dockerfile of ['worker.Dockerfile', 'worker-general.Dockerfile']) {
-    const source = fs.readFileSync(new URL(`../infra/github-runner-autoscaler/${dockerfile}`, import.meta.url), 'utf8');
-    assert.match(source, /apt-get install[\s\S]*\bbubblewrap\b/, dockerfile);
+test('Docker backend failures are infrastructure errors; compiler failures stay normal failures', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const request = { kind: 'python_compile', paths: ['ok.py'] };
+  const setup = await runCheck(dir, request, { backend: { run: async () => ({ infrastructure: { component: 'sandbox', code: 'DOCKER_CREATE_FAILED', command: 'docker-sandbox', message: 'container create failed' } }) } });
+  assert.equal(setup.status, 'infra_error');
+  assert.equal(setup.infrastructure.component, 'sandbox');
+  assert.equal(setup.infrastructure.code, 'DOCKER_CREATE_FAILED');
+  const failing = await runCheck(dir, request, { backend: { run: async () => ({ exitCode: 1, durationMs: 2, stdout: JSON.stringify({ file: 'ok.py', line: 1, message: 'invalid syntax' }) }) } });
+  assert.equal(failing.status, 'fail');
+  assert.equal(failing.infrastructure, undefined);
+});
+
+test('a platform without any sandbox is an infrastructure error and never runs the check unsandboxed', async () => {
+  const dir = worktree({ 'ok.py': 'x = 1\n' });
+  const marker = path.join(dir, 'ran');
+  const result = await runCheck(dir, { kind: 'ruff', paths: ['ok.py'] }, { backend: { run: async () => ({ infrastructure: { component: 'sandbox', code: 'UNAVAILABLE', command: null, message: 'executor unavailable' } }) } });
+  assert.equal(result.status, 'infra_error');
+  assert.equal(result.infrastructure.code, 'UNAVAILABLE');
+  assert.equal(fs.existsSync(marker), false);
+});
+
+test('sandboxPreflight passes when the sandbox runs a no-op', async () => {
+  const result = await sandboxPreflight({ sandboxFactory: directSandbox });
+  assert.equal(result.ok, true);
+  assert.ok(result.duration_ms >= 0);
+});
+
+test('Docker sandbox preflight reports executor failures as structured infrastructure blocks', async () => {
+  const missing = await sandboxPreflight({ backend: { preflight: async () => ({ ok: false, status: 'infra_error', summary: 'Docker unavailable', infrastructure: { component: 'sandbox', code: 'EXECUTOR_UNAVAILABLE', command: 'trusted-run-check-executor' } }) } });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.status, 'infra_error');
+  assert.deepEqual(missing.infrastructure, { component: 'sandbox', code: 'EXECUTOR_UNAVAILABLE', command: 'trusted-run-check-executor' });
+});
+
+test('sandboxPreflight succeeds through the real sandbox on this platform', { skip: !hasRealSandbox }, async () => {
+  const result = await sandboxPreflight();
+  assert.equal(result.ok, true, result.summary);
+});
+
+test('Pi runtime preflights the sandbox at session start and fails the stage before any agent turn', { skip: process.platform !== 'linux' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-preflight-runtime-'));
+  try {
+    const issueContext = path.join(dir, 'issue.json');
+    const loader = path.join(dir, 'loader.mjs');
+    fs.writeFileSync(issueContext, JSON.stringify({ title: 'test', body: 'test' }));
+    // `typebox` is stubbed: only the session_start wiring is exercised here.
+    fs.writeFileSync(loader, `
+      export async function resolve(specifier, context, nextResolve) {
+        if (specifier === 'typebox') {
+          const source = 'export const Type = new Proxy({}, { get: () => (...args) => ({}) });';
+          return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      }
+    `);
+    const script = `
+      import assert from 'node:assert/strict';
+      const handlers = new Map();
+      let modelSet = false;
+      const pi = {
+        on: (name, handler) => handlers.set(name, handler),
+        registerTool: () => {},
+        getActiveTools: () => [],
+        setActiveTools: () => {},
+        sendUserMessage: async () => {},
+        setModel: async () => { modelSet = true; return true; },
+      };
+      const { default: extension } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
+      extension(pi);
+      await assert.rejects(
+        handlers.get('session_start')({}, { model: { provider: 'test', id: 'model', maxTokens: 32000 }, cwd: process.cwd() }),
+        /run_check sandbox preflight failed: INFRASTRUCTURE ERROR: trusted run_check executor identity is unavailable/,
+      );
+      assert.equal(modelSet, false, 'no agent budget/model work may start after a failed preflight');
+    `;
+    const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
+      cwd: new URL('..', import.meta.url).pathname,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: '/nonexistent-pi-bin',
+        PI_STAGE: 'implementer',
+        PI_ISSUE: '1',
+        PI_ISSUE_CONTEXT: issueContext,
+        GITHUB_WORKSPACE: new URL('..', import.meta.url).pathname,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stderr, /PI_RUN_CHECK_PREFLIGHT \{"stage":"implementer","ok":false/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('focused-check tools live in the dedicated sandbox image, not the agent image', () => {
+  const source = fs.readFileSync(new URL('../infra/github-runner-autoscaler/run-check-sandbox.Dockerfile', import.meta.url), 'utf8');
+  assert.match(source, /FROM python:3\.12/);
+  assert.match(source, /USER 1001:1001/);
+  assert.doesNotMatch(fs.readFileSync(new URL('../infra/github-runner-autoscaler/worker.Dockerfile', import.meta.url), 'utf8'), /bubblewrap/);
 });
 
 test('failed check returns usable diagnostics even when output is unparsed', async () => {
@@ -232,17 +381,29 @@ test('named node_tests profile runs a fixed argv', async () => {
   assert.equal(result.profile, 'node_tests');
 });
 
-test('missing binary is a fail result, not a thrown error', async () => {
+test('missing check binary is an infrastructure error result, not a thrown error or a code failure', async () => {
   const dir = worktree({ 'a.py': '' });
   const result = await runCheck(dir, { kind: 'ruff', paths: ['a.py'] }, directOptions({ bins: { ruff: '/nonexistent/ruff' } }));
-  assert.equal(result.status, 'fail');
+  assert.equal(result.status, 'infra_error');
   assert.match(result.summary, /Could not start/);
+  assert.equal(result.infrastructure.component, 'check_command');
 });
 
 test('metric record carries no raw output', () => {
   const record = checkMetricRecord({ kind: 'ruff', status: 'fail', duration_ms: 5, truncated: false, diagnostics: [{}, {}], stdout_tail: 'secret' },
     { backend: 'pi', stage: 'implementer' });
   assert.deepEqual(record, { backend: 'pi', stage: 'implementer', kind: 'ruff', profile: null, status: 'fail', duration_ms: 5, truncated: false, diagnostics: 2 });
+});
+
+test('metric record marks infrastructure errors so they are countable apart from check failures', () => {
+  const record = checkMetricRecord({
+    kind: 'pytest', status: 'infra_error', duration_ms: 1, truncated: false, diagnostics: [], stderr_tail: 'secret',
+    infrastructure: { component: 'sandbox', code: 'EXECUTOR_CONFIG', command: 'trusted-run-check-executor' },
+  }, { backend: 'pi', stage: 'implementer' });
+  assert.equal(record.status, 'infra_error');
+  assert.equal(record.infrastructure, 'sandbox');
+  assert.equal(record.infrastructure_code, 'EXECUTOR_CONFIG');
+  assert.equal('stderr_tail' in record, false);
 });
 
 // --- progress-controller integration -------------------------------------------------------
@@ -297,4 +458,27 @@ test('Pi exposes run_check without enabling unrestricted bash, and the core stay
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
   const core = fs.readFileSync(new URL('../scripts/pi-common/run-check.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(core, /typebox|pi-agent-runtime|registerTool/);
+});
+
+test('infrastructure errors are a distinct status and no shell fallback exists in the check core or the runtime tool', () => {
+  assert.deepEqual(CHECK_STATUSES, ['pass', 'fail', 'timeout', 'invalid', 'infra_error']);
+  const core = fs.readFileSync(new URL('../scripts/pi-common/run-check.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(core, /['"`](?:\/bin\/)?(?:ba|z|da)?sh['"`]|bash -c|shell:\s*true/);
+  const runtime = fs.readFileSync(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url), 'utf8');
+  assert.match(runtime, /status: pass\|fail\|timeout\|invalid\|infra_error/);
+  assert.match(runtime, /if \(config\.productiveProgress\?\.verificationTool === 'run_check'\) await preflightRunCheckSandbox\(\);/);
+  // Preflight must run before the response budget/model work of the session starts.
+  assert.ok(runtime.indexOf('await preflightRunCheckSandbox();') < runtime.indexOf("await applyBudget('short', ctx);"));
+});
+
+test('an infra_error result is a normal tool result: it consumes the permit and grants no progress', () => {
+  const c = implementer();
+  c.onTurnStart(0);
+  c.checkToolCall('safe_edit', { path: 'a.py' });
+  c.onToolExecutionEnd('safe_edit', false);
+  c.onTurnStart(1);
+  assert.equal(c.checkToolCall('run_check', { kind: 'ruff', paths: ['a.py'] }), undefined);
+  c.onToolExecutionEnd('run_check', false);
+  assert.equal(c.turnMadeProgress, false);
+  assert.equal(c.verificationPermitted(), false);
 });

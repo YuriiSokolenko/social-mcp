@@ -245,36 +245,61 @@ trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG" "$DOCKER_RUN_LOG"' EXI
   spawn_runner
 )
 grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'ephemeral runners must use host networking for local model/Zoekt endpoints'
-grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'runners must allow focused-check namespace creation'
+! grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'general runners must keep Docker default seccomp'
 grep -q -- '-e RUNNER_LABELS=n150,general' "$DOCKER_RUN_LOG" || fail 'spawn_runner must pass RUNNER_LABELS through'
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the docker socket when MOUNT_DOCKER_SOCKET=true'
 grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the Pi config when MOUNT_PI_CONFIG=false'
 grep -q -- 'PI_ZOEKT_' "$DOCKER_RUN_LOG" && fail 'general runners must not receive the optional Pi-only Zoekt configuration'
+grep -q -- 'run-check-sandbox' "$DOCKER_RUN_LOG" && fail 'general runners run no Pi focused checks, so they do not probe the Pi sandbox image'
 
+# Pi runners use the manager-side disposable Docker backend without receiving the Docker socket or
+# any namespace/security relaxation. The manager gate verifies a real sandbox image probe.
 : > "$DOCKER_RUN_LOG"
 (
   RUNNER_PREFIX=n150-pi-eph
   RUNNER_IMAGE=test-pi-image:tag
+  RUN_CHECK_SANDBOX_IMAGE=test-sandbox:0.1.0
+  RUN_CHECK_EXECUTOR_URL=http://127.0.0.1:17343
   RUNNER_LABELS=n150,pi-agent
   PI_CONFIG_DIR=/some/pi/config
   MOUNT_PI_CONFIG=true
   MOUNT_DOCKER_SOCKET=false
+  RUN_CHECK_EXECUTOR_ENABLED=true
   PI_ZOEKT_URL=http://127.0.0.1:6070
   PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp
   PI_ZOEKT_TIMEOUT_MS=3000
+  RUN_CHECK_SANDBOX_VERIFIED=false
   registration_token() { printf 'tok\n'; }
-  run_with_timeout() {
-    shift
+  docker() {
     printf '%s\n' "$*" >> "$DOCKER_RUN_LOG"
+    if [[ "$*" == "image inspect test-sandbox:0.1.0 --format {{.Id}}" ]]; then printf 'sha256:test-image-id\n'; return 0; fi
+    if [[ "$*" == run* ]]; then printf '{"ok":true}\n'; return 0; fi
+    fail "unexpected docker command in manager gate: $*"
   }
+  curl() { [[ "$*" == *'/healthz'* ]]; }
+  run_with_timeout() { shift; "$@"; }
   spawn_runner
 )
-grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'Pi runners must use host networking so 127.0.0.1 reaches host-local services'
+grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'Pi runners retain their existing host networking'
 grep -q -- '/some/pi/config:/pi-config-ro:ro' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the Pi config when MOUNT_PI_CONFIG=true'
-grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'Pi runners must allow the focused check sandbox to create namespaces'
-grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the docker socket when MOUNT_DOCKER_SOCKET=false'
-grep -q -- '-e PI_ZOEKT_URL=http://127.0.0.1:6070' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive PI_ZOEKT_URL when configured'
-grep -q -- '-e PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the stable Zoekt repository name'
-grep -q -- '-e PI_ZOEKT_TIMEOUT_MS=3000' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the bounded Zoekt timeout'
+! grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'Pi runners must use the default seccomp profile'
+! grep -q -- '--cap-add SYS_ADMIN\|--privileged\|apparmor=unconfined' "$DOCKER_RUN_LOG" || fail 'Pi runner launch must not widen privileges'
+grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail 'Pi runner must not receive the Docker socket'
+grep -q -- '-e PI_RUN_CHECK_EXECUTOR_URL=http://127.0.0.1:17343' "$DOCKER_RUN_LOG" || fail 'Pi runner must receive only the trusted executor endpoint'
+grep -q -- '-e RUN_CHECK_EXECUTOR_TOKEN=' "$DOCKER_RUN_LOG" || fail 'Pi runner must receive an ephemeral executor request token'
+grep -q -- 'run --rm --pull=never --network none --cap-drop ALL --security-opt no-new-privileges' "$DOCKER_RUN_LOG" || fail 'manager gate must execute a hardened real sandbox image probe'
+grep -q -- '^run --rm' "$DOCKER_RUN_LOG" || fail 'manager gate must run the sandbox image probe'
+grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi runner after the backend gate succeeds'
+
+# Missing sandbox image: fail closed before requesting a runner registration token.
+(
+  RUNNER_PREFIX=n150-pi-eph
+  RUN_CHECK_SANDBOX_IMAGE=missing-sandbox:0.1.0
+  MOUNT_PI_CONFIG=true
+  RUN_CHECK_SANDBOX_VERIFIED=false
+  docker() { return 1; }
+  registration_token() { fail 'manager requested a token without a sandbox image'; }
+  if spawn_runner >/dev/null 2>&1; then fail 'manager must refuse Pi runner startup when sandbox image is missing'; fi
+)
 
 printf 'runner autoscaler checks passed\n'

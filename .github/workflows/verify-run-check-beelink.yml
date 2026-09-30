@@ -1,5 +1,4 @@
-name: Verify run_check on Beelink
-run-name: "Sandbox smoke · ${{ github.sha }}"
+name: Verify run_check sandbox on Beelink
 
 on:
   workflow_dispatch:
@@ -8,140 +7,87 @@ permissions:
   contents: read
 
 jobs:
-  rebuild-configured-pi-image:
-    runs-on: [self-hosted, linux, x64, n150, general]
-    timeout-minutes: 30
-    outputs:
-      image: ${{ steps.image.outputs.image }}
-    steps:
-      - name: Checkout dispatched revision
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Rebuild the configured worker image on Beelink
-        id: image
-        shell: bash
-        run: |
-          set -euo pipefail
-          manager="$(docker ps --filter name=pi-runner-manager --format '{{.Names}}' | head -n 1)"
-          test -n "$manager" || { echo "pi-runner-manager not found on this Beelink Docker host" >&2; exit 1; }
-          image="$(docker inspect "$manager" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^RUNNER_IMAGE=//p' | head -n 1)"
-          test -n "$image" || { echo "RUNNER_IMAGE is not explicit in pi-runner-manager configuration" >&2; exit 1; }
-          echo "Beelink manager configured worker image: $image"
-          echo "Host-local base image identity: $(docker image inspect n150/github-pi-runner:0.87.1 --format '{{.Id}}')"
-          echo "Building current worker.Dockerfile with bubblewrap into the configured image tag."
-          docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t "$image" .
-          echo "Built image identity: $(docker image inspect "$image" --format '{{.Id}}')"
-          docker run --rm --entrypoint sh "$image" -c 'id; stat -c "%A %U:%G %n" /usr/bin/bwrap; cat /proc/sys/user/max_user_namespaces 2>/dev/null || true'
-          probe=(--die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts --new-session --ro-bind / / --dev /dev --tmpfs /tmp -- true)
-          if docker run --rm --network host --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --user 0 --entrypoint sh "$image" -c \
-            'chmod u+s /usr/bin/bwrap && su runner -s /bin/sh -c "/usr/bin/bwrap --die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts --new-session --ro-bind / / --dev /dev --tmpfs /tmp -- true"'; then
-            echo "SETUID_RUNNER_BWRAP_PROBE_OK=true apparmor=unconfined"
-          else
-            echo "SETUID_RUNNER_BWRAP_PROBE_OK=false apparmor=unconfined"
-          fi
-          if docker run --rm --network host --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --cap-add SYS_ADMIN --cap-add NET_ADMIN --user 0 --entrypoint sh "$image" -c \
-            'chmod u+s /usr/bin/bwrap && su runner -s /bin/sh -c "/usr/bin/bwrap --die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts --new-session --ro-bind / / --dev /dev --tmpfs /tmp -- true"'; then
-            echo "SETUID_RUNNER_BWRAP_PROBE_OK=true apparmor=unconfined+sys_admin+net_admin"
-          else
-            echo "SETUID_RUNNER_BWRAP_PROBE_OK=false apparmor=unconfined+sys_admin+net_admin"
-          fi
-          passed=0
-          for mode in seccomp apparmor net_admin apparmor_net apparmor_sys apparmor_sys_net sys_net root root_apparmor root_apparmor_net root_apparmor_sys_net; do
-            options=(--security-opt seccomp=unconfined)
-            user_options=()
-            case "$mode" in
-              apparmor) options+=(--security-opt apparmor=unconfined) ;;
-              net_admin) options+=(--cap-add NET_ADMIN) ;;
-              apparmor_net) options+=(--security-opt apparmor=unconfined --cap-add NET_ADMIN) ;;
-              apparmor_sys) options+=(--security-opt apparmor=unconfined --cap-add SYS_ADMIN) ;;
-              apparmor_sys_net) options+=(--security-opt apparmor=unconfined --cap-add SYS_ADMIN --cap-add NET_ADMIN) ;;
-              sys_net) options+=(--cap-add SYS_ADMIN --cap-add NET_ADMIN) ;;
-              root) user_options+=(--user 0) ;;
-              root_apparmor) options+=(--security-opt apparmor=unconfined); user_options+=(--user 0) ;;
-              root_apparmor_net) options+=(--security-opt apparmor=unconfined --cap-add NET_ADMIN); user_options+=(--user 0) ;;
-              root_apparmor_sys_net) options+=(--security-opt apparmor=unconfined --cap-add SYS_ADMIN --cap-add NET_ADMIN); user_options+=(--user 0) ;;
-            esac
-            if docker run --rm --network host "${options[@]}" "${user_options[@]}" --entrypoint bwrap "$image" "${probe[@]}"; then
-              echo "CONFIGURED_IMAGE_BWRAP_PROBE_OK=true mode=$mode"
-              passed=1
-              break
-            else
-              echo "CONFIGURED_IMAGE_BWRAP_PROBE_OK=false mode=$mode"
-            fi
-          done
-          test "$passed" = 1 || { echo "No tested Docker security configuration permits the bwrap namespaces" >&2; exit 1; }
-          echo "image=$image" >> "$GITHUB_OUTPUT"
-
-  beelink-sandbox-smoke:
-    needs: rebuild-configured-pi-image
+  production-smoke:
+    # This manual check is meaningful only on the existing production Pi pool.
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
-    timeout-minutes: 10
-    env:
-      PI_RUNNER_IMAGE: ${{ needs.rebuild-configured-pi-image.outputs.image }}
+    timeout-minutes: 20
     steps:
-      - name: Checkout dispatched revision
+      - name: Checkout PR revision
         uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Record runner and image evidence
+      - name: Record Beelink runner identity
         shell: bash
         run: |
           set -euo pipefail
           echo "PR commit tested: $(git rev-parse HEAD)"
           echo "Runner name: ${RUNNER_NAME:-unavailable}"
-          echo "Runner labels: ${RUNNER_LABELS:-not exposed in job environment}"
+          echo "Expected runner labels: n150,pi-agent (enforced by runs-on)"
           echo "Runner OS/arch: ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}"
           echo "Hostname: $(hostname)"
-          echo "Container identity:"
-          cat /etc/hostname 2>/dev/null || true
+          echo "Container identity: $(cat /etc/hostname 2>/dev/null || true)"
+          echo "PID 1 cgroup:"
           cat /proc/1/cgroup 2>/dev/null || true
-          echo "OS image identity:"
+          echo "Worker OS:"
           cat /etc/os-release
-          echo "Configured Pi runner image/tag:"
-          rg -n '^(RUNNER_IMAGE|RUNNER_PREFIX|RUNNER_LABELS)=' infra/github-runner-autoscaler/.env.example || true
-          echo "Worker Dockerfile base image:"
-          head -n 1 infra/github-runner-autoscaler/worker.Dockerfile
-          echo "Configured worker image rebuilt immediately before this smoke: $PI_RUNNER_IMAGE"
-          echo "bwrap version:"
-          bwrap --version
+          echo "Current runner user: $(id)"
 
-      - name: Create a real bubblewrap sandbox
+      - name: Exercise the real Pi runtime preflight and shared checks
         shell: bash
         run: |
           set -euo pipefail
-          # Namespace and device/temp settings mirror run-check.mjs; the manager starts
-          # this pool with host networking and seccomp=unconfined.
-          bwrap --die-with-parent \
-            --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts \
-            --new-session \
-            --ro-bind /usr /usr --ro-bind /bin /bin \
-            --dev /dev --tmpfs /tmp \
-            -- true
-          echo "REAL_BWRAP_SANDBOX_OK=true"
-
-      - name: Run the PR runtime preflight and shared run_check cases
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/pi-sandbox-smoke"
-          cat > "$RUNNER_TEMP/pi-sandbox-smoke/valid.py" <<'PY'
+          smoke="$RUNNER_TEMP/pi-run-check-sandbox-smoke"
+          mkdir -p "$smoke/tests"
+          cp "$GITHUB_WORKSPACE/pyproject.toml" "$smoke/pyproject.toml"
+          cat > "$smoke/valid.py" <<'PY'
           print("valid")
           PY
-          cat > "$RUNNER_TEMP/pi-sandbox-smoke/invalid.py" <<'PY'
+          cat > "$smoke/invalid.py" <<'PY'
           def broken(:
               pass
           PY
+          cat > "$smoke/ruff-valid.py" <<'PY'
+          def answer():
+              return 42
+          PY
+          cat > "$smoke/ruff-invalid.py" <<'PY'
+          import os
+          PY
+          cat > "$smoke/tests/test_smoke.py" <<'PY'
+          import os
+          import socket
+          import time
 
-          # Exercise the real extension's session_start handler. Only typebox is stubbed,
-          # matching the focused runtime integration test; sandboxPreflight is not mocked.
-          cat > "$RUNNER_TEMP/pi-sandbox-smoke/loader.mjs" <<'JS'
+          def test_pass():
+              assert 2 + 2 == 4
+
+          def test_fail():
+              assert 2 + 2 == 5
+
+          def test_timeout():
+              time.sleep(30)
+
+          def test_sandbox_policy():
+              assert os.getuid() != 0
+              with open('/proc/self/status', encoding='utf-8') as stream:
+                  status = dict(line.split(':', 1) for line in stream if line.startswith(('CapEff:', 'NoNewPrivs:')))
+              assert status['CapEff'].strip() == '0000000000000000'
+              assert status['NoNewPrivs'].strip() == '1'
+              assert sorted(os.listdir('/sys/class/net')) == ['lo']
+              assert not os.path.exists('/var/run/docker.sock')
+              assert all(not os.path.exists(item) for item in ('/home/runner', '/pi-config-ro', '/host', '/var/run/secrets'))
+              assert not any(any(marker in key.upper() for marker in ('TOKEN', 'SECRET', 'API_KEY', 'ACCESS_KEY', 'GITHUB', 'MODEL', 'OPENAI', 'ANTHROPIC', 'SSH_AUTH_SOCK')) for key in os.environ)
+              probe = socket.socket()
+              probe.settimeout(1)
+              try:
+                  assert probe.connect_ex(('1.1.1.1', 443)) != 0
+              finally:
+                  probe.close()
+          PY
+
+          cat > "$smoke/loader.mjs" <<'JS'
           export async function resolve(specifier, context, nextResolve) {
             if (specifier === 'typebox') {
               const source = 'export const Type = new Proxy({}, { get: () => (...args) => ({}) });';
@@ -150,7 +96,7 @@ jobs:
             return nextResolve(specifier, context);
           }
           JS
-          cat > "$RUNNER_TEMP/pi-sandbox-smoke/runtime.mjs" <<'JS'
+          cat > "$smoke/runtime.mjs" <<'JS'
           import assert from 'node:assert/strict';
           const handlers = new Map();
           const pi = {
@@ -166,35 +112,75 @@ jobs:
             cwd: process.env.GITHUB_WORKSPACE,
           });
           JS
-          printf '{"title":"sandbox smoke","body":"runtime preflight"}\n' > "$RUNNER_TEMP/pi-sandbox-smoke/issue.json"
-          PI_STAGE=implementer \
-          PI_ISSUE=242 \
-          PI_ISSUE_CONTEXT="$RUNNER_TEMP/pi-sandbox-smoke/issue.json" \
-          GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
-            node --no-warnings --experimental-loader "$RUNNER_TEMP/pi-sandbox-smoke/loader.mjs" \
-              "$RUNNER_TEMP/pi-sandbox-smoke/runtime.mjs" 2>&1 | tee "$RUNNER_TEMP/pi-sandbox-smoke/runtime.log"
-          grep -F 'PI_RUN_CHECK_PREFLIGHT {"stage":"implementer","ok":true' "$RUNNER_TEMP/pi-sandbox-smoke/runtime.log"
+          printf '{"title":"sandbox smoke","body":"runtime preflight"}\n' > "$smoke/issue.json"
+          PI_STAGE=implementer PI_ISSUE=242 PI_ISSUE_CONTEXT="$smoke/issue.json" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            node --no-warnings --experimental-loader "$smoke/loader.mjs" "$smoke/runtime.mjs" 2>&1 | tee "$smoke/runtime.log"
+          node --input-type=module - "$smoke/runtime.log" <<'JS'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const line = fs.readFileSync(process.argv[2], 'utf8').split('\n').find(item => item.includes('PI_RUN_CHECK_PREFLIGHT '));
+          assert.ok(line, 'runtime must emit PI_RUN_CHECK_PREFLIGHT');
+          const record = JSON.parse(line.slice(line.indexOf('PI_RUN_CHECK_PREFLIGHT ') + 'PI_RUN_CHECK_PREFLIGHT '.length));
+          console.log(`PREFLIGHT_EVIDENCE ${JSON.stringify(record)}`);
+          assert.equal(record.ok, true);
+          assert.match(record.pi_runner.name, /^n150-pi-eph-/);
+          assert.match(record.pi_runner.labels, /n150/);
+          assert.match(record.pi_runner.labels, /pi-agent/);
+          assert.equal(record.pi_runner.user, 'runner');
+          assert.equal(record.pi_runner.privileged, false);
+          assert.deepEqual(record.pi_runner.cap_add, []);
+          assert.deepEqual(record.pi_runner.security_options, []);
+          assert.equal(record.pi_runner.docker_socket_absent, true);
+          assert.equal(record.sandbox.uid, 1001);
+          assert.equal(record.sandbox.effective_capabilities, '0000000000000000');
+          assert.equal(record.sandbox.no_new_privileges, true);
+          assert.equal(record.sandbox.network_disabled, true);
+          assert.deepEqual(record.sandbox.network_interfaces, ['lo']);
+          assert.equal(record.sandbox.docker_socket_absent, true);
+          assert.equal(record.sandbox.worktree_readable, true);
+          assert.equal(record.sandbox.host_paths_absent, true);
+          assert.equal(record.sandbox.secret_environment_absent, true);
+          console.log('RUNNER_PRIVILEGE_PROFILE_OK=true SANDBOX_ISOLATION_OK=true');
+          JS
 
-          cat > "$RUNNER_TEMP/pi-sandbox-smoke/checks.mjs" <<'JS'
+          cat > "$smoke/checks.mjs" <<'JS'
           import assert from 'node:assert/strict';
           const { runCheck } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/pi-common/run-check.mjs`);
-          const root = `${process.env.RUNNER_TEMP}/pi-sandbox-smoke`;
-          const valid = await runCheck(root, { kind: 'python_compile', paths: ['valid.py'] });
-          const invalid = await runCheck(root, { kind: 'python_compile', paths: ['invalid.py'] });
-          console.log(`RUN_CHECK_VALID ${JSON.stringify(valid)}`);
-          console.log(`RUN_CHECK_INVALID ${JSON.stringify(invalid)}`);
-          assert.equal(valid.status, 'pass');
-          assert.equal(valid.exit_code, 0);
-          assert.equal(invalid.status, 'fail');
-          assert.notEqual(invalid.exit_code, 0);
-          assert.notEqual(invalid.status, 'infra_error');
-          assert.match(`${invalid.stdout_tail}\n${invalid.stderr_tail}`, /SyntaxError|invalid syntax|expected/i);
+          const root = `${process.env.RUNNER_TEMP}/pi-run-check-sandbox-smoke`;
+          const cases = {
+            python_valid: await runCheck(root, { kind: 'python_compile', paths: ['valid.py'] }),
+            python_invalid: await runCheck(root, { kind: 'python_compile', paths: ['invalid.py'] }),
+            ruff_valid: await runCheck(root, { kind: 'ruff', paths: ['ruff-valid.py'] }),
+            ruff_invalid: await runCheck(root, { kind: 'ruff', paths: ['ruff-invalid.py'] }),
+            pytest_valid: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_pass'] }),
+            pytest_invalid: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_fail'] }),
+            pytest_policy: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_sandbox_policy'] }),
+            pytest_timeout: await runCheck(root, { kind: 'pytest', targets: ['tests/test_smoke.py::test_timeout'] }, { timeoutSeconds: 2 }),
+          };
+          for (const [name, result] of Object.entries(cases)) console.log(`RUN_CHECK_${name.toUpperCase()} ${JSON.stringify(result)}`);
+          assert.equal(cases.python_valid.status, 'pass');
+          assert.equal(cases.python_invalid.status, 'fail');
+          assert.notEqual(cases.python_invalid.exit_code, 0);
+          assert.match(`${cases.python_invalid.stdout_tail}\n${cases.python_invalid.stderr_tail}`, /SyntaxError|invalid syntax|expected/i);
+          assert.equal(cases.ruff_valid.status, 'pass');
+          assert.equal(cases.ruff_invalid.status, 'fail');
+          assert.equal(cases.pytest_valid.status, 'pass');
+          assert.equal(cases.pytest_invalid.status, 'fail');
+          assert.equal(cases.pytest_policy.status, 'pass');
+          assert.equal(cases.pytest_timeout.status, 'timeout');
+          assert.equal(cases.pytest_timeout.sandbox_container_removed, true);
+          for (const [name, result] of Object.entries(cases)) {
+            assert.notEqual(result.status, 'infra_error', `${name} unexpectedly failed as infrastructure`);
+            assert.equal(result.sandbox_image, process.env.RUN_CHECK_SANDBOX_IMAGE || result.sandbox_image);
+            if (!name.includes('timeout')) assert.equal(result.sandbox_container_removed, true, `${name} sandbox container must be removed`);
+          }
+          console.log('NO_UNRESTRICTED_BASH_FALLBACK=true source=scripts/pi-common/run-check.mjs');
           JS
-          node "$RUNNER_TEMP/pi-sandbox-smoke/checks.mjs"
-          echo "NO_BASH_FALLBACK=true; both results came from scripts/pi-common/run-check.mjs"
+          GITHUB_TOKEN=smoke-sentinel OPENAI_API_KEY=smoke-sentinel node "$smoke/checks.mjs"
 
-      - name: State historical log limitation
+      - name: Historical evidence limitation
         if: always()
+        shell: bash
         run: |
-          echo "Historical Rabbit/Beelink logs for the original ENOENT run are not available from this GitHub Actions job."
-          echo "The checked-in documentation/config mentions old rollback tag 0.87.1, but does not prove that it was the image used by the historical failed run."
+          echo "Historical Rabbit/Beelink logs for failed run 36747125572 are not available inside this GitHub Actions job."
+          echo "Known from that investigation: the worker image lacked bwrap. The follow-up bwrap permission failure is caused by the existing nested namespace/mount restriction; this workflow does not alter runner privileges."

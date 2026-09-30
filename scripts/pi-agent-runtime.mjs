@@ -14,7 +14,7 @@ import {
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
-import { CHECK_KINDS, checkMetricRecord, runCheck } from './pi-common/run-check.mjs';
+import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { structuralEdit } from './pi-common/structural-edit.mjs';
 import { baseRef } from './pi-common/project-config.mjs';
@@ -320,7 +320,20 @@ export default function (pi) {
 
   syncProductiveState();
 
+  // The run_check sandbox is a hard dependency of stages that expose it. Prove it works before any
+  // agent turn is spent, and fail the stage as an infrastructure error rather than let the agent
+  // discover a broken runner mid-task and go looking for an unrestricted shell.
+  async function preflightRunCheckSandbox() {
+    const result = await sandboxPreflight();
+    const record = result.ok
+      ? { ...result, stage, ok: true }
+      : { stage, ok: false, summary: result.summary, infrastructure: result.infrastructure, stderr_tail: result.stderr_tail };
+    console[result.ok ? 'info' : 'error'](`PI_RUN_CHECK_PREFLIGHT ${JSON.stringify(record)}`);
+    if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
+  }
+
   pi.on('session_start', async (_event, ctx) => {
+    if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
     await applyBudget('short', ctx);
     syncActionToolSurface(syncProductiveState());
   });
@@ -505,7 +518,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'run_check',
       label: 'Run focused check',
-      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check. Available once after each successful mutation. Passing does not replace final validation; still call submit_result.',
+      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation. Passing does not replace final validation; still call submit_result.',
       parameters: Type.Object({
         kind: Type.Union(CHECK_KINDS.map(kind => Type.Literal(kind))),
         paths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),

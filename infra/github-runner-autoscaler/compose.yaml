@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: n150/pi-runner-manager:latest
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.2}
     container_name: pi-runner-manager
     restart: unless-stopped
     environment:
@@ -12,6 +12,11 @@ services:
       MAX_RUNNERS: ${MAX_RUNNERS:-}
       POLL_SECONDS: ${POLL_SECONDS:-}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-}
+      RUN_CHECK_SANDBOX_IMAGE: ${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.0}
+      RUN_CHECK_EXECUTOR_URL: ${RUN_CHECK_EXECUTOR_URL:-http://127.0.0.1:17343}
+      RUN_CHECK_EXECUTOR_PORT: ${RUN_CHECK_EXECUTOR_PORT:-17343}
+      RUN_CHECK_STAGE_VOLUME: ${RUN_CHECK_STAGE_VOLUME:-social-mcp-run-check-stage}
+      RUN_CHECK_EXECUTOR_ENABLED: "true"
       RUNNER_PREFIX: ${RUNNER_PREFIX:-}
       RUNNER_LABELS: ${RUNNER_LABELS:-}
       PI_ZOEKT_URL: ${PI_ZOEKT_URL:-}
@@ -27,6 +32,9 @@ services:
       DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - run-check-stage:/run-check-stage
+    ports:
+      - "127.0.0.1:${RUN_CHECK_EXECUTOR_PORT:-17343}:17343"
 
   # Second, independent pool: plain CI (ci.yml's `test`/`docker`/`wake-merge-gate`
   # jobs) with no Pi/LLM agent involved. Kept as a separate manager instance
@@ -37,7 +45,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: n150/pi-runner-manager:latest
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.2}
     container_name: general-runner-manager
     restart: unless-stopped
     environment:
@@ -52,9 +60,14 @@ services:
       MODEL_STATUS_URL: ""
       MOUNT_PI_CONFIG: "false"
       MOUNT_DOCKER_SOCKET: "true"
+      RUN_CHECK_EXECUTOR_ENABLED: "false"
       PI_CONFIG_DIR: ""
       CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
       CURL_MAX_TIME_SECONDS: ${CURL_MAX_TIME_SECONDS:-15}
       DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  run-check-stage:
+    name: ${RUN_CHECK_STAGE_VOLUME:-social-mcp-run-check-stage}
