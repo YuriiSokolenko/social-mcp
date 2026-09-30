@@ -109,7 +109,7 @@ jobs:
 
 
   wake-merge-gate:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
+    if: success() && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev'))
     needs: [test, docker]
     runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 2
@@ -121,11 +121,12 @@ jobs:
           ref: dev
 
       - name: Finalize merged issue after green dev CI
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-post-merge.mjs "$GITHUB_SHA"
 
-      - name: Continue merge queue after green dev CI
+      - name: Continue merge queue after green CI
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-common/workflow-dispatch.mjs pi-auto-merge.yml

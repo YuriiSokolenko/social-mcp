@@ -26,6 +26,7 @@
     "implementer": "pi-issue-agent.yml",
     "reviewer": "pi-pr-review.yml",
     "repair": "pi-pr-fix.yml",
+    "ci": "ci.yml",
     "mergeGate": "pi-auto-merge.yml",
     "triage": "pi-triage.yml"
   },

@@ -13,19 +13,23 @@ test('CI validates the committed dev state without synthetic PR integration inpu
   assert.doesNotMatch(workflow, /git merge --no-ff|social-mcp\/integration/);
 });
 
-test('merge gate never waits for pre-merge CI, review, repair, or a dev SHA', () => {
+test('merge gate requires green CI for the exact current PR head without synthetic integration state', () => {
   const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(gate, /workflowFile\('ci'\)/);
+  assert.match(gate, /head_sha=/);
+  assert.match(gate, /pr\.head\.sha/);
+  assert.match(gate, /state !== 'success'/);
   assert.doesNotMatch(gate, /integration_base_sha|repair_base_sha|BASE_SHA|social-mcp\/integration|social-mcp\/pi-review/i);
-  assert.doesNotMatch(gate, /pi-pr-review|statuses|social-mcp\/integration|social-mcp\/pi-review/);
   assert.match(gate, /dispatchWorkflow\('pi-pr-fix\.yml'/);
   assert.match(gate, /merge_method: 'squash'/);
 });
 
-test('architecture guard documents that complexity must not return', () => {
+test('architecture guard keeps exact-head PR CI but rejects synthetic dev-pair orchestration', () => {
   const guard = fs.readFileSync('docs/ci-architecture.md', 'utf8');
-  assert.match(guard, /merge.*dev.*CI/is);
+  assert.match(guard, /exact PR HEAD.*CI/is);
+  assert.match(guard, /before merge/is);
   assert.match(guard, /Do not reintroduce/i);
-  assert.match(guard, /dev SHA|exact-pair/i);
+  assert.match(guard, /captured dev SHA|synthetic/i);
 });
 
 
@@ -157,9 +161,11 @@ test('merge gate has permission for its late-conflict PR Fix dispatch', () => {
 });
 
 
-test('green dev CI wakes merge gate without parsing commit-message conventions', () => {
+test('green PR CI and green dev CI both wake merge gate without parsing commit-message conventions', () => {
   const workflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
-  assert.match(workflow, /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/dev' && success\(\)/);
+  assert.match(workflow, /github\.event_name == 'pull_request'/);
+  assert.match(workflow, /github\.event_name == 'push' && github\.ref == 'refs\/heads\/dev'/);
+  assert.match(workflow, /Continue merge queue after green CI/);
   assert.doesNotMatch(workflow, /contains\(github\.event\.head_commit\.message/);
 });
 

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { readScript } from './helpers/resolved-source.mjs';
-import { allowedFiles, issueNumber } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, issueNumber, prCiVerdict } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 const pr = {
@@ -26,14 +26,28 @@ test('Pi cannot change the workflow definitions used for its own merge', () => {
   assert.equal(allowedFiles([{ filename: 'app/server.py' }], 2), false);
 });
 
-test('merge gate follows the simple merge-then-test contract', () => {
+test('merge gate requires successful PR CI for the exact head SHA', () => {
+  assert.deepEqual(prCiVerdict([], 'abc'), { state: 'pending', run: null });
+  assert.equal(prCiVerdict([
+    { id: 1, event: 'pull_request', head_sha: 'old', status: 'completed', conclusion: 'success' },
+  ], 'abc').state, 'pending');
+  assert.equal(prCiVerdict([
+    { id: 2, event: 'pull_request', head_sha: 'abc', status: 'in_progress', conclusion: null },
+  ], 'abc').state, 'pending');
+  assert.equal(prCiVerdict([
+    { id: 3, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'failure' },
+  ], 'abc').state, 'failed');
+  assert.equal(prCiVerdict([
+    { id: 4, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'success' },
+  ], 'abc').state, 'success');
+
   const source = readScript('scripts/pi-auto-merge.mjs', 'utf8');
+  assert.match(source, /workflowFile\('ci'\)/);
+  assert.match(source, /head_sha=/);
+  assert.match(source, /waiting for green PR CI/);
   assert.match(source, /merge_method: 'squash'/);
-  assert.match(source, /dev push CI now validates the merged result/);
   assert.doesNotMatch(source, /integration_base_sha|repair_base_sha|BASE_SHA|base\.object\.sha/);
   assert.doesNotMatch(source, /social-mcp\/(?:integration|integration-conflict|pi-review|repair-)/);
-  assert.doesNotMatch(source, /pi-pr-review\.yml|ci\.yml/);
-  assert.doesNotMatch(source, /statuses|reserveAndDispatch|latestStatus/);
 });
 
 test('unsafe control-plane PRs leave one explicit human-attention comment', () => {

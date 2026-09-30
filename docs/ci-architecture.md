@@ -5,9 +5,10 @@ The control plane intentionally uses a simple contract:
 1. Dispatcher routes eligible work.
 2. Implementer integrates the latest `dev` in its live session, resolves conflicts, validates the result, and produces a verified PR.
 3. Trusted review tooling runs deterministic checks on the exact PR HEAD; Reviewer then independently approves that same HEAD or requests changes.
-4. Merge Gate validates basic ownership/safety and attempts a GitHub squash merge.
-5. Ordinary `push` CI tests the resulting `dev` commit.
-6. Green post-merge CI wakes Merge Gate for the next ready PR; red CI stops the merge sequence.
+4. Ordinary pull-request CI validates that exact PR HEAD, including control-plane and Docker checks that Reviewer does not own.
+5. Merge Gate requires both `review:passed` and successful PR CI for the current `pr.head.sha`, then attempts a GitHub squash merge for that SHA.
+6. Ordinary `push` CI tests the resulting `dev` commit.
+7. Green CI wakes Merge Gate; red CI blocks the merge sequence.
 
 The actual merged `dev` commit is the integration truth.
 
@@ -17,9 +18,9 @@ Agents use focused product tests when useful for implementation or reasoning. Au
 
 ## Complexity guard
 
-Do not reintroduce pre-merge exact-pair orchestration. The merge decision must not depend on captured dev SHAs, `integration_base_sha`, `repair_base_sha`, synthetic dev+PR merge commits, SHA/base-bound status contexts, or a custom pre-merge CI/review/repair state machine.
+Do not reintroduce synthetic pre-merge exact-pair orchestration. The merge decision must not depend on captured dev SHAs, `integration_base_sha`, `repair_base_sha`, synthetic dev+PR merge commits, or a custom dev+PR integration state machine.
 
-A PR head SHA may be read immediately before GitHub's merge call and supplied as optimistic concurrency protection. That is local operation data, not pipeline state. Prefer GitHub's atomic repository operations and fresh-state reads over custom synchronization.
+The current PR head SHA is local operation data. Merge Gate may read it from GitHub, require the ordinary PR CI run for that exact PR HEAD to be green, and then pass the same SHA to GitHub's merge API as optimistic concurrency protection. No workflow transports that SHA to another workflow.
 
 ## Ownership rule
 
@@ -29,7 +30,7 @@ Every normal transition has one obvious owner:
 - Implementer workflow owns publication of implementation PRs.
 - Reviewer/PR Fix own review and requested changes.
 - Merge Gate owns merge attempts.
-- CI owns validation of the merged `dev` result.
+- CI owns validation of the exact PR HEAD before merge and the merged `dev` result after merge.
 - Reconciler owns recovery only.
 
 Do not make Reconciler, Usage, or another diagnostic workflow a second scheduler.
@@ -38,7 +39,7 @@ Do not make Reconciler, Usage, or another diagnostic workflow a second scheduler
 
 A wake event means only: "re-check your current work." It must not carry authoritative pipeline state.
 
-Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler is not a normal Merge Gate scheduler; it may issue one recovery wake only when an already-`review:passed` PR outlives the PR recovery grace period without its normal PASS handoff.
+Normal wake sources are readiness change -> Dispatcher, successful review -> Merge Gate, successful PR CI -> Merge Gate, successful merged-`dev` CI -> Merge Gate for the next PR, and explicit/manual control -> selected workflow. Reconciler is not a normal Merge Gate scheduler; it may issue one recovery wake only when an already-`review:passed` PR outlives the PR recovery grace period without its normal PASS handoff.
 
 ## Merge conflict rule
 
@@ -46,19 +47,20 @@ Merge Gate simply attempts the merge. If GitHub reports a late conflict, it remo
 
 PR Fix—not Merge Gate—owns content-level repair against current `dev`. Trusted repair tooling performs integration, authoritative deterministic checks, publication of the new PR HEAD, and the handoff to a fresh Reviewer. Do not add mergeability polling, transported dev SHAs, synthetic integration, or conflict-solving code to Merge Gate.
 
-## Post-merge CI rule
+## CI gating rule
 
 ```text
-PR -> merge into dev -> CI on actual dev commit
-                         |
-                   +-----+-----+
-                   |           |
-                 green         red
-                   |           |
-             next merge      stop
+Reviewer PASS ----+
+                  +--> Merge Gate --> merge into dev --> CI on actual dev commit
+PR HEAD CI green -+        |                              |
+                           |                        +-----+-----+
+                     exact same SHA                 |           |
+                                                 green         red
+                                                   |           |
+                                             next merge      stop
 ```
 
-Do not duplicate this with a pre-merge approximation.
+PR CI is not a synthetic integration approximation: it is the repository's ordinary pull-request workflow bound to the current PR HEAD. Post-merge `dev` CI remains the integration truth.
 
 ## Workflow input rule
 
@@ -76,7 +78,7 @@ A SHA is not cross-workflow pipeline state.
 
 Forbidden: `workflow A -> SHA -> workflow B`.
 
-Allowed: `workflow -> read current SHA -> use locally for one atomic operation`.
+Allowed: `workflow -> read current SHA -> query GitHub state for that SHA -> use locally for one atomic operation`.
 
 Once that operation finishes, the SHA has no orchestration meaning.
 
@@ -117,7 +119,7 @@ Recovery must be smaller than the normal pipeline. For issue work, Reconciler on
 Before adding CI machinery, ask:
 1. Can the receiver read this value from GitHub instead of receiving it?
 2. Can one existing owner perform this transition directly?
-3. Can ordinary post-merge `dev` CI validate this instead?
+3. Is this already covered by ordinary exact-head PR CI or post-merge `dev` CI?
 4. Can GitHub's atomic API operation handle the race?
 5. Does this belong to recovery rather than the happy path?
 
