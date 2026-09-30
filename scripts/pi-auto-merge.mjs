@@ -6,7 +6,7 @@ import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED, withoutReviewLabels, withRevie
 import { baseBranch, parseIssueBranch, workflowFile } from './pi-common/project-config.mjs';
 import { PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 
-const { api, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns } = githubClient();
+const { api, raw, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns } = githubClient();
 
 const PRODUCT_CI_STEPS = new Set([
   'Ruff',
@@ -113,7 +113,8 @@ async function processInfraFailure(pr, prLabels, sha, ci) {
       `Merge Gate classified CI for reviewed HEAD ${sha} as an infrastructure failure (${conclusion}), so PR Fix will not run. CI will be retried once.${runUrl}\n\n${retryMarker}`,
     );
     try {
-      await api(`/actions/runs/${runId}/rerun`, 'POST');
+      const response = await raw(`/actions/runs/${runId}/rerun`, 'POST');
+      if (!response.ok) throw new Error(`POST /actions/runs/${runId}/rerun: ${response.status} ${await response.text()}`);
       console.log(`#${pr.number}: infrastructure CI ${conclusion} for ${sha}; requested bounded retry of run ${runId}, checking the next PR`);
     } catch (error) {
       const nextLabels = [...prLabels];
