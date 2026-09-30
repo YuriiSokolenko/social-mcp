@@ -77,11 +77,6 @@ _REDACTED_MARKER = "REDACTED"
 
 
 def _is_sensitive_key(key: str) -> bool:
-    """Return whether ``key`` names a sensitive field.
-
-    The key is normalized to lowercase, then treated as sensitive when it equals
-    or ends with one of the configured ``_SENSITIVE_KEY_SUFFIX`` values.
-    """
     lowered = key.lower()
     return any(
         lowered == suffix or lowered.endswith(suffix) or suffix in lowered
@@ -101,13 +96,6 @@ def redact_message(text: str) -> str:
 
 
 def _redact_key_value(match: re.Match) -> str:
-    """Substitute ``_REDACTED_MARKER`` for the value of a sensitive ``key=value`` match.
-
-    For sensitive keys (detected by :func:`_is_sensitive_key`) returns
-    ``key=_REDACTED_MARKER``; otherwise returns the original match unchanged.
-    Used as the substitution callback for :data:`_KEY_VALUE_RE` in
-    :func:`redact_message`.
-    """
     key = match.group(1)
     if _is_sensitive_key(key):
         return f"{key}={_REDACTED_MARKER}"

@@ -380,8 +380,6 @@ class PlatformHttpClient:
         await self._client.aclose()
 
     def _check_active(self) -> None:
-        """Verify the client is still usable; raise RuntimeError if closed."""
-
         if self._closed:
             raise RuntimeError("PlatformHttpClient has been closed.")
 
