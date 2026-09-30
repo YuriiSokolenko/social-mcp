@@ -85,14 +85,17 @@ export function nextActionResponseCap({
 
 export function nextActionRequiredProseOnlyTurns(
   current,
-  { actionRequired, attemptedTool, madeProgress },
+  { actionRequired, attemptedTool, madeProgress, responseHitOutputCeiling = false },
 ) {
   if (!Number.isSafeInteger(current) || current < 0) {
     throw new Error('action-required prose-only turn count must be a non-negative integer');
   }
-  return actionRequired && attemptedTool !== true && madeProgress !== true
-    ? current + 1
-    : 0;
+  if (!actionRequired || attemptedTool === true || madeProgress === true) return 0;
+  // A response that consumed the entire active output budget may contain a
+  // truncated tool call that never reached the tool_call hook. Do not count
+  // that turn as prose-only, but preserve any earlier prose-only strike.
+  if (responseHitOutputCeiling === true) return current;
+  return current + 1;
 }
 
 export function actionRequiredToolNames(
@@ -173,7 +176,13 @@ export class ProgressController {
     this.evidenceUnlockUsedSinceProgress = false;
     this.recoveryMode = false;
     this.recoveryEvidenceRemaining = 0;
-    this.mutatedPaths = new Set();
+    const initialMutatedPaths = config.initialMutatedPaths ?? [];
+    if (!Array.isArray(initialMutatedPaths)) {
+      throw new Error('initialMutatedPaths must be an array');
+    }
+    this.mutatedPaths = new Set(
+      initialMutatedPaths.filter(value => typeof value === 'string' && value.length > 0),
+    );
     this.pendingMutationPath = null;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
