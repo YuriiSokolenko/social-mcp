@@ -13,6 +13,14 @@ on:
         required: true
         default: false
         type: boolean
+      backend:
+        description: Agent backend (mini-swe is experimental/manual only)
+        required: true
+        default: pi
+        type: choice
+        options:
+          - pi
+          - mini-swe
       model:
         description: Model backend to use (must already be loaded on nano)
         required: true
@@ -40,6 +48,7 @@ jobs:
     env:
       ISSUE: ${{ inputs.issue_number }}
       PI_MODEL_CHOICE: ${{ inputs.model || vars.PI_MODEL || 'laguna' }}
+      PI_STAGE_BACKEND: ${{ inputs.backend || 'pi' }}
 
     steps:
       - name: Checkout dev control repository
@@ -108,7 +117,7 @@ jobs:
           ruff --version
 
       - name: Prepare Orbit Local code graph
-        if: steps.claim.outputs.terminal != 'true'
+        if: steps.claim.outputs.terminal != 'true' && env.PI_STAGE_BACKEND == 'pi'
         run: |
           command -v orbit >/dev/null
           orbit version
@@ -117,7 +126,7 @@ jobs:
           orbit index "$JOB_DIR" >/dev/null
           echo "Orbit Local MCP configured and current issue worktree indexed."
 
-      - name: Run Pi with live progress
+      - name: Run implementation backend with live progress
         if: steps.claim.outputs.terminal != 'true'
         run: |
           cd "$JOB_DIR"
