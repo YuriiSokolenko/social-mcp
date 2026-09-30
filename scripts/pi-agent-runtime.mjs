@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 
 import {
+  FINISH_TOOLS,
   ProgressController,
   actionRequiredToolNames,
   classifyTruncatedToolCall,
@@ -29,6 +30,11 @@ import { zoektSearch } from './pi-common/zoekt-search.mjs';
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
 
+// Evidence needs are reported independently of complexity: a nontrivial task can still need
+// zero repository evidence (a fresh standalone file from a complete spec), so complexity is
+// not a valid proxy for how many evidence actions the Implementer should be granted.
+const MAX_PLANNER_EVIDENCE_BUDGET = 6;
+
 const IMPLEMENTATION_PREPARATION_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
@@ -39,9 +45,10 @@ const IMPLEMENTATION_PREPARATION_SCHEMA = Object.freeze({
       items: { type: 'string', minLength: 1, maxLength: 240 },
     },
     complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
+    evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
     reason: { type: 'string', minLength: 1, maxLength: 300 },
   },
-  required: ['steps', 'complexity', 'reason'],
+  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
   additionalProperties: false,
 });
 
@@ -60,7 +67,8 @@ function validateImplementationPreparation(value) {
     throw new Error('Implementation planner returned a non-object structured result');
   }
   const keys = Object.keys(value);
-  if (keys.length !== 3 || !keys.includes('steps') || !keys.includes('complexity') || !keys.includes('reason')) {
+  const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'reason'];
+  if (keys.length !== requiredKeys.length || !requiredKeys.every(key => keys.includes(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
   if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 8) {
@@ -73,14 +81,18 @@ function validateImplementationPreparation(value) {
   if (!['trivial', 'nontrivial'].includes(value.complexity)) {
     throw new Error(`Implementation planner returned invalid complexity: ${String(value.complexity)}`);
   }
+  const evidenceBudget = Number(value.evidence_budget);
+  if (!Number.isSafeInteger(evidenceBudget) || evidenceBudget < 0 || evidenceBudget > MAX_PLANNER_EVIDENCE_BUDGET) {
+    throw new Error(`Implementation planner returned invalid evidence_budget: ${String(value.evidence_budget)}`);
+  }
   const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
   if (!reason || reason.length > 300) throw new Error('Implementation planner returned an invalid reason');
-  return { steps, complexity: value.complexity, reason };
+  return { steps, complexity: value.complexity, evidenceBudget, reason };
 }
 
 function plannerTask(env = process.env) {
   const issue = implementerIssueContext(env);
-  return `Create the concise top-level implementation plan for this issue and classify only whether it is trivial or nontrivial. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.
+  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, and separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}): how many repository evidence-gathering actions (reads/searches) the Implementer will likely need before it can safely mutate. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.
 
 Issue title:
 ${issue.title}
@@ -227,6 +239,9 @@ export default function (pi) {
   let actionRequiredProseOnlyTurns = 0;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
+  // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
+  // or terminal submission) it was granted a one-shot elevated mutation budget for.
+  let elevatedTurnAttemptedFinishTool = false;
 
   function syncProductiveState() {
     const state = controller.productiveProgressState();
@@ -243,6 +258,8 @@ export default function (pi) {
       config.productiveProgress &&
       productiveState === 'action_required';
 
+    const largeMutationBudgetActive = stage === 'implementer' && controller.largeMutationBudgetActive();
+
     if (preComplexityRequired || productiveActionRequired) {
       if (unrestrictedActiveTools == null) unrestrictedActiveTools = pi.getActiveTools();
       const restricted = preComplexityRequired
@@ -253,7 +270,11 @@ export default function (pi) {
               'submit_repair',
             ]).has(name)
           )
-        : actionRequiredToolNames(unrestrictedActiveTools, {
+        : largeMutationBudgetActive
+          // UX on top of the controller's own hard gate: while the elevated budget is active,
+          // don't even show tools this turn is not allowed to call.
+          ? unrestrictedActiveTools.filter(name => FINISH_TOOLS.has(name))
+          : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
             blockerTool: config.productiveProgress.blockerTool,
@@ -347,16 +368,19 @@ export default function (pi) {
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
         const prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal);
         const result = controller.setComplexity(prepared.complexity);
+        controller.setEvidenceBudget(prepared.evidenceBudget);
         console.log(`PI_PLAN ${JSON.stringify({
           stage,
           steps: prepared.steps,
           complexity: prepared.complexity,
+          evidenceBudget: prepared.evidenceBudget,
           reason: prepared.reason,
           usage: prepared.usage,
         })}`);
         console.log(`PI_COMPLEXITY ${JSON.stringify({
           stage,
           complexity: prepared.complexity,
+          evidenceBudget: prepared.evidenceBudget,
           reason: prepared.reason,
           usage: prepared.usage,
           source: 'implementation-planner',
@@ -371,11 +395,12 @@ export default function (pi) {
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}`,
           }],
           details: {
             ...result,
             plan: prepared.steps,
+            evidenceBudget: prepared.evidenceBudget,
             plannerUsage: prepared.usage,
             reason: prepared.reason,
             freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
@@ -560,6 +585,26 @@ export default function (pi) {
       },
     });
 
+    if (controller.largeMutationBudgetTool) {
+      pi.registerTool({
+        name: controller.largeMutationBudgetTool,
+        label: 'Request large mutation budget',
+        description: `Grant exactly the NEXT response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling, for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. That one elevated response must attempt structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result; the budget always collapses back to the normal small ceiling immediately afterward, whether or not it was used, and must be requested again for another large payload.`,
+        parameters: Type.Object({
+          reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
+        }),
+        async execute(_toolCallId, params) {
+          return {
+            content: [{
+              type: 'text',
+              text: `Large mutation budget granted for exactly the next response (${controller.largeMutationBudgetMaxTokens} max output tokens). Use it now for one structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result call; do not spend it on narration or another request.`,
+            }],
+            details: { reason: params.reason, maxTokens: controller.largeMutationBudgetMaxTokens },
+          };
+        },
+      });
+    }
+
     if (process.env.PI_ZOEKT_URL) {
       pi.registerTool({
         name: 'indexed_repo_search',
@@ -631,6 +676,7 @@ export default function (pi) {
 
   pi.on('turn_start', (event) => {
     actionTurnAttemptedTool = false;
+    elevatedTurnAttemptedFinishTool = false;
     loopGuardSteeredThisTurn = false;
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
@@ -642,6 +688,7 @@ export default function (pi) {
       maxTokens: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
       productiveState,
       actionCapApplied: appliedActionCap > 0,
+      largeMutationBudget: controller.largeMutationBudgetState,
     })}`);
   });
 
@@ -666,6 +713,9 @@ export default function (pi) {
       }
       return blocked;
     }
+    // Only a call the controller actually let through counts as an attempted finish tool: a
+    // blocked call never reached execution, so it must not suppress the violation warning.
+    if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
 
     const cwd = ctx?.cwd || process.cwd();
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);
@@ -771,8 +821,9 @@ export default function (pi) {
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
     if (!truncated) return undefined;
     console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated })}`);
+    const guidance = truncatedToolCallGuidance(event.toolName, { largeMutationBudgetTool: controller.largeMutationBudgetTool });
     return {
-      content: [{ type: 'text', text: `${truncatedToolCallGuidance(event.toolName)}\n\n${text}` }],
+      content: [{ type: 'text', text: `${guidance}\n\n${text}` }],
       isError: true,
     };
   });
@@ -786,6 +837,23 @@ export default function (pi) {
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
+
+    // The turn that just ended was the one-shot elevated mutation response (if any): consume
+    // it unconditionally so a second elevated response is never granted automatically, and
+    // flag it when it did not even attempt the mutation/terminal action it was granted for.
+    if (stage === 'implementer' && controller.largeMutationBudgetActive()) {
+      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+        stage,
+        phase: 'consumed',
+        attemptedFinishTool: elevatedTurnAttemptedFinishTool,
+        outputTokens,
+      })}`);
+      if (!elevatedTurnAttemptedFinishTool) {
+        console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
+      }
+      controller.resetLargeMutationBudget();
+    }
+
     const preComplexityRequired =
       config.preComplexityActionResponseMaxTokens != null &&
       controller.preComplexityActionRequired();
@@ -825,7 +893,7 @@ export default function (pi) {
       return;
     }
 
-    const targetActionCap = actionCap > 0
+    let targetActionCap = actionCap > 0
       ? nextActionResponseCap({
           baseCap: actionCap,
           retryCap: actionRetryCap,
@@ -834,6 +902,18 @@ export default function (pi) {
           madeProgress: controller.turnMadeProgress,
         })
       : 0;
+    let budgetReason = targetActionCap > 0 ? 'action_required' : 'level_ladder';
+
+    // A grant just succeeded this turn: override whatever the normal action cap would be and
+    // apply the elevated ceiling to exactly the upcoming response.
+    const largeMutationBudgetGrantedThisTurn =
+      stage === 'implementer' && controller.largeMutationBudgetPending();
+    if (largeMutationBudgetGrantedThisTurn) {
+      targetActionCap = controller.largeMutationBudgetMaxTokens;
+      budgetReason = 'large_mutation_elevated';
+      controller.activateLargeMutationBudget();
+      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({ stage, phase: 'granted', maxTokens: targetActionCap })}`);
+    }
 
     if (targetActionCap > 0) {
       if (appliedActionCap !== targetActionCap || Number(ctx.model?.maxTokens) !== targetActionCap) {
@@ -870,6 +950,8 @@ export default function (pi) {
       responseHitOutputCeiling,
       nextBudget: next.level,
       maxTokens: appliedActionCap || next.maxTokens,
+      budgetReason,
+      largeMutationBudget: controller.largeMutationBudgetState,
       explicit: next.explicit === true,
       preservedForToolTurn: next.preservedForToolTurn === true,
       productiveState,

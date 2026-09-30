@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { IMPLEMENTER_RESPONSE_MAX_TOKENS } from './progress-controller.mjs';
+import { IMPLEMENTER_RESPONSE_MAX_TOKENS, RESPONSE_BUDGETS } from './progress-controller.mjs';
 import { baseBranch, baseRef, projectConfig } from './project-config.mjs';
 
 /** Role prompt location, relative to the checkout (`agents.promptsDir`). */
@@ -183,7 +183,9 @@ export const STAGES = Object.freeze({
     maxTurns: 100,
     repeatThreshold: 3,
     requireComplexity: true,
-    fixedResponseMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
+    // No response-global fixed ceiling: normal turns use the small short/normal/deep
+    // ladder below, and a large code-bearing mutation gets the 16k ceiling for exactly
+    // one response via `request_large_mutation_budget` (see `productiveProgress`).
     implementationPlannerAgent: 'implementation-planner',
     implementationPlannerMaxTokens: 768,
     implementationPlannerStructuredRetry: 1,
@@ -201,14 +203,22 @@ export const STAGES = Object.freeze({
       blockerTool: 'need_more_evidence',
       verificationTool: 'run_check',
       initialEvidenceBudget: 6,
+      // Fallback only: used when the planner's own per-task `evidence_budget` estimate is
+      // absent. The planner's estimate (wired through `setEvidenceBudget`) is authoritative
+      // because complexity alone is not a valid proxy for how much evidence a task needs.
       initialEvidenceBudgetByComplexity: {
         trivial: 2,
         nontrivial: 6,
       },
-      actionResponseMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
-      actionResponseRetryMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
+      actionResponseMaxTokens: RESPONSE_BUDGETS.short,
+      actionResponseRetryMaxTokens: RESPONSE_BUDGETS.short,
+      // One-shot elevated ceiling for a response that must emit a large write/edit payload.
+      // Granted by `request_large_mutation_budget`, applied to exactly the next response,
+      // and always collapsed back to the small action budget afterward.
+      largeMutationBudgetTool: 'request_large_mutation_budget',
+      largeMutationBudgetMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
       actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
-      controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server'],
+      controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'],
     },
     prompt: promptBuilders.implementer,
   },

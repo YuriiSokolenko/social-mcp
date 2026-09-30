@@ -188,6 +188,50 @@ test('safe_edit rejects stale markers and invalid ranges without changing the fi
   }
 });
 
+test('safe_edit failures return bounded current-worktree context for a local retry', () => {
+  const dir = tempRepo();
+  try {
+    const file = path.join(dir, 'sample.py');
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+    fs.writeFileSync(file, lines.join('\n'));
+
+    assert.throws(
+      () => safeEdit(dir, {
+        path: 'sample.py',
+        operation: 'replace',
+        start_line: 10,
+        end_line: 10,
+        expected_marker: 'not present anywhere',
+        text: 'replacement',
+      }),
+      (error) => {
+        assert.match(error.message, /expected_marker was not found in current lines 10-10/);
+        assert.match(error.message, /Current lines 7-13:/);
+        assert.match(error.message, /\n9: line 9\n10: line 10\n11: line 11\n/);
+        return true;
+      },
+    );
+
+    assert.throws(
+      () => safeEdit(dir, {
+        path: 'sample.py',
+        operation: 'replace',
+        start_line: 50,
+        end_line: 50,
+        text: 'replacement',
+      }),
+      (error) => {
+        assert.match(error.message, /outside the current file \(1-20\)/);
+        assert.match(error.message, /Current lines 17-20:/);
+        assert.match(error.message, /\n20: line 20/);
+        return true;
+      },
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('safe_edit bounds the post-edit preview for large mutations', () => {
   const dir = tempRepo();
   try {
