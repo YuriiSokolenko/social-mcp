@@ -251,11 +251,16 @@ verify_runner_sandbox_image() {
   if [ "$RUNNER_SANDBOX_VERIFIED" == true ]; then
     return 0
   fi
-  if run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run --rm --entrypoint bwrap "$RUNNER_IMAGE" --version >/dev/null 2>&1; then
+  # Not just `bwrap --version`: create a real sandbox with the same namespace flags run_check uses
+  # and the same container settings spawn_runner gives workers (runner user, host network, seccomp),
+  # so a binary that exists but cannot create namespaces is rejected too.
+  if run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run --rm --network host --security-opt seccomp=unconfined --entrypoint bwrap "$RUNNER_IMAGE" \
+    --die-with-parent --unshare-user --unshare-net --unshare-pid --unshare-ipc --unshare-uts --new-session \
+    --ro-bind / / --dev /dev --tmpfs /tmp -- true >/dev/null 2>&1; then
     RUNNER_SANDBOX_VERIFIED=true
     return 0
   fi
-  log "error: image ${RUNNER_IMAGE} has no working bwrap, so run_check would fail with infra_error; not starting runners from it. Rebuild the worker image under a NEW tag (see infra/github-runner-autoscaler/README.md)"
+  log "error: image ${RUNNER_IMAGE} cannot create a bwrap sandbox, so run_check would fail with infra_error; not starting runners from it. Rebuild the worker image under a NEW tag (see infra/github-runner-autoscaler/README.md)"
   return 1
 }
 

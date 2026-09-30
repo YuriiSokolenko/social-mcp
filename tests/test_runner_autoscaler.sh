@@ -277,7 +277,8 @@ grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail
 grep -q -- '-e PI_ZOEKT_URL=http://127.0.0.1:6070' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive PI_ZOEKT_URL when configured'
 grep -q -- '-e PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the stable Zoekt repository name'
 grep -q -- '-e PI_ZOEKT_TIMEOUT_MS=3000' "$DOCKER_RUN_LOG" || fail 'Pi runners must receive the bounded Zoekt timeout'
-grep -q -- '--entrypoint bwrap test-pi-image:tag --version' "$DOCKER_RUN_LOG" || fail 'Pi runners must verify the worker image contains bwrap before starting'
+grep -q -- '--network host --security-opt seccomp=unconfined --entrypoint bwrap test-pi-image:tag' "$DOCKER_RUN_LOG" || fail 'the image probe must use the same container settings as real runners'
+grep -q -- '--unshare-user --unshare-net .* -- true' "$DOCKER_RUN_LOG" || fail 'the image probe must create a real sandbox, not just run bwrap --version'
 
 # An agent-pool image without a working bwrap (e.g. a stale locally cached tag) starts fine but
 # fails every run_check with "bwrap: ENOENT"; the manager must refuse it, and must not spend a
@@ -297,11 +298,11 @@ grep -q -- '--entrypoint bwrap test-pi-image:tag --version' "$DOCKER_RUN_LOG" ||
     [[ "$*" != *'--entrypoint bwrap'* ]]
   }
   if spawn_runner >"$DOCKER_RUN_LOG.out"; then fail 'spawn_runner must refuse an image without a working bwrap'; fi
-  grep -q 'has no working bwrap' "$DOCKER_RUN_LOG.out" || fail 'the refusal must say why the image was rejected'
+  grep -q 'cannot create a bwrap sandbox' "$DOCKER_RUN_LOG.out" || fail 'the refusal must say why the image was rejected'
   grep -q 'NEW tag' "$DOCKER_RUN_LOG.out" || fail 'the refusal must point at rebuilding under a new tag'
 )
 rm -f "$DOCKER_RUN_LOG.out"
-grep -q -- '--entrypoint bwrap stale-pi-image:tag --version' "$DOCKER_RUN_LOG" || fail 'the image must be probed for bwrap'
+grep -q -- '--entrypoint bwrap stale-pi-image:tag' "$DOCKER_RUN_LOG" || fail 'the image must be probed for bwrap'
 grep -q -- 'docker run -d' "$DOCKER_RUN_LOG" && fail 'no runner container may start from an image without bwrap'
 
 # A verified image is probed once; a rejected image is re-probed so a fixed tag recovers without a restart.
