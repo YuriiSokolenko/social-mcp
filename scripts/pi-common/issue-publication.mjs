@@ -26,6 +26,35 @@ import { runGit as git } from './git.mjs';
  */
 const lines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 
+const MISSING_OBJECTS = /missing necessary objects/i;
+const DEFAULT_PUSH_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000]);
+
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+export function pushWithMissingObjectRetry(args, {
+  cwd,
+  token,
+  run = git,
+  sleep = sleepMs,
+  delaysMs = DEFAULT_PUSH_RETRY_DELAYS_MS,
+} = {}) {
+  for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
+    const result = run(args, { cwd, token, allowFailure: true });
+    if (result.status === 0) return result;
+
+    const message = [result.err, result.out].filter(Boolean).join('\n');
+    const retryable = MISSING_OBJECTS.test(message);
+    if (!retryable || attempt === delaysMs.length) {
+      throw new Error(message || `git push failed with exit code ${result.status}`);
+    }
+
+    sleep(delaysMs[attempt]);
+  }
+  throw new Error('unreachable push retry state');
+}
+
 /**
  * After submit_result succeeds, origin/dev is an ancestor of HEAD because the
  * finalizer has integrated the latest dev. Compare publication content against
@@ -66,7 +95,10 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Refusing to publish protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
-  git(['push',`--force-with-lease=refs/heads/pi/issue-${issue}:${expectedSha ?? ''}`,'--set-upstream','origin',`${commit}:refs/heads/pi/issue-${issue}`], { cwd, token });
+  pushWithMissingObjectRetry(
+    ['push',`--force-with-lease=refs/heads/pi/issue-${issue}:${expectedSha ?? ''}`,'--set-upstream','origin',`${commit}:refs/heads/pi/issue-${issue}`],
+    { cwd, token },
+  );
   return { commit };
 }
 
