@@ -11,7 +11,7 @@ on:
       model:
         description: Model backend to use (must already be loaded on nano)
         required: true
-        default: laguna
+        default: qwen
         type: choice
         options:
           - laguna
@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 120
     env:
       ISSUE: ${{ inputs.issue_number }}
-      PI_MODEL_CHOICE: ${{ inputs.model || vars.PI_MODEL || 'laguna' }}
+      PI_MODEL_CHOICE: ${{ inputs.model || 'qwen' }}
 
     steps:
       - name: Checkout trusted dev

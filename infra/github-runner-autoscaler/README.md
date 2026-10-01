@@ -12,7 +12,7 @@ pool's stuck loop can never block the other's:
 - **`general-runner-manager`** (pool label `general`) watches queued runs of
   every workflow with a job on the `general` label: `.github/workflows/ci.yml`,
   `pi-auto-merge.yml`, `pi-automation-control.yml`, `pi-pr-review.yml`'s gate
-  job (its review job stays on `pi-agent`), `pi-reconcile.yml`, `pi-set-model.yml`,
+  job (its review job stays on `pi-agent`), `pi-reconcile.yml`,
   and `pi-usage.yml` -- none of these call the Pi/LLM agent, so this pool has
   no model gate; `MAX_RUNNERS` is the only cap. **This list must stay in sync
   with `GENERAL_WORKFLOW_FILES`** (`compose.yaml`'s default / the host's
