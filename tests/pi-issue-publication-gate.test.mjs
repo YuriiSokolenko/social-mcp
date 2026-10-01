@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { readScript } from './helpers/resolved-source.mjs';
 
-import { hasUnsandboxedProvenance, nextLabelsForVerification } from '../scripts/pi-common/issue-publication.mjs';
+import { isUnsandboxedBackend, nextLabelsForVerification } from '../scripts/pi-common/issue-publication.mjs';
 import { PIPELINE_LABELS } from '../scripts/pi-common/state-machine.mjs';
 import { VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
 
@@ -45,36 +45,38 @@ test('pi:needs-human is never added twice, and never removed once present', () =
 });
 
 /**
- * Closing the race a background mini-swe process could still win: excluding
- * the ledger path from the model's environment, and discarding it right
- * after the mini CLI exits (mini-swe-stage-backend.mjs's
- * discardModelPhaseLedger), narrows the window but cannot close it --
- * mini-swe has no process sandbox, so a detached background process from a
- * normally-completed command (documented upstream mini-swe-agent behavior)
- * can still survive past the `mini` process's own exit and recreate the
- * ledger, or forge real checks.final output, during the harness-owned
- * validation phase. The only guarantee that does not depend on winning that
- * race: a PR is never treated as fully verified if any ledger record is
- * attributable to a backend whose execution isn't sandboxed, regardless of
- * what the records themselves claim.
+ * Trust-root regression: an earlier version of this gate derived trust from
+ * `record.backend` inside the ledger itself -- but the ledger is exactly the
+ * thing an untrusted mini-swe process can write to, so it could forge
+ * `backend: 'pi'` on every record and sail through the gate. The trust input
+ * must come from somewhere the implementer's own process tree can never
+ * reach: the workflow_dispatch `inputs.backend` value, fixed by the Actions
+ * runner before the job starts and never routed through $GITHUB_ENV. This is
+ * threaded into `upsertPullRequest` as its own `backend` argument, entirely
+ * independent of anything in the ledger file.
  */
-test('a ledger with any unsandboxed-backend record is never treated as trustworthy', () => {
-  assert.equal(hasUnsandboxedProvenance([{ backend: 'pi' }]), false);
-  assert.equal(hasUnsandboxedProvenance([{ backend: 'pi' }, { backend: 'mini-swe' }]), true);
-  assert.equal(hasUnsandboxedProvenance([]), false);
+test('isUnsandboxedBackend trusts only the harness-declared backend, never anything from a record', () => {
+  assert.equal(isUnsandboxedBackend('pi'), false);
+  assert.equal(isUnsandboxedBackend('mini-swe'), true);
+  assert.equal(isUnsandboxedBackend(undefined), true);
+  assert.equal(isUnsandboxedBackend(''), true);
 });
 
-test('a fully VERIFIED mini-swe ledger still gets pi:needs-human, because none of it is authoritative yet', () => {
-  // Even every recorded check passing, including the completion marker, must
-  // not be enough -- that is exactly the state a forged ledger would show.
+test('a forged ledger where every record claims backend: pi still gets pi:needs-human, because the harness knows the real backend was mini-swe', () => {
+  // This is the literal attack the ledger-derived version of this gate was
+  // vulnerable to: a raw-shell mini-swe process rewriting every record's
+  // `backend` field to 'pi' and every `status` to 'pass', including the
+  // completion marker. The gate must not even look at that field.
+  const forgedButAllPassLedgerVerificationState = VERIFICATION_STATES.VERIFIED;
+  const harnessKnownBackend = 'mini-swe';
   assert.deepEqual(
-    nextLabelsForVerification([], VERIFICATION_STATES.VERIFIED, /* hasUnsandboxedRecords */ true),
+    nextLabelsForVerification([], forgedButAllPassLedgerVerificationState, isUnsandboxedBackend(harnessKnownBackend)),
     [PIPELINE_LABELS.needsHuman],
   );
 });
 
-test('a VERIFIED, all-Pi ledger is unaffected by the unsandboxed-provenance gate', () => {
-  assert.equal(nextLabelsForVerification([], VERIFICATION_STATES.VERIFIED, false), null);
+test('a VERIFIED Pi-backend run is unaffected by the backend-trust gate', () => {
+  assert.equal(nextLabelsForVerification([], VERIFICATION_STATES.VERIFIED, isUnsandboxedBackend('pi')), null);
 });
 
 test('label objects in GitHub API shape (not bare strings) are handled identically', () => {
@@ -85,18 +87,26 @@ test('label objects in GitHub API shape (not bare strings) are handled identical
   );
 });
 
-test('upsertPullRequest applies the gate on both the create and update paths, and returns verification_state', () => {
+test('upsertPullRequest derives trust from the backend argument, not the ledger, and returns verification_state', () => {
   const source = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
+  assert.match(source, /export async function upsertPullRequest\(\{ issue, resultFile, owner, ledgerFile, backend \}\)/);
   assert.match(source, /const verificationState = computeVerificationState\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\);/);
-  assert.match(source, /const unsandboxedProvenance = hasUnsandboxedProvenance\(ledgerRecords\);/);
-  assert.match(source, /nextLabelsForVerification\(existing\[0\]\.labels, verificationState, unsandboxedProvenance\)/);
-  assert.match(source, /nextLabelsForVerification\(\[\], verificationState, unsandboxedProvenance\)/);
+  assert.match(source, /const unsandboxedBackend = isUnsandboxedBackend\(backend\);/);
+  assert.match(source, /nextLabelsForVerification\(existing\[0\]\.labels, verificationState, unsandboxedBackend\)/);
+  assert.match(source, /nextLabelsForVerification\(\[\], verificationState, unsandboxedBackend\)/);
   assert.match(source, /if \(nextLabels\) await replaceLabels\(pr\.number, nextLabels\);/);
   assert.match(source, /return \{ number:pr\.number, url:pr\.html_url, verification_state: verificationState \};/);
+  // The CLI dispatch forwards the 5th positional arg as `backend`.
+  assert.match(source, /upsertPullRequest\(\{issue:Number\(a\[0\]\),resultFile:a\[1\],owner:a\[2\],ledgerFile:a\[3\],backend:a\[4\]\}\)/);
 });
 
-test('the issue-agent workflow only dispatches Reviewer when the ledger says VERIFIED', () => {
+test('the issue-agent workflow passes the workflow_dispatch backend input directly, never a shell-environment expansion', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const prStep = workflow.slice(workflow.indexOf('Create or update pull request'));
+  // "${{ inputs.backend || 'pi' }}" is evaluated by the Actions runner into the
+  // literal command text; it is never a $VAR expansion that a compromised
+  // process could influence by writing to $GITHUB_ENV.
+  assert.match(prStep, /issue-publication\.mjs" pr "\$ISSUE" "\$PI_IMPLEMENTER_RESULT_FILE" "\$\{\{ github\.repository_owner \}\}" "\$PI_VALIDATION_LEDGER_FILE" "\$\{\{ inputs\.backend \|\| 'pi' \}\}"/);
   assert.match(workflow, /verification_state=\$\(jq -r '\.verification_state' <<<"\$PR"\)/);
   const reviewStep = workflow.slice(workflow.indexOf('Start independent PR review'));
   assert.match(reviewStep, /if: steps\.checkpoint\.outputs\.changed == 'true' && steps\.pr\.outputs\.number != '' && steps\.pr\.outputs\.verification_state == 'VERIFIED'/);

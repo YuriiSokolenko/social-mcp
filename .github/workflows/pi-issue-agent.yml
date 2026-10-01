@@ -150,7 +150,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}" "$PI_VALIDATION_LEDGER_FILE")"
+          # The backend arg is the "${{ }}" workflow_dispatch input directly, not
+          # $PI_STAGE_BACKEND or any other shell-environment expansion: inputs.*
+          # is fixed by the Actions runner at dispatch time and is never routed
+          # through $GITHUB_ENV, so nothing a running job does (including a
+          # compromised mini-swe process writing to $GITHUB_ENV) can alter it.
+          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}" "$PI_VALIDATION_LEDGER_FILE" "${{ inputs.backend || 'pi' }}")"
           echo "number=$(jq -r '.number' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "url=$(jq -r '.url' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "verification_state=$(jq -r '.verification_state' <<<"$PR")" >> "$GITHUB_OUTPUT"

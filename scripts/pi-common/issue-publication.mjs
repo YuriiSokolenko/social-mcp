@@ -122,43 +122,47 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
  * background process running after the `mini` CLI itself exits (this is
  * documented upstream mini-swe-agent behavior, not a hypothetical), and nothing
  * today guarantees that process tree is fully torn down before checks.final
- * runs. A survivor could forge ledger records, or just as easily tamper with
- * the real files/output checks.final reads -- the ledger is not the only
- * thing at risk, so hiding or discarding the ledger path alone (see
- * mini-swe-stage-backend.mjs's discardModelPhaseLedger) narrows but cannot
- * close this. Until mini-swe's execution is actually sandboxed (comparable to
- * the Docker isolation `run_check` already has for Pi), nothing it reports --
- * including a fully clean checks.final -- is authoritative.
+ * runs. A survivor could tamper with the real files/output checks.final
+ * reads, or forge ledger records -- *including* a forged `backend: 'pi'` on
+ * every record, which is exactly why trust must never be decided from the
+ * ledger itself. `backend` here must come from a source the implementer's
+ * own process tree can never influence: the workflow_dispatch input is fixed
+ * by the Actions runner before the job starts and is never routed through
+ * $GITHUB_ENV, so nothing that happens during the run -- including a
+ * compromised process writing to $GITHUB_ENV -- can alter it. A ledger
+ * record's own `backend` field remains useful as display/diagnostic
+ * provenance (which backend produced which line), just never as a trust
+ * input.
  */
 const SANDBOXED_BACKENDS = new Set(['pi']);
 
-export function hasUnsandboxedProvenance(records) {
-  return records.some(record => !SANDBOXED_BACKENDS.has(record.backend));
+export function isUnsandboxedBackend(backend) {
+  return !SANDBOXED_BACKENDS.has(backend);
 }
 
 /**
  * Pure: given a PR's current labels, the ledger-derived verification state,
- * and whether any ledger record came from a backend whose execution isn't
- * sandboxed, returns the label set `upsertPullRequest` should apply, or
+ * and whether the harness-known execution backend for this run is
+ * unsandboxed, returns the label set `upsertPullRequest` should apply, or
  * `null` if no label change is needed. This is a durable, control-plane
  * gate, not PR-body prose: `pi:needs-human` on the PR is a hard stop already
  * honored by the shared PR-guard (Reviewer/PR Fix) and by Merge Gate, so a
- * PR that is not both fully verified AND attributable only to a sandboxed
- * backend can never reach an effective review PASS or a merge. Once set, it
- * is only ever added here, never removed -- exactly like every other
- * `pi:needs-human` producer in this codebase (pr-guard.mjs,
- * pi-auto-merge.mjs): clearing it is a human action.
+ * PR that is not both fully verified AND executed by a sandboxed backend can
+ * never reach an effective review PASS or a merge. Once set, it is only ever
+ * added here, never removed -- exactly like every other `pi:needs-human`
+ * producer in this codebase (pr-guard.mjs, pi-auto-merge.mjs): clearing it
+ * is a human action.
  */
-export function nextLabelsForVerification(currentLabels, verificationState, hasUnsandboxedRecords = false) {
+export function nextLabelsForVerification(currentLabels, verificationState, unsandboxedBackend = false) {
   const names = (currentLabels ?? []).map(label => typeof label === 'string' ? label : label.name);
-  const trusted = verificationState === VERIFICATION_STATES.VERIFIED && !hasUnsandboxedRecords;
+  const trusted = verificationState === VERIFICATION_STATES.VERIFIED && !unsandboxedBackend;
   if (trusted || names.includes(PIPELINE_LABELS.needsHuman)) {
     return null;
   }
   return [...names, PIPELINE_LABELS.needsHuman];
 }
 
-export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }) {
+export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, backend }) {
   const { api, replaceLabels } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   if (!resultFile || !fs.existsSync(resultFile) || !fs.statSync(resultFile).size) {
@@ -174,7 +178,7 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
   const { records: ledgerRecords, corrupted: ledgerCorrupted } = readValidationLedger(ledgerFile);
   const verificationState = computeVerificationState(ledgerRecords, { corrupted: ledgerCorrupted });
-  const unsandboxedProvenance = hasUnsandboxedProvenance(ledgerRecords);
+  const unsandboxedBackend = isUnsandboxedBackend(backend);
   const tests = [
     renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted }),
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
@@ -182,12 +186,12 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
   if (existing[0]) {
     const pr = await api(`/pulls/${existing[0].number}`,'PATCH',{title:metadata.title,body});
-    const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState, unsandboxedProvenance);
+    const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState, unsandboxedBackend);
     if (nextLabels) await replaceLabels(pr.number, nextLabels);
     return { number:pr.number, url:pr.html_url, verification_state: verificationState };
   }
   const pr = await api('/pulls','POST',{title:metadata.title,head:issueBranch(issue),base:baseBranch(),body});
-  const nextLabels = nextLabelsForVerification([], verificationState, unsandboxedProvenance);
+  const nextLabels = nextLabelsForVerification([], verificationState, unsandboxedBackend);
   if (nextLabels) await replaceLabels(pr.number, nextLabels);
   return { number:pr.number, url:pr.html_url, verification_state: verificationState };
 }
@@ -201,7 +205,7 @@ async function main() {
   const [cmd, ...a] = process.argv.slice(2);
   if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
-  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3]})));
+  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
   throw new Error('unknown publication command');
 }
