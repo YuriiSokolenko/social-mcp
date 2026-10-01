@@ -162,6 +162,14 @@ test('writer agent is tool-less, child-budgeted and registered for the implement
   assert.equal(progress.actionResponseMaxTokens, 2048);
 });
 
+test('writer contract explicitly preserves backslashes through structured JSON transport', () => {
+  const writer = fs.readFileSync('.pi/agents/mutation-writer.md', 'utf8');
+  assert.match(writer, /structured result is transported as JSON/i);
+  assert.match(writer, /Preserve source-code backslashes through that JSON round trip/i);
+  assert.match(writer, /\\\\n/);
+  assert.match(writer, /literal newline inside the Python string/i);
+});
+
 test('symlinked path components cannot redirect a delegated mutation outside the worktree or into .git', () => {
   const dir = tempDir();
   const outside = tempDir();
