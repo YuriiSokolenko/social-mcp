@@ -58,7 +58,8 @@ jobs:
       - name: Checkout dev control repository
         uses: actions/checkout@v5
         with:
-          ref: dev
+          # SMOKE ONLY (#273 mutation turn): control plane from the dispatched branch. Never merge.
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
           persist-credentials: false
 
