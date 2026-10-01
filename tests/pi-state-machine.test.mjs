@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { inspectIssueState, isIssueTransitionNoop, safeRemovals, validateIssueTransition } from '../scripts/pi-common/state-machine.mjs';
 import { replaceIssueState } from '../scripts/pi-common/github-state.mjs';
+import { readScript } from './helpers/resolved-source.mjs';
 
 const issue = (state, labels) => ({ state, labels: labels.map(name => ({ name })) });
 
@@ -24,11 +25,12 @@ test('blocked wins over needs-human when terminal labels conflict', () => {
   assert.deepEqual(safeRemovals(findings), ['pi:needs-human']);
 });
 
-test('epics are never executable work', () => {
+test('epics are never executable work but preserve a manual block marker', () => {
   const findings = inspectIssueState(issue('open', [
-    'architect:epic', 'dispatcher:ready', 'pi:running', 'pi:needs-human',
+    'architect:epic', 'dispatcher:ready', 'pi:running', 'pi:needs-human', 'pi:blocked',
   ]));
   assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:needs-human', 'pi:running']);
+  assert.equal(safeRemovals(findings).includes('pi:blocked'), false);
 });
 
 test('ambiguous multiple active states keep the furthest safe state', () => {
@@ -101,6 +103,11 @@ test('needs-human cannot become executable without an explicit retry', () => {
     () => validateIssueTransition(issue('open', ['pi:needs-human', 'pi:ready']), 'running'),
     /explicit retry/,
   );
+});
+
+test('blocked transition logging reports preservation rather than a misleading state change', () => {
+  const source = readScript('scripts/pi-transition.mjs', 'utf8');
+  assert.match(source, /preserved .*blocked.*ignored .* transition/);
 });
 
 test('terminal labels do not break cleanup or publication from a live run', () => {
