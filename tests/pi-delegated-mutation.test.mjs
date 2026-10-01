@@ -6,7 +6,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   MUTATION_WRITER_SCHEMA,
+  CONSERVATIVE_CHARS_PER_TOKEN,
+  WRITER_OUTPUT_RESERVE_RATIO,
   applyDelegatedMutation,
+  maxEditSourceChars,
   mutationWriterTask,
   validateDelegationRequest,
   validateWriterResult,
@@ -17,6 +20,9 @@ import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pi-delegated-'));
 }
+
+const WRITER_MAX_TOKENS = stageConfig('implementer').productiveProgress.delegatedMutationWriterMaxTokens;
+const limits = { writerMaxTokens: WRITER_MAX_TOKENS };
 
 const concrete = {
   operation: 'write',
@@ -30,10 +36,10 @@ test('delegation requires a concrete path, decided intent and requirements', () 
   try {
     fs.mkdirSync(path.join(dir, 'pkg'));
     fs.writeFileSync(path.join(dir, 'pkg', 'mod.py'), 'x = 1\n');
-    const ok = validateDelegationRequest(dir, concrete);
+    const ok = validateDelegationRequest(dir, concrete, limits);
     assert.deepEqual(ok.request, { ...concrete, context: '' });
     assert.equal(ok.currentContent, null);
-    const edit = validateDelegationRequest(dir, { ...concrete, operation: 'edit', path: 'pkg/mod.py' });
+    const edit = validateDelegationRequest(dir, { ...concrete, operation: 'edit', path: 'pkg/mod.py' }, limits);
     assert.equal(edit.currentContent, 'x = 1\n');
 
     const rejected = [
@@ -53,7 +59,7 @@ test('delegation requires a concrete path, decided intent and requirements', () 
       [{ operation: 'edit', path: 'missing.py' }, 'missing_target'],
     ];
     for (const [patch, code] of rejected) {
-      assert.throws(() => validateDelegationRequest(dir, { ...concrete, ...patch }), error => error.code === code, JSON.stringify(patch));
+      assert.throws(() => validateDelegationRequest(dir, { ...concrete, ...patch }, limits), error => error.code === code, JSON.stringify(patch));
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -95,10 +101,11 @@ test('runtime application is atomic and detects a no-op', () => {
   const dir = tempDir();
   try {
     const target = path.join(dir, 'nested', 'game.py');
-    assert.deepEqual(applyDelegatedMutation(target, 'print(1)\n'), { changed: true, bytes: 9 });
+    const request = { operation: 'write', path: 'nested/game.py' };
+    assert.deepEqual(applyDelegatedMutation(dir, request, 'print(1)\n'), { changed: true, bytes: 9 });
     assert.equal(fs.readFileSync(target, 'utf8'), 'print(1)\n');
     const mtime = fs.statSync(target).mtimeMs;
-    assert.equal(applyDelegatedMutation(target, 'print(1)\n').changed, false);
+    assert.equal(applyDelegatedMutation(dir, request, 'print(1)\n').changed, false);
     assert.equal(fs.statSync(target).mtimeMs, mtime);
     assert.deepEqual(fs.readdirSync(path.dirname(target)), ['game.py']);
   } finally {
@@ -151,6 +158,92 @@ test('writer agent is tool-less, child-budgeted and registered for the implement
   assert.equal(progress.delegatedMutationWriterMaxTokens, 16384);
   assert.equal(progress.delegatedMutationWriterRetry, 1);
   assert.equal(progress.actionResponseMaxTokens, 2048);
+});
+
+test('symlinked path components cannot redirect a delegated mutation outside the worktree or into .git', () => {
+  const dir = tempDir();
+  const outside = tempDir();
+  try {
+    fs.mkdirSync(path.join(dir, '.git', 'hooks'), { recursive: true });
+    fs.symlinkSync(outside, path.join(dir, 'link'));
+    fs.symlinkSync(path.join(dir, '.git'), path.join(dir, 'gitlink'));
+    fs.symlinkSync(path.join(outside, 'missing.py'), path.join(dir, 'dangling.py'));
+    for (const target of ['link/generated.py', 'gitlink/hooks/pre-commit', 'dangling.py']) {
+      for (const operation of ['write', 'edit']) {
+        assert.throws(
+          () => validateDelegationRequest(dir, { ...concrete, operation, path: target }, limits),
+          error => error.code === 'invalid_path',
+          `${operation} ${target}`,
+        );
+      }
+      assert.throws(() => applyDelegatedMutation(dir, { operation: 'write', path: target }, 'x'), error => error.code === 'invalid_path', target);
+    }
+    assert.deepEqual(fs.readdirSync(outside), []);
+    assert.deepEqual(fs.readdirSync(path.join(dir, '.git', 'hooks')), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('target state is re-validated between request validation and runtime apply', () => {
+  const dir = tempDir();
+  const outside = tempDir();
+  try {
+    // A parent directory swapped for a symlink while the writer ran.
+    fs.mkdirSync(path.join(dir, 'pkg'));
+    const write = validateDelegationRequest(dir, { ...concrete, path: 'pkg/new.py' }, limits);
+    fs.rmSync(path.join(dir, 'pkg'), { recursive: true });
+    fs.symlinkSync(outside, path.join(dir, 'pkg'));
+    assert.throws(() => applyDelegatedMutation(dir, write.request, 'x = 1\n'), error => error.code === 'invalid_path');
+    assert.deepEqual(fs.readdirSync(outside), []);
+
+    // An edit target changed (or vanished) while the writer rewrote the old content.
+    fs.writeFileSync(path.join(dir, 'mod.py'), 'a = 1\n');
+    const edit = validateDelegationRequest(dir, { ...concrete, operation: 'edit', path: 'mod.py' }, limits);
+    fs.writeFileSync(path.join(dir, 'mod.py'), 'a = 2\n');
+    assert.throws(
+      () => applyDelegatedMutation(dir, edit.request, 'a = 1\nb = 2\n', { expectedContent: edit.currentContent }),
+      error => error.code === 'target_changed',
+    );
+    assert.equal(fs.readFileSync(path.join(dir, 'mod.py'), 'utf8'), 'a = 2\n');
+    fs.rmSync(path.join(dir, 'mod.py'));
+    assert.throws(
+      () => applyDelegatedMutation(dir, edit.request, 'a = 1\n', { expectedContent: edit.currentContent }),
+      error => error.code === 'target_changed',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('an admitted edit source is expected to fit in the writer output ceiling', () => {
+  const limit = maxEditSourceChars(WRITER_MAX_TOKENS);
+  // Pessimistic token estimate for the full rewritten file must stay within the ceiling,
+  // leaving the reserved share for reasoning, the structured wrapper and the change itself.
+  const estimatedTokens = Math.ceil(limit / CONSERVATIVE_CHARS_PER_TOKEN);
+  const reservedTokens = Math.floor(WRITER_MAX_TOKENS * WRITER_OUTPUT_RESERVE_RATIO);
+  assert.ok(estimatedTokens + reservedTokens <= WRITER_MAX_TOKENS, `${estimatedTokens} + ${reservedTokens} tokens`);
+  assert.ok(CONSERVATIVE_CHARS_PER_TOKEN <= 3, 'ratio stays below typical source-code density');
+  assert.ok(limit < 30000, `edit cap ${limit} chars is far below the old 120K`);
+
+  const dir = tempDir();
+  try {
+    fs.writeFileSync(path.join(dir, 'fits.py'), 'x'.repeat(limit));
+    fs.writeFileSync(path.join(dir, 'big.py'), 'x'.repeat(limit + 1));
+    assert.equal(validateDelegationRequest(dir, { ...concrete, operation: 'edit', path: 'fits.py' }, limits).currentContent.length, limit);
+    assert.throws(
+      () => validateDelegationRequest(dir, { ...concrete, operation: 'edit', path: 'big.py' }, limits),
+      error => error.code === 'target_too_large',
+    );
+    // A full-replacement write never ships the existing file to the writer, whatever its size.
+    const write = validateDelegationRequest(dir, { ...concrete, operation: 'write', path: 'big.py' }, limits);
+    assert.equal(write.currentContent, null);
+    assert.doesNotMatch(mutationWriterTask({ request: write.request, currentContent: write.currentContent, issue: null, preparation: null }), /CURRENT_FILE/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // Drives the real runtime extension end to end. Only typebox's schema builders are stubbed;
@@ -221,11 +314,15 @@ function runtimeScenario(mode) {
         if (mode === 'path-mismatch') return respond(request, value({ path: 'other.py' }));
         if (mode === 'truncated') return respond(request, { status: 'failed', error: 'Response stopped at the output token limit; tool arguments may be truncated' });
         if (mode === 'noop') return respond(request, value({ content: fs.readFileSync(cwd + '/arkanoid.py', 'utf8') }));
+        if (mode === 'edit-race') {
+          // Someone changes the edit target while the writer is still rewriting the old content.
+          fs.writeFileSync(cwd + '/arkanoid.py', 'CHANGED\\n');
+          return respond(request, value({ operation: 'edit' }));
+        }
         return respond(request, value());
       });
       runtime(pi);
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
-      await handlers.get('session_start')?.({}, ctx).catch(() => {});
       let turn = 0;
       async function call(name, input = {}, { expectError = null } = {}) {
         handlers.get('turn_start')({ turnIndex: turn });
@@ -255,8 +352,11 @@ function runtimeScenario(mode) {
 
       if (mode !== 'restored') await call('prepare_implementation');
       if (mode === 'noop') fs.writeFileSync(cwd + '/arkanoid.py', GAME);
+      if (mode === 'edit-race') fs.writeFileSync(cwd + '/arkanoid.py', 'OLD\\n');
 
       if (['flow', 'fallback', 'retry', 'restored'].includes(mode)) {
+        // The runtime syncs the action surface on turn_start; observe it at that boundary.
+        handlers.get('turn_start')({ turnIndex: turn });
         assert.ok(active.includes('delegate_mutation'));
         assert.ok(!active.includes('run_check'));
         const result = await call('delegate_mutation', delegate);
@@ -290,10 +390,11 @@ function runtimeScenario(mode) {
       } else {
         const expectError = {
           cancel: /aborted/, 'cancel-after-result': /cancelled before the writer result was applied/,
-          invalid: /empty_content/, 'path-mismatch': /path_mismatch/, truncated: /writer_output_truncated/,
+          invalid: /empty_content/, 'edit-race': /changed while the writer ran/, 'path-mismatch': /path_mismatch/, truncated: /writer_output_truncated/,
         }[mode];
-        await call('delegate_mutation', delegate, { expectError });
-        assert.equal(fs.existsSync(cwd + '/arkanoid.py'), false, 'nothing applied');
+        await call('delegate_mutation', mode === 'edit-race' ? { ...delegate, operation: 'edit' } : delegate, { expectError });
+        if (mode === 'edit-race') assert.equal(fs.readFileSync(cwd + '/arkanoid.py', 'utf8'), 'CHANGED\\n', 'concurrent change preserved');
+        else assert.equal(fs.existsSync(cwd + '/arkanoid.py'), false, 'nothing applied');
         assert.equal(writerRequests.length, mode === 'invalid' ? 2 : 1, 'bounded retry');
         assert.ok(!active.includes('run_check'), 'failed delegation earns no verification permit');
         assert.ok(active.includes('write') && active.includes('delegate_mutation'), 'productive tools stay available');
@@ -352,4 +453,5 @@ test('mismatched, truncated, vague, cancelled and no-op delegations are never ap
   const noop = runtimeScenario('noop');
   assert.match(noop, /"phase":"no_op"/);
   assert.match(noop, /PI_MUTATION .*"tool":"delegate_mutation".*"changed":false/);
+  assert.match(runtimeScenario('edit-race'), /"phase":"rejected".*"stage":"apply","reason":"target_changed"/);
 });
