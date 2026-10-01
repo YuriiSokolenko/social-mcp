@@ -32,7 +32,7 @@ Use this order. Complexity must be based on the actual repair target and changed
 6. Call `declare_task_complexity` based on the issue, blocker, current code, and plan.
 7. Immediately execute the first plan item and continue the repair.
 
-Before `declare_task_complexity`, stay within initial orientation: these agent instructions, the original issue, the concrete repair target, preflight conflict state, directly relevant code/tests, and the short plan. Do not edit files, load skills, expand into repository history or unrelated code, or begin implementation before step 5 is complete.
+Before `declare_task_complexity`, stay within initial orientation: these agent instructions, the original issue, the concrete repair target, preflight conflict state, directly relevant code/tests, and the short plan. Do not edit files, load skills, expand into repository history or unrelated code, or begin implementation until `declare_task_complexity` succeeds.
 
 Classify the repair itself, not the size of the original issue:
 
