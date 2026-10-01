@@ -17,6 +17,18 @@ The agent automation (dispatcher, architect, implementer, reviewer, repair, merg
 
 JSON (Node has no YAML parser and the control plane has no dependencies; a YAML front-end is a packaging step). Loaded by `scripts/pi-common/project-config.mjs`, validated strictly (unknown keys rejected, commands are fixed argv, never shell strings), **fails closed** (no built-in defaults). Search order: `AGENT_HARNESS_CONFIG` → `$GITHUB_WORKSPACE/.agent-harness.json` (trusted control checkout) → walking up from the module. The process cwd is never searched: agent sessions run in writable worktrees. The file itself is always a protected control-plane path, so an agent cannot widen its own permissions.
 
+## Model-facing agent contracts
+
+Model-driven stages receive one composed initial prompt:
+
+1. `agents/AGENTS.md` — shared stable invariants for runtime authority, workflow ownership, safety, and terminal behavior.
+2. `agents/<role>/AGENTS.md` — only role-specific behavior.
+3. Trusted per-run context from the harness — issue/PR/worktree/runtime facts that can change between runs.
+
+`scripts/pi-common/stage-config.mjs` injects the shared and role contracts exactly once. Agents do not read either contract file as a startup step. Dynamic state stays in runtime state, tool availability, tool results, and short state-specific steers rather than being copied into static prompt prose.
+
+When static examples and the current tool surface disagree, runtime state and the exposed tool surface win. Tests in `tests/pi-progress-controller.test.mjs` enforce prompt composition and key transition consistency.
+
 ## pi-* occurrence audit
 
 - **Genuinely Pi-specific (stays in the Pi adapter):** `pi-agent-runtime.mjs`, `pi-stage-backend.mjs`, `pi-*-result-tool.mjs` (Pi tool registration), `pi-log-filter.mjs`, `PI_METRIC`/`PI_TASK` stdout lines, Pi provider/base-URL forcing, `.pi/` settings.
