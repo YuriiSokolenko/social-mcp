@@ -707,7 +707,7 @@ export default function (pi) {
       pi.registerTool({
         name: delegatedMutationTool,
         label: 'Delegate large mutation',
-        description: `Delegate one ALREADY-DECIDED large file mutation whose payload would not fit in your normal response (for example a complete new file). You choose the exact path, operation, intent and concrete requirements; a dedicated writer materializes only that payload under a ${config.productiveProgress.delegatedMutationWriterMaxTokens}-token ceiling, and the runtime validates and applies it like a normal write (rollback, run_check permit and progress included). operation=write creates or fully replaces the file; operation=edit rewrites an existing file (its current content is supplied to the writer automatically). Do not include the file content yourself. Vague intents such as "fix the issue" are rejected. Keep small changes on direct structural_edit/safe_edit/edit/write.`,
+        description: `Delegate one ALREADY-DECIDED large file mutation whose payload would not fit in your normal response (for example a complete new file). You choose the exact path, operation, intent and concrete requirements; a dedicated writer materializes only that payload under a ${config.productiveProgress.delegatedMutationWriterMaxTokens}-token ceiling, and the runtime validates and applies it like a normal write (rollback, run_check permit and progress included). operation=write creates or fully replaces the file; operation=edit rewrites an existing file that is small enough for the writer to return in full (its current content is supplied to the writer automatically; larger files need direct structural_edit/safe_edit). Do not include the file content yourself. Vague intents such as "fix the issue" are rejected. Keep small changes on direct structural_edit/safe_edit/edit/write.`,
         parameters: Type.Object({
           operation: Type.Union([Type.Literal('write'), Type.Literal('edit')]),
           path: Type.String({ minLength: 1, maxLength: 1000 }),
@@ -718,12 +718,14 @@ export default function (pi) {
         async execute(_toolCallId, params, signal, _onUpdate, ctx) {
           let validated;
           try {
-            validated = validateDelegationRequest(ctx.cwd, params);
+            validated = validateDelegationRequest(ctx.cwd, params, {
+              writerMaxTokens: config.productiveProgress.delegatedMutationWriterMaxTokens,
+            });
           } catch (error) {
             delegatedMutationLog('rejected', { path: params?.path ?? null, operation: params?.operation ?? null, stage: 'request', reason: error?.code ?? 'invalid_request', error: String(error?.message ?? error) });
             throw error;
           }
-          const { request, absolutePath, currentContent } = validated;
+          const { request, currentContent } = validated;
           const target = { path: request.path, operation: request.operation };
           delegatedMutationLog('requested', { ...target, requirements: request.requirements.length, preparationState: controller.preparationState });
           let issue = null;
@@ -746,7 +748,13 @@ export default function (pi) {
             delegatedMutationLog('cancelled', { ...target, before: 'runtime_apply' });
             throw new Error('delegate_mutation was cancelled before the writer result was applied');
           }
-          const applied = applyDelegatedMutation(absolutePath, content);
+          let applied;
+          try {
+            applied = applyDelegatedMutation(ctx.cwd, request, content, { expectedContent: currentContent });
+          } catch (error) {
+            delegatedMutationLog('rejected', { ...target, stage: 'apply', reason: error?.code ?? 'apply_failure', error: String(error?.message ?? error) });
+            throw error;
+          }
           delegatedMutationLog(applied.changed ? 'applied' : 'no_op', { ...target, bytes: applied.bytes });
           return {
             content: [{

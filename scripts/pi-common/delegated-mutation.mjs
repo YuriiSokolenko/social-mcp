@@ -7,11 +7,23 @@ import path from 'node:path';
 // the worktree, so snapshots, no-op detection, rollback and verification permits stay
 // owned by the normal mutation path.
 
-export const DELEGATED_MUTATION_TOOL = 'delegate_mutation';
 export const DELEGATED_MUTATION_OPERATIONS = Object.freeze(['write', 'edit']);
-// Upper bounds keep the writer prompt and its payload inside one 16K response.
-export const MAX_DELEGATED_EDIT_SOURCE_CHARS = 120000;
+// Sanity bound for the structured schema only; what the writer can actually return is bounded
+// by its output-token ceiling.
 export const MAX_DELEGATED_CONTENT_CHARS = 200000;
+
+// An edit makes the writer return the WHOLE rewritten file, so the admissible source size is
+// derived from the writer's OUTPUT ceiling, not its context window. Source code averages
+// roughly 3-4 chars/token; 2.5 is deliberately pessimistic to absorb JSON string escaping.
+// The reserve covers writer reasoning, the structured-output wrapper and the added change.
+export const CONSERVATIVE_CHARS_PER_TOKEN = 2.5;
+export const WRITER_OUTPUT_RESERVE_RATIO = 0.4;
+
+export function maxEditSourceChars(writerMaxTokens) {
+  const tokens = Number(writerMaxTokens);
+  if (!Number.isSafeInteger(tokens) || tokens < 1) throw new Error('writer max tokens must be a positive integer');
+  return Math.floor(tokens * (1 - WRITER_OUTPUT_RESERVE_RATIO) * CONSERVATIVE_CHARS_PER_TOKEN);
+}
 
 export const MUTATION_WRITER_SCHEMA = Object.freeze({
   type: 'object',
@@ -40,7 +52,21 @@ function reject(code, message) {
   throw new DelegatedMutationRejected(code, message);
 }
 
-function resolveTarget(cwd, requestedPath) {
+function lstatOrNull(target) {
+  try {
+    return fs.lstatSync(target);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+// Lexical containment is not enough: an existing symlinked parent (worktree/link -> /outside
+// or -> .git) would redirect the write. Walk every existing component below the worktree root
+// with lstat and refuse any symlink, so the physical target is guaranteed to be inside the
+// worktree. Called at request time AND again immediately before apply (the writer may run for
+// minutes, so request-time validation alone leaves a TOCTOU window).
+export function resolveDelegatedTarget(cwd, requestedPath) {
   if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
     reject('missing_path', 'delegate_mutation requires a concrete target path');
   }
@@ -51,18 +77,36 @@ function resolveTarget(cwd, requestedPath) {
     reject('invalid_path', 'delegate_mutation path escapes the current worktree');
   }
   const relative = path.relative(root, absolutePath);
-  if (relative.split(path.sep)[0] === '.git') reject('invalid_path', 'delegate_mutation cannot target .git');
-  return { root, absolutePath, relative };
+  const parts = relative.split(path.sep);
+  if (parts[0] === '.git') reject('invalid_path', 'delegate_mutation cannot target .git');
+
+  let current = root;
+  let targetStat = null;
+  for (const [index, part] of parts.entries()) {
+    current = path.join(current, part);
+    const stat = lstatOrNull(current);
+    if (!stat) break; // the remaining components will be created as real directories/file
+    if (stat.isSymbolicLink()) {
+      reject('invalid_path', `delegate_mutation refuses symbolic links in the target path: ${path.relative(root, current)}`);
+    }
+    const last = index === parts.length - 1;
+    if (!last && !stat.isDirectory()) reject('invalid_path', `delegate_mutation parent is not a directory: ${path.relative(root, current)}`);
+    if (last) {
+      if (!stat.isFile()) reject('invalid_path', `delegate_mutation target is not a regular file: ${relative}`);
+      targetStat = stat;
+    }
+  }
+  return { root, absolutePath, relative, exists: targetStat != null };
 }
 
 // Validates the parent's request before any writer is launched. Returns the normalized
-// request plus the current target bytes (required for edit, optional context for write).
-export function validateDelegationRequest(cwd, params) {
+// request plus, for edit only, the current target content handed to the writer.
+export function validateDelegationRequest(cwd, params, { writerMaxTokens } = {}) {
   const operation = params?.operation;
   if (!DELEGATED_MUTATION_OPERATIONS.includes(operation)) {
     reject('invalid_operation', `delegate_mutation operation must be one of ${DELEGATED_MUTATION_OPERATIONS.join('/')}`);
   }
-  const { absolutePath, relative } = resolveTarget(cwd, params?.path);
+  const { absolutePath, relative, exists } = resolveDelegatedTarget(cwd, params?.path);
   const intent = typeof params?.intent === 'string' ? params.intent.trim() : '';
   if (intent.length < 12 || VAGUE_INTENT.test(intent)) {
     reject('vague_intent', 'delegate_mutation intent must state the concrete change already decided (for example "Create the complete standalone curses game"), not a request to figure out or fix the issue');
@@ -75,16 +119,18 @@ export function validateDelegationRequest(cwd, params) {
   }
   const context = typeof params?.context === 'string' ? params.context.trim() : '';
 
+  // A full-replacement write never needs the old file; only an edit sends it to the writer.
   let currentContent = null;
-  if (fs.existsSync(absolutePath)) {
-    const stat = fs.lstatSync(absolutePath);
-    if (stat.isSymbolicLink() || !stat.isFile()) reject('invalid_path', `delegate_mutation target is not a regular file: ${relative}`);
-    currentContent = fs.readFileSync(absolutePath, 'utf8');
-  }
   if (operation === 'edit') {
-    if (currentContent == null) reject('missing_target', `delegate_mutation edit target does not exist: ${relative}; use operation=write for a new file`);
-    if (currentContent.length > MAX_DELEGATED_EDIT_SOURCE_CHARS) {
-      reject('target_too_large', `delegate_mutation edit target is too large for one writer response (${currentContent.length} chars); use bounded direct structural_edit/safe_edit calls`);
+    if (!exists) reject('missing_target', `delegate_mutation edit target does not exist: ${relative}; use operation=write for a new file`);
+    const limit = maxEditSourceChars(writerMaxTokens);
+    const size = fs.statSync(absolutePath).size;
+    if (size > limit) {
+      reject('target_too_large', `delegate_mutation edit target (${size} bytes) cannot be rewritten in full within the writer output ceiling (limit ${limit} chars); use bounded direct structural_edit/safe_edit calls`);
+    }
+    currentContent = fs.readFileSync(absolutePath, 'utf8');
+    if (currentContent.length > limit) {
+      reject('target_too_large', `delegate_mutation edit target (${currentContent.length} chars) cannot be rewritten in full within the writer output ceiling (limit ${limit} chars); use bounded direct structural_edit/safe_edit calls`);
     }
   }
   return {
@@ -146,20 +192,29 @@ export function validateWriterResult(value, request) {
   return value.content;
 }
 
-// Atomic write of the validated payload. Returns changed=false (and touches nothing) when the
-// bytes already match, mirroring the no-op rule for direct writes.
-export function applyDelegatedMutation(absolutePath, content) {
-  if (fs.existsSync(absolutePath) && fs.readFileSync(absolutePath).equals(Buffer.from(content, 'utf8'))) {
+// Re-validates the target immediately before writing, then writes the validated payload
+// atomically. For an edit, the file must still hold exactly the content the writer rewrote;
+// otherwise the full rewrite would silently discard a concurrent change. Returns
+// changed=false (and touches nothing) when the bytes already match.
+export function applyDelegatedMutation(cwd, request, content, { expectedContent = null } = {}) {
+  const { absolutePath, exists } = resolveDelegatedTarget(cwd, request.path);
+  if (request.operation === 'edit') {
+    if (!exists) reject('target_changed', `delegate_mutation edit target disappeared before apply: ${request.path}`);
+    if (fs.readFileSync(absolutePath, 'utf8') !== expectedContent) {
+      reject('target_changed', `delegate_mutation edit target changed while the writer ran: ${request.path}; nothing was applied`);
+    }
+  }
+  if (exists && fs.readFileSync(absolutePath).equals(Buffer.from(content, 'utf8'))) {
     return { changed: false, bytes: Buffer.byteLength(content, 'utf8') };
   }
-  const mode = fs.existsSync(absolutePath) ? fs.statSync(absolutePath).mode & 0o777 : 0o644;
+  const mode = exists ? fs.statSync(absolutePath).mode & 0o777 : 0o644;
   fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
   const tempPath = path.join(
     path.dirname(absolutePath),
     `.${path.basename(absolutePath)}.pi-delegated-${process.pid}-${Date.now()}`,
   );
   try {
-    fs.writeFileSync(tempPath, content, { encoding: 'utf8', mode });
+    fs.writeFileSync(tempPath, content, { encoding: 'utf8', mode, flag: 'wx' });
     fs.renameSync(tempPath, absolutePath);
   } finally {
     fs.rmSync(tempPath, { force: true });
