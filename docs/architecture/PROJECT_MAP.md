@@ -218,6 +218,10 @@ This document is the human- and agent-readable text map of the current Social MC
        |
        +--> safe_edit / edit / write
        |
+       +--> delegate_mutation (large already-decided payload)
+       |      +--> mutation-writer subagent (16K, no repo tools) -> {operation, path, content}
+       |      +--> runtime validates + applies (snapshot / no-op / rollback / run_check permit)
+       |
        +--> submit_result
        |
        +--> one concrete fact still missing

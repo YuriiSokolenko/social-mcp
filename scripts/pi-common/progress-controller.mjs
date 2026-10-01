@@ -50,7 +50,9 @@ export function isBoundedDirectBash(command) {
 }
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
 const ROLLBACK_TOOL = 'rollback_last_mutation';
-const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+// `delegate_mutation` is applied by the runtime from a validated writer payload, so it earns
+// exactly the same progress/verification accounting as a direct mutation.
+const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'delegate_mutation']);
 // The set of tools a one-shot elevated mutation response is allowed to spend
 // its turn on: an actual mutation, a rollback, or a terminal submission.
 export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
@@ -81,7 +83,15 @@ export function classifyTruncatedToolCall({ toolName, isError, text }) {
   return { kind: 'tool_call_truncated', toolName };
 }
 
-export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null } = {}) {
+const DIRECT_PAYLOAD_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+
+export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null, delegatedMutationTool = null } = {}) {
+  if (delegatedMutationTool && DIRECT_PAYLOAD_TOOLS.has(toolName)) {
+    return `Your previous "${toolName}" tool call was NOT executed: the response hit the completion-token limit, so its arguments were cut off and nothing was changed. `
+      + 'The mutation is too large for the normal Implementer response. Do not regenerate the full payload in the parent. '
+      + `Call ${delegatedMutationTool} with the target path, operation (write for a new/whole file, edit for an existing file), a concrete intent, and concrete requirements; `
+      + 'the runtime writer materializes the payload under the large ceiling and applies it.';
+  }
   const splitAdvice = 'Make the next mutation smaller: split the change across several smaller write/edit/safe_edit calls '
     + '(for a new file, write a minimal skeleton first, then add sections with separate edits).';
   const budgetAdvice = largeMutationBudgetTool

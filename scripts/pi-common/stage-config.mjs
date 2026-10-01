@@ -184,8 +184,9 @@ export const STAGES = Object.freeze({
     repeatThreshold: 3,
     requireComplexity: true,
     // No response-global fixed ceiling: normal turns use the small short/normal/deep
-    // ladder below, and a large code-bearing mutation gets the 16k ceiling for exactly
-    // one response via `request_large_mutation_budget` (see `productiveProgress`).
+    // ladder below. A large code-bearing mutation is delegated to the `mutation-writer`
+    // subagent via `delegate_mutation` (16k ceiling on the writer only); the legacy one-shot
+    // parent grant `request_large_mutation_budget` remains for compatibility.
     implementationPlannerAgent: 'implementation-planner',
     implementationPlannerMaxTokens: 768,
     implementationPlannerStructuredRetry: 1,
@@ -217,7 +218,15 @@ export const STAGES = Object.freeze({
       // and always collapsed back to the small action budget afterward.
       largeMutationBudgetTool: 'request_large_mutation_budget',
       largeMutationBudgetMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
-      actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      // Preferred large-payload path: the parent stays at the small ceiling and a dedicated
+      // writer subagent materializes the already-decided mutation under the large ceiling.
+      delegatedMutationTool: 'delegate_mutation',
+      delegatedMutationWriterAgent: 'mutation-writer',
+      delegatedMutationWriterMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
+      // A full 16k local-model generation can take several minutes.
+      delegatedMutationWriterTimeoutMs: 900000,
+      delegatedMutationWriterRetry: 1,
+      actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'delegate_mutation', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'],
     },
     prompt: promptBuilders.implementer,
