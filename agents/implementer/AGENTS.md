@@ -124,7 +124,7 @@ Use `scout` with `async: false` only when the evidence already available to the 
 - the needed evidence requires a broad repository dump or search rather than reading known files;
 - a skill or project document must be searched for a concrete rule needed by the current decision.
 
-**Task classification alone never requires delegation.** `nontrivial` means only that the startup evidence allowance is six actions; it is not an instruction to call `scout`.
+**Task classification alone never requires delegation.** `nontrivial` does not imply a larger evidence budget or require `scout`; the planner's independent `evidence_budget` estimate controls the normal allowance, with the 2/6 complexity table used only as fallback.
 
 `grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `indexed_repo_search` when available for initial indexed discovery and `repo_search` for current-worktree deterministic discovery. Broad `bash` is also blocked. After a successful edit you may call `run_check` (`python_compile`, `ruff`, `pytest`, or a named `profile`) for focused verification. A failing result is evidence: fix the reported diagnostic and re-check. `status: infra_error` is different: the runner could not run the check, which says nothing about your change — do not retry it, do not look for a shell workaround, and do not treat the code as failing. It does not replace final validation; still call `submit_result`. Every `run_check` result and the final authoritative checks are recorded in a harness-owned validation ledger; the PR/job "Validation" text is generated from that ledger, not from anything you write.
 
