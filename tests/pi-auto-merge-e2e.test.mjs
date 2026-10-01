@@ -59,7 +59,12 @@ function writeMock(mockFile, storeFile) {
       const jobsMatch = /\\/actions\\/runs\\/(\\d+)\\/jobs$/.exec(pathname);
       if (jobsMatch && method === 'GET') {
         if (store.jobsError) return new Response(store.jobsError, { status: 500 });
-        const jobs = store.jobsByRun?.[jobsMatch[1]] ?? [];
+        const runId = Number(jobsMatch[1]);
+        const explicitJobs = Object.hasOwn(store.jobsByRun ?? {}, jobsMatch[1]);
+        const run = [...(store.ciRuns ?? []), ...Object.values(store.ciRunsBySha ?? {}).flat()]
+          .find(item => item.id === runId);
+        const jobs = explicitJobs ? store.jobsByRun[jobsMatch[1]] :
+          run?.conclusion === 'success' ? [{ name: 'test', conclusion: 'success' }] : [];
         return Response.json({ total_count: jobs.length, jobs });
       }
 
@@ -154,6 +159,46 @@ test('merge gate squash-merges a passed, unchanged, safe PR', () => {
 
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.merged, { sha: 'sha-1', merge_method: 'squash' });
+});
+
+test('action_required PR CI is infrastructure blocked and diagnostics retain the conclusion', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  writeFileSync(storeFile, JSON.stringify({
+    openPrs: [{ number: 7 }],
+    pr: basePr,
+    files: [{ filename: 'src/social_mcp/app.py' }],
+    issue: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    ciRuns: [{ id: 25, event: 'pull_request', head_sha: 'sha-1', status: 'completed', conclusion: 'action_required' }],
+  }));
+
+  const result = run(storeFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /infrastructure CI action_required for sha-1/);
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.equal(store.merged, undefined);
+  assert.deepEqual(store.reruns, [25]);
+  assert.match(store.comments[0].body, /infrastructure failure \(action_required\)/);
+});
+
+test('a successful required workflow with zero jobs is infrastructure blocked, never green', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  const storeFile = join(dir, 'store.json');
+  writeFileSync(storeFile, JSON.stringify({
+    openPrs: [{ number: 7 }],
+    pr: basePr,
+    files: [{ filename: 'src/social_mcp/app.py' }],
+    issue: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
+    ciRuns: [{ id: 26, event: 'pull_request', head_sha: 'sha-1', status: 'completed', conclusion: 'success' }],
+    jobsByRun: { 26: [] },
+  }));
+
+  const result = run(storeFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /infrastructure CI success for sha-1/);
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.equal(store.merged, undefined);
+  assert.deepEqual(store.reruns, [26]);
 });
 
 test('merge gate stops on a control-plane file change and leaves one human-attention comment', () => {

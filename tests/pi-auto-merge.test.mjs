@@ -68,7 +68,13 @@ test('merge gate requires successful PR CI for the exact head SHA and classifies
   ], 'abc').state, 'infra_failure');
   assert.equal(prCiVerdict([
     { id: 7, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'success' },
-  ], 'abc').state, 'success');
+  ], 'abc', [{ conclusion: 'success' }]).state, 'success');
+  assert.equal(prCiVerdict([
+    { id: 9, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'success' },
+  ], 'abc', []).state, 'infra_failure');
+  assert.equal(prCiVerdict([
+    { id: 10, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'action_required' },
+  ], 'abc').state, 'infra_failure');
   assert.equal(prCiVerdict([
     { id: 8, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'failure' },
   ], 'abc', [{

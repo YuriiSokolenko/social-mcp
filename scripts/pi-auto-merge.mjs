@@ -50,7 +50,14 @@ export function prCiVerdict(runs, headSha, jobs = []) {
 
   const run = matching[0];
   if (run.status !== 'completed') return { state: 'pending', run };
-  if (run.conclusion === 'success') return { state: 'success', run };
+  if (run.conclusion === 'success') {
+    // A workflow-level success can still represent a required workflow that
+    // scheduled no jobs (for example, action_required with an empty run).
+    // Require trusted job metadata to show at least one successful job.
+    return jobs.some(job => job?.conclusion === 'success')
+      ? { state: 'success', run }
+      : { state: 'infra_failure', run };
+  }
 
   // A failed workflow is repairable only when trusted Actions metadata shows
   // that a product check itself failed. Cancellation, timeout, runner/setup
@@ -92,7 +99,7 @@ async function loadPrCiVerdict(headSha) {
     `/actions/workflows/${encodeURIComponent(workflow)}/runs?event=pull_request&head_sha=${encodeURIComponent(headSha)}`,
   );
   const initial = prCiVerdict(runs, headSha);
-  if (initial.state !== 'infra_failure' || initial.run?.conclusion !== 'failure') return initial;
+  if (initial.state === 'pending' || initial.state === 'code_failure') return initial;
 
   try {
     const jobsData = await api(`/actions/runs/${initial.run.id}/jobs?per_page=100`);
