@@ -50,7 +50,9 @@ export function isBoundedDirectBash(command) {
 }
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
 const ROLLBACK_TOOL = 'rollback_last_mutation';
-const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+// `begin_coding_session` hands the rest of the work to a 16k fork of this session that mutates
+// the worktree through the normal tools, so it earns the same progress/verification accounting.
+const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
 // The set of tools a one-shot elevated mutation response is allowed to spend
 // its turn on: an actual mutation, a rollback, or a terminal submission.
 export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
@@ -81,7 +83,15 @@ export function classifyTruncatedToolCall({ toolName, isError, text }) {
   return { kind: 'tool_call_truncated', toolName };
 }
 
-export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null } = {}) {
+const DIRECT_PAYLOAD_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+
+export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null, codingSessionTool = null } = {}) {
+  if (codingSessionTool && DIRECT_PAYLOAD_TOOLS.has(toolName)) {
+    return `Your previous "${toolName}" tool call was NOT executed: the response hit the completion-token limit, so its arguments were cut off and nothing was changed. `
+      + 'The change is too large for the normal Implementer response. Do not regenerate the payload in this response. '
+      + `Call ${codingSessionTool} now: the runtime continues this same session with a large output ceiling, `
+      + 'where you write the code and tests, run checks, fix and submit.';
+  }
   const splitAdvice = 'Make the next mutation smaller: split the change across several smaller write/edit/safe_edit calls '
     + '(for a new file, write a minimal skeleton first, then add sections with separate edits).';
   const budgetAdvice = largeMutationBudgetTool
@@ -120,6 +130,22 @@ export function nextActionRequiredProseOnlyTurns(
   // that turn as prose-only, but preserve any earlier prose-only strike.
   if (responseHitOutputCeiling === true) return current;
   return current + 1;
+}
+
+// Consecutive action-required responses that consumed the whole output ceiling without
+// attempting any tool: typically code being drafted in reasoning (or a cut-off tool call).
+// The prose-only counter above deliberately ignores such turns, so they need their own bound.
+export const MAX_CEILING_WITHOUT_TOOL_TURNS = 3;
+
+export function nextCeilingWithoutToolTurns(
+  current,
+  { actionRequired, attemptedTool, madeProgress, responseHitOutputCeiling },
+) {
+  if (!Number.isSafeInteger(current) || current < 0) {
+    throw new Error('ceiling-without-tool turn count must be a non-negative integer');
+  }
+  if (!actionRequired || attemptedTool === true || madeProgress === true) return 0;
+  return responseHitOutputCeiling === true ? current + 1 : 0;
 }
 
 export function actionRequiredToolNames(
@@ -218,6 +244,7 @@ export class ProgressController {
     this.largeMutationBudgetTool = this.productiveProgress?.largeMutationBudgetTool ?? null;
     this.largeMutationBudgetMaxTokens = this.productiveProgress?.largeMutationBudgetMaxTokens ?? null;
     this.largeMutationBudgetState = 'idle';
+    this.codingSessionTool = this.productiveProgress?.codingSessionTool ?? null;
     this.lspServerReady = !this.requireLspStartBeforeFindSymbol;
 
     this.fixedMaxTokens = Number(env.PI_FIXED_RESPONSE_MAX_TOKENS ?? config.fixedResponseMaxTokens ?? 0);
@@ -415,6 +442,15 @@ export class ProgressController {
           reason: `BLOCKED: ${toolName} did not execute. Before complexity is recorded, use only initial-orientation tools or the configured preparation/classification action.`,
         };
       }
+    }
+
+    // The 16k coding phase starts only once preparation/evidence has established readiness:
+    // never during startup orientation or while evidence gathering is still open.
+    if (this.codingSessionTool && toolName === this.codingSessionTool && this.productiveState !== 'action_required') {
+      return {
+        block: true,
+        reason: `BLOCKED: ${toolName} did not execute. The coding session starts only once evidence is complete (action_required); finish the exploration first.`,
+      };
     }
 
     if (this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool) {

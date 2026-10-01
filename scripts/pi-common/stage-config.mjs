@@ -184,8 +184,9 @@ export const STAGES = Object.freeze({
     repeatThreshold: 3,
     requireComplexity: true,
     // No response-global fixed ceiling: normal turns use the small short/normal/deep
-    // ladder below, and a large code-bearing mutation gets the 16k ceiling for exactly
-    // one response via `request_large_mutation_budget` (see `productiveProgress`).
+    // ladder below. The coding phase runs in a 16k fork of this session via
+    // `begin_coding_session` (16k ceiling on the fork only). The parent-side one-shot grant
+    // `request_large_mutation_budget` is LEGACY: kept only as a stage-1 compatibility fallback.
     implementationPlannerAgent: 'implementation-planner',
     implementationPlannerMaxTokens: 768,
     implementationPlannerStructuredRetry: 1,
@@ -212,12 +213,29 @@ export const STAGES = Object.freeze({
       },
       actionResponseMaxTokens: RESPONSE_BUDGETS.short,
       actionResponseRetryMaxTokens: RESPONSE_BUDGETS.short,
-      // One-shot elevated ceiling for a response that must emit a large write/edit payload.
-      // Granted by `request_large_mutation_budget`, applied to exactly the next response,
-      // and always collapsed back to the small action budget afterward.
+      // LEGACY (stage-1 compatibility only; never selected by truncation recovery): one-shot
+      // elevated ceiling on the parent's own next response via `request_large_mutation_budget`.
+      // Prefer `begin_coding_session` below.
       largeMutationBudgetTool: 'request_large_mutation_budget',
       largeMutationBudgetMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
-      actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
+      // Coding phase: once preparation/evidence is done (action_required), the 2k Implementer
+      // calls `begin_coding_session` and the runtime forks THIS session (pi-subagents
+      // `context: 'fork'`) into a 16k continuation of the same Implementer that finishes the
+      // work itself (code, tests, run_check, fixes, submit_result) under the same trusted
+      // runtime, loaded from the control checkout. Bounded to a few sessions per run.
+      codingSessionTool: 'begin_coding_session',
+      codingSessionAgent: 'implementer-coding-session',
+      codingSessionMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
+      codingSessionTimeoutMs: 5400000,
+      codingSessionMaxSessions: 2,
+      // The coding session's tool allowlist: the normal Implementer coding/verification tools.
+      // Exploration orchestration (subagents/scouts, LSP via ambient MCP extensions) and the
+      // transition/legacy budget tools stay in the 2k phase.
+      codingSessionTools: [
+        'read', 'bash', 'write', 'edit', 'structural_edit', 'safe_edit', 'rollback_last_mutation',
+        'run_check', 'repo_search', 'indexed_repo_search', 'need_more_evidence', 'submit_result',
+      ],
+      actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'],
     },
     prompt: promptBuilders.implementer,

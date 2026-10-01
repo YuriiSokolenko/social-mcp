@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import { Type } from 'typebox';
 
@@ -9,7 +10,9 @@ import {
   ProgressController,
   actionRequiredToolNames,
   classifyTruncatedToolCall,
+  MAX_CEILING_WITHOUT_TOOL_TURNS,
   nextActionRequiredProseOnlyTurns,
+  nextCeilingWithoutToolTurns,
   nextActionResponseCap,
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
@@ -32,6 +35,72 @@ import {
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
+import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
+
+// Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
+const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+
+// Trust boundary: the coding session's agent definition, tool allowlist and extensions come
+// from THIS module's control checkout (the trusted harness), never from the issue worktree the
+// Implementer can rewrite. It is registered in code through pi-subagents' runtime-agent
+// registry; an explicit `extensions` list disables ambient (worktree/global) extensions for the
+// fork, worktree `agentOverrides` can only narrow model/thinking for a runtime agent, and a
+// same-name worktree agent collides and fails the launch closed. The fork runs this same
+// runtime (in coding-session mode), so every runtime protection applies inside it unchanged.
+const CONTROL_SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_AGENT_REGISTER_EVENT = 'pi-subagents:runtime-agent-register:v1';
+const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing your own session in its coding phase.
+
+The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
+
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules: write the code, add or update tests where the task needs them, run_check, fix what the checks report, and call submit_result when the work is complete. If one concrete fact is missing, use need_more_evidence.`;
+
+export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
+  return {
+    description: '16k coding-phase continuation forked from the Implementer session; implements, verifies and submits',
+    systemPrompt: CODING_SESSION_SYSTEM_PROMPT,
+    tools: [...tools],
+    // Explicit list: ambient extensions are disabled for the fork; all paths are absolute paths
+    // inside the trusted control checkout. The runtime enforces the same rules as in the parent.
+    extensions: [
+      path.join(scriptsDir, 'pi-bash-timeout.mjs'),
+      path.join(scriptsDir, 'pi-agent-runtime.mjs'),
+      path.join(scriptsDir, 'pi-implementer-result-tool.mjs'),
+    ],
+    systemPromptMode: 'append',
+    inheritProjectContext: true,
+    inheritGlobalContext: true,
+    inheritSkills: false,
+    defaultContext: 'fork',
+    // The string "off" (pi-subagents 0.71.0 appends it as a :off model suffix); `false` would
+    // add no suffix and leave the model's default reasoning on. Also prevents defaultThinking
+    // from filling the field. The delegation request repeats it as an override, and the runtime
+    // enforces it on the wire (see CODING_SESSION_PAYLOAD_PATCH).
+    thinking: 'off',
+  };
+}
+
+// Laguna (llama-server, openai-completions) reasons by default once tools are present, and pi's
+// "off" level sends no reasoning field for this provider's compat. The coding session therefore
+// disables thinking on every provider request itself; chat_template_kwargs.enable_thinking=false
+// is honored by the Laguna chat template (live probe: 0 reasoning chars, immediate tool call).
+export function disableThinkingInPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.messages)) return payload;
+  return {
+    ...payload,
+    chat_template_kwargs: { ...(payload.chat_template_kwargs ?? {}), enable_thinking: false },
+  };
+}
+
+// Set (only) for the forked coding session: switches this runtime into coding-session mode.
+function codingSessionSpec(env = process.env) {
+  try {
+    const spec = JSON.parse(env.PI_CODING_SESSION ?? '');
+    const maxTokens = Number(spec?.maxTokens);
+    if (spec?.sessionId && Number.isSafeInteger(maxTokens) && maxTokens > 0) return { sessionId: String(spec.sessionId), maxTokens };
+  } catch { /* parent session */ }
+  return null;
+}
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
@@ -107,11 +176,18 @@ Issue body:
 ${issue.body}`;
 }
 
-async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, timeoutMs, maxTokens = null, toolBudget = { hard: 1 } }, signal) {
+// `context: 'fork'` branches the parent's persisted session transcript into the child
+// (pi-subagents createBranchedSession); `childEnv` is visible only while the child runs.
+async function runStructuredSubagent(pi, ctx, {
+  agent, nodeId, task, schema = null, timeoutMs, maxTokens = null, toolBudget = { hard: 1 },
+  context = 'fresh', childEnv = {}, thinking = null,
+}, signal) {
   const requestId = randomUUID();
   const ownerRunId = ctx.sessionManager.getSessionId();
   const previousBudget = process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
   if (maxTokens) process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(maxTokens);
+  const previousEnv = Object.fromEntries(Object.keys(childEnv).map(key => [key, process.env[key]]));
+  Object.assign(process.env, childEnv);
 
   try {
     const response = await new Promise((resolve, reject) => {
@@ -151,25 +227,31 @@ async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, tim
         nodeId,
         agent,
         task,
-        context: 'fresh',
+        context,
         cwd: ctx.cwd,
         timeoutMs,
-        toolBudget,
+        ...(toolBudget ? { toolBudget } : {}),
+        // Request-level thinking wins over the agent's (incl. worktree agentOverrides/defaults).
+        ...(thinking ? { thinking } : {}),
         intercomBridge: { mode: 'off' },
-        result: { kind: 'structured', schema },
+        result: schema ? { kind: 'structured', schema } : { kind: 'text' },
       });
     });
 
     if (response.status !== 'completed') {
       throw new Error(`${agent} failed: ${response.error || response.status}`);
     }
-    if (response.result?.kind !== 'structured') {
+    if (schema && response.result?.kind !== 'structured') {
       throw new Error(`${agent} did not return a structured result`);
     }
     return response;
   } finally {
     if (previousBudget == null) delete process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
     else process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = previousBudget;
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 
@@ -213,12 +295,41 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
   };
 }
 
+function resultText(result) {
+  if (typeof result === 'string') return result;
+  const content = Array.isArray(result) ? result : result?.content;
+  if (Array.isArray(content)) return content.map(part => part?.text ?? '').join('\n');
+  return typeof result?.message === 'string' ? result.message : '';
+}
+
+function codingSessionLog(phase, fields) {
+  const line = `PI_CODING_SESSION ${JSON.stringify({ phase, ...fields })}`;
+  if (['failed', 'rejected', 'cancelled'].includes(phase)) console.warn(line);
+  else console.log(line);
+}
+
 
 // Single runtime controller for every model-driven stage. It owns orientation,
 // task-complexity declaration, repeat/turn safety and per-response output budget.
 export default function (pi) {
   const stage = process.env.PI_STAGE;
-  const config = stageConfig(stage);
+  // Inside the forked coding session this same runtime enforces the same rules, with the
+  // large ceiling on every response and no nested transition or legacy grant.
+  const codingSession = stage === 'implementer' ? codingSessionSpec() : null;
+  const baseConfig = stageConfig(stage);
+  const config = codingSession
+    ? {
+        ...baseConfig,
+        fixedResponseMaxTokens: codingSession.maxTokens,
+        productiveProgress: {
+          ...baseConfig.productiveProgress,
+          actionResponseMaxTokens: codingSession.maxTokens,
+          actionResponseRetryMaxTokens: codingSession.maxTokens,
+          codingSessionTool: null,
+          largeMutationBudgetTool: null,
+        },
+      }
+    : baseConfig;
   const resumePatch = stage === 'implementer' ? process.env.PI_RESUME_PATCH : null;
   const resumedImplementer = process.env.PI_RESUME_ACTIVE != null
     ? process.env.PI_RESUME_ACTIVE === 'true'
@@ -231,7 +342,8 @@ export default function (pi) {
   const freshBaseCommit = stage === 'implementer'
     ? String(process.env.PI_IMPLEMENTER_START_COMMIT ?? '').trim()
     : '';
-  const directActionImplementer = resumedImplementer || validationRepair;
+  // A coding session is already prepared: it starts directly in the action phase.
+  const directActionImplementer = resumedImplementer || validationRepair || Boolean(codingSession);
   const controller = new ProgressController(
     directActionImplementer
       ? {
@@ -250,6 +362,7 @@ export default function (pi) {
   let appliedActionCap = 0;
   let actionTurnAttemptedTool = false;
   let actionRequiredProseOnlyTurns = 0;
+  let ceilingWithoutToolTurns = 0;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
@@ -352,6 +465,13 @@ export default function (pi) {
     if (!changed) throw new Error(`Failed to apply action-required response cap of ${maxTokens} tokens`);
   }
 
+  function truncationGuidance(toolName) {
+    return truncatedToolCallGuidance(toolName, {
+      largeMutationBudgetTool: controller.largeMutationBudgetTool,
+      codingSessionTool: config.productiveProgress?.codingSessionTool ?? null,
+    });
+  }
+
   syncProductiveState();
 
   // The run_check sandbox is a hard dependency of stages that expose it. Prove it works before any
@@ -366,10 +486,63 @@ export default function (pi) {
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
 
+  // Coding session only: enforce thinking off on the wire and record how fast it acts.
+  let codingReadyAt = null;
+  let codingFirstToolLogged = false;
+  let codingFirstResponseLogged = false;
+  if (codingSession) {
+    let patchedRequests = 0;
+    pi.on('before_provider_request', (event) => {
+      const patched = disableThinkingInPayload(event.payload);
+      if (patched !== event.payload && ++patchedRequests === 1) {
+        codingSessionLog('thinking_disabled', {
+          side: 'fork',
+          sessionId: codingSession.sessionId,
+          enableThinking: patched.chat_template_kwargs.enable_thinking,
+          maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
+        });
+      }
+      return patched;
+    });
+  }
+
+  // Registers the trusted coding-session agent with pi-subagents (synchronous event contract).
+  let codingSessionAgent = null;
+  function ensureCodingSessionAgent() {
+    if (codingSessionAgent?.ok) return codingSessionAgent;
+    const definition = codingSessionAgentDefinition(config.productiveProgress.codingSessionTools ?? []);
+    const request = { version: 1, name: config.productiveProgress.codingSessionAgent, definition };
+    pi.events?.emit?.(RUNTIME_AGENT_REGISTER_EVENT, request);
+    codingSessionAgent = request.result
+      ? (request.result.ok ? { ok: true } : { ok: false, error: String(request.result.error?.message ?? request.result.error) })
+      : { ok: false, error: 'pi-subagents did not handle runtime agent registration' };
+    codingSessionLog(codingSessionAgent.ok ? 'agent_registered' : 'agent_unavailable', {
+      agent: request.name, source: 'runtime', thinking: definition.thinking, tools: definition.tools, extensions: definition.extensions,
+      ...(codingSessionAgent.ok ? {} : { error: codingSessionAgent.error }),
+    });
+    return codingSessionAgent;
+  }
+
   pi.on('session_start', async (_event, ctx) => {
+    // The sandbox preflight is the first hard gate: nothing else starts if it fails.
     if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
+    if (stage === 'implementer' && config.productiveProgress?.codingSessionTool) ensureCodingSessionAgent();
     await applyBudget('short', ctx);
     syncActionToolSurface(syncProductiveState());
+    if (codingSession) {
+      const entries = ctx.sessionManager?.getEntries?.() ?? [];
+      codingReadyAt = Date.now();
+      codingSessionLog('session_ready', {
+        side: 'fork',
+        sessionId: codingSession.sessionId,
+        maxTokens: Number(ctx.model?.maxTokens) || null,
+        thinkingLevel: pi.getThinkingLevel?.() ?? null,
+        activeTools: pi.getActiveTools(),
+        inheritedEntries: entries.length,
+        inheritedToolResults: entries.filter(entry => entry?.message?.role === 'toolResult').length,
+        forkedFromParent: Boolean(ctx.sessionManager?.getHeader?.()?.parentSession),
+      });
+    }
   });
 
   if (controller.requireComplexity && config.implementationPlannerAgent) {
@@ -401,7 +574,7 @@ export default function (pi) {
               `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
               'Your preparation obligation is satisfied. No planner output or complexity was recorded. ' +
               'Do not call prepare_implementation again. Continue implementing from the issue and loaded contract. ' +
-              'Normal mutation, scoped request_large_mutation_budget, run_check after mutation, and submit_result rules apply. ' +
+              'Normal mutation, begin_coding_session for the coding phase, run_check after mutation, and submit_result rules apply. ' +
               'If one concrete fact is missing, use need_more_evidence to unlock a read/search before acting.\n' +
               `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.`,
             }],
@@ -502,6 +675,8 @@ export default function (pi) {
   }
 
   const pendingMutationSnapshots = new Map();
+  // Truncated calls already guided, whichever of tool_result / tool_execution_end fired first.
+  const truncationGuidedCalls = new Set();
   const pendingLoopCalls = new Map();
   let lastSuccessfulMutationSnapshot = null;
 
@@ -616,7 +791,7 @@ export default function (pi) {
       pi.registerTool({
         name: controller.largeMutationBudgetTool,
         label: 'Request large mutation budget',
-        description: `Grant exactly the NEXT response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling, for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. That one elevated response must attempt structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result; the budget always collapses back to the normal small ceiling immediately afterward, whether or not it was used, and must be requested again for another large payload.`,
+        description: `LEGACY: prefer begin_coding_session. Grant exactly the NEXT response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling, for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. That one elevated response must attempt structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result; the budget always collapses back to the normal small ceiling immediately afterward, whether or not it was used, and must be requested again for another large payload.`,
         parameters: Type.Object({
           reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
         }),
@@ -628,6 +803,99 @@ export default function (pi) {
             }],
             details: { reason: params.reason, maxTokens: controller.largeMutationBudgetMaxTokens },
           };
+        },
+      });
+    }
+
+    const codingSessionTool = config.productiveProgress?.codingSessionTool;
+    if (codingSessionTool && config.productiveProgress?.codingSessionAgent) {
+      const sessionConfig = config.productiveProgress;
+      const maxSessions = Number(sessionConfig.codingSessionMaxSessions ?? 2);
+      let sessionsStarted = 0;
+      pi.registerTool({
+        name: codingSessionTool,
+        label: 'Begin coding session',
+        description: `Call once exploration is done and you know what to implement, in particular when the code will not fit your normal ${sessionConfig.actionResponseMaxTokens}-token response. The runtime continues THIS session (same conversation, evidence and decisions) as a coding session with a ${sessionConfig.codingSessionMaxTokens}-token response ceiling and your normal coding tools (write/edit/safe_edit/structural_edit, rollback, run_check, repo_search, need_more_evidence, submit_result) under the same runtime rules. Write the code and tests there, run checks, fix, and submit_result. Call it as soon as you are ready; do NOT draft the code here first. Small changes can stay direct.`,
+        parameters: Type.Object({
+          reason: Type.Optional(Type.String({ maxLength: 300, description: 'Optional one-line note for logs' })),
+        }),
+        async execute(toolCallId, params, signal, _onUpdate, ctx) {
+          const sessionId = randomUUID();
+          const base = { sessionId, session: sessionsStarted + 1, side: 'parent' };
+          codingSessionLog('requested', {
+            ...base,
+            parentRunId: ctx.sessionManager?.getSessionId?.() ?? null,
+            parentMaxTokens: Number(ctx.model?.maxTokens) || null,
+            codingMaxTokens: sessionConfig.codingSessionMaxTokens,
+            preparationState: controller.preparationState,
+            reason: params?.reason ?? null,
+          });
+          const refuse = (reason, message) => {
+            codingSessionLog('rejected', { ...base, reason });
+            const error = new Error(message);
+            error.code = reason;
+            throw error;
+          };
+          if (sessionsStarted >= maxSessions) {
+            refuse('max_sessions', `The coding session limit (${maxSessions}) for this run is reached. Finish with direct edits or submit_result.`);
+          }
+          // The fork inherits the persisted parent transcript. Without one there is no
+          // same-context session to run, and a fresh prompt is not an acceptable stand-in.
+          const parentSessionFile = ctx.sessionManager?.getSessionFile?.() ?? null;
+          if (!parentSessionFile || !fs.existsSync(parentSessionFile)) {
+            refuse('fork_unavailable', 'This session is not persisted, so it cannot continue as a coding session. Implement with direct edits.');
+          }
+          const agentReady = ensureCodingSessionAgent();
+          if (!agentReady.ok) {
+            refuse('agent_unavailable', `The trusted coding-session agent is not registered (${agentReady.error}). Implement with direct edits.`);
+          }
+          sessionsStarted += 1;
+          const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
+          const startedAt = Date.now();
+          codingSessionLog('started', { ...base, context: 'fork', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens });
+          let response = null;
+          let sessionError = null;
+          try {
+            response = await runStructuredSubagent(pi, ctx, {
+              agent: sessionConfig.codingSessionAgent,
+              nodeId: `coding-session-${toolCallId}`,
+              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code (and tests where the task needs them), run_check, fix what fails, and call submit_result when the work is complete. Write code directly in tool arguments.',
+              timeoutMs: Number(sessionConfig.codingSessionTimeoutMs ?? 5400000),
+              maxTokens: sessionConfig.codingSessionMaxTokens,
+              // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
+              toolBudget: null,
+              thinking: 'off',
+              context: 'fork',
+              childEnv: { PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens }) },
+            }, signal);
+          } catch (error) {
+            sessionError = error;
+          }
+          if (signal?.aborted) {
+            codingSessionLog('cancelled', { ...base, durationMs: Date.now() - startedAt });
+            throw sessionError ?? new Error('coding session was cancelled');
+          }
+          const submitted = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
+          codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
+            ...base,
+            durationMs: Date.now() - startedAt,
+            usage: response?.usage ?? null,
+            submitted,
+            status: sessionError ? 'error' : 'ok',
+            ...(sessionError ? { error: String(sessionError?.message ?? sessionError) } : {}),
+          });
+          if (submitted) {
+            return {
+              content: [{ type: 'text', text: 'Coding session completed the implementation and submitted the result. The work is done: stop now.' }],
+              details: { ...base, submitted: true },
+              // The fork already called submit_result; end this session without another turn.
+              terminate: true,
+            };
+          }
+          const remaining = maxSessions - sessionsStarted;
+          const message = `Coding session ended without submit_result${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${remaining > 0 ? `You may call ${codingSessionTool} once more (${remaining} left), ` : ''}finish with direct edits/run_check, or submit_result.`;
+          if (sessionError) throw new Error(message);
+          return { content: [{ type: 'text', text: message }], details: { ...base, submitted: false } };
         },
       });
     }
@@ -721,6 +989,10 @@ export default function (pi) {
 
   pi.on('tool_call', async (event, ctx) => {
     actionTurnAttemptedTool = true;
+    if (codingSession && !codingFirstToolLogged) {
+      codingFirstToolLogged = true;
+      codingSessionLog('first_tool_call', { side: 'fork', sessionId: codingSession.sessionId, tool: event.toolName, msSinceReady: codingReadyAt ? Date.now() - codingReadyAt : null });
+    }
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
     if (blocked) {
@@ -773,12 +1045,25 @@ export default function (pi) {
       return noOpBlocked;
     }
 
+    // Trusted containment for every file mutation, direct or inside the coding session:
+    // the target must physically be inside the worktree (no escape, no .git, no symlinks).
+    if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
+      try {
+        resolveMutationTarget(cwd, event.input?.path);
+      } catch (error) {
+        if (!(error instanceof MutationTargetRejected)) throw error;
+        const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
+        console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
+        return containmentBlocked;
+      }
+    }
+
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);
     const repositoryStateBefore = semanticMutation
       ? repositoryStateFingerprint(cwd)
       : null;
 
-    if (stage === 'implementer' && ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName)) {
+    if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
       try {
         pendingMutationSnapshots.set(
           event.toolCallId,
@@ -802,10 +1087,20 @@ export default function (pi) {
     return undefined;
   });
   pi.on('tool_execution_end', async (event, ctx) => {
+    // pi rejects a call whose arguments were cut off at the output ceiling before execution and
+    // may not route that rejection through tool_result; steer from here so the truncation
+    // guidance (begin the coding session instead of regenerating) still reaches the model once.
+    const truncatedText = resultText(event.result);
+    const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text: truncatedText });
+    if (truncated && !truncationGuidedCalls.has(event.toolCallId)) {
+      truncationGuidedCalls.add(event.toolCallId);
+      console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated, source: 'tool_execution_end' })}`);
+      await pi.sendUserMessage(`RUNTIME: ${truncationGuidance(event.toolName)}`, { deliverAs: 'steer' });
+    }
     const pendingLoopCall = pendingLoopCalls.get(event.toolCallId) ?? null;
     const contentMutation =
       stage === 'implementer' &&
-      ['structural_edit', 'safe_edit', 'edit', 'write'].includes(event.toolName);
+      CONTENT_MUTATION_TOOLS.has(event.toolName);
     const mutationSnapshot = contentMutation
       ? (pendingMutationSnapshots.get(event.toolCallId) ?? null)
       : null;
@@ -842,6 +1137,14 @@ export default function (pi) {
     }
 
     if (contentMutation) {
+      console.log(`PI_MUTATION ${JSON.stringify({
+        stage,
+        tool: event.toolName,
+        mode: codingSession ? 'coding_session' : 'direct',
+        path: mutationSnapshot?.path ?? null,
+        isError: event.isError === true,
+        changed: mutationChanged,
+      })}`);
       if (!event.isError && mutationChanged === true && mutationSnapshot) {
         lastSuccessfulMutationSnapshot = mutationSnapshot;
       }
@@ -872,11 +1175,15 @@ export default function (pi) {
   });
 
   pi.on('tool_result', (event) => {
-    const text = (event.content ?? []).map(part => part?.text ?? '').join('\n');
+    const text = resultText(event);
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
     if (!truncated) return undefined;
-    console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated })}`);
-    const guidance = truncatedToolCallGuidance(event.toolName, { largeMutationBudgetTool: controller.largeMutationBudgetTool });
+    if (event.toolCallId) {
+      if (truncationGuidedCalls.has(event.toolCallId)) return undefined;
+      truncationGuidedCalls.add(event.toolCallId);
+    }
+    console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated, source: 'tool_result' })}`);
+    const guidance = truncationGuidance(event.toolName);
     return {
       content: [{ type: 'text', text: `${guidance}\n\n${text}` }],
       isError: true,
@@ -885,6 +1192,10 @@ export default function (pi) {
 
   pi.on('turn_end', async (event, ctx) => {
     const outputTokens = Number(event.message?.usage?.output || 0);
+    if (codingSession && !codingFirstResponseLogged) {
+      codingFirstResponseLogged = true;
+      codingSessionLog('first_response', { side: 'fork', sessionId: codingSession.sessionId, outputTokens, attemptedTool: actionTurnAttemptedTool });
+    }
     const activeResponseCap =
       appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel];
     const responseHitOutputCeiling =
@@ -949,6 +1260,18 @@ export default function (pi) {
       return;
     }
 
+    ceilingWithoutToolTurns = nextCeilingWithoutToolTurns(ceilingWithoutToolTurns, {
+      actionRequired: runtimeActionRequired,
+      attemptedTool: actionTurnAttemptedTool,
+      madeProgress: controller.turnMadeProgress,
+      responseHitOutputCeiling,
+    });
+    if (ceilingWithoutToolTurns >= MAX_CEILING_WITHOUT_TOOL_TURNS) {
+      console.error(`PI_ACTION_REQUIRED_ABORT: ${ceilingWithoutToolTurns} consecutive action-required responses hit the output ceiling without a tool call; aborting stage`);
+      ctx.abort();
+      return;
+    }
+
     let targetActionCap = actionCap > 0
       ? nextActionResponseCap({
           baseCap: actionCap,
@@ -984,16 +1307,22 @@ export default function (pi) {
     }
 
     if (runtimeActionRequired && !controller.turnMadeProgress && !loopGuardSteeredThisTurn) {
-      const directive = preComplexityRequired
+      const codingSessionTool = config.productiveProgress?.codingSessionTool;
+      const directive = stage === 'implementer' && ceilingWithoutToolTurns > 0
+        // Code drafted in reasoning (or a cut-off call) ate the whole response: name it exactly.
+        ? `RUNTIME: your last response used the entire ${actionCap || 'output'}-token ceiling without calling any tool. Do not draft, outline, or reason through file contents in this session; that output is discarded. In the next response call a tool immediately.${codingSessionTool ? ` If you are ready to implement and the code is large, call ${codingSessionTool} now; that coding session has your full context and a large output ceiling and writes the code itself.` : ''} If it is small, call the direct mutation tool now.`
+        : preComplexityRequired
         ? 'RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. Call declare_task_complexity immediately with the classification already supported by the issue, diff, and changed code.'
         : postComplexityRequired
           ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
           : stage === 'implementer'
-            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
+            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, begin_coding_session (to implement in a large-output coding session), rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
             : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
-      const reason = actionRequiredProseOnlyTurns > 0
-        ? 'prose-only retry'
-        : 'action-required transition';
+      const reason = stage === 'implementer' && ceilingWithoutToolTurns > 0
+        ? `ceiling without tool (${ceilingWithoutToolTurns}/${MAX_CEILING_WITHOUT_TOOL_TURNS})`
+        : actionRequiredProseOnlyTurns > 0
+          ? 'prose-only retry'
+          : 'action-required transition';
       console.log(`PI_ACTION_REQUIRED_STEER: ${reason}; injecting user-level runtime directive`);
       await pi.sendUserMessage(directive, { deliverAs: 'steer' });
     }

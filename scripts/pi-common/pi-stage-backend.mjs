@@ -19,6 +19,10 @@ function wait(child, name) {
   });
 }
 
+export function piSessionDir(spec) {
+  return `${spec.artifacts.terminalResultPath}.pi-sessions`;
+}
+
 export function buildPiInvocation(spec, workspace) {
   const config = stageConfig(spec.stage);
   const extensions = [
@@ -34,7 +38,12 @@ export function buildPiInvocation(spec, workspace) {
     '--provider', spec.model.provider,
     '--model', spec.model.id,
     '--mode', 'json',
-    '--no-session',
+    // The coding session forks this session's transcript (pi-subagents `context: 'fork'`
+    // requires a persisted parent session). Sessions live next to the stage artifacts, outside
+    // the worktree; every other stage stays session-less.
+    ...(config.productiveProgress?.codingSessionTool
+      ? ['--session-dir', piSessionDir(spec)]
+      : ['--no-session']),
     spec.prompt,
   );
 
