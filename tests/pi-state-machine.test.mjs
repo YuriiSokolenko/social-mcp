@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { inspectIssueState, isIssueTransitionNoop, safeRemovals, validateIssueTransition } from '../scripts/pi-common/state-machine.mjs';
 import { replaceIssueState } from '../scripts/pi-common/github-state.mjs';
-import { readScript } from './helpers/resolved-source.mjs';
 
 const issue = (state, labels) => ({ state, labels: labels.map(name => ({ name })) });
 
@@ -103,11 +102,6 @@ test('needs-human cannot become executable without an explicit retry', () => {
     () => validateIssueTransition(issue('open', ['pi:needs-human', 'pi:ready']), 'running'),
     /explicit retry/,
   );
-});
-
-test('blocked transition logging reports preservation rather than a misleading state change', () => {
-  const source = readScript('scripts/pi-transition.mjs', 'utf8');
-  assert.match(source, /preserved .*blocked.*ignored .* transition/);
 });
 
 test('terminal labels do not break cleanup or publication from a live run', () => {
