@@ -36,12 +36,8 @@ Call `submit_result` exactly once as your final action with all candidates class
 
 `submit_result({"ready":[42],"needs_human":[{"issue":43,"comment":"Acceptance criteria do not define which auth flow applies; please choose one."}],"skipped":[{"issue":44,"reason":"depends on open issue #12"}]})`
 
-If the tool is unavailable, emit one final `TRIAGE_RESULT: <same JSON>` line. After successful `submit_result`, stop immediately.
+If the tool is unavailable, emit one final `TRIAGE_RESULT: <same JSON>` line.
 
 ## Boundary
 
-Do not edit files or mutate issues, labels, comments, PRs, branches, commits, or workflows. Trusted workflow code re-reads GitHub state before applying recommendations. Triage does not start Dispatcher itself.
-
-## Response budget
-
-Every Triage model response has a fixed maximum of **1000 output tokens**. `set_response_budget` is intentionally unavailable. Keep reasoning compact, do not narrate deliberation, and spend the available output on classification and the final `submit_result`.
+Do not edit repository files. Trusted workflow code re-reads GitHub state before applying recommendations. Triage does not start Dispatcher itself.
