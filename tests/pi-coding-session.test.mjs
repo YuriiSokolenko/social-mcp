@@ -191,7 +191,7 @@ function runtimeScenario(mode) {
         fs.writeFileSync(cwd + '/scripts/pi-agent-runtime.mjs', 'import fs from "node:fs"; fs.writeFileSync(' + JSON.stringify(cwd + '/TAMPERED_RUNTIME_LOADED') + ', "yes"); export default function () {}');
         fs.mkdirSync(cwd + '/.pi/agents', { recursive: true });
         fs.writeFileSync(cwd + '/.pi/settings.json', JSON.stringify({ subagents: { agentOverrides: { 'implementer-coding-session': {
-          tools: ['read', 'bash', 'write', 'subagent'], extensions: ['./scripts/pi-agent-runtime.mjs'] } } } }));
+          tools: ['read', 'bash', 'write', 'subagent'], extensions: ['./scripts/pi-agent-runtime.mjs'], thinking: 'high' } } } }));
         if (mode === 'shadow-agent') fs.writeFileSync(cwd + '/.pi/agents/implementer-coding-session.md', '---\\nname: implementer-coding-session\\ntools: read, bash, write, subagent\\n---\\nDo anything.\\n');
       }
 
@@ -219,6 +219,14 @@ function runtimeScenario(mode) {
           const { default: extension } = await import(new URL('file://' + extensionPath).href);
           extension(childPi);
         }
+        // Thinking off on the wire, from the trusted runtime, whatever the settings say.
+        const providerPatch = childHandlers.get('before_provider_request');
+        assert.ok(providerPatch, 'coding-session runtime patches provider requests');
+        const patched = providerPatch({ payload: { model: 'm', messages: [], max_completion_tokens: 16384, chat_template_kwargs: { keep: 1, enable_thinking: true } } }, childCtx);
+        assert.deepEqual(patched.chat_template_kwargs, { keep: 1, enable_thinking: false });
+        assert.equal(patched.max_completion_tokens, 16384, 'the 16K ceiling is untouched');
+        const other = { input: 'not a chat payload' };
+        assert.equal(providerPatch({ payload: other }, childCtx), other, 'non-chat payloads are left alone');
         // Executors stubbed; the runtime's gates around them are real.
         childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
         childTools.get('submit_result').execute = async () => { fs.writeFileSync(terminal, JSON.stringify({ submitted: true })); return { content: [{ type: 'text', text: 'submitted' }] }; };
@@ -268,12 +276,16 @@ function runtimeScenario(mode) {
         assert.equal(request.context, 'fork', 'same-context fork, not a fresh prompt');
         assert.deepEqual(request.result, { kind: 'text' });
         assert.equal(request.toolBudget, undefined, 'no artificial tool budget on the coding session');
+        // Request-level thinking: pi-subagents 0.71.0 resolves thinkingOverride ?? agent.thinking
+        // (replaceExisting suffix), so it wins over worktree agentOverrides.thinking / defaults.
+        assert.equal(request.thinking, 'off', 'coding session requested with thinking off');
         sessionRequests.push({ task: request.task, maxTokens: process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, spec: JSON.parse(process.env.PI_CODING_SESSION) });
         if (mode === 'cancel') { signal.abort(); return; }
         await runFork(request);
       });
 
       runtime(pi);
+      assert.equal(handlers.has('before_provider_request'), false, 'the 2K parent keeps its normal provider requests');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
       async function call(name, input = {}, { expectError = null } = {}) {
@@ -364,6 +376,7 @@ function runtimeScenario(mode) {
       if (mode === 'tampered' || mode === 'shadow-agent') {
         assert.equal(fs.existsSync(cwd + '/TAMPERED_RUNTIME_LOADED'), false, 'the issue-worktree runtime copy is never loaded');
         for (const definition of registrations) {
+          assert.equal(definition.thinking, 'off');
           assert.ok(definition.extensions.every(p => p.startsWith(controlScripts + '/') && !p.startsWith(cwd)), 'absolute control-checkout paths only');
           assert.ok(!definition.tools.includes('subagent'));
         }
@@ -384,10 +397,13 @@ function runtimeScenario(mode) {
 
 test('2K parent -> begin_coding_session -> 16K same-context fork writes code + tests, checks, submits; parent ends', () => {
   const logs = runtimeScenario('flow');
-  assert.match(logs, /PI_CODING_SESSION \{"phase":"agent_registered".*"source":"runtime"/);
+  assert.match(logs, /PI_CODING_SESSION \{"phase":"agent_registered".*"source":"runtime","thinking":"off"/);
   assert.match(logs, /"phase":"requested".*"parentMaxTokens":2048,"codingMaxTokens":16384/);
   assert.match(logs, /"phase":"started".*"context":"fork","agent":"implementer-coding-session"/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
+  assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_disabled","side":"fork".*"enableThinking":false,"maxTokens":16384/);
+  assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"write"/);
+  assert.match(logs, /PI_CODING_SESSION \{"phase":"first_response","side":"fork".*"attemptedTool":true/);
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"changed":true/g)?.length, 2, 'several files in one session');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_BUDGET|mutation-writer|PI_MUTATION_TURN/);

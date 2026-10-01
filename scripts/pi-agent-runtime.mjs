@@ -51,9 +51,9 @@ const CONTROL_SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_AGENT_REGISTER_EVENT = 'pi-subagents:runtime-agent-register:v1';
 const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing your own session in its coding phase.
 
-The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration is done. Your normal turns had a small output ceiling; this coding session has a large one so you can implement normally.
+The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
 
-Finish the task here under your normal contract and runtime rules: write the code, add or update tests where the task needs them, run_check, fix what the checks report, and call submit_result when the work is complete. Write code directly in tool arguments; do not draft it in reasoning first. If one concrete fact is missing, use need_more_evidence.`;
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules: write the code, add or update tests where the task needs them, run_check, fix what the checks report, and call submit_result when the work is complete. If one concrete fact is missing, use need_more_evidence.`;
 
 export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
   return {
@@ -72,6 +72,23 @@ export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS
     inheritGlobalContext: true,
     inheritSkills: false,
     defaultContext: 'fork',
+    // The string "off" (pi-subagents 0.71.0 appends it as a :off model suffix); `false` would
+    // add no suffix and leave the model's default reasoning on. Also prevents defaultThinking
+    // from filling the field. The delegation request repeats it as an override, and the runtime
+    // enforces it on the wire (see CODING_SESSION_PAYLOAD_PATCH).
+    thinking: 'off',
+  };
+}
+
+// Laguna (llama-server, openai-completions) reasons by default once tools are present, and pi's
+// "off" level sends no reasoning field for this provider's compat. The coding session therefore
+// disables thinking on every provider request itself; chat_template_kwargs.enable_thinking=false
+// is honored by the Laguna chat template (live probe: 0 reasoning chars, immediate tool call).
+export function disableThinkingInPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.messages)) return payload;
+  return {
+    ...payload,
+    chat_template_kwargs: { ...(payload.chat_template_kwargs ?? {}), enable_thinking: false },
   };
 }
 
@@ -163,7 +180,7 @@ ${issue.body}`;
 // (pi-subagents createBranchedSession); `childEnv` is visible only while the child runs.
 async function runStructuredSubagent(pi, ctx, {
   agent, nodeId, task, schema = null, timeoutMs, maxTokens = null, toolBudget = { hard: 1 },
-  context = 'fresh', childEnv = {},
+  context = 'fresh', childEnv = {}, thinking = null,
 }, signal) {
   const requestId = randomUUID();
   const ownerRunId = ctx.sessionManager.getSessionId();
@@ -214,6 +231,8 @@ async function runStructuredSubagent(pi, ctx, {
         cwd: ctx.cwd,
         timeoutMs,
         ...(toolBudget ? { toolBudget } : {}),
+        // Request-level thinking wins over the agent's (incl. worktree agentOverrides/defaults).
+        ...(thinking ? { thinking } : {}),
         intercomBridge: { mode: 'off' },
         result: schema ? { kind: 'structured', schema } : { kind: 'text' },
       });
@@ -467,6 +486,26 @@ export default function (pi) {
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
 
+  // Coding session only: enforce thinking off on the wire and record how fast it acts.
+  let codingReadyAt = null;
+  let codingFirstToolLogged = false;
+  let codingFirstResponseLogged = false;
+  if (codingSession) {
+    let patchedRequests = 0;
+    pi.on('before_provider_request', (event) => {
+      const patched = disableThinkingInPayload(event.payload);
+      if (patched !== event.payload && ++patchedRequests === 1) {
+        codingSessionLog('thinking_disabled', {
+          side: 'fork',
+          sessionId: codingSession.sessionId,
+          enableThinking: patched.chat_template_kwargs.enable_thinking,
+          maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
+        });
+      }
+      return patched;
+    });
+  }
+
   // Registers the trusted coding-session agent with pi-subagents (synchronous event contract).
   let codingSessionAgent = null;
   function ensureCodingSessionAgent() {
@@ -478,7 +517,7 @@ export default function (pi) {
       ? (request.result.ok ? { ok: true } : { ok: false, error: String(request.result.error?.message ?? request.result.error) })
       : { ok: false, error: 'pi-subagents did not handle runtime agent registration' };
     codingSessionLog(codingSessionAgent.ok ? 'agent_registered' : 'agent_unavailable', {
-      agent: request.name, source: 'runtime', tools: definition.tools, extensions: definition.extensions,
+      agent: request.name, source: 'runtime', thinking: definition.thinking, tools: definition.tools, extensions: definition.extensions,
       ...(codingSessionAgent.ok ? {} : { error: codingSessionAgent.error }),
     });
     return codingSessionAgent;
@@ -492,10 +531,12 @@ export default function (pi) {
     syncActionToolSurface(syncProductiveState());
     if (codingSession) {
       const entries = ctx.sessionManager?.getEntries?.() ?? [];
+      codingReadyAt = Date.now();
       codingSessionLog('session_ready', {
         side: 'fork',
         sessionId: codingSession.sessionId,
         maxTokens: Number(ctx.model?.maxTokens) || null,
+        thinkingLevel: pi.getThinkingLevel?.() ?? null,
         activeTools: pi.getActiveTools(),
         inheritedEntries: entries.length,
         inheritedToolResults: entries.filter(entry => entry?.message?.role === 'toolResult').length,
@@ -823,6 +864,7 @@ export default function (pi) {
               maxTokens: sessionConfig.codingSessionMaxTokens,
               // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
               toolBudget: null,
+              thinking: 'off',
               context: 'fork',
               childEnv: { PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens }) },
             }, signal);
@@ -947,6 +989,10 @@ export default function (pi) {
 
   pi.on('tool_call', async (event, ctx) => {
     actionTurnAttemptedTool = true;
+    if (codingSession && !codingFirstToolLogged) {
+      codingFirstToolLogged = true;
+      codingSessionLog('first_tool_call', { side: 'fork', sessionId: codingSession.sessionId, tool: event.toolName, msSinceReady: codingReadyAt ? Date.now() - codingReadyAt : null });
+    }
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
     if (blocked) {
@@ -1146,6 +1192,10 @@ export default function (pi) {
 
   pi.on('turn_end', async (event, ctx) => {
     const outputTokens = Number(event.message?.usage?.output || 0);
+    if (codingSession && !codingFirstResponseLogged) {
+      codingFirstResponseLogged = true;
+      codingSessionLog('first_response', { side: 'fork', sessionId: codingSession.sessionId, outputTokens, attemptedTool: actionTurnAttemptedTool });
+    }
     const activeResponseCap =
       appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel];
     const responseHitOutputCeiling =
