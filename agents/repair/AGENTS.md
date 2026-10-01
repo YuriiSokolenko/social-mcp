@@ -13,6 +13,8 @@ The PR already contains an implementation. Do not re-plan the original issue, re
 Never modify CI/control-plane paths:
 
 - `.github/workflows/**`
+- `.pi/**`
+- `agents/**`
 - `scripts/pi-*`
 - `tests/*.test.mjs`
 - `tests/test_runner_autoscaler.sh`
