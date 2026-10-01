@@ -70,7 +70,8 @@ export function resolveDelegatedTarget(cwd, requestedPath) {
   if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
     reject('missing_path', 'delegate_mutation requires a concrete target path');
   }
-  if (path.isAbsolute(requestedPath)) reject('invalid_path', 'delegate_mutation path must be relative to the worktree');
+  // Absolute paths are accepted when they name a file inside the worktree (the model sees and
+  // uses worktree-absolute paths with the direct tools); containment is enforced below.
   const root = path.resolve(cwd);
   const absolutePath = path.resolve(root, requestedPath);
   if (absolutePath === root || !absolutePath.startsWith(`${root}${path.sep}`)) {

@@ -225,6 +225,13 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
   };
 }
 
+function resultText(result) {
+  if (typeof result === 'string') return result;
+  const content = Array.isArray(result) ? result : result?.content;
+  if (Array.isArray(content)) return content.map(part => part?.text ?? '').join('\n');
+  return typeof result?.message === 'string' ? result.message : '';
+}
+
 function delegatedMutationLog(phase, fields) {
   const line = `PI_DELEGATED_MUTATION ${JSON.stringify({ phase, ...fields })}`;
   if (['writer_failed', 'rejected', 'cancelled'].includes(phase)) console.warn(line);
@@ -421,6 +428,13 @@ export default function (pi) {
     if (!changed) throw new Error(`Failed to apply action-required response cap of ${maxTokens} tokens`);
   }
 
+  function truncationGuidance(toolName) {
+    return truncatedToolCallGuidance(toolName, {
+      largeMutationBudgetTool: controller.largeMutationBudgetTool,
+      delegatedMutationTool: config.productiveProgress?.delegatedMutationTool ?? null,
+    });
+  }
+
   syncProductiveState();
 
   // The run_check sandbox is a hard dependency of stages that expose it. Prove it works before any
@@ -572,6 +586,8 @@ export default function (pi) {
   }
 
   const pendingMutationSnapshots = new Map();
+  // Truncated calls already guided, whichever of tool_result / tool_execution_end fired first.
+  const truncationGuidedCalls = new Set();
   const pendingLoopCalls = new Map();
   let lastSuccessfulMutationSnapshot = null;
 
@@ -939,6 +955,16 @@ export default function (pi) {
     return undefined;
   });
   pi.on('tool_execution_end', async (event, ctx) => {
+    // pi rejects a call whose arguments were cut off at the output ceiling before execution and
+    // may not route that rejection through tool_result; steer from here so the truncation
+    // guidance (delegate instead of regenerating) still reaches the model exactly once.
+    const truncatedText = resultText(event.result);
+    const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text: truncatedText });
+    if (truncated && !truncationGuidedCalls.has(event.toolCallId)) {
+      truncationGuidedCalls.add(event.toolCallId);
+      console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated, source: 'tool_execution_end' })}`);
+      await pi.sendUserMessage(`RUNTIME: ${truncationGuidance(event.toolName)}`, { deliverAs: 'steer' });
+    }
     const pendingLoopCall = pendingLoopCalls.get(event.toolCallId) ?? null;
     const contentMutation =
       stage === 'implementer' &&
@@ -1017,14 +1043,15 @@ export default function (pi) {
   });
 
   pi.on('tool_result', (event) => {
-    const text = (event.content ?? []).map(part => part?.text ?? '').join('\n');
+    const text = resultText(event);
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
     if (!truncated) return undefined;
-    console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated })}`);
-    const guidance = truncatedToolCallGuidance(event.toolName, {
-      largeMutationBudgetTool: controller.largeMutationBudgetTool,
-      delegatedMutationTool: config.productiveProgress?.delegatedMutationTool ?? null,
-    });
+    if (event.toolCallId) {
+      if (truncationGuidedCalls.has(event.toolCallId)) return undefined;
+      truncationGuidedCalls.add(event.toolCallId);
+    }
+    console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated, source: 'tool_result' })}`);
+    const guidance = truncationGuidance(event.toolName);
     return {
       content: [{ type: 'text', text: `${guidance}\n\n${text}` }],
       isError: true,

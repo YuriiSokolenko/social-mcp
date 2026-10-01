@@ -40,6 +40,8 @@ test('delegation requires a concrete path, decided intent and requirements', () 
     assert.deepEqual(ok.request, { ...concrete, context: '' });
     assert.equal(ok.currentContent, null);
     const edit = validateDelegationRequest(dir, { ...concrete, operation: 'edit', path: 'pkg/mod.py' }, limits);
+    // A worktree-absolute path is normalized to the relative request path.
+    assert.equal(validateDelegationRequest(dir, { ...concrete, path: path.join(dir, 'pkg', 'mod.py') }, limits).request.path, path.join('pkg', 'mod.py'));
     assert.equal(edit.currentContent, 'x = 1\n');
 
     const rejected = [
@@ -277,6 +279,7 @@ function runtimeScenario(mode) {
       const handlers = new Map();
       const caps = [];
       const writerRequests = [];
+      const steers = [];
       let active = ['read', 'write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'submit_result', 'need_more_evidence',
         'request_large_mutation_budget', 'delegate_mutation', 'rollback_last_mutation', 'prepare_implementation'];
       let plannerAttempts = 0;
@@ -288,7 +291,7 @@ function runtimeScenario(mode) {
         on: (name, fn) => handlers.set(name, fn),
         getActiveTools: () => [...active], setActiveTools: names => { active = names; },
         setModel: async model => { caps.push(model.maxTokens); return true; },
-        sendUserMessage: async () => {},
+        sendUserMessage: async text => { steers.push(text); },
       };
       const respond = (request, payload) => bus.emit('prompt-template:subagent:response', {
         requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, ...payload,
@@ -402,9 +405,22 @@ function runtimeScenario(mode) {
       }
 
       if (mode === 'flow') {
-        const truncated = handlers.get('tool_result')({ toolName: 'write', isError: true,
-          content: [{ type: 'text', text: 'Tool arguments may be truncated: output token limit reached' }] });
-        assert.match(truncated.content[0].text, /Call delegate_mutation with the target path/);
+        const cut = 'Tool call "write" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.';
+        const guided = () => steers.filter(text => text.includes('Call delegate_mutation with the target path')).length;
+        // Production shape (run 36847315837): pi rejects the cut-off call before execution and
+        // emits only tool_execution_end, no tool_call and no tool_result.
+        await handlers.get('tool_execution_end')({ toolName: 'write', toolCallId: 'cut-1', isError: true,
+          result: { content: [{ type: 'text', text: cut }] } }, ctx);
+        assert.equal(guided(), 1, 'execution-end-only truncation steers to delegation');
+        // tool_result first, then tool_execution_end: rewritten once, not steered again.
+        const rewritten = handlers.get('tool_result')({ toolName: 'write', toolCallId: 'cut-2', isError: true, content: [{ type: 'text', text: cut }] });
+        assert.match(rewritten.content[0].text, /Call delegate_mutation with the target path/);
+        await handlers.get('tool_execution_end')({ toolName: 'write', toolCallId: 'cut-2', isError: true, result: { content: [{ type: 'text', text: cut }] } }, ctx);
+        assert.equal(guided(), 1);
+        // tool_execution_end first, then tool_result: steered once, tool_result left alone.
+        await handlers.get('tool_execution_end')({ toolName: 'write', toolCallId: 'cut-3', isError: true, result: { content: [{ type: 'text', text: cut }] } }, ctx);
+        assert.equal(handlers.get('tool_result')({ toolName: 'write', toolCallId: 'cut-3', isError: true, content: [{ type: 'text', text: cut }] }), undefined);
+        assert.equal(guided(), 2);
       }
     `);
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, scenario], {
@@ -428,6 +444,8 @@ test('full flow: parent -> delegate_mutation -> 16K writer -> runtime write -> r
   assert.match(logs, /PI_MUTATION .*"tool":"delegate_mutation","mode":"delegated","path":"arkanoid.py","isError":false,"changed":true/);
   assert.match(logs, /PI_MUTATION .*"tool":"write","mode":"direct"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_BUDGET/);
+  assert.match(logs, /PI_TOOL_CALL_TRUNCATED .*"toolName":"write","source":"tool_execution_end"/);
+  assert.match(logs, /PI_TOOL_CALL_TRUNCATED .*"toolName":"write","source":"tool_result"/);
 });
 
 test('delegation works under PREPARATION_FALLBACK and on a resumed implementer', () => {
