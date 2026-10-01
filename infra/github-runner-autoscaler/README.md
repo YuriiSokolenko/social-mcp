@@ -130,6 +130,15 @@ Before enabling `general-runner-manager`, stop and remove the old persistent
 the old persistent `github-pi-runner` container) so neither consumes jobs in
 parallel with its ephemeral pool.
 
+The current Qwen model runtime supports eight concurrent model requests.
+`MODEL_MAX_CONCURRENCY` is the centralized model-capacity setting and defaults
+to `8`; set it to `4` when switching to Laguna. This controls model-facing
+admission independently from the Pi runner pool's `MAX_RUNNERS` cap, even
+though both currently default to eight. The manager also limits model slots
+reported by llama.cpp to this configured capacity. Workflow concurrency groups
+remain independent: per-issue/per-PR work stays keyed by its identity, while
+Dispatcher, Architect, Triage, and Merge Gate remain serialized.
+
 Set `MAX_RUNNERS` (`pi-agent` pool) and `GENERAL_MAX_RUNNERS` (`general` pool)
 in the N150 host's local `.env` to each pool's desired capacity. The two pools
 share the same 4-core/14 GiB host and the same Docker daemon, so their totals
@@ -139,7 +148,7 @@ If `.env` defines `WORKFLOW_FILES` (or, for the `general` pool, `GENERAL_WORKFLO
 add any newly introduced workflow file there too (e.g. `pi-triage.yml`);
 updating the tracked defaults does not override an existing host `.env`.
 Restart the autoscaler manager after changing its local environment.
-`manager.sh` is the single source of Pi-pool fallback values (including `MAX_RUNNERS=4` and `POLL_SECONDS=6`). `compose.yaml` only forwards Pi-pool overrides; `.env.example` shows recommended explicit host values. A host may override them in its untracked `.env`, and that local value is authoritative for that host.
+`manager.sh` owns Pi-pool fallback values (`MAX_RUNNERS=8`, `MODEL_MAX_CONCURRENCY=8`, and `POLL_SECONDS=6`). `compose.yaml` forwards Pi-pool overrides; `.env.example` shows recommended explicit host values. A host may override them in its untracked `.env`, and that local value is authoritative for that host. Raising model capacity does not raise the separate `GENERAL_MAX_RUNNERS` CI pool.
 Additional jobs remain queued in GitHub Actions until a worker slot becomes free.
 Set `MODEL_STATUS_URL` in the N150 host's local `.env` to the active model
 server, reachable from the manager container. For a llama.cpp server, point it at that server's `/slots` endpoint. The endpoint returns the total slots and whether each is processing a request. Do not treat a historical host/port as part of the repository contract; `MODEL_STATUS_URL` must follow whichever model server is active on the N150 deployment. The manager
