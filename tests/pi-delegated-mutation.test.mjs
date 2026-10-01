@@ -168,6 +168,28 @@ test('writer contract explicitly preserves backslashes through structured JSON t
   assert.match(writer, /Preserve source-code backslashes through that JSON round trip/i);
   assert.match(writer, /\\\\n/);
   assert.match(writer, /literal newline inside the Python string/i);
+  // Raw prompt text is what the model reads: exact backslash counts matter.
+  assert.ok(writer.includes('the two characters `\\n` (backslash, n)'), 'one backslash + n, not two backslashes');
+  assert.ok(writer.includes('`print("a\\nb")` is the JSON string `"print(\\"a\\\\nb\\")"`'), 'concrete source/JSON pair');
+  for (const escape of ['`\\t`', '`\\\\`', 'regex escapes']) assert.ok(writer.includes(escape), escape);
+  assert.match(writer, /Do not globally add escapes/);
+});
+
+test('runtime applies decoded writer content byte-for-byte without re-escaping', () => {
+  const dir = tempDir();
+  try {
+    // Exactly what a correct writer emits on the wire for a backslash-sensitive source.
+    const wire = String.raw`{"operation":"write","path":"esc.py","content":"HELP = \"q: quit\\nr: restart\\tok\"\nRX = r\"\\d+\\\\\"\n"}`;
+    const request = { operation: 'write', path: 'esc.py' };
+    const content = validateWriterResult(JSON.parse(wire), request);
+    assert.equal(applyDelegatedMutation(dir, request, content).changed, true);
+    const source = fs.readFileSync(path.join(dir, 'esc.py'), 'utf8');
+    assert.equal(source, String.raw`HELP = "q: quit\nr: restart\tok"` + '\n' + String.raw`RX = r"\d+\\"` + '\n');
+    // The broken case from smoke 2: an intended \n decoded into a real line break mid-string.
+    assert.equal(source.split('\n')[0], String.raw`HELP = "q: quit\nr: restart\tok"`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('symlinked path components cannot redirect a delegated mutation outside the worktree or into .git', () => {
