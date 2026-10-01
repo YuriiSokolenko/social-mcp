@@ -30,7 +30,7 @@ const FIXED_ENV = {
 };
 const HARNESS_ROOT = process.env.RUN_CHECK_HARNESS_ROOT || '/opt/social-mcp';
 process.env.AGENT_HARNESS_CONFIG ||= path.join(HARNESS_ROOT, '.agent-harness.json');
-const { buildRunCheckSpec } = await import(pathToFileURL(path.join(HARNESS_ROOT, 'scripts/pi-common/run-check.mjs')));
+const { buildRunCheckSpec, normalizeRunCheckPaths } = await import(pathToFileURL(path.join(HARNESS_ROOT, 'scripts/pi-common/run-check.mjs')));
 
 const runCommand = (args, { timeoutMs = 30000, maxOutputBytes = 4 * 1024 * 1024 } = {}) => new Promise((resolve, reject) => {
   const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' } });
@@ -182,25 +182,7 @@ function hardenStage(stage) {
 // canonical runner worktree; the builder then performs its normal existence,
 // symlink, and containment checks against the staged tree.
 export function remapRunnerPaths(root, params) {
-  const remap = value => {
-    if (typeof value !== 'string' || !path.posix.isAbsolute(value)) return value;
-    const relative = path.posix.relative(root, value);
-    if (relative === '..' || relative.startsWith(`..${path.posix.sep}`) || path.posix.isAbsolute(relative)) {
-      throw Object.assign(new Error(`path escapes the current worktree: ${value}`), { name: 'InvalidCheck' });
-    }
-    return relative || '.';
-  };
-  if (params?.kind === 'python_compile' || params?.kind === 'ruff') {
-    return { ...params, paths: Array.isArray(params.paths) ? params.paths.map(remap) : params.paths };
-  }
-  if (params?.kind === 'pytest') {
-    return { ...params, targets: Array.isArray(params.targets) ? params.targets.map(target => {
-      if (typeof target !== 'string') return target;
-      const [file, ...selectors] = target.split('::');
-      return [remap(file), ...selectors].join('::');
-    }) : params.targets };
-  }
-  return params;
+  return normalizeRunCheckPaths(root, params);
 }
 
 /** The executor boundary: translate runner paths, then validate/build against the staged tree. */

@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runCheck } from '../scripts/pi-common/run-check.mjs';
+import { createDockerSandboxBackend } from '../scripts/pi-common/run-check-docker-backend.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.env.RUN_CHECK_HARNESS_ROOT = repoRoot;
@@ -49,8 +51,70 @@ test('executor staging seam remaps canonical runner paths then validates the sta
 
   assert.throws(() => buildStagedRunCheckSpec(canonicalRoot, stageRoot, { kind: 'python_compile', paths: [path.join(outsideRoot, 'secret.py')] }, options), /escapes the current worktree/);
   assert.throws(() => buildStagedRunCheckSpec(canonicalRoot, stageRoot, { kind: 'python_compile', paths: ['../secret.py'] }, options), /escapes the current worktree/);
-  assert.throws(() => buildStagedRunCheckSpec(canonicalRoot, stageRoot, { kind: 'python_compile', paths: ['src/escape.py'] }, options), /resolves outside the current worktree/);
+  for (const target of ['src/escape.py', `${canonicalRoot}/src/escape.py`]) {
+    assert.throws(() => buildStagedRunCheckSpec(canonicalRoot, stageRoot, { kind: 'python_compile', paths: [target] }, options), { name: 'InvalidCheck', message: /resolves outside the current worktree/ });
+  }
   assert.throws(() => buildStagedRunCheckSpec(canonicalRoot, stageRoot, { kind: 'python_compile', paths: ['src/missing.py'] }, options), /path does not exist/);
+});
+
+test('run_check sends canonical relative requests through Docker and preserves staged invalid classification', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'run-check-root-'));
+  const alias = `${root}-alias`;
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'run-check-stage-'));
+  fs.symlinkSync(root, alias);
+  for (const dir of [root, stage]) fs.writeFileSync(path.join(dir, 'brick_smoke.py'), 'answer = 42\n');
+  t.after(() => {
+    fs.unlinkSync(alias);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(stage, { recursive: true, force: true });
+  });
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const captured = [];
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    captured.push(body);
+    let result;
+    try {
+      const built = buildStagedRunCheckSpec(body.root, stage, body.params);
+      result = { exitCode: 0, durationMs: 1, stdout: '', stderr: '', spec: built.spec };
+    } catch (error) {
+      // Match the trusted executor's classification boundary.
+      result = error.name === 'InvalidCheck'
+        ? { status: 'invalid', message: error.message }
+        : { infrastructure: { component: 'sandbox', code: 'SANDBOX_EXECUTOR_ERROR', message: error.message } };
+    }
+    return new Response(JSON.stringify(result), { status: 200 });
+  };
+  const backend = createDockerSandboxBackend({ RUN_CHECK_EXECUTOR_TOKEN: 'test-token', RUNNER_NAME: 'test-runner' });
+  for (const kind of ['python_compile', 'ruff', 'pytest']) {
+    const field = kind === 'pytest' ? 'targets' : 'paths';
+    const suffix = kind === 'pytest' ? '::test_one' : '';
+    const specs = [];
+    for (const target of [`brick_smoke.py${suffix}`, `${alias}/brick_smoke.py${suffix}`, `${fs.realpathSync(root)}/brick_smoke.py${suffix}`]) {
+      const result = await runCheck(alias, { kind, [field]: [target] }, { backend });
+      assert.equal(result.status, 'pass', target);
+      const body = captured.at(-1);
+      assert.deepEqual(body.params, { kind, [field]: [`brick_smoke.py${suffix}`] });
+      specs.push(buildStagedRunCheckSpec(body.root, stage, body.params).spec);
+    }
+    assert.deepEqual(specs[0], specs[1]);
+    assert.deepEqual(specs[0], specs[2]);
+    for (const bad of ['/tmp/outside.py', '/etc/passwd', '../outside.py', `${alias}-sibling/outside.py`, './--help']) {
+      const count = captured.length;
+      const result = await runCheck(alias, { kind, [field]: [`${bad}${suffix}`] }, { backend });
+      assert.equal(result.status, 'invalid', bad);
+      assert.equal(result.infrastructure, undefined);
+      assert.doesNotMatch(result.summary, /INFRASTRUCTURE|Do not retry/);
+      assert.equal(captured.length, count, 'invalid input must not reach executor');
+    }
+  }
+  // Runner-local validation succeeds, but the staged tree lost the target.
+  fs.unlinkSync(path.join(stage, 'brick_smoke.py'));
+  const missing = await runCheck(alias, { kind: 'python_compile', paths: [`${alias}/brick_smoke.py`] }, { backend });
+  assert.equal(missing.status, 'invalid');
+  assert.match(missing.summary, /path does not exist/);
+  assert.equal(missing.infrastructure, undefined);
 });
 
 const safeContainer = () => ({

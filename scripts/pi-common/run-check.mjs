@@ -54,7 +54,47 @@ export const PROFILES = Object.freeze(Object.fromEntries(
   Object.entries(projectConfig().checks.profiles).map(([name, spec]) => [name, root => expandCommand(spec, root)]),
 ));
 
-class InvalidCheck extends Error {}
+class InvalidCheck extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'InvalidCheck';
+  }
+}
+
+// Namespace-independent lexical containment. The executor can apply this to
+// the runner root before validating existence and symlinks in its staged copy.
+function relativeCheckPath(root, requested, canonicalRoot = root) {
+  if (typeof requested !== 'string' || !requested.trim() || requested.includes('\0')) {
+    throw new InvalidCheck('path entries must be non-empty strings');
+  }
+  let relative = path.relative(path.resolve(root), path.resolve(root, requested)) || '.';
+  if (path.isAbsolute(requested) && (relative === '..' || relative.startsWith(`..${path.sep}`))) {
+    relative = path.relative(path.resolve(canonicalRoot), requested) || '.';
+  }
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new InvalidCheck(`path escapes the current worktree: ${requested}`);
+  }
+  if (requested.startsWith('-') || relative.startsWith('-')) {
+    throw new InvalidCheck(`path must not start with "-": ${requested}`);
+  }
+  return relative;
+}
+
+/** Normalize model paths without accessing a different filesystem namespace. */
+export function normalizeRunCheckPaths(root, params, canonicalRoot = root) {
+  if (params?.kind === 'python_compile' || params?.kind === 'ruff') {
+    return { ...params, paths: Array.isArray(params.paths)
+      ? params.paths.map(item => relativeCheckPath(root, item, canonicalRoot)) : params.paths };
+  }
+  if (params?.kind === 'pytest') {
+    return { ...params, targets: Array.isArray(params.targets) ? params.targets.map(target => {
+      if (typeof target !== 'string') throw new InvalidCheck('targets must be strings');
+      const [file, ...selectors] = target.split('::');
+      return [relativeCheckPath(root, file, canonicalRoot), ...selectors].join('::');
+    }) : params.targets };
+  }
+  return params;
+}
 
 function invalid(kind, message) {
   return {
@@ -101,15 +141,11 @@ function rejectUnknownFields(params, allowed) {
 }
 
 function containedRelativePath(root, requested, { mustBeFile = false } = {}) {
-  if (typeof requested !== 'string' || !requested.trim() || requested.includes('\0')) {
-    throw new InvalidCheck('path entries must be non-empty strings');
-  }
-  if (requested.startsWith('-')) throw new InvalidCheck(`path must not start with "-": ${requested}`);
+  // Normalize against the caller's root first (which may itself be a
+  // symlink, e.g. /tmp on macOS), then check the actual filesystem boundary.
+  const relative = relativeCheckPath(root, requested);
   const worktree = fs.realpathSync(root);
-  const absolute = path.resolve(worktree, requested);
-  if (absolute !== worktree && !absolute.startsWith(`${worktree}${path.sep}`)) {
-    throw new InvalidCheck(`path escapes the current worktree: ${requested}`);
-  }
+  const absolute = path.resolve(worktree, relative);
   if (!fs.existsSync(absolute)) throw new InvalidCheck(`path does not exist: ${requested}`);
   const real = fs.realpathSync(absolute);
   if (real !== worktree && !real.startsWith(`${worktree}${path.sep}`)) {
@@ -175,7 +211,8 @@ export function buildRunCheckSpec(root, params, options = {}) {
     ruff: options.bins?.ruff ?? 'ruff',
     pytest: options.bins?.pytest ?? 'pytest',
   };
-  return { request: params, spec: commandFor(root, params, bins) };
+  const request = normalizeRunCheckPaths(root, params, fs.realpathSync(root));
+  return { request, spec: commandFor(root, request, bins) };
 }
 
 function checkEnv(env) {
