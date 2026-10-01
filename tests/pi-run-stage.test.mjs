@@ -124,6 +124,16 @@ test('automatic runs use the versioned default and invalid default config fails 
     }),
     /Invalid default Pi model/,
   );
+
+  const missingWorkspace = mkdtempSync(join(tmpdir(), 'pi-default-model-missing-'));
+  assert.throws(
+    () => buildStageRunSpec({ stage: 'dispatcher', cwd: '/work' }, {
+      RUNNER_TEMP: '/tmp/runner',
+      GITHUB_WORKSPACE: missingWorkspace,
+      PI_MODEL_CHOICE: 'default',
+    }),
+    /Default Pi model config is missing/,
+  );
 });
 
 test('model endpoint defaults to the shared Open Responses server on port 4001', () => {
