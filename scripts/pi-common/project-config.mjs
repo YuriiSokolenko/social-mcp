@@ -23,9 +23,11 @@ import { fileURLToPath } from 'node:url';
 export const CONFIG_FILE_NAME = '.agent-harness.json';
 export const CONFIG_ENV = 'AGENT_HARNESS_CONFIG';
 
-const LABEL_ROLES = Object.freeze([
-  'queued', 'ready', 'running', 'pr', 'needsHuman', 'blocked', 'architectReady', 'epic', 'reviewPassed', 'reviewChangesRequested',
+const REQUIRED_LABEL_ROLES = Object.freeze([
+  'queued', 'ready', 'running', 'pr', 'needsHuman', 'architectReady', 'epic', 'reviewPassed', 'reviewChangesRequested',
 ]);
+const OPTIONAL_LABEL_ROLES = Object.freeze(['blocked']);
+const LABEL_ROLES = Object.freeze([...REQUIRED_LABEL_ROLES, ...OPTIONAL_LABEL_ROLES]);
 // Workflow files the harness dispatches or watches, by ROLE. Filenames are project
 // wiring (the caller workflows live in the project repository), not harness names.
 const WORKFLOW_ROLES = Object.freeze(['dispatcher', 'architect', 'implementer', 'reviewer', 'repair', 'ci', 'mergeGate', 'triage']);
@@ -107,7 +109,10 @@ export function validateConfig(raw) {
 
   const labels = object(raw.labels, 'labels');
   rejectUnknown(labels, LABEL_ROLES, 'labels');
-  for (const role of LABEL_ROLES) string(labels[role], `labels.${role}`);
+  for (const role of REQUIRED_LABEL_ROLES) string(labels[role], `labels.${role}`);
+  for (const role of OPTIONAL_LABEL_ROLES) {
+    if (labels[role] !== undefined) string(labels[role], `labels.${role}`);
+  }
 
   const workflows = object(raw.workflows, 'workflows');
   rejectUnknown(workflows, WORKFLOW_ROLES, 'workflows');
@@ -156,7 +161,9 @@ export function validateConfig(raw) {
       checkpointBranchSuffix: string(git.checkpointBranchSuffix, 'git.checkpointBranchSuffix'),
       identity: Object.freeze({ name: string(identity.name, 'git.identity.name'), email: string(identity.email, 'git.identity.email') }),
     }),
-    labels: Object.freeze(Object.fromEntries(LABEL_ROLES.map(role => [role, labels[role]]))),
+    labels: Object.freeze(Object.fromEntries(
+      LABEL_ROLES.filter(role => labels[role] !== undefined).map(role => [role, labels[role]]),
+    )),
     workflows: Object.freeze(Object.fromEntries(WORKFLOW_ROLES.map(role => [role, workflows[role]]))),
     workspace: Object.freeze({
       cleanDirectories: Object.freeze(stringList(workspace.cleanDirectories, 'workspace.cleanDirectories', { optional: true })),
