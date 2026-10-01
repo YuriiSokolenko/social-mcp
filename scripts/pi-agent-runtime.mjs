@@ -17,6 +17,7 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
+import { mergeNewlyActiveTools } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import { appendCheckRecord, normalizeScope } from './pi-common/validation-ledger.mjs';
@@ -375,6 +376,16 @@ export default function (pi) {
     return state;
   }
 
+  let lastSurfaceSignature = null;
+  function setSurface(names, reason) {
+    pi.setActiveTools(names);
+    const signature = names.join(',');
+    if (signature !== lastSurfaceSignature) {
+      console.log(`PI_TOOL_SURFACE_UPDATE ${JSON.stringify({ stage, reason, active: names })}`);
+      lastSurfaceSignature = signature;
+    }
+  }
+
   function syncActionToolSurface(productiveState) {
     const preComplexityRequired =
       config.preComplexityActionResponseMaxTokens != null &&
@@ -385,9 +396,18 @@ export default function (pi) {
       productiveState === 'action_required';
 
     const largeMutationBudgetActive = stage === 'implementer' && controller.largeMutationBudgetActive();
+    // Completed one-shot control tools disappear. Enabled tools such as `subagent` are shown only
+    // where the controller gate lets them execute (evidence_allowed), never in action_required.
+    const satisfied = controller.transitions.satisfiedToolNames();
+    const current = pi.getActiveTools();
+    // Tools added by a control transition appear in the live list but not in the saved baseline.
+    if (unrestrictedActiveTools != null) {
+      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, current);
+    }
+    const visible = names => names.filter(name => !satisfied.has(name));
 
     if (preComplexityRequired || productiveActionRequired) {
-      if (unrestrictedActiveTools == null) unrestrictedActiveTools = pi.getActiveTools();
+      if (unrestrictedActiveTools == null) unrestrictedActiveTools = current;
       const restricted = preComplexityRequired
         ? unrestrictedActiveTools.filter(name =>
             new Set([
@@ -408,14 +428,30 @@ export default function (pi) {
               ? [config.productiveProgress.verificationTool].filter(Boolean)
               : [],
           });
-      pi.setActiveTools(restricted);
+      setSurface(visible(restricted), 'restricted');
       return;
     }
 
     if (unrestrictedActiveTools != null) {
-      pi.setActiveTools(unrestrictedActiveTools);
+      setSurface(visible(unrestrictedActiveTools), 'restored');
       unrestrictedActiveTools = null;
+      return;
     }
+    const remaining = visible(current);
+    if (remaining.length !== current.length) setSurface(remaining, 'transition_complete');
+  }
+
+  // Materialize a newly completed one-shot transition into durable runtime state, the active
+  // tool surface, and the next model request (a steering message the model sees in history).
+  async function announceTransition(record, productiveState) {
+    console.log(`PI_STATE_TRANSITION_COMPLETE ${JSON.stringify({ stage, ...record })}`);
+    syncActionToolSurface(productiveState);
+    const block = controller.transitions.stateBlock();
+    console.log(`PI_SESSION_STATE ${JSON.stringify({ stage, completed: [...controller.transitions.completed.keys()], block })}`);
+    await pi.sendUserMessage(
+      `${controller.transitions.transitionNotice(record)}\n\n${block}`,
+      { deliverAs: 'steer' },
+    );
   }
 
   async function handleLoopResult(loopResult, ctx) {
@@ -678,6 +714,7 @@ export default function (pi) {
   // Truncated calls already guided, whichever of tool_result / tool_execution_end fired first.
   const truncationGuidedCalls = new Set();
   const pendingLoopCalls = new Map();
+  const pendingToolInputs = new Map();
   let lastSuccessfulMutationSnapshot = null;
 
   if (stage === 'implementer') {
@@ -988,14 +1025,19 @@ export default function (pi) {
   });
 
   pi.on('tool_call', async (event, ctx) => {
-    actionTurnAttemptedTool = true;
     if (codingSession && !codingFirstToolLogged) {
       codingFirstToolLogged = true;
       codingSessionLog('first_tool_call', { side: 'fork', sessionId: codingSession.sessionId, tool: event.toolName, msSinceReady: codingReadyAt ? Date.now() - codingReadyAt : null });
     }
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
+    // A repeated already-completed transition is not a real tool attempt: it must not reset the
+    // prose-only / ceiling-without-tool watchdogs.
+    if (!blocked?.alreadySatisfied) actionTurnAttemptedTool = true;
     if (blocked) {
+      if (blocked.alreadySatisfied) {
+        console.warn(`PI_ALREADY_SATISFIED ${JSON.stringify({ stage, ...controller.lastAlreadySatisfied, suppressed: true, productive: false })}`);
+      }
       if (loopGuard) {
         const loopResult = loopGuard.observe({
           stage,
@@ -1076,6 +1118,7 @@ export default function (pi) {
         }));
       }
     }
+    pendingToolInputs.set(event.toolCallId, structuredClone(event.input ?? {}));
     if (loopGuard) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
@@ -1153,8 +1196,11 @@ export default function (pi) {
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     controller.onToolExecutionEnd(event.toolName, event.isError, { madeProgress: effectiveProgress });
+    const transitionRecord = controller.recordTransitionCompleted(event.toolName, pendingToolInputs.get(event.toolCallId) ?? {}, event.isError);
+    pendingToolInputs.delete(event.toolCallId);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
+    if (transitionRecord) await announceTransition(transitionRecord, productiveState);
 
     if (loopGuard && pendingLoopCall) {
       const loopResult = loopGuard.observe({
