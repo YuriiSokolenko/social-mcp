@@ -138,7 +138,7 @@ test('apply dispatches IMPLEMENT to Implementer and ARCHITECT to Architect, upda
   assert.deepEqual(store.issues[10].labels.map(l => l.name), ['pi:ready']);
   assert.deepEqual(store.issues[20].labels.map(l => l.name), ['architect:ready']);
   assert.deepEqual(store.dispatched, [
-    { workflow: 'pi-issue-agent.yml', inputs: { issue_number: '10', require_ready: true } },
+    { workflow: 'pi-issue-agent.yml', inputs: { issue_number: '10', dispatch_mode: 'dispatcher' } },
     { workflow: 'pi-architect.yml', inputs: { issue_number: '20' } },
   ]);
 });

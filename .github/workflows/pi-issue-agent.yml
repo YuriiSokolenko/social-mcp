@@ -8,11 +8,14 @@ on:
         description: Issue number to implement
         required: true
         type: number
-      require_ready:
-        description: Require pi:ready preflight (used by Dispatcher)
+      dispatch_mode:
+        description: Dispatch mode
         required: true
-        default: false
-        type: boolean
+        default: manual
+        type: choice
+        options:
+          - manual
+          - dispatcher
       backend:
         description: Agent backend (mini-swe is experimental/manual only)
         required: true
@@ -49,6 +52,7 @@ jobs:
       ISSUE: ${{ inputs.issue_number }}
       PI_MODEL_CHOICE: ${{ inputs.model || vars.PI_MODEL || 'laguna' }}
       PI_STAGE_BACKEND: ${{ inputs.backend || 'pi' }}
+      PI_DISPATCH_MODE: ${{ inputs.dispatch_mode || 'manual' }}
 
     steps:
       - name: Checkout dev control repository
@@ -67,11 +71,10 @@ jobs:
         id: preflight
         env:
           GH_TOKEN: ${{ github.token }}
-          REQUIRE_READY: ${{ inputs.require_ready }}
         run: |
           ISSUE_CONTEXT="$RUNNER_TEMP/pi-issue-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           MODE="plain"
-          if [ "$REQUIRE_READY" = "true" ]; then MODE="ready"; fi
+          if [ "$PI_DISPATCH_MODE" = "dispatcher" ]; then MODE="ready"; fi
           node "$GITHUB_WORKSPACE/scripts/pi-common/issue-context.mjs" "$ISSUE" "$ISSUE_CONTEXT" "$MODE"
           echo "PI_ISSUE_CONTEXT=$ISSUE_CONTEXT" >> "$GITHUB_ENV"
 
@@ -84,10 +87,9 @@ jobs:
         id: claim
         env:
           GH_TOKEN: ${{ github.token }}
-          REQUIRE_READY: ${{ inputs.require_ready }}
         run: |
           ACTION="running-manual"
-          if [ "$REQUIRE_READY" = "true" ]; then ACTION="running"; fi
+          if [ "$PI_DISPATCH_MODE" = "dispatcher" ]; then ACTION="running"; fi
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue "$ACTION"
 
       - name: Create temporary issue worktree

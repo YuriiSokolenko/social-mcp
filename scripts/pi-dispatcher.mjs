@@ -166,7 +166,7 @@ async function main() {
 
     await transitionIssue(number, "ready");
     try {
-      await dispatchWorkflow(workflowFile("implementer"), { issue_number: String(number), require_ready: true });
+      await dispatchWorkflow(workflowFile("implementer"), { issue_number: String(number), dispatch_mode: "dispatcher" });
     } catch (error) {
       try {
         await transitionIssue(number, "queued");
