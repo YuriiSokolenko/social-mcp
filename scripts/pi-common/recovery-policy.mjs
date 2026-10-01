@@ -8,12 +8,14 @@ import { ISSUE_TERMINAL, PIPELINE_LABELS } from './state-machine.mjs';
 
 export function issueRecoveryTarget(issue, { hasOpenPiPr = false, automationMode = 'PAUSED' } = {}) {
   if (!issue || issue.state !== 'open') return null;
-  if (hasOpenPiPr) return PIPELINE_LABELS.pr;
   const labels = new Set((issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   const terminal = [...ISSUE_TERMINAL].filter(label => labels.has(label));
   if (terminal.length) {
-    return terminal.includes(PIPELINE_LABELS.blocked) ? PIPELINE_LABELS.blocked : terminal[0];
+    return PIPELINE_LABELS.blocked && terminal.includes(PIPELINE_LABELS.blocked)
+      ? PIPELINE_LABELS.blocked
+      : terminal[0];
   }
+  if (hasOpenPiPr) return PIPELINE_LABELS.pr;
   return automationMode === 'RUNNING' ? PIPELINE_LABELS.queued : null;
 }
 
