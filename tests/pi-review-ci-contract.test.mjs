@@ -107,6 +107,7 @@ test('review PASS is required before merge gate can merge', () => {
 test('PR fix resolves current-dev conflicts in the live repair session and returns to fresh review', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
   const tool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
+  const stageConfig = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   assert.match(workflow, /pi-run-stage\.mjs" repair/);
   assert.match(stageConfig, /repair:[\s\S]*resultTool: 'pi-repair-result-tool\.mjs'/);
   const finalizer = readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
@@ -561,7 +562,6 @@ test('runtime owns response budgets instead of duplicating them in role contract
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
-  const stageConfig = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const guard = readScript('scripts/pi-common/pr-guard.mjs', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.ok(workflow.includes('ISSUE=$(jq -r \'\.issue\' "$CONTEXT")'));
