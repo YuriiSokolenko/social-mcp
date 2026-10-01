@@ -63,10 +63,13 @@ if (isIssueTransitionNoop(item, action)) {
 } else {
   const expected = names(item);
   const target = validateIssueTransition(item, action);
+  const blockedPreserved = PIPELINE_LABELS.blocked && target === PIPELINE_LABELS.blocked;
   await replaceIssueLabels(expected, target, action, { complete: action === 'satisfied' && target == null });
-  if (action !== 'running') await postComment();
-  if (PIPELINE_LABELS.blocked && target === PIPELINE_LABELS.blocked) {
-    console.log(`issue #${number}: preserved ${PIPELINE_LABELS.blocked}; ignored ${action} transition`);
+  if (action !== 'running' && !blockedPreserved) await postComment();
+  if (blockedPreserved) {
+    console.log(
+      `issue #${number}: preserved ${PIPELINE_LABELS.blocked}; ignored ${action} target and removed conflicting pipeline ownership`,
+    );
   } else {
     console.log(`issue #${number}: transitioned to ${target}`);
   }
