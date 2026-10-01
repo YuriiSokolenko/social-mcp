@@ -602,7 +602,7 @@ export default function (pi) {
         })}`);
         const numberedPlan = prepared.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
         const provenance = stage === 'implementer' && !resumedImplementer
-          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful safe_edit/edit/write, direct reads of this worktree are authoritative latest-base evidence; do not use extra Git/evidence calls to re-prove that provenance.`
+          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful structural_edit/safe_edit/edit/write, direct reads of this worktree are authoritative latest-base evidence; do not use extra Git/evidence calls to re-prove that provenance.`
           : '';
         const lspWorkspace = stage === 'implementer' && !resumedImplementer
           ? `\n\nLSP workspace root: ${ctx.cwd}. For a cold name-only lookup with an explicit language, call lsp_start_server once with the matching server_id and this exact absolute workspace_root before lsp_find_symbol; lsp_start_server is a control action and does not consume evidence budget.`
@@ -657,7 +657,7 @@ export default function (pi) {
     pi.registerTool({
       name: config.productiveProgress.blockerTool,
       label: 'Request one evidence action',
-      description: 'Use only when one concrete missing fact prevents the next safe_edit/edit/write/submit action. This unlocks exactly one evidence-gathering tool call; after that call productive action is required again.',
+      description: 'Use only when one concrete missing fact prevents the next productive action. This unlocks exactly one evidence-gathering tool call; after that call runtime returns to action-required state.',
       parameters: Type.Object({
         missing: Type.String({ minLength: 1, maxLength: 300 }),
         reason: Type.String({ minLength: 1, maxLength: 500 }),
@@ -666,7 +666,7 @@ export default function (pi) {
         return {
           content: [{
             type: 'text',
-            text: `One evidence action unlocked for: ${params.missing}. After that evidence call, safe_edit/edit/write/submit_result is required again.`,
+            text: `One evidence action unlocked for: ${params.missing}. After that evidence call, runtime returns to action-required state.`,
           }],
           details: params,
         };
