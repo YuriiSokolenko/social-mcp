@@ -73,7 +73,7 @@ Reconciler does not wake Merge Gate. A wake carries no authoritative task state;
 
 ## Agent control-plane boundary
 
-Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. `agents/**` holds the runtime prompts every model stage reads first, so it is protected the same way as workflow/script control-plane files, not treated as ordinary product content. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
+Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. `agents/**` holds the runtime prompts every model stage reads first, so it is protected the same way as workflow/script control-plane files, not treated as ordinary product content. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
 
 ## Branch, trust, and inputs
 
@@ -110,7 +110,7 @@ DEEP 8192
 
 A short intermediate turn that actually invokes a tool may preserve an already elevated NORMAL/DEEP budget for the following response. `set_response_budget` remains a proactive one-response override. Task complexity and response size remain independent.
 
-Triage is the deliberate exception: `PI_FIXED_RESPONSE_MAX_TOKENS=1000` keeps every Triage response fixed at 1000 tokens, disables automatic promotion, and does not expose `set_response_budget`.
+Triage is one deliberate exception: `PI_FIXED_RESPONSE_MAX_TOKENS=1000` keeps every Triage response fixed at 1000 tokens, disables automatic promotion, and does not expose `set_response_budget`. The Implementer coding-session fork is the other: it uses a fixed 16,384-token ceiling for large coding/tool payloads, while the parent keeps the normal small-budget ladder and caps `ACTION_REQUIRED` mutation responses at 2,048 tokens.
 
 Each model call logs its active limit as `PI_BUDGET`; the automatic decision for the following call is logged as `PI_BUDGET_NEXT`.
 
@@ -122,9 +122,9 @@ The normative execution rules live in [CI_RULES.md](CI_RULES.md). The short Impl
 
 ```text
 prepare_implementation
-  -> one planner result: steps + trivial|nontrivial
-  -> 2 evidence actions if trivial, otherwise 6
-  -> safe_edit / edit / write / submit_result
+  -> one planner result: steps + trivial|nontrivial + evidence_budget 0..6
+  -> that many evidence actions (fallback only: trivial 2 / nontrivial 6)
+  -> structural_edit / safe_edit / edit / write / begin_coding_session / submit_result
      or one need_more_evidence escape -> one evidence action -> action
 ```
 
