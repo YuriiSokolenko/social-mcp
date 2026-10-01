@@ -25,11 +25,12 @@ on:
           - pi
           - mini-swe
       model:
-        description: Model backend to use (must already be loaded on nano)
+        description: Model backend override; default reads .pi/default-model
         required: true
-        default: qwen
+        default: default
         type: choice
         options:
+          - default
           - laguna
           - qwen
 
@@ -50,7 +51,7 @@ jobs:
     timeout-minutes: 1200
     env:
       ISSUE: ${{ inputs.issue_number }}
-      PI_MODEL_CHOICE: ${{ inputs.model || 'qwen' }}
+      PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
       PI_STAGE_BACKEND: ${{ inputs.backend || 'pi' }}
       PI_DISPATCH_MODE: ${{ inputs.dispatch_mode || 'manual' }}
 

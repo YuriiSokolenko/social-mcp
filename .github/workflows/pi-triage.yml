@@ -5,11 +5,12 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: Model backend to use (must already be loaded on nano)
+        description: Model backend override; default reads .pi/default-model
         required: true
-        default: qwen
+        default: default
         type: choice
         options:
+          - default
           - laguna
           - qwen
   issues:
@@ -33,7 +34,7 @@ jobs:
     timeout-minutes: 120
     env:
       PI_TRIAGE_BATCH_SIZE: '8'
-      PI_MODEL_CHOICE: ${{ inputs.model || 'qwen' }}
+      PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
 
     steps:
       - name: Checkout trusted dev
