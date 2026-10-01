@@ -10,12 +10,10 @@ import { stageConfig, stagePrompt } from './pi-common/stage-config.mjs';
 import { createStageRunSpec } from './pi-common/stage-run-contract.mjs';
 import { runStageWithValidationRecovery } from './pi-common/stage-validation-recovery.mjs';
 
-// The hp-laguna backend (llama-server on nano) can only ever have ONE of
-// these loaded at a time -- switching model here is a *claim* about what a
-// human has already started on nano, not something this script can make
-// true by itself. verifyModelIsLoaded() below checks that claim against
-// reality and fails loudly instead of silently running the wrong model
-// under the requested model's name (see PR #118 for the bug this replaces).
+// The model alias selects what operators have already loaded behind the shared
+// Rabbit/Open Responses endpoint; this script does not start or stop runtimes.
+// verifyModelIsLoaded() checks that claim and fails loudly instead of silently
+// running a different model under the requested alias (see PR #118).
 const MODEL_CHOICES = {
   laguna: { id: 'laguna-s-2.1-gguf', label: 'Laguna S 2.1' },
   qwen: { id: 'Qwen3.8-Flash-Next-NVFP4', label: 'Qwen 3.8 Flash Next NVFP4' },
