@@ -229,7 +229,7 @@ function runtimeScenario(mode) {
         assert.equal(providerPatch({ payload: other }, childCtx), other, 'non-chat payloads are left alone');
         // Executors stubbed; the runtime's gates around them are real.
         childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
-        childTools.get('submit_result').execute = async () => { fs.writeFileSync(terminal, JSON.stringify({ submitted: true })); return { content: [{ type: 'text', text: 'submitted' }] }; };
+        childTools.get('submit_result').execute = async () => { fs.writeFileSync(terminal, 'submitted\\n'); return { content: [{ type: 'text', text: 'submitted' }] }; }; // same marker terminalResult() writes
         let turn = 0;
         const childCall = async (name, input) => {
           childHandlers.get('turn_start')({ turnIndex: turn });
@@ -285,6 +285,9 @@ function runtimeScenario(mode) {
       });
 
       runtime(pi);
+      // The parent also carries the real implementer result tool (and its submit nudge).
+      const { default: parentResultTool } = await import(${JSON.stringify(new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href)});
+      parentResultTool(pi);
       assert.equal(handlers.has('before_provider_request'), false, 'the 2K parent keeps its normal provider requests');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
@@ -365,9 +368,13 @@ function runtimeScenario(mode) {
       if (['flow', 'fallback', 'restored', 'tampered', 'containment'].includes(mode)) {
         assert.equal(result.terminate, true, 'parent ends after the fork submitted');
         assert.ok(fs.existsSync(terminal));
+        // Smoke #285: the parent's own submit flag is false (the fork submitted), so the nudge
+        // must honor the run-wide terminal marker instead of restarting the parent.
+        assert.equal(handlers.get('agent_before_settle')(), undefined, 'no submit nudge after the fork submitted');
       }
       if (mode === 'no-submit') {
         assert.notEqual(result.terminate, true);
+        assert.equal(handlers.get('agent_before_settle')()?.continue, true, 'without a submission the nudge still fires');
         assert.match(result.content[0].text, /ended without submit_result/);
         await call('begin_coding_session', {});
         // The per-run limit (2) is enforced when the third session is requested.
@@ -436,6 +443,22 @@ test('cancellation, a missing session, and drafting loops fail closed', () => {
 test('rewriting the issue-worktree runtime, settings or agent definition cannot change the coding session', () => {
   assert.match(runtimeScenario('tampered'), /"phase":"completed".*"submitted":true/);
   assert.match(runtimeScenario('shadow-agent'), /"phase":"ended_without_submit".*collides with configured agent/);
+});
+
+test('the submit nudge honors a submission recorded by another process', async () => {
+  const { terminalMarkerSubmitted } = await import('../scripts/pi-common/terminal-tool.mjs');
+  const dir = tempDir();
+  try {
+    const marker = path.join(dir, 'terminal');
+    assert.equal(terminalMarkerSubmitted({ PI_TERMINAL_RESULT_FILE: marker }), false, 'no marker');
+    fs.writeFileSync(marker, 'something else\n');
+    assert.equal(terminalMarkerSubmitted({ PI_TERMINAL_RESULT_FILE: marker }), false, 'foreign content');
+    fs.writeFileSync(marker, 'submitted\n');
+    assert.equal(terminalMarkerSubmitted({ PI_TERMINAL_RESULT_FILE: marker }), true);
+    assert.equal(terminalMarkerSubmitted({}), false, 'no marker configured');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('run_check scope normalization from current dev accepts relative and worktree-absolute paths (#281)', async () => {

@@ -1,9 +1,20 @@
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 export function terminalResult(text, details) {
   const marker = process.env.PI_TERMINAL_RESULT_FILE;
   if (marker) writeFileSync(marker, 'submitted\n', { encoding: 'utf8', mode: 0o600 });
   return { content: [{ type: 'text', text }], details, terminate: true };
+}
+
+// The terminal marker is the run-wide truth: the implementer's coding session submits from a
+// forked process, so this process's own `submitted` flag can be false although the run is done.
+export function terminalMarkerSubmitted(env = process.env) {
+  const marker = env.PI_TERMINAL_RESULT_FILE;
+  try {
+    return Boolean(marker && existsSync(marker) && readFileSync(marker, 'utf8').trim() === 'submitted');
+  } catch {
+    return false;
+  }
 }
 
 export function registerSubmitNudge(pi, {
@@ -61,12 +72,12 @@ export function registerTerminalTool(pi, {
   });
 
   registerSubmitNudge(pi, {
-    isSubmitted: () => submitted,
+    isSubmitted: () => submitted || terminalMarkerSubmitted(),
     customType: nudgeType,
     content: nudgeText,
     repeatWhile: () => terminalFailed || nudgeRepeatWhile(),
     maxNudges: () => terminalFailed ? null : nudgeMaxCount,
   });
 
-  return { isSubmitted: () => submitted };
+  return { isSubmitted: () => submitted || terminalMarkerSubmitted() };
 }
