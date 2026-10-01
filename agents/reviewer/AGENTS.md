@@ -19,6 +19,7 @@ Automated review must not approve CI/control-plane changes. The workflow guards 
 - `tests/*.test.mjs`
 - `tests/test_runner_autoscaler.sh`
 - `infra/github-runner-autoscaler/**`
+- `.agent-harness.json` / `.agent-harness.yml` / `.agent-harness.yaml`
 
 
 ## Execution

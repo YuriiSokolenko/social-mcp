@@ -92,7 +92,7 @@ Once that operation finishes, the SHA has no orchestration meaning.
 
 ## Agent control-plane boundary
 
-The CI control plane is not agent-editable. No Pi agent may create, edit, delete, rename, review, repair, or auto-merge changes under `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`. `agents/**` counts as control plane because it is the runtime prompt each model stage reads first, not product content. Trusted tooling enforces this independently of prompts. Control-plane maintenance is performed only through the trusted human/direct-`dev` path.
+The CI control plane is not agent-editable. No Pi agent may create, edit, delete, rename, review, repair, or auto-merge changes under `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, `infra/github-runner-autoscaler/**`, or the harness config itself (`.agent-harness.json`, `.agent-harness.yml`, `.agent-harness.yaml`). `agents/**` counts as control plane because it is the runtime prompt each model stage reads first, not product content. Trusted tooling enforces this independently of prompts. Control-plane maintenance is performed only through the trusted human/direct-`dev` path.
 
 ## Trusted control-plane rule
 

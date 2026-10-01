@@ -73,7 +73,7 @@ Reconciler is not a normal Merge Gate scheduler: it issues one state-free Merge 
 
 ## Agent control-plane boundary
 
-Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. `agents/**` holds the runtime prompts every model stage reads first, so it is protected the same way as workflow/script control-plane files, not treated as ordinary product content. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
+Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, `infra/github-runner-autoscaler/**`, and the harness config itself (`.agent-harness.json`, `.agent-harness.yml`, `.agent-harness.yaml`) are protected from agent-generated changes. `agents/**` holds the runtime prompts every model stage reads first, so it is protected the same way as workflow/script control-plane files, not treated as ordinary product content. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
 
 ## Branch, trust, and inputs
 
@@ -124,7 +124,7 @@ The normative execution rules live in [CI_RULES.md](CI_RULES.md). The short Impl
 prepare_implementation
   -> one planner result: steps + trivial|nontrivial + evidence_budget (0-6)
   -> evidence_budget evidence actions (fallback: 2 if trivial, otherwise 6)
-  -> structural_edit / safe_edit / edit / write / begin_coding_session / submit_result
+  -> structural_edit / safe_edit / edit / write / begin_coding_session / rollback_last_mutation / submit_result
      or one need_more_evidence escape -> one evidence action -> action
 ```
 
