@@ -41,9 +41,9 @@ Detailed Rabbit traces can be appended later. This file should preserve the high
 | 1 | #287 | JSON-style secret redaction | [36889307806](https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889307806) | [110460580070](https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889307806/job/110460580070) | **Failed / needs human** |
 | 2 | #288 | asyncio keyed single-flight | [36889316531](https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889316531) | 110460606310 | **In progress** |
 | 3 | #289 | deterministic rolling event window | [36889325069](https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889325069) | 110460637461 | **In progress** |
-| 4 | #290 | bounded diagnostic event buffer | [36889334931](https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889334931) | 110460670996 | **In progress** |
+| 4 | #290 | bounded diagnostic event buffer | [36889334931](https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889334931) | [110460670996](https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889334931/job/110460670996) | **Failed / needs human** |
 
-Snapshot taken while tests #288-#290 were still inside **Run implementation backend with live progress**. Their final outcome must be updated after completion.
+Snapshot updated after #290 completed. Tests #288 and #289 are still inside **Run implementation backend with live progress** and remain pending.
 
 ---
 
@@ -251,31 +251,146 @@ Pending. Claude/Rabbit logs can be appended here if deeper per-turn evidence is 
 
 Issue: https://github.com/YuriiSokolenko/social-mcp/issues/290  
 Run: https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889334931  
-Job ID: `110460670996`
+Job: https://github.com/YuriiSokolenko/social-mcp/actions/runs/36889334931/job/110460670996
 
 ### Intended task
 
 Implement a bounded typed in-memory event buffer with sequence numbers, eviction, filtering, explicit clear semantics, immutable/defensive snapshots, and deterministic JSON-compatible export.
 
-### Current result
+### Final workflow result
 
-**In progress at snapshot time.**
+- Workflow job: **failure**
+- Issue state after run: **open**
+- Harness label: **`pi:needs-human`**
+- Repository changes at publication time: **none**
+- Branch publication: **skipped**
+- PR creation: **skipped**
+- Focused validation: **never reached**
+- Coding-session handoff: **never completed**
+- Large mutation budget: **never used**
+- Terminal `submit_result`: **never called**
 
-Workflow setup completed successfully and the job is currently inside **Run implementation backend with live progress**.
+The harness again ended with:
 
-### Final result
+> Pi stage implementer exited without its terminal tool
 
-Pending.
+and transitioned the issue to `pi:needs-human`.
+
+### Model/runtime metrics
+
+From the GitHub Actions log:
+
+- model responses: **12**
+- fresh input: **44,455 tokens**
+- output: **9,860 tokens**
+- cache read: **103,274 tokens**
+- total tokens: **157,589**
+- model response time: **1438.3 s**
+- agent pass time: **1666.8 s** (~27.8 min)
+- tool actions recorded: **8**
+- parent response ceiling: **2048 tokens throughout**
+- large mutation budget: **idle throughout**
+- final abort condition: **3 consecutive action-required responses hit the 2048-token ceiling without a tool call**
+
+This run is much more expensive than #287 and exposes a different failure mode.
+
+### Event sequence
+
+1. Model #1 correctly called `prepare_implementation`.
+2. Planner attempt #1 ran with a 768-token budget but failed with `missing_structured_output`.
+3. The harness performed the configured internal retry.
+4. Planner attempt #2 timed out after **120,000 ms**.
+5. Runtime entered explicit `PREPARATION_FALLBACK` after **218.7 s** total preparation time.
+6. The fallback message correctly stated that preparation was satisfied and implementation could continue.
+7. Model #2 decided to gather minimal evidence, but called `subagents_enable` instead of the explicitly suggested `need_more_evidence`.
+8. `subagents_enable` returned a clear instruction: on the next request call `subagent({action:"list", capabilities:true})`.
+9. Model #3 did not call the newly enabled `subagent`. Instead it spent a full **2048-token** response reasoning about which tools were or were not visible and hit the ceiling without any tool call.
+10. Model #4 called `subagents_enable` again.
+11. Model #5 called `subagents_enable` again.
+12. Model #6 said it wanted to read `pyproject.toml`, but used `safe_edit` instead.
+13. That `safe_edit` **actually mutated `pyproject.toml`**, replacing line 1 with the literal text `placeholder`.
+14. Model #7 recognized the mistake and successfully called `rollback_last_mutation`, restoring the repository.
+15. Model #8 again called `subagents_enable`.
+16. Model #9 again called `subagents_enable`.
+17. Model #10 correctly reasoned that the task was large enough to justify `begin_coding_session`, explicitly saying it should call it, but never emitted the tool call. It instead consumed the full **2048-token** ceiling.
+18. Model #11 again consumed the full **2048-token** ceiling without a tool call.
+19. Model #12 did the same for a third consecutive action-required turn.
+20. The runtime fired `PI_ACTION_REQUIRED_ABORT` and terminated the stage.
+21. No valid repository change survived; no validation, branch publication, PR, or terminal result occurred.
+
+### What worked
+
+- The parent remained at the intended **2048-token** ceiling.
+- Planner failure did not re-enter the old preparation deadlock; `PREPARATION_FALLBACK` was reached.
+- The configured planner retry for `missing_structured_output` executed.
+- The accidental mutation was reversible, and `rollback_last_mutation` restored the repository.
+- The new ceiling-without-tool guard eventually stopped the reasoning-only loop after three consecutive full-ceiling turns.
+- The workflow correctly refused to publish an empty/invalid result.
+
+### What failed
+
+#### Model/agent behavior
+
+The model repeatedly described the right next action but selected a different tool or no tool at all.
+
+Examples:
+
+- it wanted evidence but repeatedly called `subagents_enable` instead of following the returned instruction to call `subagent`;
+- it wanted to read `pyproject.toml` but used `safe_edit` and changed the file;
+- it explicitly concluded that it should call `begin_coding_session`, yet spent multiple full responses drafting/reasoning and never emitted the call.
+
+This is a stronger version of the intent/tool mismatch observed in #287.
+
+#### Harness/runtime behavior
+
+The runtime contained the damage but still allowed very expensive failure progression.
+
+Observed weaknesses:
+
+- preparation consumed **218.7 s** before fallback;
+- repeated `subagents_enable` calls were allowed even after the tool reported that the subagent capability was already enabled;
+- the parent tool surface appears confusing enough that the model repeatedly reasoned about missing `read`/`repo_search` capabilities instead of transitioning into the coding session;
+- `safe_edit` could be misused as a fake read and make a real mutation to `pyproject.toml`;
+- the ceiling-without-tool guard needed three full 2048-token responses before aborting, costing roughly 6K output tokens and many minutes after the failure pattern was already obvious.
+
+### Preliminary interpretation
+
+#290 exposes a distinct failure chain:
+
+`planner miss -> planner retry timeout -> PREPARATION_FALLBACK -> capability/tool-surface confusion -> repeated control-tool calls -> accidental mutation/rollback -> intended coding handoff never emitted -> three ceiling-only turns -> abort`
+
+This again does **not** exercise the actual 16K coding continuation, because `begin_coding_session` was never successfully called.
+
+The failure is primarily agent/model tool-selection behavior, but the harness/tool UX amplifies it:
+
+- enabling a capability should make the newly available tool unambiguous on the next turn;
+- repeated enable calls should collapse to a no-op or immediate steer;
+- mutation tools should not be attractive substitutes for reads;
+- once the model states that a large coding handoff is required, repeated full-ceiling prose without the handoff should be cut off earlier.
+
+### Candidate follow-up regressions
+
+1. `PREPARATION_FALLBACK -> subagents_enable -> repeated subagents_enable`
+   - second enable should be classified as already satisfied/no-op;
+   - runtime should steer directly to the enabled `subagent` action.
+
+2. `PREPARATION_FALLBACK -> model intends read -> safe_edit("placeholder")`
+   - ensure mutation tools cannot become a substitute for evidence acquisition;
+   - consider detecting obviously non-task mutations to config files before they count as productive progress.
+
+3. `action-required -> model explicitly intends begin_coding_session -> 2048 ceiling without tool`
+   - the targeted steer exists and worked;
+   - evaluate whether **2 consecutive** full-ceiling misses are enough to abort instead of 3 for this specific state.
 
 ### Rabbit evidence
 
-Pending. Claude/Rabbit logs can be appended here if deeper per-turn evidence is needed.
+Pending. Claude/Rabbit logs can be appended here to determine whether the missing dynamically enabled `subagent` tool was a model-selection failure, tool-schema exposure issue, or both.
 
 ---
 
 ## Cross-test conclusions
 
-These conclusions are provisional until #288-#290 finish.
+These conclusions are provisional until #288 and #289 finish.
 
 ### 1. The 2048-token parent ceiling is holding
 
@@ -335,11 +450,35 @@ The loop guard correctly detected the repeated LSP strategy and eventually abort
 
 The better target is to prevent obviously redundant state-initialization calls before the general loop guard has to intervene.
 
-### 7. Do not attribute #287 to the 16K coding session
+### 7. Do not attribute #287 or #290 to the 16K coding session
 
-No `begin_coding_session`, mutation handoff, large mutation turn, `run_check`, or `submit_result` happened.
+Neither run successfully called `begin_coding_session`. No large mutation turn was actually entered.
 
-#287 currently provides no evidence about whether the same-session 16K coding continuation succeeds or fails once reached.
+#287 failed in a repeated LSP-startup loop after fallback. #290 failed later, after capability/tool-surface confusion, an accidental mutation+rollback, and three consecutive full-ceiling responses without a tool call.
+
+These runs therefore test the **path to** the coding session, not the coding session itself.
+
+### 8. Capability-enabling tools need the same one-shot semantics as LSP startup
+
+#290 repeatedly called `subagents_enable` even though the first successful call said the capability was enabled and told the model exactly which new tool to call next.
+
+This is structurally similar to #287's repeated `lsp_start_server` behavior. A general rule is emerging:
+
+> one-shot state transition tools should become visibly satisfied and non-attractive immediately after success.
+
+Repeated enable/start calls should be no-op + steer, not another normal action.
+
+### 9. Accidental mutation can masquerade as progress
+
+In #290, `safe_edit` replaced the first line of `pyproject.toml` with `placeholder` while the model was trying to read the file.
+
+The rollback mechanism worked, but the mutation temporarily counted as productive progress. For experiment analysis, "mutation happened" must therefore be separated from "task-directed mutation happened".
+
+### 10. The ceiling-without-tool guard is effective but expensive
+
+#290 demonstrates that the new guard does stop a reasoning-only loop. However, three consecutive 2048-token misses consumed roughly 6K output tokens and several additional minutes after the model had already failed to perform the intended coding handoff.
+
+This threshold should be evaluated with more runs before changing it, but it is now a measurable cost center.
 
 ---
 
@@ -389,6 +528,6 @@ Keep raw-log links/paths below the corresponding test when Claude adds them.
 - [x] Test #287 completed and was analyzed.
 - [ ] Test #288 final result captured.
 - [ ] Test #289 final result captured.
-- [ ] Test #290 final result captured.
+- [x] Test #290 final result captured and analyzed.
 - [ ] Rabbit evidence appended where useful.
 - [ ] Final cross-test conclusions updated after all four runs terminate.
