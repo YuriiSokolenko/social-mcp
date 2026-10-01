@@ -832,14 +832,13 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
     assert.match(stageConfig(name).resultTool, /-result-tool\.mjs$/);
   }
-  for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair']) {
-    assert.match(stageConfig(name).requiredFirstReadPath, /AGENTS\.md$/);
+  for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
+    assert.equal(stageConfig(name).requiredFirstReadPath, undefined, `${name} receives its contracts in the initial prompt`);
   }
-  assert.equal(stageConfig('implementer').requiredFirstReadPath, undefined);
 });
 
 
-test('stage configuration owns every model prompt', () => {
+test('stage configuration owns every model prompt and injects the shared contract exactly once', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-stage-prompt-'));
   const issueContext = path.join(dir, 'issue.json');
   fs.writeFileSync(issueContext, JSON.stringify({ title: 'Example issue', body: 'Acceptance criteria' }));
@@ -856,21 +855,35 @@ test('stage configuration owns every model prompt', () => {
     for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair', 'implementer']) {
       const prompt = stagePrompt(name, env);
       assert.equal(typeof prompt, 'string');
-      assert.ok(prompt.includes(`agents/${name === 'repair' ? 'repair' : name}/AGENTS.md`));
+      assert.equal(prompt.split('<shared_agent_contract source="agents/AGENTS.md">').length - 1, 1, `${name} shared contract count`);
+      assert.equal(prompt.split(`<role_contract source="agents/${name}/AGENTS.md">`).length - 1, 1, `${name} role contract count`);
+      assert.equal(prompt.split('# Shared Agent Contract').length - 1, 1, `${name} shared contract body count`);
+      assert.match(prompt, /successful terminal tool ends the stage/i);
+      assert.match(prompt, /blocked, failed, cancelled, or truncated tool call did not execute/i);
+      assert.doesNotMatch(prompt, /(?:^|\n)\s*(?:\d+\.\s*)?Read (?:and follow )?agents\/[^/]+\/AGENTS\.md/im);
       assert.match(prompt, /submit_(?:result|repair)/);
     }
-    assert.match(stagePrompt('reviewer', env), /trusted prepared review context[\s\S]*review-context\.json/);
-    assert.match(stagePrompt('reviewer', env), /blocked or failed tool call did not execute/i);
-    assert.match(stagePrompt('implementer', env), /# Pi Implementer Agent[\s\S]*Example issue[\s\S]*Acceptance criteria/);
-    assert.match(stagePrompt('implementer', env), /Do not search for or re-read agents\/implementer\/AGENTS\.md/);
-    assert.doesNotMatch(stagePrompt('implementer', env), /Read and follow agents\/implementer\/AGENTS\.md first/);
-    assert.match(stagePrompt('implementer', env), /prepare_implementation[\s\S]*implementation-planner[\s\S]*trivial\/nontrivial/);
-    assert.doesNotMatch(stagePrompt('implementer', env), /complexity-classifier/);
-    assert.match(stagePrompt('implementer', env), /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
-    assert.match(stagePrompt('implementer', env), /Do not call `subagent\(action:"list"\)`/i);
-    assert.match(stagePrompt('implementer', env), /768 output tokens/);
-    assert.match(stagePrompt('implementer', env), /lsp_start_server[\s\S]*exact absolute workspace root/i);
-    assert.doesNotMatch(stagePrompt('implementer', env), /limit <= 200/);
+
+    const reviewerPrompt = stagePrompt('reviewer', env);
+    assert.match(reviewerPrompt, /trusted prepared review context:[\s\S]*review-context\.json/i);
+
+    const implementerPrompt = stagePrompt('implementer', env);
+    assert.match(implementerPrompt, /# Pi Implementer Agent[\s\S]*Example issue[\s\S]*Acceptance criteria/);
+    assert.match(implementerPrompt, /prepare_implementation[\s\S]*implementation-planner[\s\S]*trivial\/nontrivial/);
+    assert.doesNotMatch(implementerPrompt, /complexity-classifier/);
+    assert.match(implementerPrompt, /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
+    assert.doesNotMatch(implementerPrompt, /Do not call `subagent\(action:"list"\)`/i);
+    assert.match(implementerPrompt, /subagents_enable[\s\S]*follow the tool surface and next-action guidance returned by runtime/i);
+    assert.match(implementerPrompt, /lsp_start_server[\s\S]*lsp_find_symbol/i);
+    assert.match(implementerPrompt, /need_more_evidence[\s\S]*one concrete missing fact/i);
+    assert.doesNotMatch(implementerPrompt, /768 output tokens/);
+    assert.doesNotMatch(implementerPrompt, /limit <= 200/);
+
+    assert.equal(stageConfig('implementer').delegationTool, 'subagent');
+    assert.ok(stageConfig('implementer').productiveProgress.controlTools.includes('subagents_enable'));
+    assert.equal(stageConfig('implementer').requireLspStartBeforeFindSymbol, true);
+    assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
+
     const resumePatch = path.join(dir, 'resume.patch');
     fs.writeFileSync(resumePatch, 'diff --git a/src/example.py b/src/example.py\n');
     const resumedPrompt = stagePrompt('implementer', {
@@ -880,11 +893,11 @@ test('stage configuration owns every model prompt', () => {
       PI_CHECKPOINT_EXPECTED: 'checkpoint-sha',
     });
     assert.match(resumedPrompt, /restored checkpoint work is already in this worktree/);
-    assert.match(resumedPrompt, /Call `submit_result` with no arguments immediately/);
-    assert.match(resumedPrompt, /Do not call `prepare_implementation`/);
-    assert.match(resumedPrompt, /Do not pass `already_satisfied` for restored work/);
-    assert.match(resumedPrompt, /zero-diff state[\s\S]*completes it automatically/);
-    assert.match(resumedPrompt, /restored work is already present[\s\S]*submit immediately/i);
+    assert.match(resumedPrompt, /Call submit_result with no arguments immediately/);
+    assert.match(resumedPrompt, /Do not call prepare_implementation/);
+    assert.match(resumedPrompt, /Do not pass already_satisfied for restored work/);
+    assert.match(resumedPrompt, /zero-diff restored work is completed by runtime automatically/);
+
     const staleResumePrompt = stagePrompt('implementer', {
       ...env,
       PI_RESUME_PATCH: resumePatch,
@@ -893,17 +906,16 @@ test('stage configuration owns every model prompt', () => {
     });
     assert.match(staleResumePrompt, /Fresh worktree base:/);
     assert.doesNotMatch(staleResumePrompt, /Runtime resume state/);
-    assert.match(stagePrompt('implementer', env), /Task classification alone never requires delegation/);
+
+    assert.match(implementerPrompt, /Task classification alone never requires delegation/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     assert.match(stagePrompt('dispatcher', env), /prepared context is sufficient and authoritative/i);
-    assert.doesNotMatch(stagePrompt('dispatcher', env), /Read the project documentation once/);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
-    assert.match(stagePrompt('triage', env), /runtime closes exploration/i);
+    assert.match(stagePrompt('triage', env), /runtime closes repository exploration|runtime closes exploration/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
-
 
 test('productive progress allows only one extra evidence permit per productive epoch', () => {
   const state = controller({
