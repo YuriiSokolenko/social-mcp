@@ -13,6 +13,8 @@ You are read-only. Never modify repository files. Trusted workflow tooling appli
 Automated review must not approve CI/control-plane changes. The workflow guards these paths before model execution:
 
 - `.github/workflows/**`
+- `.pi/**`
+- `agents/**`
 - `scripts/pi-*`
 - `tests/*.test.mjs`
 - `tests/test_runner_autoscaler.sh`
