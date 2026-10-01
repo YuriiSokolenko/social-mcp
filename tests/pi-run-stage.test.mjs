@@ -428,6 +428,29 @@ test('mini-swe invocation uses upstream yolo CLI with local OpenAI-compatible mo
   assert.match(invocation.output, /terminal\.mini-swe-trajectory\.json$/);
 });
 
+test('mini-swe never receives the validation ledger path in its model-facing environment', () => {
+  // mini-swe gives the model raw shell with this process's environment,
+  // unlike Pi where the model only ever reaches a file through a trusted
+  // tool handler. If the ledger path were visible here, the model could
+  // forge a passing check -- or even the pipeline-completion marker --
+  // before the harness-owned checks.final pipeline ever runs.
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: '/work',
+    prompt: 'do the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementer', PI_VALIDATION_LEDGER_FILE: '/tmp/pi-validation-ledger-1-1.jsonl' },
+    artifacts: {
+      terminalResultPath: '/tmp/terminal',
+      metricsPath: '/tmp/metrics.jsonl',
+      rawLogPath: '/tmp/raw.jsonl',
+    },
+  });
+  const invocation = buildMiniSweInvocation(spec);
+  assert.equal(invocation.options.env.PI_VALIDATION_LEDGER_FILE, undefined);
+  assert.ok(!Object.keys(invocation.options.env).includes('PI_VALIDATION_LEDGER_FILE'));
+});
+
 test('mini-swe backend is explicit and limited to implementer', () => {
   assert.equal(resolveStageBackend({}), 'pi');
   assert.equal(resolveStageBackend({ PI_STAGE_BACKEND: 'mini-swe' }), 'mini-swe');
