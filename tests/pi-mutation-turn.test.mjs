@@ -472,7 +472,7 @@ function runtimeScenario(mode) {
       } else assert.equal(turnRequests.length, 0, 'no fresh-prompt fallback when the session cannot be forked');
       assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048', 'parent child-budget mirror restored');
       assert.equal(process.env.PI_MUTATION_TURN, undefined, 'turn declaration is scoped to the fork');
-      assert.deepEqual(fs.readdirSync('/tmp').filter(name => name.startsWith('pi-mutation-turn-')).filter(name => fs.statSync('/tmp/' + name).mtimeMs > Date.now() - 10000), [], 'staging removed');
+      assert.deepEqual(fs.readdirSync('/tmp').filter(name => /^pi-mutation-turn-[0-9a-f-]{36}\\.json$/.test(name) && fs.statSync('/tmp/' + name).mtimeMs > Date.now() - 10000), [], 'staging removed');
       assert.equal(caps.at(-1), 2048, 'parent stays at the normal ceiling');
       parentNeverElevated();
 

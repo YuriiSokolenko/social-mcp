@@ -452,7 +452,7 @@ export default function (pi) {
     if (mutationTurnAgent?.ok) return mutationTurnAgent;
     const definition = mutationTurnAgentDefinition();
     const request = { version: 1, name: config.productiveProgress.mutationTurnAgent, definition };
-    pi.events.emit(RUNTIME_AGENT_REGISTER_EVENT, request);
+    pi.events?.emit?.(RUNTIME_AGENT_REGISTER_EVENT, request);
     mutationTurnAgent = request.result
       ? (request.result.ok ? { ok: true } : { ok: false, error: String(request.result.error?.message ?? request.result.error) })
       : { ok: false, error: 'pi-subagents did not handle runtime agent registration' };
@@ -464,8 +464,9 @@ export default function (pi) {
   }
 
   pi.on('session_start', async (_event, ctx) => {
-    if (stage === 'implementer' && config.productiveProgress?.mutationTurnTool) ensureMutationTurnAgent();
+    // The sandbox preflight is the first hard gate: nothing else starts if it fails.
     if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
+    if (stage === 'implementer' && config.productiveProgress?.mutationTurnTool) ensureMutationTurnAgent();
     await applyBudget('short', ctx);
     syncActionToolSurface(syncProductiveState());
   });
