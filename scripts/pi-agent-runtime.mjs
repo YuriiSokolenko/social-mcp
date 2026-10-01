@@ -19,6 +19,11 @@ import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi
 import { appendCheckRecord, normalizeScope } from './pi-common/validation-ledger.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { structuralEdit } from './pi-common/structural-edit.mjs';
+import {
+  captureMutationSnapshot,
+  detectNoOpWrite,
+  mutationSnapshotChanged,
+} from './pi-common/mutation-snapshot.mjs';
 import { baseRef } from './pi-common/project-config.mjs';
 import {
   SemanticLoopGuard,
@@ -464,34 +469,6 @@ export default function (pi) {
   const pendingLoopCalls = new Map();
   let lastSuccessfulMutationSnapshot = null;
 
-  function mutationSnapshotChanged(before, after) {
-    if (!before || !after) return true;
-    if (before.existed !== after.existed) return true;
-    if (!before.existed) return false;
-    if (before.mode !== after.mode) return true;
-    return !before.content.equals(after.content);
-  }
-
-  function captureMutationSnapshot(cwd, requestedPath) {
-    if (typeof requestedPath !== 'string' || !requestedPath) return null;
-    const root = path.resolve(cwd);
-    const absolutePath = path.resolve(root, requestedPath);
-    if (absolutePath !== root && !absolutePath.startsWith(`${root}${path.sep}`)) {
-      throw new Error('Mutation path escapes the current worktree');
-    }
-    const existed = fs.existsSync(absolutePath);
-    if (existed && !fs.statSync(absolutePath).isFile()) {
-      throw new Error('Mutation rollback supports files only');
-    }
-    return {
-      path: requestedPath,
-      absolutePath,
-      existed,
-      content: existed ? fs.readFileSync(absolutePath) : null,
-      mode: existed ? fs.statSync(absolutePath).mode & 0o7777 : null,
-    };
-  }
-
   if (stage === 'implementer') {
     pi.registerTool({
       name: 'structural_edit',
@@ -732,6 +709,34 @@ export default function (pi) {
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
 
     const cwd = ctx?.cwd || process.cwd();
+
+    // `write` always overwrites unconditionally, unlike `edit` (which already refuses a
+    // same-content replacement before touching disk) and `safe_edit` (which compares bytes
+    // itself). Prove byte equality here and skip the real tool entirely so an identical write
+    // never bumps mtime or resets rollback/progress state. Reuses the same blocked-call path
+    // as checkToolCall above, so repeated no-op writes still accumulate toward loop/stall
+    // detection without counting as productive progress.
+    if (stage === 'implementer' && event.toolName === 'write' && detectNoOpWrite(cwd, event.input)) {
+      const noOpBlocked = {
+        block: true,
+        reason: `NO CHANGE: write content for ${event.input?.path} is already identical to the existing file; no write performed.`,
+      };
+      if (loopGuard) {
+        const loopResult = loopGuard.observe({
+          stage,
+          tool: event.toolName,
+          input: event.input ?? {},
+          result: noOpBlocked,
+          blocked: true,
+          productiveState,
+        });
+        await handleLoopResult(loopResult, ctx).catch(error => {
+          console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
+        });
+      }
+      return noOpBlocked;
+    }
+
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);
     const repositoryStateBefore = semanticMutation
       ? repositoryStateFingerprint(cwd)
