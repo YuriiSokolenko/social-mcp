@@ -59,7 +59,9 @@ jobs:
           persist-credentials: false
 
       - name: Initialize implementation result
-        run: echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
+        run: |
+          echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
+          echo "PI_VALIDATION_LEDGER_FILE=$RUNNER_TEMP/pi-validation-ledger-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue
         id: preflight
@@ -148,19 +150,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}")"
+          # The backend arg is the "${{ }}" workflow_dispatch input directly, not
+          # $PI_STAGE_BACKEND or any other shell-environment expansion: inputs.*
+          # is fixed by the Actions runner at dispatch time and is never routed
+          # through $GITHUB_ENV, so nothing a running job does (including a
+          # compromised mini-swe process writing to $GITHUB_ENV) can alter it.
+          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}" "$PI_VALIDATION_LEDGER_FILE" "${{ inputs.backend || 'pi' }}")"
           echo "number=$(jq -r '.number' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "url=$(jq -r '.url' <<<"$PR")" >> "$GITHUB_OUTPUT"
+          echo "verification_state=$(jq -r '.verification_state' <<<"$PR")" >> "$GITHUB_OUTPUT"
 
       - name: Mark pull request created
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }} (verification: ${{ steps.pr.outputs.verification_state }})"
 
+      # Verification state is the ledger's, not prose: a PR whose authoritative
+      # checks did not all complete already carries pi:needs-human (added by
+      # issue-publication.mjs), which both the PR-guard (Reviewer/PR Fix) and
+      # Merge Gate treat as a hard stop. Skipping the dispatch here too avoids
+      # burning a Reviewer run that can only ever self-skip.
       - name: Start independent PR review
-        if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != '' && steps.pr.outputs.verification_state == 'VERIFIED'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" review "${{ steps.pr.outputs.number }}"

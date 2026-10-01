@@ -5,6 +5,8 @@ import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
 import { runGit as git } from './git.mjs';
 import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projectConfig, workflowFile } from './project-config.mjs';
+import { PIPELINE_LABELS } from './state-machine.mjs';
+import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -108,8 +110,60 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
   return { commit };
 }
 
-export async function upsertPullRequest({ issue, resultFile, owner }) {
-  const { api } = githubClient();
+/**
+ * Backends whose checks.final execution is actually process-isolated, so a
+ * clean result from them can be trusted. Pi's `run_check` runs in a Docker
+ * sandbox; its checks.final also runs as plain host code, but the model
+ * itself never gets raw shell (every mutation goes through a specific,
+ * trusted tool handler), so nothing in that execution tree can survive past
+ * the agent session to interfere with checks.final afterward. mini-swe gives
+ * the model raw shell with the harness's own environment and has no such
+ * isolation: a normally-completed command can still leave a detached
+ * background process running after the `mini` CLI itself exits (this is
+ * documented upstream mini-swe-agent behavior, not a hypothetical), and nothing
+ * today guarantees that process tree is fully torn down before checks.final
+ * runs. A survivor could tamper with the real files/output checks.final
+ * reads, or forge ledger records -- *including* a forged `backend: 'pi'` on
+ * every record, which is exactly why trust must never be decided from the
+ * ledger itself. `backend` here must come from a source the implementer's
+ * own process tree can never influence: the workflow_dispatch input is fixed
+ * by the Actions runner before the job starts and is never routed through
+ * $GITHUB_ENV, so nothing that happens during the run -- including a
+ * compromised process writing to $GITHUB_ENV -- can alter it. A ledger
+ * record's own `backend` field remains useful as display/diagnostic
+ * provenance (which backend produced which line), just never as a trust
+ * input.
+ */
+const SANDBOXED_BACKENDS = new Set(['pi']);
+
+export function isUnsandboxedBackend(backend) {
+  return !SANDBOXED_BACKENDS.has(backend);
+}
+
+/**
+ * Pure: given a PR's current labels, the ledger-derived verification state,
+ * and whether the harness-known execution backend for this run is
+ * unsandboxed, returns the label set `upsertPullRequest` should apply, or
+ * `null` if no label change is needed. This is a durable, control-plane
+ * gate, not PR-body prose: `pi:needs-human` on the PR is a hard stop already
+ * honored by the shared PR-guard (Reviewer/PR Fix) and by Merge Gate, so a
+ * PR that is not both fully verified AND executed by a sandboxed backend can
+ * never reach an effective review PASS or a merge. Once set, it is only ever
+ * added here, never removed -- exactly like every other `pi:needs-human`
+ * producer in this codebase (pr-guard.mjs, pi-auto-merge.mjs): clearing it
+ * is a human action.
+ */
+export function nextLabelsForVerification(currentLabels, verificationState, unsandboxedBackend = false) {
+  const names = (currentLabels ?? []).map(label => typeof label === 'string' ? label : label.name);
+  const trusted = verificationState === VERIFICATION_STATES.VERIFIED && !unsandboxedBackend;
+  if (trusted || names.includes(PIPELINE_LABELS.needsHuman)) {
+    return null;
+  }
+  return [...names, PIPELINE_LABELS.needsHuman];
+}
+
+export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, backend }) {
+  const { api, replaceLabels } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   if (!resultFile || !fs.existsSync(resultFile) || !fs.statSync(resultFile).size) {
     throw new Error('Implementer result metadata is required before PR publication');
@@ -122,17 +176,24 @@ export async function upsertPullRequest({ issue, resultFile, owner }) {
     throw new Error('Implementer result metadata is incomplete');
   }
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
+  const { records: ledgerRecords, corrupted: ledgerCorrupted } = readValidationLedger(ledgerFile);
+  const verificationState = computeVerificationState(ledgerRecords, { corrupted: ledgerCorrupted });
+  const unsandboxedBackend = isUnsandboxedBackend(backend);
   const tests = [
-    ...projectConfig().pullRequest.validationLines.map(line => `- ${line}`),
+    renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted }),
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
   ].join('\n');
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
   if (existing[0]) {
     const pr = await api(`/pulls/${existing[0].number}`,'PATCH',{title:metadata.title,body});
-    return { number:pr.number, url:pr.html_url };
+    const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState, unsandboxedBackend);
+    if (nextLabels) await replaceLabels(pr.number, nextLabels);
+    return { number:pr.number, url:pr.html_url, verification_state: verificationState };
   }
   const pr = await api('/pulls','POST',{title:metadata.title,head:issueBranch(issue),base:baseBranch(),body});
-  return { number:pr.number, url:pr.html_url };
+  const nextLabels = nextLabelsForVerification([], verificationState, unsandboxedBackend);
+  if (nextLabels) await replaceLabels(pr.number, nextLabels);
+  return { number:pr.number, url:pr.html_url, verification_state: verificationState };
 }
 
 export async function dispatchReviewer(prNumber) {
@@ -144,7 +205,7 @@ async function main() {
   const [cmd, ...a] = process.argv.slice(2);
   if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
-  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2]})));
+  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
   throw new Error('unknown publication command');
 }

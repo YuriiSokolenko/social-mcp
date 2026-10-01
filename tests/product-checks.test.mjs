@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runProductChecks, runRuffCheck } from '../scripts/pi-common/product-checks.mjs';
+import { readValidationLedger } from '../scripts/pi-common/validation-ledger.mjs';
 
 function fixture(t, { semanticFailure = false } = {}) {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'product-checks-'));
@@ -152,6 +153,51 @@ test('failed product checks retain the beginning and end of long output', t => {
     assert.match(error.message, /LAST_FAILURE/);
     return true;
   });
+});
+
+test('a full passing run of checks.final records one pass entry per step in the validation ledger', t => {
+  const { root, bin } = fixture(t);
+  const pytest = path.join(bin, 'pytest');
+  fs.writeFileSync(pytest, '#!/bin/sh\nprintf "561 passed, 3 skipped\\n"\n');
+  fs.chmodSync(pytest, 0o755);
+  const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-')), 'ledger.jsonl');
+  runProductChecks({ cwd: root, ledgerPath });
+  const { records } = readValidationLedger(ledgerPath);
+  assert.deepEqual(records.map(r => [r.kind, r.status, r.source]), [
+    ['ruff', 'pass', 'checks_final'],
+    ['git_diff_check', 'pass', 'checks_final'],
+    ['pytest', 'pass', 'checks_final'],
+    ['checks_final', 'pass', 'checks_final_complete'],
+  ]);
+  // Unspecified backend defaults to 'pi', the only backend that existed before
+  // this parameter was added.
+  assert.ok(records.every(r => r.backend === 'pi'));
+});
+
+test('checks.final records carry the actual backend, not a hardcoded one, so a mini-swe implementer run is not misattributed to Pi', t => {
+  const { root, bin } = fixture(t);
+  const pytest = path.join(bin, 'pytest');
+  fs.writeFileSync(pytest, '#!/bin/sh\nprintf "561 passed, 3 skipped\\n"\n');
+  fs.chmodSync(pytest, 0o755);
+  const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-')), 'ledger.jsonl');
+  runProductChecks({ cwd: root, ledgerPath, backend: 'mini-swe' });
+  const { records } = readValidationLedger(ledgerPath);
+  assert.ok(records.length > 0);
+  assert.ok(records.every(r => r.backend === 'mini-swe'), 'every record, including the completion marker, must carry the real backend');
+});
+
+test('a mid-pipeline checks.final failure records the failing step and not_run for every step after it', t => {
+  const { root } = fixture(t, { semanticFailure: true });
+  const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-')), 'ledger.jsonl');
+  assert.throws(() => runProductChecks({ cwd: root, ledgerPath }));
+  const { records } = readValidationLedger(ledgerPath);
+  assert.deepEqual(records.map(r => [r.kind, r.status]), [
+    ['ruff', 'fail'],
+    ['git_diff_check', 'not_run'],
+    ['pytest', 'not_run'],
+  ]);
+  // A failed/interrupted pipeline must never record the completion marker.
+  assert.ok(!records.some(r => r.source === 'checks_final_complete'));
 });
 
 test('missing Ruff is reported as a check infrastructure failure', t => {

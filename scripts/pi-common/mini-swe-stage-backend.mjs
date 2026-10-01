@@ -36,6 +36,24 @@ function trajectoryPath(spec) {
   return `${spec.artifacts.terminalResultPath}.mini-swe-trajectory.json`;
 }
 
+// Vars in this list are harness-trust-only: they name a file only this
+// backend's own Node process (via the shared `validate()` call in
+// stage-validation-recovery.mjs) is meant to read or write, never something
+// the model-facing subprocess should see. Unlike Pi, where the model only
+// ever reaches a file through a specific, trusted tool handler, mini-swe's
+// whole paradigm is giving the model raw shell with its process environment
+// -- so a var that is merely present here is a var the model can both read
+// the path of and write to. PI_VALIDATION_LEDGER_FILE is the
+// supposedly-authoritative validation ledger: if the model could see its
+// path, it could forge a passing run_check-shaped record, or even the
+// pipeline-completion marker, before the harness-owned checks.final ever
+// runs.
+const MODEL_ENV_BLOCKLIST = ['PI_VALIDATION_LEDGER_FILE'];
+
+function modelFacingEnv(environment) {
+  return Object.fromEntries(Object.entries(environment).filter(([key]) => !MODEL_ENV_BLOCKLIST.includes(key)));
+}
+
 export function buildMiniSweInvocation(spec) {
   if (spec.stage !== 'implementer') {
     throw new Error('mini-swe backend is experimental and currently supports only the implementer stage');
@@ -65,7 +83,7 @@ export function buildMiniSweInvocation(spec) {
     options: {
       cwd: spec.cwd,
       env: {
-        ...spec.environment,
+        ...modelFacingEnv(spec.environment),
         GITHUB_WORKSPACE: spec.cwd,
         PWD: spec.cwd,
         MSWEA_CONFIGURED: 'true',
@@ -162,6 +180,26 @@ function writeImplementationResult(spec) {
   );
 }
 
+/**
+ * Excluding PI_VALIDATION_LEDGER_FILE from the model-facing environment
+ * (modelFacingEnv) only hides the variable name; the exact path is still
+ * mechanically derivable from other vars the model does have (RUNNER_TEMP,
+ * GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT) plus the naming template committed in
+ * this very workflow file, which mini-swe's raw shell can read. The real
+ * guarantee cannot be "the agent doesn't know the path" -- it has to be
+ * "nothing the agent could have written there survives." mini-swe has no
+ * legitimate ledger producer during the model phase (no run_check tool
+ * exists for it yet), so once the child process is confirmed exited,
+ * anything at that path is necessarily forged. Call this immediately after
+ * the child process is confirmed exited, strictly before the harness's own
+ * checks.final pipeline (which runs after `runMiniSweStage` returns) ever
+ * reads or appends to the ledger.
+ */
+export function discardModelPhaseLedger(spec) {
+  const ledgerPath = spec.environment.PI_VALIDATION_LEDGER_FILE;
+  if (ledgerPath) fs.rmSync(ledgerPath, { force: true });
+}
+
 export async function runMiniSweStage(spec) {
   const startedAt = Date.now();
   const invocation = buildMiniSweInvocation(spec);
@@ -181,6 +219,7 @@ export async function runMiniSweStage(spec) {
   }
 
   const code = await wait(child, 'mini-swe-agent');
+  discardModelPhaseLedger(spec);
   await Promise.all(streamDone);
   if (rawStream) {
     rawStream.end();

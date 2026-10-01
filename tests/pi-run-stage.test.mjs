@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
-import { buildMiniSweInvocation, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
+import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
+import { readScript } from './helpers/resolved-source.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
@@ -207,7 +208,7 @@ test('shared validation recovery gives any implementer backend one focused repai
     cwd: dir,
     prompt: 'implement the task',
     model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
-    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation', PI_VALIDATION_LEDGER_FILE: join(dir, 'ledger.jsonl') },
     artifacts: {
       terminalResultPath: join(dir, 'terminal'),
       metricsPath: join(dir, 'metrics.jsonl'),
@@ -229,8 +230,10 @@ test('shared validation recovery gives any implementer backend one focused repai
       });
     },
     {
-      validate: ({ cwd }) => {
+      validate: ({ cwd, ledgerPath, backend }) => {
         assert.equal(cwd, dir);
+        assert.equal(ledgerPath, spec.environment.PI_VALIDATION_LEDGER_FILE);
+        assert.equal(backend, 'fake');
         validations += 1;
         if (validations === 1) throw new Error('ruff check . failed\nBLE001 blind exception');
       },
@@ -242,6 +245,7 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.equal(attempts[0].environment.PI_VALIDATION_REPAIR, undefined);
   assert.equal(attempts[1].environment.PI_VALIDATION_REPAIR, 'true');
   assert.equal(attempts[1].environment.PI_CALL, 'repair');
+  assert.equal(attempts[1].environment.PI_VALIDATION_LEDGER_FILE, spec.environment.PI_VALIDATION_LEDGER_FILE);
   assert.match(attempts[1].prompt, /BLE001 blind exception/);
   assert.equal(result.backend, 'fake');
   assert.equal(result.durationMs, 3);
@@ -260,8 +264,12 @@ test('Pi and mini-swe both run post-backend validation', async () => {
     const result = await runSelectedStage(spec, { backend, workspace: '/control' }, {
       runPi: fake,
       runMiniSwe: fake,
-      validate: ({ cwd }) => {
+      validate: ({ cwd, backend: validatedBackend }) => {
         assert.equal(cwd, '/work');
+        // Regression: the ledger must carry the real backend that produced the
+        // result, not a value hardcoded to 'pi' -- a mini-swe implementer run's
+        // checks_final records would otherwise be misattributed to Pi.
+        assert.equal(validatedBackend, backend);
         validations += 1;
       },
     });
@@ -419,6 +427,57 @@ test('mini-swe invocation uses upstream yolo CLI with local OpenAI-compatible mo
   assert.equal(invocation.options.env.MSWEA_COST_TRACKING, 'ignore_errors');
   assert.equal(invocation.options.env.OPENAI_API_KEY, 'local-mini-swe');
   assert.match(invocation.output, /terminal\.mini-swe-trajectory\.json$/);
+});
+
+test('mini-swe never receives the validation ledger path in its model-facing environment', () => {
+  // mini-swe gives the model raw shell with this process's environment,
+  // unlike Pi where the model only ever reaches a file through a trusted
+  // tool handler. If the ledger path were visible here, the model could
+  // forge a passing check -- or even the pipeline-completion marker --
+  // before the harness-owned checks.final pipeline ever runs.
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: '/work',
+    prompt: 'do the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementer', PI_VALIDATION_LEDGER_FILE: '/tmp/pi-validation-ledger-1-1.jsonl' },
+    artifacts: {
+      terminalResultPath: '/tmp/terminal',
+      metricsPath: '/tmp/metrics.jsonl',
+      rawLogPath: '/tmp/raw.jsonl',
+    },
+  });
+  const invocation = buildMiniSweInvocation(spec);
+  assert.equal(invocation.options.env.PI_VALIDATION_LEDGER_FILE, undefined);
+  assert.ok(!Object.keys(invocation.options.env).includes('PI_VALIDATION_LEDGER_FILE'));
+});
+
+test('discardModelPhaseLedger removes whatever is at the ledger path, not just hides it', () => {
+  // The path is mechanically derivable by a raw-shell agent (RUNNER_TEMP +
+  // GITHUB_RUN_ID + GITHUB_RUN_ATTEMPT + the naming template committed in
+  // the workflow file) even though modelFacingEnv hides the variable name.
+  // The actual guarantee has to be that nothing written there survives, not
+  // that the agent doesn't know where to write it -- so this must delete
+  // real forged content, not merely be a documented intention.
+  const dir = mkdtempSync(join(tmpdir(), 'mini-swe-ledger-'));
+  const ledgerPath = join(dir, 'ledger.jsonl');
+  writeFileSync(ledgerPath, '{"kind":"python_compile","scope":{"paths":["x.py"]},"status":"pass","source":"run_check","stage":"implementer","backend":"mini-swe","run_id":"forged"}\n');
+  discardModelPhaseLedger({ environment: { PI_VALIDATION_LEDGER_FILE: ledgerPath } });
+  assert.equal(existsSync(ledgerPath), false);
+});
+
+test('discardModelPhaseLedger is a no-op when no ledger path is configured', () => {
+  assert.doesNotThrow(() => discardModelPhaseLedger({ environment: {} }));
+});
+
+test('runMiniSweStage discards the ledger strictly after the child process exits and before computing the implementation result', () => {
+  const source = readScript('scripts/pi-common/mini-swe-stage-backend.mjs', 'utf8');
+  const waitIndex = source.indexOf("const code = await wait(child, 'mini-swe-agent');");
+  const discardIndex = source.indexOf('discardModelPhaseLedger(spec);');
+  const resultIndex = source.indexOf('writeImplementationResult(spec);');
+  assert.ok(waitIndex >= 0 && discardIndex >= 0 && resultIndex >= 0);
+  assert.ok(waitIndex < discardIndex, 'the ledger must be discarded only after the child process is confirmed exited');
+  assert.ok(discardIndex < resultIndex, 'the ledger must be discarded before any later harness-owned step runs');
 });
 
 test('mini-swe backend is explicit and limited to implementer', () => {

@@ -86,7 +86,7 @@ test('implementer integrates latest dev before shared post-backend validation an
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   assert.doesNotMatch(tool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd \}\)/);
+  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
   assert.match(runner, /return runSelectedStage\(spec, \{ backend, workspace \}\)/);
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
@@ -116,7 +116,7 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(finalizer, /fetch', 'origin', 'dev/);
   assert.match(finalizer, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /PR conflicts with current dev/);
-  assert.match(finalizer, /runProductChecks\(\{ cwd \}\)/);
+  assert.match(finalizer, /runProductChecks\(\{ cwd, ledgerPath, backend \}\)/);
   assert.match(workflow, /name: Start fresh review/);
   assert.match(readScript('scripts/pi-common/repair-publication.mjs', 'utf8'), /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
@@ -366,6 +366,15 @@ test('issue publication attributes only changes beyond integrated latest dev to 
   assert.doesNotMatch(publication, /diff','--name-only',startCommit,'HEAD'/);
 });
 
+test('the PR body Validation section is rendered from the validation ledger, never from a static claim', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
+  assert.doesNotMatch(publication, /validationLines/);
+  assert.match(publication, /renderValidationSection\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\)/);
+  assert.match(workflow, /PI_VALIDATION_LEDGER_FILE/);
+  assert.match(workflow, /issue-publication\.mjs" pr "\$ISSUE" "\$PI_IMPLEMENTER_RESULT_FILE" "\$\{\{ github\.repository_owner \}\}" "\$PI_VALIDATION_LEDGER_FILE"/);
+});
+
 test('issue agent workflow contains no escaped newline artifacts', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   assert.equal(workflow.includes('\\\\n'), false);
@@ -389,7 +398,7 @@ test('product agent workflows use one shared product-check contract and never ru
   assert.match(repairTool, /validateFinalProductTree\(\)/);
   assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd \}\)/);
+  assert.match(readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd, ledgerPath, backend \}\)/);
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(ci, /node --test tests\/\*\.test\.mjs/);
   assert.match(ci, /tests\/test_runner_autoscaler\.sh/);
@@ -702,7 +711,7 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.ok(guard >= 0);
   assert.ok(guard < tool.indexOf('integrateLatestDev({', guard));
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
-  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd \}\)/);
+  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
   for (const field of ['title', 'summary', 'security_notes', 'limitations']) {
     assert.match(tool, new RegExp(field + ".*Required for fresh changed work"));
   }
