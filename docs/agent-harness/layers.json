@@ -61,6 +61,7 @@
     "scripts/pi-common/repo-search.mjs",
     "scripts/pi-common/safe-edit.mjs",
     "scripts/pi-common/semantic-loop-guard.mjs",
+    "scripts/pi-common/session-state.mjs",
     "scripts/pi-common/structural-edit.mjs",
     "scripts/pi-common/terminal-tool.mjs",
     "scripts/pi-common/zoekt-search.mjs",

@@ -1,3 +1,4 @@
+import { SessionTransitions } from './session-state.mjs';
 const COMPLEXITY_RANK = Object.freeze({ trivial: 0, nontrivial: 1, normal: 1, complex: 2 });
 // Ceiling for the one-shot elevated mutation response: generated source is embedded in
 // tool-call arguments, so a small ceiling truncates a large `write`/`edit` before it executes.
@@ -200,6 +201,10 @@ export class ProgressController {
     this.boundedDirectBash = config.boundedDirectBash === true;
     this.singleUseTools = new Set(config.singleUseTools ?? []);
     this.usedSingleUseTools = new Set();
+    this.transitions = new SessionTransitions({
+      preparationTool: config.productiveProgress?.activationTool ?? null,
+    });
+    this.lastAlreadySatisfied = null;
 
     this.productiveProgress = config.productiveProgress ?? null;
     this.productiveState = this.productiveProgress?.startState ?? 'inactive';
@@ -411,6 +416,21 @@ export class ProgressController {
       };
     }
 
+    // A repeated one-shot transition is a deterministic no-op: it never reaches the underlying
+    // tool, never counts as progress (blocked calls have no execution-end), and does not touch
+    // the consecutive-repeat signature, so it cannot be mistaken for useful work.
+    const transitionKey = this.transitions.keyFor(toolName, input);
+    if (this.transitions.has(transitionKey)) {
+      this.lastAlreadySatisfied = { tool: toolName, key: transitionKey };
+      return {
+        block: true,
+        alreadySatisfied: true,
+        reason: this.transitions.alreadySatisfiedReason(toolName, transitionKey, {
+          actionRequired: this.productiveState === 'action_required',
+        }),
+      };
+    }
+
     const pendingComplexityTransition =
       this.requireComplexity &&
       !this.preparationSatisfied() &&
@@ -595,6 +615,19 @@ export class ProgressController {
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
     this.turnUsedTool = true;
     return undefined;
+  }
+
+  // Records a successful one-shot transition; returns its record only the first time.
+  recordTransitionCompleted(toolName, input, isError) {
+    if (isError) return null;
+    const key = this.transitions.keyFor(toolName, input);
+    if (key == null) return null;
+    return this.transitions.complete(key, {
+      tool: toolName,
+      serverId: input?.server_id,
+      workspaceRoot: input?.workspace_root,
+      fallback: key === 'preparation' && this.preparationState === 'PREPARATION_FALLBACK',
+    });
   }
 
   onToolExecutionEnd(toolName, isError, { madeProgress = true } = {}) {

@@ -1,0 +1,97 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+// Real runtime with a stubbed pi host: after PREPARATION_FALLBACK, subagents_enable and
+// lsp_start_server succeed once; the runtime must materialize state, update the tool surface,
+// and turn repeats into already_satisfied without executing them.
+test('runtime materializes completed transitions into context and tool surface', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-session-state-'));
+  try {
+    const context = path.join(dir, 'issue.json');
+    const loader = path.join(dir, 'loader.mjs');
+    fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
+    fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
+      if (specifier === 'typebox') return {
+        url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
+        shortCircuit: true,
+      };
+      return nextResolve(specifier, context);
+    }`);
+    const script = `
+      import assert from 'node:assert/strict';
+      import { EventEmitter } from 'node:events';
+      const { default: runtime } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
+      const bus = new EventEmitter();
+      const tools = new Map();
+      const handlers = new Map();
+      const messages = [];
+      let active = ['read', 'safe_edit', 'run_check', 'submit_result', 'need_more_evidence', 'begin_coding_session',
+        'request_large_mutation_budget', 'prepare_implementation', 'subagents_enable', 'lsp_start_server'];
+      const ctx = { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 32000 },
+        sessionManager: { getSessionId: () => 'parent' }, abort: () => {} };
+      const pi = {
+        events: { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) },
+        registerTool: tool => tools.set(tool.name, tool),
+        on: (name, fn) => handlers.set(name, fn),
+        getActiveTools: () => [...active], setActiveTools: names => { active = names; },
+        setModel: async () => true,
+        sendUserMessage: async text => { messages.push(text); },
+      };
+      bus.on('prompt-template:subagent:request', request => bus.emit('prompt-template:subagent:response', {
+        requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId,
+        status: 'failed', error: 'Missing structured_output call',
+      }));
+      runtime(pi);
+      let turn = 0;
+      let startups = 0;
+      async function call(name, input = {}, { enables } = {}) {
+        handlers.get('turn_start')({ turnIndex: turn });
+        const event = { toolName: name, toolCallId: name + turn, input };
+        const blocked = await handlers.get('tool_call')(event, ctx);
+        if (blocked) return blocked;
+        let result = { content: [{ type: 'text', text: 'ok' }] };
+        if (name === 'lsp_start_server') startups++;
+        if (tools.has(name)) result = await tools.get(name).execute(event.toolCallId, input, null, null, ctx);
+        if (enables) active.push(enables); // extension adds the newly enabled tool
+        await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        return undefined;
+      }
+      await call('prepare_implementation');
+      assert.ok(!active.includes('prepare_implementation'), 'prepare_implementation removed');
+      assert.ok(messages.some(m => /preparation: fallback-complete/.test(m)), 'preparation state injected');
+
+      await call('subagents_enable', {}, { enables: 'subagent' });
+      assert.ok(!active.includes('subagents_enable'), 'subagents_enable removed');
+      assert.ok(active.includes('subagent'), 'subagent schema exposed on the next turn');
+      assert.ok(messages.some(m => /subagents: enabled/.test(m) && /Do not call subagents_enable again/.test(m)));
+
+      const lsp = { server_id: 'python', workspace_root: ctx.cwd };
+      await call('lsp_start_server', lsp);
+      assert.equal(startups, 1);
+      assert.ok(messages.some(m => /python LSP: running/.test(m)));
+      const repeat = await call('lsp_start_server', lsp);
+      assert.equal(repeat.block, true);
+      assert.match(repeat.reason, /ALREADY_SATISFIED/);
+      assert.equal(startups, 1, 'startup not re-executed');
+      const again = await call('subagents_enable');
+      assert.match(again.reason, /ALREADY_SATISFIED/);
+    `;
+    const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
+      cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context,
+        PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false', PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
+    });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const logs = result.stdout + result.stderr;
+    for (const marker of ['PI_STATE_TRANSITION_COMPLETE', 'PI_SESSION_STATE', 'PI_TOOL_SURFACE_UPDATE', 'PI_ALREADY_SATISFIED']) {
+      assert.match(logs, new RegExp(marker), marker);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
