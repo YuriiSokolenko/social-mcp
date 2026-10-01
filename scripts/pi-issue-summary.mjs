@@ -17,13 +17,15 @@ const labelNames = issue.labels.map(label => label.name);
 
 const stage = issue.state === 'closed' && issue.state_reason === 'completed' ? 'COMPLETED'
   : pr?.merged_at ? 'MERGED / DEV CI'
+  : L.blocked && labelNames.includes(L.blocked) ? 'BLOCKED'
+  : labelNames.includes(L.needsHuman) ? 'NEEDS HUMAN'
   : labelNames.includes(L.pr) ? 'READY TO MERGE'
   : labelNames.includes(L.running) ? 'IMPLEMENTING'
   : labelNames.includes(L.ready) ? 'READY'
   : labelNames.includes(L.architectReady) ? 'ARCHITECTING'
   : labelNames.includes(L.queued) ? 'DISPATCHABLE'
   : labelNames.includes(L.epic) ? 'EPIC'
-  : labelNames.includes(L.needsHuman) ? 'NEEDS HUMAN' : 'BACKLOG';
+  : 'BACKLOG';
 
 const lines = [
   `## Issue #${issueNumber} pipeline`,
