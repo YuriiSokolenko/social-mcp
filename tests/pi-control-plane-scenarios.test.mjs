@@ -191,10 +191,14 @@ test('dispatcher-ready label event is the only normal wake after architect publi
 test('manual Implementer dispatch bypasses pi:ready while Dispatcher keeps the strict ready gate', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const dispatcher = readScript('scripts/pi-dispatcher.mjs', 'utf8');
-  assert.match(workflow, /require_ready:/);
+  assert.match(workflow, /dispatch_mode:/);
+  assert.match(workflow, /default: manual/);
+  assert.match(workflow, /PI_DISPATCH_MODE: \$\{\{ inputs\.dispatch_mode \|\| 'manual' \}\}/);
   assert.match(workflow, /MODE="plain"/);
+  assert.match(workflow, /PI_DISPATCH_MODE" = "dispatcher"[\s\S]*MODE="ready"/);
   assert.match(workflow, /ACTION="running-manual"/);
-  assert.match(dispatcher, /dispatchWorkflow\("pi-issue-agent\.yml", \{ issue_number: String\(number\), require_ready: true \}\)/);
+  assert.match(workflow, /PI_DISPATCH_MODE" = "dispatcher"[\s\S]*ACTION="running"/);
+  assert.match(dispatcher, /dispatchWorkflow\(workflowFile\("implementer"\), \{ issue_number: String\(number\), dispatch_mode: "dispatcher" \}\)/);
 });
 
 
