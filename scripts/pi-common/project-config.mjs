@@ -24,7 +24,7 @@ export const CONFIG_FILE_NAME = '.agent-harness.json';
 export const CONFIG_ENV = 'AGENT_HARNESS_CONFIG';
 
 const LABEL_ROLES = Object.freeze([
-  'queued', 'ready', 'running', 'pr', 'needsHuman', 'architectReady', 'epic', 'reviewPassed', 'reviewChangesRequested',
+  'queued', 'ready', 'running', 'pr', 'needsHuman', 'blocked', 'architectReady', 'epic', 'reviewPassed', 'reviewChangesRequested',
 ]);
 // Workflow files the harness dispatches or watches, by ROLE. Filenames are project
 // wiring (the caller workflows live in the project repository), not harness names.
