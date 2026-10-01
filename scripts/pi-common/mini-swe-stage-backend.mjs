@@ -180,6 +180,26 @@ function writeImplementationResult(spec) {
   );
 }
 
+/**
+ * Excluding PI_VALIDATION_LEDGER_FILE from the model-facing environment
+ * (modelFacingEnv) only hides the variable name; the exact path is still
+ * mechanically derivable from other vars the model does have (RUNNER_TEMP,
+ * GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT) plus the naming template committed in
+ * this very workflow file, which mini-swe's raw shell can read. The real
+ * guarantee cannot be "the agent doesn't know the path" -- it has to be
+ * "nothing the agent could have written there survives." mini-swe has no
+ * legitimate ledger producer during the model phase (no run_check tool
+ * exists for it yet), so once the child process is confirmed exited,
+ * anything at that path is necessarily forged. Call this immediately after
+ * the child process is confirmed exited, strictly before the harness's own
+ * checks.final pipeline (which runs after `runMiniSweStage` returns) ever
+ * reads or appends to the ledger.
+ */
+export function discardModelPhaseLedger(spec) {
+  const ledgerPath = spec.environment.PI_VALIDATION_LEDGER_FILE;
+  if (ledgerPath) fs.rmSync(ledgerPath, { force: true });
+}
+
 export async function runMiniSweStage(spec) {
   const startedAt = Date.now();
   const invocation = buildMiniSweInvocation(spec);
@@ -199,6 +219,7 @@ export async function runMiniSweStage(spec) {
   }
 
   const code = await wait(child, 'mini-swe-agent');
+  discardModelPhaseLedger(spec);
   await Promise.all(streamDone);
   if (rawStream) {
     rawStream.end();
