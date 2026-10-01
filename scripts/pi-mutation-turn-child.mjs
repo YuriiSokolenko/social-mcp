@@ -11,8 +11,10 @@ import {
   writeStagedMutation,
 } from './pi-common/mutation-turn.mjs';
 
-// Loaded only inside the forked `implementer-mutation-turn` child via .pi/settings.json.
-// The child is a fork of the Implementer's own session (same transcript, same evidence); this
+// Loaded only inside the forked `implementer-mutation-turn` child, by absolute path from the
+// trusted control checkout: the parent runtime registers that agent in code (see
+// mutationTurnAgentDefinition in pi-agent-runtime.mjs), so no issue-worktree copy of this file,
+// .pi/agents or .pi/settings.json is consulted. The child is a fork of the Implementer's own session (same transcript, same evidence); this
 // extension narrows it to exactly the one mutation the parent declared. Its write/edit keep
 // the builtin names and arguments, but never touch the worktree: they stage the payload for
 // the parent runtime, which alone validates and applies it. Fails closed when no turn was

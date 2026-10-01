@@ -10,12 +10,6 @@
         "subagentOnlyExtensions": [
           "./scripts/pi-subagent-response-budget.mjs"
         ]
-      },
-      "implementer-mutation-turn": {
-        "subagentOnlyExtensions": [
-          "./scripts/pi-subagent-response-budget.mjs",
-          "./scripts/pi-mutation-turn-child.mjs"
-        ]
       }
     }
   }

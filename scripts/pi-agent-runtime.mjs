@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import { Type } from 'typebox';
 
@@ -42,6 +43,44 @@ import {
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'request_mutation_turn']);
+
+// Trust boundary: the forked mutation turn's agent definition, tool allowlist and child
+// extensions come from THIS module's control checkout (the trusted harness), never from the
+// issue worktree the Implementer can rewrite. It is registered in code through pi-subagents'
+// runtime-agent registry; an explicit `extensions` list disables ambient (worktree/global)
+// extensions for the child, worktree `agentOverrides` can only narrow model/thinking for a
+// runtime agent, and a same-name worktree agent collides and fails the launch closed.
+const CONTROL_SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_AGENT_REGISTER_EVENT = 'pi-subagents:runtime-agent-register:v1';
+const MUTATION_TURN_SYSTEM_PROMPT = `You are the same Implementer, continuing your own session in mutation mode.
+
+The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you already decided. Nothing new needs to be investigated or decided. Your normal turns are limited to a small output ceiling; this one turn has a large ceiling only so the already-decided payload fits.
+
+Rules:
+- Call the single available mutation tool exactly once, for the declared path, with the complete payload. For write, the complete file content: no placeholders, ellipses, or "rest unchanged" markers. For edit, exact edits[] replacements against the current file.
+- Do not draft, restate, or reason through the code before the call; put it directly in the tool arguments.
+- Do not explore, re-plan, or change the target. No other tool is available, and a different path or operation is rejected.
+- After the tool result, reply with one short line and stop. The runtime validates and applies the mutation; your normal turn then continues with verification.`;
+
+export function mutationTurnAgentDefinition(scriptsDir = CONTROL_SCRIPTS_DIR) {
+  return {
+    description: 'One-shot large-output mutation turn forked from the Implementer session; emits exactly the one declared write/edit',
+    systemPrompt: MUTATION_TURN_SYSTEM_PROMPT,
+    tools: ['write', 'edit'],
+    // Explicit list: ambient extensions are disabled for the child; both paths are absolute
+    // paths inside the trusted control checkout.
+    extensions: [
+      path.join(scriptsDir, 'pi-subagent-response-budget.mjs'),
+      path.join(scriptsDir, 'pi-mutation-turn-child.mjs'),
+    ],
+    systemPromptMode: 'append',
+    inheritProjectContext: true,
+    inheritGlobalContext: true,
+    inheritSkills: false,
+    defaultContext: 'fork',
+    thinking: 'off',
+  };
+}
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
@@ -407,7 +446,25 @@ export default function (pi) {
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
 
+  // Registers the trusted mutation-turn agent with pi-subagents (synchronous event contract).
+  let mutationTurnAgent = null;
+  function ensureMutationTurnAgent() {
+    if (mutationTurnAgent?.ok) return mutationTurnAgent;
+    const definition = mutationTurnAgentDefinition();
+    const request = { version: 1, name: config.productiveProgress.mutationTurnAgent, definition };
+    pi.events.emit(RUNTIME_AGENT_REGISTER_EVENT, request);
+    mutationTurnAgent = request.result
+      ? (request.result.ok ? { ok: true } : { ok: false, error: String(request.result.error?.message ?? request.result.error) })
+      : { ok: false, error: 'pi-subagents did not handle runtime agent registration' };
+    mutationTurnLog(mutationTurnAgent.ok ? 'agent_registered' : 'agent_unavailable', {
+      agent: request.name, source: 'runtime', tools: definition.tools, extensions: definition.extensions,
+      ...(mutationTurnAgent.ok ? {} : { error: mutationTurnAgent.error }),
+    });
+    return mutationTurnAgent;
+  }
+
   pi.on('session_start', async (_event, ctx) => {
+    if (stage === 'implementer' && config.productiveProgress?.mutationTurnTool) ensureMutationTurnAgent();
     if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
     await applyBudget('short', ctx);
     syncActionToolSurface(syncProductiveState());
@@ -711,6 +768,11 @@ export default function (pi) {
           if (!parentSessionFile || !fs.existsSync(parentSessionFile)) {
             mutationTurnLog('rejected', { ...target, stage: 'request', reason: 'fork_unavailable' });
             throw new MutationTurnRejected('fork_unavailable', 'This session is not persisted, so a same-context mutation turn cannot be forked. Make the change with smaller direct edits.');
+          }
+          const agentReady = ensureMutationTurnAgent();
+          if (!agentReady.ok) {
+            mutationTurnLog('rejected', { ...target, stage: 'request', reason: 'agent_unavailable', error: agentReady.error });
+            throw new MutationTurnRejected('agent_unavailable', `The trusted mutation-turn agent is not registered (${agentReady.error}). Make the change with smaller direct edits.`);
           }
           const stagingFile = path.join(os.tmpdir(), `pi-mutation-turn-${turnId}.json`);
           const startedAt = Date.now();
