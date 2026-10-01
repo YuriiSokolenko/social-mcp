@@ -10,6 +10,11 @@
         "subagentOnlyExtensions": [
           "./scripts/pi-subagent-response-budget.mjs"
         ]
+      },
+      "mutation-writer": {
+        "subagentOnlyExtensions": [
+          "./scripts/pi-subagent-response-budget.mjs"
+        ]
       }
     }
   }
