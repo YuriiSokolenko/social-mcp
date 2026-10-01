@@ -11,7 +11,9 @@ import {
   ProgressController,
   actionRequiredToolNames,
   classifyTruncatedToolCall,
+  MAX_CEILING_WITHOUT_TOOL_TURNS,
   nextActionRequiredProseOnlyTurns,
+  nextCeilingWithoutToolTurns,
   nextActionResponseCap,
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
@@ -323,6 +325,7 @@ export default function (pi) {
   let appliedActionCap = 0;
   let actionTurnAttemptedTool = false;
   let actionRequiredProseOnlyTurns = 0;
+  let ceilingWithoutToolTurns = 0;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
@@ -739,7 +742,7 @@ export default function (pi) {
       pi.registerTool({
         name: mutationTurnTool,
         label: 'Request large mutation turn',
-        description: `Use when you have already decided one file mutation whose payload will not fit in your normal response (for example a complete new source file). Declare only the operation and path. The runtime forks THIS session (same conversation, evidence and decisions) into one turn with a ${turnConfig.mutationTurnMaxTokens}-token ceiling where only that write/edit is available; you then emit the payload there with the normal tool arguments. The runtime validates and applies it like a direct write (rollback, run_check permit and progress included), and you continue here at your normal response budget. operation=write creates or fully replaces the file; operation=edit makes exact replacements in an existing file. Small changes stay on direct structural_edit/safe_edit/edit/write.`,
+        description: `Use when the next mutation's payload will not fit in your normal response (for example a complete new source file). Call it as soon as the target is known: declare only the operation and path, and do NOT draft or outline the code here first. The runtime forks THIS session (same conversation, evidence and decisions) into one turn with a ${turnConfig.mutationTurnMaxTokens}-token ceiling where only that write/edit is available; you then emit the payload there with the normal tool arguments. The runtime validates and applies it like a direct write (rollback, run_check permit and progress included), and you continue here at your normal response budget. operation=write creates or fully replaces the file; operation=edit makes exact replacements in an existing file. Small changes stay on direct structural_edit/safe_edit/edit/write.`,
         parameters: Type.Object({
           operation: Type.Union([Type.Literal('write'), Type.Literal('edit')]),
           path: Type.String({ minLength: 1, maxLength: 1000 }),
@@ -1174,6 +1177,18 @@ export default function (pi) {
       return;
     }
 
+    ceilingWithoutToolTurns = nextCeilingWithoutToolTurns(ceilingWithoutToolTurns, {
+      actionRequired: runtimeActionRequired,
+      attemptedTool: actionTurnAttemptedTool,
+      madeProgress: controller.turnMadeProgress,
+      responseHitOutputCeiling,
+    });
+    if (ceilingWithoutToolTurns >= MAX_CEILING_WITHOUT_TOOL_TURNS) {
+      console.error(`PI_ACTION_REQUIRED_ABORT: ${ceilingWithoutToolTurns} consecutive action-required responses hit the output ceiling without a tool call; aborting stage`);
+      ctx.abort();
+      return;
+    }
+
     let targetActionCap = actionCap > 0
       ? nextActionResponseCap({
           baseCap: actionCap,
@@ -1209,16 +1224,22 @@ export default function (pi) {
     }
 
     if (runtimeActionRequired && !controller.turnMadeProgress && !loopGuardSteeredThisTurn) {
-      const directive = preComplexityRequired
+      const mutationTurnTool = config.productiveProgress?.mutationTurnTool;
+      const directive = stage === 'implementer' && ceilingWithoutToolTurns > 0
+        // Code drafted in reasoning (or a cut-off call) ate the whole response: name it exactly.
+        ? `RUNTIME: your last response used the entire ${actionCap || 'output'}-token ceiling without calling any tool. Do not draft, outline, or reason through file contents in this session; that output is discarded. In the next response call a tool immediately.${mutationTurnTool ? ` If the next mutation is a large file or payload, call ${mutationTurnTool}({operation, path}) now with only the operation and path; the forked turn has your full context and writes the content itself.` : ''} If it is small, call the direct mutation tool now.`
+        : preComplexityRequired
         ? 'RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. Call declare_task_complexity immediately with the classification already supported by the issue, diff, and changed code.'
         : postComplexityRequired
           ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
           : stage === 'implementer'
             ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, request_mutation_turn (for a large already-decided payload), rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
             : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
-      const reason = actionRequiredProseOnlyTurns > 0
-        ? 'prose-only retry'
-        : 'action-required transition';
+      const reason = stage === 'implementer' && ceilingWithoutToolTurns > 0
+        ? `ceiling without tool (${ceilingWithoutToolTurns}/${MAX_CEILING_WITHOUT_TOOL_TURNS})`
+        : actionRequiredProseOnlyTurns > 0
+          ? 'prose-only retry'
+          : 'action-required transition';
       console.log(`PI_ACTION_REQUIRED_STEER: ${reason}; injecting user-level runtime directive`);
       await pi.sendUserMessage(directive, { deliverAs: 'steer' });
     }

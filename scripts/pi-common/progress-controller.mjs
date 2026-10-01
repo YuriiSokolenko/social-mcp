@@ -132,6 +132,22 @@ export function nextActionRequiredProseOnlyTurns(
   return current + 1;
 }
 
+// Consecutive action-required responses that consumed the whole output ceiling without
+// attempting any tool: typically code being drafted in reasoning (or a cut-off tool call).
+// The prose-only counter above deliberately ignores such turns, so they need their own bound.
+export const MAX_CEILING_WITHOUT_TOOL_TURNS = 3;
+
+export function nextCeilingWithoutToolTurns(
+  current,
+  { actionRequired, attemptedTool, madeProgress, responseHitOutputCeiling },
+) {
+  if (!Number.isSafeInteger(current) || current < 0) {
+    throw new Error('ceiling-without-tool turn count must be a non-negative integer');
+  }
+  if (!actionRequired || attemptedTool === true || madeProgress === true) return 0;
+  return responseHitOutputCeiling === true ? current + 1 : 0;
+}
+
 export function actionRequiredToolNames(
   activeToolNames,
   { actionTools = [], controlTools = [], blockerTool = null, verificationTools = [] } = {},

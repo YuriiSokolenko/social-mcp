@@ -11,7 +11,7 @@ import {
   sha256,
   validateMutationTurnRequest,
 } from '../scripts/pi-common/mutation-turn.mjs';
-import { ProgressController, truncatedToolCallGuidance } from '../scripts/pi-common/progress-controller.mjs';
+import { MAX_CEILING_WITHOUT_TOOL_TURNS, ProgressController, nextCeilingWithoutToolTurns, truncatedToolCallGuidance } from '../scripts/pi-common/progress-controller.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 function tempDir() {
@@ -303,7 +303,8 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { throw new Error('unexpected abort'); },
+      let aborts = 0;
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (mode !== 'ceiling-draft') throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -453,6 +454,22 @@ function runtimeScenario(mode) {
       if (['noop'].includes(mode)) fs.writeFileSync(cwd + '/generated.py', 'REQUIRED_CONSTANT = "abc123"\\nHELP = "q: quit\\\\nr: restart"\\n');
       if (['edit', 'edit-race'].includes(mode)) fs.writeFileSync(cwd + '/generated.py', 'REQUIRED_CONSTANT = "OLD_VALUE"\\n');
 
+      if (mode === 'ceiling-draft') {
+        // Smoke 4 shape: the model drafts the file in reasoning and every response ends at the
+        // 2048 ceiling without any tool call. Steered precisely each time, aborted on the third.
+        for (let i = 1; i <= 3; i++) {
+          handlers.get('turn_start')({ turnIndex: turn });
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 2048 } } }, ctx);
+          if (i < 3) {
+            assert.equal(aborts, 0, 'not aborted after ' + i);
+            assert.ok(steers.at(-1).includes('without calling any tool. Do not draft, outline, or reason through file contents'), steers.at(-1));
+            assert.ok(steers.at(-1).includes('call request_mutation_turn({operation, path}) now with only the operation and path'), steers.at(-1));
+          }
+        }
+        assert.equal(aborts, 1, 'bounded: third ceiling-hit response without a tool aborts');
+        assert.equal(turnRequests.length, 0);
+        process.exit(0);
+      }
       handlers.get('turn_start')({ turnIndex: turn });
       assert.ok(active.includes('request_mutation_turn'));
       assert.ok(!active.includes('run_check'));
@@ -584,6 +601,23 @@ test('rewriting the issue-worktree guard, settings or agent definition cannot wi
   assert.match(tampered, /"phase":"applied"/);
   // A same-name agent planted in the worktree collides with the runtime agent: fail closed.
   assert.match(runtimeScenario('shadow-agent'), /"phase":"failed".*"reason":"turn_failed"/);
+});
+
+test('ceiling-hit responses without a tool are counted, reset by any tool attempt, and bounded', () => {
+  const step = (count, overrides = {}) => nextCeilingWithoutToolTurns(count, {
+    actionRequired: true, attemptedTool: false, madeProgress: false, responseHitOutputCeiling: true, ...overrides,
+  });
+  assert.equal(step(0), 1);
+  assert.equal(step(2), 3);
+  assert.equal(step(2, { attemptedTool: true }), 0);
+  assert.equal(step(2, { madeProgress: true }), 0);
+  assert.equal(step(2, { responseHitOutputCeiling: false }), 0, 'a short prose turn is the prose-only guard\'s job');
+  assert.equal(step(2, { actionRequired: false }), 0);
+  assert.equal(MAX_CEILING_WITHOUT_TOOL_TURNS, 3);
+  const logs = runtimeScenario('ceiling-draft');
+  assert.match(logs, /PI_ACTION_REQUIRED_STEER: ceiling without tool \(1\/3\)/);
+  assert.match(logs, /PI_ACTION_REQUIRED_STEER: ceiling without tool \(2\/3\)/);
+  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: 3 consecutive action-required responses hit the output ceiling without a tool call/);
 });
 
 test('run_check scope normalization from current dev accepts relative and worktree-absolute paths (#281)', async () => {
