@@ -541,30 +541,22 @@ test('stage runner delegates shared Pi extensions to the Pi backend once for all
 
 test('stage configuration is the single source of per-agent runtime limits', () => {
   const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
-  for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair']) {
-    assert.match(config, new RegExp(`${name}:[\\s\\S]*requiredFirstReadPath`));
-  }
-  const implementerBlock = config.slice(
-    config.indexOf('  implementer:'),
-    config.indexOf('\n  },\n});', config.indexOf('  implementer:')),
-  );
-  assert.doesNotMatch(implementerBlock, /requiredFirstReadPath/);
+  assert.doesNotMatch(config, /requiredFirstReadPath:/);
   assert.match(config, /dispatcher:[\s\S]*maxTurns: 30/);
   assert.match(config, /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
 });
 
-test('agent prompts document the shared response-budget contract', () => {
-  for (const name of ['architect', 'implementer', 'repair', 'reviewer', 'dispatcher']) {
-    const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
-    assert.match(source, /set_response_budget/);
-    assert.match(source, /SHORT[\s\S]*2048/);
-    assert.match(source, /NORMAL[\s\S]*4096/);
-    assert.match(source, /DEEP[\s\S]*8192/);
-  }
-  const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
-  assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
-  assert.match(triage, /`set_response_budget` is intentionally unavailable/);
+test('runtime owns response budgets instead of duplicating them in role contracts', () => {
+  const controller = readScript('scripts/pi-common/progress-controller.mjs', 'utf8');
+  assert.match(controller, /short: 2048/);
+  assert.match(controller, /normal: 4096/);
+  assert.match(controller, /deep: 8192/);
   assert.match(readScript('scripts/pi-common/stage-config.mjs', 'utf8'), /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
+
+  for (const name of ['architect', 'implementer', 'repair', 'reviewer', 'dispatcher', 'triage']) {
+    const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
+    assert.doesNotMatch(source, /SHORT[\s\S]*2048|NORMAL[\s\S]*4096|DEEP[\s\S]*8192/);
+  }
 });
 
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
