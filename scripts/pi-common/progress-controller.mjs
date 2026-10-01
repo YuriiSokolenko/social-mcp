@@ -230,6 +230,7 @@ export class ProgressController {
       deep: positiveInteger(Number(env.PI_RESPONSE_BUDGET_DEEP ?? RESPONSE_BUDGETS.deep), 'PI_RESPONSE_BUDGET_DEEP'),
     };
 
+    this.preparationState = 'PENDING';
     this.complexity = this.requireComplexity ? null : 'default';
     this.absoluteTurn = 0;
     this.lastTurnIndex = null;
@@ -251,6 +252,7 @@ export class ProgressController {
       if (next === current) return { complexity: this.complexity, changed: false };
     }
     const previous = this.complexity;
+    this.preparationState = 'PREPARED';
     this.complexity = name;
     return { complexity: name, previous, changed: previous !== name };
   }
@@ -308,8 +310,29 @@ export class ProgressController {
     return !this.requireComplexity || Boolean(this.complexity);
   }
 
+  // Preparation infrastructure can fail without producing a classification. Keep that
+  // failure explicit rather than inventing complexity or successful planner output.
+  preparationSatisfied() {
+    return this.complexityRecorded() || this.preparationState === 'PREPARATION_FALLBACK';
+  }
+
+  enterPreparationFallback() {
+    if (!this.requiredFirstReadDone ||
+        !this.usedSingleUseTools.has(this.productiveActivationTool) ||
+        this.preparationSatisfied()) {
+      throw new Error('Preparation fallback requires an attempted, unresolved preparation action');
+    }
+    this.preparationState = 'PREPARATION_FALLBACK';
+    // No planner estimate is available. Start with an action and preserve the normal
+    // need_more_evidence escape hatch for any concrete missing implementation fact.
+    this.productiveEvidenceRemaining = 0;
+    this.productiveState = 'action_required';
+    this.evidenceUnlockUsedSinceProgress = false;
+    return { preparationState: this.preparationState, complexity: this.complexity };
+  }
+
   preComplexityActionRequired() {
-    if (!this.requireComplexity || this.complexity || !this.requiredFirstReadDone) return false;
+    if (this.preparationSatisfied() || !this.requiredFirstReadDone) return false;
     const preComplexityTurns = Math.max(
       0,
       this.absoluteTurn - (this.complexityTurnBase ?? this.absoluteTurn),
@@ -363,19 +386,19 @@ export class ProgressController {
 
     const pendingComplexityTransition =
       this.requireComplexity &&
-      !this.complexity &&
+      !this.preparationSatisfied() &&
       this.preComplexityTransitionTools.has(toolName);
     const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
 
     const preComplexityEvidenceTool =
       this.requireComplexity &&
-      !this.complexity &&
+      !this.preparationSatisfied() &&
       !pendingComplexityTransition &&
       !terminalTool &&
       this.preComplexityAllowedTools.has(toolName);
 
-    if (this.requireComplexity && !this.complexity) {
+    if (this.requireComplexity && !this.preparationSatisfied()) {
       const orientationDeadlineReached = this.preComplexityActionRequired();
       if (orientationDeadlineReached && !pendingComplexityTransition && !terminalTool) {
         const reason = this.preComplexityEvidenceBudget != null && this.preComplexityEvidenceRemaining <= 0
@@ -542,7 +565,7 @@ export class ProgressController {
     if (
       isError &&
       this.requireComplexity &&
-      !this.complexity &&
+      !this.preparationSatisfied() &&
       this.preComplexityEvidenceBudget != null &&
       this.preComplexityAllowedTools.has(toolName) &&
       !this.preComplexityTransitionTools.has(toolName)
@@ -576,7 +599,8 @@ export class ProgressController {
       this.productiveEvidenceRemaining = 0;
       if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
     }
-    if (!isError && this.productiveProgress && toolName === this.productiveActivationTool) {
+    if (!isError && this.productiveProgress && toolName === this.productiveActivationTool &&
+        this.preparationState !== 'PREPARATION_FALLBACK') {
       const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
       this.productiveEvidenceRemaining = evidenceBudget;
       // A task whose planner-reported evidence need is zero has nothing to gather: go
