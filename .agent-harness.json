@@ -1,7 +1,7 @@
 {
   "version": 1,
   "git": {
-    "defaultBranch": "dev",
+    "defaultBranch": "smoke/273-delegated-writer",
     "issueBranchPrefix": "pi/issue-",
     "checkpointBranchSuffix": "-checkpoint",
     "identity": {
