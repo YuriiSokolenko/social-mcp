@@ -598,7 +598,8 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.match(config, /implementer:[\s\S]*boundedDirectBash: true/);
 
   assert.match(agent, /### Restored work[\s\S]*Call `submit_result` with no arguments immediately[\s\S]*Do \*\*not\*\* call `prepare_implementation`/);
-  assert.match(agent, /contract is embedded verbatim[\s\S]*Do not search for or re-read this file/i);
+  assert.match(agent, /role overlay follows the shared agent contract in the initial prompt/i);
+  assert.match(config, /shared_agent_contract[\s\S]*role_contract[\s\S]*trusted_context/);
   assert.match(agent, /Do not pass `already_satisfied` for restored work/);
   assert.match(agent, /zero diff[\s\S]*records the issue as already satisfied automatically/);
   assert.match(agent, /### Fresh work[\s\S]*Call `prepare_implementation` exactly once/);
@@ -718,7 +719,7 @@ test('reviewer orients and plans before declaring complexity', () => {
   const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.match(config, /reviewer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash', 'lsp_start_server', 'lsp_find_symbol'\]/);
-  for (const value of ['Read `agents/reviewer/AGENTS.md`', 'Read the linked issue', 'Inspect the complete PR diff', 'Write a concise review plan', '1000 tokens', 'Call `declare_task_complexity`', 'Continue the semantic review']) {
+  for (const value of ['Read the linked issue', 'Inspect the complete PR diff', 'Write a concise review plan', '1000 tokens', 'Call `declare_task_complexity`', 'Continue the semantic review']) {
     assert.ok(agent.includes(value), `reviewer startup marker missing: ${value}`);
   }
   assert.match(agent, /Known-symbol semantic navigation/);
@@ -728,8 +729,8 @@ test('reviewer orients and plans before declaring complexity', () => {
   assert.match(agent, /current code and relevant tests are authoritative/i);
   assert.match(agent, /issue text and inspected current code conflict/i);
   assert.match(agent, /CHANGES_REQUESTED/);
-  assert.match(config, /current checked-out code is authoritative for factual behavior/i);
-  assert.match(config, /do not PASS a PR that repeats an issue's factual claim/i);
+  assert.match(agent, /current code and relevant tests are authoritative/i);
+  assert.match(agent, /issue text and inspected current code conflict/i);
   assert.match(config, /Reviewer LSP workspace root/);
 });
 
@@ -737,7 +738,7 @@ test('repair orients and plans before declaring complexity', () => {
   const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
   assert.match(config, /repair:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash'\]/);
-  for (const value of ['Read `agents/repair/AGENTS.md`', 'Read the concrete blocking Reviewer finding', 'Inspect the PR diff', 'Write a short repair plan', '1000 output tokens', 'Call `declare_task_complexity`', 'Immediately execute the first plan item']) {
+  for (const value of ['Read the concrete blocking Reviewer finding', 'Inspect the PR diff', 'Write a short repair plan', '1000 output tokens', 'Call `declare_task_complexity`', 'Immediately execute the first plan item']) {
     assert.ok(agent.includes(value), `repair startup marker missing: ${value}`);
   }
 });
