@@ -65,6 +65,17 @@ test('python_compile passes on valid source and reports a syntax error with file
   assert.ok(fail.diagnostics[0].message.length > 0);
 });
 
+test('newly created smoke file compiles with a worktree-absolute path', { skip: !hasPython }, async t => {
+  const dir = worktree();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'brick_smoke.py'), 'answer = 42\n');
+  for (const target of ['brick_smoke.py', path.join(dir, 'brick_smoke.py'), path.join(fs.realpathSync(dir), 'brick_smoke.py')]) {
+    const result = await runCheck(dir, { kind: 'python_compile', paths: [target] }, directOptions({ bins: { python: pythonBin } }));
+    assert.equal(result.status, 'pass', target);
+    assert.equal(result.summary, 'Compiled cleanly');
+  }
+});
+
 test('ruff pass and parsed failure use the fixed shared argv', async () => {
   const dir = worktree({ 'a.py': 'import os\n' });
   const argvLog = path.join(dir, 'argv.txt');
