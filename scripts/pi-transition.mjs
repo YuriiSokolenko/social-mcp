@@ -63,7 +63,7 @@ if (isIssueTransitionNoop(item, action)) {
 } else {
   const expected = names(item);
   const target = validateIssueTransition(item, action);
-  await replaceIssueLabels(expected, target, action, { complete: action === 'satisfied' });
+  await replaceIssueLabels(expected, target, action, { complete: action === 'satisfied' && target == null });
   if (action !== 'running') await postComment();
   console.log(`issue #${number}: transitioned to ${target}`);
 }
