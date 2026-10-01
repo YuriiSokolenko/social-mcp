@@ -541,36 +541,27 @@ test('stage runner delegates shared Pi extensions to the Pi backend once for all
 
 test('stage configuration is the single source of per-agent runtime limits', () => {
   const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
-  for (const name of ['architect', 'dispatcher', 'triage', 'reviewer', 'repair']) {
-    assert.match(config, new RegExp(`${name}:[\\s\\S]*requiredFirstReadPath`));
-  }
-  const implementerBlock = config.slice(
-    config.indexOf('  implementer:'),
-    config.indexOf('\n  },\n});', config.indexOf('  implementer:')),
-  );
-  assert.doesNotMatch(implementerBlock, /requiredFirstReadPath/);
+  assert.doesNotMatch(config, /requiredFirstReadPath:/);
   assert.match(config, /dispatcher:[\s\S]*maxTurns: 30/);
   assert.match(config, /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
 });
 
-test('agent prompts document the shared response-budget contract', () => {
-  for (const name of ['architect', 'implementer', 'repair', 'reviewer', 'dispatcher']) {
-    const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
-    assert.match(source, /set_response_budget/);
-    assert.match(source, /SHORT[\s\S]*2048/);
-    assert.match(source, /NORMAL[\s\S]*4096/);
-    assert.match(source, /DEEP[\s\S]*8192/);
-  }
-  const triage = fs.readFileSync('agents/triage/AGENTS.md', 'utf8');
-  assert.match(triage, /fixed maximum of \*\*1000 output tokens\*\*/);
-  assert.match(triage, /`set_response_budget` is intentionally unavailable/);
+test('runtime owns response budgets instead of duplicating them in role contracts', () => {
+  const controller = readScript('scripts/pi-common/progress-controller.mjs', 'utf8');
+  assert.match(controller, /short: 2048/);
+  assert.match(controller, /normal: 4096/);
+  assert.match(controller, /deep: 8192/);
   assert.match(readScript('scripts/pi-common/stage-config.mjs', 'utf8'), /triage:[\s\S]*fixedResponseMaxTokens: 1000/);
+
+  for (const name of ['architect', 'implementer', 'repair', 'reviewer', 'dispatcher', 'triage']) {
+    const source = fs.readFileSync(`agents/${name}/AGENTS.md`, 'utf8');
+    assert.doesNotMatch(source, /SHORT[\s\S]*2048|NORMAL[\s\S]*4096|DEEP[\s\S]*8192/);
+  }
 });
 
 test('reviewer metrics carry the linked issue and trivial reviews use the fast-path contract', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
-  const stageConfig = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const guard = readScript('scripts/pi-common/pr-guard.mjs', 'utf8');
   const prompt = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.ok(workflow.includes('ISSUE=$(jq -r \'\.issue\' "$CONTEXT")'));
@@ -580,12 +571,12 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.match(runner, /PI_ISSUE: env\.PI_ISSUE \?\? env\.ISSUE \?\? ''/);
   assert.match(runner, /writeGithubEnv\(env, 'PI_ISSUE', spec\.environment\.PI_ISSUE\)/);
   assert.match(prompt, /\*\*trivial\*\* — tiny self-contained diff/);
-  assert.match(stageConfig, /do not rerun pytest, Ruff, or git diff --check/);
+  assert.ok(prompt.includes('**Never rerun them.**'));
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /History or prior attempts are valid when they materially answer a concrete question/);
   assert.match(prompt, /Never load skills for trivial reviews/);
-  assert.match(prompt, /blocked or failed tool call \*\*did not execute\*\*/i);
-  assert.ok(prompt.includes('**Never rerun them.**'));
+  const sharedContract = fs.readFileSync('agents/AGENTS.md', 'utf8');
+  assert.match(sharedContract, /blocked, failed, cancelled, or truncated tool call did not execute/i);
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
 test('fresh implementer uses one planner/classifier result while restored and repair work submit directly', () => {
@@ -606,7 +597,8 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.match(config, /implementer:[\s\S]*boundedDirectBash: true/);
 
   assert.match(agent, /### Restored work[\s\S]*Call `submit_result` with no arguments immediately[\s\S]*Do \*\*not\*\* call `prepare_implementation`/);
-  assert.match(agent, /contract is embedded verbatim[\s\S]*Do not search for or re-read this file/i);
+  assert.match(agent, /role overlay follows the shared agent contract in the initial prompt/i);
+  assert.match(config, /shared_agent_contract[\s\S]*role_contract[\s\S]*trusted_context/);
   assert.match(agent, /Do not pass `already_satisfied` for restored work/);
   assert.match(agent, /zero diff[\s\S]*records the issue as already satisfied automatically/);
   assert.match(agent, /### Fresh work[\s\S]*Call `prepare_implementation` exactly once/);
@@ -689,7 +681,7 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   const transition = readScript('scripts/pi-transition.mjs', 'utf8');
   const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
 
-  assert.match(config, /complete Implementer operating contract is embedded below/);
+  assert.match(config, /shared_agent_contract[\s\S]*role_contract[\s\S]*trusted_context/);
   assert.doesNotMatch(config, /Read and follow agents\/implementer\/AGENTS\.md first/);
   assert.doesNotMatch(tool, /If there is no real diff, implement the task/);
   assert.match(tool, /already_satisfied/);
@@ -726,7 +718,7 @@ test('reviewer orients and plans before declaring complexity', () => {
   const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/reviewer/AGENTS.md', 'utf8');
   assert.match(config, /reviewer:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash', 'lsp_start_server', 'lsp_find_symbol'\]/);
-  for (const value of ['Read `agents/reviewer/AGENTS.md`', 'Read the linked issue', 'Inspect the complete PR diff', 'Write a concise review plan', '1000 tokens', 'Call `declare_task_complexity`', 'Continue the semantic review']) {
+  for (const value of ['Read the linked issue', 'Inspect the complete PR diff', 'Write a concise review plan', '1000 tokens', 'Call `declare_task_complexity`', 'Continue the semantic review']) {
     assert.ok(agent.includes(value), `reviewer startup marker missing: ${value}`);
   }
   assert.match(agent, /Known-symbol semantic navigation/);
@@ -736,8 +728,8 @@ test('reviewer orients and plans before declaring complexity', () => {
   assert.match(agent, /current code and relevant tests are authoritative/i);
   assert.match(agent, /issue text and inspected current code conflict/i);
   assert.match(agent, /CHANGES_REQUESTED/);
-  assert.match(config, /current checked-out code is authoritative for factual behavior/i);
-  assert.match(config, /do not PASS a PR that repeats an issue's factual claim/i);
+  assert.match(agent, /current code and relevant tests are authoritative/i);
+  assert.match(agent, /issue text and inspected current code conflict/i);
   assert.match(config, /Reviewer LSP workspace root/);
 });
 
@@ -745,7 +737,7 @@ test('repair orients and plans before declaring complexity', () => {
   const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   const agent = fs.readFileSync('agents/repair/AGENTS.md', 'utf8');
   assert.match(config, /repair:[\s\S]*requireComplexity: true[\s\S]*preComplexityAllowedTools: \['read', 'bash'\]/);
-  for (const value of ['Read `agents/repair/AGENTS.md`', 'Read the concrete blocking Reviewer finding', 'Inspect the PR diff', 'Write a short repair plan', '1000 output tokens', 'Call `declare_task_complexity`', 'Immediately execute the first plan item']) {
+  for (const value of ['Read the concrete blocking Reviewer finding', 'Inspect the PR diff', 'Write a short repair plan', '1000 output tokens', 'Call `declare_task_complexity`', 'Immediately execute the first plan item']) {
     assert.ok(agent.includes(value), `repair startup marker missing: ${value}`);
   }
 });
@@ -962,7 +954,6 @@ test('blocked implementer outcome is a deliberate human gate', () => {
   assert.match(tool, /blocked_reason requires a clean worktree/);
   assert.match(runtime, /submit_result with blocked_reason now/);
   assert.match(agent, /submit_result\(\{blocked_reason:/);
-  assert.match(agent, /16,384-token/);
   assert.match(recovery, /outcome !== IMPLEMENTER_OUTCOMES\.changed/);
   assert.match(miniSwe, /writeImplementerResult/);
 

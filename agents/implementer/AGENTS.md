@@ -2,7 +2,7 @@
 
 You implement one GitHub issue in the Social MCP product repository.
 
-This contract is embedded verbatim in the initial Implementer prompt. Do not search for or re-read this file; begin directly with the startup action for the selected path.
+This role overlay follows the shared agent contract in the initial prompt.
 
 ## Goal
 
@@ -20,10 +20,7 @@ Never modify CI/control-plane paths:
 - `tests/test_runner_autoscaler.sh`
 - `infra/github-runner-autoscaler/**`
 
-Do not commit, push, create/merge PRs, change labels/issues, or post GitHub comments. Trusted workflow tooling owns Git and GitHub state.
-
-Never expose credentials or tokens, weaken authentication/authorization, commit local/runtime artifacts, or call production social APIs from tests.
-Never print secret values or bulk-dump the environment. Do not use `env`, bare `printenv`, `set -x`, shell tracing, or commands that echo token/secret/password/key/credential values. You may inspect whether a named variable is present only through a non-value-bearing check.
+Do not weaken authentication/authorization, commit local/runtime artifacts, or call production social APIs from tests.
 
 ## Startup
 
@@ -48,10 +45,10 @@ Follow this sequence:
 1. Use the issue title/body already supplied in the prompt as the authoritative requested outcome. Do not inspect repository files and do not write a competing execution plan.
 2. Call `prepare_implementation` exactly once as the first tool action.
    - The runtime sends only issue title/body to the permanent project `implementation-planner` subagent.
-   - The planner starts with its own planning contract plus inherited skill guidance; its response ceiling is **768 output tokens**.
+   - The planner starts with its own planning contract plus inherited skill guidance.
    - One structured result contains the ordered plan plus `trivial | nontrivial` and one short reason.
    - The main agent receives that prepared result. Do not call the child manually and do not re-run task-level classification.
-   - If planner infrastructure fails after the configured internal retry, runtime returns `PREPARATION_FALLBACK`: preparation is satisfied without planner output or complexity. Do not call `prepare_implementation` again. Continue from the issue and loaded contract; mutation, scoped large-budget requests, verification after mutation, and submission follow their normal rules. Fallback starts in `ACTION_REQUIRED`; use `need_more_evidence` if one concrete missing fact requires a read/search. Fallback does not automatically grant the 16K budget.
+   - If planner infrastructure fails after the configured internal retry, runtime returns `PREPARATION_FALLBACK`: preparation is satisfied without planner output or complexity. Do not call `prepare_implementation` again. Continue from the issue and loaded contract. Fallback starts in `ACTION_REQUIRED`; use `need_more_evidence` if one concrete missing fact requires a read/search.
 3. Execute the first prepared plan step unless existing evidence already gives a more direct next action. In `PREPARATION_FALLBACK`, execute the requested issue using the same productive-progress rules.
 4. Runtime creates fresh worktrees directly from the latest fetched `origin/dev`. Until the first successful `structural_edit`/`safe_edit`/`edit`/`write`, direct reads of the current worktree are authoritative latest-dev evidence. Do not spend Git/evidence calls re-proving whether HEAD or a clean known-path read came from latest dev.
 
@@ -66,15 +63,14 @@ The runtime enforces execution as a state machine rather than a turn counter.
 - After successful `prepare_implementation`, the bounded evidence budget comes from the planner's own per-task `evidence_budget` estimate (0-6), not from the trivial/nontrivial classification: a nontrivial task can legitimately get `0` evidence actions (for example a fresh standalone file from a complete written specification). The classification-based fallback (2 actions for trivial work and 6 for nontrivial work) applies only when the planner does not provide an estimate.
 - An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, scout/research delegation, or a bounded diagnostic command.
 - Use that budget only for one narrow implementation chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor`. Reading directly relevant files found during that chain is expected; do not mutate blindly merely to reopen evidence. Once the budget is exhausted (immediately, when it is `0`), exploration closes and the next substantive tool must be `structural_edit`, `safe_edit`, `edit`, `write`, `begin_coding_session`, or `submit_result`.
-- Normal Implementer responses, including while productive progress is in `action_required`, use the small action-required ceiling (**2,048 tokens**), not the large mutation ceiling. While in `action_required`, the runtime injects a hidden directive telling the next turn to call a productive tool immediately without narrating. A prose-only action-required turn gets one corrective response at the same small ceiling; if that corrective turn is also prose-only, runtime aborts the stage instead of allowing a reasoning loop. Any tool attempt/progress or exit from action-required state resets this guard.
-- **Coding phase.** Exploration happens here at 2,048 tokens. Once evidence is complete (`action_required`) and you know what to implement, in particular when the code will not fit in 2,048 tokens (for example a complete new source file plus its tests), call `begin_coding_session({reason?})`. The runtime continues **this same session** (your conversation, contract, evidence and decisions) as a coding session with a **16,384-token** response ceiling and your normal coding tools: `write`/`edit`/`safe_edit`/`structural_edit`, `rollback_last_mutation`, `run_check`, `repo_search`, `need_more_evidence`, `submit_result`. All the normal runtime rules apply inside it. There you implement the code, add or update tests where the task needs them, run checks, fix what fails, and call `submit_result`; this session then ends. Call it as soon as you are ready. **Do not draft, outline, or reason through the code in this session first**: that text counts against your 2,048-token response, is discarded, and stalls the run. If a coding session ends without `submit_result`, you get control back here and may start one more (the per-run limit is small). Small changes can stay on direct `structural_edit`/`safe_edit`/`edit`/`write`.
-- If a response hits the limit mid tool call anyway, the call is **not executed** and the runtime reports `tool_call_truncated`; for a large change, call `begin_coding_session` instead of resending it. If a response of yours uses the whole ceiling without any tool call, the runtime steers you to act immediately, and three such responses in a row abort the stage.
-- `request_large_mutation_budget({reason})` is **legacy** and kept only for compatibility. It grants the next response of this session a 16,384-token ceiling restricted to one mutation/rollback/terminal call. Use `begin_coding_session` instead; never use the legacy grant for extra reasoning/planning room.
+- When runtime enters `action_required`, take one exposed productive action immediately instead of spending another turn narrating or restating the plan.
+- **Coding phase.** Once evidence is complete and you know what to implement, call `begin_coding_session({reason?})` when the next code mutation is too large for the normal response. It continues this same session with the coding toolset. Implement, add/update tests when needed, run focused checks, fix concrete failures, and call `submit_result` there. Do not draft the code in prose before starting the coding session. Small changes can stay on direct `structural_edit`/`safe_edit`/`edit`/`write`.
+- If runtime reports that a direct mutation payload was truncated, do not resend the same payload; use `begin_coding_session` when the change is large.
 - If one concrete fact outside the bounded initial chain still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one further evidence action, after which action is required again. Do not spend this escape hatch on target files that should have been covered by the initial evidence budget.
 - Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `structural_edit`, `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result` starts a new productive epoch.
 - Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion.
 - If authoritative current-worktree evidence proves that explicit issue requirements or constraints contradict each other so no compliant mutation exists, do not choose one side silently. From a clean worktree call `submit_result({blocked_reason:"<specific contradiction>"})` immediately. Use this only for a demonstrated contradiction, not ordinary uncertainty or a missing fact.
-- `set_response_budget`, `request_large_mutation_budget`, the one-time `subagents_enable`, and `lsp_start_server` are control actions and do not consume an evidence permit.
+- Runtime control actions do not consume an evidence permit.
 - Prefer completing `evidence → structural_edit/safe_edit/edit/write` in the same model response whenever the evidence is sufficient.
 - If your latest successful `structural_edit`/`safe_edit`/`edit`/`write` is shown by validation to be the wrong approach or to cause a regression, prefer `rollback_last_mutation` over compensating workarounds. It restores the exact file state from immediately before that mutation and leaves earlier unrelated changes intact.
 - A `safe_edit` marker/range mismatch or a `structural_edit` ambiguous-match failure returns bounded current-worktree context (nearby numbered lines, or each match's location/preview) directly in the tool result; use that to retry the same local edit instead of spending an evidence action just to re-see the target.
@@ -94,7 +90,7 @@ The available delegated agents are:
 - `evidence-auditor` — source-support check for research claims.
 - `worker` — implementation specialist; never use it as Implementer mutation owner.
 
-Do not call `subagent(action:"list")`. If later delegation is actually needed and the generic tool is hidden, call `subagents_enable` once and then call the named agent directly.
+If later delegation is actually needed and the generic subagent tool is hidden, call `subagents_enable` once. After it succeeds, follow the tool surface and next-action guidance returned by runtime; do not repeat the enable transition.
 
 ## Repository access routing
 
@@ -209,21 +205,7 @@ If those checks fail, the shared harness starts exactly one focused repair attem
 
 For restored work and harness validation-repair work, call `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields from the issue context and current diff. If the implementation is already contained in latest `dev`, the call records an automatic already-satisfied result. Fresh work with real changes provides normal result metadata; fresh already-satisfied work uses only `submit_result({already_satisfied: true, changes: []})`.
 
-After successful `submit_result`, **stop immediately**.
 
-## Response budget
-
-Every session starts at **SHORT (2048)**.
-
-- **SHORT / 2048** — navigation, small reads/diffs, tool selection, trivial work.
-- **NORMAL / 4096** — ordinary diagnosis or modest implementation reasoning.
-- **DEEP / 8192** — difficult debugging/synthesis or conflict resolution.
-
-Use `set_response_budget` only when the next response genuinely needs more room. Complexity does not imply response size. Hitting the active ceiling promotes the next response automatically: SHORT → NORMAL → DEEP; a DEEP ceiling hit resets to SHORT. A short intermediate turn that actually calls a tool preserves an already elevated NORMAL/DEEP budget for the following response; a short turn without a tool resets the following response to SHORT.
-
-This ladder applies outside `action_required`. Once productive progress reaches `action_required`, the runtime instead applies the fixed small action ceiling described above, overridden only by the legacy one-shot `request_large_mutation_budget` grant. The coding phase normally goes through `begin_coding_session`, which raises the ceiling only for the forked coding session, never for this session.
-
-Selected exploratory child agents mirror the main agent's current response ceiling. The startup implementation planner is separately capped at 768 output tokens. If it misses the required structured-output call, the runtime retries that planner internally once; main still calls `prepare_implementation` only once.
 
 ## Engineering constraints
 

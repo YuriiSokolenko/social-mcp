@@ -18,24 +18,21 @@ Never modify CI/control-plane paths:
 - `tests/test_runner_autoscaler.sh`
 - `infra/github-runner-autoscaler/**`
 
-Do not commit, push, create/merge PRs, change labels/issues, post comments, or dispatch workflows. Trusted workflow tooling owns Git and GitHub state.
-
-Never expose credentials or tokens, weaken authentication/authorization/validation, commit local/runtime artifacts, or call production social APIs from tests.
+Do not weaken authentication/authorization/validation or call production social APIs from tests.
 
 ## Execution
 
 Use this order. Complexity must be based on the actual repair target and changed code, never guessed before seeing them.
 
-1. Read `agents/repair/AGENTS.md`.
-2. Read the original issue completely: title, description, acceptance criteria, and explicit scope. Treat it as the source of intended behavior.
-3. Read the concrete blocking Reviewer finding, failing product check, or merge conflict. Treat it as the repair target.
-4. Confirm the worktree already contains latest `dev`. If preflight left merge conflicts, resolve those conflicts first while preserving both the issue intent and valid current `dev` behavior.
-5. Inspect only the affected files, symbols, tests, and immediate code context needed to understand the target. Inspect the PR diff only when a concrete diagnostic question requires knowing what the PR changed.
-6. Write a short repair plan for yourself, at most **1000 output tokens**, describing the smallest complete change needed.
-7. Call `declare_task_complexity` based on the issue, blocker, current code, and plan.
-8. Immediately execute the first plan item and continue the repair.
+1. Read the original issue completely: title, description, acceptance criteria, and explicit scope. Treat it as the source of intended behavior.
+2. Read the concrete blocking Reviewer finding, failing product check, or merge conflict. Treat it as the repair target.
+3. Confirm the worktree already contains latest `dev`. If preflight left merge conflicts, resolve those conflicts first while preserving both the issue intent and valid current `dev` behavior.
+4. Inspect only the affected files, symbols, tests, and immediate code context needed to understand the target. Inspect the PR diff only when a concrete diagnostic question requires knowing what the PR changed.
+5. Write a short repair plan for yourself, at most **1000 output tokens**, describing the smallest complete change needed.
+6. Call `declare_task_complexity` based on the issue, blocker, current code, and plan.
+7. Immediately execute the first plan item and continue the repair.
 
-Before `declare_task_complexity`, stay within initial orientation: these agent instructions, the original issue, the concrete repair target, preflight conflict state, directly relevant code/tests, and the short plan. Do not edit files, load skills, expand into repository history or unrelated code, or begin implementation before step 5 is complete.
+Before `declare_task_complexity`, stay within initial orientation: these agent instructions, the original issue, the concrete repair target, preflight conflict state, directly relevant code/tests, and the short plan. Do not edit files, load skills, expand into repository history or unrelated code, or begin implementation until `declare_task_complexity` succeeds.
 
 Classify the repair itself, not the size of the original issue:
 
@@ -75,7 +72,6 @@ Do not run full `pytest`, full-repository Ruff, or CI/control-plane suites befor
 
 If it reports a merge conflict or failing check, fix only that concrete problem, run a focused check when useful, and call `submit_repair` again.
 
-After successful `submit_repair`, **stop immediately**. Do not inspect more files, run another command, or write a recap.
 
 ## Repair constraints
 
@@ -86,15 +82,6 @@ After successful `submit_repair`, **stop immediately**. Do not inspect more file
 - Prefer existing repository patterns over new frameworks, layers, interfaces, dependencies, or abstractions.
 - Do not weaken or delete a valid test merely to obtain a pass.
 
-## Response budget
-
-Every session starts at **SHORT (2048)**. Keep it unless the next response genuinely needs more room. Never increase the response budget merely to continue investigation or planning before the first repair edit; use repository edits to express implementation code instead of generating long prose/code drafts.
-
-- **SHORT / 2048** — navigation, inspection, tool selection, simple checks, trivial repairs.
-- **NORMAL / 4096** — ordinary localized diagnosis or repair decisions.
-- **DEEP / 8192** — difficult debugging/synthesis or substantial conflict resolution.
-
-Use `set_response_budget` only when needed and choose the smallest sufficient level. Repair complexity does not imply response size. DEEP is an absolute ceiling, not a default for complex repairs. If a response reaches its full token ceiling, the shared runtime promotes the next response one level only when that turn also made concrete action progress. A reasoning-only ceiling hit does not earn more budget. Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.
 
 ## Skills: load only when needed
 

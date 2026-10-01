@@ -32,7 +32,7 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
     RUNNER_TEMP: '/tmp/runner',
     GITHUB_RUN_ID: '123',
     GITHUB_RUN_ATTEMPT: '2',
-    GITHUB_WORKSPACE: '/control',
+    GITHUB_WORKSPACE: process.cwd(),
     PI_MODEL: 'model-x',
     PI_PROVIDER: 'provider-x',
     PI_MODEL_BASE_URL: 'http://model/v1',
@@ -45,7 +45,7 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
     raw: '/tmp/raw.jsonl',
   }, env);
 
-  assert.equal(workspace, '/control');
+  assert.equal(workspace, process.cwd());
   assert.equal(spec.stage, 'dispatcher');
   assert.equal(spec.cwd, '/work');
   assert.match(spec.prompt, /pi-dispatcher-context\.json/);
@@ -72,7 +72,7 @@ test('model endpoint defaults to the shared Open Responses server on port 4001',
     cwd: '/work',
   }, {
     RUNNER_TEMP: '/tmp/runner',
-    GITHUB_WORKSPACE: '/control',
+    GITHUB_WORKSPACE: process.cwd(),
     PI_MODEL: 'model-x',
   });
 
