@@ -18,6 +18,7 @@ export const PIPELINE_LABELS = Object.freeze({
   running: configuredLabels.running,
   pr: configuredLabels.pr,
   needsHuman: configuredLabels.needsHuman,
+  blocked: configuredLabels.blocked,
   architectReady: configuredLabels.architectReady,
   epic: configuredLabels.epic,
 });
@@ -27,7 +28,7 @@ export const ISSUE_ACTIVE = new Set([
 ]);
 
 export const ISSUE_TERMINAL = new Set([
-  PIPELINE_LABELS.needsHuman,
+  PIPELINE_LABELS.blocked, PIPELINE_LABELS.needsHuman,
 ]);
 
 export const ISSUE_STATE_LABELS = new Set([
@@ -49,9 +50,14 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
       remove: [...active, PIPELINE_LABELS.queued].filter(label => labels.has(label)) });
   }
   if (issue.state === 'open' && labels.has(PIPELINE_LABELS.epic) &&
-      (labels.has(PIPELINE_LABELS.queued) || active.length || terminal.length)) {
+      (labels.has(PIPELINE_LABELS.queued) || active.length)) {
     findings.push({ code: 'epic-executable', severity: 'repair',
-      remove: [PIPELINE_LABELS.queued, ...active, ...terminal].filter(label => labels.has(label)) });
+      remove: [PIPELINE_LABELS.queued, ...active].filter(label => labels.has(label)) });
+  }
+  if (terminal.length > 1) {
+    const keep = terminal.includes(PIPELINE_LABELS.blocked) ? PIPELINE_LABELS.blocked : terminal[0];
+    findings.push({ code: 'multiple-terminal', severity: 'repair', labels: terminal,
+      remove: terminal.filter(label => label !== keep), keep });
   }
   if (terminal.length && (labels.has(PIPELINE_LABELS.queued) || active.length)) {
     findings.push({ code: 'terminal-active', severity: 'repair',
@@ -115,6 +121,12 @@ export function validateIssueTransition(issue, action) {
   const labels = names(issue);
   if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target ?? 'unowned'}`);
   if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target ?? 'unowned'}`);
+  if (labels.has(PIPELINE_LABELS.blocked)) {
+    throw new Error(`blocked issue cannot transition to ${target ?? 'unowned'}; remove ${PIPELINE_LABELS.blocked} explicitly first`);
+  }
+  if (labels.has(PIPELINE_LABELS.needsHuman) && !['queued', 'running-manual', 'needs-human'].includes(action)) {
+    throw new Error(`${PIPELINE_LABELS.needsHuman} issue requires an explicit retry before transition to ${target ?? 'unowned'}`);
+  }
   if (action === 'satisfied' && !labels.has(PIPELINE_LABELS.running)) {
     throw new Error(`satisfied requires ${PIPELINE_LABELS.running}`);
   }
