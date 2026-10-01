@@ -9,11 +9,12 @@ on:
         required: true
         type: number
       model:
-        description: Model backend to use (must already be loaded on nano)
+        description: Model backend override; default reads .pi/default-model
         required: true
-        default: qwen
+        default: default
         type: choice
         options:
+          - default
           - laguna
           - qwen
   pull_request:
@@ -53,7 +54,7 @@ jobs:
     timeout-minutes: 480
     env:
       PR: ${{ inputs.pr_number }}
-      PI_MODEL_CHOICE: ${{ inputs.model || 'qwen' }}
+      PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5
