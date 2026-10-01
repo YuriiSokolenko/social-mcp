@@ -11,6 +11,29 @@ test('lost issue ownership returns to Dispatcher only while RUNNING', () => {
   assert.equal(issueRecoveryTarget(current, { automationMode: 'PAUSED' }), null);
 });
 
+test('terminal issue ownership is preserved instead of being re-queued', () => {
+  assert.equal(
+    issueRecoveryTarget(issue('open', ['pi:needs-human', 'pi:running']), { automationMode: 'RUNNING' }),
+    'pi:needs-human',
+  );
+  assert.equal(
+    issueRecoveryTarget(issue('open', ['pi:blocked', 'pi:ready']), { automationMode: 'RUNNING' }),
+    'pi:blocked',
+  );
+  assert.equal(
+    issueRecoveryTarget(issue('open', ['pi:blocked', 'pi:running']), {
+      hasOpenPiPr: true, automationMode: 'RUNNING',
+    }),
+    'pi:blocked',
+  );
+  assert.equal(
+    issueRecoveryTarget(issue('open', ['pi:needs-human', 'pi:running']), {
+      hasOpenPiPr: true, automationMode: 'RUNNING',
+    }),
+    'pi:needs-human',
+  );
+});
+
 test('existing implementation PR remains the durable owner', () => {
   const current = issue('open', ['pi:running']);
   assert.equal(issueRecoveryTarget(current, { hasOpenPiPr: true, automationMode: 'RUNNING' }), 'pi:mr-created');

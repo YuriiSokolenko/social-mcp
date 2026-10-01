@@ -18,6 +18,7 @@ export const PIPELINE_LABELS = Object.freeze({
   running: configuredLabels.running,
   pr: configuredLabels.pr,
   needsHuman: configuredLabels.needsHuman,
+  blocked: configuredLabels.blocked,
   architectReady: configuredLabels.architectReady,
   epic: configuredLabels.epic,
 });
@@ -28,6 +29,7 @@ export const ISSUE_ACTIVE = new Set([
 
 export const ISSUE_TERMINAL = new Set([
   PIPELINE_LABELS.needsHuman,
+  ...(PIPELINE_LABELS.blocked ? [PIPELINE_LABELS.blocked] : []),
 ]);
 
 export const ISSUE_STATE_LABELS = new Set([
@@ -48,10 +50,16 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
     findings.push({ code: 'closed-active', severity: 'repair',
       remove: [...active, PIPELINE_LABELS.queued].filter(label => labels.has(label)) });
   }
+  const epicTerminal = terminal.filter(label => label !== PIPELINE_LABELS.blocked);
   if (issue.state === 'open' && labels.has(PIPELINE_LABELS.epic) &&
-      (labels.has(PIPELINE_LABELS.queued) || active.length || terminal.length)) {
+      (labels.has(PIPELINE_LABELS.queued) || active.length || epicTerminal.length)) {
     findings.push({ code: 'epic-executable', severity: 'repair',
-      remove: [PIPELINE_LABELS.queued, ...active, ...terminal].filter(label => labels.has(label)) });
+      remove: [PIPELINE_LABELS.queued, ...active, ...epicTerminal].filter(label => labels.has(label)) });
+  }
+  if (terminal.length > 1) {
+    const keep = terminal.includes(PIPELINE_LABELS.blocked) ? PIPELINE_LABELS.blocked : terminal[0];
+    findings.push({ code: 'multiple-terminal', severity: 'repair', labels: terminal,
+      remove: terminal.filter(label => label !== keep), keep });
   }
   if (terminal.length && (labels.has(PIPELINE_LABELS.queued) || active.length)) {
     findings.push({ code: 'terminal-active', severity: 'repair',
@@ -115,6 +123,19 @@ export function validateIssueTransition(issue, action) {
   const labels = names(issue);
   if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target ?? 'unowned'}`);
   if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target ?? 'unowned'}`);
+  if (PIPELINE_LABELS.blocked && labels.has(PIPELINE_LABELS.blocked)) {
+    const executable = ['queued', 'ready', 'running', 'running-manual', 'architect-ready'];
+    if (executable.includes(action)) {
+      throw new Error(`blocked issue cannot transition to executable state ${target ?? 'unowned'}; remove ${PIPELINE_LABELS.blocked} explicitly first`);
+    }
+    // A human block is durable even if an already-running workflow reaches a
+    // cleanup/publication transition. Let that workflow finish successfully
+    // without replacing the manual block with another pipeline state.
+    return PIPELINE_LABELS.blocked;
+  }
+  if (labels.has(PIPELINE_LABELS.needsHuman) && ['ready', 'running', 'architect-ready'].includes(action)) {
+    throw new Error(`${PIPELINE_LABELS.needsHuman} issue requires an explicit retry before transition to ${target ?? 'unowned'}`);
+  }
   if (action === 'satisfied' && !labels.has(PIPELINE_LABELS.running)) {
     throw new Error(`satisfied requires ${PIPELINE_LABELS.running}`);
   }

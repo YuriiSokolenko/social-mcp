@@ -11,13 +11,25 @@ test('closed issues cannot remain queued or active', () => {
 });
 
 test('terminal state wins over queued or active labels', () => {
-  const findings = inspectIssueState(issue('open', ['pi:needs-human', 'dispatcher:ready', 'pi:ready']));
-  assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:ready']);
+  const needsHuman = inspectIssueState(issue('open', ['pi:needs-human', 'dispatcher:ready', 'pi:ready']));
+  assert.deepEqual(safeRemovals(needsHuman).sort(), ['dispatcher:ready', 'pi:ready']);
+
+  const blocked = inspectIssueState(issue('open', ['pi:blocked', 'dispatcher:ready', 'pi:running']));
+  assert.deepEqual(safeRemovals(blocked).sort(), ['dispatcher:ready', 'pi:running']);
 });
 
-test('epics are never executable work', () => {
-  const findings = inspectIssueState(issue('open', ['architect:epic', 'dispatcher:ready', 'pi:running']));
-  assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:running']);
+test('blocked wins over needs-human when terminal labels conflict', () => {
+  const findings = inspectIssueState(issue('open', ['pi:blocked', 'pi:needs-human']));
+  assert.equal(findings.some(item => item.code === 'multiple-terminal' && item.keep === 'pi:blocked'), true);
+  assert.deepEqual(safeRemovals(findings), ['pi:needs-human']);
+});
+
+test('epics are never executable work but preserve a manual block marker', () => {
+  const findings = inspectIssueState(issue('open', [
+    'architect:epic', 'dispatcher:ready', 'pi:running', 'pi:needs-human', 'pi:blocked',
+  ]));
+  assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:needs-human', 'pi:running']);
+  assert.equal(safeRemovals(findings).includes('pi:blocked'), false);
 });
 
 test('ambiguous multiple active states keep the furthest safe state', () => {
@@ -78,6 +90,33 @@ test('terminal issue may retain a checkpoint for human recovery without reconcil
 test('triage or a human retry may queue unowned and needs-human issues', () => {
   assert.equal(validateIssueTransition(issue('open', []), 'queued'), 'dispatcher:ready');
   assert.equal(validateIssueTransition(issue('open', ['pi:needs-human']), 'queued'), 'dispatcher:ready');
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:blocked']), 'queued'), /blocked issue/);
+});
+
+test('needs-human cannot become executable without an explicit retry', () => {
+  assert.throws(
+    () => validateIssueTransition(issue('open', ['pi:needs-human', 'dispatcher:ready']), 'ready'),
+    /explicit retry/,
+  );
+  assert.throws(
+    () => validateIssueTransition(issue('open', ['pi:needs-human', 'pi:ready']), 'running'),
+    /explicit retry/,
+  );
+});
+
+test('terminal labels do not break cleanup or publication from a live run', () => {
+  const blockedRunning = issue('open', ['pi:blocked', 'pi:running']);
+  assert.equal(validateIssueTransition(blockedRunning, 'mr-created'), 'pi:blocked');
+  assert.equal(validateIssueTransition(blockedRunning, 'needs-human'), 'pi:blocked');
+  assert.equal(validateIssueTransition(blockedRunning, 'stopped'), 'pi:blocked');
+  assert.equal(validateIssueTransition(blockedRunning, 'satisfied'), 'pi:blocked');
+  assert.throws(() => validateIssueTransition(blockedRunning, 'running-manual'), /blocked issue/);
+
+  const needsHumanRunning = issue('open', ['pi:needs-human', 'pi:running']);
+  assert.equal(validateIssueTransition(needsHumanRunning, 'mr-created'), 'pi:mr-created');
+  assert.equal(validateIssueTransition(needsHumanRunning, 'needs-human'), 'pi:needs-human');
+  assert.equal(validateIssueTransition(needsHumanRunning, 'stopped'), null);
+  assert.equal(validateIssueTransition(needsHumanRunning, 'satisfied'), null);
 });
 
 test('orphaned Architect ownership is detected', () => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { githubClient } from './pi-common/github-api.mjs';
-import { labelName } from './pi-common/project-config.mjs';
+import { projectConfig } from './pi-common/project-config.mjs';
 
 const [kind] = process.argv.slice(2);
 if (kind !== 'issue') throw new Error('usage: pi-labels.mjs issue');
@@ -14,5 +14,9 @@ const labels = [
   ['running','0052cc','Agent is working on this issue'],
   ['pr','1d76db','Agent created a pull request'],
   ['needsHuman','fbca04','Automation requires human attention'],
+  ['blocked','d93f0b','Human-blocked issue; automation must not dispatch it'],
 ];
-for (const [role, color, description] of labels) await ensureLabel(labelName(role), color, description);
+for (const [role, color, description] of labels) {
+  const name = projectConfig().labels[role];
+  if (name) await ensureLabel(name, color, description);
+}

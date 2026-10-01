@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 
 import { replaceIssueState } from './pi-common/github-state.mjs';
-import { ISSUE_STATE_LABELS, isIssueTransitionNoop, validateIssueTransition } from './pi-common/state-machine.mjs';
+import { ISSUE_STATE_LABELS, PIPELINE_LABELS, isIssueTransitionNoop, validateIssueTransition } from './pi-common/state-machine.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
 import { baseBranch, issueBranch } from './pi-common/project-config.mjs';
 
@@ -63,7 +63,14 @@ if (isIssueTransitionNoop(item, action)) {
 } else {
   const expected = names(item);
   const target = validateIssueTransition(item, action);
-  await replaceIssueLabels(expected, target, action, { complete: action === 'satisfied' });
-  if (action !== 'running') await postComment();
-  console.log(`issue #${number}: transitioned to ${target}`);
+  const blockedPreserved = PIPELINE_LABELS.blocked && target === PIPELINE_LABELS.blocked;
+  await replaceIssueLabels(expected, target, action, { complete: action === 'satisfied' && target == null });
+  if (action !== 'running' && !blockedPreserved) await postComment();
+  if (blockedPreserved) {
+    console.log(
+      `issue #${number}: preserved ${PIPELINE_LABELS.blocked}; ignored ${action} target and removed conflicting pipeline ownership`,
+    );
+  } else {
+    console.log(`issue #${number}: transitioned to ${target}`);
+  }
 }

@@ -87,14 +87,23 @@ test('prepare lists untriaged issues and re-checks pi:needs-human issues whose b
         labels: [{ name: 'pi:needs-human' }],
         comments: [{ body: `<!-- pi-triage:hash:${crypto.createHash('sha1').update('still vague').digest('hex').slice(0, 16)} -->` }],
       },
+      // Needs-human is explicitly reconsidered only after its body changes.
+      4: {
+        number: 4, title: 'Clarified by a person', body: 'now concrete',
+        labels: [{ name: 'pi:needs-human' }],
+        comments: [{ body: `<!-- pi-triage:hash:${crypto.createHash('sha1').update('old vague body').digest('hex').slice(0, 16)} -->` }],
+      },
+      // A manual block is durable even if the body changes.
+      5: { number: 5, title: 'Do not run', body: 'changed text', labels: [{ name: 'pi:blocked' }] },
     },
   }));
 
   const result = run(['prepare', outFile], storeFile);
   assert.equal(result.status, 0, result.stderr);
   const context = JSON.parse(readFileSync(outFile, 'utf8'));
-  assert.deepEqual(context.candidates.map(c => c.issue), [1]);
-  assert.match(result.stdout, /1 candidate issue/);
+  assert.deepEqual(context.candidates.map(c => c.issue), [1, 4]);
+  assert.equal(context.candidates.find(c => c.issue === 4).reconsidering, true);
+  assert.match(result.stdout, /2 candidate issue/);
 });
 
 test('apply marks ready issues dispatcher:ready and flags needs_human issues with a comment', () => {
@@ -105,10 +114,15 @@ test('apply marks ready issues dispatcher:ready and flags needs_human issues wit
     issues: {
       1: { number: 1, state: 'open', title: 'Ready to go', body: '## Goal\nClear scope.\n\n## Acceptance criteria\n- Deliver the requested behavior.\n- Keep the change scoped.\n- Add focused tests.', labels: [] },
       2: { number: 2, state: 'open', title: 'Needs clarification', body: 'Ambiguous ask.', labels: [] },
+      3: {
+        number: 3, state: 'open', title: 'Clarified retry',
+        body: '## Goal\nClear now.\n\n## Acceptance criteria\n- Deliver the requested behavior.\n- Keep the change scoped.\n- Add focused tests.',
+        labels: [{ name: 'pi:needs-human' }], comments: [],
+      },
     },
   }));
   const triageResult = {
-    ready: [1],
+    ready: [1, 3],
     needs_human: [{ issue: 2, comment: 'The acceptance criteria are missing entirely.' }],
     skipped: [],
   };
@@ -125,6 +139,7 @@ test('apply marks ready issues dispatcher:ready and flags needs_human issues wit
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.issues[1].labels.map(l => l.name), ['dispatcher:ready']);
   assert.deepEqual(store.issues[2].labels.map(l => l.name), ['pi:needs-human']);
+  assert.deepEqual(store.issues[3].labels.map(l => l.name), ['dispatcher:ready']);
   assert.equal(store.issues[2].comments.length, 1);
   assert.match(store.issues[2].comments[0].body, /needs a person before this can be dispatched/);
 });

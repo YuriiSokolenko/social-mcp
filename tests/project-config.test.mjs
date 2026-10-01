@@ -15,6 +15,7 @@ test('the committed config is valid and describes this repository', () => {
   const config = projectConfig();
   assert.equal(config.git.defaultBranch, 'dev');
   assert.equal(workflowFile('implementer'), 'pi-issue-agent.yml');
+  assert.equal(config.labels.blocked, 'pi:blocked');
   assert.equal(issueBranch(7), 'pi/issue-7');
 });
 
@@ -25,6 +26,13 @@ test('unknown keys and missing roles fail closed', () => {
   const badWorkflow = raw(); badWorkflow.workflows.reviewer = '../x.yml';
   assert.throws(() => validateConfig(badWorkflow), /workflows\.reviewer/);
   assert.throws(() => parseConfigText('{'), /not valid JSON/);
+});
+
+test('legacy v1 config without blocked label remains loadable', () => {
+  const legacy = raw();
+  delete legacy.labels.blocked;
+  const config = validateConfig(legacy);
+  assert.equal(config.labels.blocked, undefined);
 });
 
 test('commands are fixed argv, never shell strings', () => {
