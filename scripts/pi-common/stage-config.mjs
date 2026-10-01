@@ -33,6 +33,13 @@ ${trustedContext.trim()}
 </trusted_context>`;
 }
 
+function untrustedTaskInput(value) {
+  return JSON.stringify(value)
+    .replaceAll('&', '\\u0026')
+    .replaceAll('<', '\\u003c')
+    .replaceAll('>', '\\u003e');
+}
+
 const promptBuilders = Object.freeze({
   architect(env) {
     const root = env.RUNNER_TEMP;
@@ -112,17 +119,15 @@ If submit_result reports a concrete problem, fix only that problem and retry. Do
 LSP workspace root: ${worktreeRoot}.
 Call prepare_implementation exactly once as the first tool action; runtime returns the startup plan and trivial/nontrivial classification.`;
 
-    return withContracts('implementer', env, `
-GitHub issue: #${issue}
+    return `${agentContractPrompt('implementer', env)}
 
-Issue title:
-${title}
+<untrusted_task_input>
+${untrustedTaskInput({ issue, title, body })}
+</untrusted_task_input>
 
-Issue body:
-${body}
-
+<trusted_context>
 ${runtimeState}
-`);
+</trusted_context>`;
   },
 });
 
