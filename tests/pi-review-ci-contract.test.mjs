@@ -682,7 +682,7 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   const transition = readScript('scripts/pi-transition.mjs', 'utf8');
   const config = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
 
-  assert.match(config, /complete Implementer operating contract is embedded below/);
+  assert.match(config, /shared_agent_contract[\s\S]*role_contract[\s\S]*trusted_context/);
   assert.doesNotMatch(config, /Read and follow agents\/implementer\/AGENTS\.md first/);
   assert.doesNotMatch(tool, /If there is no real diff, implement the task/);
   assert.match(tool, /already_satisfied/);
