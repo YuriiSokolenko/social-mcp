@@ -18,17 +18,38 @@ import { runStageWithValidationRecovery } from './pi-common/stage-validation-rec
 // under the requested model's name (see PR #118 for the bug this replaces).
 const MODEL_CHOICES = {
   laguna: { id: 'laguna-s-2.1-gguf', label: 'Laguna S 2.1' },
-  qwen: { id: 'qwen3.8-flash-next', label: 'Qwen 3.8 Flash Next' },
+  qwen: { id: 'Qwen3.8-Flash-Next-NVFP4', label: 'Qwen 3.8 Flash Next NVFP4' },
 };
 
 export const DEFAULT_MODEL_BASE_URL = 'http://192.168.8.184:4001/v1';
 
+function controlWorkspace(env) {
+  return env.GITHUB_WORKSPACE || path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+}
+
+function defaultModelChoice(env) {
+  const file = path.join(controlWorkspace(env), '.pi', 'default-model');
+  if (!fs.existsSync(file)) {
+    throw new Error(`Default Pi model config is missing: ${file}`);
+  }
+  const choice = fs.readFileSync(file, 'utf8').trim();
+  if (!MODEL_CHOICES[choice]) {
+    throw new Error(
+      `Invalid default Pi model "${choice || '<empty>'}" in ${file}; expected one of: ${Object.keys(MODEL_CHOICES).join(', ')}`,
+    );
+  }
+  return choice;
+}
+
 function resolveModelId(env) {
   if (env.PI_MODEL) return env.PI_MODEL;
-  const choice = env.PI_MODEL_CHOICE || 'laguna';
+  const requested = String(env.PI_MODEL_CHOICE ?? '').trim();
+  const choice = !requested || requested === 'default' ? defaultModelChoice(env) : requested;
   const entry = MODEL_CHOICES[choice];
   if (!entry) {
-    throw new Error(`Unknown PI_MODEL_CHOICE "${choice}", expected one of: ${Object.keys(MODEL_CHOICES).join(', ')}`);
+    throw new Error(
+      `Unknown PI_MODEL_CHOICE "${choice}", expected default or one of: ${Object.keys(MODEL_CHOICES).join(', ')}`,
+    );
   }
   return entry.id;
 }
@@ -158,7 +179,7 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
     PI_METRICS_FILE: env.PI_METRICS_FILE ?? path.join(runnerTemp, `pi-usage-${suffix}.jsonl`),
   };
 
-  const workspace = env.GITHUB_WORKSPACE || path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const workspace = controlWorkspace(env);
   const spec = createStageRunSpec({
     stage,
     cwd,
