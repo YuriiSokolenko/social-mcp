@@ -34,11 +34,12 @@ async function transitionIssue(number, action) {
 
 
 // Issues already in one of these states are owned by another stage of the
-// pipeline; triage never re-classifies them. `pi:needs-human` is handled
-// separately below, since triage is exactly what re-reviews those.
+// pipeline; triage never re-classifies them. `pi:blocked` is a durable stop.
+// `pi:needs-human` is handled separately below, since triage is exactly what
+// re-reviews those after the issue body changes.
 const pipelineLabels = [
   PIPELINE_LABELS.queued, PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr,
-  PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic,
+  PIPELINE_LABELS.blocked, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic,
 ];
 
 function hash(value) {
