@@ -15,7 +15,7 @@ from pathlib import Path
 from social_mcp.auth.oauth_state import OAuthStateManager
 from social_mcp.auth.token_cipher import TokenCipher
 from social_mcp.config import Settings
-from social_mcp.diagnostics import DiagnosticLog
+from social_mcp.diagnostics.log import DiagnosticLog
 from social_mcp.storage.sqlite import SQLiteAccountStore
 
 logger = logging.getLogger(__name__)
