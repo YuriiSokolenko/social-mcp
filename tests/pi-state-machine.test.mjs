@@ -25,8 +25,10 @@ test('blocked wins over needs-human when terminal labels conflict', () => {
 });
 
 test('epics are never executable work', () => {
-  const findings = inspectIssueState(issue('open', ['architect:epic', 'dispatcher:ready', 'pi:running']));
-  assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:running']);
+  const findings = inspectIssueState(issue('open', [
+    'architect:epic', 'dispatcher:ready', 'pi:running', 'pi:needs-human',
+  ]));
+  assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:needs-human', 'pi:running']);
 });
 
 test('ambiguous multiple active states keep the furthest safe state', () => {
@@ -95,6 +97,25 @@ test('needs-human cannot become executable without an explicit retry', () => {
     () => validateIssueTransition(issue('open', ['pi:needs-human', 'dispatcher:ready']), 'ready'),
     /explicit retry/,
   );
+  assert.throws(
+    () => validateIssueTransition(issue('open', ['pi:needs-human', 'pi:ready']), 'running'),
+    /explicit retry/,
+  );
+});
+
+test('terminal labels do not break cleanup or publication from a live run', () => {
+  const blockedRunning = issue('open', ['pi:blocked', 'pi:running']);
+  assert.equal(validateIssueTransition(blockedRunning, 'mr-created'), 'pi:blocked');
+  assert.equal(validateIssueTransition(blockedRunning, 'needs-human'), 'pi:blocked');
+  assert.equal(validateIssueTransition(blockedRunning, 'stopped'), 'pi:blocked');
+  assert.equal(validateIssueTransition(blockedRunning, 'satisfied'), 'pi:blocked');
+  assert.throws(() => validateIssueTransition(blockedRunning, 'running-manual'), /blocked issue/);
+
+  const needsHumanRunning = issue('open', ['pi:needs-human', 'pi:running']);
+  assert.equal(validateIssueTransition(needsHumanRunning, 'mr-created'), 'pi:mr-created');
+  assert.equal(validateIssueTransition(needsHumanRunning, 'needs-human'), 'pi:needs-human');
+  assert.equal(validateIssueTransition(needsHumanRunning, 'stopped'), null);
+  assert.equal(validateIssueTransition(needsHumanRunning, 'satisfied'), null);
 });
 
 test('orphaned Architect ownership is detected', () => {
