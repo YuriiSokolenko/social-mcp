@@ -39,7 +39,7 @@ function defaultModelChoice(env) {
   return choice;
 }
 
-function resolveModelId(env) {
+export function resolveModelId(env) {
   if (env.PI_MODEL) return env.PI_MODEL;
   const requested = String(env.PI_MODEL_CHOICE ?? '').trim();
   const choice = !requested || requested === 'default' ? defaultModelChoice(env) : requested;
