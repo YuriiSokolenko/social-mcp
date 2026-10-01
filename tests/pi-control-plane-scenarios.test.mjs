@@ -40,6 +40,16 @@ test('agent concurrency never cancels active work', () => {
   }
 });
 
+test('review invalidation on synchronize is serialized per PR, never in a shared group', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const group = workflow.match(/^concurrency:\n(?:\s+#.*\n)*\s+group: (.+)$/m)?.[1] ?? '';
+  // A group built only from inputs.pr_number collapses every synchronize event into one
+  // shared group, where GitHub cancels older pending runs and drops their invalidation.
+  assert.match(group, /github\.event\.pull_request\.number/);
+  assert.match(group, /inputs\.pr_number/);
+  assert.notEqual(group, 'pi-pr-review-${{ inputs.pr_number }}');
+});
+
 test('implementer checkpoint uses compare-and-swap lease and exact deletion', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');

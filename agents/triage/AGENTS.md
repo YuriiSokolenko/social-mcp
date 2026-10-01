@@ -36,8 +36,6 @@ Call `submit_result` exactly once as your final action with all candidates class
 
 `submit_result({"ready":[42],"needs_human":[{"issue":43,"comment":"Acceptance criteria do not define which auth flow applies; please choose one."}],"skipped":[{"issue":44,"reason":"depends on open issue #12"}]})`
 
-If the tool is unavailable, emit one final `TRIAGE_RESULT: <same JSON>` line.
-
 ## Boundary
 
 Do not edit repository files. Trusted workflow code re-reads GitHub state before applying recommendations. Triage does not start Dispatcher itself.

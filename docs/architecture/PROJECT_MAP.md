@@ -151,7 +151,7 @@ This document is the human- and agent-readable text map of the current Social MC
                                               v                                 |
                                        EVIDENCE_ALLOWED                          |
                                               |                                 |
-                            2 trivial / 6 nontrivial evidence actions           |
+                planner evidence_budget (0-6; fallback 2 trivial/6 nontrivial)  |
                                               |                                 |
                                               v                                 |
                                        ACTION_REQUIRED <-------------------------+

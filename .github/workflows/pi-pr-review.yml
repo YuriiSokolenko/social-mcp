@@ -28,7 +28,9 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pi-pr-review-${{ inputs.pr_number }}
+  # synchronize has no inputs: key its invalidation per PR so pushes to different PRs never
+  # share a group (GitHub cancels older pending runs in a group, which would drop an invalidation).
+  group: ${{ github.event_name == 'pull_request' && format('pi-pr-review-invalidate-{0}', github.event.pull_request.number) || format('pi-pr-review-{0}', inputs.pr_number) }}
   cancel-in-progress: false
 
 jobs:

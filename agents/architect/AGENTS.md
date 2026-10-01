@@ -129,6 +129,3 @@ For split:
 `submit_result({"action":"split","steps":[{"key":"contract","kind":"contract","priority":"P1","title":"...","body":"...","depends_on":[]},{"key":"implement","kind":"implementation","priority":"P1","title":"...","body":"...","depends_on":["contract"]}]})`
 
 For split, keys are unique lowercase slugs; dependencies reference only preceding step keys.
-
-
-If the tool is unavailable, fall back to one standalone `ARCHITECT_RESULT: <json>` line using the same decision and including the current `parent_issue`.

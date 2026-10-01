@@ -13,6 +13,8 @@ You are read-only. Never modify repository files. Trusted workflow tooling appli
 Automated review must not approve CI/control-plane changes. The workflow guards these paths before model execution:
 
 - `.github/workflows/**`
+- `.pi/**`
+- `agents/**`
 - `scripts/pi-*`
 - `tests/*.test.mjs`
 - `tests/test_runner_autoscaler.sh`
@@ -160,6 +162,3 @@ Use **PASS** when the PR satisfies the linked issue and you found no concrete bl
 Use **CHANGES_REQUESTED** only for concrete actionable blocking findings. State what is wrong, where it occurs, and why it matters. Keep optional/cosmetic observations out of the blocking verdict.
 
 For PASS, keep the summary concise and state what was actually verified.
-
-
-If `submit_result` is unavailable, fall back to a final response beginning with a standalone `REVIEW_RESULT: PASS` or `REVIEW_RESULT: CHANGES_REQUESTED` line followed by the same concise write-up.
