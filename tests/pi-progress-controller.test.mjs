@@ -165,7 +165,7 @@ test('Implementer model-visible transition rules match the runtime action surfac
       PI_ISSUE: '42',
       PI_ISSUE_CONTEXT: issueContext,
     });
-    assert.match(prompt, /subagents_enable once[\s\S]*follow the tool surface/i);
+    assert.match(prompt, /subagents_enable[\s\S]{0,20}once[\s\S]*follow the tool surface/i);
     assert.doesNotMatch(prompt, /subagent\(action:"list"\)/i);
     assert.match(prompt, /lsp_start_server[\s\S]*lsp_find_symbol/i);
     assert.match(prompt, /need_more_evidence[\s\S]*one concrete fact/i);
