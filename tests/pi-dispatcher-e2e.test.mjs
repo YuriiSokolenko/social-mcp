@@ -91,6 +91,8 @@ test('prepare writes eligible candidates, skips blocked/dependency-pending issue
       10: { number: 10, state: 'open', title: 'Fix A', body: taskBody('P1'), labels: [{ name: 'dispatcher:ready' }] },
       11: { number: 11, state: 'open', title: 'In flight', body: taskBody('P1'), labels: [{ name: 'pi:ready' }] },
       12: { number: 12, state: 'open', title: 'Blocked on #99', body: taskBody('P1', [99]), labels: [{ name: 'dispatcher:ready' }] },
+      13: { number: 13, state: 'open', title: 'Manually blocked', body: taskBody('P0'), labels: [{ name: 'pi:blocked' }, { name: 'dispatcher:ready' }] },
+      14: { number: 14, state: 'open', title: 'Needs a person', body: taskBody('P0'), labels: [{ name: 'pi:needs-human' }, { name: 'dispatcher:ready' }] },
       99: { number: 99, state: 'open', title: 'Dependency not done', body: taskBody('P1'), labels: [] },
     },
     prs: [],
@@ -102,9 +104,10 @@ test('prepare writes eligible candidates, skips blocked/dependency-pending issue
   const context = JSON.parse(readFileSync(outFile, 'utf8'));
   assert.deepEqual(context.active, [11]);
   assert.deepEqual(context.candidates.map(c => c.issue), [10]);
-  assert.equal(context.skipped.length, 1);
-  assert.equal(context.skipped[0].issue, 12);
-  assert.match(context.skipped[0].reason, /dependency #99 is not completed/);
+  assert.deepEqual(context.skipped.map(item => item.issue), [12, 13, 14]);
+  assert.match(context.skipped.find(item => item.issue === 12).reason, /dependency #99 is not completed/);
+  assert.match(context.skipped.find(item => item.issue === 13).reason, /non-dispatchable|inconsistent pipeline state/);
+  assert.match(context.skipped.find(item => item.issue === 14).reason, /non-dispatchable|inconsistent pipeline state/);
   assert.ok(context.queue, 'prepare includes queue context');
   assert.match(result.stdout, /1 active, 1 ready candidates/);
 });
