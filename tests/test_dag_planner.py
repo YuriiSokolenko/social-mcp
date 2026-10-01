@@ -39,6 +39,22 @@ def _shuffled(graph: "dict[str, list[str]]", seed: int) -> "dict[str, list[str]]
     return shuffled
 
 
+def _assert_batches_are_valid(
+    graph: "dict[str, list[str]]", batches: "list[list[str]]"
+) -> None:
+    """Every task appears once, batches are ordered, and dependencies precede them."""
+
+    finished: set[str] = set()
+    for batch in batches:
+        assert batch == sorted(batch)
+        assert len(set(batch)) == len(batch)
+        for task in batch:
+            for dependency in graph[task]:
+                assert dependency in finished, f"{dependency!r} must precede {task!r}"
+        finished.update(batch)
+    assert finished == set(graph)
+
+
 def test_empty_graph_returns_empty_plan() -> None:
     assert plan_execution({}) == []
     assert plan_execution([]) == []
@@ -116,7 +132,9 @@ def test_batches_are_deterministic_across_shuffled_inputs() -> None:
     expected = [["d", "f"], ["b", "c"], ["a"], ["e"]]
     assert plan_execution(ACYCLIC) == expected
     for seed in range(12):
-        assert plan_execution(_shuffled(ACYCLIC, seed)) == expected
+        shuffled = _shuffled(ACYCLIC, seed)
+        assert plan_execution(shuffled) == expected
+        _assert_batches_are_valid(ACYCLIC, plan_execution(shuffled))
 
 
 def test_cycle_report_is_deterministic_across_shuffled_inputs() -> None:
