@@ -15,6 +15,7 @@
     "running": "pi:running",
     "pr": "pi:mr-created",
     "needsHuman": "pi:needs-human",
+    "blocked": "pi:blocked",
     "architectReady": "architect:ready",
     "epic": "architect:epic",
     "reviewPassed": "review:passed",
