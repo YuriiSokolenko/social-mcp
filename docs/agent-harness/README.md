@@ -68,4 +68,4 @@ jobs:
     secrets: inherit
 ```
 
-plus `.agent-harness.json` (see this repository's file), `agents/<role>/AGENTS.md`, and repository variables/secrets for infra.
+plus `.agent-harness.json` (see this repository's file), `agents/AGENTS.md`, `agents/<role>/AGENTS.md`, and repository variables/secrets for infra.
