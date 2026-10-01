@@ -92,7 +92,7 @@ Once that operation finishes, the SHA has no orchestration meaning.
 
 ## Agent control-plane boundary
 
-The CI control plane is not agent-editable. No Pi agent may create, edit, delete, rename, review, repair, or auto-merge changes under `.github/workflows/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`. `agents/**` counts as control plane because it is the runtime prompt each model stage reads first, not product content. Trusted tooling enforces this independently of prompts. Control-plane maintenance is performed only through the trusted human/direct-`dev` path.
+The CI control plane is not agent-editable. No Pi agent may create, edit, delete, rename, review, repair, or auto-merge changes under `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, `infra/github-runner-autoscaler/**`, or the harness config itself (`.agent-harness.json`, `.agent-harness.yml`, `.agent-harness.yaml`). `agents/**` counts as control plane because it is the runtime prompt each model stage reads first, not product content. Trusted tooling enforces this independently of prompts. Control-plane maintenance is performed only through the trusted human/direct-`dev` path.
 
 ## Trusted control-plane rule
 
@@ -116,7 +116,7 @@ Trusted reusable pipeline policy belongs in `scripts/pi-common/`, with its purpo
 
 Keep stage-specific orchestration outside the common directory. A helper is common only when multiple stages need the same deterministic rule.
 
-All model-driven stages run through `pi-run-stage.mjs`, which wires one shared progress controller plus the stage-specific terminal tool. The controller owns bounded orientation, complexity declaration, repeat/turn protection, response budgets, single-use startup actions, and productive-progress state. The global turn ceiling remains an emergency bound, but Implementer no longer depends on a no-progress turn count: after one evidence action it enters `ACTION_REQUIRED`, where it must `edit`, `write`, `submit_result`, or declare one concrete `need_more_evidence` blocker to unlock exactly one more evidence action. Dispatcher becomes terminal-only after its prepared candidate context is loaded. Complexity is planning metadata, not a second quota system. Model prose or a process exit is never accepted as a substitute for a trusted terminal result artifact.
+All model-driven stages run through `pi-run-stage.mjs`, which wires one shared progress controller plus the stage-specific terminal tool. The controller owns bounded orientation, complexity declaration, repeat/turn protection, response budgets, single-use startup actions, and productive-progress state. The global turn ceiling remains an emergency bound, but Implementer no longer depends on a no-progress turn count: once the planner's bounded initial evidence budget (0–6 actions; see `CI_RULES.md`) is spent it enters `ACTION_REQUIRED`, where it must take a productive action (`structural_edit`, `safe_edit`, `edit`, `write`, `begin_coding_session`, `rollback_last_mutation`, or `submit_result`) or declare one concrete `need_more_evidence` blocker to unlock exactly one more evidence action. Dispatcher becomes terminal-only after its prepared candidate context is loaded. Complexity is planning metadata, not a second quota system. Model prose or a process exit is never accepted as a substitute for a trusted terminal result artifact.
 
 ## Recovery rule
 

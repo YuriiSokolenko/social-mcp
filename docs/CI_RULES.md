@@ -12,9 +12,9 @@ Every green CI run on a `dev` push wakes Merge Gate, which reloads current PR st
 
 ## Agent control-plane boundary
 
-No Pi agent may create, edit, delete, rename, review, repair, or auto-merge CI/control-plane files. Protected paths are `.github/workflows/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**`. `agents/**` is protected as control-plane, not product content, because it holds the runtime prompt every model stage reads before doing anything else; an agent editing its own instructions is a control-plane change, not a product change.
+No Pi agent may create, edit, delete, rename, review, repair, or auto-merge CI/control-plane files. Protected paths are `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, `infra/github-runner-autoscaler/**`, and the harness config itself (`.agent-harness.json`, `.agent-harness.yml`, `.agent-harness.yaml`). `agents/**` is protected as control-plane, not product content, because it holds the runtime prompt every model stage reads before doing anything else; an agent editing its own instructions is a control-plane change, not a product change.
 
-Implementer and PR Fix enforce this in trusted submit tooling. Reviewer and PR Fix also inspect the complete PR file list before model execution; a control-plane PR is marked `pi:needs-human` and skipped. Merge Gate uses the same centralized path policy and cannot auto-merge such a PR. Dispatcher, Architect, and Triage do not edit repository files at all. Control-plane changes, including changes to `agents/**` prompts, use the trusted human/direct-`dev` path only.
+Implementer and PR Fix enforce this in trusted validation/publication tooling (the central policy in `.agent-harness.json` → `control-plane-policy.mjs`). Reviewer and PR Fix also inspect the complete PR file list before model execution; a control-plane PR is marked `pi:needs-human` and skipped. Merge Gate uses the same centralized path policy and cannot auto-merge such a PR. Dispatcher, Architect, and Triage do not edit repository files at all. Control-plane changes, including changes to `agents/**` prompts, use the trusted human/direct-`dev` path only.
 
 ## Branches and trust
 
@@ -48,7 +48,7 @@ Implementer edits code and tests in an isolated worktree. It does not commit, pu
 
 Before the Implementer session may finish successfully, its trusted `submit_result` tool fetches the latest `dev` and merges `origin/dev` into the issue branch. If that merge conflicts, the same live Implementer session must resolve the conflicted files and retry `submit_result`; a resolvable conflict is not a successful terminal state. Trusted tooling owns staging and the merge commit, while the agent owns the content-level conflict resolution.
 
-Only after latest `dev` is integrated does trusted submit tooling run the authoritative product deterministic checks, and they must pass before publication, including at least:
+Only after latest `dev` is integrated, and after the Implementer backend exits, does the trusted stage harness (`stage-validation-recovery.mjs` → `validateFinalProductTree()`) run the authoritative product deterministic checks. They must pass before publication. If they fail, the harness starts exactly one focused validation-repair attempt in the same worktree with the concrete diagnostics and then reruns them. The checks include at least:
 
 ```bash
 pytest
@@ -86,7 +86,7 @@ It does not:
 
 The current PR head SHA may be read immediately before merge and supplied to GitHub as optimistic concurrency protection. That SHA is local operation data, not pipeline state.
 
-If GitHub reports a merge conflict, Merge Gate invalidates the stale review verdict, dispatches PR Fix, and stops the queue without crashing. Conflict resolution remains outside Merge Gate. PRs modifying any protected control-plane path (`.github/workflows/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`) are not auto-merged.
+If GitHub reports a merge conflict, Merge Gate invalidates the stale review verdict, dispatches PR Fix, and stops the queue without crashing. Conflict resolution remains outside Merge Gate. PRs modifying any protected control-plane path (`.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, `infra/github-runner-autoscaler/**`, or the harness config itself (`.agent-harness.json`, `.agent-harness.yml`, `.agent-harness.yaml`)) are not auto-merged.
 
 ## Post-merge CI
 
@@ -145,14 +145,14 @@ Do not silently substitute another task when selected work fails.
 
 ## Complexity guard
 
-Routing to Architect is a Dispatcher decision made before Implementer starts. Implementer therefore needs only a binary startup class from its planner: **trivial** or **nontrivial**. That class changes exactly one bounded runtime parameter—the initial productive-progress evidence allowance (**2** or **6** actions). It does not change response budgets, turn quotas, workflow routing, or whether delegation is required. Reviewer and PR Fix keep their separate `trivial | normal | complex` review-depth classification.
+Routing to Architect is a Dispatcher decision made before Implementer starts. Implementer therefore needs only a binary startup class from its planner: **trivial** or **nontrivial**. The planner separately returns its own per-task `evidence_budget` estimate (0–6), and that estimate is the initial productive-progress evidence allowance; the class only supplies the fallback allowance (**2** for trivial, **6** for nontrivial) when no estimate is recorded. Neither value changes response budgets, turn quotas, workflow routing, or whether delegation is required. Reviewer and PR Fix keep their separate `trivial | normal | complex` review-depth classification.
 
 
 ## Productive-progress guard
 
 Implementer exploration is constrained by trusted runtime state rather than by a fixed count of "no-progress" turns.
 
-For fresh work, successful `prepare_implementation` opens a bounded initial evidence budget: **2 actions for trivial work and 6 for nontrivial work**. This permits one narrow discovery-and-inspection chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor` without forcing a guessed mutation. Once that budget is exhausted, the runtime enters `ACTION_REQUIRED`: the next substantive action must be `safe_edit`, `edit`, `write`, or `submit_result`. If one concrete fact outside that bounded initial chain still prevents a safe action, `need_more_evidence({missing, reason})` unlocks exactly one additional evidence action and then returns to `ACTION_REQUIRED`. That escape hatch may be used only once per productive epoch; another `need_more_evidence` is blocked until a successful productive action (`safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result`) resets the epoch. Failed productive actions do not reset it.
+For fresh work, successful `prepare_implementation` opens a bounded initial evidence budget equal to the planner's `evidence_budget` estimate (**0–6** actions; the by-complexity fallback of 2 trivial / 6 nontrivial applies only when no estimate is recorded). A budget of 0 enters `ACTION_REQUIRED` immediately. This permits one narrow discovery-and-inspection chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor` without forcing a guessed mutation. Once that budget is exhausted, the runtime enters `ACTION_REQUIRED`: the next substantive action must be `structural_edit`, `safe_edit`, `edit`, `write`, `begin_coding_session`, `rollback_last_mutation`, or `submit_result`. If one concrete fact outside that bounded initial chain still prevents a safe action, `need_more_evidence({missing, reason})` unlocks exactly one additional evidence action and then returns to `ACTION_REQUIRED`. That escape hatch may be used only once per productive epoch; another `need_more_evidence` is blocked until a successful productive action (`structural_edit`, `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result`) resets the epoch. Failed productive actions do not reset it.
 
 `prepare_implementation` is runtime single-shot. If planner infrastructure fails after its configured internal retry (one retry for missing `structured_output`), the runtime records `PREPARATION_FALLBACK` and satisfies preparation without inventing planner output or complexity. The fallback closes startup orientation and enters `ACTION_REQUIRED`: normal mutation/submission tools and `begin_coding_session` (plus the legacy `request_large_mutation_budget`) are available; `run_check` still requires a successful mutation, and a concrete missing fact can unlock one read/search via `need_more_evidence`. A second preparation call remains blocked. Fallback itself grants no elevated response budget. `PI_SUBAGENT_FAILURE`, `PI_SUBAGENT_RETRY`, and `PI_PREPARATION_FALLBACK` distinguish failed attempts, retry exhaustion, and recovery. Cancellation still propagates rather than enabling execution. Restored Implementer work starts directly in `ACTION_REQUIRED` and should call `submit_result({})` first.
 

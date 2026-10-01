@@ -13,10 +13,13 @@ The PR already contains an implementation. Do not re-plan the original issue, re
 Never modify CI/control-plane paths:
 
 - `.github/workflows/**`
+- `.pi/**`
+- `agents/**`
 - `scripts/pi-*`
 - `tests/*.test.mjs`
 - `tests/test_runner_autoscaler.sh`
 - `infra/github-runner-autoscaler/**`
+- `.agent-harness.json` / `.agent-harness.yml` / `.agent-harness.yaml`
 
 Do not weaken authentication/authorization/validation or call production social APIs from tests.
 

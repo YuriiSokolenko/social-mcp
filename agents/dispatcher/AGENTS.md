@@ -62,8 +62,3 @@ Call `submit_result` exactly once as your final action:
 `submit_result({"classifications":[{"issue":42,"decision":"IMPLEMENT"},{"issue":44,"decision":"ARCHITECT"}]})`
 
 Every prepared candidate must appear exactly once. Include no issue outside the prepared candidates.
-
-
-If the tool is unavailable, emit one final line:
-
-`DISPATCH_RESULT: {"classifications":[...]}`

@@ -19,6 +19,7 @@ Never modify CI/control-plane paths:
 - `tests/*.test.mjs`
 - `tests/test_runner_autoscaler.sh`
 - `infra/github-runner-autoscaler/**`
+- `.agent-harness.json` / `.agent-harness.yml` / `.agent-harness.yaml`
 
 Do not weaken authentication/authorization, commit local/runtime artifacts, or call production social APIs from tests.
 
@@ -46,7 +47,7 @@ Follow this sequence:
 2. Call `prepare_implementation` exactly once as the first tool action.
    - The runtime sends only issue title/body to the permanent project `implementation-planner` subagent.
    - The planner starts with its own planning contract plus inherited skill guidance.
-   - One structured result contains the ordered plan plus `trivial | nontrivial` and one short reason.
+   - One structured result contains the ordered plan, `trivial | nontrivial`, the planner's own `evidence_budget` estimate (0-6), and one short reason.
    - The main agent receives that prepared result. Do not call the child manually and do not re-run task-level classification.
    - If planner infrastructure fails after the configured internal retry, runtime returns `PREPARATION_FALLBACK`: preparation is satisfied without planner output or complexity. Do not call `prepare_implementation` again. Continue from the issue and loaded contract. Fallback starts in `ACTION_REQUIRED`; use `need_more_evidence` if one concrete missing fact requires a read/search.
 3. Execute the first prepared plan step unless existing evidence already gives a more direct next action. In `PREPARATION_FALLBACK`, execute the requested issue using the same productive-progress rules.
@@ -124,7 +125,7 @@ Use `scout` with `async: false` only when the evidence already available to the 
 - the needed evidence requires a broad repository dump or search rather than reading known files;
 - a skill or project document must be searched for a concrete rule needed by the current decision.
 
-**Task classification alone never requires delegation.** `nontrivial` means only that the startup evidence allowance is six actions; it is not an instruction to call `scout`.
+**Task classification alone never requires delegation.** `nontrivial` is not an instruction to call `scout`, and it does not set the startup evidence allowance (the planner's `evidence_budget` does).
 
 `grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `indexed_repo_search` when available for initial indexed discovery and `repo_search` for current-worktree deterministic discovery. Broad `bash` is also blocked. After a successful edit you may call `run_check` (`python_compile`, `ruff`, `pytest`, or a named `profile`) for focused verification. A failing result is evidence: fix the reported diagnostic and re-check. `status: infra_error` is different: the runner could not run the check, which says nothing about your change — do not retry it, do not look for a shell workaround, and do not treat the code as failing. It does not replace final validation; still call `submit_result`. Every `run_check` result and the final authoritative checks are recorded in a harness-owned validation ledger; the PR/job "Validation" text is generated from that ledger, not from anything you write.
 

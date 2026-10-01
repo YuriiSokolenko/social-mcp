@@ -167,14 +167,14 @@ Splitting components into separate services can be done later if needed.
 
 ## CI and local checks
 
-`ci.yml` runs on pushes to `dev` (and may be started manually) on fresh GitHub-hosted runners. It runs Ruff, pytest, Node CI/control-plane contract tests, and runner-autoscaler checks. A separate Docker job builds the image, starts Compose with a unique project name and a temporary encryption key, tests the running HTTP service, and removes its volume and containers even when a check fails. A green `dev` CI run wakes Merge Gate for the next eligible reviewed PR; a red run stops that merge sequence. Pi product agents run their own pre-publication product checks on trusted self-hosted N150 runners, but CI on the actual merged `dev` commit is the integration truth. No Meta or TikTok credentials are needed.
+`ci.yml` runs on pull requests targeting `dev`, on pushes to `dev`, and on manual dispatch, using fresh GitHub-hosted runners. It runs Ruff, pytest, Node CI/control-plane contract tests, and runner-autoscaler checks. A separate Docker job builds the image, starts Compose with a unique project name and a temporary encryption key, tests the running HTTP service, and removes its volume and containers even when a check fails. A completed PR CI run wakes Merge Gate through `ci-terminal-wake.yml`, and Merge Gate merges only a PR whose current HEAD has green PR CI. A green `dev` CI run wakes Merge Gate for the next eligible reviewed PR; a red run stops that merge sequence. Pi product agents run their own pre-publication product checks on trusted self-hosted N150 runners, but CI on the actual merged `dev` commit is the integration truth. No Meta or TikTok credentials are needed.
 
 To run the same checks locally with Python 3.12, Node.js and Docker Compose:
 
 ```bash
 python3.12 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e . pytest pytest-asyncio ruff
+python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
 ruff check .
 pytest
 node --test tests/*.test.mjs

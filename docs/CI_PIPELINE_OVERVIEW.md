@@ -69,11 +69,11 @@ Normal wake sources are deliberately narrow:
 
 Any PR HEAD change emits `pull_request:synchronize`; that handler removes stale `review:*` labels and does nothing else. It never dispatches Reviewer. Implementer/PR Fix own the normal fresh-review handoff after current-`dev` integration and deterministic checks succeed. If the handoff is genuinely abandoned, Reconciler may recover it only after a 10-minute grace period from the PR's latest update; this grace period never delays the happy path.
 
-Reconciler does not wake Merge Gate. A wake carries no authoritative task state; the receiver reloads GitHub state. `pi:needs-human` on a PR is a hard stop for Reviewer, PR Fix, and Merge Gate.
+Reconciler is not a normal Merge Gate scheduler: it issues one state-free Merge Gate wake only when a PR already carrying `review:passed` outlives the PR recovery grace period without its normal PASS handoff. A wake carries no authoritative task state; the receiver reloads GitHub state. `pi:needs-human` on a PR is a hard stop for Reviewer, PR Fix, and Merge Gate.
 
 ## Agent control-plane boundary
 
-Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, and `infra/github-runner-autoscaler/**` are protected from agent-generated changes. `agents/**` holds the runtime prompts every model stage reads first, so it is protected the same way as workflow/script control-plane files, not treated as ordinary product content. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
+Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-merge authority. `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, `infra/github-runner-autoscaler/**`, and the harness config itself (`.agent-harness.json`, `.agent-harness.yml`, `.agent-harness.yaml`) are protected from agent-generated changes. `agents/**` holds the runtime prompts every model stage reads first, so it is protected the same way as workflow/script control-plane files, not treated as ordinary product content. Implementer/PR Fix submissions reject them; Reviewer/PR Fix stop before model work; Merge Gate refuses automatic merge. Such changes require the trusted human/direct-`dev` path.
 
 ## Branch, trust, and inputs
 
@@ -122,9 +122,9 @@ The normative execution rules live in [CI_RULES.md](CI_RULES.md). The short Impl
 
 ```text
 prepare_implementation
-  -> one planner result: steps + trivial|nontrivial
-  -> 2 evidence actions if trivial, otherwise 6
-  -> safe_edit / edit / write / submit_result
+  -> one planner result: steps + trivial|nontrivial + evidence_budget (0-6)
+  -> evidence_budget evidence actions (fallback: 2 if trivial, otherwise 6)
+  -> structural_edit / safe_edit / edit / write / begin_coding_session / rollback_last_mutation / submit_result
      or one need_more_evidence escape -> one evidence action -> action
 ```
 
