@@ -909,7 +909,9 @@ test('stage configuration owns every model prompt and injects the shared contrac
 
     assert.match(implementerPrompt, /Task classification alone never requires delegation/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
-    assert.match(stagePrompt('dispatcher', env), /prepared context is sufficient and authoritative/i);
+    const dispatcherPrompt = stagePrompt('dispatcher', env);
+    assert.match(dispatcherPrompt, /prepared context is sufficient/i);
+    assert.match(dispatcherPrompt, /candidates array is authoritative/i);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
     assert.match(stagePrompt('triage', env), /runtime closes repository exploration|runtime closes exploration/i);
   } finally {
