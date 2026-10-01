@@ -396,10 +396,9 @@ export default function (pi) {
       productiveState === 'action_required';
 
     const largeMutationBudgetActive = stage === 'implementer' && controller.largeMutationBudgetActive();
-    // Completed one-shot control tools disappear; tools a transition enabled (e.g. `subagent`
-    // after `subagents_enable`) join the surface. Both come from runtime state, not the model.
+    // Completed one-shot control tools disappear. Enabled tools such as `subagent` are shown only
+    // where the controller gate lets them execute (evidence_allowed), never in action_required.
     const satisfied = controller.transitions.satisfiedToolNames();
-    const enabled = controller.transitions.enabledSurfaceTools();
     const current = pi.getActiveTools();
     // Tools added by a control transition appear in the live list but not in the saved baseline.
     if (unrestrictedActiveTools != null) {
@@ -423,7 +422,7 @@ export default function (pi) {
           ? unrestrictedActiveTools.filter(name => FINISH_TOOLS.has(name))
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
-            controlTools: [...config.productiveProgress.controlTools, ...enabled],
+            controlTools: config.productiveProgress.controlTools,
             blockerTool: config.productiveProgress.blockerTool,
             verificationTools: controller.verificationPermitted()
               ? [config.productiveProgress.verificationTool].filter(Boolean)
@@ -1026,13 +1025,15 @@ export default function (pi) {
   });
 
   pi.on('tool_call', async (event, ctx) => {
-    actionTurnAttemptedTool = true;
     if (codingSession && !codingFirstToolLogged) {
       codingFirstToolLogged = true;
       codingSessionLog('first_tool_call', { side: 'fork', sessionId: codingSession.sessionId, tool: event.toolName, msSinceReady: codingReadyAt ? Date.now() - codingReadyAt : null });
     }
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
+    // A repeated already-completed transition is not a real tool attempt: it must not reset the
+    // prose-only / ceiling-without-tool watchdogs.
+    if (!blocked?.alreadySatisfied) actionTurnAttemptedTool = true;
     if (blocked) {
       if (blocked.alreadySatisfied) {
         console.warn(`PI_ALREADY_SATISFIED ${JSON.stringify({ stage, ...controller.lastAlreadySatisfied, suppressed: true, productive: false })}`);

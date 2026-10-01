@@ -40,11 +40,10 @@ test('A: repeated lsp_start_server after fallback is already_satisfied and not p
   assert.equal(state.checkToolCall('safe_edit', {}), undefined);
 });
 
-test('B: subagents_enable completes once, surfaces subagent, repeat steers without progress', () => {
+test('B: subagents_enable completes once, repeat steers without progress', () => {
   const state = fallbackController();
   assert.ok(complete(state, 'subagents_enable'));
   assert.deepEqual([...state.transitions.satisfiedToolNames()], ['subagents_enable', 'prepare_implementation']);
-  assert.deepEqual(state.transitions.enabledSurfaceTools(), ['subagent']);
   assert.match(state.transitions.stateBlock(), /subagents: enabled/);
   state.onTurnStart(1);
   const blocked = state.checkToolCall('subagents_enable', {});
@@ -92,14 +91,18 @@ test('D: runtime state == model-visible state == tool surface for each transitio
   const cfg = stageConfig('implementer').productiveProgress;
   const surface = actionRequiredToolNames(all, {
     actionTools: cfg.actionTools,
-    controlTools: [...cfg.controlTools, ...state.transitions.enabledSurfaceTools()],
+    controlTools: cfg.controlTools,
     blockerTool: cfg.blockerTool,
   }).filter(name => !state.transitions.satisfiedToolNames().has(name));
   for (const tool of ['prepare_implementation', 'subagents_enable']) {
     assert.ok(!surface.includes(tool), `${tool} removed from surface`);
     assert.equal(state.checkToolCall(tool, {}).alreadySatisfied, true, `${tool} deterministic no-op`);
   }
-  assert.ok(surface.includes('subagent'), 'enabled subagent schema is exposed');
+  assert.ok(!surface.includes('subagent'), 'subagent hidden in action_required: the gate would block it');
+  assert.equal(state.checkToolCall('subagent', {}).block, true);
+  assert.equal(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('subagent', {}), undefined, 'subagent executes once evidence is allowed');
   assert.match(state.transitions.stateBlock(), /subagents: enabled/);
   // LSP stays visible (keyed per workspace) but the identical call is satisfied
   assert.ok(surface.includes('lsp_start_server'));

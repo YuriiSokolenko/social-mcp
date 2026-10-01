@@ -32,7 +32,8 @@ test('runtime materializes completed transitions into context and tool surface',
       let active = ['read', 'safe_edit', 'run_check', 'submit_result', 'need_more_evidence', 'begin_coding_session',
         'request_large_mutation_budget', 'prepare_implementation', 'subagents_enable', 'lsp_start_server'];
       const ctx = { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 32000 },
-        sessionManager: { getSessionId: () => 'parent' }, abort: () => {} };
+        sessionManager: { getSessionId: () => 'parent' }, abort: () => { aborts++; } };
+      let aborts = 0;
       const pi = {
         events: { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) },
         registerTool: tool => tools.set(tool.name, tool),
@@ -67,7 +68,7 @@ test('runtime materializes completed transitions into context and tool surface',
 
       await call('subagents_enable', {}, { enables: 'subagent' });
       assert.ok(!active.includes('subagents_enable'), 'subagents_enable removed');
-      assert.ok(active.includes('subagent'), 'subagent schema exposed on the next turn');
+      assert.ok(!active.includes('subagent'), 'subagent hidden while action_required (gate would block it)');
       assert.ok(messages.some(m => /subagents: enabled/.test(m) && /Do not call subagents_enable again/.test(m)));
 
       const lsp = { server_id: 'python', workspace_root: ctx.cwd };
@@ -80,6 +81,18 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.equal(startups, 1, 'startup not re-executed');
       const again = await call('subagents_enable');
       assert.match(again.reason, /ALREADY_SATISFIED/);
+
+      // Watchdog: a prose-only turn followed by a repeated satisfied transition is still the
+      // second consecutive prose-only turn; the repeat must not reset the counter.
+      assert.equal(aborts, 0);
+      handlers.get('turn_start')({ turnIndex: turn });
+      await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+      assert.equal(aborts, 0);
+      handlers.get('turn_start')({ turnIndex: turn });
+      const repeated = await handlers.get('tool_call')({ toolName: 'subagents_enable', toolCallId: 'r' + turn, input: {} }, ctx);
+      assert.equal(repeated.alreadySatisfied, true);
+      await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+      assert.equal(aborts, 1, 'already_satisfied repeat did not reset the prose-only counter');
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 15000,

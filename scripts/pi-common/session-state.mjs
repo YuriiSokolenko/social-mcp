@@ -6,9 +6,6 @@ export const SUBAGENTS_ENABLE_TOOL = 'subagents_enable';
 export const LSP_START_TOOL = 'lsp_start_server';
 export const PREPARATION_KEY = 'preparation';
 
-// Tools that become visible once a transition has completed (the transition's payoff).
-const ENABLED_SURFACE_TOOLS = { [SUBAGENTS_ENABLE_TOOL]: ['subagent'] };
-
 export function mergeNewlyActiveTools(baseline, current) {
   const known = new Set(baseline);
   return [...baseline, ...current.filter(name => !known.has(name))];
@@ -50,15 +47,6 @@ export class SessionTransitions {
     const names = new Set();
     if (this.completed.has(SUBAGENTS_ENABLE_TOOL)) names.add(SUBAGENTS_ENABLE_TOOL);
     if (this.preparationTool && this.completed.has(PREPARATION_KEY)) names.add(this.preparationTool);
-    return names;
-  }
-
-  // Tools a completed transition made available.
-  enabledSurfaceTools() {
-    const names = [];
-    for (const [tool, enabled] of Object.entries(ENABLED_SURFACE_TOOLS)) {
-      if (this.completed.has(tool)) names.push(...enabled);
-    }
     return names;
   }
 
@@ -104,7 +92,7 @@ export class SessionTransitions {
         : `${record.serverId} LSP: running`;
     const repeatTool = record.key === PREPARATION_KEY ? this.preparationTool : record.tool;
     const tail = record.key === SUBAGENTS_ENABLE_TOOL
-      ? 'If subagent evidence is needed, call subagent(...).\nOtherwise continue implementation.'
+      ? 'If subagent evidence is needed, call need_more_evidence first; subagent(...) is then permitted for that evidence action.\nOtherwise continue implementation.'
       : 'Continue with repository inspection, implementation, validation, or terminal result.';
     return [
       'STATE TRANSITION COMPLETE (control transition only; the GitHub issue is not complete)',
