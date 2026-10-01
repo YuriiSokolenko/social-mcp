@@ -50,10 +50,11 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
     findings.push({ code: 'closed-active', severity: 'repair',
       remove: [...active, PIPELINE_LABELS.queued].filter(label => labels.has(label)) });
   }
+  const epicTerminal = terminal.filter(label => label !== PIPELINE_LABELS.blocked);
   if (issue.state === 'open' && labels.has(PIPELINE_LABELS.epic) &&
-      (labels.has(PIPELINE_LABELS.queued) || active.length || terminal.length)) {
+      (labels.has(PIPELINE_LABELS.queued) || active.length || epicTerminal.length)) {
     findings.push({ code: 'epic-executable', severity: 'repair',
-      remove: [PIPELINE_LABELS.queued, ...active, ...terminal].filter(label => labels.has(label)) });
+      remove: [PIPELINE_LABELS.queued, ...active, ...epicTerminal].filter(label => labels.has(label)) });
   }
   if (terminal.length > 1) {
     const keep = terminal.includes(PIPELINE_LABELS.blocked) ? PIPELINE_LABELS.blocked : terminal[0];
