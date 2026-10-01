@@ -229,9 +229,10 @@ test('shared validation recovery gives any implementer backend one focused repai
       });
     },
     {
-      validate: ({ cwd, ledgerPath }) => {
+      validate: ({ cwd, ledgerPath, backend }) => {
         assert.equal(cwd, dir);
         assert.equal(ledgerPath, spec.environment.PI_VALIDATION_LEDGER_FILE);
+        assert.equal(backend, 'fake');
         validations += 1;
         if (validations === 1) throw new Error('ruff check . failed\nBLE001 blind exception');
       },
@@ -262,8 +263,12 @@ test('Pi and mini-swe both run post-backend validation', async () => {
     const result = await runSelectedStage(spec, { backend, workspace: '/control' }, {
       runPi: fake,
       runMiniSwe: fake,
-      validate: ({ cwd }) => {
+      validate: ({ cwd, backend: validatedBackend }) => {
         assert.equal(cwd, '/work');
+        // Regression: the ledger must carry the real backend that produced the
+        // result, not a value hardcoded to 'pi' -- a mini-swe implementer run's
+        // checks_final records would otherwise be misattributed to Pi.
+        assert.equal(validatedBackend, backend);
         validations += 1;
       },
     });

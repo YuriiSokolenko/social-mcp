@@ -5,7 +5,8 @@ import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
 import { runGit as git } from './git.mjs';
 import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projectConfig, workflowFile } from './project-config.mjs';
-import { readValidationLedger, renderValidationSection } from './validation-ledger.mjs';
+import { PIPELINE_LABELS } from './state-machine.mjs';
+import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -109,8 +110,27 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
   return { commit };
 }
 
+/**
+ * Pure: given a PR's current labels and the ledger-derived verification
+ * state, returns the label set `upsertPullRequest` should apply, or `null`
+ * if no label change is needed. This is a durable, control-plane gate, not
+ * PR-body prose: `pi:needs-human` on the PR is a hard stop already honored
+ * by the shared PR-guard (Reviewer/PR Fix) and by Merge Gate, so a PR whose
+ * authoritative checks did not all complete can never reach an effective
+ * review PASS or a merge. Once set, it is only ever added here, never
+ * removed -- exactly like every other `pi:needs-human` producer in this
+ * codebase (pr-guard.mjs, pi-auto-merge.mjs): clearing it is a human action.
+ */
+export function nextLabelsForVerification(currentLabels, verificationState) {
+  const names = (currentLabels ?? []).map(label => typeof label === 'string' ? label : label.name);
+  if (verificationState === VERIFICATION_STATES.VERIFIED || names.includes(PIPELINE_LABELS.needsHuman)) {
+    return null;
+  }
+  return [...names, PIPELINE_LABELS.needsHuman];
+}
+
 export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }) {
-  const { api } = githubClient();
+  const { api, replaceLabels } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   if (!resultFile || !fs.existsSync(resultFile) || !fs.statSync(resultFile).size) {
     throw new Error('Implementer result metadata is required before PR publication');
@@ -124,6 +144,7 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }
   }
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
   const { records: ledgerRecords, corrupted: ledgerCorrupted } = readValidationLedger(ledgerFile);
+  const verificationState = computeVerificationState(ledgerRecords, { corrupted: ledgerCorrupted });
   const tests = [
     renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted }),
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
@@ -131,10 +152,14 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
   if (existing[0]) {
     const pr = await api(`/pulls/${existing[0].number}`,'PATCH',{title:metadata.title,body});
-    return { number:pr.number, url:pr.html_url };
+    const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState);
+    if (nextLabels) await replaceLabels(pr.number, nextLabels);
+    return { number:pr.number, url:pr.html_url, verification_state: verificationState };
   }
   const pr = await api('/pulls','POST',{title:metadata.title,head:issueBranch(issue),base:baseBranch(),body});
-  return { number:pr.number, url:pr.html_url };
+  const nextLabels = nextLabelsForVerification([], verificationState);
+  if (nextLabels) await replaceLabels(pr.number, nextLabels);
+  return { number:pr.number, url:pr.html_url, verification_state: verificationState };
 }
 
 export async function dispatchReviewer(prNumber) {

@@ -153,16 +153,22 @@ jobs:
           PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}" "$PI_VALIDATION_LEDGER_FILE")"
           echo "number=$(jq -r '.number' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "url=$(jq -r '.url' <<<"$PR")" >> "$GITHUB_OUTPUT"
+          echo "verification_state=$(jq -r '.verification_state' <<<"$PR")" >> "$GITHUB_OUTPUT"
 
       - name: Mark pull request created
         if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }}"
+          node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue mr-created             "Pi finished the implementation and opened/updated PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.url }} (verification: ${{ steps.pr.outputs.verification_state }})"
 
+      # Verification state is the ledger's, not prose: a PR whose authoritative
+      # checks did not all complete already carries pi:needs-human (added by
+      # issue-publication.mjs), which both the PR-guard (Reviewer/PR Fix) and
+      # Merge Gate treat as a hard stop. Skipping the dispatch here too avoids
+      # burning a Reviewer run that can only ever self-skip.
       - name: Start independent PR review
-        if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != ''
+        if: steps.checkpoint.outputs.changed == 'true' && steps.pr.outputs.number != '' && steps.pr.outputs.verification_state == 'VERIFIED'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" review "${{ steps.pr.outputs.number }}"

@@ -93,7 +93,7 @@ function finalCheckKind(step) {
   return step.builtin === 'ruff' ? 'ruff' : step.name.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
 }
 
-function recordFinalCheck(ledgerPath, step, status, error) {
+function recordFinalCheck(ledgerPath, step, status, backend, error) {
   if (!ledgerPath) return;
   appendCheckRecord(ledgerPath, {
     kind: finalCheckKind(step),
@@ -102,7 +102,7 @@ function recordFinalCheck(ledgerPath, step, status, error) {
     exit_code: null,
     source: 'checks_final',
     stage: 'implementer',
-    backend: 'pi',
+    backend,
     run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
     summary: status === 'pass' ? 'Check passed' : String(error?.message ?? '').slice(0, 400),
     infrastructure: status === 'infra_error' ? { component: 'check_command', code: 'PRODUCT_CHECK_SPAWN_ERROR' } : null,
@@ -123,8 +123,13 @@ function recordFinalCheck(ledgerPath, step, status, error) {
  * step has completed without error is a dedicated completion marker
  * appended, so a process that dies partway through (e.g. after Ruff passes
  * but before `pytest` runs) cannot be read back as "final checks ran."
+ *
+ * `backend` identifies which implementer backend produced these records
+ * ('pi' or 'mini-swe') -- this function is shared by both, via
+ * `runStageWithValidationRecovery`, and the ledger must carry the real
+ * provenance rather than assume it is always Pi.
  */
-export function runProductChecks({ cwd, ledgerPath } = {}) {
+export function runProductChecks({ cwd, ledgerPath, backend = 'pi' } = {}) {
   const root = cwd ?? process.cwd();
   const steps = projectConfig().checks.final;
   for (let i = 0; i < steps.length; i += 1) {
@@ -142,11 +147,11 @@ export function runProductChecks({ cwd, ledgerPath } = {}) {
         if (result.out) process.stdout.write(`${result.out}\n`);
         if (result.err) process.stderr.write(`${result.err}\n`);
       }
-      recordFinalCheck(ledgerPath, step, 'pass');
+      recordFinalCheck(ledgerPath, step, 'pass', backend);
     } catch (error) {
       const infra = /could not run:/.test(error.message);
-      recordFinalCheck(ledgerPath, step, infra ? 'infra_error' : 'fail', error);
-      for (const remaining of steps.slice(i + 1)) recordFinalCheck(ledgerPath, remaining, 'not_run');
+      recordFinalCheck(ledgerPath, step, infra ? 'infra_error' : 'fail', backend, error);
+      for (const remaining of steps.slice(i + 1)) recordFinalCheck(ledgerPath, remaining, 'not_run', backend);
       throw error;
     }
   }
@@ -157,7 +162,7 @@ export function runProductChecks({ cwd, ledgerPath } = {}) {
       status: 'pass',
       source: FINAL_PIPELINE_COMPLETE_SOURCE,
       stage: 'implementer',
-      backend: 'pi',
+      backend,
       run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
       summary: 'All checks.final steps completed',
     });

@@ -169,6 +169,21 @@ test('a full passing run of checks.final records one pass entry per step in the 
     ['pytest', 'pass', 'checks_final'],
     ['checks_final', 'pass', 'checks_final_complete'],
   ]);
+  // Unspecified backend defaults to 'pi', the only backend that existed before
+  // this parameter was added.
+  assert.ok(records.every(r => r.backend === 'pi'));
+});
+
+test('checks.final records carry the actual backend, not a hardcoded one, so a mini-swe implementer run is not misattributed to Pi', t => {
+  const { root, bin } = fixture(t);
+  const pytest = path.join(bin, 'pytest');
+  fs.writeFileSync(pytest, '#!/bin/sh\nprintf "561 passed, 3 skipped\\n"\n');
+  fs.chmodSync(pytest, 0o755);
+  const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-')), 'ledger.jsonl');
+  runProductChecks({ cwd: root, ledgerPath, backend: 'mini-swe' });
+  const { records } = readValidationLedger(ledgerPath);
+  assert.ok(records.length > 0);
+  assert.ok(records.every(r => r.backend === 'mini-swe'), 'every record, including the completion marker, must carry the real backend');
 });
 
 test('a mid-pipeline checks.final failure records the failing step and not_run for every step after it', t => {
