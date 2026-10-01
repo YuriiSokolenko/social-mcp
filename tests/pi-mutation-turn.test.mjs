@@ -245,7 +245,9 @@ test('fork tool surface is only the declared operation; exploration, other targe
     }
     assert.equal((await turn.call('write', { path: 'bar.py', content: 'x' })).error, 'path_mismatch');
     assert.equal(turn.staged(), null);
-    assert.match((await turn.call('write', { path: cwd + '/foo.py', content: 'x = 1\\n' })).result.content[0].text, /STAGED/);
+    const stagedResult = (await turn.call('write', { path: cwd + '/foo.py', content: 'x = 1\\n' })).result;
+    assert.match(stagedResult.content[0].text, /STAGED/);
+    assert.equal(stagedResult.terminate, true, 'the fork ends immediately after staging its one mutation');
     assert.equal(fs.existsSync(cwd + '/foo.py'), false, 'the fork never writes the worktree');
     assert.equal(turn.staged().content, 'x = 1\\n');
     assert.match((await turn.call('write', { path: 'foo.py', content: 'second' })).blocked, /already staged its one mutation/);

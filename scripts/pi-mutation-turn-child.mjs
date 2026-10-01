@@ -85,6 +85,9 @@ export default function (pi) {
         text: `STAGED: your ${spec.operation} for ${spec.path} (${content.length} chars) was handed to the runtime, which validates and applies it. This mutation turn is complete: do not call any tool; reply with one short line.`,
       }],
       details: { turnId: spec.turnId, operation: spec.operation, path: spec.path, chars: content.length },
+      // End the fork right here: no automatic follow-up turn after its one mutation (Smoke 4
+      // showed the fork otherwise spending ~5 minutes on extra, blocked turns).
+      terminate: true,
     };
   }
 
