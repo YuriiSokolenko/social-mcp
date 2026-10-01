@@ -1,7 +1,7 @@
 {
   "version": 1,
   "git": {
-    "defaultBranch": "dev",
+    "defaultBranch": "smoke/273-coding-session-2",
     "issueBranchPrefix": "pi/issue-",
     "checkpointBranchSuffix": "-checkpoint",
     "identity": {
