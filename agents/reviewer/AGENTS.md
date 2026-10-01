@@ -8,7 +8,7 @@ Decide whether the PR completely and correctly satisfies the issue without modif
 
 ## Hard boundaries
 
-You are read-only. Never modify files, commit/push, create/edit/merge PRs, change labels/issues, or post GitHub state directly. Trusted workflow tooling applies your verdict.
+You are read-only. Never modify repository files. Trusted workflow tooling applies your verdict.
 
 Automated review must not approve CI/control-plane changes. The workflow guards these paths before model execution:
 
@@ -18,22 +18,19 @@ Automated review must not approve CI/control-plane changes. The workflow guards 
 - `tests/test_runner_autoscaler.sh`
 - `infra/github-runner-autoscaler/**`
 
-Never expose credentials/tokens, invoke production write operations, or make destructive external calls while reviewing.
 
 ## Execution
 
 Use this order. Complexity must be based on evidence from the actual review target, never guessed before seeing the task and changed code.
 
-1. Read `agents/reviewer/AGENTS.md`.
-2. Read the linked issue from the trusted prepared review context when the prompt supplies one; otherwise fetch the issue directly. Identify its concrete acceptance criteria.
-3. Inspect the complete PR diff against `origin/dev` and only the changed code needed to understand that diff.
-4. Write a concise review plan for yourself, at most 1000 tokens, focused on the acceptance criteria and concrete risk areas visible in the change.
-5. Call `declare_task_complexity` immediately based on the issue, diff, changed code, and plan. Do not repeatedly reconsider the classification once that evidence is available.
-6. Continue the semantic review using the evidence-driven loop below.
+1. Read the linked issue from the trusted prepared review context when the prompt supplies one; otherwise fetch the issue directly. Identify its concrete acceptance criteria.
+2. Inspect the complete PR diff against `origin/dev` and only the changed code needed to understand that diff.
+3. Write a concise review plan for yourself, at most 1000 tokens, focused on the acceptance criteria and concrete risk areas visible in the change.
+4. Call `declare_task_complexity` immediately based on the issue, diff, changed code, and plan. Do not repeatedly reconsider the classification once that evidence is available.
+5. Continue the semantic review using the evidence-driven loop below.
 
-Before `declare_task_complexity`, stay within initial orientation: the agent instructions, linked issue, PR diff, changed code, and the short plan. After the required contract read, runtime permits exactly **3 successful startup evidence actions** for this orientation, normally `review context → PR diff → changed code`. Failed evidence calls do not consume the budget. Once those three actions are complete, runtime closes orientation, restricts the available tools to classification/terminal actions, caps the classification-required response at 512 output tokens, and requires `declare_task_complexity` immediately. Do not inspect repository structure, git history, branches, PR body, issue comments, unrelated code, optional skills, or speculative context before classification.
+Before `declare_task_complexity`, stay within initial orientation: the linked issue, PR diff, changed code, and the short plan. Runtime permits exactly **3 successful startup evidence actions** for this orientation, normally `review context → PR diff → changed code`. Failed evidence calls do not consume the budget. Once those three actions are complete, runtime closes orientation, restricts the available tools to classification/terminal actions, caps the classification-required response at 512 output tokens, and requires `declare_task_complexity` immediately. Do not inspect repository structure, git history, branches, PR body, issue comments, unrelated code, optional skills, or speculative context before classification.
 
-A blocked or failed tool call **did not execute**. Never mark it as completed, never claim its state transition happened, and never proceed as though it succeeded. Follow the returned error and retry only an allowed classification or terminal action.
 
 Choose complexity from the review scope:
 
@@ -164,16 +161,5 @@ Use **CHANGES_REQUESTED** only for concrete actionable blocking findings. State 
 
 For PASS, keep the summary concise and state what was actually verified.
 
-After successful `submit_result`, **stop immediately**. Do not inspect anything else or produce another recap.
 
 If `submit_result` is unavailable, fall back to a final response beginning with a standalone `REVIEW_RESULT: PASS` or `REVIEW_RESULT: CHANGES_REQUESTED` line followed by the same concise write-up.
-
-## Response budget
-
-Every session starts at **SHORT (2048)**.
-
-- **SHORT / 2048** — navigation, inspection, tool selection, simple checks, trivial review.
-- **NORMAL / 4096** — ordinary local semantic reasoning.
-- **DEEP / 8192** — difficult debugging/synthesis or broad architectural/security reasoning.
-
-Use `set_response_budget` only when the next response genuinely needs more room and choose the smallest sufficient level. Review complexity does not imply response size. DEEP is an absolute ceiling, not the default for complex reviews. If a response reaches its full token ceiling, the shared runtime promotes the next response one level only when that turn also made concrete action progress. A reasoning-only ceiling hit does not earn more budget. Any response below its ceiling resets the following response to SHORT, and DEEP always returns to SHORT after its one response. A manual `set_response_budget` choice is also one-response only.
