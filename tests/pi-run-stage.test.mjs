@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
+import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
@@ -71,16 +71,10 @@ test('versioned default model resolves qwen from the trusted control workspace',
   mkdirSync(join(workspace, '.pi'), { recursive: true });
   writeFileSync(join(workspace, '.pi', 'default-model'), 'qwen\n');
 
-  const { spec } = buildStageRunSpec({
-    stage: 'dispatcher',
-    cwd: '/work',
-  }, {
-    RUNNER_TEMP: '/tmp/runner',
-    GITHUB_WORKSPACE: workspace,
-    PI_MODEL_CHOICE: 'default',
-  });
-
-  assert.equal(spec.model.id, 'Qwen3.8-Flash-Next-NVFP4');
+  assert.equal(
+    resolveModelId({ GITHUB_WORKSPACE: workspace, PI_MODEL_CHOICE: 'default' }),
+    'Qwen3.8-Flash-Next-NVFP4',
+  );
 });
 
 test('explicit laguna workflow choice overrides the versioned qwen default', () => {
@@ -88,50 +82,32 @@ test('explicit laguna workflow choice overrides the versioned qwen default', () 
   mkdirSync(join(workspace, '.pi'), { recursive: true });
   writeFileSync(join(workspace, '.pi', 'default-model'), 'qwen\n');
 
-  const { spec } = buildStageRunSpec({
-    stage: 'dispatcher',
-    cwd: '/work',
-  }, {
-    RUNNER_TEMP: '/tmp/runner',
-    GITHUB_WORKSPACE: workspace,
-    PI_MODEL_CHOICE: 'laguna',
-  });
-
-  assert.equal(spec.model.id, 'laguna-s-2.1-gguf');
+  assert.equal(
+    resolveModelId({ GITHUB_WORKSPACE: workspace, PI_MODEL_CHOICE: 'laguna' }),
+    'laguna-s-2.1-gguf',
+  );
 });
 
-test('automatic runs use the versioned default and invalid default config fails loudly', () => {
+test('automatic runs use the versioned default and invalid or missing config fails loudly', () => {
   const workspace = mkdtempSync(join(tmpdir(), 'pi-default-model-'));
   mkdirSync(join(workspace, '.pi'), { recursive: true });
   const defaultFile = join(workspace, '.pi', 'default-model');
   writeFileSync(defaultFile, 'qwen\n');
 
-  const { spec } = buildStageRunSpec({
-    stage: 'dispatcher',
-    cwd: '/work',
-  }, {
-    RUNNER_TEMP: '/tmp/runner',
-    GITHUB_WORKSPACE: workspace,
-  });
-  assert.equal(spec.model.id, 'Qwen3.8-Flash-Next-NVFP4');
+  assert.equal(
+    resolveModelId({ GITHUB_WORKSPACE: workspace }),
+    'Qwen3.8-Flash-Next-NVFP4',
+  );
 
   writeFileSync(defaultFile, 'unknown-model\n');
   assert.throws(
-    () => buildStageRunSpec({ stage: 'dispatcher', cwd: '/work' }, {
-      RUNNER_TEMP: '/tmp/runner',
-      GITHUB_WORKSPACE: workspace,
-      PI_MODEL_CHOICE: 'default',
-    }),
+    () => resolveModelId({ GITHUB_WORKSPACE: workspace, PI_MODEL_CHOICE: 'default' }),
     /Invalid default Pi model/,
   );
 
   const missingWorkspace = mkdtempSync(join(tmpdir(), 'pi-default-model-missing-'));
   assert.throws(
-    () => buildStageRunSpec({ stage: 'dispatcher', cwd: '/work' }, {
-      RUNNER_TEMP: '/tmp/runner',
-      GITHUB_WORKSPACE: missingWorkspace,
-      PI_MODEL_CHOICE: 'default',
-    }),
+    () => resolveModelId({ GITHUB_WORKSPACE: missingWorkspace, PI_MODEL_CHOICE: 'default' }),
     /Default Pi model config is missing/,
   );
 });
