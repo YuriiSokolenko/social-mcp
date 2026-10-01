@@ -911,7 +911,7 @@ test('stage configuration owns every model prompt and injects the shared contrac
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     const dispatcherPrompt = stagePrompt('dispatcher', env);
     assert.match(dispatcherPrompt, /prepared context is sufficient/i);
-    assert.match(dispatcherPrompt, /candidates array is authoritative/i);
+    assert.match(dispatcherPrompt, /candidates.*array is authoritative/i);
     assert.match(stagePrompt('triage', env), /pi-triage-context\.json/);
     assert.match(stagePrompt('triage', env), /runtime closes repository exploration|runtime closes exploration/i);
   } finally {
