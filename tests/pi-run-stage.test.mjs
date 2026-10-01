@@ -135,7 +135,7 @@ test('Pi backend invocation keeps the legacy extension and CLI argument order', 
   assert.deepEqual(invocation.filter.options.stdio, ['pipe', 'inherit', 'inherit']);
 });
 
-test('only stages offering the large mutation turn persist a forkable session', () => {
+test('only stages offering the coding session persist a forkable session', () => {
   for (const stage of ['dispatcher', 'reviewer', 'triage']) {
     const args = buildPiInvocation(specFor(stage), '/control').pi.args;
     assert.ok(args.includes('--no-session'), stage);

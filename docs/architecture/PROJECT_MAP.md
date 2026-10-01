@@ -218,10 +218,10 @@ This document is the human- and agent-readable text map of the current Social MC
        |
        +--> safe_edit / edit / write
        |
-       +--> request_mutation_turn({operation, path}) (large already-decided payload)
-       |      +--> one-shot fork of THIS session (same transcript), 16K, only the declared write/edit
-       |      +--> fork stages the payload; runtime validates + applies (snapshot / no-op / rollback / run_check permit)
-       |      +--> back to the same 2K session
+       +--> begin_coding_session (ready to implement; 2K exploration phase ends)
+       |      +--> 16K fork of THIS session (same transcript), same trusted runtime + normal coding tools
+       |      +--> implement -> tests -> run_check -> fix -> run_check -> submit_result (inside the fork)
+       |      +--> parent ends after the fork submits; otherwise back to 2K (bounded sessions per run)
        |
        +--> submit_result
        |

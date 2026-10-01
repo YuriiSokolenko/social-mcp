@@ -38,10 +38,10 @@ export function buildPiInvocation(spec, workspace) {
     '--provider', spec.model.provider,
     '--model', spec.model.id,
     '--mode', 'json',
-    // The large mutation turn forks this session's transcript (pi-subagents `context: 'fork'`
+    // The coding session forks this session's transcript (pi-subagents `context: 'fork'`
     // requires a persisted parent session). Sessions live next to the stage artifacts, outside
     // the worktree; every other stage stays session-less.
-    ...(config.productiveProgress?.mutationTurnTool
+    ...(config.productiveProgress?.codingSessionTool
       ? ['--session-dir', piSessionDir(spec)]
       : ['--no-session']),
     spec.prompt,
