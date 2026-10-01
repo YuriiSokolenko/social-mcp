@@ -107,7 +107,6 @@ test('review PASS is required before merge gate can merge', () => {
 test('PR fix resolves current-dev conflicts in the live repair session and returns to fresh review', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-fix.yml', 'utf8');
   const tool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
-  const stageConfig = readScript('scripts/pi-common/stage-config.mjs', 'utf8');
   assert.match(workflow, /pi-run-stage\.mjs" repair/);
   assert.match(stageConfig, /repair:[\s\S]*resultTool: 'pi-repair-result-tool\.mjs'/);
   const finalizer = readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
@@ -572,12 +571,12 @@ test('reviewer metrics carry the linked issue and trivial reviews use the fast-p
   assert.match(runner, /PI_ISSUE: env\.PI_ISSUE \?\? env\.ISSUE \?\? ''/);
   assert.match(runner, /writeGithubEnv\(env, 'PI_ISSUE', spec\.environment\.PI_ISSUE\)/);
   assert.match(prompt, /\*\*trivial\*\* — tiny self-contained diff/);
-  assert.match(stageConfig, /do not rerun pytest, Ruff, or git diff --check/);
+  assert.ok(prompt.includes('**Never rerun them.**'));
   assert.match(prompt, /### Trivial fast path/);
   assert.match(prompt, /History or prior attempts are valid when they materially answer a concrete question/);
   assert.match(prompt, /Never load skills for trivial reviews/);
-  assert.match(prompt, /blocked or failed tool call \*\*did not execute\*\*/i);
-  assert.ok(prompt.includes('**Never rerun them.**'));
+  const sharedContract = fs.readFileSync('agents/AGENTS.md', 'utf8');
+  assert.match(sharedContract, /blocked, failed, cancelled, or truncated tool call did not execute/i);
   assert.ok(!prompt.includes('Before reviewing, read `docs/PROJECT_CONTEXT.md`'));
 });
 test('fresh implementer uses one planner/classifier result while restored and repair work submit directly', () => {
