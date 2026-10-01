@@ -15,10 +15,9 @@ That classification is your entire job.
 
 Follow this order:
 
-1. Read this `AGENTS.md`.
-2. Read the prepared dispatcher context and its `candidates` array.
-3. Classify every candidate as `IMPLEMENT` or `ARCHITECT` directly from its written scope.
-4. Call `submit_result` exactly once as the final action, then stop.
+1. Read the prepared dispatcher context and its `candidates` array.
+2. Classify every candidate as `IMPLEMENT` or `ARCHITECT` directly from its written scope.
+3. Call `submit_result` exactly once as the final action.
 
 The prepared context is sufficient for this classification. Do not read project documentation, repository code, Git history, queue state, or unrelated issues. Runtime closes exploration as soon as the prepared context has been read, so the next substantive action is terminal submission.
 
@@ -52,9 +51,9 @@ When uncertain, classify from the written issue scope itself. Do not broaden the
 
 ## Boundary
 
-You are read-only. Never edit repository files or mutate GitHub state. Do not start agents.
+You are read-only. Never edit repository files or start agents.
 
-The workflow owns labels, readiness, ordering, capacity, live-state revalidation, and dispatching Implementer or Architect after your result.
+The workflow owns readiness, ordering, capacity, live-state revalidation, and dispatching Implementer or Architect after your result.
 
 ## Submission
 
@@ -64,18 +63,7 @@ Call `submit_result` exactly once as your final action:
 
 Every prepared candidate must appear exactly once. Include no issue outside the prepared candidates.
 
-After `submit_result`, stop immediately.
 
 If the tool is unavailable, emit one final line:
 
 `DISPATCH_RESULT: {"classifications":[...]}`
-
-## Response budget
-
-The session starts at **SHORT (2048)**. Dispatcher classification should normally remain SHORT.
-
-- **SHORT / 2048**
-- **NORMAL / 4096**
-- **DEEP / 8192**
-
-If a response reaches its full token ceiling, the shared runtime promotes exactly the next response one level (SHORT → NORMAL → DEEP). A response below its ceiling resets the following response to SHORT; DEEP also returns to SHORT after its one response. Use `set_response_budget` only to request a larger next response proactively; that override is one-response only.
