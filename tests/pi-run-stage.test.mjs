@@ -66,6 +66,66 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
   assert.ok(Object.isFrozen(spec.artifacts));
 });
 
+test('versioned default model resolves qwen from the trusted control workspace', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-default-model-'));
+  mkdirSync(join(workspace, '.pi'), { recursive: true });
+  writeFileSync(join(workspace, '.pi', 'default-model'), 'qwen\n');
+
+  const { spec } = buildStageRunSpec({
+    stage: 'dispatcher',
+    cwd: '/work',
+  }, {
+    RUNNER_TEMP: '/tmp/runner',
+    GITHUB_WORKSPACE: workspace,
+    PI_MODEL_CHOICE: 'default',
+  });
+
+  assert.equal(spec.model.id, 'Qwen3.8-Flash-Next-NVFP4');
+});
+
+test('explicit laguna workflow choice overrides the versioned qwen default', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-default-model-'));
+  mkdirSync(join(workspace, '.pi'), { recursive: true });
+  writeFileSync(join(workspace, '.pi', 'default-model'), 'qwen\n');
+
+  const { spec } = buildStageRunSpec({
+    stage: 'dispatcher',
+    cwd: '/work',
+  }, {
+    RUNNER_TEMP: '/tmp/runner',
+    GITHUB_WORKSPACE: workspace,
+    PI_MODEL_CHOICE: 'laguna',
+  });
+
+  assert.equal(spec.model.id, 'laguna-s-2.1-gguf');
+});
+
+test('automatic runs use the versioned default and invalid default config fails loudly', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'pi-default-model-'));
+  mkdirSync(join(workspace, '.pi'), { recursive: true });
+  const defaultFile = join(workspace, '.pi', 'default-model');
+  writeFileSync(defaultFile, 'qwen\n');
+
+  const { spec } = buildStageRunSpec({
+    stage: 'dispatcher',
+    cwd: '/work',
+  }, {
+    RUNNER_TEMP: '/tmp/runner',
+    GITHUB_WORKSPACE: workspace,
+  });
+  assert.equal(spec.model.id, 'Qwen3.8-Flash-Next-NVFP4');
+
+  writeFileSync(defaultFile, 'unknown-model\n');
+  assert.throws(
+    () => buildStageRunSpec({ stage: 'dispatcher', cwd: '/work' }, {
+      RUNNER_TEMP: '/tmp/runner',
+      GITHUB_WORKSPACE: workspace,
+      PI_MODEL_CHOICE: 'default',
+    }),
+    /Invalid default Pi model/,
+  );
+});
+
 test('model endpoint defaults to the shared Open Responses server on port 4001', () => {
   const { spec } = buildStageRunSpec({
     stage: 'dispatcher',
@@ -92,7 +152,7 @@ test('Pi hp-laguna provider config is forced to the same stage endpoint', () => 
         baseUrl: 'http://192.168.8.210:4000/v1',
         models: [
           { id: 'laguna-s-2.1-gguf', baseUrl: 'http://192.168.8.210:3009/v1' },
-          { id: 'qwen3.8-flash-next' },
+          { id: 'Qwen3.8-Flash-Next-NVFP4' },
         ],
         modelOverrides: {
           'laguna-s-2.1-gguf': { baseUrl: 'http://192.168.8.210:4000/v1' },
@@ -393,7 +453,7 @@ test('mini-swe backend receives issue task plus worktree routing instead of the 
     RUNNER_TEMP: dir,
     GITHUB_WORKSPACE: '/control',
     PI_STAGE_BACKEND: 'mini-swe',
-    PI_MODEL: 'qwen3.8-flash-next',
+    PI_MODEL: 'Qwen3.8-Flash-Next-NVFP4',
     PI_MODEL_BASE_URL: 'http://model/v1',
     PI_ISSUE_CONTEXT: issueContext,
     ISSUE: '77',
