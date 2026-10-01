@@ -150,7 +150,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The backend arg is the "${{ }}" workflow_dispatch input directly, not
+          # The backend arg is the workflow_dispatch backend input directly, not
           # $PI_STAGE_BACKEND or any other shell-environment expansion: inputs.*
           # is fixed by the Actions runner at dispatch time and is never routed
           # through $GITHUB_ENV, so nothing a running job does (including a
