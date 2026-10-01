@@ -151,14 +151,14 @@ This document is the human- and agent-readable text map of the current Social MC
                                               v                                 |
                                        EVIDENCE_ALLOWED                          |
                                               |                                 |
-                            2 trivial / 6 nontrivial evidence actions           |
+                            planner evidence_budget 0-6 (fallback 2 / 6)           |
                                               |                                 |
                                               v                                 |
                                        ACTION_REQUIRED <-------------------------+
                                         /      |      \
                            need_more_evidence  |       +--> submit_result
                                   |            |
-                                  v            +--> safe_edit / edit / write
+                                  v            +--> structural_edit / safe_edit / edit / write
                           one evidence action          |
                                   |                    |
                                   +----> ACTION_REQUIRED
@@ -216,12 +216,12 @@ This document is the human- and agent-readable text map of the current Social MC
        v
     ACTION_REQUIRED
        |
-       +--> safe_edit / edit / write
+       +--> structural_edit / safe_edit / edit / write
        |
-       +--> begin_coding_session (ready to implement; 2K exploration phase ends)
+       +--> begin_coding_session (ready to implement; parent action phase hands off)
        |      +--> 16K fork of THIS session (same transcript), same trusted runtime + normal coding tools
        |      +--> implement -> tests -> run_check -> fix -> run_check -> submit_result (inside the fork)
-       |      +--> parent ends after the fork submits; otherwise back to 2K (bounded sessions per run)
+       |      +--> parent ends after the fork submits; otherwise resumes normal small-budget rules
        |
        +--> submit_result
        |
