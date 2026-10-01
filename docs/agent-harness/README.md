@@ -23,9 +23,10 @@ Model-driven stages receive one composed initial prompt:
 
 1. `agents/AGENTS.md` — shared stable invariants for runtime authority, workflow ownership, safety, and terminal behavior.
 2. `agents/<role>/AGENTS.md` — only role-specific behavior.
-3. Trusted per-run context from the harness — issue/PR/worktree/runtime facts that can change between runs.
+3. Untrusted task data when supplied directly to the model, such as an Implementer issue title/body.
+4. Trusted per-run context from the harness — runtime/worktree state and trusted context-file locations.
 
-`scripts/pi-common/stage-config.mjs` injects the shared and role contracts exactly once. Agents do not read either contract file as a startup step. Dynamic state stays in runtime state, tool availability, tool results, and short state-specific steers rather than being copied into static prompt prose.
+`scripts/pi-common/stage-config.mjs` injects the shared and role contracts exactly once. Agents do not read either contract file as a startup step. Direct user-authored task text is kept outside the trusted runtime block and delimiter-safe. Dynamic state stays in runtime state, tool availability, tool results, and short state-specific steers rather than being copied into static prompt prose.
 
 When static examples and the current tool surface disagree, runtime state and the exposed tool surface win. Tests in `tests/pi-progress-controller.test.mjs` enforce prompt composition and key transition consistency.
 
