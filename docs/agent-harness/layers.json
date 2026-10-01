@@ -54,6 +54,7 @@
     "scripts/pi-architect-result-tool.mjs",
     "scripts/pi-bash-timeout.mjs",
     "scripts/pi-common/bash-timeout-policy.mjs",
+    "scripts/pi-common/mutation-snapshot.mjs",
     "scripts/pi-common/pi-stage-backend.mjs",
     "scripts/pi-common/progress-controller.mjs",
     "scripts/pi-common/repo-search.mjs",

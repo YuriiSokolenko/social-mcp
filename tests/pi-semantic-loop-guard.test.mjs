@@ -561,6 +561,83 @@ test('runtime mock classifies blocked tool calls without tool_execution_end', ()
   assert.match(result.stdout, /BLOCKED_LOOP_INTEGRATION_OK/);
 });
 
+test('runtime mock short-circuits an identical write without touching the filesystem', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-write-noop-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'same content\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    const before = fs.statSync(path.join(repo, 'a.txt')).mtimeMs;
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+      let endCalls = 0;
+      const realEnd = handlers.get('tool_execution_end');
+      handlers.set('tool_execution_end', async (...args) => { endCalls += 1; return realEnd(...args); });
+
+      const outcome = await handlers.get('tool_call')(
+        { toolCallId: 'write-1', toolName: 'write', input: { path: 'a.txt', content: 'same content\\n' } },
+        ctx,
+      );
+      assert.equal(outcome.block, true);
+      assert.match(outcome.reason, /NO CHANGE/);
+      assert.equal(endCalls, 0, 'a short-circuited write must never reach tool_execution_end');
+      console.log('WRITE_NOOP_INTEGRATION_OK');
+    `, {
+      PI_LOOP_GUARD_WINDOW: '4',
+      PI_LOOP_GUARD_THRESHOLD: '3',
+    });
+    assert.match(result.stdout, /WRITE_NOOP_INTEGRATION_OK/);
+    assert.equal(fs.statSync(path.join(repo, 'a.txt')).mtimeMs, before);
+    assert.equal(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'same content\n');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('runtime mock treats a repeated identical write as a loop, not progress', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-write-repeat-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'same content\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+      const outcome = await handlers.get('tool_call')(
+        { toolCallId: 'write-1', toolName: 'write', input: { path: 'a.txt', content: 'same content\\n' } },
+        ctx,
+      );
+      assert.equal(outcome.block, true);
+      assert.equal(messages.length, 1, 'a no-op write must still steer at the configured revisit threshold');
+      assert.match(messages[0][0], /RUNTIME LOOP GUARD/);
+      console.log('WRITE_NOOP_LOOP_INTEGRATION_OK');
+    `, {
+      PI_LOOP_GUARD_WINDOW: '4',
+      PI_LOOP_GUARD_THRESHOLD: '1',
+    });
+    assert.match(result.stdout, /WRITE_NOOP_LOOP_INTEGRATION_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('control scenario read semantic lookup source edit verify submit completes without a warning', () => {
   const guard = new SemanticLoopGuard();
   const results = [
