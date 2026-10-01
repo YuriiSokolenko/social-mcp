@@ -17,7 +17,7 @@ Only consider an open, non-draft PR targeting `dev`, from the same repository, w
 
 `pi:needs-human` on either the PR or linked issue blocks automation.
 
-Reject automatic merge for PRs changing any protected control-plane path: `.github/workflows/**`, `scripts/pi-*` (including `scripts/pi-common/**`), `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`, including protected-path renames, or when the complete changed-file list cannot be verified.
+Reject automatic merge for PRs changing any protected control-plane path: `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*` (including `scripts/pi-common/**`), `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, or `infra/github-runner-autoscaler/**`, including protected-path renames, or when the complete changed-file list cannot be verified.
 
 Do not require a custom review commit status, pre-merge CI on an exact dev/PR pair, captured dev SHA, or proof that the PR branch contains the current dev tip. Reviewer approves the exact PR HEAD it reviewed; GitHub's merge operation determines whether that approved HEAD can currently merge.
 
