@@ -136,6 +136,44 @@ test('action-required tool surface keeps only productive and control tools', () 
   );
 });
 
+test('Implementer model-visible transition rules match the runtime action surface', () => {
+  const config = stageConfig('implementer');
+  const surface = actionRequiredToolNames(
+    ['read', 'repo_search', 'subagent', 'subagents_enable', 'lsp_start_server', 'safe_edit', 'submit_result', 'need_more_evidence'],
+    {
+      actionTools: config.productiveProgress.actionTools,
+      controlTools: config.productiveProgress.controlTools,
+      blockerTool: config.productiveProgress.blockerTool,
+    },
+  );
+
+  assert.ok(surface.includes('subagents_enable'));
+  assert.ok(surface.includes('lsp_start_server'));
+  assert.ok(surface.includes('need_more_evidence'));
+  assert.ok(surface.includes('safe_edit'));
+  assert.ok(surface.includes('submit_result'));
+  assert.ok(!surface.includes('read'));
+  assert.ok(!surface.includes('repo_search'));
+  assert.ok(!surface.includes('subagent'));
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-contract-surface-'));
+  const issueContext = path.join(dir, 'issue.json');
+  fs.writeFileSync(issueContext, JSON.stringify({ title: 'Example', body: 'Acceptance' }));
+  try {
+    const prompt = stagePrompt('implementer', {
+      GITHUB_WORKSPACE: process.cwd(),
+      PI_ISSUE: '42',
+      PI_ISSUE_CONTEXT: issueContext,
+    });
+    assert.match(prompt, /subagents_enable once[\s\S]*follow the tool surface/i);
+    assert.doesNotMatch(prompt, /subagent\(action:"list"\)/i);
+    assert.match(prompt, /lsp_start_server[\s\S]*lsp_find_symbol/i);
+    assert.match(prompt, /need_more_evidence[\s\S]*one concrete fact/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('scout child response budget mirrors the main response ceiling', async () => {
   const previous = process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
   let handler;
