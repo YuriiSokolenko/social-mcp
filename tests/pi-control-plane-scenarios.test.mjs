@@ -198,7 +198,7 @@ test('manual Implementer dispatch bypasses pi:ready while Dispatcher keeps the s
   assert.match(workflow, /PI_DISPATCH_MODE" = "dispatcher"[\s\S]*MODE="ready"/);
   assert.match(workflow, /ACTION="running-manual"/);
   assert.match(workflow, /PI_DISPATCH_MODE" = "dispatcher"[\s\S]*ACTION="running"/);
-  assert.match(dispatcher, /dispatchWorkflow\(workflowFile\("implementer"\), \{ issue_number: String\(number\), dispatch_mode: "dispatcher" \}\)/);
+  assert.match(dispatcher, /dispatchWorkflow\("pi-issue-agent\.yml", \{ issue_number: String\(number\), dispatch_mode: "dispatcher" \}\)/);
 });
 
 
