@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { readScript } from './helpers/resolved-source.mjs';
 
-import { nextLabelsForVerification } from '../scripts/pi-common/issue-publication.mjs';
+import { hasUnsandboxedProvenance, nextLabelsForVerification } from '../scripts/pi-common/issue-publication.mjs';
 import { PIPELINE_LABELS } from '../scripts/pi-common/state-machine.mjs';
 import { VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
 
@@ -44,6 +44,39 @@ test('pi:needs-human is never added twice, and never removed once present', () =
   assert.equal(nextLabelsForVerification(alreadyGated, VERIFICATION_STATES.VERIFIED), null);
 });
 
+/**
+ * Closing the race a background mini-swe process could still win: excluding
+ * the ledger path from the model's environment, and discarding it right
+ * after the mini CLI exits (mini-swe-stage-backend.mjs's
+ * discardModelPhaseLedger), narrows the window but cannot close it --
+ * mini-swe has no process sandbox, so a detached background process from a
+ * normally-completed command (documented upstream mini-swe-agent behavior)
+ * can still survive past the `mini` process's own exit and recreate the
+ * ledger, or forge real checks.final output, during the harness-owned
+ * validation phase. The only guarantee that does not depend on winning that
+ * race: a PR is never treated as fully verified if any ledger record is
+ * attributable to a backend whose execution isn't sandboxed, regardless of
+ * what the records themselves claim.
+ */
+test('a ledger with any unsandboxed-backend record is never treated as trustworthy', () => {
+  assert.equal(hasUnsandboxedProvenance([{ backend: 'pi' }]), false);
+  assert.equal(hasUnsandboxedProvenance([{ backend: 'pi' }, { backend: 'mini-swe' }]), true);
+  assert.equal(hasUnsandboxedProvenance([]), false);
+});
+
+test('a fully VERIFIED mini-swe ledger still gets pi:needs-human, because none of it is authoritative yet', () => {
+  // Even every recorded check passing, including the completion marker, must
+  // not be enough -- that is exactly the state a forged ledger would show.
+  assert.deepEqual(
+    nextLabelsForVerification([], VERIFICATION_STATES.VERIFIED, /* hasUnsandboxedRecords */ true),
+    [PIPELINE_LABELS.needsHuman],
+  );
+});
+
+test('a VERIFIED, all-Pi ledger is unaffected by the unsandboxed-provenance gate', () => {
+  assert.equal(nextLabelsForVerification([], VERIFICATION_STATES.VERIFIED, false), null);
+});
+
 test('label objects in GitHub API shape (not bare strings) are handled identically', () => {
   const apiShapeLabels = [{ name: 'review:passed' }];
   assert.deepEqual(
@@ -55,8 +88,9 @@ test('label objects in GitHub API shape (not bare strings) are handled identical
 test('upsertPullRequest applies the gate on both the create and update paths, and returns verification_state', () => {
   const source = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(source, /const verificationState = computeVerificationState\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\);/);
-  assert.match(source, /nextLabelsForVerification\(existing\[0\]\.labels, verificationState\)/);
-  assert.match(source, /nextLabelsForVerification\(\[\], verificationState\)/);
+  assert.match(source, /const unsandboxedProvenance = hasUnsandboxedProvenance\(ledgerRecords\);/);
+  assert.match(source, /nextLabelsForVerification\(existing\[0\]\.labels, verificationState, unsandboxedProvenance\)/);
+  assert.match(source, /nextLabelsForVerification\(\[\], verificationState, unsandboxedProvenance\)/);
   assert.match(source, /if \(nextLabels\) await replaceLabels\(pr\.number, nextLabels\);/);
   assert.match(source, /return \{ number:pr\.number, url:pr\.html_url, verification_state: verificationState \};/);
 });

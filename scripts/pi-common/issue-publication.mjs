@@ -111,19 +111,48 @@ export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token })
 }
 
 /**
- * Pure: given a PR's current labels and the ledger-derived verification
- * state, returns the label set `upsertPullRequest` should apply, or `null`
- * if no label change is needed. This is a durable, control-plane gate, not
- * PR-body prose: `pi:needs-human` on the PR is a hard stop already honored
- * by the shared PR-guard (Reviewer/PR Fix) and by Merge Gate, so a PR whose
- * authoritative checks did not all complete can never reach an effective
- * review PASS or a merge. Once set, it is only ever added here, never
- * removed -- exactly like every other `pi:needs-human` producer in this
- * codebase (pr-guard.mjs, pi-auto-merge.mjs): clearing it is a human action.
+ * Backends whose checks.final execution is actually process-isolated, so a
+ * clean result from them can be trusted. Pi's `run_check` runs in a Docker
+ * sandbox; its checks.final also runs as plain host code, but the model
+ * itself never gets raw shell (every mutation goes through a specific,
+ * trusted tool handler), so nothing in that execution tree can survive past
+ * the agent session to interfere with checks.final afterward. mini-swe gives
+ * the model raw shell with the harness's own environment and has no such
+ * isolation: a normally-completed command can still leave a detached
+ * background process running after the `mini` CLI itself exits (this is
+ * documented upstream mini-swe-agent behavior, not a hypothetical), and nothing
+ * today guarantees that process tree is fully torn down before checks.final
+ * runs. A survivor could forge ledger records, or just as easily tamper with
+ * the real files/output checks.final reads -- the ledger is not the only
+ * thing at risk, so hiding or discarding the ledger path alone (see
+ * mini-swe-stage-backend.mjs's discardModelPhaseLedger) narrows but cannot
+ * close this. Until mini-swe's execution is actually sandboxed (comparable to
+ * the Docker isolation `run_check` already has for Pi), nothing it reports --
+ * including a fully clean checks.final -- is authoritative.
  */
-export function nextLabelsForVerification(currentLabels, verificationState) {
+const SANDBOXED_BACKENDS = new Set(['pi']);
+
+export function hasUnsandboxedProvenance(records) {
+  return records.some(record => !SANDBOXED_BACKENDS.has(record.backend));
+}
+
+/**
+ * Pure: given a PR's current labels, the ledger-derived verification state,
+ * and whether any ledger record came from a backend whose execution isn't
+ * sandboxed, returns the label set `upsertPullRequest` should apply, or
+ * `null` if no label change is needed. This is a durable, control-plane
+ * gate, not PR-body prose: `pi:needs-human` on the PR is a hard stop already
+ * honored by the shared PR-guard (Reviewer/PR Fix) and by Merge Gate, so a
+ * PR that is not both fully verified AND attributable only to a sandboxed
+ * backend can never reach an effective review PASS or a merge. Once set, it
+ * is only ever added here, never removed -- exactly like every other
+ * `pi:needs-human` producer in this codebase (pr-guard.mjs,
+ * pi-auto-merge.mjs): clearing it is a human action.
+ */
+export function nextLabelsForVerification(currentLabels, verificationState, hasUnsandboxedRecords = false) {
   const names = (currentLabels ?? []).map(label => typeof label === 'string' ? label : label.name);
-  if (verificationState === VERIFICATION_STATES.VERIFIED || names.includes(PIPELINE_LABELS.needsHuman)) {
+  const trusted = verificationState === VERIFICATION_STATES.VERIFIED && !hasUnsandboxedRecords;
+  if (trusted || names.includes(PIPELINE_LABELS.needsHuman)) {
     return null;
   }
   return [...names, PIPELINE_LABELS.needsHuman];
@@ -145,6 +174,7 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
   const { records: ledgerRecords, corrupted: ledgerCorrupted } = readValidationLedger(ledgerFile);
   const verificationState = computeVerificationState(ledgerRecords, { corrupted: ledgerCorrupted });
+  const unsandboxedProvenance = hasUnsandboxedProvenance(ledgerRecords);
   const tests = [
     renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted }),
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
@@ -152,12 +182,12 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile }
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
   if (existing[0]) {
     const pr = await api(`/pulls/${existing[0].number}`,'PATCH',{title:metadata.title,body});
-    const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState);
+    const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState, unsandboxedProvenance);
     if (nextLabels) await replaceLabels(pr.number, nextLabels);
     return { number:pr.number, url:pr.html_url, verification_state: verificationState };
   }
   const pr = await api('/pulls','POST',{title:metadata.title,head:issueBranch(issue),base:baseBranch(),body});
-  const nextLabels = nextLabelsForVerification([], verificationState);
+  const nextLabels = nextLabelsForVerification([], verificationState, unsandboxedProvenance);
   if (nextLabels) await replaceLabels(pr.number, nextLabels);
   return { number:pr.number, url:pr.html_url, verification_state: verificationState };
 }
