@@ -1,0 +1,221 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { ProgressController } from '../scripts/pi-common/progress-controller.mjs';
+import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+
+function fallbackController() {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.enterPreparationFallback();
+  state.onToolExecutionEnd('prepare_implementation', false);
+  return state;
+}
+
+test('fallback satisfies preparation without fabricating complexity or permitting skipped preparation', () => {
+  const skipped = new ProgressController(stageConfig('implementer'), {});
+  assert.throws(() => skipped.enterPreparationFallback(), /attempted, unresolved/);
+  for (const tool of ['write', 'edit', 'safe_edit', 'request_large_mutation_budget', 'run_check', 'read']) {
+    assert.equal(skipped.checkToolCall(tool, {}).block, true, tool);
+  }
+  const state = fallbackController();
+  assert.equal(state.preparationState, 'PREPARATION_FALLBACK');
+  assert.equal(state.preparationSatisfied(), true);
+  assert.equal(state.complexityRecorded(), false);
+  assert.equal(state.complexity, null);
+  assert.match(state.checkToolCall('prepare_implementation', {}).reason, /single-shot/);
+  state.onTurnStart(10);
+  assert.equal(state.preComplexityActionRequired(), false);
+  assert.equal(state.currentMaxTokens(), 2048);
+  assert.equal(state.largeMutationBudgetState, 'idle');
+  assert.throws(() => state.enterPreparationFallback(), /attempted, unresolved/);
+});
+
+test('fallback preserves normal mutation, verification, evidence and one-shot budget rules', () => {
+  for (const tool of ['write', 'edit', 'safe_edit', 'structural_edit', 'submit_result']) {
+    assert.equal(fallbackController().checkToolCall(tool, {}), undefined, tool);
+  }
+  const state = fallbackController();
+  assert.equal(state.checkToolCall('run_check', {}).block, true, 'verification still requires mutation');
+  assert.equal(state.checkToolCall('request_large_mutation_budget', {}), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.largeMutationBudgetPending(), true);
+  assert.equal(state.activateLargeMutationBudget(), true);
+  assert.equal(state.checkToolCall('read', {}).block, true, 'elevated response remains mutation-only');
+  assert.equal(state.checkToolCall('write', {}), undefined);
+  state.onToolExecutionEnd('write', false);
+  state.resetLargeMutationBudget();
+  assert.equal(state.checkToolCall('run_check', {}), undefined);
+  state.onToolExecutionEnd('run_check', false);
+  assert.equal(state.checkToolCall('run_check', {}).block, true);
+  assert.equal(state.checkToolCall('submit_result', {}), undefined);
+  for (const tool of ['read', 'repo_search', 'lsp_goto_definition', 'subagent']) {
+    const evidence = fallbackController();
+    assert.equal(evidence.checkToolCall('need_more_evidence', { missing: 'target', reason: 'resolve edit' }), undefined);
+    assert.equal(evidence.checkToolCall(tool, {}), undefined, tool);
+    assert.equal(evidence.productiveProgressState(), 'action_required');
+  }
+});
+
+// Exercise the real runtime, including delegation retry and event-driven tool surfaces.
+// Only typebox's schema builders are stubbed; no planner/state-machine logic is replaced.
+function runtimeScenario(mode) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-preparation-'));
+  try {
+    const context = path.join(dir, 'issue.json');
+    const loader = path.join(dir, 'loader.mjs');
+    fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
+    fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
+      if (specifier === 'typebox') return {
+        url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
+        shortCircuit: true,
+      };
+      return nextResolve(specifier, context);
+    }`);
+    const script = `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import { EventEmitter } from 'node:events';
+      const { default: runtime } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
+      const mode = ${JSON.stringify(mode)};
+      const bus = new EventEmitter();
+      const tools = new Map();
+      const handlers = new Map();
+      const messages = [];
+      const caps = [];
+      let active = ['read', 'write', 'edit', 'safe_edit', 'run_check', 'submit_result', 'need_more_evidence', 'request_large_mutation_budget', 'prepare_implementation'];
+      let attempts = 0;
+      let aborts = 0;
+      const ctx = { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 32000 },
+        sessionManager: { getSessionId: () => 'parent' }, abort: () => { aborts++; } };
+      const signal = new AbortController();
+      const pi = {
+        events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) },
+        registerTool: tool => tools.set(tool.name, tool),
+        on: (name, fn) => handlers.set(name, fn),
+        getActiveTools: () => [...active], setActiveTools: names => { active = names; },
+        setModel: async model => { caps.push(model.maxTokens); return true; },
+        sendUserMessage: async text => { messages.push(text); },
+      };
+      bus.on('prompt-template:subagent:request', request => {
+        attempts++;
+        assert.equal(request.agent, 'implementation-planner');
+        assert.match(request.task, /Example task/);
+        assert.match(request.task, /Implement example.py/);
+        assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
+        if (mode === 'abort') { signal.abort(); return; }
+        bus.emit('prompt-template:subagent:response', {
+          requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId,
+          ...(mode === 'success' || mode === 'retry-success' && attempts === 2 ? {
+            status: 'completed', result: { kind: 'structured', value: {
+              steps: ['Implement example.py'], complexity: 'nontrivial', evidence_budget: 2, reason: 'Needs source evidence',
+            } },
+          } : { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' }),
+        });
+      });
+      runtime(pi);
+      tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
+      let turn = 0;
+      async function call(name, input = {}) {
+        handlers.get('turn_start')({ turnIndex: turn });
+        const event = { toolName: name, toolCallId: name + turn, input };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name);
+        let result;
+        if (tools.has(name)) result = await tools.get(name).execute(event.toolCallId, input, signal.signal, null, ctx);
+        else {
+          if (name === 'write') fs.writeFileSync(ctx.cwd + '/example.py', input.content);
+          result = { content: [{ type: 'text', text: 'ok' }] };
+        }
+        await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        return result;
+      }
+      if (mode === 'restored') {
+        assert.equal(tools.has('prepare_implementation'), false);
+        await call('submit_result');
+        assert.equal(attempts, 0);
+      } else if (mode === 'abort') {
+        await assert.rejects(call('prepare_implementation'), /aborted/);
+        assert.equal(attempts, 1);
+        const blocked = await handlers.get('tool_call')({ toolName: 'write', input: {} }, ctx);
+        assert.equal(blocked.block, true);
+      } else {
+        const prepared = await call('prepare_implementation');
+        assert.equal(attempts, mode === 'success' ? 1 : 2);
+        const repeated = await handlers.get('tool_call')({ toolName: 'prepare_implementation', input: {} }, ctx);
+        assert.match(repeated.reason, /single-shot/);
+        if (mode === 'failure' || mode === 'prose') {
+          assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
+          assert.equal(prepared.details.complexity, null);
+          assert.equal('plan' in prepared.details, false);
+          assert.match(prepared.content[0].text, /Do not call prepare_implementation again/);
+          assert.ok(!caps.includes(16384), 'fallback alone must not grant large response');
+          assert.ok(active.includes('request_large_mutation_budget'));
+          if (mode === 'prose') {
+            for (let i = 0; i < 2; i++) {
+              handlers.get('turn_start')({ turnIndex: turn });
+              await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+            }
+          } else {
+            await call('request_large_mutation_budget', { reason: 'Complete source payload exceeds default ceiling' });
+            assert.equal(caps.at(-1), 16384);
+            assert.ok(active.includes('write'));
+            assert.ok(!active.includes('read'));
+            await call('write', { path: 'example.py', content: 'print("example")\\n' });
+            assert.equal(caps.at(-1), 2048);
+            assert.ok(active.includes('run_check'));
+            await call('run_check', { kind: 'python_compile', scope: ['example.py'] });
+            await call('submit_result');
+            // Past the startup deadline, a concrete missing fact still opens read/search.
+            turn = 10;
+            await call('need_more_evidence', { missing: 'Exact edit anchor', reason: 'Resolve target before editing' });
+            assert.ok(active.includes('read'));
+            await call('read', { path: 'example.py' });
+            assert.ok(active.includes('edit'));
+            assert.ok(messages.every(text => !text.includes('CLASSIFICATION REQUIRED')));
+          }
+        } else {
+          assert.deepEqual(prepared.details.plan, ['Implement example.py']);
+          assert.equal(prepared.details.complexity, 'nontrivial');
+          assert.equal(prepared.details.evidenceBudget, 2);
+          assert.ok(active.includes('read'));
+        }
+      }
+      assert.equal(aborts, mode === 'prose' ? 1 : 0);
+    `;
+    // run_check's executor is covered by the sandbox suite; this test verifies its gate/surface.
+    const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
+      cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context,
+        PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
+        PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
+    });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    return result.stdout + result.stderr;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('planner misses structured output twice, then runtime restores the complete execution path', () => {
+  const logs = runtimeScenario('failure');
+  assert.match(logs, /PI_SUBAGENT_FAILURE .*"attempt":1,"retriesExhausted":false/);
+  assert.match(logs, /PI_SUBAGENT_RETRY .*"reason":"missing_structured_output","attempt":1/);
+  assert.match(logs, /PI_SUBAGENT_FAILURE .*"attempt":2,"retriesExhausted":true/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"recovery":"continue_without_planner_output"/);
+  assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
+});
+
+for (const mode of ['success', 'retry-success', 'abort', 'restored']) {
+  test('runtime preserves preparation behavior: ' + mode, () => {
+    const logs = runtimeScenario(mode);
+    assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
+  });
+}
+
+test('fallback keeps the execution prose-only guard bounded', () => {
+  assert.match(runtimeScenario('prose'), /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only/);
+});

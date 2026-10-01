@@ -146,7 +146,7 @@ This document is the human- and agent-readable text map of the current Social MC
                                               v                                 v
                                    prepare_implementation                 restored work
                                               |                                 |
-                                       planner                       |
+                                       planner                                  |
                                               |                                 |
                                               v                                 |
                                        EVIDENCE_ALLOWED                          |
@@ -187,8 +187,13 @@ This document is the human- and agent-readable text map of the current Social MC
 
     prepare_implementation (single-shot)
        |
+       +--> planner infrastructure failure after configured retry
+       |      +--> PREPARATION_FALLBACK (no planner output or complexity)
+       |             +--> ACTION_REQUIRED (normal scoped budget / mutation / check / submit rules)
+       |                    +--> need_more_evidence -> one read/search -> ACTION_REQUIRED
+       |
        v
-    EVIDENCE_ALLOWED (2 trivial / 6 nontrivial)
+    EVIDENCE_ALLOWED (planner estimate 0-6; fallback 2 trivial / 6 nontrivial)
        |
        +--> known path .......................... read directly
        |

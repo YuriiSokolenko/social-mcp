@@ -192,6 +192,13 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
     } catch (error) {
       const message = String(error?.message ?? error);
       const retryable = message.includes('Missing structured_output call');
+      console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
+        agent: config.implementationPlannerAgent,
+        reason: retryable ? 'missing_structured_output' : 'planner_infrastructure_failure',
+        attempt: attempt + 1,
+        retriesExhausted: retryable && attempt >= retries,
+        error: message,
+      })}`);
       if (!retryable || attempt >= retries) throw error;
       console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
         agent: config.implementationPlannerAgent,
@@ -369,10 +376,39 @@ export default function (pi) {
     pi.registerTool({
       name: 'prepare_implementation',
       label: 'Prepare implementation',
-      description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result; do not write a competing plan in the main agent.',
+      description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result, or PREPARATION_FALLBACK if planner infrastructure fails; do not write a competing plan in the main agent.',
       parameters: Type.Object({}),
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-        const prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal);
+        let prepared;
+        try {
+          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal);
+        } catch (error) {
+          // Cancellation is not a recovery request: never unlock execution on abort.
+          if (signal?.aborted) throw error;
+          const fallback = controller.enterPreparationFallback();
+          const reason = String(error?.message ?? error);
+          console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
+            stage,
+            ...fallback,
+            source: config.implementationPlannerAgent,
+            failureClass: 'preparation_infrastructure_failure',
+            recovery: 'continue_without_planner_output',
+            reason,
+          })}`);
+          syncActionToolSurface(syncProductiveState());
+          return {
+            content: [{ type: 'text', text:
+              `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
+              'Your preparation obligation is satisfied. No planner output or complexity was recorded. ' +
+              'Do not call prepare_implementation again. Continue implementing from the issue and loaded contract. ' +
+              'Normal mutation, scoped request_large_mutation_budget, run_check after mutation, and submit_result rules apply. ' +
+              'If one concrete fact is missing, use need_more_evidence to unlock a read/search before acting.\n' +
+              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.`,
+            }],
+            details: { ...fallback, failureClass: 'preparation_infrastructure_failure', reason,
+              lspWorkspaceRoot: ctx.cwd, freshBaseCommit },
+          };
+        }
         const result = controller.setComplexity(prepared.complexity);
         controller.setEvidenceBudget(prepared.evidenceBudget);
         console.log(`PI_PLAN ${JSON.stringify({
@@ -871,6 +907,7 @@ export default function (pi) {
         console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
       }
       controller.resetLargeMutationBudget();
+      syncActionToolSurface(productiveState);
     }
 
     const preComplexityRequired =
