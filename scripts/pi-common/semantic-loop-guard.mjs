@@ -29,7 +29,7 @@ const MUTATION_TOOLS = new Set([
   'safe_edit',
   'edit',
   'write',
-  'delegate_mutation',
+  'request_mutation_turn',
   'rollback_last_mutation',
 ]);
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);

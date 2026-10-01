@@ -218,9 +218,10 @@ This document is the human- and agent-readable text map of the current Social MC
        |
        +--> safe_edit / edit / write
        |
-       +--> delegate_mutation (large already-decided payload)
-       |      +--> mutation-writer subagent (16K, no repo tools) -> {operation, path, content}
-       |      +--> runtime validates + applies (snapshot / no-op / rollback / run_check permit)
+       +--> request_mutation_turn({operation, path}) (large already-decided payload)
+       |      +--> one-shot fork of THIS session (same transcript), 16K, only the declared write/edit
+       |      +--> fork stages the payload; runtime validates + applies (snapshot / no-op / rollback / run_check permit)
+       |      +--> back to the same 2K session
        |
        +--> submit_result
        |

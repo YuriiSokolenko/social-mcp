@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -33,17 +34,14 @@ import {
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import {
-  DelegatedMutationRejected,
-  MUTATION_WRITER_SCHEMA,
-  applyDelegatedMutation,
-  mutationWriterTask,
-  validateDelegationRequest,
-  validateWriterResult,
-} from './pi-common/delegated-mutation.mjs';
+  MutationTurnRejected,
+  applyStagedMutation,
+  readStagedMutation,
+  validateMutationTurnRequest,
+} from './pi-common/mutation-turn.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
-const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'delegate_mutation']);
-const WRITER_TRUNCATION_PATTERN = /output token limit|max_tokens|finish_reason[^a-z]*length|truncat/i;
+const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'request_mutation_turn']);
 
 const SUBAGENT_DELEGATION_REQUEST_EVENT = 'prompt-template:subagent:request';
 const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
@@ -119,11 +117,18 @@ Issue body:
 ${issue.body}`;
 }
 
-async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, timeoutMs, maxTokens = null, toolBudget = { hard: 1 } }, signal) {
+// `context: 'fork'` branches the parent's persisted session transcript into the child
+// (pi-subagents createBranchedSession); `childEnv` is visible only while the child runs.
+async function runStructuredSubagent(pi, ctx, {
+  agent, nodeId, task, schema = null, timeoutMs, maxTokens = null, toolBudget = { hard: 1 },
+  context = 'fresh', childEnv = {},
+}, signal) {
   const requestId = randomUUID();
   const ownerRunId = ctx.sessionManager.getSessionId();
   const previousBudget = process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
   if (maxTokens) process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(maxTokens);
+  const previousEnv = Object.fromEntries(Object.keys(childEnv).map(key => [key, process.env[key]]));
+  Object.assign(process.env, childEnv);
 
   try {
     const response = await new Promise((resolve, reject) => {
@@ -163,25 +168,29 @@ async function runStructuredSubagent(pi, ctx, { agent, nodeId, task, schema, tim
         nodeId,
         agent,
         task,
-        context: 'fresh',
+        context,
         cwd: ctx.cwd,
         timeoutMs,
         toolBudget,
         intercomBridge: { mode: 'off' },
-        result: { kind: 'structured', schema },
+        result: schema ? { kind: 'structured', schema } : { kind: 'text' },
       });
     });
 
     if (response.status !== 'completed') {
       throw new Error(`${agent} failed: ${response.error || response.status}`);
     }
-    if (response.result?.kind !== 'structured') {
+    if (schema && response.result?.kind !== 'structured') {
       throw new Error(`${agent} did not return a structured result`);
     }
     return response;
   } finally {
     if (previousBudget == null) delete process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
     else process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = previousBudget;
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 
@@ -232,58 +241,10 @@ function resultText(result) {
   return typeof result?.message === 'string' ? result.message : '';
 }
 
-function delegatedMutationLog(phase, fields) {
-  const line = `PI_DELEGATED_MUTATION ${JSON.stringify({ phase, ...fields })}`;
-  if (['writer_failed', 'rejected', 'cancelled'].includes(phase)) console.warn(line);
+function mutationTurnLog(phase, fields) {
+  const line = `PI_MUTATION_TURN ${JSON.stringify({ phase, side: 'parent', ...fields })}`;
+  if (['failed', 'rejected', 'cancelled'].includes(phase)) console.warn(line);
   else console.log(line);
-}
-
-// Runs the writer under the large ceiling and returns validated content. Retry is bounded to
-// `delegatedMutationWriterRetry` extra attempts and only for a missing/malformed structured
-// result; truncation, mismatched path/operation, timeouts and cancellation fail immediately.
-async function runMutationWriter(pi, ctx, config, { request, currentContent, issue, preparation }, signal) {
-  const progress = config.productiveProgress;
-  const subagentRequest = {
-    agent: progress.delegatedMutationWriterAgent,
-    nodeId: 'delegated-mutation',
-    task: mutationWriterTask({ request, currentContent, issue, preparation }),
-    schema: MUTATION_WRITER_SCHEMA,
-    timeoutMs: Number(progress.delegatedMutationWriterTimeoutMs ?? 900000),
-    maxTokens: Number(progress.delegatedMutationWriterMaxTokens),
-    // The writer has no repository tools; this only covers its structured_output call.
-    toolBudget: { hard: 2 },
-  };
-  const retries = Number(progress.delegatedMutationWriterRetry ?? 1);
-  const target = { path: request.path, operation: request.operation };
-  for (let attempt = 0; ; attempt += 1) {
-    delegatedMutationLog('writer_started', { ...target, attempt: attempt + 1, maxTokens: subagentRequest.maxTokens });
-    let failure;
-    try {
-      const response = await runStructuredSubagent(pi, ctx, subagentRequest, signal);
-      const content = validateWriterResult(response.result.value, request);
-      delegatedMutationLog('writer_completed', { ...target, attempt: attempt + 1, chars: content.length, usage: response.usage ?? null });
-      return content;
-    } catch (error) {
-      failure = error;
-    }
-    if (signal?.aborted) throw failure;
-    const message = String(failure?.message ?? failure);
-    const reason = failure instanceof DelegatedMutationRejected
-      ? failure.code
-      : WRITER_TRUNCATION_PATTERN.test(message)
-        ? 'writer_output_truncated'
-        : message.includes('Missing structured_output call')
-          ? 'missing_structured_output'
-          : 'writer_infrastructure_failure';
-    const retryable = ['missing_structured_output', 'invalid_output', 'empty_content'].includes(reason);
-    delegatedMutationLog('writer_failed', {
-      ...target, attempt: attempt + 1, reason, retriesExhausted: retryable && attempt >= retries, error: message,
-    });
-    if (!retryable || attempt >= retries) {
-      throw new DelegatedMutationRejected(reason, `Mutation writer failed (${reason}): ${message}`);
-    }
-    delegatedMutationLog('writer_retry', { ...target, attempt: attempt + 1, reason });
-  }
 }
 
 
@@ -328,9 +289,6 @@ export default function (pi) {
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
-  // Prepared plan steps handed to a delegated mutation writer as context (null when the
-  // planner did not run or fell back).
-  let preparedPlanSteps = null;
 
   function syncProductiveState() {
     const state = controller.productiveProgressState();
@@ -431,7 +389,7 @@ export default function (pi) {
   function truncationGuidance(toolName) {
     return truncatedToolCallGuidance(toolName, {
       largeMutationBudgetTool: controller.largeMutationBudgetTool,
-      delegatedMutationTool: config.productiveProgress?.delegatedMutationTool ?? null,
+      mutationTurnTool: config.productiveProgress?.mutationTurnTool ?? null,
     });
   }
 
@@ -484,7 +442,7 @@ export default function (pi) {
               `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
               'Your preparation obligation is satisfied. No planner output or complexity was recorded. ' +
               'Do not call prepare_implementation again. Continue implementing from the issue and loaded contract. ' +
-              'Normal mutation, delegate_mutation for large payloads, run_check after mutation, and submit_result rules apply. ' +
+              'Normal mutation, request_mutation_turn for large payloads, run_check after mutation, and submit_result rules apply. ' +
               'If one concrete fact is missing, use need_more_evidence to unlock a read/search before acting.\n' +
               `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.`,
             }],
@@ -494,7 +452,6 @@ export default function (pi) {
         }
         const result = controller.setComplexity(prepared.complexity);
         controller.setEvidenceBudget(prepared.evidenceBudget);
-        preparedPlanSteps = prepared.steps;
         console.log(`PI_PLAN ${JSON.stringify({
           stage,
           steps: prepared.steps,
@@ -702,7 +659,7 @@ export default function (pi) {
       pi.registerTool({
         name: controller.largeMutationBudgetTool,
         label: 'Request large mutation budget',
-        description: `Grant exactly the NEXT response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling, for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. That one elevated response must attempt structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result; the budget always collapses back to the normal small ceiling immediately afterward, whether or not it was used, and must be requested again for another large payload.`,
+        description: `LEGACY: prefer request_mutation_turn. Grant exactly the NEXT response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling, for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. That one elevated response must attempt structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result; the budget always collapses back to the normal small ceiling immediately afterward, whether or not it was used, and must be requested again for another large payload.`,
         parameters: Type.Object({
           reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
         }),
@@ -718,69 +675,99 @@ export default function (pi) {
       });
     }
 
-    const delegatedMutationTool = config.productiveProgress?.delegatedMutationTool;
-    if (delegatedMutationTool && config.productiveProgress?.delegatedMutationWriterAgent) {
+    const mutationTurnTool = config.productiveProgress?.mutationTurnTool;
+    if (mutationTurnTool && config.productiveProgress?.mutationTurnAgent) {
+      const turnConfig = config.productiveProgress;
       pi.registerTool({
-        name: delegatedMutationTool,
-        label: 'Delegate large mutation',
-        description: `Delegate one ALREADY-DECIDED large file mutation whose payload would not fit in your normal response (for example a complete new file). You choose the exact path, operation, intent and concrete requirements; a dedicated writer materializes only that payload under a ${config.productiveProgress.delegatedMutationWriterMaxTokens}-token ceiling, and the runtime validates and applies it like a normal write (rollback, run_check permit and progress included). operation=write creates or fully replaces the file; operation=edit rewrites an existing file that is small enough for the writer to return in full (its current content is supplied to the writer automatically; larger files need direct structural_edit/safe_edit). Do not include the file content yourself. Vague intents such as "fix the issue" are rejected. Keep small changes on direct structural_edit/safe_edit/edit/write.`,
+        name: mutationTurnTool,
+        label: 'Request large mutation turn',
+        description: `Use when you have already decided one file mutation whose payload will not fit in your normal response (for example a complete new source file). Declare only the operation and path. The runtime forks THIS session (same conversation, evidence and decisions) into one turn with a ${turnConfig.mutationTurnMaxTokens}-token ceiling where only that write/edit is available; you then emit the payload there with the normal tool arguments. The runtime validates and applies it like a direct write (rollback, run_check permit and progress included), and you continue here at your normal response budget. operation=write creates or fully replaces the file; operation=edit makes exact replacements in an existing file. Small changes stay on direct structural_edit/safe_edit/edit/write.`,
         parameters: Type.Object({
           operation: Type.Union([Type.Literal('write'), Type.Literal('edit')]),
           path: Type.String({ minLength: 1, maxLength: 1000 }),
-          intent: Type.String({ minLength: 12, maxLength: 600, description: 'The concrete change already decided, e.g. "Create the complete standalone curses Arkanoid game"' }),
-          requirements: Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { minItems: 1, maxItems: 20, description: 'Concrete requirements/postconditions the content must satisfy' }),
-          context: Type.Optional(Type.String({ maxLength: 4000, description: 'Optional already-gathered evidence the writer needs (signatures, constants, conventions)' })),
+          reason: Type.Optional(Type.String({ maxLength: 300, description: 'Optional one-line note for logs' })),
         }),
-        async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-          let validated;
+        async execute(toolCallId, params, signal, _onUpdate, ctx) {
+          let declared;
           try {
-            validated = validateDelegationRequest(ctx.cwd, params, {
-              writerMaxTokens: config.productiveProgress.delegatedMutationWriterMaxTokens,
-            });
+            declared = validateMutationTurnRequest(ctx.cwd, params);
           } catch (error) {
-            delegatedMutationLog('rejected', { path: params?.path ?? null, operation: params?.operation ?? null, stage: 'request', reason: error?.code ?? 'invalid_request', error: String(error?.message ?? error) });
+            mutationTurnLog('rejected', { stage: 'request', path: params?.path ?? null, operation: params?.operation ?? null, reason: error?.code ?? 'invalid_request', error: String(error?.message ?? error) });
             throw error;
           }
-          const { request, currentContent } = validated;
-          const target = { path: request.path, operation: request.operation };
-          delegatedMutationLog('requested', { ...target, requirements: request.requirements.length, preparationState: controller.preparationState });
-          let issue = null;
-          try { issue = implementerIssueContext(); } catch { /* resumed/local runs may lack issue context */ }
-          let content;
+          const turnId = randomUUID();
+          const target = { turnId, operation: declared.operation, path: declared.path };
+          const parentSessionFile = ctx.sessionManager?.getSessionFile?.() ?? null;
+          mutationTurnLog('requested', {
+            ...target,
+            parentRunId: ctx.sessionManager?.getSessionId?.() ?? null,
+            parentMaxTokens: Number(ctx.model?.maxTokens) || null,
+            mutationMaxTokens: turnConfig.mutationTurnMaxTokens,
+            preparationState: controller.preparationState,
+            reason: params?.reason ?? null,
+          });
+          // The fork inherits the persisted parent transcript. Without one there is no
+          // same-context turn to run, and a fresh minimal prompt is not an acceptable stand-in.
+          if (!parentSessionFile || !fs.existsSync(parentSessionFile)) {
+            mutationTurnLog('rejected', { ...target, stage: 'request', reason: 'fork_unavailable' });
+            throw new MutationTurnRejected('fork_unavailable', 'This session is not persisted, so a same-context mutation turn cannot be forked. Make the change with smaller direct edits.');
+          }
+          const stagingFile = path.join(os.tmpdir(), `pi-mutation-turn-${turnId}.json`);
+          const startedAt = Date.now();
+          mutationTurnLog('started', { ...target, context: 'fork', agent: turnConfig.mutationTurnAgent, mutationMaxTokens: turnConfig.mutationTurnMaxTokens });
           try {
-            content = await runMutationWriter(pi, ctx, config, {
-              request,
-              currentContent,
-              issue,
-              preparation: { state: controller.preparationState, steps: preparedPlanSteps },
-            }, signal);
-          } catch (error) {
-            if (signal?.aborted) delegatedMutationLog('cancelled', { ...target, before: 'writer_result' });
-            else delegatedMutationLog('rejected', { ...target, stage: 'writer', reason: error?.code ?? 'writer_failure', error: String(error?.message ?? error) });
-            throw error;
+            let response = null;
+            let turnError = null;
+            try {
+              response = await runStructuredSubagent(pi, ctx, {
+                agent: turnConfig.mutationTurnAgent,
+                nodeId: `mutation-turn-${toolCallId}`,
+                task: `Mutation turn: call ${declared.operation} exactly once for ${declared.path} with the complete payload you already decided earlier in this session. No other tool is available. Then reply with one short line.`,
+                timeoutMs: Number(turnConfig.mutationTurnTimeoutMs ?? 900000),
+                maxTokens: turnConfig.mutationTurnMaxTokens,
+                // One mutation call; any further tool call is blocked inside the fork.
+                toolBudget: { hard: 1, block: '*' },
+                context: 'fork',
+                childEnv: { PI_MUTATION_TURN: JSON.stringify({ ...target, stagingFile }) },
+              }, signal);
+            } catch (error) {
+              turnError = error;
+            }
+            // Cancellation is fail-closed: whatever the fork staged is discarded unapplied.
+            if (signal?.aborted) {
+              mutationTurnLog('cancelled', { ...target, durationMs: Date.now() - startedAt });
+              throw turnError ?? new Error('mutation turn was cancelled before its payload was applied');
+            }
+            const staged = readStagedMutation(stagingFile);
+            const usage = response?.usage ?? null;
+            if (!staged) {
+              const reason = turnError ? 'turn_failed' : 'no_mutation_staged';
+              mutationTurnLog('failed', { ...target, reason, durationMs: Date.now() - startedAt, usage, error: turnError ? String(turnError?.message ?? turnError) : null });
+              throw new MutationTurnRejected(reason, turnError
+                ? `The mutation turn failed before staging a mutation: ${String(turnError?.message ?? turnError)}. Nothing was applied.`
+                : 'The mutation turn ended without calling the declared mutation tool (for example its output was cut off). Nothing was applied.');
+            }
+            mutationTurnLog('completed', { ...target, durationMs: Date.now() - startedAt, usage, chars: staged.content?.length ?? null, turnStatus: turnError ? 'error_after_stage' : 'ok' });
+            let applied;
+            try {
+              applied = applyStagedMutation(ctx.cwd, declared, staged);
+            } catch (error) {
+              mutationTurnLog('rejected', { ...target, stage: 'apply', reason: error?.code ?? 'apply_failure', error: String(error?.message ?? error) });
+              throw error;
+            }
+            mutationTurnLog(applied.changed ? 'applied' : 'no_op', { ...target, bytes: applied.bytes });
+            return {
+              content: [{
+                type: 'text',
+                text: applied.changed
+                  ? `Mutation turn applied ${declared.operation} to ${declared.path} (${applied.bytes} bytes). Normal mutation rules apply: run_check is available once for this mutation; you are back at your normal response budget.`
+                  : `NO CHANGE: the mutation turn produced content identical to ${declared.path}; nothing was written.`,
+              }],
+              details: { ...target, changed: applied.changed, bytes: applied.bytes, mutationTurn: true },
+            };
+          } finally {
+            fs.rmSync(stagingFile, { force: true });
           }
-          // Cancellation between writer completion and application must never apply the payload.
-          if (signal?.aborted) {
-            delegatedMutationLog('cancelled', { ...target, before: 'runtime_apply' });
-            throw new Error('delegate_mutation was cancelled before the writer result was applied');
-          }
-          let applied;
-          try {
-            applied = applyDelegatedMutation(ctx.cwd, request, content, { expectedContent: currentContent });
-          } catch (error) {
-            delegatedMutationLog('rejected', { ...target, stage: 'apply', reason: error?.code ?? 'apply_failure', error: String(error?.message ?? error) });
-            throw error;
-          }
-          delegatedMutationLog(applied.changed ? 'applied' : 'no_op', { ...target, bytes: applied.bytes });
-          return {
-            content: [{
-              type: 'text',
-              text: applied.changed
-                ? `Delegated ${request.operation} applied to ${request.path} (${applied.bytes} bytes). Normal mutation rules apply: run_check is available once for this mutation; continue at the normal response budget.`
-                : `NO CHANGE: the delegated writer produced content identical to ${request.path}; nothing was written.`,
-            }],
-            details: { ...target, changed: applied.changed, bytes: applied.bytes, delegated: true },
-          };
         },
       });
     }
@@ -957,7 +944,7 @@ export default function (pi) {
   pi.on('tool_execution_end', async (event, ctx) => {
     // pi rejects a call whose arguments were cut off at the output ceiling before execution and
     // may not route that rejection through tool_result; steer from here so the truncation
-    // guidance (delegate instead of regenerating) still reaches the model exactly once.
+    // guidance (request a mutation turn instead of regenerating) still reaches the model once.
     const truncatedText = resultText(event.result);
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text: truncatedText });
     if (truncated && !truncationGuidedCalls.has(event.toolCallId)) {
@@ -1008,7 +995,7 @@ export default function (pi) {
       console.log(`PI_MUTATION ${JSON.stringify({
         stage,
         tool: event.toolName,
-        mode: event.toolName === 'delegate_mutation' ? 'delegated' : 'direct',
+        mode: event.toolName === 'request_mutation_turn' ? 'mutation_turn' : 'direct',
         path: mutationSnapshot?.path ?? null,
         isError: event.isError === true,
         changed: mutationChanged,
@@ -1164,7 +1151,7 @@ export default function (pi) {
         : postComplexityRequired
           ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
           : stage === 'implementer'
-            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, delegate_mutation (for a large already-decided payload), rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
+            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, request_mutation_turn (for a large already-decided payload), rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
             : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
       const reason = actionRequiredProseOnlyTurns > 0
         ? 'prose-only retry'

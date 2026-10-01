@@ -125,7 +125,7 @@ test('Pi backend invocation keeps the legacy extension and CLI argument order', 
     '--provider', 'provider-x',
     '--model', 'model-x',
     '--mode', 'json',
-    '--no-session',
+    '--session-dir', '/tmp/terminal.pi-sessions',
     'do the task',
   ]);
   assert.equal(invocation.pi.command, 'pi');
@@ -133,6 +133,14 @@ test('Pi backend invocation keeps the legacy extension and CLI argument order', 
   assert.equal(invocation.pi.options.env.PI_STAGE, 'implementer');
   assert.equal(invocation.filter.options.env.PI_CALL, 'main');
   assert.deepEqual(invocation.filter.options.stdio, ['pipe', 'inherit', 'inherit']);
+});
+
+test('only stages offering the large mutation turn persist a forkable session', () => {
+  for (const stage of ['dispatcher', 'reviewer', 'triage']) {
+    const args = buildPiInvocation(specFor(stage), '/control').pi.args;
+    assert.ok(args.includes('--no-session'), stage);
+    assert.ok(!args.includes('--session-dir'), stage);
+  }
 });
 
 test('Pi repair invocation is labelled separately in shared metrics', () => {

@@ -184,9 +184,9 @@ export const STAGES = Object.freeze({
     repeatThreshold: 3,
     requireComplexity: true,
     // No response-global fixed ceiling: normal turns use the small short/normal/deep
-    // ladder below. A large code-bearing mutation is delegated to the `mutation-writer`
-    // subagent via `delegate_mutation` (16k ceiling on the writer only); the legacy one-shot
-    // parent grant `request_large_mutation_budget` remains for compatibility.
+    // ladder below. A large code-bearing mutation runs in a one-shot fork of this session via
+    // `request_mutation_turn` (16k ceiling on the fork only). The parent-side one-shot grant
+    // `request_large_mutation_budget` is LEGACY: kept only as a stage-1 compatibility fallback.
     implementationPlannerAgent: 'implementation-planner',
     implementationPlannerMaxTokens: 768,
     implementationPlannerStructuredRetry: 1,
@@ -213,20 +213,20 @@ export const STAGES = Object.freeze({
       },
       actionResponseMaxTokens: RESPONSE_BUDGETS.short,
       actionResponseRetryMaxTokens: RESPONSE_BUDGETS.short,
-      // One-shot elevated ceiling for a response that must emit a large write/edit payload.
-      // Granted by `request_large_mutation_budget`, applied to exactly the next response,
-      // and always collapsed back to the small action budget afterward.
+      // LEGACY (stage-1 compatibility only; never selected by truncation recovery): one-shot
+      // elevated ceiling on the parent's own next response via `request_large_mutation_budget`.
+      // Prefer `request_mutation_turn` below.
       largeMutationBudgetTool: 'request_large_mutation_budget',
       largeMutationBudgetMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
-      // Preferred large-payload path: the parent stays at the small ceiling and a dedicated
-      // writer subagent materializes the already-decided mutation under the large ceiling.
-      delegatedMutationTool: 'delegate_mutation',
-      delegatedMutationWriterAgent: 'mutation-writer',
-      delegatedMutationWriterMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
+      // Preferred large-payload path: the parent stays at the small ceiling and declares one
+      // already-decided write/edit; the runtime forks this same session into one 16k turn
+      // restricted to that mutation (pi-subagents `context: 'fork'`), then applies it.
+      mutationTurnTool: 'request_mutation_turn',
+      mutationTurnAgent: 'implementer-mutation-turn',
+      mutationTurnMaxTokens: IMPLEMENTER_RESPONSE_MAX_TOKENS,
       // A full 16k local-model generation can take several minutes.
-      delegatedMutationWriterTimeoutMs: 900000,
-      delegatedMutationWriterRetry: 1,
-      actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'delegate_mutation', 'rollback_last_mutation', 'submit_result'],
+      mutationTurnTimeoutMs: 900000,
+      actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'request_mutation_turn', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'],
     },
     prompt: promptBuilders.implementer,
