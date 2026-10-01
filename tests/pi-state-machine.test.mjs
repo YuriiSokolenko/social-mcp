@@ -11,8 +11,17 @@ test('closed issues cannot remain queued or active', () => {
 });
 
 test('terminal state wins over queued or active labels', () => {
-  const findings = inspectIssueState(issue('open', ['pi:needs-human', 'dispatcher:ready', 'pi:ready']));
-  assert.deepEqual(safeRemovals(findings).sort(), ['dispatcher:ready', 'pi:ready']);
+  const needsHuman = inspectIssueState(issue('open', ['pi:needs-human', 'dispatcher:ready', 'pi:ready']));
+  assert.deepEqual(safeRemovals(needsHuman).sort(), ['dispatcher:ready', 'pi:ready']);
+
+  const blocked = inspectIssueState(issue('open', ['pi:blocked', 'dispatcher:ready', 'pi:running']));
+  assert.deepEqual(safeRemovals(blocked).sort(), ['dispatcher:ready', 'pi:running']);
+});
+
+test('blocked wins over needs-human when terminal labels conflict', () => {
+  const findings = inspectIssueState(issue('open', ['pi:blocked', 'pi:needs-human']));
+  assert.equal(findings.some(item => item.code === 'multiple-terminal' && item.keep === 'pi:blocked'), true);
+  assert.deepEqual(safeRemovals(findings), ['pi:needs-human']);
 });
 
 test('epics are never executable work', () => {
@@ -78,6 +87,14 @@ test('terminal issue may retain a checkpoint for human recovery without reconcil
 test('triage or a human retry may queue unowned and needs-human issues', () => {
   assert.equal(validateIssueTransition(issue('open', []), 'queued'), 'dispatcher:ready');
   assert.equal(validateIssueTransition(issue('open', ['pi:needs-human']), 'queued'), 'dispatcher:ready');
+  assert.throws(() => validateIssueTransition(issue('open', ['pi:blocked']), 'queued'), /blocked issue/);
+});
+
+test('needs-human cannot become executable without an explicit retry', () => {
+  assert.throws(
+    () => validateIssueTransition(issue('open', ['pi:needs-human', 'dispatcher:ready']), 'ready'),
+    /explicit retry/,
+  );
 });
 
 test('orphaned Architect ownership is detected', () => {
