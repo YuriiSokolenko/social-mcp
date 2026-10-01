@@ -12,6 +12,7 @@ import {
   computeVerificationState,
   renderValidationSection,
   VERIFICATION_STATES,
+  FINAL_PIPELINE_COMPLETE_SOURCE,
 } from '../scripts/pi-common/validation-ledger.mjs';
 
 function tempLedger() {
@@ -43,6 +44,19 @@ const finalCheck = (overrides = {}) => ({
   ...overrides,
 });
 
+// The one record that actually proves the whole checks.final pipeline ran to
+// completion, as opposed to a single step's own record.
+const finalComplete = (overrides = {}) => ({
+  kind: 'checks_final',
+  scope: { whole_repo: true },
+  status: 'pass',
+  source: FINAL_PIPELINE_COMPLETE_SOURCE,
+  stage: 'implementer',
+  backend: 'pi',
+  run_id: 'local',
+  ...overrides,
+});
+
 test('appendCheckRecord/readValidationLedger round-trip preserves order and assigns seq', () => {
   const ledgerPath = tempLedger();
   appendCheckRecord(ledgerPath, focused());
@@ -68,8 +82,8 @@ test('normalizeScope treats an absolute in-worktree path and the equivalent rela
   assert.deepEqual(absolute, relative);
 });
 
-test('a passing focused check plus a passing final-checks run yields VERIFIED', () => {
-  const records = [focused({ status: 'pass' }), finalCheck({ status: 'pass' })];
+test('a passing focused check plus a completed final-checks pipeline yields VERIFIED', () => {
+  const records = [focused({ status: 'pass' }), finalCheck({ status: 'pass' }), finalComplete()];
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.VERIFIED);
 });
 
@@ -80,8 +94,17 @@ test('a passing focused check with no final-checks record yields PENDING, never 
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.PENDING);
 });
 
+test('one passing checks.final step without the pipeline-completion marker yields PENDING, never VERIFIED', () => {
+  // The exact scenario a second review round caught: Ruff (one checks.final
+  // step) passes and gets recorded, then the process dies before
+  // git diff --check and pytest run. A per-step record alone must never be
+  // mistaken for "the whole pipeline finished."
+  const records = [focused({ status: 'pass' }), finalCheck({ kind: 'ruff', status: 'pass' })];
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.PENDING);
+});
+
 test('a failing focused check yields VERIFICATION_FAILED', () => {
-  const records = [focused({ status: 'fail' }), finalCheck({ status: 'pass' })];
+  const records = [focused({ status: 'fail' }), finalCheck({ status: 'pass' }), finalComplete()];
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.FAILED);
 });
 
@@ -105,6 +128,7 @@ test('a later equivalent authoritative check resolves an earlier infra_error', (
     focused({ status: 'infra_error' }),
     focused({ status: 'pass' }),
     finalCheck({ status: 'pass' }),
+    finalComplete(),
   ];
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.VERIFIED);
 });
@@ -138,10 +162,13 @@ test('a ledger with an unparseable line is treated as blocked, never as evidence
 test('renderValidationSection renders only from ledger records, never from model-provided text', () => {
   const core = fs.readFileSync(new URL('../scripts/pi-common/validation-ledger.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(core, /\.title\b|\.changes\b|\.security_notes\b/);
-  const records = [focused({ status: 'pass' }), finalCheck({ status: 'pass' })];
+  const records = [focused({ status: 'pass' }), finalCheck({ status: 'pass' }), finalComplete()];
   const text = renderValidationSection(records);
   assert.match(text, /python_compile\(arkanoid\.py\): passed/);
   assert.match(text, /Overall verification state: VERIFIED/);
+  // The pipeline-completion marker proves completeness; it is not itself a
+  // check, so it must never render as its own bullet.
+  assert.doesNotMatch(text, /checks_final_complete/);
 });
 
 test('renderValidationSection on an empty ledger states plainly that nothing was recorded', () => {
@@ -156,6 +183,7 @@ test('duplicate/equivalent checks reconcile deterministically by recency, not by
     focused({ status: 'infra_error' }),
     focused({ status: 'pass' }),
     finalCheck({ status: 'pass' }),
+    finalComplete(),
   ];
   assert.equal(reconcile(forward)[0].status, 'pass');
   assert.equal(computeVerificationState(forward), VERIFICATION_STATES.VERIFIED);

@@ -62,7 +62,17 @@ export function groupKey(kind, scope) {
   return `${kind}:${stableStringify(scope)}`;
 }
 
-const RECORD_SOURCES = Object.freeze(['run_check', 'checks_final']);
+/**
+ * The checks.final pipeline is a fixed sequence of steps (e.g. Ruff, then
+ * `git diff --check`, then pytest). A per-step `checks_final` record for one
+ * step is not proof the whole pipeline ran — a process that dies between
+ * steps would otherwise leave an early step's `pass` looking like "final
+ * checks ran." Only this reserved source, appended once after every step in
+ * the pipeline has completed without error, counts as that proof.
+ */
+export const FINAL_PIPELINE_COMPLETE_SOURCE = 'checks_final_complete';
+
+const RECORD_SOURCES = Object.freeze(['run_check', 'checks_final', FINAL_PIPELINE_COMPLETE_SOURCE]);
 
 /**
  * Fail-closed ingestion: a record missing the fields that identify what was
@@ -148,6 +158,9 @@ export function reconcile(records) {
   // A Map key's insertion position never moves on re-`set`, so this also
   // naturally yields the groups in first-seen order for rendering.
   for (const record of records) {
+    // The pipeline-completion marker is not an individual check: it never
+    // appears as its own "Validation" bullet.
+    if (record.source === FINAL_PIPELINE_COMPLETE_SOURCE) continue;
     groups.set(groupKey(record.kind, record.scope), record);
   }
   return [...groups.values()];
@@ -157,10 +170,11 @@ export function reconcile(records) {
  * `corrupted` (from `readValidationLedger`) always wins: a ledger that lost
  * even one line cannot be trusted to have kept every fail/infra_error record,
  * so it is never treated as evidence of VERIFIED. "Did the final checks.final
- * pipeline run" is likewise derived from the ledger's own contents (a
- * `checks_final`-sourced record), never assumed true by default — a focused
- * `run_check` pass alone, with no final-pipeline record, is PENDING, not
- * VERIFIED.
+ * pipeline run to completion" is likewise derived from the ledger's own
+ * contents — specifically the reserved `FINAL_PIPELINE_COMPLETE_SOURCE`
+ * marker, never from the mere presence of an individual `checks_final` step
+ * record. A single early step (e.g. Ruff) passing and then the process dying
+ * before the rest of the pipeline runs must not look like "final checks ran."
  */
 export function computeVerificationState(records, { corrupted = false } = {}) {
   if (corrupted) return VERIFICATION_STATES.BLOCKED_INFRA;
@@ -168,7 +182,7 @@ export function computeVerificationState(records, { corrupted = false } = {}) {
   if (!groups.length) return VERIFICATION_STATES.NOT_APPLICABLE;
   if (groups.some(group => group.status === 'fail')) return VERIFICATION_STATES.FAILED;
   if (groups.some(group => BLOCKING_STATUSES.has(group.status))) return VERIFICATION_STATES.BLOCKED_INFRA;
-  const finalChecksRan = records.some(record => record.source === 'checks_final');
+  const finalChecksRan = records.some(record => record.source === FINAL_PIPELINE_COMPLETE_SOURCE);
   if (!finalChecksRan) return VERIFICATION_STATES.PENDING;
   return VERIFICATION_STATES.VERIFIED;
 }
