@@ -28,7 +28,8 @@ export const ISSUE_ACTIVE = new Set([
 ]);
 
 export const ISSUE_TERMINAL = new Set([
-  PIPELINE_LABELS.blocked, PIPELINE_LABELS.needsHuman,
+  PIPELINE_LABELS.needsHuman,
+  ...(PIPELINE_LABELS.blocked ? [PIPELINE_LABELS.blocked] : []),
 ]);
 
 export const ISSUE_STATE_LABELS = new Set([
@@ -50,9 +51,9 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
       remove: [...active, PIPELINE_LABELS.queued].filter(label => labels.has(label)) });
   }
   if (issue.state === 'open' && labels.has(PIPELINE_LABELS.epic) &&
-      (labels.has(PIPELINE_LABELS.queued) || active.length)) {
+      (labels.has(PIPELINE_LABELS.queued) || active.length || terminal.length)) {
     findings.push({ code: 'epic-executable', severity: 'repair',
-      remove: [PIPELINE_LABELS.queued, ...active].filter(label => labels.has(label)) });
+      remove: [PIPELINE_LABELS.queued, ...active, ...terminal].filter(label => labels.has(label)) });
   }
   if (terminal.length > 1) {
     const keep = terminal.includes(PIPELINE_LABELS.blocked) ? PIPELINE_LABELS.blocked : terminal[0];
@@ -121,10 +122,17 @@ export function validateIssueTransition(issue, action) {
   const labels = names(issue);
   if (issue.state !== 'open') throw new Error(`cannot transition closed issue to ${target ?? 'unowned'}`);
   if (labels.has(PIPELINE_LABELS.epic)) throw new Error(`architect epic cannot transition to ${target ?? 'unowned'}`);
-  if (labels.has(PIPELINE_LABELS.blocked)) {
-    throw new Error(`blocked issue cannot transition to ${target ?? 'unowned'}; remove ${PIPELINE_LABELS.blocked} explicitly first`);
+  if (PIPELINE_LABELS.blocked && labels.has(PIPELINE_LABELS.blocked)) {
+    const executable = ['queued', 'ready', 'running', 'running-manual', 'architect-ready'];
+    if (executable.includes(action)) {
+      throw new Error(`blocked issue cannot transition to executable state ${target ?? 'unowned'}; remove ${PIPELINE_LABELS.blocked} explicitly first`);
+    }
+    // A human block is durable even if an already-running workflow reaches a
+    // cleanup/publication transition. Let that workflow finish successfully
+    // without replacing the manual block with another pipeline state.
+    return PIPELINE_LABELS.blocked;
   }
-  if (labels.has(PIPELINE_LABELS.needsHuman) && !['queued', 'running-manual', 'needs-human'].includes(action)) {
+  if (labels.has(PIPELINE_LABELS.needsHuman) && ['ready', 'running', 'architect-ready'].includes(action)) {
     throw new Error(`${PIPELINE_LABELS.needsHuman} issue requires an explicit retry before transition to ${target ?? 'unowned'}`);
   }
   if (action === 'satisfied' && !labels.has(PIPELINE_LABELS.running)) {
