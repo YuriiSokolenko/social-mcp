@@ -20,6 +20,18 @@ test('terminal issue ownership is preserved instead of being re-queued', () => {
     issueRecoveryTarget(issue('open', ['pi:blocked', 'pi:ready']), { automationMode: 'RUNNING' }),
     'pi:blocked',
   );
+  assert.equal(
+    issueRecoveryTarget(issue('open', ['pi:blocked', 'pi:running']), {
+      hasOpenPiPr: true, automationMode: 'RUNNING',
+    }),
+    'pi:blocked',
+  );
+  assert.equal(
+    issueRecoveryTarget(issue('open', ['pi:needs-human', 'pi:running']), {
+      hasOpenPiPr: true, automationMode: 'RUNNING',
+    }),
+    'pi:needs-human',
+  );
 });
 
 test('existing implementation PR remains the durable owner', () => {
