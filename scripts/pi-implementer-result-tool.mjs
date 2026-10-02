@@ -16,6 +16,73 @@ function changedPathsAgainstBase() {
 }
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
 
+export const CHANGED_PUBLICATION_FIELDS = Object.freeze([
+  'title',
+  'summary',
+  'changes',
+  'files',
+  'security_notes',
+  'limitations',
+]);
+
+function normalizeStringArray(value) {
+  return Array.isArray(value) ? value.map(clean).filter(Boolean) : [];
+}
+
+export function missingChangedPublicationFields(params = {}) {
+  return CHANGED_PUBLICATION_FIELDS.filter(field => {
+    if (field === 'changes' || field === 'files') return normalizeStringArray(params[field]).length === 0;
+    return !clean(params[field]);
+  });
+}
+
+export function validateFreshChangedSubmission(params = {}) {
+  const missingFields = missingChangedPublicationFields(params);
+  if (missingFields.length) {
+    throw new Error(JSON.stringify({
+      code: 'missing_publication_fields',
+      missing_fields: missingFields,
+    }));
+  }
+  return {
+    title: clean(params.title),
+    summary: clean(params.summary),
+    changes: normalizeStringArray(params.changes),
+    files: normalizeStringArray(params.files),
+    security_notes: clean(params.security_notes),
+    limitations: clean(params.limitations),
+  };
+}
+
+export function submitResultParameters() {
+  // Keep the tool schema as a plain object for local-model/tool-call compatibility.
+  // Outcome-specific required fields are enforced synchronously in execute before
+  // integration or any publication-side effect.
+  return Type.Object({
+    title: Type.Optional(Type.String({ description: 'Required for fresh changed work: PR title.' })),
+    summary: Type.Optional(Type.String({ description: 'Required for fresh changed work: PR summary.' })),
+    changes: Type.Optional(Type.Array(Type.String(), {
+      description: 'Required for fresh changed work: concrete repository changes.',
+    })),
+    files: Type.Optional(Type.Array(Type.String(), {
+      description: 'Required for fresh changed work: exact repository-relative changed-file set.',
+    })),
+    already_satisfied: Type.Optional(Type.Boolean({
+      description: 'Set true only when latest dev already contains the requested end state.',
+    })),
+    blocked_reason: Type.Optional(Type.String({
+      maxLength: 1000,
+      description: 'Fresh work only: concrete contradiction that makes a compliant mutation impossible.',
+    })),
+    security_notes: Type.Optional(Type.String({
+      description: 'Required for fresh changed work, including an explicit no-impact statement.',
+    })),
+    limitations: Type.Optional(Type.String({
+      description: 'Required for fresh changed work, including an explicit none-known statement.',
+    })),
+  });
+}
+
 function restoredWork() {
   if (process.env.PI_RESUME_ACTIVE != null) return process.env.PI_RESUME_ACTIVE === 'true';
   const patch = process.env.PI_RESUME_PATCH;
@@ -33,28 +100,22 @@ function issueContext() {
 }
 
 export default function (pi) {
+  // Snapshot run mode once so the advertised contract and execute path cannot
+  // diverge if process.env or the resume patch changes later in the process.
+  const restored = restoredWork();
+  const validationRepair = validationRepairWork();
+  const runtimeOwnedMetadata = restored || validationRepair;
+
   registerTerminalTool(pi, {
     label: 'Sync and submit implementation candidate',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored or harness validation-repair work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]}. If authoritative current-code evidence proves explicit issue requirements or constraints are mutually incompatible so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, files, security_notes, and limitations on the first call. `changes` is human-readable; `files` is the exact repository-relative changed-file set.',
-    parameters: Type.Object({
-      title: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
-      summary: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
-      changes: Type.Optional(Type.Array(Type.String(), { description: 'Required for fresh changed work; list concrete repository changes.' })),
-      files: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: 'Required for fresh changed work; exact repository-relative paths intended for publication.' })),
-      already_satisfied: Type.Optional(Type.Boolean()),
-      blocked_reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000, description: 'Fresh work only: concrete contradiction in explicit requirements or constraints that makes a compliant mutation impossible.' })),
-      security_notes: Type.Optional(Type.String({ description: 'Required for fresh changed work, including when there are no security-relevant changes.' })),
-      limitations: Type.Optional(Type.String({ description: 'Required for fresh changed work, including when there are no known limitations.' })),
-    }),
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored or harness validation-repair work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]}. If authoritative current-code evidence proves explicit issue requirements or constraints are mutually incompatible so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, files, security_notes, and limitations on the first call. The runtime validates that complete publication contract before integrating latest dev and returns code=missing_publication_fields with every missing field. `changes` is human-readable; `files` is the exact repository-relative changed-file set.',
+    parameters: submitResultParameters(),
     customType: 'implementer-result',
-    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. For restored or harness validation-repair work call submit_result({}) now. For fresh work call structural_edit/safe_edit/edit/write now when a change is required, submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state, or submit_result({blocked_reason:"..."}) when authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible. If exactly one concrete missing fact blocks safe action, call need_more_evidence once, gather exactly one fact, then act.',
+    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. If submit_result just reported missing publication fields, retry submit_result immediately with exactly those fields; do not call evidence or exploration tools. For restored or harness validation-repair work call submit_result({}) now. For fresh work call structural_edit/safe_edit/edit/write now when a change is required, submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state, or submit_result({blocked_reason:"..."}) when authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible. If exactly one concrete missing fact blocks safe action before submission, call need_more_evidence once, gather exactly one fact, then act.',
     nudgeRepeatWhile: () => process.env.PI_PRODUCTIVE_STATE === 'action_required',
     nudgeMaxCount: 3,
     successText: 'SUCCESS. Latest dev is integrated and the implementation candidate is recorded. The harness will run authoritative final checks. Stop now.',
     execute: async (params) => {
-      const restored = restoredWork();
-      const validationRepair = validationRepairWork();
-      const runtimeOwnedMetadata = restored || validationRepair;
       const alreadySatisfied = params.already_satisfied === true;
       const blockedReason = clean(params.blocked_reason);
       if (runtimeOwnedMetadata && alreadySatisfied) {
@@ -93,22 +154,8 @@ export default function (pi) {
       }
 
       const freshChangedMetadata = !runtimeOwnedMetadata && !alreadySatisfied
-        ? {
-            title: clean(params.title),
-            summary: clean(params.summary),
-            security_notes: clean(params.security_notes),
-            limitations: clean(params.limitations),
-          }
+        ? validateFreshChangedSubmission(params)
         : null;
-      if (
-        freshChangedMetadata &&
-        (!freshChangedMetadata.title ||
-          !freshChangedMetadata.summary ||
-          !freshChangedMetadata.security_notes ||
-          !freshChangedMetadata.limitations)
-      ) {
-        throw new Error('Fresh changed work requires title, summary, security_notes, and limitations');
-      }
 
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
@@ -157,8 +204,6 @@ export default function (pi) {
       } else {
         data = {
           ...freshChangedMetadata,
-          changes: Array.isArray(params.changes) ? params.changes.map(clean).filter(Boolean) : [],
-          files: Array.isArray(params.files) ? params.files.map(clean).filter(Boolean) : [],
           already_satisfied: false,
         };
       }
@@ -167,6 +212,7 @@ export default function (pi) {
       if (data.already_satisfied && hasDiff) throw new Error('already_satisfied requires zero diff against latest dev');
       if (data.already_satisfied && data.changes.length) throw new Error('already_satisfied requires changes: []');
       if (data.already_satisfied && data.files.length) throw new Error('already_satisfied requires files: []');
+      // Shared invariant for runtime-owned restored/validation-repair results too.
       if (!data.already_satisfied && !data.changes.length) throw new Error('at least one concrete change is required');
       if (!data.already_satisfied && !data.files.length) throw new Error('at least one declared file is required');
       if (!runtimeOwnedMetadata && !data.already_satisfied) {
