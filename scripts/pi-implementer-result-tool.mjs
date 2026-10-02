@@ -108,7 +108,7 @@ export default function (pi) {
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
       });
-      const changedPaths = lines(git(['diff', '--name-only', baseRef()]).out);
+      const changedPaths = gitPaths(git(['diff', '--name-only', '-z', baseRef()]).out);
       const hasDiff = changedPaths.length > 0;
       let data;
 
