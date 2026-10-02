@@ -9,6 +9,8 @@ import {
   readValidationLedger,
   normalizeScope,
   reconcile,
+  latestUnresolvedRunCheckFailure,
+  runCheckRequestForRecord,
   computeVerificationState,
   renderValidationSection,
   VERIFICATION_STATES,
@@ -141,6 +143,36 @@ test('an unrelated broad pytest pass does not satisfy a failed/infra-error focus
   // This is the literal shape of smoke run 36782519549: a focused python_compile
   // infra_error plus a broad, unrelated pytest pass.
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.BLOCKED_INFRA);
+});
+
+test('#342 recovery keeps the exact failed pytest scope pending across a broader pass until that scope passes', () => {
+  const failed = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    status: 'fail',
+  });
+  const broaderPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py'] },
+    status: 'pass',
+  });
+  const records = [failed, broaderPass];
+
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.FAILED);
+  assert.equal(latestUnresolvedRunCheckFailure(records), failed);
+  assert.deepEqual(runCheckRequestForRecord(failed), {
+    kind: 'pytest',
+    targets: ['tests/test_feature.py::test_exact_case'],
+  });
+
+  const exactPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    status: 'pass',
+  });
+  records.push(exactPass);
+  assert.equal(latestUnresolvedRunCheckFailure(records), null);
+  assert.equal(reconcile(records).find(record => record.scope.targets?.includes('tests/test_feature.py::test_exact_case'))?.status, 'pass');
 });
 
 test('a ledger with an unparseable line is treated as blocked, never as evidence of VERIFIED', () => {
