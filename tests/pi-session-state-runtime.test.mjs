@@ -192,6 +192,13 @@ test('runtime materializes completed transitions into context and tool surface',
       await call('need_more_evidence', { missing: 'one fact', reason: 'exercise recovery surface' });
       assert.ok(!active.includes('retry_last_failed_check'), 'exact retry is action-phase only');
       assert.ok(active.includes('run_check'), 'ordinary run_check surface returns outside action_required');
+      const hiddenRetry = await handlers.get('tool_call')({
+        toolName: 'retry_last_failed_check',
+        toolCallId: 'hidden-retry-' + turn,
+        input: {},
+      }, ctx);
+      assert.equal(hiddenRetry.block, true, 'a hidden retry cannot execute outside its action surface');
+      assert.match(hiddenRetry.reason, /not available in the current action state/);
       const outsideActionCheck = {
         toolName: 'run_check',
         toolCallId: 'outside-action-check-' + turn,
