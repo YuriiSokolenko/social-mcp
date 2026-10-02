@@ -3,7 +3,7 @@
 Startup owns infrastructure: the application container is built from
 configuration when the app starts and shared with request handlers through
 ``app.state``. Keep this layer thin and resolve dependencies with
-:func:`get_container` instead of constructing them per request.
+:func:`get_container` instead of constructing them per request. CI cache probe.
 """
 
 import logging
