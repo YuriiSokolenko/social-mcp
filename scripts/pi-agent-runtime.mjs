@@ -498,8 +498,6 @@ export default function (pi) {
   }
 
   function recordRuntimeAbort(failureCode, reason, details = {}) {
-    const failureFile = String(process.env.PI_RUNTIME_FAILURE_FILE ?? '').trim();
-    if (!failureFile) return;
     const record = {
       schema_version: 1,
       stage,
@@ -508,6 +506,14 @@ export default function (pi) {
       reason,
       ...details,
     };
+    // A coding-session fork is recoverable by its parent Implementer. Keep its abort in logs,
+    // but never let a nested fork leave job-level failure provenance behind.
+    if (codingSession) {
+      console.error(`PI_RUNTIME_FAILURE_NESTED ${JSON.stringify(record)}`);
+      return;
+    }
+    const failureFile = String(process.env.PI_RUNTIME_FAILURE_FILE ?? '').trim();
+    if (!failureFile) return;
     try {
       fs.mkdirSync(path.dirname(failureFile), { recursive: true });
       const tempFile = `${failureFile}.${process.pid}.tmp`;
