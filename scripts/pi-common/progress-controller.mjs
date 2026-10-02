@@ -6,6 +6,10 @@ const COMPLEXITY_RANK = Object.freeze({ trivial: 0, nontrivial: 1, normal: 1, co
 // implementer turns use the small `RESPONSE_BUDGETS`/`actionResponseMaxTokens` ceiling.
 export const IMPLEMENTER_RESPONSE_MAX_TOKENS = 16384;
 export const RESPONSE_BUDGETS = Object.freeze({ short: 2048, normal: 4096, deep: 8192 });
+// Planner infrastructure fallback gets a deterministic, bounded repository-orientation window.
+// Two evidence attempts are enough to locate the canonical source/test layout without reopening
+// general exploration; the first successful mutation closes the window early.
+export const PREPARATION_FALLBACK_EVIDENCE_BUDGET = 2;
 
 function safePathToken(value) {
   return typeof value === 'string' &&
@@ -360,12 +364,18 @@ export class ProgressController {
       throw new Error('Preparation fallback requires an attempted, unresolved preparation action');
     }
     this.preparationState = 'PREPARATION_FALLBACK';
-    // No planner estimate is available. Start with an action and preserve the normal
-    // need_more_evidence escape hatch for any concrete missing implementation fact.
-    this.productiveEvidenceRemaining = 0;
-    this.productiveState = 'action_required';
+    // No planner estimate is available, so grant a small deterministic orientation window
+    // to establish the canonical source/test layout before mutation. The normal bounded
+    // evidence state machine consumes this at accepted-call time, and any successful mutation
+    // closes the window early in onToolExecutionEnd().
+    this.productiveEvidenceRemaining = PREPARATION_FALLBACK_EVIDENCE_BUDGET;
+    this.productiveState = 'evidence_allowed';
     this.evidenceUnlockUsedSinceProgress = false;
-    return { preparationState: this.preparationState, complexity: this.complexity };
+    return {
+      preparationState: this.preparationState,
+      complexity: this.complexity,
+      evidenceBudget: PREPARATION_FALLBACK_EVIDENCE_BUDGET,
+    };
   }
 
   preComplexityActionRequired() {
@@ -432,6 +442,8 @@ export class ProgressController {
         alreadySatisfied: true,
         reason: this.transitions.alreadySatisfiedReason(toolName, transitionKey, {
           actionRequired: this.productiveState === 'action_required',
+          verificationTool: this.productiveVerificationTool,
+          verificationState: this.verificationLifecycleState(),
         }),
       };
     }
@@ -561,8 +573,17 @@ export class ProgressController {
           this.evidenceUnlockUsedSinceProgress = true;
           this.productiveEvidenceRemaining = 1;
           this.productiveState = 'evidence_allowed';
-        } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool && this.verificationPermits > 0) {
-          acceptedVerificationCall = true;
+        } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
+          if (this.verificationPermits > 0) {
+            acceptedVerificationCall = true;
+          } else {
+            return {
+              block: true,
+              reason: this.verificationState === 'exhausted'
+                ? `BLOCKED: ${toolName} is exhausted for the current mutation state. A new successful mutation is required before another focused verification.`
+                : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
+            };
+          }
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
             block: true,
@@ -578,7 +599,18 @@ export class ProgressController {
             reason: 'BLOCKED: one evidence action is already permitted. Execute that evidence action before declaring another blocker.',
           };
         }
-        if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
+        if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
+          if (this.verificationPermits > 0) {
+            acceptedVerificationCall = true;
+          } else {
+            return {
+              block: true,
+              reason: this.verificationState === 'exhausted'
+                ? `BLOCKED: ${toolName} is exhausted for the current mutation state. A new successful mutation is required before another focused verification.`
+                : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
+            };
+          }
+        } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           const semanticFallback = this.semanticLookupAwaitingRead &&
             !this.semanticFallbackEvidenceUsed &&
             toolName !== 'read' &&

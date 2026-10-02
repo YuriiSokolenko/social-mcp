@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { resolveMutationTarget } from '../scripts/pi-common/mutation-target.mjs';
 import {
   MAX_CEILING_WITHOUT_TOOL_TURNS,
+  PREPARATION_FALLBACK_EVIDENCE_BUDGET,
   ProgressController,
   nextCeilingWithoutToolTurns,
   truncatedToolCallGuidance,
@@ -67,7 +68,11 @@ test('the coding session starts only after preparation and once evidence is comp
   assert.equal(ready.checkToolCall('prepare_implementation', {}), undefined);
   ready.enterPreparationFallback();
   ready.onToolExecutionEnd('prepare_implementation', false);
-  assert.equal(ready.checkToolCall('begin_coding_session', {}), undefined, 'available under PREPARATION_FALLBACK');
+  assert.match(ready.checkToolCall('begin_coding_session', {}).reason, /only once evidence is complete/);
+  for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
+    assert.equal(ready.checkToolCall('read', { path: 'fallback-evidence-' + i }), undefined);
+  }
+  assert.equal(ready.checkToolCall('begin_coding_session', {}), undefined, 'available after fallback evidence is complete');
   ready.onToolExecutionEnd('begin_coding_session', true);
   assert.equal(ready.verificationPermitted(), false, 'a failed session earns no verification permit');
   assert.equal(ready.checkToolCall('begin_coding_session', {}), undefined);
@@ -160,6 +165,7 @@ function runtimeScenario(mode) {
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400abc' }), null);
       assert.equal(providerErrorStatus({ stopReason: 'stop', errorMessage: '400 nope' }), null);
       const mode = ${JSON.stringify(mode)};
+      const fallbackEvidenceBudget = ${PREPARATION_FALLBACK_EVIDENCE_BUDGET};
       const cwd = ${JSON.stringify(work)};
       const terminal = ${JSON.stringify(terminal)};
       const runtimeFailure = ${JSON.stringify(runtimeFailure)};
@@ -362,9 +368,18 @@ function runtimeScenario(mode) {
       }
       // Evidence gathered by the parent earlier in its own session; never repeated in the request.
       fs.writeFileSync(cwd + '/config.py', 'REQUIRED_CONSTANT = "abc123"\\n');
-      if (mode === 'fallback' || mode === 'restored') await call('need_more_evidence', { missing: 'constant', reason: 'value' });
-      await call('read', { path: 'config.py' });
+      if (mode === 'fallback') {
+        for (let i = 1; i < fallbackEvidenceBudget; i++) {
+          fs.writeFileSync(cwd + '/fallback-layout-' + i + '.txt', 'layout evidence ' + i + '\\n');
+          await call('read', { path: 'fallback-layout-' + i + '.txt' });
+        }
+        await call('read', { path: 'config.py' });
+      } else {
+        if (mode === 'restored') await call('need_more_evidence', { missing: 'constant', reason: 'value' });
+        await call('read', { path: 'config.py' });
+      }
       fs.rmSync(cwd + '/config.py');
+      for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
 
       if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) {
         // First action_required response is prose only: the runtime arms provider-level
