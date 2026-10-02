@@ -564,17 +564,27 @@ export default function (pi) {
   }
 
   function failedCheckRecoveryState() {
-    if (stage !== 'implementer') return { failure: null, corrupted: false };
+    if (stage !== 'implementer') return { failure: null, request: null, corrupted: false };
     const { records, corrupted } = readValidationLedger(process.env.PI_VALIDATION_LEDGER_FILE);
-    return {
-      failure: corrupted
-        ? null
-        : latestUnresolvedRunCheckFailure(records, {
-            runId: validationRunId(),
-            attemptId: validationAttemptId(),
-          }),
-      corrupted,
-    };
+    if (corrupted) return { failure: null, request: null, corrupted: true };
+
+    const failure = latestUnresolvedRunCheckFailure(records, {
+      runId: validationRunId(),
+    });
+    if (!failure) return { failure: null, request: null, corrupted: false };
+
+    try {
+      return {
+        failure,
+        request: runCheckRequestForRecord(failure),
+        corrupted: false,
+      };
+    } catch {
+      // Malformed/legacy ledger history must never hide ordinary run_check or
+      // create a retry tool that cannot execute. Final verification still
+      // sees the original record and remains fail-closed.
+      return { failure: null, request: null, corrupted: false };
+    }
   }
 
   function controllerToolName(toolName) {
@@ -1477,14 +1487,7 @@ export default function (pi) {
     }
 
     if (!recoveryBlocked && event.toolName === RETRY_FAILED_CHECK_TOOL && failedCheckRecovery) {
-      try {
-        canonicalInput = runCheckRequestForRecord(failedCheckRecovery);
-      } catch (error) {
-        recoveryBlocked = {
-          block: true,
-          reason: `BLOCKED: retry_last_failed_check cannot reconstruct the authoritative failed scope: ${String(error?.message ?? error)}`,
-        };
-      }
+      canonicalInput = recoveryState.request;
     }
 
     const canonicalToolName = controllerToolName(event.toolName);
