@@ -4,10 +4,16 @@ import { Type } from 'typebox';
 import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
 import { baseRef } from './pi-common/project-config.mjs';
 import { runGit as git } from './pi-common/git.mjs';
-import { writeImplementerResult } from './pi-common/implementer-result.mjs';
+import { assertImplementerFileSet, writeImplementerResult } from './pi-common/implementer-result.mjs';
 import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
 
 const lines = (text) => text.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+const gitPaths = (text) => text.split('\0').filter(Boolean);
+function changedPathsAgainstBase() {
+  const tracked = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
+  const untracked = gitPaths(git(['ls-files', '--others', '--exclude-standard', '-z']).out);
+  return [...new Set([...tracked, ...untracked])].sort();
+}
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
 
 function restoredWork() {
@@ -29,11 +35,12 @@ function issueContext() {
 export default function (pi) {
   registerTerminalTool(pi, {
     label: 'Sync and submit implementation candidate',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored or harness validation-repair work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]}. If authoritative current-code evidence proves explicit issue requirements or constraints are mutually incompatible so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, security_notes, and limitations on the first call.',
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored or harness validation-repair work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]}. If authoritative current-code evidence proves explicit issue requirements or constraints are mutually incompatible so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, files, security_notes, and limitations on the first call. `changes` is human-readable; `files` is the exact repository-relative changed-file set.',
     parameters: Type.Object({
       title: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
       summary: Type.Optional(Type.String({ description: 'Required for fresh changed work.' })),
       changes: Type.Optional(Type.Array(Type.String(), { description: 'Required for fresh changed work; list concrete repository changes.' })),
+      files: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: 'Required for fresh changed work; exact repository-relative paths intended for publication.' })),
       already_satisfied: Type.Optional(Type.Boolean()),
       blocked_reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000, description: 'Fresh work only: concrete contradiction in explicit requirements or constraints that makes a compliant mutation impossible.' })),
       security_notes: Type.Optional(Type.String({ description: 'Required for fresh changed work, including when there are no security-relevant changes.' })),
@@ -64,7 +71,7 @@ export default function (pi) {
         integrateLatestDev({
           conflictMessage: files => `Latest dev conflicts while verifying blocked work: ${files.join(', ')}`,
         });
-        const changedPaths = lines(git(['diff', '--name-only', baseRef()]).out);
+        const changedPaths = changedPathsAgainstBase();
         const dirty = lines(git(['status', '--porcelain', '--untracked-files=all']).out);
         if (changedPaths.length || dirty.length) {
           throw new Error('blocked_reason requires a clean worktree with zero diff against latest dev');
@@ -76,6 +83,7 @@ export default function (pi) {
           title: clean(context.title),
           summary: `Implementation${issue ? ` for issue #${issue}` : ''} is blocked by a concrete contradiction in the requested requirements or constraints.`,
           changes: [],
+          files: [],
           outcome: 'blocked',
           blocked_reason: blockedReason,
           security_notes: 'No repository change was made because the task is blocked pending human clarification.',
@@ -105,7 +113,7 @@ export default function (pi) {
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
       });
-      const changedPaths = lines(git(['diff', '--name-only', baseRef()]).out);
+      const changedPaths = changedPathsAgainstBase();
       const hasDiff = changedPaths.length > 0;
       let data;
 
@@ -118,6 +126,7 @@ export default function (pi) {
               title: clean(context.title),
               summary: `${summaryPrefix}${issue ? ` for issue #${issue}` : ''} was prepared against latest dev.`,
               changes: changedPaths,
+              files: changedPaths,
               already_satisfied: false,
               security_notes: 'No additional security notes were supplied for restored work.',
               limitations: 'No additional limitations were supplied for restored work.',
@@ -128,6 +137,7 @@ export default function (pi) {
                 ? `Latest dev already contains the validation-repaired implementation${issue ? ` for issue #${issue}` : ''}; no duplicate implementation is required.`
                 : `Latest dev already contains the replayed saved implementation${issue ? ` for issue #${issue}` : ''}; no duplicate implementation is required.`,
               changes: [],
+              files: [],
               already_satisfied: true,
               security_notes: 'No repository change was required because latest dev already contains the saved implementation.',
               limitations: 'No implementation PR is created for a stale restored branch that is already contained in latest dev.',
@@ -139,6 +149,7 @@ export default function (pi) {
           title: clean(context.title),
           summary: `Latest dev already contains the exact requested end state${issue ? ` for issue #${issue}` : ''}; no duplicate implementation is required.`,
           changes: [],
+          files: [],
           already_satisfied: true,
           security_notes: 'No repository change was required.',
           limitations: 'No implementation PR is created for an already-satisfied issue.',
@@ -147,6 +158,7 @@ export default function (pi) {
         data = {
           ...freshChangedMetadata,
           changes: Array.isArray(params.changes) ? params.changes.map(clean).filter(Boolean) : [],
+          files: Array.isArray(params.files) ? params.files.map(clean).filter(Boolean) : [],
           already_satisfied: false,
         };
       }
@@ -154,7 +166,12 @@ export default function (pi) {
       if (!data.title || !data.summary) throw new Error('title and summary are required');
       if (data.already_satisfied && hasDiff) throw new Error('already_satisfied requires zero diff against latest dev');
       if (data.already_satisfied && data.changes.length) throw new Error('already_satisfied requires changes: []');
+      if (data.already_satisfied && data.files.length) throw new Error('already_satisfied requires files: []');
       if (!data.already_satisfied && !data.changes.length) throw new Error('at least one concrete change is required');
+      if (!data.already_satisfied && !data.files.length) throw new Error('at least one declared file is required');
+      if (!runtimeOwnedMetadata && !data.already_satisfied) {
+        assertImplementerFileSet(changedPaths, data.files);
+      }
 
       data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, data);
       return { data };

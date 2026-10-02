@@ -362,8 +362,8 @@ test('issue publication attributes only changes beyond integrated latest dev to 
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(publication, /merge-base','--is-ancestor','origin\/dev','HEAD'/);
   assert.match(publication, /return integrated \? 'origin\/dev' : startCommit/);
-  assert.match(publication, /diff','--name-only',base,'HEAD'/);
-  assert.doesNotMatch(publication, /diff','--name-only',startCommit,'HEAD'/);
+  assert.match(publication, /diff','--no-renames','--name-only','-z',base,'HEAD'/);
+  assert.doesNotMatch(publication, /diff','--no-renames','--name-only','-z',startCommit,'HEAD'/);
 });
 
 test('the PR body Validation section is rendered from the validation ledger, never from a static claim', () => {
@@ -688,7 +688,7 @@ test('implementer has an explicit already-satisfied terminal path without duplic
   assert.match(tool, /Latest dev already contains the exact requested end state/);
   assert.match(tool, /nudgeMaxCount: 3/);
   assert.match(tool, /PI_PRODUCTIVE_STATE/);
-  assert.match(tool, /diff', '--name-only', 'origin\/dev'/);
+  assert.match(tool, /diff', '--no-renames', '--name-only', '-z', 'origin\/dev'/);
   assert.match(tool, /already_satisfied requires zero diff against latest dev/);
   assert.match(workflow, /if \[ "\$OUTCOME" = "already_satisfied" \]; then/);
   assert.match(workflow, /issue satisfied/);

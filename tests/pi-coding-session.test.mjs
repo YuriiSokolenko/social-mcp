@@ -263,7 +263,7 @@ function runtimeScenario(mode) {
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
-        if (mode !== 'no-submit') await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], security_notes: 'n', limitations: 'n' });
+        if (mode !== 'no-submit') await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
         respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
       }
       bus.on('prompt-template:subagent:request', async request => {

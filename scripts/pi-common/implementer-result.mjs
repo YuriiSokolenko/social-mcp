@@ -2,6 +2,36 @@ import fs from 'node:fs';
 
 const clean = value => typeof value === 'string' ? value.trim() : '';
 
+function normalizeFiles(value) {
+  if (!Array.isArray(value)) return [];
+  const files = [...value];
+  for (const file of files) {
+    if (typeof file !== 'string' || !file.length) {
+      throw new Error('Implementer result files must be non-empty strings');
+    }
+    if (file.startsWith('/') || file.startsWith('./') || file.split('/').includes('..')) {
+      throw new Error(`Implementer result files must be exact repository-relative git paths: ${file}`);
+    }
+  }
+  return [...new Set(files)].sort();
+}
+
+export function assertImplementerFileSet(actualFiles, declaredFiles) {
+  const actual = normalizeFiles(actualFiles);
+  const declared = normalizeFiles(declaredFiles);
+  const actualSet = new Set(actual);
+  const declaredSet = new Set(declared);
+  const unexpected = actual.filter(file => !declaredSet.has(file));
+  const missing = declared.filter(file => !actualSet.has(file));
+  if (unexpected.length || missing.length) {
+    const parts = [];
+    if (unexpected.length) parts.push(`unexpected files: ${unexpected.join(', ')}`);
+    if (missing.length) parts.push(`missing files: ${missing.join(', ')}`);
+    throw new Error(`Implementer file-set mismatch: ${parts.join('; ')}`);
+  }
+  return actual;
+}
+
 export const IMPLEMENTER_OUTCOMES = Object.freeze({
   changed: 'changed',
   alreadySatisfied: 'already_satisfied',
@@ -16,6 +46,7 @@ export function normalizeImplementerResult(input) {
   const changes = Array.isArray(input.changes)
     ? input.changes.map(clean).filter(Boolean)
     : [];
+  const files = normalizeFiles(input.files);
   const blockedReason = clean(input.blocked_reason);
   const inferredOutcome = input.blocked === true
     ? IMPLEMENTER_OUTCOMES.blocked
@@ -33,12 +64,15 @@ export function normalizeImplementerResult(input) {
 
   if (outcome === IMPLEMENTER_OUTCOMES.changed) {
     if (!changes.length) throw new Error('changed outcome requires at least one concrete change');
+    if (!files.length) throw new Error('changed outcome requires at least one declared file');
     if (blockedReason) throw new Error('changed outcome cannot include blocked_reason');
   } else if (outcome === IMPLEMENTER_OUTCOMES.alreadySatisfied) {
     if (changes.length) throw new Error('already_satisfied outcome requires changes: []');
+    if (files.length) throw new Error('already_satisfied outcome requires files: []');
     if (blockedReason) throw new Error('already_satisfied outcome cannot include blocked_reason');
   } else {
     if (changes.length) throw new Error('blocked outcome requires changes: []');
+    if (files.length) throw new Error('blocked outcome requires files: []');
     if (!blockedReason) throw new Error('blocked outcome requires blocked_reason');
   }
 
@@ -47,6 +81,7 @@ export function normalizeImplementerResult(input) {
     title: clean(input.title),
     summary: clean(input.summary),
     changes,
+    files,
     outcome,
     already_satisfied: outcome === IMPLEMENTER_OUTCOMES.alreadySatisfied,
     blocked: outcome === IMPLEMENTER_OUTCOMES.blocked,

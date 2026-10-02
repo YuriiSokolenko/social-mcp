@@ -11,6 +11,12 @@ import { writeImplementerResult } from './implementer-result.mjs';
 import { createStageRunResult } from './stage-run-contract.mjs';
 
 const BACKEND = 'mini-swe';
+const gitPaths = text => text.split('\0').filter(Boolean);
+function changedPathsAgainstBase() {
+  const tracked = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
+  const untracked = gitPaths(git(['ls-files', '--others', '--exclude-standard', '-z']).out);
+  return [...new Set([...tracked, ...untracked])].sort();
+}
 
 function wait(child, name) {
   return new Promise((resolve, reject) => {
@@ -149,10 +155,7 @@ function writeImplementationResult(spec) {
   integrateLatestDev({
     conflictMessage: files => `Latest dev conflicts with the mini-swe implementation: ${files.join(', ')}`,
   });
-  const changedPaths = git(['diff', '--name-only', baseRef()]).out
-    .split(/\r?\n/)
-    .map(item => item.trim())
-    .filter(Boolean);
+  const changedPaths = changedPathsAgainstBase();
   if (!changedPaths.length) {
     throw new Error('mini-swe-agent submitted without repository changes; experimental backend does not infer already-satisfied');
   }
@@ -166,6 +169,7 @@ function writeImplementationResult(spec) {
     title: String(context.title ?? '').trim(),
     summary: `Experimental mini-swe-agent implementation${issue ? ` for issue #${issue}` : ''} was prepared against latest dev.`,
     changes: changedPaths,
+    files: changedPaths,
     already_satisfied: false,
     security_notes: 'No dedicated security assessment was supplied by the experimental mini-swe-agent backend; independent review remains authoritative.',
     limitations: 'PR metadata is generated deterministically from the current diff rather than from Pi submit_result.',

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 
 import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
+import { assertImplementerFileSet, IMPLEMENTER_OUTCOMES, readImplementerResult } from './implementer-result.mjs';
 import { runGit as git } from './git.mjs';
 import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projectConfig, workflowFile } from './project-config.mjs';
 import { PIPELINE_LABELS } from './state-machine.mjs';
@@ -28,6 +29,7 @@ import { computeVerificationState, readValidationLedger, renderValidationSection
  * validated tree.
  */
 const lines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+const gitPaths = (s) => s.split('\0').filter(Boolean);
 
 const MISSING_OBJECTS = /missing necessary objects/i;
 const DEFAULT_PUSH_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000]);
@@ -67,7 +69,7 @@ export function pushWithMissingObjectRetry(args, {
  * integrated the latest base, so they keep using the run-start commit for
  * checkpoint recovery.
  */
-function publicationBase(cwd, startCommit) {
+export function publicationBase(cwd, startCommit) {
   const integrated = git(['merge-base','--is-ancestor',baseRef(),'HEAD'], { cwd, allowFailure:true }).status === 0;
   return integrated ? baseRef() : startCommit;
 }
@@ -86,7 +88,7 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   if (git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0) git(['commit','-m',`feat: implement issue #${issue}`], { cwd });
   const base = publicationBase(cwd, startCommit);
   if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
-  const changed = lines(git(['diff','--name-only',base,'HEAD'], { cwd }).out);
+  const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Implementer attempted to modify protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
@@ -95,10 +97,20 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   return { changed:true, commit };
 }
 
-export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token }) {
+export function assertPublicationFileSet({ cwd, base, resultFile }) {
+  const metadata = readImplementerResult(resultFile);
+  if (!metadata || metadata.outcome !== IMPLEMENTER_OUTCOMES.changed) {
+    throw new Error('Changed implementation metadata is required before issue-branch publication');
+  }
+  const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
+  assertImplementerFileSet(changed, metadata.files);
+  return changed;
+}
+
+export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token, resultFile }) {
   git(['diff','--check'], { cwd });
   const base = publicationBase(cwd, startCommit);
-  const changed = lines(git(['diff','--name-only',base,'HEAD'], { cwd }).out);
+  const changed = assertPublicationFileSet({ cwd, base, resultFile });
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Refusing to publish protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
@@ -165,15 +177,12 @@ export function nextLabelsForVerification(currentLabels, verificationState, unsa
 export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, backend }) {
   const { api, replaceLabels } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
-  if (!resultFile || !fs.existsSync(resultFile) || !fs.statSync(resultFile).size) {
+  const metadata = readImplementerResult(resultFile);
+  if (!metadata) {
     throw new Error('Implementer result metadata is required before PR publication');
   }
-  const metadata = JSON.parse(fs.readFileSync(resultFile,'utf8'));
-  if (typeof metadata.title !== 'string' || !metadata.title.trim() ||
-      typeof metadata.summary !== 'string' || !metadata.summary.trim() ||
-      !Array.isArray(metadata.changes) || !metadata.changes.length ||
-      !metadata.changes.every(item => typeof item === 'string' && item.trim())) {
-    throw new Error('Implementer result metadata is incomplete');
+  if (metadata.outcome !== IMPLEMENTER_OUTCOMES.changed) {
+    throw new Error('Changed implementer result metadata is required before PR publication');
   }
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
   const { records: ledgerRecords, corrupted: ledgerCorrupted } = readValidationLedger(ledgerFile);
@@ -204,7 +213,7 @@ export async function dispatchReviewer(prNumber) {
 async function main() {
   const [cmd, ...a] = process.argv.slice(2);
   if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
-  if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
+  if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
   throw new Error('unknown publication command');
