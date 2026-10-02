@@ -167,58 +167,42 @@ export function reconcile(records) {
 }
 
 /**
- * Returns the single active exact-scope run_check recovery obligation.
+ * Returns the most recent unresolved exact-scope run_check failure for the
+ * selected workflow run.
  *
- * A recoverable `fail` opens one obligation. While it is open, unrelated
- * broader/different scopes never satisfy it and never create a queue of stale
- * obligations behind it. Only another authoritative run_check for the exact
- * same kind+scope can close that recovery episode:
- * - pass: recovered successfully;
- * - timeout/invalid/infra_error: stop forcing retries and leave the ledger's
- *   normal fail-closed verification projection to report the blocked state;
- * - fail: keep recovery open, with the newest exact failure as its evidence.
+ * Recovery state is tracked independently per exact kind+scope:
+ * - fail: that scope requires exact recovery;
+ * - pass: resolves that exact scope;
+ * - timeout/invalid/infra_error: stop forcing retry for that exact scope while
+ *   normal ledger reconciliation remains fail-closed;
+ * - broader/different scopes never resolve each other.
  *
- * This intentionally models recovery as one state machine rather than deriving
- * a backlog from every historical failed scope in the append-only ledger.
- * Recovery may be scoped to one workflow run, but it deliberately spans the
- * primary implementation and all validation-repair attempts in that run.
- * Final verification still reconciles the complete shared ledger.
+ * Multiple failed scopes may therefore remain outstanding within one workflow
+ * run. The most recently failed unresolved scope is offered first; after it is
+ * resolved, an older unresolved scope becomes active. Scoping by runId prevents
+ * failures from earlier workflow runs from leaking into the current session.
  */
 export function latestUnresolvedRunCheckFailure(records, { runId = null } = {}) {
-  let recovery = null;
-  let recoveryKey = null;
+  const stateByGroup = new Map();
 
-  for (const record of records) {
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
     if (record.source !== 'run_check') continue;
     if (runId != null && record.run_id !== runId) continue;
 
-    if (!recovery) {
-      if (record.status === 'fail') {
-        recovery = record;
-        recoveryKey = groupKey(record.kind, record.scope);
-      }
-      continue;
-    }
-
-    if (groupKey(record.kind, record.scope) !== recoveryKey) {
-      // A broader/different scope cannot satisfy or replace the current exact
-      // recovery obligation.
-      continue;
-    }
-
+    const key = groupKey(record.kind, record.scope);
     if (record.status === 'fail') {
-      recovery = record;
-      continue;
+      stateByGroup.set(key, { record, index });
+    } else if (record.status === 'pass' || BLOCKING_STATUSES.has(record.status)) {
+      stateByGroup.delete(key);
     }
-
-    // Any exact non-fail outcome closes the forced-retry episode. pass means
-    // successful recovery; timeout/invalid/infra_error remain fail-closed in
-    // computeVerificationState via normal exact-group reconciliation.
-    recovery = null;
-    recoveryKey = null;
   }
 
-  return recovery;
+  let latest = null;
+  for (const candidate of stateByGroup.values()) {
+    if (!latest || candidate.index > latest.index) latest = candidate;
+  }
+  return latest?.record ?? null;
 }
 
 /**
