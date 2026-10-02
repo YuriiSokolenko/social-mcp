@@ -175,7 +175,7 @@ test('#342 recovery keeps the exact failed pytest scope pending across a broader
   assert.equal(reconcile(records).find(record => record.scope.targets?.includes('tests/test_feature.py::test_exact_case'))?.status, 'pass');
 });
 
-test('a failed run_check remains pending across exact-scope timeout, invalid, and infra_error until an exact pass', () => {
+test('exact-scope timeout, invalid, and infra_error stop forced retry but remain fail-closed verification', () => {
   const failure = focused({
     kind: 'pytest',
     scope: { targets: ['tests/test_feature.py::test_exact_case'] },
@@ -187,23 +187,68 @@ test('a failed run_check remains pending across exact-scope timeout, invalid, an
       scope: { targets: ['tests/test_feature.py::test_exact_case'] },
       status,
     });
+    const records = [failure, later];
     assert.equal(
-      latestUnresolvedRunCheckFailure([failure, later]),
-      failure,
-      `${status} must not resolve the failed exact scope`,
+      latestUnresolvedRunCheckFailure(records),
+      null,
+      `${status} must end the forced retry episode`,
+    );
+    assert.equal(
+      computeVerificationState(records),
+      VERIFICATION_STATES.BLOCKED_INFRA,
+      `${status} remains fail-closed verification evidence`,
     );
   }
+});
 
+test('one recovery episode does not queue stale failures from unrelated scopes', () => {
+  const exactFailure = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    status: 'fail',
+  });
+  const unrelatedFailure = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_other.py::test_other_case'] },
+    status: 'fail',
+  });
+  const broaderPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py'] },
+    status: 'pass',
+  });
   const exactPass = focused({
     kind: 'pytest',
     scope: { targets: ['tests/test_feature.py::test_exact_case'] },
     status: 'pass',
   });
-  assert.equal(latestUnresolvedRunCheckFailure([failure, focused({
-    kind: 'pytest',
-    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
-    status: 'infra_error',
-  }), exactPass]), null);
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure([exactFailure, unrelatedFailure, broaderPass]),
+    exactFailure,
+    'different scopes neither satisfy nor replace the active exact recovery',
+  );
+  assert.equal(
+    latestUnresolvedRunCheckFailure([exactFailure, unrelatedFailure, broaderPass, exactPass]),
+    null,
+    'closing the active episode must not resurrect an unrelated historical failure as a queued retry',
+  );
+});
+
+test('a repeated exact fail refreshes the active recovery evidence without creating another obligation', () => {
+  const first = focused({
+    kind: 'ruff',
+    scope: { paths: ['src/a.py'] },
+    status: 'fail',
+    summary: 'first',
+  });
+  const second = focused({
+    kind: 'ruff',
+    scope: { paths: ['src/a.py'] },
+    status: 'fail',
+    summary: 'second',
+  });
+  assert.equal(latestUnresolvedRunCheckFailure([first, second]), second);
 });
 
 test('a ledger with an unparseable line is treated as blocked, never as evidence of VERIFIED', () => {
