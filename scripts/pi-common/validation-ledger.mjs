@@ -17,6 +17,15 @@ import { CHECK_STATUSES } from './run-check.mjs';
 
 export const LEDGER_STATUSES = Object.freeze([...CHECK_STATUSES, 'not_run']);
 
+export function resolveValidationRunId(env = process.env) {
+  const explicit = String(env.PI_VALIDATION_RUN_ID ?? '').trim();
+  if (explicit) return explicit;
+
+  const githubRunId = String(env.GITHUB_RUN_ID ?? '').trim();
+  const githubRunAttempt = String(env.GITHUB_RUN_ATTEMPT ?? '1').trim() || '1';
+  return `${githubRunId || `local-${process.pid}`}-${githubRunAttempt}`;
+}
+
 export const VERIFICATION_STATES = Object.freeze({
   NOT_APPLICABLE: 'VERIFICATION_NOT_APPLICABLE',
   PENDING: 'VERIFICATION_PENDING',
