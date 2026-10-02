@@ -25,6 +25,7 @@ import {
   latestUnresolvedRunCheckFailure,
   normalizeScope,
   readValidationLedger,
+  resolveValidationRunId,
   runCheckRequestForRecord,
 } from './pi-common/validation-ledger.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
@@ -553,8 +554,7 @@ export default function (pi) {
   let elevatedTurnAttemptedFinishTool = false;
 
   function validationRunId() {
-    return process.env.PI_VALIDATION_RUN_ID ??
-      `${process.env.GITHUB_RUN_ID ?? `local-${process.pid}`}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`;
+    return resolveValidationRunId(process.env);
   }
 
   function validationAttemptId() {
