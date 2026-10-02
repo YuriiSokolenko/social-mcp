@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,6 +9,12 @@ import { test } from 'node:test';
 // End-to-end coverage for pi-auto-merge.mjs's processPR()/main(), which the
 // pure-logic unit tests in pi-auto-merge.test.mjs verify only through
 // exported helpers and source-text contract assertions.
+
+function temporaryDirectory(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
 
 const basePr = {
   number: 7, state: 'open', draft: false, changed_files: 1, body: 'Closes #42',
@@ -136,8 +142,8 @@ function writeMock(mockFile, storeFile) {
   `);
 }
 
-function run(storeFile) {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+function run(t, storeFile) {
+  const dir = temporaryDirectory(t);
   const mockFile = join(dir, 'mock.mjs');
   writeMock(mockFile, storeFile);
   return spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, 'scripts/pi-auto-merge.mjs'], {
@@ -146,8 +152,8 @@ function run(storeFile) {
   });
 }
 
-test('merge gate squash-merges a passed, unchanged, safe PR', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('merge gate squash-merges a passed, unchanged, safe PR', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -157,7 +163,7 @@ test('merge gate squash-merges a passed, unchanged, safe PR', () => {
     ciRuns: [{ id: 11, event: 'pull_request', head_sha: 'sha-1', status: 'completed', conclusion: 'success' }],
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /merged sha-1 after green PR CI; dispatched explicit dev CI for the merged result/);
 
@@ -166,8 +172,8 @@ test('merge gate squash-merges a passed, unchanged, safe PR', () => {
   assert.deepEqual(store.dispatched, [{ workflow: 'ci.yml' }]);
 });
 
-test('action_required PR CI is infrastructure blocked and diagnostics retain the conclusion', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('action_required PR CI is infrastructure blocked and diagnostics retain the conclusion', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -177,7 +183,7 @@ test('action_required PR CI is infrastructure blocked and diagnostics retain the
     ciRuns: [{ id: 25, event: 'pull_request', head_sha: 'sha-1', status: 'completed', conclusion: 'action_required' }],
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /infrastructure CI action_required for sha-1/);
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
@@ -186,8 +192,8 @@ test('action_required PR CI is infrastructure blocked and diagnostics retain the
   assert.match(store.comments[0].body, /infrastructure failure \(action_required\)/);
 });
 
-test('a successful required workflow with zero jobs is infrastructure blocked, never green', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('a successful required workflow with zero jobs is infrastructure blocked, never green', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -198,7 +204,7 @@ test('a successful required workflow with zero jobs is infrastructure blocked, n
     jobsByRun: { 26: [] },
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /infrastructure CI success for sha-1/);
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
@@ -206,8 +212,8 @@ test('a successful required workflow with zero jobs is infrastructure blocked, n
   assert.deepEqual(store.reruns, [26]);
 });
 
-test('merge gate stops on a control-plane file change and leaves one human-attention comment', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('merge gate stops on a control-plane file change and leaves one human-attention comment', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -216,7 +222,7 @@ test('merge gate stops on a control-plane file change and leaves one human-atten
     issue: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /changed control files or incomplete file list; human review required/);
 
@@ -226,8 +232,8 @@ test('merge gate stops on a control-plane file change and leaves one human-atten
   assert.match(store.comments[0].body, /Merge Gate stopped PR #7/);
 });
 
-test('a late merge conflict invalidates review and dispatches PR Fix', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('a late merge conflict invalidates review and dispatches PR Fix', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -238,7 +244,7 @@ test('a late merge conflict invalidates review and dispatches PR Fix', () => {
     mergeConflict: true,
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /merge conflict; assigned review:changes-requested ownership and dispatched PR Fix/);
 
@@ -249,8 +255,8 @@ test('a late merge conflict invalidates review and dispatches PR Fix', () => {
   assert.deepEqual(store.dispatched, [{ workflow: 'pi-pr-fix.yml', inputs: { pr_number: '7' } }]);
 });
 
-test('a repeated wake cannot merge the next PR until the new dev HEAD has green CI', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('a repeated wake cannot merge the next PR until the new dev HEAD has green CI', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   const secondPr = {
     ...basePr,
@@ -277,7 +283,7 @@ test('a repeated wake cannot merge the next PR until the new dev HEAD has green 
     },
   }));
 
-  const first = run(storeFile);
+  const first = run(t, storeFile);
   assert.equal(first.status, 0, first.stderr);
   let store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.merges, [{ pr: 7, sha: 'sha-1', merge_method: 'squash' }]);
@@ -289,7 +295,7 @@ test('a repeated wake cannot merge the next PR until the new dev HEAD has green 
   store.devCiRuns = [{ id: 103, event: 'push', head_sha: 'dev-after-7', status: 'in_progress', conclusion: null }];
   writeFileSync(storeFile, JSON.stringify(store));
 
-  const duplicate = run(storeFile);
+  const duplicate = run(t, storeFile);
   assert.equal(duplicate.status, 0, duplicate.stderr);
   assert.match(duplicate.stdout, /#8: waiting for green dev CI for dev-after-7; current state=pending/);
   store = JSON.parse(readFileSync(storeFile, 'utf8'));
@@ -299,7 +305,7 @@ test('a repeated wake cannot merge the next PR until the new dev HEAD has green 
   store.devCiRuns = [{ id: 104, event: 'push', head_sha: 'dev-after-7', status: 'completed', conclusion: 'success' }];
   writeFileSync(storeFile, JSON.stringify(store));
 
-  const afterGreenDev = run(storeFile);
+  const afterGreenDev = run(t, storeFile);
   assert.equal(afterGreenDev.status, 0, afterGreenDev.stderr);
   store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.merges, [
@@ -308,8 +314,8 @@ test('a repeated wake cannot merge the next PR until the new dev HEAD has green 
   ]);
 });
 
-test('merge gate skips a passed PR while exact-head CI is still pending', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('merge gate skips a passed PR while exact-head CI is still pending', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -319,14 +325,14 @@ test('merge gate skips a passed PR while exact-head CI is still pending', () => 
     ciRuns: [{ id: 12, event: 'pull_request', head_sha: 'sha-1', status: 'in_progress', conclusion: null }],
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /waiting for green PR CI for sha-1/);
   assert.equal(JSON.parse(readFileSync(storeFile, 'utf8')).merged, undefined);
 });
 
-test('genuine product-test failure invalidates PASS, dispatches PR Fix once, and does not merge that PR', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('genuine product-test failure invalidates PASS, dispatches PR Fix once, and does not merge that PR', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -342,11 +348,11 @@ test('genuine product-test failure invalidates PASS, dispatches PR Fix once, and
     },
   }));
 
-  const first = run(storeFile);
+  const first = run(t, storeFile);
   assert.equal(first.status, 0, first.stderr);
   assert.match(first.stdout, /PR CI failure for sha-1; assigned review:changes-requested, dispatched PR Fix, checking the next PR/);
 
-  const second = run(storeFile);
+  const second = run(t, storeFile);
   assert.equal(second.status, 0, second.stderr);
 
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
@@ -359,8 +365,8 @@ test('genuine product-test failure invalidates PASS, dispatches PR Fix once, and
   assert.match(store.comments[0].body, /https:\/\/github\.test\/runs\/13/);
 });
 
-test('stale green CI from a different head SHA cannot merge the current PR', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('stale green CI from a different head SHA cannot merge the current PR', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -370,14 +376,14 @@ test('stale green CI from a different head SHA cannot merge the current PR', () 
     ciRuns: [{ id: 14, event: 'pull_request', head_sha: 'sha-old', status: 'completed', conclusion: 'success' }],
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /waiting for green PR CI for sha-1; checking the next PR/);
   assert.equal(JSON.parse(readFileSync(storeFile, 'utf8')).merged, undefined);
 });
 
-test('code failure on one PR is routed to repair while a later green PR can still merge', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('code failure on one PR is routed to repair while a later green PR can still merge', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   const secondPr = {
     ...basePr,
@@ -405,7 +411,7 @@ test('code failure on one PR is routed to repair while a later green PR can stil
     },
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /PR CI failure for sha-1; assigned review:changes-requested, dispatched PR Fix, checking the next PR/);
   assert.match(result.stdout, /merged sha-2 after green PR CI/);
@@ -419,8 +425,8 @@ test('code failure on one PR is routed to repair while a later green PR can stil
   assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
 });
 
-test('infrastructure failure retries once without PR Fix and does not block a later green PR', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('infrastructure failure retries once without PR Fix and does not block a later green PR', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   const secondPr = {
     ...basePr,
@@ -445,7 +451,7 @@ test('infrastructure failure retries once without PR Fix and does not block a la
     },
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /requested bounded retry of run 17, checking the next PR/);
   assert.match(result.stdout, /merged sha-2 after green PR CI/);
@@ -458,8 +464,8 @@ test('infrastructure failure retries once without PR Fix and does not block a la
   assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
 });
 
-test('infrastructure retry is bounded and repeated wakes are idempotent', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('infrastructure retry is bounded and repeated wakes are idempotent', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -472,9 +478,9 @@ test('infrastructure retry is bounded and repeated wakes are idempotent', () => 
     }],
   }));
 
-  const first = run(storeFile);
+  const first = run(t, storeFile);
   assert.equal(first.status, 0, first.stderr);
-  const repeated = run(storeFile);
+  const repeated = run(t, storeFile);
   assert.equal(repeated.status, 0, repeated.stderr);
   assert.match(repeated.stdout, /retry already requested for run 19/);
 
@@ -487,11 +493,11 @@ test('infrastructure retry is bounded and repeated wakes are idempotent', () => 
   store.ciRuns[0] = { ...store.ciRuns[0], conclusion: 'timed_out', run_attempt: 2 };
   writeFileSync(storeFile, JSON.stringify(store));
 
-  const exhausted = run(storeFile);
+  const exhausted = run(t, storeFile);
   assert.equal(exhausted.status, 0, exhausted.stderr);
   assert.match(exhausted.stdout, /infrastructure CI failure persisted after bounded retry; marked pi:needs-human/);
 
-  const afterExhausted = run(storeFile);
+  const afterExhausted = run(t, storeFile);
   assert.equal(afterExhausted.status, 0, afterExhausted.stderr);
   assert.match(afterExhausted.stdout, /PR requires human attention; automation skipped/);
 
@@ -503,8 +509,8 @@ test('infrastructure retry is bounded and repeated wakes are idempotent', () => 
   assert.ok(store.pr.labels.some(label => label.name === 'review:passed'));
 });
 
-test('failure before product checks is infrastructure and never dispatches PR Fix', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('failure before product checks is infrastructure and never dispatches PR Fix', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -520,7 +526,7 @@ test('failure before product checks is infrastructure and never dispatches PR Fi
     },
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /requested bounded retry of run 20/);
 
@@ -531,8 +537,8 @@ test('failure before product checks is infrastructure and never dispatches PR Fi
   assert.ok(store.pr.labels.some(label => label.name === 'review:passed'));
 });
 
-test('jobs metadata API failure is conservative infrastructure and requests only failed-job retry', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('jobs metadata API failure is conservative infrastructure and requests only failed-job retry', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -546,7 +552,7 @@ test('jobs metadata API failure is conservative infrastructure and requests only
     jobsError: 'jobs API unavailable',
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /treating it as infrastructure/);
   assert.match(result.stdout, /requested bounded retry of run 23/);
@@ -558,8 +564,8 @@ test('jobs metadata API failure is conservative infrastructure and requests only
   assert.ok(store.pr.labels.some(label => label.name === 'review:passed'));
 });
 
-test('failed infrastructure retry moves the PR to human recovery without a pre-action retry marker', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('failed infrastructure retry moves the PR to human recovery without a pre-action retry marker', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -573,7 +579,7 @@ test('failed infrastructure retry moves the PR to human recovery without a pre-a
     rerunError: 'runner service unavailable',
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /infrastructure retry request failed; marked pi:needs-human/);
 
@@ -586,8 +592,8 @@ test('failed infrastructure retry moves the PR to human recovery without a pre-a
   assert.doesNotMatch(store.comments[0].body, /merge-gate:ci-infra-retry:7:sha-1:24/);
 });
 
-test('PR Fix dispatch failure transfers ownership durably and does not block a later green PR', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('PR Fix dispatch failure transfers ownership durably and does not block a later green PR', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   const secondPr = {
     ...basePr,
@@ -616,7 +622,7 @@ test('PR Fix dispatch failure transfers ownership durably and does not block a l
     dispatchErrors: { 'pi-pr-fix.yml': 'dispatch unavailable' },
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /Reconciler will recover it/);
   assert.match(result.stdout, /deferred repair to Reconciler, checking the next PR/);
@@ -631,8 +637,8 @@ test('PR Fix dispatch failure transfers ownership durably and does not block a l
 });
 
 
-test('pending CI on one PR does not block a later green PR', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('pending CI on one PR does not block a later green PR', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   const secondPr = {
     ...basePr,
@@ -657,7 +663,7 @@ test('pending CI on one PR does not block a later green PR', () => {
     },
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /waiting for green PR CI for sha-1; checking the next PR/);
   assert.match(result.stdout, /merged sha-2 after green PR CI/);
@@ -666,8 +672,8 @@ test('pending CI on one PR does not block a later green PR', () => {
   assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
 });
 
-test('a PR whose issue is not yet mr-created, or that lacks review:passed, is skipped without mutation', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-auto-merge-'));
+test('a PR whose issue is not yet mr-created, or that lacks review:passed, is skipped without mutation', (t) => {
+  const dir = temporaryDirectory(t);
   const storeFile = join(dir, 'store.json');
   writeFileSync(storeFile, JSON.stringify({
     openPrs: [{ number: 7 }],
@@ -676,7 +682,7 @@ test('a PR whose issue is not yet mr-created, or that lacks review:passed, is sk
     issue: { number: 42, state: 'open', labels: [{ name: 'pi:mr-created' }] },
   }));
 
-  const result = run(storeFile);
+  const result = run(t, storeFile);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /waiting for independent review PASS/);
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
