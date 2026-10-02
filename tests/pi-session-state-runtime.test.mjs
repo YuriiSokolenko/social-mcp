@@ -14,6 +14,7 @@ test('runtime materializes completed transitions into context and tool surface',
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-session-state-'));
   try {
     const context = path.join(dir, 'issue.json');
+    const ledger = path.join(dir, 'ledger.jsonl');
     const loader = path.join(dir, 'loader.mjs');
     const expectedFinalPipeline = projectConfig().checks.final.map(step => step.name).join(' -> ');
     const expectedFinalGuidance =
@@ -37,7 +38,9 @@ test('runtime materializes completed transitions into context and tool surface',
       const tools = new Map();
       const handlers = new Map();
       const messages = [];
-      let active = ['read', 'safe_edit', 'edit', 'run_check', 'submit_result', 'need_more_evidence', 'begin_coding_session',
+      // Intentionally omit retry_last_failed_check: the runtime must activate
+      // its own deterministic recovery tool when an exact retry becomes ready.
+      let active = ['read', 'safe_edit', 'edit', 'run_check', 'submit_result', 'rollback_last_mutation', 'need_more_evidence', 'begin_coding_session',
         'request_large_mutation_budget', 'prepare_implementation', 'subagents_enable', 'lsp_start_server'];
       const ctx = { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 32000 },
         sessionManager: { getSessionId: () => 'parent' }, abort: () => { aborts++; } };
@@ -123,11 +126,78 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.equal(repeated.alreadySatisfied, true);
       await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
       assert.equal(aborts, 1, 'already_satisfied repeat did not reset the prose-only counter');
+
+      // Failed-check recovery is exercised through the real runtime hooks, not
+      // by regex-matching pi-agent-runtime.mjs source text.
+      fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
+        kind: 'python_compile',
+        scope: { paths: ['example.py'] },
+        status: 'fail',
+        exit_code: 1,
+        source: 'run_check',
+        stage: 'implementer',
+        backend: 'pi',
+        run_id: 'runtime-test',
+        diagnostics_count: 1,
+        summary: 'focused failure',
+        infrastructure: null,
+      }) + '\\n');
+      handlers.get('turn_start')({ turnIndex: turn });
+      assert.ok(active.includes('retry_last_failed_check'), 'runtime activates exact retry even when the parent allowlist omitted it');
+      assert.ok(active.includes('rollback_last_mutation'), 'rollback remains available during recovery');
+      assert.ok(active.includes('need_more_evidence'), 'one-evidence escape remains available during recovery');
+      assert.ok(active.includes('submit_result'), 'terminal submission remains available during recovery');
+      assert.ok(!active.includes('run_check'), 'arbitrary run_check is hidden while exact recovery is pending');
+
+      const broader = await handlers.get('tool_call')({
+        toolName: 'run_check',
+        toolCallId: 'broader-' + turn,
+        input: { kind: 'python_compile', paths: ['example.py', 'other.py'] },
+      }, ctx);
+      assert.equal(broader.block, true);
+      assert.match(broader.reason, /retry_last_failed_check/);
+
+      const retryEvent = { toolName: 'retry_last_failed_check', toolCallId: 'retry-' + turn, input: {} };
+      assert.equal(await handlers.get('tool_call')(retryEvent, ctx), undefined, 'exact retry is accepted through the normal run_check permit');
+      await handlers.get('tool_execution_end')({
+        ...retryEvent,
+        isError: false,
+        result: { content: [{ type: 'text', text: '{"status":"fail"}' }] },
+      }, ctx);
+      assert.ok(!active.includes('retry_last_failed_check'), 'retry consumes the one verification permit');
+
+      const submitAfterRetry = await handlers.get('tool_call')({
+        toolName: 'submit_result',
+        toolCallId: 'submit-after-retry-' + turn,
+        input: {},
+      }, ctx);
+      assert.equal(submitAfterRetry, undefined, 'persistent/flaky failure does not deadlock terminal submission');
+
+      fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, '{"broken":');
+      handlers.get('turn_start')({ turnIndex: ++turn });
+      assert.ok(!active.includes('run_check'), 'corrupt ledger keeps ad-hoc run_check fail-closed');
+      assert.ok(!active.includes('retry_last_failed_check'), 'corrupt ledger hides exact retry because the authoritative scope is unknowable');
+      assert.ok(active.includes('submit_result'), 'corrupt ledger still allows terminal submission so the harness can report blocked verification');
+      const corruptCheck = await handlers.get('tool_call')({
+        toolName: 'run_check',
+        toolCallId: 'corrupt-check-' + turn,
+        input: { kind: 'python_compile', paths: ['example.py'] },
+      }, ctx);
+      assert.equal(corruptCheck.block, true);
+      assert.match(corruptCheck.reason, /ledger is corrupted/);
+      const corruptRetry = await handlers.get('tool_call')({
+        toolName: 'retry_last_failed_check',
+        toolCallId: 'corrupt-retry-' + turn,
+        input: {},
+      }, ctx);
+      assert.equal(corruptRetry.block, true);
+      assert.match(corruptRetry.reason, /ledger is corrupted/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 15000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context,
-        PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false', PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
+        PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false', PI_VALIDATION_LEDGER_FILE: ledger,
+        PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
     });
     assert.equal(result.status, 0, result.stderr + result.stdout);
     const logs = result.stdout + result.stderr;
