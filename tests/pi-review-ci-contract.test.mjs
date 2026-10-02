@@ -940,18 +940,33 @@ test('text architecture map is maintained only for architecture-changing work', 
   assert.match(context, /docs\/architecture\/PROJECT_MAP\.md/);
 });
 
-test('implementer action-required aborts keep execution-failure provenance through publication fallback', () => {
+test('implementer action-required aborts keep defensive execution-failure provenance through publication fallback', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  const overview = fs.readFileSync('docs/CI_PIPELINE_OVERVIEW.md', 'utf8');
 
   assert.match(runtime, /tool_choice: 'required'/);
   assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED/);
   assert.match(runtime, /failure_class: 'model_execution_abort'/);
   assert.match(runtime, /PI_RUNTIME_FAILURE_FILE/);
 
   assert.match(workflow, /PI_RUNTIME_FAILURE_FILE=\$RUNNER_TEMP\/pi-runtime-failure-/);
   assert.match(workflow, /Pi execution aborted before terminal submission \[\$FAILURE_CLASS\/\$FAILURE_CODE\]/);
-  assert.match(workflow, /FAILURE_REASON="\$\(jq -r '\.reason/);
+  assert.equal(
+    (workflow.match(/if jq -e 'type == "object"' "\$PI_RUNTIME_FAILURE_FILE" >\/dev\/null 2>&1; then/g) ?? []).length,
+    2,
+    'both workflow failure consumers validate JSON before field extraction under bash -e',
+  );
+  assert.equal(
+    (workflow.match(/runtime_failure_metadata_invalid/g) ?? []).length,
+    2,
+    'both workflow failure consumers fail closed to an explicit invalid-metadata classification',
+  );
+  assert.match(overview, /PI_RUNTIME_FAILURE_FILE.*diagnostic provenance, not an authorization boundary/s);
+  assert.match(overview, /\$RUNNER_TEMP.*Implementer shell\/tool process may be able to write/s);
+  assert.match(overview, /must never authorize publication, review, or merge/s);
+
   const abortIndex = workflow.indexOf('Pi execution aborted before terminal submission');
   const genericNoChangeIndex = workflow.indexOf('Pi completed the task but produced no repository changes');
   assert.ok(abortIndex >= 0 && genericNoChangeIndex > abortIndex, 'runtime abort is classified before generic no-change fallback');
