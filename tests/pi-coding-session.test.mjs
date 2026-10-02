@@ -146,7 +146,13 @@ function runtimeScenario(mode) {
       import fs from 'node:fs';
       import { EventEmitter } from 'node:events';
       const runtimeUrl = ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
-      const { default: runtime } = await import(runtimeUrl);
+      const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'BadRequestError: 422 tool_choice unsupported' }), 422);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'hp-laguna API error (422): unsupported' }), 422);
+      assert.equal(providerErrorStatus({ stopReason: 'error', status: 429, errorMessage: 'ignored' }), 429);
+      assert.equal(providerErrorStatus({ stopReason: 'stop', errorMessage: '400 nope' }), null);
       const mode = ${JSON.stringify(mode)};
       const cwd = ${JSON.stringify(work)};
       const terminal = ${JSON.stringify(terminal)};
@@ -375,19 +381,22 @@ function runtimeScenario(mode) {
           'non-action provider requests without tools are not forced',
         );
         if (mode === 'prose-force-provider-statuses') {
-          for (const status of [408, 429]) {
+          for (const [status, errorMessage] of [
+            [408, '408 status code (no body)'],
+            [429, '429 {"error":"rate limit"}'],
+          ]) {
             handlers.get('turn_start')({ turnIndex: turn });
             const retry = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-            assert.equal(retry.tool_choice, 'required', 'retryable provider status ' + status + ' keeps tool forcing armed');
+            assert.equal(retry.tool_choice, 'required', 'provider status ' + status + ' keeps tool forcing armed');
             const boundary = await handlers.get('turn_end')({
               turnIndex: turn++,
               message: {
                 stopReason: 'error',
-                errorMessage: 'hp-laguna API error (' + status + '): transient provider failure',
+                errorMessage,
                 usage: { output: 0 },
               },
             }, ctx);
-            assert.equal(boundary, undefined, 'retryable provider error delegates retry policy to Pi');
+            assert.equal(boundary, undefined, 'provider error turn is ignored by model-progress accounting');
           }
 
           handlers.get('turn_start')({ turnIndex: turn });
@@ -397,11 +406,11 @@ function runtimeScenario(mode) {
             turnIndex: turn++,
             message: {
               stopReason: 'error',
-              errorMessage: 'hp-laguna API error (422): required tool choice unsupported',
+              errorMessage: '422 {"error":"tool_choice required is unsupported"}',
               usage: { output: 0 },
             },
           }, ctx);
-          assert.equal(boundary?.continue, true, 'request-shape rejection forces one runtime continuation');
+          assert.equal(boundary, undefined, 'turn_end return value is not the continuation mechanism');
 
           handlers.get('turn_start')({ turnIndex: turn });
           const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
@@ -567,7 +576,7 @@ test('first prose-only action-required retry stays forced through a ceiling turn
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
-test('provider error turns preserve forcing on 408/429 and recover once from a forced 422', () => {
+test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover once from a forced 422', () => {
   const logs = runtimeScenario('prose-force-provider-statuses');
   assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 3);
   assert.match(logs, /PI_PROVIDER_ERROR_TURN .*"status":408.*"forced":true/);
