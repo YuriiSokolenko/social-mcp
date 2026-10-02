@@ -140,7 +140,9 @@ export function validateConfig(raw) {
   });
 
   const checks = object(raw.checks ?? {}, 'checks');
-  rejectUnknown(checks, ['final', 'profiles'], 'checks');
+  rejectUnknown(checks, ['final', 'profiles', 'packageRoots'], 'checks');
+  const packageRoots = object(checks.packageRoots ?? {}, 'checks.packageRoots');
+  rejectUnknown(packageRoots, ['canonicalRoots', 'allowDuplicatePackages'], 'checks.packageRoots');
   const profiles = {};
   for (const [name, spec] of Object.entries(object(checks.profiles ?? {}, 'checks.profiles'))) {
     profiles[name] = command({ name, ...object(spec, `checks.profiles.${name}`) }, `checks.profiles.${name}`);
@@ -179,6 +181,10 @@ export function validateConfig(raw) {
     checks: Object.freeze({
       final: checks.final === undefined ? Object.freeze([]) : commandList(checks.final, 'checks.final'),
       profiles: Object.freeze(profiles),
+      packageRoots: Object.freeze({
+        canonicalRoots: Object.freeze(stringList(packageRoots.canonicalRoots, 'checks.packageRoots.canonicalRoots', { optional: true })),
+        allowDuplicatePackages: Object.freeze(stringList(packageRoots.allowDuplicatePackages, 'checks.packageRoots.allowDuplicatePackages', { optional: true })),
+      }),
     }),
     environment: Object.freeze({
       default: environment.default === undefined ? Object.freeze([]) : commandList(environment.default, 'environment.default'),
