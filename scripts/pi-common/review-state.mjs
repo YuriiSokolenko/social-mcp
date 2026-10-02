@@ -52,6 +52,67 @@ export async function dispatchAfterReview(prNumber, verdict) {
   await dispatchWorkflow(workflow, inputs);
 }
 
+/**
+ * Recover a failed independent review without inventing a review verdict.
+ * The first failed run is retried once; a repeated failure or a failed retry
+ * request is transferred to a human. A run for an outdated PR head is ignored.
+ */
+export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outcome, runUrl, model = 'default' }, client = githubClient()) {
+  const { loadPullRequest, replaceLabels, pages, comment, dispatchWorkflow } = client;
+  const pr = await loadPullRequest(prNumber);
+  if (pr.head.sha !== reviewedHead) return { status: 'stale' };
+
+  const labels = prLabelNames(pr);
+  const clearVerdict = withoutReviewLabels(labels);
+  if (labels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
+
+  const comments = await pages(`/issues/${prNumber}/comments`);
+  const retryPrefix = `<!-- pi-review:failure-retry:${prNumber}:${reviewedHead}:`;
+  const retryMarker = `${retryPrefix}${runId} -->`;
+  const exhaustedMarker = `<!-- pi-review:failure-exhausted:${prNumber}:${reviewedHead}:${runId} -->`;
+  const failedRetryMarker = `<!-- pi-review:failure-retry-request-failed:${prNumber}:${reviewedHead}:${runId} -->`;
+  const link = runUrl ? `\n\nRun: ${runUrl}` : '';
+
+  const markHuman = async (marker, message) => {
+    await replaceLabels(prNumber, clearVerdict.includes(PIPELINE_LABELS.needsHuman)
+      ? clearVerdict
+      : [...clearVerdict, PIPELINE_LABELS.needsHuman]);
+    if (!comments.some(item => (item.body ?? '').includes(marker))) {
+      await comment(prNumber, `${message}${link}\n\n${marker}`);
+    }
+  };
+
+  if (comments.some(item => (item.body ?? '').includes(retryMarker))) {
+    return { status: 'retry-already-requested' };
+  }
+
+  const previousFailures = comments.filter(item => (item.body ?? '').includes(retryPrefix)).length;
+  if (previousFailures === 0) {
+    await replaceLabels(prNumber, clearVerdict);
+    // Persist the reason before queuing the retry, so a dispatch failure
+    // cannot leave the PR silent or carrying an earlier PASS verdict.
+    await comment(
+      prNumber,
+      `Independent review ended with ${outcome} for HEAD ${reviewedHead}. This is an infrastructure failure, not a code-review verdict. One automatic retry workflow was queued.${link}\n\n${retryMarker}`,
+    );
+    try {
+      await dispatchWorkflow(workflowFile('reviewer'), {
+        pr_number: String(prNumber),
+        model: ['laguna', 'qwen'].includes(model) ? model : 'default',
+      });
+      return { status: 'retry-dispatched' };
+    } catch (error) {
+      await markHuman(failedRetryMarker,
+        `Independent review failed with ${outcome}, and its bounded retry workflow could not be dispatched (${error.message}). Human review recovery is required.`);
+      return { status: 'needs-human', reason: 'retry-request-failed' };
+    }
+  }
+
+  await markHuman(exhaustedMarker,
+    `Independent review failed with ${outcome} again after the single automatic retry. No PASS or CHANGES_REQUESTED verdict was applied. Human review recovery is required.`);
+  return { status: 'needs-human', reason: 'retry-exhausted' };
+}
+
 async function main() {
   const [cmd, rawPr, a, b, c] = process.argv.slice(2);
   const prNumber = Number(rawPr);
@@ -61,6 +122,14 @@ async function main() {
     return process.stdout.write(JSON.stringify(result));
   }
   if (cmd === 'dispatch') return dispatchAfterReview(prNumber, a);
-  throw new Error('usage: review-state.mjs invalidate <pr> | apply <pr> <head> <verdict> <text-file> | dispatch <pr> <verdict>');
+  if (cmd === 'recover-failure') {
+    const result = await recoverReviewFailure({
+      prNumber, reviewedHead: a, runId: b,
+      outcome: process.env.REVIEW_OUTCOME, runUrl: process.env.REVIEW_RUN_URL,
+      model: process.env.REVIEW_MODEL,
+    });
+    return process.stdout.write(JSON.stringify(result));
+  }
+  throw new Error('usage: review-state.mjs invalidate <pr> | apply <pr> <head> <verdict> <text-file> | dispatch <pr> <verdict> | recover-failure <pr> <head> <run-id>');
 }
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main().catch(e=>{console.error(e);process.exitCode=1;});
