@@ -69,6 +69,10 @@
   "checks": {
     "final": [
       {
+        "name": "package roots",
+        "builtin": "package_roots"
+      },
+      {
         "name": "ruff",
         "builtin": "ruff"
       },
@@ -110,6 +114,12 @@
           "no:cacheprovider"
         ]
       }
+    },
+    "packageRoots": {
+      "canonicalRoots": [
+        "src"
+      ],
+      "allowDuplicatePackages": []
     }
   },
   "environment": {
