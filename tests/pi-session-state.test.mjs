@@ -48,7 +48,8 @@ test('B: subagents_enable completes once, repeat steers without progress', () =>
   state.onTurnStart(1);
   const blocked = state.checkToolCall('subagents_enable', {});
   assert.equal(blocked.alreadySatisfied, true);
-  assert.match(blocked.reason, /begin_coding_session|submit_result/);
+  assert.match(blocked.reason, /current runtime tool surface/);
+  assert.doesNotMatch(blocked.reason, /begin_coding_session|submit_result/);
   assert.equal(state.turnMadeProgress, false);
   assert.equal(state.turnUsedTool, false);
 });
@@ -140,6 +141,14 @@ test('session-state validation guidance follows the verification lifecycle', () 
     state.transitions.transitionNotice(record, verification('not_yet_available')),
     /run_check is not yet available; it becomes available after a successful mutation/,
   );
+  const subagents = state.transitions.completed.get('subagents_enable');
+  const surfaced = state.transitions.transitionNotice(subagents, {
+    ...verification('not_yet_available'),
+    activeToolNames: ['need_more_evidence', 'submit_result'],
+  });
+  assert.match(surfaced, /CURRENTLY EXPOSED TOOLS.*need_more_evidence, submit_result/);
+  assert.match(surfaced, /call need_more_evidence first; the delegated-inspection tool will be exposed/);
+  assert.doesNotMatch(surfaced, /subagent\(/);
   assert.match(
     state.transitions.alreadySatisfiedReason('prepare_implementation', 'preparation', {
       actionRequired: true,
