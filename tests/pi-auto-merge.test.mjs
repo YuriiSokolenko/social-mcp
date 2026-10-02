@@ -195,7 +195,7 @@ test('merge gate merges at most one PR per dev CI cycle and explicitly starts th
   assert.match(gate, /const devCi = await loadDevCiVerdict\(\)/);
   assert.match(gate, /if \(devCi\.state !== 'success'\)/);
   assert.match(gate, /return 'blocked'/);
-  assert.match(gate, /await dispatchWorkflow\(workflowFile\('ci'\)\)/);
+  assert.match(gate, /await dispatchWorkflow\('ci\.yml'\)/);
   assert.match(ci, /needs: \[test, docker\]/);
   assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
   assert.match(ci, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
