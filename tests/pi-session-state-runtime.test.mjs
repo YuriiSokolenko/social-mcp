@@ -75,6 +75,8 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.ok(!active.includes('prepare_implementation'), 'prepare_implementation removed');
       assert.ok(!active.includes('run_check'), 'run_check hidden before a mutation grants a permit');
       assert.ok(messages.some(m => /preparation: fallback-complete/.test(m)), 'preparation state injected');
+      handlers.get('turn_start')({ turnIndex: turn });
+      await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
       const beforeMutationGuidance = messages.join('\\n');
       assert.match(beforeMutationGuidance, /run_check is not yet available; it becomes available after a successful mutation/);
       assert.doesNotMatch(beforeMutationGuidance, /run_check is exhausted for the current mutation state/);
