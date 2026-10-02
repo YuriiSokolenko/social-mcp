@@ -440,7 +440,7 @@ function runtimeScenario(mode) {
             assert.equal(caps.at(-1), 16384, 'new module plus tests is elevated after its evidence read');
             assert.ok(active.includes('write'));
             assert.ok(!active.includes('read'));
-            await call('write', { path: 'example.py', content: 'print("large")\n' });
+            await call('write', { path: 'example.py', content: 'print("large")\\n' });
             assert.equal(caps.at(-1), 2048, 'automatic grant collapses after one mutation response');
           } else if (mode === 'small-auto') {
             assert.deepEqual(prepared.details.plan, ['Change the one config label']);
