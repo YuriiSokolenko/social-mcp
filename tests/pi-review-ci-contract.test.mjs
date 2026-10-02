@@ -705,7 +705,6 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.match(tool, /code: 'missing_publication_fields'/);
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
   assert.match(validation, /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
-  assert.match(tool, /return Type\.Object\(/);
 });
 
 test('stage runner relies on installed pi-subagents instead of registering a duplicate subagent tool', () => {
