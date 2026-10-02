@@ -111,6 +111,7 @@ test('runtime materializes completed transitions into context and tool surface',
       const repeat = await call('lsp_start_server', lsp);
       assert.equal(repeat.block, true);
       assert.match(repeat.reason, /ALREADY_SATISFIED/);
+      assert.match(repeat.reason, /CURRENTLY EXPOSED TOOLS/);
       assert.equal(startups, 1, 'startup not re-executed');
       const again = await call('subagents_enable');
       assert.match(again.reason, /ALREADY_SATISFIED/);
@@ -298,6 +299,7 @@ test('runtime materializes completed transitions into context and tool surface',
     for (const marker of ['PI_STATE_TRANSITION_COMPLETE', 'PI_SESSION_STATE', 'PI_TOOL_SURFACE_UPDATE', 'PI_ALREADY_SATISFIED']) {
       assert.match(logs, new RegExp(marker), marker);
     }
+    assert.match(logs, /PI_SESSION_STATE .*"activeTools":\[/, 'transition log includes the authoritative active surface');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
