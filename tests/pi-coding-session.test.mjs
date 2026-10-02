@@ -368,6 +368,12 @@ function runtimeScenario(mode) {
           messages: [],
           tools: exposedBeforeForce.map(name => ({ type: 'function', function: { name } })),
         };
+        const nonActionPayload = { model: 'm', messages: [] };
+        assert.equal(
+          handlers.get('before_provider_request')({ payload: nonActionPayload }, ctx),
+          nonActionPayload,
+          'non-action provider requests without tools are not forced',
+        );
         const constrained = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
         assert.equal(constrained.tool_choice, 'required');
         assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
