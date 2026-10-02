@@ -17,7 +17,7 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
-import { mergeNewlyActiveTools } from './pi-common/session-state.mjs';
+import { activeToolGuidance, mergeNewlyActiveTools } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -62,7 +62,7 @@ const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing y
 
 The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
 
-Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules: write the code, add or update tests where the task needs them, run_check, fix what the checks report, and call submit_result when the work is complete. If one concrete fact is missing, use need_more_evidence.`;
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
 
 export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
   return {
@@ -551,6 +551,7 @@ export default function (pi) {
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
+  let unavailableToolAttempts = 0;
   // True only when this runtime itself removed the verification tool from the model
   // surface (permit exhaustion or exact-retry substitution). A later valid
   // permit may restore it only in that case; unrelated removals stay removed.
@@ -746,12 +747,14 @@ export default function (pi) {
   async function announceTransition(record, productiveState) {
     console.log(`PI_STATE_TRANSITION_COMPLETE ${JSON.stringify({ stage, ...record })}`);
     syncActionToolSurface(productiveState);
+    const activeToolNames = pi.getActiveTools();
     const verification = {
       verificationTool: config.productiveProgress?.verificationTool ?? null,
       verificationState: controller.verificationLifecycleState(),
+      activeToolNames,
     };
     const block = controller.transitions.stateBlock(verification);
-    console.log(`PI_SESSION_STATE ${JSON.stringify({ stage, completed: [...controller.transitions.completed.keys()], block })}`);
+    console.log(`PI_SESSION_STATE ${JSON.stringify({ stage, completed: [...controller.transitions.completed.keys()], block, activeTools: activeToolNames })}`);
     await pi.sendUserMessage(
       `${controller.transitions.transitionNotice(record, verification)}\n\n${block}`,
       { deliverAs: 'steer' },
@@ -858,6 +861,50 @@ export default function (pi) {
         ? `${verificationTool} is exhausted for the current mutation state and is unavailable now. Do not call it again unless a new successful mutation grants a new focused check.`
         : `${verificationTool} is not yet available; it becomes available after a successful mutation.`;
     return `${lifecycle} ${finalValidationGuidance()}`;
+  }
+
+  function taskSpecificToolGuidance(activeToolNames, {
+    ceilingHit = false,
+    preComplexityRequired = false,
+    postComplexityRequired = false,
+  } = {}) {
+    const active = new Set(activeToolNames);
+    const hints = [];
+
+    if (preComplexityRequired && active.has('declare_task_complexity')) {
+      hints.push('Call declare_task_complexity immediately with the classification already supported by the current evidence.');
+    }
+
+    if (stage === 'reviewer' && postComplexityRequired) {
+      if (active.has('submit_result')) {
+        hints.push('If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED.');
+      }
+      const reviewerEvidenceTools = activeToolNames.filter(name =>
+        !['submit_result', 'declare_task_complexity', 'set_response_budget'].includes(name)
+      );
+      if (reviewerEvidenceTools.length > 0) {
+        hints.push('Otherwise use exactly one currently exposed evidence tool for the unresolved review question, then decide.');
+      }
+    }
+
+    if (stage === 'implementer') {
+      const codingSessionTool = config.productiveProgress?.codingSessionTool;
+      if (ceilingHit && codingSessionTool && active.has(codingSessionTool)) {
+        hints.push(`If the implementation is large, call ${codingSessionTool} now; it keeps the current context and provides the large coding ceiling instead of drafting code here.`);
+      }
+      if (active.has('submit_result')) {
+        hints.push('If explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now.');
+      }
+      const blockerTool = config.productiveProgress?.blockerTool;
+      if (blockerTool && active.has(blockerTool)) {
+        hints.push(`Call ${blockerTool} only when exactly one concrete missing fact prevents the next safe action.`);
+      }
+      if (active.has(RETRY_FAILED_CHECK_TOOL)) {
+        hints.push(`Use ${RETRY_FAILED_CHECK_TOOL} to rerun the exact unresolved failed verification scope after fixing it.`);
+      }
+    }
+
+    return hints.join(' ');
   }
 
   syncProductiveState();
@@ -980,15 +1027,17 @@ export default function (pi) {
             reason,
           })}`);
           syncActionToolSurface(syncProductiveState());
+          const fallbackActiveToolNames = pi.getActiveTools();
           return {
             content: [{ type: 'text', text:
               `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
-              'Your preparation obligation is satisfied. No planner output or complexity was recorded. ' +
-              'Do not call prepare_implementation again. If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. ' +
-              `You may use up to ${fallback.evidenceBudget} repository evidence attempts; every accepted non-control evidence tool call (for example read/search, LSP lookup, or subagent inspection) consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. ` +
-              'Direct mutation remains allowed during the window and closes it on success; begin_coding_session remains blocked until the evidence window is closed. ' +
-              'run_check is not yet available; it becomes available after a successful mutation. Normal submit_result rules still apply. ' +
-              'After the fallback window closes, use need_more_evidence only when one concrete implementation fact is still missing.\n' +
+              'Your preparation obligation is satisfied. No planner output or complexity was recorded. Do not repeat preparation. ' +
+              'If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. ' +
+              `You may use up to ${fallback.evidenceBudget} repository evidence attempts; every accepted non-control evidence action consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. ` +
+              'Direct mutation remains allowed during the window and closes it on success. The coding-session action becomes valid only after the evidence window is closed. ' +
+              'Focused verification becomes available only after a successful mutation. Final submission rules are unchanged. ' +
+              'After the fallback window closes, use only the blocker action exposed by the runtime when one concrete implementation fact is still missing.\n' +
+              `${activeToolGuidance(fallbackActiveToolNames)}\n` +
               `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.` +
               (layoutHint
                 ? `\nRepository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}. This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.`
@@ -1033,7 +1082,7 @@ export default function (pi) {
           ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful structural_edit/safe_edit/edit/write, direct reads of this worktree are authoritative latest-base evidence; do not use extra Git/evidence calls to re-prove that provenance.`
           : '';
         const lspWorkspace = stage === 'implementer' && !resumedImplementer
-          ? `\n\nLSP workspace root: ${ctx.cwd}. For a cold name-only lookup with an explicit language, call lsp_start_server once with the matching server_id and this exact absolute workspace_root before lsp_find_symbol; lsp_start_server is a control action and does not consume evidence budget.`
+          ? `\n\nLSP workspace root: ${ctx.cwd}. Use only inspection/control tools currently exposed by the runtime; runtime steering is authoritative for valid tool names.`
           : '';
         const layoutGuidance = prepared.layoutHint
           ? `\n\nRepository layout hint: source root ${prepared.layoutHint.sourceRoot}; new module target ${prepared.layoutHint.sourceTarget}; source directory ${prepared.layoutHint.sourceDirectory}${prepared.layoutHint.sourceConvention ? `; nearest source convention ${prepared.layoutHint.sourceConvention}` : ''}; tests ${prepared.layoutHint.testDirectory}${prepared.layoutHint.testConvention ? `; nearest test convention ${prepared.layoutHint.testConvention}` : ''}. This bounded current-worktree lookup is authoritative layout evidence. Prefer one targeted convention read if needed; do not broad-search or re-prove the fresh-worktree provenance.`
@@ -1311,7 +1360,7 @@ export default function (pi) {
       pi.registerTool({
         name: codingSessionTool,
         label: 'Begin coding session',
-        description: `Call once exploration is done and you know what to implement, in particular when the code will not fit your normal ${sessionConfig.actionResponseMaxTokens}-token response. The runtime continues THIS session (same conversation, evidence and decisions) as a coding session with a ${sessionConfig.codingSessionMaxTokens}-token response ceiling and your normal coding tools (write/edit/safe_edit/structural_edit, rollback, run_check, repo_search, need_more_evidence, submit_result) under the same runtime rules. Write the code and tests there, run checks, fix, and submit_result. Call it as soon as you are ready; do NOT draft the code here first. Small changes can stay direct.`,
+        description: `Call once exploration is done and you know what to implement, in particular when the code will not fit your normal ${sessionConfig.actionResponseMaxTokens}-token response. The runtime continues THIS session (same conversation, evidence and decisions) as a coding session with a ${sessionConfig.codingSessionMaxTokens}-token response ceiling under the same runtime rules. Inside the fork, use only the tool surface exposed there. Call it as soon as you are ready; do NOT draft the code here first. Small changes can stay direct.`,
         parameters: Type.Object({
           reason: Type.Optional(Type.String({ maxLength: 300, description: 'Optional one-line note for logs' })),
         }),
@@ -1355,7 +1404,7 @@ export default function (pi) {
             response = await runStructuredSubagent(pi, ctx, {
               agent: sessionConfig.codingSessionAgent,
               nodeId: `coding-session-${toolCallId}`,
-              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code (and tests where the task needs them), run_check, fix what fails, and call submit_result when the work is complete. Write code directly in tool arguments.',
+              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code and tests where needed using only tools currently exposed by the fork runtime. Verify when verification is exposed, fix failures, and finish through the exposed terminal action. Write code directly in tool arguments.',
               timeoutMs: Number(sessionConfig.codingSessionTimeoutMs ?? 5400000),
               maxTokens: sessionConfig.codingSessionMaxTokens,
               // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
@@ -1389,7 +1438,15 @@ export default function (pi) {
             };
           }
           const remaining = maxSessions - sessionsStarted;
-          const message = `Coding session ended without submit_result${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${remaining > 0 ? `You may call ${codingSessionTool} once more (${remaining} left), ` : ''}finish with direct edits/run_check, or submit_result.`;
+          const activeToolNames = pi.getActiveTools();
+          const terminalStatus = activeToolNames.includes('submit_result')
+            ? 'Coding session ended without submit_result'
+            : 'Coding session ended without a terminal result';
+          const continuation =
+            remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
+              ? `You may call ${codingSessionTool} once more (${remaining} left). `
+              : '';
+          const message = `${terminalStatus}${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
           if (sessionError) throw new Error(message);
           return { content: [{ type: 'text', text: message }], details: { ...base, submitted: false } };
         },
@@ -1489,6 +1546,65 @@ export default function (pi) {
       codingSessionLog('first_tool_call', { side: 'fork', sessionId: codingSession.sessionId, tool: event.toolName, msSinceReady: codingReadyAt ? Date.now() - codingReadyAt : null });
     }
     const productiveState = controller.productiveProgressState();
+    const activeToolNames = pi.getActiveTools();
+    const transitionKey = controller.transitions.keyFor(event.toolName, event.input);
+    const alreadySatisfiedTransition = controller.transitions.has(transitionKey);
+
+    // Provider forcing is transport-level: any emitted tool call proves tool_choice=required
+    // was satisfied. Local policy may still reject that call as hidden/already-satisfied, but
+    // forcing must not remain stuck across the next provider request.
+    const satisfiedProviderForcing = requireToolOnNextProviderRequest;
+    if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
+
+    // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
+    // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
+    // run_check for controller policy after visibility has been checked.
+    // retry_last_failed_check is a runtime-owned recovery pseudo-tool. Even while hidden,
+    // it must reach the recovery policy below so callers get the deterministic recovery-state
+    // reason (corrupt ledger / no pending failure / not available in this action state) rather
+    // than being misclassified as an ordinary unavailable-tool attempt.
+    const recoveryPolicyTool = event.toolName === RETRY_FAILED_CHECK_TOOL;
+    const enforceActiveSurface =
+      lastSurfaceSignature !== null &&
+      !alreadySatisfiedTransition &&
+      !recoveryPolicyTool &&
+      !activeToolNames.includes(event.toolName);
+    if (enforceActiveSurface) {
+      unavailableToolAttempts += 1;
+      const unavailable = {
+        block: true,
+        reason: `BLOCKED: that tool is not currently exposed by the runtime. ${activeToolGuidance(activeToolNames)}`,
+      };
+      console.warn(`PI_UNAVAILABLE_TOOL_ATTEMPT ${JSON.stringify({
+        stage,
+        count: unavailableToolAttempts,
+        productiveState,
+        attemptedTool: event.toolName,
+        activeTools: activeToolNames,
+      })}`);
+      if (satisfiedProviderForcing) {
+        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({
+          stage,
+          tool: event.toolName,
+          alreadySatisfied: false,
+          unavailable: true,
+        })}`);
+      }
+      if (loopGuard) {
+        const loopResult = loopGuard.observe({
+          stage,
+          tool: event.toolName,
+          input: event.input ?? {},
+          result: unavailable,
+          blocked: true,
+          productiveState,
+        });
+        await handleLoopResult(loopResult, ctx).catch(error => {
+          console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
+        });
+      }
+      return unavailable;
+    }
     const recoveryState = failedCheckRecoveryState();
     const failedCheckRecovery = recoveryState.failure;
     const recoveryRetryReady = Boolean(
@@ -1530,12 +1646,16 @@ export default function (pi) {
 
     const canonicalToolName = controllerToolName(event.toolName);
     const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput);
-    // Any provider-emitted tool call satisfies the transport-level forcing requirement, even if
-    // the controller later classifies it as already completed. Progress accounting remains stricter:
-    // an already-satisfied transition still does not reset prose/ceiling watchdogs.
-    if (requireToolOnNextProviderRequest) {
-      requireToolOnNextProviderRequest = false;
-      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({ stage, tool: event.toolName, alreadySatisfied: blocked?.alreadySatisfied === true })}`);
+    if (blocked?.alreadySatisfied) {
+      blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is single-shot and already completed; it did not execute. ${activeToolGuidance(activeToolNames)}`;
+    }
+    if (satisfiedProviderForcing) {
+      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({
+        stage,
+        tool: event.toolName,
+        alreadySatisfied: blocked?.alreadySatisfied === true,
+        unavailable: false,
+      })}`);
     }
     if (!blocked?.alreadySatisfied) {
       actionTurnAttemptedTool = true;
@@ -1771,8 +1891,9 @@ export default function (pi) {
       // Rarely, Pi may also classify the 400/422 body text as retryable; in that case this
       // queued steer can be delivered in addition to Pi's own retry. The forcing flag is already
       // cleared, so the overlap is bounded and cannot create a forced-request loop.
+      const activeToolNames = pi.getActiveTools();
       await pi.sendUserMessage(
-        'RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing and call one exposed action tool immediately.',
+        `RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
         { deliverAs: 'steer' },
       );
       // Pi continues because sendUserMessage() queues a steer consumed by its post-agent-run loop;
@@ -1928,17 +2049,22 @@ export default function (pi) {
     }
 
     if (runtimeActionRequired && !controller.turnMadeProgress && !loopGuardSteeredThisTurn) {
-      const codingSessionTool = config.productiveProgress?.codingSessionTool;
+      const activeToolNames = pi.getActiveTools();
+      const currentToolGuidance = activeToolGuidance(activeToolNames);
+      const semantics = taskSpecificToolGuidance(activeToolNames, {
+        ceilingHit: stage === 'implementer' && ceilingWithoutToolTurns > 0,
+        preComplexityRequired,
+        postComplexityRequired,
+      });
       const directive = stage === 'implementer' && ceilingWithoutToolTurns > 0
-        // Code drafted in reasoning (or a cut-off call) ate the whole response: name it exactly.
-        ? `RUNTIME: your last response used the entire ${actionCap || 'output'}-token ceiling without calling any tool. Do not draft, outline, or reason through file contents in this session; that output is discarded. In the next response call a tool immediately.${codingSessionTool ? ` If you are ready to implement and the code is large, call ${codingSessionTool} now; that coding session has your full context and a large output ceiling and writes the code itself.` : ''} If it is small, call the direct mutation tool now.`
+        ? `RUNTIME: your last response used the entire ${actionCap || 'output'}-token ceiling without calling any tool. Do not draft, outline, or reason through file contents in this session; that output is discarded. In the next response call a tool immediately. ${currentToolGuidance} ${semantics}`
         : preComplexityRequired
-        ? 'RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. Call declare_task_complexity immediately with the classification already supported by the issue, diff, and changed code.'
+        ? `RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. ${currentToolGuidance} ${semantics}`
         : postComplexityRequired
-          ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
+          ? `RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. ${currentToolGuidance} ${semantics}`
           : stage === 'implementer'
-            ? `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, begin_coding_session (to implement in a large-output coding session), rollback_last_mutation, or submit_result immediately. ${verificationLifecycleGuidance()} If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.`
-            : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
+            ? `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. ${currentToolGuidance} ${semantics} Verification status: ${verificationLifecycleGuidance()}`
+            : `RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. ${currentToolGuidance} ${semantics}`;
       const reason = stage === 'implementer' && ceilingWithoutToolTurns > 0
         ? `ceiling without tool (${ceilingWithoutToolTurns}/${MAX_CEILING_WITHOUT_TOOL_TURNS})`
         : actionRequiredProseOnlyTurns > 0
