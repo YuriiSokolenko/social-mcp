@@ -201,37 +201,44 @@ test('exact-scope timeout, invalid, and infra_error stop forced retry but remain
   }
 });
 
-test('one recovery episode does not queue stale failures from unrelated scopes', () => {
-  const exactFailure = focused({
+test('multiple failed scopes remain independently recoverable within one workflow run', () => {
+  const firstFailure = focused({
     kind: 'pytest',
     scope: { targets: ['tests/test_feature.py::test_exact_case'] },
     status: 'fail',
+    run_id: 'run-1',
   });
-  const unrelatedFailure = focused({
+  const secondFailure = focused({
     kind: 'pytest',
     scope: { targets: ['tests/test_other.py::test_other_case'] },
     status: 'fail',
+    run_id: 'run-1',
   });
   const broaderPass = focused({
     kind: 'pytest',
     scope: { targets: ['tests/test_feature.py'] },
     status: 'pass',
+    run_id: 'run-1',
   });
-  const exactPass = focused({
+  const secondPass = focused({
     kind: 'pytest',
-    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    scope: { targets: ['tests/test_other.py::test_other_case'] },
     status: 'pass',
+    run_id: 'run-1',
   });
 
+  const records = [firstFailure, secondFailure, broaderPass];
   assert.equal(
-    latestUnresolvedRunCheckFailure([exactFailure, unrelatedFailure, broaderPass]),
-    exactFailure,
-    'different scopes neither satisfy nor replace the active exact recovery',
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
+    secondFailure,
+    'most recent unresolved exact failure is recovered first',
   );
+
+  records.push(secondPass);
   assert.equal(
-    latestUnresolvedRunCheckFailure([exactFailure, unrelatedFailure, broaderPass, exactPass]),
-    null,
-    'closing the active episode must not resurrect an unrelated historical failure as a queued retry',
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
+    firstFailure,
+    'resolving one scope exposes the remaining exact failure instead of dropping it',
   );
 });
 
@@ -266,19 +273,12 @@ test('failed-check recovery is scoped to the current workflow run and spans repa
     run_id: 'run-1',
     attempt_id: 'primary',
   });
-  const unrelatedRepairFailure = focused({
-    kind: 'python_compile',
-    scope: { paths: ['repair.py'] },
-    status: 'fail',
-    run_id: 'run-1',
-    attempt_id: 'validation-repair:1',
-  });
-  const records = [oldRun, primary, unrelatedRepairFailure];
+  const records = [oldRun, primary];
 
   assert.equal(
     latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
     primary,
-    'repair attempts inherit the unresolved exact scope from the primary attempt',
+    'a validation-repair session inherits an unresolved failure from the primary attempt',
   );
   assert.equal(
     latestUnresolvedRunCheckFailure(records, { runId: 'run-2' }),
@@ -297,7 +297,7 @@ test('failed-check recovery is scoped to the current workflow run and spans repa
   assert.equal(
     latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
     null,
-    'a later repair can resolve the inherited exact scope',
+    'a later repair can resolve an exact failure recorded by an earlier attempt',
   );
 });
 
