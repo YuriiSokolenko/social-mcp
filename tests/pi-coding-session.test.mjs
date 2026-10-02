@@ -151,8 +151,13 @@ function runtimeScenario(mode) {
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'BadRequestError: 422 tool_choice unsupported' }), 422);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'InternalServerError: 500 upstream failure' }), 500);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'hp-laguna API error (422): unsupported' }), 422);
       assert.equal(providerErrorStatus({ stopReason: 'error', status: 429, errorMessage: 'ignored' }), 429);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'Maximum context: 400 tokens' }), null);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'fetch failed: 422 something' }), null);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '500 tokens exceeded' }), null);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400abc' }), null);
       assert.equal(providerErrorStatus({ stopReason: 'stop', errorMessage: '400 nope' }), null);
       const mode = ${JSON.stringify(mode)};
       const cwd = ${JSON.stringify(work)};
