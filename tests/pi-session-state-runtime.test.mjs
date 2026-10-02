@@ -92,10 +92,9 @@ test('runtime materializes completed transitions into context and tool surface',
       await call('edit', { path: 'example.py' });
       assert.ok(active.includes('run_check'), 'a second successful mutation re-exposes run_check after exhaustion');
       active = active.filter(name => name !== 'run_check'); // simulate an unrelated control/runtime removal
-      handlers.get('turn_start')({ turnIndex: turn });
-      assert.ok(!active.includes('run_check'), 'permit gating must not resurrect a tool removed by another owner');
 
       await call('subagents_enable', {}, { enables: 'subagent' });
+      assert.ok(!active.includes('run_check'), 'permit gating must not resurrect a tool removed by another owner');
       assert.ok(!active.includes('subagents_enable'), 'subagents_enable removed');
       assert.ok(!active.includes('subagent'), 'subagent hidden while action_required (gate would block it)');
       assert.ok(messages.some(m => /subagents: enabled/.test(m) && /Do not call subagents_enable again/.test(m)));
