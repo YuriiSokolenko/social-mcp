@@ -544,8 +544,9 @@ export default function (pi) {
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
-  // True only when this runtime's permit gate removed the verification tool from the model
-  // surface. A later permit may restore it only in that case; unrelated removals stay removed.
+  // True only when this runtime itself removed the verification tool from the model
+  // surface (permit exhaustion, exact-retry substitution, or fail-closed ledger corruption).
+  // A later valid permit may restore it only in that case; unrelated removals stay removed.
   let verificationToolHiddenByPermitGate = false;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
@@ -588,12 +589,17 @@ export default function (pi) {
       stage === 'implementer' &&
       config.productiveProgress &&
       productiveState === 'action_required';
-    const recoveryState = productiveActionRequired
-      ? failedCheckRecoveryState()
-      : { failure: null, corrupted: false };
+    // Recovery follows the authoritative ledger + verification permit, not the
+    // productive-state surface. If a permit exists, the exact retry must be
+    // visible anywhere an arbitrary run_check would otherwise be callable.
+    const recoveryState = failedCheckRecoveryState();
     const failedCheckRecovery = recoveryState.failure;
     const recoveryLedgerCorrupted = recoveryState.corrupted;
-    const recoveryRetryReady = Boolean(failedCheckRecovery && controller.verificationPermitted());
+    const recoveryRetryReady = Boolean(
+      failedCheckRecovery &&
+      !recoveryLedgerCorrupted &&
+      controller.verificationPermitted()
+    );
 
     const largeMutationBudgetActive = stage === 'implementer' && controller.largeMutationBudgetActive();
     // Completed one-shot control tools disappear. Enabled tools such as `subagent` are shown only
@@ -635,14 +641,18 @@ export default function (pi) {
     }
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
-      (!verificationTool || name !== verificationTool || verificationPermitted) &&
+      (!verificationTool || name !== verificationTool || (verificationPermitted && !recoveryRetryReady)) &&
       (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
     const applySurface = (names, reason) => {
       if (verificationTool) {
-        if (!verificationPermitted && current.includes(verificationTool) && !names.includes(verificationTool)) {
+        if (
+          current.includes(verificationTool) &&
+          !names.includes(verificationTool) &&
+          (!verificationPermitted || recoveryRetryReady || recoveryLedgerCorrupted)
+        ) {
           verificationToolHiddenByPermitGate = true;
-        } else if (verificationPermitted && names.includes(verificationTool)) {
+        } else if (verificationPermitted && !recoveryRetryReady && names.includes(verificationTool)) {
           verificationToolHiddenByPermitGate = false;
         }
       }
@@ -1406,7 +1416,13 @@ export default function (pi) {
     const productiveState = controller.productiveProgressState();
     const recoveryState = failedCheckRecoveryState();
     const failedCheckRecovery = recoveryState.failure;
+    const recoveryRetryReady = Boolean(
+      failedCheckRecovery &&
+      !recoveryState.corrupted &&
+      controller.verificationPermitted()
+    );
     let recoveryBlocked = null;
+    let canonicalInput = event.input ?? {};
     if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
       recoveryBlocked = {
         block: true,
@@ -1422,14 +1438,26 @@ export default function (pi) {
         block: true,
         reason: 'BLOCKED: run_check did not execute because the validation ledger is corrupted. Submit the implementation so the harness can report the fail-closed verification state instead of attempting ad-hoc recovery.',
       };
-    } else if (failedCheckRecovery && event.toolName === 'run_check') {
+    } else if (recoveryRetryReady && event.toolName === 'run_check') {
       recoveryBlocked = {
         block: true,
-        reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} is still authoritative. Make a relevant mutation, then call retry_last_failed_check so the exact same kind+scope is rerun.`,
+        reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} has an exact retry ready now; call retry_last_failed_check so the same kind+scope consumes this verification permit.`,
       };
     }
+
+    if (!recoveryBlocked && event.toolName === RETRY_FAILED_CHECK_TOOL && failedCheckRecovery) {
+      try {
+        canonicalInput = runCheckRequestForRecord(failedCheckRecovery);
+      } catch (error) {
+        recoveryBlocked = {
+          block: true,
+          reason: `BLOCKED: retry_last_failed_check cannot reconstruct the authoritative failed scope: ${String(error?.message ?? error)}`,
+        };
+      }
+    }
+
     const canonicalToolName = controllerToolName(event.toolName);
-    const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, event.input);
+    const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput);
     // Any provider-emitted tool call satisfies the transport-level forcing requirement, even if
     // the controller later classifies it as already completed. Progress accounting remains stricter:
     // an already-satisfied transition still does not reset prose/ceiling watchdogs.
@@ -1448,7 +1476,7 @@ export default function (pi) {
         const loopResult = loopGuard.observe({
           stage,
           tool: canonicalToolName,
-          input: event.input ?? {},
+          input: canonicalInput,
           result: blocked,
           blocked: true,
           productiveState,
@@ -1524,12 +1552,12 @@ export default function (pi) {
         }));
       }
     }
-    pendingToolInputs.set(event.toolCallId, structuredClone(event.input ?? {}));
+    pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
     if (loopGuard) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
         toolName: canonicalToolName,
-        input: structuredClone(event.input ?? {}),
+        input: structuredClone(canonicalInput),
         productiveState,
         repositoryStateBefore,
       });
