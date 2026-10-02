@@ -608,7 +608,7 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.match(agent, /shared stage harness runs the authoritative checks/);
   assert.doesNotMatch(agent, /trivial_repo_lookup|RepoMap|repo map orientation|complexity-classifier/);
 
-  assert.match(runtime, /IMPLEMENTATION_PREPARATION_SCHEMA/);
+  assert.match(runtime, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
   assert.match(runtime, /enum: \['trivial', 'nontrivial'\]/);
   assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
   assert.doesNotMatch(runtime, /trivial_repo_lookup|trivialRepoLookup|runStructuredComplexityClassifier|complexityClassifierAgent/);

@@ -111,28 +111,11 @@ const SUBAGENT_DELEGATION_RESPONSE_EVENT = 'prompt-template:subagent:response';
 // not a valid proxy for how many evidence actions the Implementer should be granted.
 const MAX_PLANNER_EVIDENCE_BUDGET = 6;
 
-const IMPLEMENTATION_PREPARATION_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    steps: {
-      type: 'array',
-      minItems: 1,
-      maxItems: 8,
-      items: { type: 'string', minLength: 1, maxLength: 240 },
-    },
-    complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
-    evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
-    reason: { type: 'string', minLength: 1, maxLength: 300 },
-  },
-  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
-  additionalProperties: false,
-});
-
 const MAX_PLANNER_STEP_LENGTH = 240;
 
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
 // reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
-// The strict IMPLEMENTATION_PREPARATION_SCHEMA contract is enforced locally by validation.
+// The strict canonical contract is enforced locally by validateImplementationPreparation().
 const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
