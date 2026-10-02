@@ -242,7 +242,14 @@ test('package-root guard ignores unrelated top-level directories and supports in
       [],
     );
 
-    fs.mkdirSync(path.join(root, 'demo_pkg'));
+    fs.mkdirSync(path.join(root, 'demo_pkg', 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'demo_pkg', 'node_modules', 'foreign.py'), '');
+    assert.deepEqual(
+      duplicatePackageRootDiagnostics(root, { canonicalRoots: ['src'], allowDuplicatePackages: [] }),
+      [],
+    );
+
+    fs.writeFileSync(path.join(root, 'demo_pkg', '__init__.py'), '');
     fs.writeFileSync(path.join(root, 'demo_pkg', '__init__.py'), '');
     assert.equal(
       duplicatePackageRootDiagnostics(root, { canonicalRoots: ['src'], allowDuplicatePackages: [] }).length,
