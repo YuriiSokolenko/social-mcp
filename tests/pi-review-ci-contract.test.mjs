@@ -164,12 +164,12 @@ test('merge gate has permission for its late-conflict PR Fix dispatch', () => {
 });
 
 
-test('terminal PR CI wakes only from completed workflow_run while green dev CI keeps its direct continuation', () => {
+test('terminal PR CI wakes only from completed workflow_run while authoritative dev CI keeps its direct continuation', () => {
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   const terminalWake = fs.readFileSync('.github/workflows/ci-terminal-wake.yml', 'utf8');
 
   assert.match(ci, /always\(\)/);
-  assert.match(ci, /github\.event_name == 'push' &&/);
+  assert.match(ci, /contains\(fromJSON\('\["push","workflow_dispatch"\]'\), github\.event_name\)/);
   assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
   assert.match(ci, /Continue merge queue after green dev CI/);
   assert.doesNotMatch(ci, /github\.event_name == 'pull_request' \|\|/);
