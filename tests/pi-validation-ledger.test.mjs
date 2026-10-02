@@ -374,6 +374,17 @@ test('runCheckRequestForRecord rejects mixed scopes instead of replaying a diffe
   );
 });
 
+test('runCheckRequestForRecord rejects a scope field that does not match the check kind', () => {
+  assert.throws(
+    () => runCheckRequestForRecord(focused({
+      kind: 'pytest',
+      scope: { paths: ['src/a.py'] },
+      status: 'fail',
+    })),
+    /scope does not match check kind/,
+  );
+});
+
 test('a ledger with an unparseable line is treated as blocked, never as evidence of VERIFIED', () => {
   // All records that DID parse look fully green. Fail-closed means the
   // corrupted flag alone must still force BLOCKED_INFRA: the dropped line
