@@ -553,7 +553,8 @@ export default function (pi) {
   let elevatedTurnAttemptedFinishTool = false;
 
   function validationRunId() {
-    return `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`;
+    return process.env.PI_VALIDATION_RUN_ID ??
+      `${process.env.GITHUB_RUN_ID ?? `local-${process.pid}`}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`;
   }
 
   function validationAttemptId() {
@@ -1487,6 +1488,14 @@ export default function (pi) {
       recoveryBlocked = {
         block: true,
         reason: 'BLOCKED: retry_last_failed_check did not execute because there is no unresolved failed run_check scope.',
+      };
+    } else if (
+      event.toolName === RETRY_FAILED_CHECK_TOOL &&
+      !pi.getActiveTools().includes(RETRY_FAILED_CHECK_TOOL)
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: retry_last_failed_check is not available in the current action state. Continue with the visible tools; the exact retry is exposed only when recovery is actionable.',
       };
     } else if (recoveryRetryReady && event.toolName === 'run_check') {
       recoveryBlocked = {
