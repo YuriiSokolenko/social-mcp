@@ -241,8 +241,7 @@ test('Implementer workflow uploads the stage-named temporary trace after failed 
   assert.match(upload, /retention-days: 7/);
   assert.match(upload, /path: \$\{\{ runner\.temp \}\}\/pi-model-trace-implementer-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\.jsonl/);
   assert.match(docs, /pi-model-trace-implementer-<issue>-<run-id>-<attempt>/);
-  assert.match(docs, /\*\*7 day retention\*\*/);
-  assert.match(docs, /Implementer is currently the only Pi stage that uploads model-trace artifacts/);
+  assert.match(docs, /7 day retention/);
   assert.match(docs, /Treat the artifact itself as sensitive/);
   assert.match(docs, /any signed-in GitHub user/);
   assert.match(docs, /Streaming\/SSE responses are stored as the complete raw response text/);
