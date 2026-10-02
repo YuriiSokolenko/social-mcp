@@ -17,13 +17,16 @@ import { CHECK_STATUSES } from './run-check.mjs';
 
 export const LEDGER_STATUSES = Object.freeze([...CHECK_STATUSES, 'not_run']);
 
-export function resolveValidationRunId(env = process.env) {
-  const explicit = String(env.PI_VALIDATION_RUN_ID ?? '').trim();
-  if (explicit) return explicit;
-
+export function resolveRunArtifactId(env = process.env) {
   const githubRunId = String(env.GITHUB_RUN_ID ?? '').trim();
   const githubRunAttempt = String(env.GITHUB_RUN_ATTEMPT ?? '1').trim() || '1';
   return `${githubRunId || `local-${process.pid}`}-${githubRunAttempt}`;
+}
+
+export function resolveValidationRunId(env = process.env) {
+  const explicit = String(env.PI_VALIDATION_RUN_ID ?? '').trim();
+  if (explicit) return explicit;
+  return resolveRunArtifactId(env);
 }
 
 export const VERIFICATION_STATES = Object.freeze({

@@ -4,6 +4,8 @@ import { baseBranch, baseRef, checkpointBranch, issueBranch as issueBranchName }
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { resolveRunArtifactId } from './validation-ledger.mjs';
+
 /**
  * Prepare and clean the isolated Implementer worktree.
  *
@@ -17,7 +19,12 @@ import path from 'node:path';
  * Implementer resolves them against current dev.
  */
 
-export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
+export function issueWorktreePatchPath(tempDir, env = process.env) {
+  if (!tempDir) throw new Error('tempDir is required');
+  return path.join(tempDir, `pi-resume-${resolveRunArtifactId(env)}.patch`);
+}
+
+export function prepareIssueWorktree({ issue, jobDir, tempDir }, env = process.env) {
   if (!Number.isSafeInteger(issue) || issue < 1) throw new Error('issue must be a positive integer');
   if (!jobDir || !tempDir) throw new Error('jobDir and tempDir are required');
   fs.rmSync(jobDir, { recursive: true, force: true });
@@ -40,7 +47,7 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }) {
 
   git(['worktree', 'prune']);
   git(['worktree', 'add', '-B', issueBranch, jobDir, baseRef()]);
-  const patch = path.join(tempDir, `pi-resume-${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}.patch`);
+  const patch = issueWorktreePatchPath(tempDir, env);
   let resumed = false;
   if (resumeRef) {
     const base = git(['merge-base', baseRef(), resumeRef]).out;

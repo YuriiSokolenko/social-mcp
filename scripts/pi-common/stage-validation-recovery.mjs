@@ -80,7 +80,12 @@ export async function runStageWithValidationRecovery(
     }
 
     try {
-      validate({ cwd: spec.cwd, ledgerPath: spec.environment.PI_VALIDATION_LEDGER_FILE, backend: result.backend });
+      validate({
+        cwd: spec.cwd,
+        ledgerPath: spec.environment.PI_VALIDATION_LEDGER_FILE,
+        backend: result.backend,
+        env: spec.environment,
+      });
       return createStageRunResult({
         backend: result.backend,
         durationMs,
