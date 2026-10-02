@@ -182,13 +182,14 @@ export function reconcile(records) {
  * resolved, an older unresolved scope becomes active. Scoping by runId prevents
  * failures from earlier workflow runs from leaking into the current session.
  */
-export function latestUnresolvedRunCheckFailure(records, { runId = null } = {}) {
+export function latestUnresolvedRunCheckFailure(records, { runId = null, stage = null } = {}) {
   const stateByGroup = new Map();
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     if (record.source !== 'run_check') continue;
     if (runId != null && record.run_id !== runId) continue;
+    if (stage != null && record.stage !== stage) continue;
 
     const key = groupKey(record.kind, record.scope);
     if (record.status === 'fail') {
@@ -198,11 +199,20 @@ export function latestUnresolvedRunCheckFailure(records, { runId = null } = {}) 
     }
   }
 
-  let latest = null;
-  for (const candidate of stateByGroup.values()) {
-    if (!latest || candidate.index > latest.index) latest = candidate;
+  const candidates = [...stateByGroup.values()].sort((left, right) => right.index - left.index);
+  for (const candidate of candidates) {
+    try {
+      // Recovery can only select a record that the deterministic retry tool
+      // can faithfully reconstruct. Malformed/legacy records stay in the
+      // ledger for final fail-closed verification but never mask an older,
+      // valid recovery obligation.
+      runCheckRequestForRecord(candidate.record);
+      return candidate.record;
+    } catch {
+      // Try the next unresolved exact scope.
+    }
   }
-  return latest?.record ?? null;
+  return null;
 }
 
 /**
@@ -214,16 +224,18 @@ export function runCheckRequestForRecord(record) {
   if (!record || typeof record.kind !== 'string' || !record.scope || typeof record.scope !== 'object') {
     throw new Error('cannot reconstruct run_check request from an invalid ledger record');
   }
-  if (Array.isArray(record.scope.paths) && record.scope.paths.length) {
-    return { kind: record.kind, paths: [...record.scope.paths] };
+
+  const hasPaths = Array.isArray(record.scope.paths) && record.scope.paths.length > 0;
+  const hasTargets = Array.isArray(record.scope.targets) && record.scope.targets.length > 0;
+  const hasProfile = typeof record.scope.profile === 'string' && record.scope.profile.length > 0;
+  const scopeFieldCount = Number(hasPaths) + Number(hasTargets) + Number(hasProfile);
+  if (scopeFieldCount !== 1 || record.scope.whole_repo === true) {
+    throw new Error(`cannot reconstruct run_check request for ${record.kind}: ambiguous or unsupported scope`);
   }
-  if (Array.isArray(record.scope.targets) && record.scope.targets.length) {
-    return { kind: record.kind, targets: [...record.scope.targets] };
-  }
-  if (typeof record.scope.profile === 'string' && record.scope.profile) {
-    return { kind: record.kind, profile: record.scope.profile };
-  }
-  throw new Error(`cannot reconstruct run_check request for ${record.kind}: unsupported scope`);
+
+  if (hasPaths) return { kind: record.kind, paths: [...record.scope.paths] };
+  if (hasTargets) return { kind: record.kind, targets: [...record.scope.targets] };
+  return { kind: record.kind, profile: record.scope.profile };
 }
 
 /**
