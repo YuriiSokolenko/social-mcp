@@ -20,8 +20,9 @@ def _require_number(name: str, value: object) -> IntervalBound:
 
     Supported bounds are instances of ``numbers.Real`` plus
     ``decimal.Decimal``. Booleans are rejected on purpose despite being
-    ``int`` subclasses, and complex values are rejected because interval
-    ordering is not defined for them.
+    ``int`` subclasses, complex values are rejected because interval ordering
+    is not defined for them, and NaN values are rejected because they are not
+    totally ordered.
     """
 
     if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
@@ -29,6 +30,15 @@ def _require_number(name: str, value: object) -> IntervalBound:
             f"interval {name} must be a numbers.Real or decimal.Decimal value "
             f"(bool is not supported), got {value!r}"
         )
+
+    if isinstance(value, Decimal):
+        is_nan = value.is_nan()
+    else:
+        is_nan = value != value
+
+    if is_nan:
+        raise ValueError(f"interval {name} must not be NaN, got {value!r}")
+
     return value
 
 
@@ -59,9 +69,9 @@ def merge_intervals(
     Supported interval bounds are ``numbers.Real`` values (including
     ``int``, ``float``, and ``fractions.Fraction``) plus
     ``decimal.Decimal``. ``bool`` is explicitly unsupported despite being
-    an ``int`` subclass. Complex values and other non-real numeric types are
-    unsupported because they do not provide the total ordering required by the
-    merge algorithm.
+    an ``int`` subclass. Complex values and NaN values are unsupported
+    because they do not provide the total ordering required by the merge
+    algorithm.
 
     Args:
         intervals: Any iterable of two-item ``[start, end]`` numeric intervals.
@@ -75,7 +85,7 @@ def merge_intervals(
 
     Raises:
         ValueError: If an interval does not hold exactly two bounds, contains an
-            unsupported bound type, or starts after it ends.
+            unsupported bound type or NaN value, or starts after it ends.
     """
 
     normalized = sorted((_as_pair(interval) for interval in intervals))
