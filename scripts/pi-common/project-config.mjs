@@ -60,7 +60,7 @@ function stringList(value, where, { optional = false } = {}) {
 
 function relativeDirectoryList(value, where, { optional = false, root = null } = {}) {
   return stringList(value, where, { optional }).map((item, index) => {
-    const normalized = item.replace(/\\\\/g, '/');
+    const normalized = item.replace(/\\/g, '/');
     const parts = normalized.split('/');
     if (/^(?:\/|[A-Za-z]:\/)/.test(normalized) || parts.some(part => part === '.' || part === '..')) {
       throw new ConfigError(`${where}[${index}] must be a relative directory path without . or .. segments`);
