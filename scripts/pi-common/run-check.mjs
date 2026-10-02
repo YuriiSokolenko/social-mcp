@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { ruffArgs } from './ruff-spec.mjs';
+import { duplicatePackageRootDiagnostics } from './package-root-check.mjs';
 import { expandCommand, projectConfig } from './project-config.mjs';
 import { createDockerSandboxBackend } from './run-check-docker-backend.mjs';
 
@@ -399,6 +400,28 @@ export async function runCheck(root, params, options = {}) {
   } catch (error) {
     if (error instanceof InvalidCheck) return invalid(params?.kind, error.message);
     throw error;
+  }
+
+  const checksPythonLayout = request.kind === 'python_compile'
+    || request.kind === 'ruff'
+    || request.kind === 'pytest'
+    || (request.kind === 'profile' && request.profile === 'pytest_all');
+  const packageRootDiagnostics = checksPythonLayout
+    ? duplicatePackageRootDiagnostics(root, projectConfig().checks.packageRoots)
+    : [];
+  if (packageRootDiagnostics.length) {
+    return {
+      status: 'fail',
+      kind: request.kind,
+      ...(request.kind === 'profile' ? { profile: request.profile } : {}),
+      exit_code: null,
+      duration_ms: 0,
+      summary: 'Duplicate package root detected before focused validation',
+      diagnostics: packageRootDiagnostics.slice(0, MAX_DIAGNOSTICS),
+      stdout_tail: '',
+      stderr_tail: '',
+      truncated: packageRootDiagnostics.length > MAX_DIAGNOSTICS,
+    };
   }
 
   const seconds = Math.min(

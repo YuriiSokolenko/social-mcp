@@ -98,6 +98,12 @@ def test_non_positive_capacity_raises_value_error(capacity: int):
         LRUCache(capacity=capacity)
 
 
+@pytest.mark.parametrize("capacity", [True, False])
+def test_boolean_capacity_raises_value_error(capacity: bool):
+    with pytest.raises(ValueError):
+        LRUCache(capacity=capacity)
+
+
 @pytest.mark.parametrize("capacity", ["3", 3.0, None, [3]])
 def test_non_integer_capacity_raises_value_error(capacity: object):
     with pytest.raises(ValueError):

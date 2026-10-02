@@ -28,18 +28,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
+      - name: Create Python venv
+        run: |
+          python3 --version
+          python3 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Install project and development dependencies
-        run: pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
+        run: |
+          python --version
+          python -m pip --version
+          python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
 
       - name: Ruff
         run: ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
@@ -59,28 +60,37 @@ jobs:
     timeout-minutes: 15
     env:
       COMPOSE_PROJECT_NAME: social-mcp-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DOCKER_BUILDKIT: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
+      - name: Set up BuildKit
+        run: |
+          if ! docker buildx version >/dev/null 2>&1; then
+            version=0.37.1
+            package="docker-buildx-plugin_${version}-1~ubuntu.24.04~noble_amd64.deb"
+            url="https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/${package}"
+            curl -fsSL "$url" -o "/tmp/$package"
+            echo '3c398af6eea280ddb57f32334d83867efd2bf07c4bc1be75fbd0a61c490ea925  /tmp/'"$package" | sha256sum --check --status
+            sudo apt-get install --yes "/tmp/$package"
+          fi
+          docker buildx version
+          docker buildx inspect
+          docker system df
+          docker buildx du
+          id runner
 
       - name: Generate ephemeral test encryption key
         shell: bash
         run: |
-          pip install --quiet "cryptography>=45,<47"
-          python - <<'PY' >> "$GITHUB_ENV"
-          from cryptography.fernet import Fernet
-          print(f"TOKEN_ENCRYPTION_KEY={Fernet.generate_key().decode()}")
-          PY
+          key="$(head -c32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n')"
+          test "${#key}" -eq 44
+          [[ "$key" == *= ]]
+          echo "TOKEN_ENCRYPTION_KEY=$key" >> "$GITHUB_ENV"
 
       - name: Build and start isolated Compose environment
         run: docker compose up --build --wait
@@ -96,7 +106,7 @@ jobs:
           echo "CI_BASE_URL=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
 
       - name: Integration tests against the running container
-        run: python tests/test_ci_container.py
+        run: python3 tests/test_ci_container.py
 
       - name: Show Compose logs on failure
         if: failure()

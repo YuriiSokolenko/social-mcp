@@ -17,6 +17,8 @@ The agent automation (dispatcher, architect, implementer, reviewer, repair, merg
 
 JSON (Node has no YAML parser and the control plane has no dependencies; a YAML front-end is a packaging step). Loaded by `scripts/pi-common/project-config.mjs`, validated strictly (unknown keys rejected, commands are fixed argv, never shell strings), **fails closed** (no built-in defaults). Search order: `AGENT_HARNESS_CONFIG` → `$GITHUB_WORKSPACE/.agent-harness.json` (trusted control checkout) → walking up from the module. The process cwd is never searched: agent sessions run in writable worktrees. The file itself is always a protected control-plane path, so an agent cannot widen its own permissions.
 
+`checks.packageRoots` protects src-layout repositories from accidental duplicate top-level Python package roots. `canonicalRoots` lists trusted source roots such as `src`; a top-level directory with the same package name and Python source is treated as a structural error. Repositories that intentionally expose the same package name from multiple roots must list that package in `allowDuplicatePackages`. Because matching is directory-name based, intentional layouts such as both `src/scripts/` and top-level `scripts/` also require that explicit allow-list entry.
+
 ## Model-facing agent contracts
 
 Model-driven stages receive one composed initial prompt:

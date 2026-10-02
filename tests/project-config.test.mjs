@@ -17,6 +17,7 @@ test('the committed config is valid and describes this repository', () => {
   assert.equal(workflowFile('implementer'), 'pi-issue-agent.yml');
   assert.equal(config.labels.blocked, 'pi:blocked');
   assert.equal(config.labels.triageReady, 'triage:ready');
+  assert.deepEqual(config.checks.packageRoots, { canonicalRoots: ['src'], allowDuplicatePackages: [] });
   assert.equal(issueBranch(7), 'pi/issue-7');
 });
 
@@ -66,4 +67,32 @@ test('file-list argument tokens expand without a shell', () => {
   for (const name of ['b.test.mjs', 'a.test.mjs', 'skip.txt']) fs.writeFileSync(path.join(dir, 'tests', name), '');
   const spec = projectConfig().checks.profiles.node_tests;
   assert.deepEqual(expandCommand(spec, dir), { command: 'node', args: ['--test', 'tests/a.test.mjs', 'tests/b.test.mjs'] });
+});
+
+test('package-root policy has an explicit allow-list escape hatch and rejects unknown settings', () => {
+  const configured = raw();
+  configured.checks.packageRoots.allowDuplicatePackages = ['generated_api'];
+  assert.deepEqual(
+    validateConfig(configured).checks.packageRoots.allowDuplicatePackages,
+    ['generated_api'],
+  );
+
+  const invalid = raw();
+  invalid.checks.packageRoots.unexpected = true;
+  assert.throws(() => validateConfig(invalid), /checks\.packageRoots\.unexpected/);
+});
+
+test('package-root canonical roots reject unsafe paths and typos when validated against the checkout', () => {
+  for (const badRoot of ['../src', '/tmp/src', 'src/../src']) {
+    const configured = raw();
+    configured.checks.packageRoots.canonicalRoots = [badRoot];
+    assert.throws(() => validateConfig(configured), /must be a relative directory path/);
+  }
+
+  const typo = raw();
+  typo.checks.packageRoots.canonicalRoots = ['scr'];
+  assert.throws(
+    () => validateConfig(typo, { root: process.cwd() }),
+    /does not identify an existing directory: scr/,
+  );
 });

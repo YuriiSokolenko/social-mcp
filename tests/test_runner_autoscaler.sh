@@ -266,6 +266,7 @@ trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG" "$DOCKER_RUN_LOG"' EXI
   PI_ZOEKT_TIMEOUT_MS=3000
   MOUNT_PI_CONFIG=false
   MOUNT_DOCKER_SOCKET=true
+  PIP_CACHE_HOST_DIR=/var/cache/social-mcp/pip
   registration_token() { printf 'tok\n'; }
   run_with_timeout() {
     shift
@@ -277,6 +278,7 @@ grep -q -- '--network host' "$DOCKER_RUN_LOG" || fail 'ephemeral runners must us
 ! grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'general runners must keep Docker default seccomp'
 grep -q -- '-e RUNNER_LABELS=n150,general' "$DOCKER_RUN_LOG" || fail 'spawn_runner must pass RUNNER_LABELS through'
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" || fail 'spawn_runner must mount the docker socket when MOUNT_DOCKER_SOCKET=true'
+grep -q -- 'type=bind,source=/var/cache/social-mcp/pip,target=/home/runner/.cache/pip' "$DOCKER_RUN_LOG" || fail 'general runner must mount the optional host pip cache'
 grep -q -- '/pi-config-ro:ro' "$DOCKER_RUN_LOG" && fail 'spawn_runner must not mount the Pi config when MOUNT_PI_CONFIG=false'
 grep -q -- 'PI_ZOEKT_' "$DOCKER_RUN_LOG" && fail 'general runners must not receive the optional Pi-only Zoekt configuration'
 grep -q -- 'run-check-sandbox' "$DOCKER_RUN_LOG" && fail 'general runners run no Pi focused checks, so they do not probe the Pi sandbox image'
@@ -293,6 +295,7 @@ grep -q -- 'run-check-sandbox' "$DOCKER_RUN_LOG" && fail 'general runners run no
   PI_CONFIG_DIR=/some/pi/config
   MOUNT_PI_CONFIG=true
   MOUNT_DOCKER_SOCKET=false
+  PIP_CACHE_HOST_DIR=
   RUN_CHECK_EXECUTOR_ENABLED=true
   PI_ZOEKT_URL=http://127.0.0.1:6070
   PI_ZOEKT_REPOSITORY=YuriiSokolenko/social-mcp
@@ -314,6 +317,7 @@ grep -q -- '/some/pi/config:/pi-config-ro:ro' "$DOCKER_RUN_LOG" || fail 'spawn_r
 ! grep -q -- '--security-opt seccomp=unconfined' "$DOCKER_RUN_LOG" || fail 'Pi runners must use the default seccomp profile'
 ! grep -q -- '--cap-add SYS_ADMIN\|--privileged\|apparmor=unconfined' "$DOCKER_RUN_LOG" || fail 'Pi runner launch must not widen privileges'
 grep -q -- '/var/run/docker.sock:/var/run/docker.sock' "$DOCKER_RUN_LOG" && fail 'Pi runner must not receive the Docker socket'
+grep -q -- '/home/runner/.cache/pip' "$DOCKER_RUN_LOG" && fail 'Pi runner must not receive the general-pool pip cache'
 grep -q -- '-e PI_RUN_CHECK_EXECUTOR_URL=http://127.0.0.1:17343' "$DOCKER_RUN_LOG" || fail 'Pi runner must receive only the trusted executor endpoint'
 grep -q -- '-e RUN_CHECK_EXECUTOR_TOKEN=' "$DOCKER_RUN_LOG" || fail 'Pi runner must receive an ephemeral executor request token'
 grep -q -- 'run --rm --pull=never --network none --cap-drop ALL --security-opt no-new-privileges' "$DOCKER_RUN_LOG" || fail 'manager gate must execute a hardened real sandbox image probe'

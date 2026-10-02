@@ -59,6 +59,25 @@ def test_consumption_denied_keeps_refilled_tokens() -> None:
     assert tokens == pytest.approx(2.0)
 
 
+def test_request_equal_to_capacity_is_a_normal_transition() -> None:
+    assert apply_token_bucket(10.0, 10.0, 0.0, 0.0, 10.0) == (0.0, True)
+    assert apply_token_bucket(9.0, 10.0, 0.0, 0.0, 10.0) == (9.0, False)
+
+
+def test_request_above_capacity_is_invalid_not_denied() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"requested_tokens \(10\.5\) must not exceed capacity \(10\.0\)",
+    ):
+        apply_token_bucket(
+            current_tokens=10.0,
+            capacity=10.0,
+            refill_rate=100.0,
+            elapsed_seconds=100.0,
+            requested_tokens=10.5,
+        )
+
+
 def test_zero_elapsed_time_neither_refills_allows_beyond_current() -> None:
     assert apply_token_bucket(4.0, 10.0, 3.0, 0.0, 4.0) == (0.0, True)
     assert apply_token_bucket(4.0, 10.0, 3.0, 0.0, 5.0) == (4.0, False)
@@ -88,8 +107,6 @@ def test_transition_is_repeatable() -> None:
          "elapsed_seconds": 1.0, "requested_tokens": -1.0},
         {"current_tokens": 11.0, "capacity": 10.0, "refill_rate": 1.0,
          "elapsed_seconds": 1.0, "requested_tokens": 1.0},
-        {"current_tokens": 1.0, "capacity": 10.0, "refill_rate": 1.0,
-         "elapsed_seconds": 1.0, "requested_tokens": 11.0},
     ],
 )
 def test_invalid_inputs_raise_value_error(kwargs: dict) -> None:

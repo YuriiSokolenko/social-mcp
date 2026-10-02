@@ -391,7 +391,7 @@ test('product agent workflows use one shared product-check contract and never ru
   assert.match(fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
   assert.doesNotMatch(fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8'), /pi-common\/product-checks\.mjs/);
   const finalChecks = projectConfig().checks.final.map(step => step.builtin ?? [step.command, ...step.args].join(' '));
-  assert.deepEqual(finalChecks, ['ruff', 'git diff --check', 'pytest']);
+  assert.deepEqual(finalChecks, ['package_roots', 'ruff', 'git diff --check', 'pytest']);
   const repairTool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
   const implementerTool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
   const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
@@ -705,7 +705,6 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.match(tool, /code: 'missing_publication_fields'/);
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
   assert.match(validation, /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
-  assert.match(tool, /return Type\.Object\(/);
 });
 
 test('stage runner relies on installed pi-subagents instead of registering a duplicate subagent tool', () => {

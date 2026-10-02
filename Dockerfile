@@ -2,10 +2,15 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /install
 
-# Hatchling needs the README and package sources to build the wheel.
+# Install runtime dependencies in a source-independent layer. Hatchling needs
+# the README and package sources only when building the project wheel below.
 COPY pyproject.toml README.md ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -c 'import pathlib, tomllib; deps = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["dependencies"]; pathlib.Path("/tmp/requirements.txt").write_text("\n".join(deps) + "\n")' \
+    && pip install --prefix=/install -r /tmp/requirements.txt
+
 COPY src ./src
-RUN pip install --no-cache-dir --prefix=/install .
+RUN pip install --no-deps --no-cache-dir --prefix=/install .
 
 # Runtime stage: minimal image with only the installed package.
 FROM python:3.12-slim AS runtime

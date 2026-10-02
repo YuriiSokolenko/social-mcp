@@ -1,7 +1,8 @@
 """Deterministic token-bucket transition used by diagnostics smoke checks.
 
 The helper is pure: it never reads a clock, sleeps, or mutates shared state, so
-the same arguments always produce the same result.
+the same arguments always produce the same result. A request larger than the
+bucket capacity is invalid input because no refill can ever satisfy it.
 """
 
 from __future__ import annotations
@@ -22,12 +23,18 @@ def apply_token_bucket(
     ``capacity``, and ``requested_tokens`` are consumed only when the refilled
     bucket holds enough tokens to cover them.
 
+    A request is a normal denied transition only when it could fit in the bucket
+    (``requested_tokens <= capacity``) but the refilled bucket does not currently
+    hold enough tokens. A request larger than ``capacity`` is invalid input and
+    raises ``ValueError`` rather than returning ``allowed=False``.
+
     Args:
         current_tokens: Tokens in the bucket before the refill.
         capacity: Maximum number of tokens the bucket may hold.
         refill_rate: Tokens added per elapsed second.
         elapsed_seconds: Time elapsed since the previous transition.
-        requested_tokens: Tokens the caller wants to consume.
+        requested_tokens: Tokens the caller wants to consume. Values above
+            ``capacity`` are invalid because they can never be satisfied.
 
     Returns:
         A ``(tokens, allowed)`` pair where ``tokens`` is the token count after
@@ -37,8 +44,7 @@ def apply_token_bucket(
     Raises:
         ValueError: If any argument is negative, if ``capacity`` is not
             positive, if ``current_tokens`` exceeds ``capacity``, or if
-            ``requested_tokens`` exceeds ``capacity`` and can therefore never be
-            satisfied.
+            ``requested_tokens`` exceeds ``capacity``.
     """
     if current_tokens < 0:
         raise ValueError(f"current_tokens ({current_tokens}) must not be negative")
