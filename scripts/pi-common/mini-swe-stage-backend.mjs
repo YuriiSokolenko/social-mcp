@@ -12,6 +12,11 @@ import { createStageRunResult } from './stage-run-contract.mjs';
 
 const BACKEND = 'mini-swe';
 const gitPaths = text => text.split('\0').filter(Boolean);
+function changedPathsAgainstBase() {
+  const tracked = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
+  const untracked = gitPaths(git(['ls-files', '--others', '--exclude-standard', '-z']).out);
+  return [...new Set([...tracked, ...untracked])].sort();
+}
 
 function wait(child, name) {
   return new Promise((resolve, reject) => {
@@ -150,7 +155,7 @@ function writeImplementationResult(spec) {
   integrateLatestDev({
     conflictMessage: files => `Latest dev conflicts with the mini-swe implementation: ${files.join(', ')}`,
   });
-  const changedPaths = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
+  const changedPaths = changedPathsAgainstBase();
   if (!changedPaths.length) {
     throw new Error('mini-swe-agent submitted without repository changes; experimental backend does not infer already-satisfied');
   }
