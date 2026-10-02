@@ -88,7 +88,7 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   if (git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0) git(['commit','-m',`feat: implement issue #${issue}`], { cwd });
   const base = publicationBase(cwd, startCommit);
   if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
-  const changed = lines(git(['diff','--name-only',base,'HEAD'], { cwd }).out);
+  const changed = lines(git(['diff','--no-renames','--name-only',base,'HEAD'], { cwd }).out);
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Implementer attempted to modify protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
@@ -102,7 +102,7 @@ export function assertPublicationFileSet({ cwd, base, resultFile }) {
   if (!metadata || metadata.outcome !== IMPLEMENTER_OUTCOMES.changed) {
     throw new Error('Changed implementation metadata is required before issue-branch publication');
   }
-  const changed = gitPaths(git(['diff','--name-only','-z',base,'HEAD'], { cwd }).out);
+  const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
   assertImplementerFileSet(changed, metadata.files);
   return changed;
 }
