@@ -863,6 +863,45 @@ export default function (pi) {
     return `${lifecycle} ${finalValidationGuidance()}`;
   }
 
+  function taskSpecificToolGuidance(activeToolNames, {
+    ceilingHit = false,
+    preComplexityRequired = false,
+    postComplexityRequired = false,
+  } = {}) {
+    const active = new Set(activeToolNames);
+    const hints = [];
+
+    if (preComplexityRequired && active.has('declare_task_complexity')) {
+      hints.push('Call declare_task_complexity immediately with the classification already supported by the current evidence.');
+    }
+
+    if (stage === 'reviewer' && postComplexityRequired) {
+      if (active.has('submit_result')) {
+        hints.push('If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED.');
+      }
+      hints.push('Otherwise use exactly one currently exposed evidence tool for the unresolved review question, then decide.');
+    }
+
+    if (stage === 'implementer') {
+      const codingSessionTool = config.productiveProgress?.codingSessionTool;
+      if (ceilingHit && codingSessionTool && active.has(codingSessionTool)) {
+        hints.push(`If the implementation is large, call ${codingSessionTool} now; it keeps the current context and provides the large coding ceiling instead of drafting code here.`);
+      }
+      if (active.has('submit_result')) {
+        hints.push('If explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now.');
+      }
+      const blockerTool = config.productiveProgress?.blockerTool;
+      if (blockerTool && active.has(blockerTool)) {
+        hints.push(`Call ${blockerTool} only when exactly one concrete missing fact prevents the next safe action.`);
+      }
+      if (active.has(RETRY_FAILED_CHECK_TOOL)) {
+        hints.push(`Use ${RETRY_FAILED_CHECK_TOOL} to rerun the exact unresolved failed verification scope after fixing it.`);
+      }
+    }
+
+    return hints.join(' ');
+  }
+
   syncProductiveState();
 
   // The run_check sandbox is a hard dependency of stages that expose it. Prove it works before any
@@ -1392,7 +1431,15 @@ export default function (pi) {
             };
           }
           const remaining = maxSessions - sessionsStarted;
-          const message = `Coding session ended without a terminal result${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${remaining > 0 ? `Another coding-session continuation remains possible if that tool is still exposed (${remaining} left). ` : ''}${activeToolGuidance(pi.getActiveTools())}`;
+          const activeToolNames = pi.getActiveTools();
+          const terminalStatus = activeToolNames.includes('submit_result')
+            ? 'Coding session ended without submit_result'
+            : 'Coding session ended without a terminal result';
+          const continuation =
+            remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
+              ? `You may call ${codingSessionTool} once more (${remaining} left). `
+              : '';
+          const message = `${terminalStatus}${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
           if (sessionError) throw new Error(message);
           return { content: [{ type: 'text', text: message }], details: { ...base, submitted: false } };
         },
@@ -1493,8 +1540,28 @@ export default function (pi) {
     }
     const productiveState = controller.productiveProgressState();
     const activeToolNames = pi.getActiveTools();
-    if (!activeToolNames.includes(event.toolName)) {
+    const transitionKey = controller.transitions.keyFor(event.toolName, event.input);
+    const alreadySatisfiedTransition = controller.transitions.has(transitionKey);
+
+    // Provider forcing is transport-level: any emitted tool call proves tool_choice=required
+    // was satisfied. Local policy may still reject that call as hidden/already-satisfied, but
+    // forcing must not remain stuck across the next provider request.
+    const satisfiedProviderForcing = requireToolOnNextProviderRequest;
+    if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
+
+    // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
+    // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
+    // run_check for controller policy after visibility has been checked.
+    const enforceActiveSurface =
+      activeToolNames.length > 0 &&
+      !alreadySatisfiedTransition &&
+      !activeToolNames.includes(event.toolName);
+    if (enforceActiveSurface) {
       unavailableToolAttempts += 1;
+      const unavailable = {
+        block: true,
+        reason: `BLOCKED: that tool is not currently exposed by the runtime. ${activeToolGuidance(activeToolNames)}`,
+      };
       console.warn(`PI_UNAVAILABLE_TOOL_ATTEMPT ${JSON.stringify({
         stage,
         count: unavailableToolAttempts,
@@ -1502,10 +1569,28 @@ export default function (pi) {
         attemptedTool: event.toolName,
         activeTools: activeToolNames,
       })}`);
-      return {
-        block: true,
-        reason: `BLOCKED: that tool is not currently exposed by the runtime. ${activeToolGuidance(activeToolNames)}`,
-      };
+      if (satisfiedProviderForcing) {
+        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({
+          stage,
+          tool: event.toolName,
+          alreadySatisfied: false,
+          unavailable: true,
+        })}`);
+      }
+      if (loopGuard) {
+        const loopResult = loopGuard.observe({
+          stage,
+          tool: event.toolName,
+          input: event.input ?? {},
+          result: unavailable,
+          blocked: true,
+          productiveState,
+        });
+        await handleLoopResult(loopResult, ctx).catch(error => {
+          console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
+        });
+      }
+      return unavailable;
     }
     const recoveryState = failedCheckRecoveryState();
     const failedCheckRecovery = recoveryState.failure;
@@ -1551,12 +1636,13 @@ export default function (pi) {
     if (blocked?.alreadySatisfied) {
       blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is already completed and did not execute. ${activeToolGuidance(activeToolNames)}`;
     }
-    // Any provider-emitted tool call satisfies the transport-level forcing requirement, even if
-    // the controller later classifies it as already completed. Progress accounting remains stricter:
-    // an already-satisfied transition still does not reset prose/ceiling watchdogs.
-    if (requireToolOnNextProviderRequest) {
-      requireToolOnNextProviderRequest = false;
-      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({ stage, tool: event.toolName, alreadySatisfied: blocked?.alreadySatisfied === true })}`);
+    if (satisfiedProviderForcing) {
+      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({
+        stage,
+        tool: event.toolName,
+        alreadySatisfied: blocked?.alreadySatisfied === true,
+        unavailable: false,
+      })}`);
     }
     if (!blocked?.alreadySatisfied) {
       actionTurnAttemptedTool = true;
@@ -1792,8 +1878,9 @@ export default function (pi) {
       // Rarely, Pi may also classify the 400/422 body text as retryable; in that case this
       // queued steer can be delivered in addition to Pi's own retry. The forcing flag is already
       // cleared, so the overlap is bounded and cannot create a forced-request loop.
+      const activeToolNames = pi.getActiveTools();
       await pi.sendUserMessage(
-        `RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing. ${activeToolGuidance(pi.getActiveTools())}`,
+        `RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
         { deliverAs: 'steer' },
       );
       // Pi continues because sendUserMessage() queues a steer consumed by its post-agent-run loop;
@@ -1949,16 +2036,22 @@ export default function (pi) {
     }
 
     if (runtimeActionRequired && !controller.turnMadeProgress && !loopGuardSteeredThisTurn) {
-      const currentToolGuidance = activeToolGuidance(pi.getActiveTools());
+      const activeToolNames = pi.getActiveTools();
+      const currentToolGuidance = activeToolGuidance(activeToolNames);
+      const semantics = taskSpecificToolGuidance(activeToolNames, {
+        ceilingHit: stage === 'implementer' && ceilingWithoutToolTurns > 0,
+        preComplexityRequired,
+        postComplexityRequired,
+      });
       const directive = stage === 'implementer' && ceilingWithoutToolTurns > 0
-        ? `RUNTIME: your last response used the entire ${actionCap || 'output'}-token ceiling without calling any tool. Do not draft, outline, or reason through file contents in this session; that output is discarded. In the next response call a tool immediately. ${currentToolGuidance}`
+        ? `RUNTIME: your last response used the entire ${actionCap || 'output'}-token ceiling without calling any tool. Do not draft, outline, or reason through file contents in this session; that output is discarded. In the next response call a tool immediately. ${currentToolGuidance} ${semantics}`
         : preComplexityRequired
-        ? `RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. ${currentToolGuidance}`
+        ? `RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. ${currentToolGuidance} ${semantics}`
         : postComplexityRequired
-          ? `RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. ${currentToolGuidance}`
+          ? `RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. ${currentToolGuidance} ${semantics}`
           : stage === 'implementer'
-            ? `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. ${currentToolGuidance} Verification status: ${verificationLifecycleGuidance()}`
-            : `RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. ${currentToolGuidance}`;
+            ? `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. ${currentToolGuidance} ${semantics} Verification status: ${verificationLifecycleGuidance()}`
+            : `RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. ${currentToolGuidance} ${semantics}`;
       const reason = stage === 'implementer' && ceilingWithoutToolTurns > 0
         ? `ceiling without tool (${ceilingWithoutToolTurns}/${MAX_CEILING_WITHOUT_TOOL_TURNS})`
         : actionRequiredProseOnlyTurns > 0
