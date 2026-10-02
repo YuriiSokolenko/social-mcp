@@ -50,7 +50,7 @@ repository code. The `pi-agent` pool does not receive the Docker socket.
 
 The general pool can optionally mount a persistent host pip cache by setting
 `PIP_CACHE_HOST_DIR` in the host `.env`. The source must already exist and be
-owned by the `runner` UID/GID from the general worker image; the manager uses
+owned by `runner` (UID:GID `1001:1001` in the current general worker image); the manager uses
 Docker's `--mount` syntax so a missing source fails instead of creating a root
 owned directory. Leave it unset to disable the mount. This variable is wired
 only to `general-runner-manager`; the Pi pool does not receive it. For up to
