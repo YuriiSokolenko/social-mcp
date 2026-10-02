@@ -311,8 +311,66 @@ test('legacy run_check records without attempt_id still participate in current-r
   delete legacyFailure.attempt_id;
 
   assert.equal(
-    latestUnresolvedRunCheckFailure([legacyFailure], { runId: 'run-1' }),
+    latestUnresolvedRunCheckFailure([legacyFailure], { runId: 'run-1', stage: 'implementer' }),
     legacyFailure,
+  );
+});
+
+test('an unreconstructable newer failure does not hide an older exact recovery obligation', () => {
+  const older = focused({
+    kind: 'ruff',
+    scope: { paths: ['src/a.py'] },
+    status: 'fail',
+    run_id: 'run-1',
+    stage: 'implementer',
+  });
+  const malformedNewer = focused({
+    kind: 'pytest',
+    scope: { whole_repo: true },
+    status: 'fail',
+    run_id: 'run-1',
+    stage: 'implementer',
+  });
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure([older, malformedNewer], { runId: 'run-1', stage: 'implementer' }),
+    older,
+  );
+});
+
+test('recovery selection ignores run_check failures from other stages', () => {
+  const implementerFailure = focused({
+    kind: 'ruff',
+    scope: { paths: ['src/a.py'] },
+    status: 'fail',
+    run_id: 'run-1',
+    stage: 'implementer',
+  });
+  const reviewerFailure = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_review.py::test_case'] },
+    status: 'fail',
+    run_id: 'run-1',
+    stage: 'reviewer',
+  });
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure([implementerFailure, reviewerFailure], { runId: 'run-1', stage: 'implementer' }),
+    implementerFailure,
+  );
+});
+
+test('runCheckRequestForRecord rejects mixed scopes instead of replaying a different check', () => {
+  assert.throws(
+    () => runCheckRequestForRecord(focused({
+      kind: 'pytest',
+      scope: {
+        paths: ['src/a.py'],
+        targets: ['tests/test_a.py::test_case'],
+      },
+      status: 'fail',
+    })),
+    /ambiguous or unsupported scope/,
   );
 });
 
