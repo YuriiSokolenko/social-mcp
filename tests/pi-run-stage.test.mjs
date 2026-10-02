@@ -27,6 +27,30 @@ function specFor(stage) {
   });
 }
 
+function implementerStartup(extraEnv = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-implementer-startup-'));
+  const issueContext = join(dir, 'issue.json');
+  writeFileSync(issueContext, JSON.stringify({
+    number: 42,
+    title: 'Exercise implementer startup',
+    body: 'Verify result-tool mode ordering.',
+  }));
+
+  return buildStageRunSpec({
+    stage: 'implementer',
+    cwd: '/work',
+  }, {
+    RUNNER_TEMP: dir,
+    GITHUB_WORKSPACE: process.cwd(),
+    PI_MODEL: 'model-x',
+    PI_PROVIDER: 'provider-x',
+    PI_MODEL_BASE_URL: 'http://model/v1',
+    ISSUE: '42',
+    PI_ISSUE_CONTEXT: issueContext,
+    ...extraEnv,
+  });
+}
+
 test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => {
   const env = {
     RUNNER_TEMP: '/tmp/runner',
@@ -230,6 +254,41 @@ test('Pi backend invocation keeps the legacy extension and CLI argument order', 
   assert.equal(invocation.pi.options.env.PI_STAGE, 'implementer');
   assert.equal(invocation.filter.options.env.PI_CALL, 'main');
   assert.deepEqual(invocation.filter.options.stdio, ['pipe', 'inherit', 'inherit']);
+});
+
+test('restored implementer env reaches the Pi child before result-tool extension registration', () => {
+  const resumePatch = '/tmp/pi-resume.patch';
+  const { spec, workspace } = implementerStartup({
+    PI_RESUME_ACTIVE: 'true',
+    PI_RESUME_PATCH: resumePatch,
+  });
+  const invocation = buildPiInvocation(spec, workspace);
+
+  assert.equal(invocation.pi.options.env.PI_RESUME_ACTIVE, 'true');
+  assert.equal(invocation.pi.options.env.PI_RESUME_PATCH, resumePatch);
+  assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR, undefined);
+  assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
+});
+
+test('validation-repair env reaches the Pi child before result-tool extension registration', () => {
+  const { spec, workspace } = implementerStartup();
+  const repair = createValidationRepairSpec(spec, new Error('ruff failed'), 1);
+  const invocation = buildPiInvocation(repair, workspace);
+
+  assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR, 'true');
+  assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR_ATTEMPT, '1');
+  assert.equal(invocation.pi.options.env.PI_CALL, 'repair');
+  assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
+});
+
+test('fresh implementer starts without restored or validation-repair mode env', () => {
+  const { spec, workspace } = implementerStartup();
+  const invocation = buildPiInvocation(spec, workspace);
+
+  assert.equal(invocation.pi.options.env.PI_RESUME_ACTIVE, undefined);
+  assert.equal(invocation.pi.options.env.PI_RESUME_PATCH, undefined);
+  assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR, undefined);
+  assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
 });
 
 test('only stages offering the coding session persist a forkable session', () => {
