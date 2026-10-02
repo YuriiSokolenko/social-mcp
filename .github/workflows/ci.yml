@@ -55,6 +55,7 @@ jobs:
     timeout-minutes: 15
     env:
       COMPOSE_PROJECT_NAME: social-mcp-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DOCKER_BUILDKIT: "1"
 
     steps:
       - name: Checkout
