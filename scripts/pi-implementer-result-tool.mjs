@@ -9,6 +9,11 @@ import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
 
 const lines = (text) => text.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
 const gitPaths = (text) => text.split('\0').filter(Boolean);
+function changedPathsAgainstBase() {
+  const tracked = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
+  const untracked = gitPaths(git(['ls-files', '--others', '--exclude-standard', '-z']).out);
+  return [...new Set([...tracked, ...untracked])].sort();
+}
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
 
 function restoredWork() {
@@ -66,7 +71,7 @@ export default function (pi) {
         integrateLatestDev({
           conflictMessage: files => `Latest dev conflicts while verifying blocked work: ${files.join(', ')}`,
         });
-        const changedPaths = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
+        const changedPaths = changedPathsAgainstBase();
         const dirty = lines(git(['status', '--porcelain', '--untracked-files=all']).out);
         if (changedPaths.length || dirty.length) {
           throw new Error('blocked_reason requires a clean worktree with zero diff against latest dev');
@@ -108,7 +113,7 @@ export default function (pi) {
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
       });
-      const changedPaths = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
+      const changedPaths = changedPathsAgainstBase();
       const hasDiff = changedPaths.length > 0;
       let data;
 
