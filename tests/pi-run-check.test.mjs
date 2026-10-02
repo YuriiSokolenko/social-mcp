@@ -65,6 +65,29 @@ test('python_compile passes on valid source and reports a syntax error with file
   assert.ok(fail.diagnostics[0].message.length > 0);
 });
 
+test('focused validation fails early when a top-level package duplicates the configured src-layout package', async t => {
+  const dir = worktree({
+    'src/demo_pkg/__init__.py': '',
+    'demo_pkg/__init__.py': '',
+    'probe.py': 'answer = 42\\n',
+    'tests/a.test.mjs': "import test from 'node:test'; test('ok', () => {});\n",
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const result = await runCheck(
+    dir,
+    { kind: 'python_compile', paths: ['probe.py'] },
+    directOptions({ bins: { python: pythonBin ?? 'python3' } }),
+  );
+  assert.equal(result.status, 'fail');
+  assert.equal(result.exit_code, null);
+  assert.equal(result.diagnostics[0].code, 'DuplicatePackageRoot');
+  assert.equal(result.diagnostics[0].file, 'demo_pkg/');
+  assert.match(result.diagnostics[0].message, /src\/demo_pkg\//);
+
+  const nodeProfile = await runCheck(dir, { kind: 'profile', profile: 'node_tests' }, directOptions());
+  assert.equal(nodeProfile.status, 'pass');
+});
+
 test('newly created smoke file compiles with a worktree-absolute path', { skip: !hasPython }, async t => {
   const dir = worktree();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

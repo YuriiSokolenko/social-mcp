@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runProductChecks, runRuffCheck } from '../scripts/pi-common/product-checks.mjs';
+import { duplicatePackageRootDiagnostics } from '../scripts/pi-common/package-root-check.mjs';
 import { readValidationLedger } from '../scripts/pi-common/validation-ledger.mjs';
 
 function fixture(t, { semanticFailure = false } = {}) {
@@ -164,6 +165,7 @@ test('a full passing run of checks.final records one pass entry per step in the 
   runProductChecks({ cwd: root, ledgerPath });
   const { records } = readValidationLedger(ledgerPath);
   assert.deepEqual(records.map(r => [r.kind, r.status, r.source]), [
+    ['package_roots', 'pass', 'checks_final'],
     ['ruff', 'pass', 'checks_final'],
     ['git_diff_check', 'pass', 'checks_final'],
     ['pytest', 'pass', 'checks_final'],
@@ -192,6 +194,7 @@ test('a mid-pipeline checks.final failure records the failing step and not_run f
   assert.throws(() => runProductChecks({ cwd: root, ledgerPath }));
   const { records } = readValidationLedger(ledgerPath);
   assert.deepEqual(records.map(r => [r.kind, r.status]), [
+    ['package_roots', 'pass'],
     ['ruff', 'fail'],
     ['git_diff_check', 'not_run'],
     ['pytest', 'not_run'],
@@ -208,5 +211,54 @@ test('missing Ruff is reported as a check infrastructure failure', t => {
     assert.throws(() => runRuffCheck(root), /check: ruff could not run:.*ENOENT/);
   } finally {
     process.env.PATH = originalPath;
+  }
+});
+
+test('product checks reject a top-level Python package that duplicates a canonical src-layout package', t => {
+  const { root } = fixture(t);
+  fs.mkdirSync(path.join(root, 'src', 'demo_pkg'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'demo_pkg', '__init__.py'), '');
+  fs.mkdirSync(path.join(root, 'demo_pkg'));
+  fs.writeFileSync(path.join(root, 'demo_pkg', '__init__.py'), '');
+
+  assert.throws(() => runProductChecks({ cwd: root }), error => {
+    assert.match(error.message, /DuplicatePackageRoot/);
+    assert.match(error.message, /demo_pkg\//);
+    assert.match(error.message, /src\/demo_pkg\//);
+    assert.match(error.message, /checks\.packageRoots\.allowDuplicatePackages/);
+    return true;
+  });
+});
+
+test('package-root guard ignores unrelated top-level directories and supports intentional duplicate roots', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'package-roots-'));
+  try {
+    fs.mkdirSync(path.join(root, 'src', 'demo_pkg'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'demo_pkg', '__init__.py'), '');
+    fs.mkdirSync(path.join(root, 'tools'));
+    fs.writeFileSync(path.join(root, 'tools', 'helper.py'), '');
+    assert.deepEqual(
+      duplicatePackageRootDiagnostics(root, { canonicalRoots: ['src'], allowDuplicatePackages: [] }),
+      [],
+    );
+
+    fs.mkdirSync(path.join(root, 'demo_pkg', 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'demo_pkg', 'node_modules', 'foreign.py'), '');
+    assert.deepEqual(
+      duplicatePackageRootDiagnostics(root, { canonicalRoots: ['src'], allowDuplicatePackages: [] }),
+      [],
+    );
+
+    fs.writeFileSync(path.join(root, 'demo_pkg', '__init__.py'), '');
+    assert.equal(
+      duplicatePackageRootDiagnostics(root, { canonicalRoots: ['src'], allowDuplicatePackages: [] }).length,
+      1,
+    );
+    assert.deepEqual(
+      duplicatePackageRootDiagnostics(root, { canonicalRoots: ['src'], allowDuplicatePackages: ['demo_pkg'] }),
+      [],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
