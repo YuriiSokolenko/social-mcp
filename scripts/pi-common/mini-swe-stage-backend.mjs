@@ -150,7 +150,7 @@ function writeImplementationResult(spec) {
   integrateLatestDev({
     conflictMessage: files => `Latest dev conflicts with the mini-swe implementation: ${files.join(', ')}`,
   });
-  const changedPaths = gitPaths(git(['diff', '--name-only', '-z', baseRef()]).out);
+  const changedPaths = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
   if (!changedPaths.length) {
     throw new Error('mini-swe-agent submitted without repository changes; experimental backend does not infer already-satisfied');
   }
