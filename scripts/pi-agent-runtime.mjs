@@ -500,12 +500,12 @@ export default function (pi) {
 
   function recordRuntimeAbort(failureCode, reason, details = {}) {
     const record = {
+      ...details,
       schema_version: 1,
       stage,
       failure_class: 'model_execution_abort',
       failure_code: failureCode,
       reason,
-      ...details,
     };
     // A coding-session fork is recoverable by its parent Implementer. Keep its abort in logs,
     // but never let a nested fork leave job-level failure provenance behind.
@@ -517,8 +517,8 @@ export default function (pi) {
     if (!failureFile) return;
     try {
       fs.mkdirSync(path.dirname(failureFile), { recursive: true });
-      const tempFile = `${failureFile}.${process.pid}.tmp`;
-      fs.writeFileSync(tempFile, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
+      const tempFile = `${failureFile}.${process.pid}.${randomUUID()}.tmp`;
+      fs.writeFileSync(tempFile, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
       fs.renameSync(tempFile, failureFile);
       console.error(`PI_RUNTIME_FAILURE ${JSON.stringify(record)}`);
     } catch (error) {
@@ -617,13 +617,26 @@ export default function (pi) {
         });
       }
       if (requireToolOnNextProviderRequest) {
-        const constrained = requireToolChoiceInPayload(patched);
-        if (constrained !== patched) {
-          console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({ stage, mode: 'required', activeTools: pi.getActiveTools() })}`);
-          patched = constrained;
+        const productiveState = controller.productiveProgressState();
+        if (productiveState !== 'action_required') {
+          requireToolOnNextProviderRequest = false;
+          console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
+        } else {
+          const constrained = requireToolChoiceInPayload(patched);
+          if (constrained !== patched) {
+            console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({ stage, mode: 'required', activeTools: pi.getActiveTools() })}`);
+            patched = constrained;
+          }
         }
       }
       return patched;
+    });
+    pi.on('after_provider_response', (event) => {
+      const status = Number(event?.status ?? 0);
+      if (requireToolOnNextProviderRequest && status >= 400 && status < 500) {
+        requireToolOnNextProviderRequest = false;
+        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'provider_4xx', status })}`);
+      }
     });
   }
 
@@ -1116,14 +1129,15 @@ export default function (pi) {
     }
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
-    // A repeated already-completed transition is not a real tool attempt: it must not reset the
-    // prose-only / ceiling-without-tool watchdogs or satisfy an armed provider-level tool requirement.
+    // Any provider-emitted tool call satisfies the transport-level forcing requirement, even if
+    // the controller later classifies it as already completed. Progress accounting remains stricter:
+    // an already-satisfied transition still does not reset prose/ceiling watchdogs.
+    if (requireToolOnNextProviderRequest) {
+      requireToolOnNextProviderRequest = false;
+      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({ stage, tool: event.toolName, alreadySatisfied: blocked?.alreadySatisfied === true })}`);
+    }
     if (!blocked?.alreadySatisfied) {
       actionTurnAttemptedTool = true;
-      if (requireToolOnNextProviderRequest) {
-        requireToolOnNextProviderRequest = false;
-        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({ stage, tool: event.toolName })}`);
-      }
     }
     if (blocked) {
       if (blocked.alreadySatisfied) {
