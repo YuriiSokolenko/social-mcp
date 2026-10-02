@@ -516,6 +516,12 @@ test('run_check is exposed in the action-required surface only while a permit ex
 test('Pi exposes run_check without enabling unrestricted bash, and the core stays backend-neutral', () => {
   const runtime = fs.readFileSync(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url), 'utf8');
   assert.match(runtime, /name: 'run_check'/);
+  assert.match(runtime, /const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check'/);
+  assert.match(runtime, /name: RETRY_FAILED_CHECK_TOOL/);
+  assert.match(runtime, /unrestrictedActiveTools\.filter\(name => name === RETRY_FAILED_CHECK_TOOL\)/);
+  assert.match(runtime, /failedCheckRecovery && event\.toolName === 'run_check'/);
+  assert.match(runtime, /controllerToolName = event\.toolName === RETRY_FAILED_CHECK_TOOL \? 'run_check'/);
+  assert.ok(stageConfig('implementer').productiveProgress.codingSessionTools.includes('retry_last_failed_check'));
   assert.equal(stageConfig('implementer').boundedDirectBash, true);
   const core = fs.readFileSync(new URL('../scripts/pi-common/run-check.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(core, /typebox|pi-agent-runtime|registerTool/);
