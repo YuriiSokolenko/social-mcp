@@ -180,13 +180,17 @@ export function reconcile(records) {
  *
  * This intentionally models recovery as one state machine rather than deriving
  * a backlog from every historical failed scope in the append-only ledger.
+ * Callers may scope the scan to one runtime run/attempt; final verification
+ * still reconciles the complete shared ledger across attempts.
  */
-export function latestUnresolvedRunCheckFailure(records) {
+export function latestUnresolvedRunCheckFailure(records, { runId = null, attemptId = null } = {}) {
   let recovery = null;
   let recoveryKey = null;
 
   for (const record of records) {
     if (record.source !== 'run_check') continue;
+    if (runId != null && record.run_id !== runId) continue;
+    if (attemptId != null && record.attempt_id !== attemptId) continue;
 
     if (!recovery) {
       if (record.status === 'fail') {
