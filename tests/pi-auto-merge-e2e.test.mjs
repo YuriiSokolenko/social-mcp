@@ -43,7 +43,10 @@ function writeMock(mockFile, storeFile) {
       if (method === 'GET' && pathname.endsWith('/actions/workflows/ci.yml/runs')) {
         const headSha = searchParams.get('head_sha');
         const event = searchParams.get('event');
-        if (event === 'push') {
+        if (event === 'pull_request') {
+          return Response.json({ workflow_runs: store.ciRunsBySha?.[headSha] ?? store.ciRuns ?? [] });
+        }
+        if (event === 'push' || searchParams.get('branch') === 'dev') {
           const workflowRuns = store.devCiRuns ?? [{
             id: 900,
             event: 'push',
@@ -53,7 +56,7 @@ function writeMock(mockFile, storeFile) {
           }];
           return Response.json({ workflow_runs: workflowRuns });
         }
-        return Response.json({ workflow_runs: store.ciRunsBySha?.[headSha] ?? store.ciRuns ?? [] });
+        return Response.json({ workflow_runs: [] });
       }
 
       const jobsMatch = /\\/actions\\/runs\\/(\\d+)\\/jobs$/.exec(pathname);
@@ -120,7 +123,8 @@ function writeMock(mockFile, storeFile) {
 
       const dispatchMatch = /\\/actions\\/workflows\\/([^/]+)\\/dispatches$/.exec(pathname);
       if (dispatchMatch && method === 'POST') {
-        if (store.dispatchError) return new Response(store.dispatchError, { status: 500 });
+        const dispatchError = store.dispatchErrors?.[dispatchMatch[1]] ?? store.dispatchError;
+        if (dispatchError) return new Response(dispatchError, { status: 500 });
         store.dispatched = store.dispatched ?? [];
         store.dispatched.push({ workflow: dispatchMatch[1], inputs: JSON.parse(options.body).inputs });
         save(store);
@@ -155,10 +159,11 @@ test('merge gate squash-merges a passed, unchanged, safe PR', () => {
 
   const result = run(storeFile);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /merged sha-1 after green PR CI; dev push CI now validates the merged result/);
+  assert.match(result.stdout, /merged sha-1 after green PR CI; dispatched explicit dev CI for the merged result/);
 
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.merged, { sha: 'sha-1', merge_method: 'squash' });
+  assert.deepEqual(store.dispatched, [{ workflow: 'ci.yml' }]);
 });
 
 test('action_required PR CI is infrastructure blocked and diagnostics retain the conclusion', () => {
@@ -407,7 +412,10 @@ test('code failure on one PR is routed to repair while a later green PR can stil
 
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.ok(store.prs['7'].labels.some(label => label.name === 'review:changes-requested'));
-  assert.deepEqual(store.dispatched, [{ workflow: 'pi-pr-fix.yml', inputs: { pr_number: '7' } }]);
+  assert.deepEqual(store.dispatched, [
+    { workflow: 'pi-pr-fix.yml', inputs: { pr_number: '7' } },
+    { workflow: 'ci.yml' },
+  ]);
   assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
 });
 
@@ -445,7 +453,7 @@ test('infrastructure failure retries once without PR Fix and does not block a la
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.reruns, [17]);
   assert.deepEqual(store.rerunActions, ['rerun']);
-  assert.equal(store.dispatched, undefined);
+  assert.deepEqual(store.dispatched, [{ workflow: 'ci.yml' }]);
   assert.ok(store.prs['7'].labels.some(label => label.name === 'review:passed'));
   assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
 });
@@ -605,7 +613,7 @@ test('PR Fix dispatch failure transfers ownership durably and does not block a l
     jobsByRun: {
       25: [{ name: 'test', steps: [{ name: 'Pytest', conclusion: 'failure' }] }],
     },
-    dispatchError: 'dispatch unavailable',
+    dispatchErrors: { 'pi-pr-fix.yml': 'dispatch unavailable' },
   }));
 
   const result = run(storeFile);
@@ -617,7 +625,7 @@ test('PR Fix dispatch failure transfers ownership durably and does not block a l
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.ok(store.prs['7'].labels.some(label => label.name === 'review:changes-requested'));
   assert.ok(!store.prs['7'].labels.some(label => label.name === 'review:passed'));
-  assert.equal(store.dispatched, undefined);
+  assert.deepEqual(store.dispatched, [{ workflow: 'ci.yml' }]);
   assert.match(store.comments[0].body, /Reconciler owns recovery/);
   assert.deepEqual(store.merges, [{ pr: 8, sha: 'sha-2', merge_method: 'squash' }]);
 });
