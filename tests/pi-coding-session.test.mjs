@@ -381,7 +381,7 @@ function runtimeScenario(mode) {
       fs.rmSync(cwd + '/config.py');
       for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
 
-      if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) {
+      if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort'].includes(mode)) {
         // First action_required response is prose only: the runtime arms provider-level
         // required-tool forcing and keeps it armed until a real exposed tool is attempted.
         handlers.get('turn_start')({ turnIndex: turn });
@@ -437,6 +437,8 @@ function runtimeScenario(mode) {
           const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
           assert.equal(fallback.tool_choice, undefined, '422 clears provider-level forced-tool fallback');
           assert.match(steers.at(-1), /provider rejected the provider-level required-tool request/);
+          assert.match(steers.at(-1), /CURRENTLY EXPOSED TOOLS/);
+          assert.match(steers.at(-1), /submit_result with blocked_reason/);
           process.exit(0);
         }
 
@@ -452,10 +454,28 @@ function runtimeScenario(mode) {
             input: {},
           }, ctx);
           assert.ok(repeated?.alreadySatisfied || /already/i.test(String(repeated?.reason ?? '')), 'repeat is rejected as already completed');
+          assert.match(String(repeated.reason), /CURRENTLY EXPOSED TOOLS/);
           const afterRepeat = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
           assert.equal(afterRepeat.tool_choice, undefined, 'an emitted tool call consumes provider forcing even when it is a no-op');
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
           assert.equal(aborts, 1, 'already-satisfied repeat still counts as no productive action and trips the watchdog');
+          process.exit(0);
+        }
+
+        if (mode === 'action-hidden-abort') {
+          handlers.get('turn_start')({ turnIndex: turn });
+          const hidden = await handlers.get('tool_call')({
+            toolName: 'read',
+            toolCallId: 'hidden-' + turn,
+            input: { path: 'config.py' },
+          }, ctx);
+          assert.equal(hidden.block, true);
+          assert.match(hidden.reason, /not currently exposed/);
+          assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
+          const afterHidden = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(afterHidden.tool_choice, undefined, 'hidden provider-emitted tool clears transport forcing');
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 1, 'hidden tool remains non-progress and trips the second-strike watchdog');
           process.exit(0);
         }
 
@@ -609,6 +629,13 @@ test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover on
 test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
   const logs = runtimeScenario('action-repeat-abort');
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"alreadySatisfied":true/);
+  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+});
+
+test('a hidden provider-emitted tool clears forcing but remains non-progress and aborts on the watchdog', () => {
+  const logs = runtimeScenario('action-hidden-abort');
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"read".*"unavailable":true/);
   assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
