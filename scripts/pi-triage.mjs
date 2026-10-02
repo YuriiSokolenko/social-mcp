@@ -34,7 +34,8 @@ async function transitionIssue(number, action) {
 
 
 // Issues already in one of these states are owned by another stage of the
-// pipeline; triage never re-classifies them. `pi:blocked` is a durable stop.
+// pipeline; triage never re-classifies them. `triage:ready` is intentionally
+// excluded because it is the explicit ownership label for this stage. `pi:blocked` is a durable stop.
 // `pi:needs-human` is handled separately below. Triage only reconsiders it
 // when its own marker proves that Triage created the state and the body changed;
 // a manually applied `pi:needs-human` label is durable until a human retries it.
@@ -88,6 +89,8 @@ async function candidates() {
     const owned = labelsOf(issue);
     if (pipelineLabels.some(label => owned.has(label))) continue;
     const needsHuman = owned.has(PIPELINE_LABELS.needsHuman);
+    const triageRequested = owned.has(PIPELINE_LABELS.triageReady);
+    if (!triageRequested && !needsHuman) continue;
     const task = issueMetadata(issue);
     let comments = [];
     if (needsHuman) {
@@ -162,6 +165,7 @@ async function main() {
   const [mode, file] = process.argv.slice(2);
   if (!["prepare", "apply"].includes(mode) || !file) usage();
   if (mode === "prepare") {
+    await ensureLabel(PIPELINE_LABELS.triageReady, "c5def5", "Explicitly queued for Pi triage");
     await ensureLabel(PIPELINE_LABELS.queued, "d4c5f9", "Eligible for Pi dispatcher selection");
     await ensureLabel(PIPELINE_LABELS.needsHuman, "fbca04", "Pi finished without a usable repository change");
     const list = await candidates();
