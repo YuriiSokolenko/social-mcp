@@ -34,12 +34,30 @@ test('fallback satisfies preparation without fabricating complexity or permittin
   assert.throws(() => state.enterPreparationFallback(), /attempted, unresolved/);
 });
 
-test('fallback preserves normal mutation, verification, evidence and one-shot budget rules', () => {
-  for (const tool of ['write', 'edit', 'safe_edit', 'structural_edit', 'submit_result']) {
-    assert.equal(fallbackController().checkToolCall(tool, {}), undefined, tool);
-  }
+test('fallback grants exactly two evidence actions and closes the window on exhaustion or mutation', () => {
+  const exhausted = fallbackController();
+  assert.equal(exhausted.productiveProgressState(), 'evidence_allowed');
+  assert.equal(exhausted.checkToolCall('request_large_mutation_budget', {}).block, true);
+  assert.equal(exhausted.checkToolCall('read', { path: 'src' }), undefined);
+  assert.equal(exhausted.productiveProgressState(), 'evidence_allowed');
+  assert.equal(exhausted.checkToolCall('repo_search', { query: 'tests' }), undefined);
+  assert.equal(exhausted.productiveProgressState(), 'action_required');
+  assert.equal(exhausted.checkToolCall('read', { path: 'third' }).block, true);
+
+  const mutated = fallbackController();
+  assert.equal(mutated.checkToolCall('read', { path: 'src' }), undefined);
+  assert.equal(mutated.productiveProgressState(), 'evidence_allowed');
+  assert.equal(mutated.checkToolCall('write', { path: 'example.py', content: 'x' }), undefined);
+  mutated.onToolExecutionEnd('write', false);
+  assert.equal(mutated.productiveProgressState(), 'action_required');
+  assert.equal(mutated.checkToolCall('read', { path: 'tests' }).block, true);
+  assert.equal(mutated.checkToolCall('run_check', {}), undefined, 'successful mutation grants verification');
+});
+
+test('fallback preserves one-shot mutation budget and post-window evidence escape hatch', () => {
   const state = fallbackController();
-  assert.equal(state.checkToolCall('run_check', {}).block, true, 'verification still requires mutation');
+  assert.equal(state.checkToolCall('read', { path: 'src' }), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'tests' }), undefined);
   assert.equal(state.checkToolCall('request_large_mutation_budget', {}), undefined);
   state.onToolExecutionEnd('request_large_mutation_budget', false);
   assert.equal(state.largeMutationBudgetPending(), true);
@@ -52,8 +70,11 @@ test('fallback preserves normal mutation, verification, evidence and one-shot bu
   state.onToolExecutionEnd('run_check', false);
   assert.equal(state.checkToolCall('run_check', {}).block, true);
   assert.equal(state.checkToolCall('submit_result', {}), undefined);
+
   for (const tool of ['read', 'repo_search', 'lsp_goto_definition', 'subagent']) {
     const evidence = fallbackController();
+    assert.equal(evidence.checkToolCall('read', { path: 'src' }), undefined);
+    assert.equal(evidence.checkToolCall('read', { path: 'tests' }), undefined);
     assert.equal(evidence.checkToolCall('need_more_evidence', { missing: 'target', reason: 'resolve edit' }), undefined);
     assert.equal(evidence.checkToolCall(tool, {}), undefined, tool);
     assert.equal(evidence.productiveProgressState(), 'action_required');
@@ -171,10 +192,24 @@ function runtimeScenario(mode) {
         if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'bad-output-schema', 'invalid-complexity', 'missing-reason'].includes(mode)) {
           assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
           assert.equal(prepared.details.complexity, null);
+          assert.equal(prepared.details.evidenceBudget, 2);
           assert.equal('plan' in prepared.details, false);
           assert.match(prepared.content[0].text, /Do not call prepare_implementation again/);
+          assert.match(prepared.content[0].text, /canonical source\/test layout before creating new files/);
+          assert.match(prepared.content[0].text, /up to 2 repository evidence actions/);
           assert.ok(!caps.includes(16384), 'fallback alone must not grant large response');
+          assert.ok(active.includes('read'));
           assert.ok(active.includes('request_large_mutation_budget'));
+          const earlyBudget = await handlers.get('tool_call')({
+            toolName: 'request_large_mutation_budget',
+            input: { reason: 'too early' },
+          }, ctx);
+          assert.equal(earlyBudget.block, true);
+          assert.match(earlyBudget.reason, /finish gathering evidence first/);
+          await call('read', { path: 'src' });
+          assert.ok(active.includes('read'));
+          await call('read', { path: 'tests' });
+          assert.ok(!active.includes('read'));
           if (mode === 'prose') {
             for (let i = 0; i < 2; i++) {
               handlers.get('turn_start')({ turnIndex: turn });
