@@ -35,8 +35,9 @@ async function transitionIssue(number, action) {
 
 // Issues already in one of these states are owned by another stage of the
 // pipeline; triage never re-classifies them. `pi:blocked` is a durable stop.
-// `pi:needs-human` is handled separately below, since triage is exactly what
-// re-reviews those after the issue body changes.
+// `pi:needs-human` is handled separately below. Triage only reconsiders it
+// when its own marker proves that Triage created the state and the body changed;
+// a manually applied `pi:needs-human` label is durable until a human retries it.
 const pipelineLabels = [
   PIPELINE_LABELS.queued, PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr,
   PIPELINE_LABELS.blocked, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.epic,
@@ -93,6 +94,7 @@ async function candidates() {
       comments = await pages(`/issues/${issue.number}/comments`);
       const previousHash = lastTriageHash(comments);
       const currentHash = hashFor(issue.body);
+      if (previousHash === null) continue; // manual needs-human is durable
       if (previousHash === currentHash) continue; // nothing changed since last review
     }
     const dependencies = task.valid
