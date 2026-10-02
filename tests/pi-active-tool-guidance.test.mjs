@@ -149,7 +149,7 @@ test('runtime counts an attempted tool that is absent from the current surface',
         ...process.env,
         PI_STAGE: 'implementer',
         PI_ISSUE_CONTEXT: context,
-        PI_RESUME_ACTIVE: 'false',
+        PI_RESUME_ACTIVE: 'true',
         PI_VALIDATION_REPAIR: 'false',
       },
     });
