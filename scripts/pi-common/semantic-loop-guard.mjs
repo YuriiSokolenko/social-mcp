@@ -80,15 +80,20 @@ export function boundedStableHash(value) {
   return digest(JSON.stringify(normalizeValue(value)));
 }
 
-function boundedResultText(result) {
-  if (typeof result === 'string') return result.slice(0, 4096);
+function explicitResultText(result) {
+  if (typeof result === 'string') return result;
   if (Array.isArray(result?.content)) {
     return result.content
       .filter(item => item?.type === 'text' && typeof item.text === 'string')
       .map(item => item.text)
-      .join('\n')
-      .slice(0, 4096);
+      .join('\n');
   }
+  return null;
+}
+
+function boundedResultText(result) {
+  const explicit = explicitResultText(result);
+  if (explicit != null) return explicit.slice(0, 4096);
   return JSON.stringify(normalizeValue(result)).slice(0, 4096);
 }
 
@@ -103,34 +108,49 @@ const EVIDENCE_COLLECTION_KEYS = Object.freeze([
   'commits',
 ]);
 
-function structuredEvidencePresence(result) {
-  if (!result || typeof result !== 'object') return null;
-  const candidates = [];
-  if (result.structuredContent && typeof result.structuredContent === 'object') candidates.push(result.structuredContent);
-  if (result.details && typeof result.details === 'object') candidates.push(result.details);
-  candidates.push(result);
-
-  for (const candidate of candidates) {
-    for (const key of EVIDENCE_COLLECTION_KEYS) {
-      if (Object.hasOwn(candidate, key) && Array.isArray(candidate[key])) {
-        return candidate[key].length > 0;
-      }
-    }
-
-    const hasStdout = Object.hasOwn(candidate, 'stdout');
-    const hasStderr = Object.hasOwn(candidate, 'stderr');
-    if (hasStdout || hasStderr) {
-      const stdout = typeof candidate.stdout === 'string' ? candidate.stdout.trim() : '';
-      const stderr = typeof candidate.stderr === 'string' ? candidate.stderr.trim() : '';
-      return Boolean(stdout || stderr);
-    }
-
-    if (Object.hasOwn(candidate, 'output') && typeof candidate.output === 'string') {
-      return candidate.output.trim().length > 0;
+function candidateEvidencePresence(candidate) {
+  for (const key of EVIDENCE_COLLECTION_KEYS) {
+    if (Object.hasOwn(candidate, key) && Array.isArray(candidate[key])) {
+      return candidate[key].length > 0;
     }
   }
 
+  const hasStdout = Object.hasOwn(candidate, 'stdout');
+  const hasStderr = Object.hasOwn(candidate, 'stderr');
+  if (hasStdout || hasStderr) {
+    const stdout = typeof candidate.stdout === 'string' ? candidate.stdout.trim() : '';
+    const stderr = typeof candidate.stderr === 'string' ? candidate.stderr.trim() : '';
+    return Boolean(stdout || stderr);
+  }
+
+  if (Object.hasOwn(candidate, 'output') && typeof candidate.output === 'string') {
+    return candidate.output.trim().length > 0;
+  }
+
   return null;
+}
+
+function structuredEvidencePresence(result) {
+  if (!result || typeof result !== 'object') return null;
+
+  // Explicit structured payloads are authoritative: they describe the tool's
+  // evidence result even when the human-readable content merely serializes it.
+  const candidates = [];
+  if (result.structuredContent && typeof result.structuredContent === 'object') candidates.push(result.structuredContent);
+  if (result.details && typeof result.details === 'object') candidates.push(result.details);
+  for (const candidate of candidates) {
+    const presence = candidateEvidencePresence(candidate);
+    if (presence != null) return presence;
+  }
+
+  // Top-level collection names are less trustworthy because wrappers may use
+  // generic fields such as items/files/entries for unrelated metadata. When
+  // explicit text exists, let the text decide instead of allowing an unrelated
+  // empty top-level collection to erase useful evidence.
+  const explicitText = explicitResultText(result);
+  if (explicitText?.trim()) return null;
+
+  return candidateEvidencePresence(result);
 }
 
 export function hasMeaningfulEvidence(result, toolName = '') {

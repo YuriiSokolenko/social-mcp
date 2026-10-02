@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { ProgressController } from '../scripts/pi-common/progress-controller.mjs';
 import { safeEdit } from '../scripts/pi-common/safe-edit.mjs';
 import {
+  hasMeaningfulEvidence,
   loopGuardLimits,
   SemanticLoopGuard,
   repositoryStateFingerprint,
@@ -24,6 +25,35 @@ function observation(guard, overrides = {}) {
     ...overrides,
   });
 }
+
+test('hasMeaningfulEvidence handles empty and populated structured shell output', () => {
+  assert.equal(hasMeaningfulEvidence({
+    structuredContent: { stdout: '', stderr: '' },
+  }, 'bash'), false);
+  assert.equal(hasMeaningfulEvidence({
+    structuredContent: { stdout: '', stderr: 'warning from tool' },
+  }, 'bash'), true);
+});
+
+test('hasMeaningfulEvidence treats empty arrays and empty objects as no evidence', () => {
+  assert.equal(hasMeaningfulEvidence([], 'repo_search'), false);
+  assert.equal(hasMeaningfulEvidence({}, 'repo_search'), false);
+});
+
+test('useful text is not masked by an unrelated empty top-level collection', () => {
+  assert.equal(hasMeaningfulEvidence({
+    items: [],
+    content: [{ type: 'text', text: 'useful repository evidence' }],
+  }, 'repo_search'), true);
+});
+
+test('authoritative structured empty collection remains no evidence despite serialized content', () => {
+  assert.equal(hasMeaningfulEvidence({
+    content: [{ type: 'text', text: '{"matches":[]}' }],
+    details: { matches: [] },
+  }, 'repo_search'), false);
+});
+
 
 function failedEditSteer(guard) {
   let failure;
@@ -275,6 +305,33 @@ test('meaningful repository evidence clears an outstanding loop steer', () => {
     isError: true,
   });
   assert.equal(nextFailure.action, 'steer');
+});
+
+test('meaningful evidence consumes a pending declaration without changing its normal classification', () => {
+  const guard = new SemanticLoopGuard();
+  observation(guard, {
+    tool: 'need_more_evidence',
+    input: { missing: 'where Foo is defined', reason: 'need the implementation target' },
+    result: { ok: true },
+  });
+
+  const useful = observation(guard, {
+    tool: 'repo_search',
+    input: { query: 'Foo' },
+    result: {
+      details: { matches: [{ path: 'src/foo.js', line: 7 }] },
+      content: [{ type: 'text', text: 'src/foo.js:7' }],
+    },
+  });
+  assert.equal(useful.classification, 'success_new_observation');
+  assert.equal(useful.declaredEvidence, true);
+
+  const nextEmpty = observation(guard, {
+    tool: 'repo_search',
+    input: { query: 'Bar' },
+    result: { details: { matches: [] } },
+  });
+  assert.equal(nextEmpty.classification, 'success_no_evidence');
 });
 
 test('declared missing fact grants exactly one empty evidence result', () => {
