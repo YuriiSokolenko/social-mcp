@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import { projectConfig } from '../scripts/pi-common/project-config.mjs';
+
 // Real runtime with a stubbed pi host: after PREPARATION_FALLBACK, subagents_enable and
 // lsp_start_server succeed once; the runtime must materialize state, update the tool surface,
 // and turn repeats into already_satisfied without executing them.
@@ -13,6 +15,7 @@ test('runtime materializes completed transitions into context and tool surface',
   try {
     const context = path.join(dir, 'issue.json');
     const loader = path.join(dir, 'loader.mjs');
+    const expectedFinalPipeline = projectConfig().checks.final.map(step => step.name).join(' -> ');
     fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
     fs.writeFileSync(path.join(dir, 'example.py'), 'value = 1\n');
     fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
@@ -24,6 +27,8 @@ test('runtime materializes completed transitions into context and tool surface',
     }`);
     const script = `
       import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
       import { EventEmitter } from 'node:events';
       const { default: runtime } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
       const bus = new EventEmitter();
@@ -57,6 +62,7 @@ test('runtime materializes completed transitions into context and tool surface',
         if (blocked) return blocked;
         let result = { content: [{ type: 'text', text: 'ok' }] };
         if (name === 'lsp_start_server') startups++;
+        if (name === 'edit') fs.appendFileSync(path.join(ctx.cwd, input.path), '# mutation ' + turn + '\n');
         if (tools.has(name) && name !== 'run_check') result = await tools.get(name).execute(event.toolCallId, input, null, null, ctx);
         if (enables) active.push(enables); // extension adds the newly enabled tool
         await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
@@ -67,6 +73,9 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.ok(!active.includes('prepare_implementation'), 'prepare_implementation removed');
       assert.ok(!active.includes('run_check'), 'run_check hidden before a mutation grants a permit');
       assert.ok(messages.some(m => /preparation: fallback-complete/.test(m)), 'preparation state injected');
+      const beforeMutationGuidance = messages.join('\n');
+      assert.match(beforeMutationGuidance, /run_check is not yet available; it becomes available after a successful mutation/);
+      assert.doesNotMatch(beforeMutationGuidance, /run_check is exhausted for the current mutation state/);
 
       await call('edit', { path: 'example.py' });
       assert.ok(active.includes('run_check'), 'run_check exposed after a successful mutation grants a permit');
@@ -75,8 +84,22 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.ok(!active.includes('run_check'), 'run_check hidden immediately after its permit is consumed');
       const validationGuidance = messages.slice(validationMessageStart).join('\n');
       assert.match(validationGuidance, /run_check is exhausted for the current mutation state and is unavailable now/);
+      assert.match(
+        validationGuidance,
+        new RegExp('Authoritative final checks still run automatically after submit_result and before publication: ' +
+          "${expectedFinalPipeline}".replace(/[.*+?^$()|[\]\\]/g, '\\      assert.match(validationGuidance, /run_check is exhausted for the current mutation state and is unavailable now/);
       assert.match(validationGuidance, /Authoritative final checks still run automatically after submit_result and before publication: ruff -> git diff --check -> pytest/);
       assert.doesNotMatch(validationGuidance, /run_check is available once for the current mutation state/);
+
+      await call('subagents_enable', {}, { enables: 'subagent' });')),
+      );
+      assert.doesNotMatch(validationGuidance, /run_check is available once for the current mutation state/);
+
+      await call('edit', { path: 'example.py' });
+      assert.ok(active.includes('run_check'), 'a second successful mutation re-exposes run_check after exhaustion');
+      active = active.filter(name => name !== 'run_check'); // simulate an unrelated control/runtime removal
+      handlers.get('turn_start')({ turnIndex: turn });
+      assert.ok(!active.includes('run_check'), 'permit gating must not resurrect a tool removed by another owner');
 
       await call('subagents_enable', {}, { enables: 'subagent' });
       assert.ok(!active.includes('subagents_enable'), 'subagents_enable removed');
