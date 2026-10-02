@@ -68,8 +68,13 @@ test('runtime materializes completed transitions into context and tool surface',
 
       await call('subagents_enable', {}, { enables: 'subagent' });
       assert.ok(!active.includes('subagents_enable'), 'subagents_enable removed');
-      assert.ok(!active.includes('subagent'), 'subagent hidden while action_required (gate would block it)');
+      assert.ok(active.includes('subagent'), 'subagent remains visible during fallback evidence window');
       assert.ok(messages.some(m => /subagents: enabled/.test(m) && /Do not call subagents_enable again/.test(m)));
+
+      await call('read', { path: 'source-layout' });
+      assert.ok(active.includes('subagent'), 'one fallback evidence attempt remains');
+      await call('read', { path: 'test-layout' });
+      assert.ok(!active.includes('subagent'), 'subagent hidden after fallback evidence is exhausted');
 
       const lsp = { server_id: 'python', workspace_root: ctx.cwd };
       await call('lsp_start_server', lsp);
