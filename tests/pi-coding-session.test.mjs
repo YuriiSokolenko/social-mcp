@@ -374,21 +374,45 @@ function runtimeScenario(mode) {
           nonActionPayload,
           'non-action provider requests without tools are not forced',
         );
+        if (mode === 'prose-force-provider-statuses') {
+          for (const status of [408, 429]) {
+            handlers.get('turn_start')({ turnIndex: turn });
+            const retry = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+            assert.equal(retry.tool_choice, 'required', 'retryable provider status ' + status + ' keeps tool forcing armed');
+            const boundary = await handlers.get('turn_end')({
+              turnIndex: turn++,
+              message: {
+                stopReason: 'error',
+                errorMessage: 'hp-laguna API error (' + status + '): transient provider failure',
+                usage: { output: 0 },
+              },
+            }, ctx);
+            assert.equal(boundary, undefined, 'retryable provider error delegates retry policy to Pi');
+          }
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const rejected = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(rejected.tool_choice, 'required');
+          const boundary = await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: {
+              stopReason: 'error',
+              errorMessage: 'hp-laguna API error (422): required tool choice unsupported',
+              usage: { output: 0 },
+            },
+          }, ctx);
+          assert.equal(boundary?.continue, true, 'request-shape rejection forces one runtime continuation');
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(fallback.tool_choice, undefined, '422 clears provider-level forced-tool fallback');
+          assert.match(steers.at(-1), /provider rejected the provider-level required-tool request/);
+          process.exit(0);
+        }
+
         const constrained = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
         assert.equal(constrained.tool_choice, 'required');
         assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
-
-        if (mode === 'prose-force-provider-statuses') {
-          for (const status of [408, 429]) {
-            handlers.get('after_provider_response')({ status, headers: {} }, ctx);
-            const retry = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-            assert.equal(retry.tool_choice, 'required', 'retryable provider status ' + status + ' keeps tool forcing armed');
-          }
-          handlers.get('after_provider_response')({ status: 422, headers: {} }, ctx);
-          const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-          assert.equal(fallback.tool_choice, undefined, 'non-retryable compatibility status clears forced-tool fallback');
-          process.exit(0);
-        }
 
         if (mode === 'action-repeat-abort') {
           handlers.get('turn_start')({ turnIndex: turn });
@@ -543,11 +567,13 @@ test('first prose-only action-required retry stays forced through a ceiling turn
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
-test('retryable provider 408/429 keep forced tool choice while non-retryable 422 clears it', () => {
+test('provider error turns preserve forcing on 408/429 and recover once from a forced 422', () => {
   const logs = runtimeScenario('prose-force-provider-statuses');
   assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 3);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"reason":"provider_incompatible_status".*"status":422/);
-  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"status":(?:408|429)/);
+  assert.match(logs, /PI_PROVIDER_ERROR_TURN .*"status":408.*"forced":true/);
+  assert.match(logs, /PI_PROVIDER_ERROR_TURN .*"status":429.*"forced":true/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"reason":"provider_request_rejected".*"status":422.*"source":"turn_end"/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
 test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
