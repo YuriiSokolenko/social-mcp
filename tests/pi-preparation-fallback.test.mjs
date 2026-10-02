@@ -374,13 +374,15 @@ function runtimeScenario(mode) {
           assert.equal(prepared.details.complexity, null);
           assert.equal(prepared.details.evidenceBudget, fallbackEvidenceBudget);
           assert.equal('plan' in prepared.details, false);
-          assert.match(prepared.content[0].text, /Do not call prepare_implementation again/);
+          assert.match(prepared.content[0].text, /Do not repeat preparation/);
           assert.ok(prepared.content[0].text.includes('canonical source/test layout is not already clear'));
           assert.ok(prepared.content[0].text.includes('guidance, not a mutation gate'));
           assert.ok(prepared.content[0].text.includes('up to ' + fallbackEvidenceBudget + ' repository evidence attempts'));
-          assert.ok(prepared.content[0].text.includes('LSP lookup, or subagent inspection'));
+          assert.ok(prepared.content[0].text.includes('every accepted non-control evidence action consumes one attempt'));
           assert.ok(prepared.content[0].text.includes('even if it fails or returns no useful result'));
-          assert.ok(prepared.content[0].text.includes('begin_coding_session remains blocked until the evidence window is closed'));
+          assert.ok(prepared.content[0].text.includes('coding-session action becomes valid only after the evidence window is closed'));
+          assert.ok(prepared.content[0].text.includes('Focused verification becomes available only after a successful mutation'));
+          assert.match(prepared.content[0].text, /CURRENTLY EXPOSED TOOLS \(authoritative\):/);
           assert.ok(!caps.includes(16384), 'fallback alone must not grant large response');
           assert.ok(active.includes('read'));
           assert.ok(active.includes('request_large_mutation_budget'));
