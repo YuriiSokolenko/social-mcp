@@ -15,30 +15,25 @@ test('live pi transport emits after_provider_response for a real provider 4xx', 
   const loaded = (await status.json()).data?.map(entry => entry.id) ?? [];
   assert.ok(loaded.includes(expectedModel), 'expected live model is loaded');
 
-  const sourceAgentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent');
-  const sourceModels = path.join(sourceAgentDir, 'models.json');
-  assert.ok(fs.existsSync(sourceModels), 'runner Pi models.json must exist');
-
-  const source = JSON.parse(fs.readFileSync(sourceModels, 'utf8'));
-  const provider = structuredClone(source.providers?.['hp-laguna']);
-  assert.ok(provider && typeof provider === 'object' && !Array.isArray(provider), 'hp-laguna provider must exist');
-
-  provider.baseUrl = DEFAULT_MODEL_BASE_URL;
-  for (const entry of provider.models ?? []) {
-    if (entry && typeof entry === 'object' && !Array.isArray(entry)) entry.baseUrl = DEFAULT_MODEL_BASE_URL;
-  }
-  for (const entry of Object.values(provider.modelOverrides ?? {})) {
-    if (entry && typeof entry === 'object' && !Array.isArray(entry)) entry.baseUrl = DEFAULT_MODEL_BASE_URL;
-  }
+  const provider = {
+    baseUrl: DEFAULT_MODEL_BASE_URL,
+    api: 'openai-responses',
+    apiKey: 'local-smoke',
+    models: [{
+      id: expectedModel,
+      name: expectedModel,
+      api: 'openai-responses',
+      reasoning: true,
+      contextWindow: 262144,
+      maxTokens: 32000,
+    }],
+  };
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-live-provider-hook-'));
   try {
     const agentDir = path.join(root, 'agent');
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { 'hp-laguna': provider } }), { mode: 0o600 });
-    const sourceAuth = path.join(sourceAgentDir, 'auth.json');
-    if (fs.existsSync(sourceAuth)) fs.copyFileSync(sourceAuth, path.join(agentDir, 'auth.json'));
-
     const extension = path.join(root, 'probe.mjs');
     fs.writeFileSync(extension, `
 export default function (pi) {
