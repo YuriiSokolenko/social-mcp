@@ -25,6 +25,32 @@ function observation(guard, overrides = {}) {
   });
 }
 
+function failedEditSteer(guard) {
+  let failure;
+  for (let index = 0; index < 3; index += 1) {
+    failure = observation(guard, {
+      tool: 'edit',
+      input: { path: 'src/a.js', oldText: 'missing-' + index },
+      result: { content: [{ type: 'text', text: 'oldText not found' }] },
+      isError: true,
+    });
+  }
+  assert.equal(failure.action, 'steer');
+  return failure;
+}
+
+function emptyRepoSearch(guard, query = 'missing-symbol', overrides = {}) {
+  return observation(guard, {
+    tool: 'repo_search',
+    input: { query },
+    result: {
+      content: [{ type: 'text', text: JSON.stringify({ kind: 'content', query, matches: [] }) }],
+      details: { kind: 'content', query, matches: [], truncated: false },
+    },
+    ...overrides,
+  });
+}
+
 test('semantic loop guard detects three identical read observations', () => {
   const guard = new SemanticLoopGuard();
   assert.equal(observation(guard).tripped, false);
@@ -145,23 +171,14 @@ test('write no-op does not clear an outstanding loop steer', () => {
 
 test('empty successful bash output does not clear an outstanding loop steer', () => {
   const guard = new SemanticLoopGuard();
-  for (let index = 0; index < 3; index += 1) {
-    var failure = observation(guard, {
-      tool: 'edit',
-      input: { path: 'src/a.js', oldText: 'missing-' + index },
-      result: { content: [{ type: 'text', text: 'oldText not found' }] },
-      isError: true,
-    });
-  }
-  assert.equal(failure.action, 'steer');
+  failedEditSteer(guard);
 
   const noOp = observation(guard, {
     tool: 'bash',
     input: { command: 'git status --short -- src/a.js' },
-    result: {
-      content: [{ type: 'text', text: 'Process exited with code 0' }],
-      details: { exitCode: 0, stdout: '', stderr: '' },
-    },
+    // Pi 0.87.x built-in bash returns this exact successful empty-output shape:
+    // details is undefined unless output is truncated.
+    result: { content: [{ type: 'text', text: '(no output)' }] },
   });
   assert.equal(noOp.classification, 'success_no_evidence');
   assert.equal(noOp.noOp, true);
@@ -175,31 +192,29 @@ test('empty successful bash output does not clear an outstanding loop steer', ()
   assert.equal(nextFailure.action, 'abort');
 });
 
-test('empty repository search does not clear an outstanding loop steer', () => {
+test('modern structured bash output also identifies an empty successful call', () => {
   const guard = new SemanticLoopGuard();
-  for (let index = 0; index < 3; index += 1) {
-    var failure = observation(guard, {
-      tool: 'edit',
-      input: { path: 'src/a.js', oldText: 'missing-' + index },
-      result: { content: [{ type: 'text', text: 'oldText not found' }] },
-      isError: true,
-    });
-  }
-  assert.equal(failure.action, 'steer');
-
-  const emptySearch = observation(guard, {
-    tool: 'repo_search',
-    input: { query: 'definitely-missing-symbol' },
+  const noOp = observation(guard, {
+    tool: 'bash',
+    input: { command: 'git status --short -- src/a.js' },
     result: {
-      content: [{ type: 'text', text: '{"kind":"content","matches":[]}' }],
-      details: {
-        kind: 'content',
-        query: 'definitely-missing-symbol',
-        matches: [],
+      content: [{ type: 'text', text: '(no output)' }],
+      structuredContent: {
+        output: '',
         truncated: false,
+        exit_code: 0,
+        wall_time_seconds: 0.1,
       },
     },
   });
+  assert.equal(noOp.classification, 'success_no_evidence');
+});
+
+test('empty repository search does not clear an outstanding loop steer', () => {
+  const guard = new SemanticLoopGuard();
+  failedEditSteer(guard);
+
+  const emptySearch = emptyRepoSearch(guard, 'definitely-missing-symbol');
   assert.equal(emptySearch.classification, 'success_no_evidence');
 
   const nextFailure = observation(guard, {
@@ -211,17 +226,32 @@ test('empty repository search does not clear an outstanding loop steer', () => {
   assert.equal(nextFailure.action, 'abort');
 });
 
+test('repeated identical empty evidence trips then aborts', () => {
+  const guard = new SemanticLoopGuard();
+  assert.equal(emptyRepoSearch(guard, 'same-missing-symbol').tripped, false);
+  assert.equal(emptyRepoSearch(guard, 'same-missing-symbol').tripped, false);
+  const third = emptyRepoSearch(guard, 'same-missing-symbol');
+  assert.equal(third.action, 'steer');
+  assert.equal(third.reason, 'repeated_no_evidence');
+  assert.equal(third.revisitCount, 3);
+
+  const fourth = emptyRepoSearch(guard, 'same-missing-symbol');
+  assert.equal(fourth.action, 'abort');
+  assert.equal(fourth.reason, 'repeated_no_evidence');
+});
+
+test('different empty evidence requests do not collapse into one repeated family', () => {
+  const guard = new SemanticLoopGuard();
+  for (const query of ['missing-a', 'missing-b', 'missing-c', 'missing-d']) {
+    const result = emptyRepoSearch(guard, query);
+    assert.equal(result.classification, 'success_no_evidence');
+    assert.equal(result.tripped, false);
+  }
+});
+
 test('meaningful repository evidence clears an outstanding loop steer', () => {
   const guard = new SemanticLoopGuard();
-  for (let index = 0; index < 3; index += 1) {
-    var failure = observation(guard, {
-      tool: 'edit',
-      input: { path: 'src/a.js', oldText: 'missing-' + index },
-      result: { content: [{ type: 'text', text: 'oldText not found' }] },
-      isError: true,
-    });
-  }
-  assert.equal(failure.action, 'steer');
+  failedEditSteer(guard);
 
   const usefulSearch = observation(guard, {
     tool: 'repo_search',
@@ -247,17 +277,9 @@ test('meaningful repository evidence clears an outstanding loop steer', () => {
   assert.equal(nextFailure.action, 'steer');
 });
 
-test('declared missing fact lets one empty evidence result count as progress', () => {
+test('declared missing fact grants exactly one empty evidence result', () => {
   const guard = new SemanticLoopGuard();
-  for (let index = 0; index < 3; index += 1) {
-    var failure = observation(guard, {
-      tool: 'edit',
-      input: { path: 'src/a.js', oldText: 'missing-' + index },
-      result: { content: [{ type: 'text', text: 'oldText not found' }] },
-      isError: true,
-    });
-  }
-  assert.equal(failure.action, 'steer');
+  failedEditSteer(guard);
 
   const declaration = observation(guard, {
     tool: 'need_more_evidence',
@@ -266,37 +288,48 @@ test('declared missing fact lets one empty evidence result count as progress', (
   });
   assert.equal(declaration.classification, 'success_neutral');
 
-  const emptySearch = observation(guard, {
+  const firstEmpty = emptyRepoSearch(guard, 'Foo');
+  assert.equal(firstEmpty.classification, 'success_declared_evidence');
+  assert.equal(firstEmpty.declaredEvidence, true);
+
+  const secondEmpty = emptyRepoSearch(guard, 'Bar');
+  assert.equal(secondEmpty.classification, 'success_no_evidence');
+  assert.equal(secondEmpty.declaredEvidence, undefined);
+});
+
+test('failed or blocked evidence call does not consume declared evidence credit', () => {
+  const guard = new SemanticLoopGuard();
+  const declaration = observation(guard, {
+    tool: 'need_more_evidence',
+    input: { missing: 'whether Foo exists', reason: 'avoid editing the wrong target' },
+    result: { ok: true },
+  });
+  assert.equal(declaration.classification, 'success_neutral');
+
+  const blocked = observation(guard, {
     tool: 'repo_search',
     input: { query: 'Foo' },
-    result: {
-      content: [{ type: 'text', text: '{"kind":"content","matches":[]}' }],
-      details: { kind: 'content', query: 'Foo', matches: [], truncated: false },
-    },
+    result: { block: true, reason: 'temporarily unavailable' },
+    blocked: true,
   });
-  assert.equal(emptySearch.classification, 'success_declared_evidence');
-  assert.equal(emptySearch.declaredEvidence, true);
+  assert.equal(blocked.classification, 'blocked');
 
-  const nextFailure = observation(guard, {
-    tool: 'edit',
-    input: { path: 'src/a.js', oldText: 'missing-4' },
-    result: { content: [{ type: 'text', text: 'oldText not found' }] },
+  const failed = observation(guard, {
+    tool: 'repo_search',
+    input: { query: 'Foo' },
+    result: { content: [{ type: 'text', text: 'backend unavailable' }] },
     isError: true,
   });
-  assert.equal(nextFailure.action, 'steer');
+  assert.equal(failed.classification, 'error');
+
+  const successfulEmpty = emptyRepoSearch(guard, 'Foo');
+  assert.equal(successfulEmpty.classification, 'success_declared_evidence');
+  assert.equal(successfulEmpty.declaredEvidence, true);
 });
 
 test('successful validation still clears an outstanding loop steer', () => {
   const guard = new SemanticLoopGuard();
-  for (let index = 0; index < 3; index += 1) {
-    var failure = observation(guard, {
-      tool: 'edit',
-      input: { path: 'src/a.js', oldText: 'missing-' + index },
-      result: { content: [{ type: 'text', text: 'oldText not found' }] },
-      isError: true,
-    });
-  }
-  assert.equal(failure.action, 'steer');
+  failedEditSteer(guard);
 
   const validation = observation(guard, {
     tool: 'run_check',
@@ -315,6 +348,27 @@ test('successful validation still clears an outstanding loop steer', () => {
     isError: true,
   });
   assert.equal(nextFailure.action, 'steer');
+});
+
+test('real mutation resets repeated no-evidence state', () => {
+  const guard = new SemanticLoopGuard();
+  emptyRepoSearch(guard, 'same-missing-symbol');
+  emptyRepoSearch(guard, 'same-missing-symbol');
+  assert.equal(emptyRepoSearch(guard, 'same-missing-symbol').action, 'steer');
+
+  const mutation = observation(guard, {
+    tool: 'edit',
+    input: { path: 'src/a.js', oldText: 'a', newText: 'b' },
+    repositoryStateBefore: 'state-a',
+    repositoryStateAfter: 'state-b',
+    mutationChanged: true,
+  });
+  assert.equal(mutation.classification, 'success_changed');
+  assert.equal(mutation.tripped, false);
+
+  const afterMutation = emptyRepoSearch(guard, 'same-missing-symbol');
+  assert.equal(afterMutation.classification, 'success_no_evidence');
+  assert.equal(afterMutation.tripped, false);
 });
 
 test('target-local no-op stays a no-op when another call changed repository state', () => {
