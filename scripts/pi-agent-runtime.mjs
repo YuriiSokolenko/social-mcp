@@ -811,8 +811,11 @@ export default function (pi) {
     if (loopResult.action === 'steer') {
       loopGuardSteeredThisTurn = true;
       console.warn('PI_LOOP_GUARD_STEER ' + JSON.stringify(metric));
+      const steerMessage = loopResult.reason === 'repeated_no_evidence'
+        ? 'RUNTIME LOOP GUARD: repeated evidence calls completed successfully but returned no usable evidence. Do not repeat the same empty lookup. Change the evidence target/query, take a productive action from what is already known, or submit/stop if the task is complete or genuinely blocked.'
+        : 'RUNTIME LOOP GUARD: the current strategy is cycling through previously seen evidence or repository state. Do not repeat or cosmetically vary the same approach. Choose a genuinely different action that can create new evidence/state, or submit/stop if the task is already complete or blocked.';
       await pi.sendUserMessage(
-        'RUNTIME LOOP GUARD: the current strategy is cycling through previously seen evidence or repository state. Do not repeat or cosmetically vary the same approach. Choose a genuinely different action that can create new evidence/state, or submit/stop if the task is already complete or blocked.',
+        steerMessage,
         { deliverAs: 'steer' },
       );
     } else {

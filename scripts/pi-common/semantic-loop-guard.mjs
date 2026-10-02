@@ -80,16 +80,113 @@ export function boundedStableHash(value) {
   return digest(JSON.stringify(normalizeValue(value)));
 }
 
-function boundedResultText(result) {
-  if (typeof result === 'string') return result.slice(0, 4096);
+function explicitResultText(result) {
+  if (typeof result === 'string') return result;
   if (Array.isArray(result?.content)) {
     return result.content
       .filter(item => item?.type === 'text' && typeof item.text === 'string')
       .map(item => item.text)
-      .join('\n')
-      .slice(0, 4096);
+      .join('\n');
   }
+  return null;
+}
+
+function boundedResultText(result) {
+  const explicit = explicitResultText(result);
+  if (explicit != null) return explicit.slice(0, 4096);
   return JSON.stringify(normalizeValue(result)).slice(0, 4096);
+}
+
+const EVIDENCE_COLLECTION_KEYS = Object.freeze([
+  'matches',
+  'results',
+  'items',
+  'files',
+  'symbols',
+  'hits',
+  'entries',
+  'commits',
+]);
+
+function candidateEvidencePresence(candidate) {
+  for (const key of EVIDENCE_COLLECTION_KEYS) {
+    if (Object.hasOwn(candidate, key) && Array.isArray(candidate[key])) {
+      return candidate[key].length > 0;
+    }
+  }
+
+  const hasStdout = Object.hasOwn(candidate, 'stdout');
+  const hasStderr = Object.hasOwn(candidate, 'stderr');
+  if (hasStdout || hasStderr) {
+    const stdout = typeof candidate.stdout === 'string' ? candidate.stdout.trim() : '';
+    const stderr = typeof candidate.stderr === 'string' ? candidate.stderr.trim() : '';
+    return Boolean(stdout || stderr);
+  }
+
+  if (Object.hasOwn(candidate, 'output') && typeof candidate.output === 'string') {
+    return candidate.output.trim().length > 0;
+  }
+
+  return null;
+}
+
+function textSerializesTopLevelResult(result, text) {
+  if (!text?.trim()) return false;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+
+  const keys = Object.keys(parsed);
+  if (keys.length === 0) return false;
+  return keys.every(key =>
+    Object.hasOwn(result, key) &&
+    JSON.stringify(normalizeValue(parsed[key])) === JSON.stringify(normalizeValue(result[key]))
+  );
+}
+
+function structuredEvidencePresence(result) {
+  if (!result || typeof result !== 'object') return null;
+
+  // Explicit structured payloads are authoritative: they describe the tool's
+  // evidence result even when the human-readable content merely serializes it.
+  const candidates = [];
+  if (result.structuredContent && typeof result.structuredContent === 'object') candidates.push(result.structuredContent);
+  if (result.details && typeof result.details === 'object') candidates.push(result.details);
+  for (const candidate of candidates) {
+    const presence = candidateEvidencePresence(candidate);
+    if (presence != null) return presence;
+  }
+
+  // Top-level collection names are less trustworthy because wrappers may use
+  // generic fields such as items/files/entries for unrelated metadata. Useful
+  // human-readable text therefore wins unless it is just a JSON serialization
+  // of fields already present on the top-level result.
+  const topLevelPresence = candidateEvidencePresence(result);
+  const explicitText = explicitResultText(result);
+  if (explicitText?.trim()) {
+    if (topLevelPresence === false && textSerializesTopLevelResult(result, explicitText)) return false;
+    return null;
+  }
+
+  return topLevelPresence;
+}
+
+export function hasMeaningfulEvidence(result, toolName = '') {
+  const structured = structuredEvidencePresence(result);
+  if (structured != null) return structured;
+  if (result == null) return false;
+  if (Array.isArray(result) && result.length === 0) return false;
+  if (typeof result === 'object' && Object.keys(result).length === 0) return false;
+  const text = boundedResultText(result).trim();
+  // Pi 0.87.x exposes no structured stdout/stderr for a successful empty bash call;
+  // the built-in bash tool returns this exact result sentinel instead. This is result-shape
+  // handling, not command-string inspection, and newer Pi structuredContent.output above wins.
+  if (toolName === 'bash' && text === '(no output)') return false;
+  return text.length > 0;
 }
 
 export function normalizeErrorClass(result, blocked = false) {
@@ -193,6 +290,11 @@ export class SemanticLoopGuard {
     this.failureWindow = [];
     this.repositoryWindow = [];
     this.steerOutstanding = false;
+    // Intentional one-shot credit: need_more_evidence declares that one successful
+    // evidence call may resolve the missing fact even with an empty result. Errors
+    // and blocked calls preserve the credit; the next successful eligible evidence
+    // call consumes it, while mutation/terminal completion clears it.
+    this.declaredEvidencePending = false;
   }
 
   _push(window, value, max = this.windowSize) {
@@ -257,8 +359,14 @@ export class SemanticLoopGuard {
       tripped: false,
       action: null,
     };
+    const declaredEvidenceEligible =
+      this.declaredEvidencePending &&
+      !TERMINAL_TOOLS.has(tool) &&
+      !MUTATION_TOOLS.has(tool) &&
+      !NEUTRAL_TOOLS.has(tool);
 
     if (TERMINAL_TOOLS.has(tool)) {
+      this.declaredEvidencePending = false;
       return { ...base, classification: 'terminal' };
     }
 
@@ -278,6 +386,7 @@ export class SemanticLoopGuard {
     }
 
     if (MUTATION_TOOLS.has(tool)) {
+      this.declaredEvidencePending = false;
       if (
         typeof mutationChanged !== 'boolean' &&
         (!repositoryStateBefore || !repositoryStateAfter)
@@ -354,10 +463,41 @@ export class SemanticLoopGuard {
     }
 
     if (NEUTRAL_TOOLS.has(tool)) {
+      if (tool === 'need_more_evidence') this.declaredEvidencePending = true;
       return { ...base, classification: 'success_neutral' };
     }
 
+    const declaredEvidence = declaredEvidenceEligible;
+    if (declaredEvidence) this.declaredEvidencePending = false;
+    const meaningfulEvidence = hasMeaningfulEvidence(result, tool);
     const resultHash = boundedStableHash(result);
+    if (!meaningfulEvidence && !declaredEvidence) {
+      const family = boundedStableHash({
+        tool,
+        input: normalizeValue(input),
+        productiveState,
+        classification: 'success_no_evidence',
+      });
+      this._push(this.failureWindow, family);
+      const count = this._count(this.failureWindow, family);
+      const noEvidence = {
+        ...base,
+        classification: 'success_no_evidence',
+        observationHash: resultHash,
+        noOp: true,
+      };
+      if (count >= this.revisitThreshold) {
+        return this._trip(
+          noEvidence,
+          'repeated_no_evidence',
+          'evidence_noop',
+          count,
+          { noOp: true, repeatedObservation: true },
+        );
+      }
+      return noEvidence;
+    }
+
     const fingerprint = boundedStableHash({
       tool,
       input: normalizeValue(input),
@@ -365,13 +505,18 @@ export class SemanticLoopGuard {
       productiveState,
     });
     const seenBefore = this._count(this.observationWindow, fingerprint);
-    if (seenBefore === 0) this._markNovelEvidence();
+    if (seenBefore === 0 || declaredEvidence) this._markNovelEvidence();
     this._push(this.observationWindow, fingerprint);
     const count = this._count(this.observationWindow, fingerprint);
     const observed = {
       ...base,
-      classification: seenBefore > 0 ? 'success_same_observation' : 'success_new_observation',
+      classification: !meaningfulEvidence && declaredEvidence
+        ? 'success_declared_evidence'
+        : seenBefore > 0
+          ? 'success_same_observation'
+          : 'success_new_observation',
       observationHash: resultHash,
+      declaredEvidence,
     };
     if (count >= this.revisitThreshold) {
       return this._trip(
