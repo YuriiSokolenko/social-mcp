@@ -251,7 +251,7 @@ test('a repeated exact fail refreshes the active recovery evidence without creat
   assert.equal(latestUnresolvedRunCheckFailure([first, second]), second);
 });
 
-test('failed-check recovery is scoped to the current run and validation attempt', () => {
+test('failed-check recovery is scoped to the current workflow run and spans repair attempts', () => {
   const oldRun = focused({
     kind: 'ruff',
     scope: { paths: ['old.py'] },
@@ -266,26 +266,53 @@ test('failed-check recovery is scoped to the current run and validation attempt'
     run_id: 'run-1',
     attempt_id: 'primary',
   });
-  const repair = focused({
+  const unrelatedRepairFailure = focused({
     kind: 'python_compile',
     scope: { paths: ['repair.py'] },
     status: 'fail',
     run_id: 'run-1',
     attempt_id: 'validation-repair:1',
   });
-  const records = [oldRun, primary, repair];
+  const records = [oldRun, primary, unrelatedRepairFailure];
 
   assert.equal(
-    latestUnresolvedRunCheckFailure(records, { runId: 'run-1', attemptId: 'primary' }),
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
     primary,
+    'repair attempts inherit the unresolved exact scope from the primary attempt',
   );
   assert.equal(
-    latestUnresolvedRunCheckFailure(records, { runId: 'run-1', attemptId: 'validation-repair:1' }),
-    repair,
-  );
-  assert.equal(
-    latestUnresolvedRunCheckFailure(records, { runId: 'run-2', attemptId: 'primary' }),
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-2' }),
     null,
+    'failures from an earlier workflow run never control a new run',
+  );
+
+  const repairPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_primary.py::test_case'] },
+    status: 'pass',
+    run_id: 'run-1',
+    attempt_id: 'validation-repair:2',
+  });
+  records.push(repairPass);
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
+    null,
+    'a later repair can resolve the inherited exact scope',
+  );
+});
+
+test('legacy run_check records without attempt_id still participate in current-run recovery', () => {
+  const legacyFailure = focused({
+    kind: 'ruff',
+    scope: { paths: ['legacy.py'] },
+    status: 'fail',
+    run_id: 'run-1',
+  });
+  delete legacyFailure.attempt_id;
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure([legacyFailure], { runId: 'run-1' }),
+    legacyFailure,
   );
 });
 
