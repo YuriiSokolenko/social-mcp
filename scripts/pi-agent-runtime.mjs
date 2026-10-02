@@ -96,8 +96,9 @@ export function disableThinkingInPayload(payload) {
 // Both OpenAI-compatible Chat Completions and Responses requests accept tool_choice="required".
 // The active Pi tool surface has already been reduced to the valid action_required tools before
 // the request is built, so this forces a real tool call without choosing the tool on the model's
-// behalf. The runtime keeps this request constraint armed until a real tool attempt is observed;
-// transport retries or ceiling-hit responses must not consume it.
+// behalf. The runtime keeps this request constraint armed until the provider emits a tool call;
+// transport retries or ceiling-hit responses must not consume it. A 4xx on a request that was
+// actually forced clears the constraint so a provider that rejects "required" cannot retry forever.
 export function requireToolChoiceInPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
     return payload;
@@ -408,6 +409,7 @@ export default function (pi) {
   let actionRequiredProseOnlyTurns = 0;
   let ceilingWithoutToolTurns = 0;
   let requireToolOnNextProviderRequest = false;
+  let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
@@ -607,6 +609,7 @@ export default function (pi) {
   if (stage === 'implementer') {
     let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
+      forcedProviderRequestInFlight = false;
       let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
       if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
         codingSessionLog('thinking_disabled', {
@@ -624,6 +627,7 @@ export default function (pi) {
         } else {
           const constrained = requireToolChoiceInPayload(patched);
           if (constrained !== patched) {
+            forcedProviderRequestInFlight = true;
             console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({ stage, mode: 'required', activeTools: pi.getActiveTools() })}`);
             patched = constrained;
           }
@@ -633,7 +637,9 @@ export default function (pi) {
     });
     pi.on('after_provider_response', (event) => {
       const status = Number(event?.status ?? 0);
-      if (requireToolOnNextProviderRequest && status >= 400 && status < 500) {
+      const wasForced = forcedProviderRequestInFlight;
+      forcedProviderRequestInFlight = false;
+      if (requireToolOnNextProviderRequest && wasForced && status >= 400 && status < 500) {
         requireToolOnNextProviderRequest = false;
         console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'provider_4xx', status })}`);
       }
