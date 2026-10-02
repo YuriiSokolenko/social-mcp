@@ -86,7 +86,10 @@ test('implementer integrates latest dev before shared post-backend validation an
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   assert.doesNotMatch(tool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(validation, /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
+  assert.match(
+    validation,
+    /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
+  );
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
   assert.match(runner, /return await runSelectedStage\(spec, \{ backend, workspace \}\)/);
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
@@ -116,7 +119,7 @@ test('PR fix resolves current-dev conflicts in the live repair session and retur
   assert.match(finalizer, /fetch', 'origin', 'dev/);
   assert.match(finalizer, /merge', '--no-edit', 'origin\/dev/);
   assert.match(tool, /PR conflicts with current dev/);
-  assert.match(finalizer, /runProductChecks\(\{ cwd, ledgerPath, backend \}\)/);
+  assert.match(finalizer, /runProductChecks\(\{ cwd, ledgerPath, backend, env \}\)/);
   assert.match(workflow, /name: Start fresh review/);
   assert.match(readScript('scripts/pi-common/repair-publication.mjs', 'utf8'), /dispatchWorkflow\('pi-pr-review\.yml'/);
   assert.doesNotMatch(workflow, /name: Wake merge gate/);
@@ -398,7 +401,7 @@ test('product agent workflows use one shared product-check contract and never ru
   assert.match(repairTool, /validateFinalProductTree\(\)/);
   assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd, ledgerPath, backend \}\)/);
+  assert.match(readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd, ledgerPath, backend, env \}\)/);
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(ci, /node --test tests\/\*\.test\.mjs/);
   assert.match(ci, /tests\/test_runner_autoscaler\.sh/);
@@ -704,7 +707,10 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.ok(guard < tool.indexOf('integrateLatestDev({', guard));
   assert.match(tool, /code: 'missing_publication_fields'/);
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
-  assert.match(validation, /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
+  assert.match(
+    validation,
+    /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
+  );
 });
 
 test('stage runner relies on installed pi-subagents instead of registering a duplicate subagent tool', () => {

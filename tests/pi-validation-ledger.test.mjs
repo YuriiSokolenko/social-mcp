@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   appendCheckRecord,
   readValidationLedger,
+  resolveRunArtifactId,
   resolveValidationRunId,
   normalizeScope,
   reconcile,
@@ -33,6 +34,21 @@ test('resolveValidationRunId trims explicit ids and falls back consistently', ()
     '123-2',
   );
   assert.equal(resolveValidationRunId({}), `local-${process.pid}-1`);
+});
+
+test('resolveRunArtifactId normalizes GitHub ids independently of an explicit validation id', () => {
+  assert.equal(
+    resolveRunArtifactId({
+      PI_VALIDATION_RUN_ID: 'validation-only',
+      GITHUB_RUN_ID: ' 123 ',
+      GITHUB_RUN_ATTEMPT: ' 2 ',
+    }),
+    '123-2',
+  );
+  assert.equal(
+    resolveRunArtifactId({ GITHUB_RUN_ID: '   ', GITHUB_RUN_ATTEMPT: '   ' }),
+    `local-${process.pid}-1`,
+  );
 });
 
 const focused = (overrides = {}) => ({
