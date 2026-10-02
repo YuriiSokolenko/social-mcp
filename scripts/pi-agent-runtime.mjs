@@ -179,6 +179,7 @@ const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
     },
     complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
     evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
+    large_mutation: { type: 'boolean' },
     reason: { type: 'string', minLength: 1, maxLength: 300 },
   },
   required: ['steps', 'complexity', 'evidence_budget', 'reason'],
@@ -285,18 +286,20 @@ export function discoverAdditivePythonLayout(cwd, issue) {
   return null;
 }
 
-// Safe repairs only: keep the four canonical fields, trim strings, truncate overlong steps.
-// Missing or invalid required fields are left untouched so strict validation fails closed.
+// Safe repairs only: keep the five canonical fields, trim strings, truncate overlong steps.
+// large_mutation is an optional planner hint: omission safely defaults to false, while an
+// explicitly present non-boolean value is preserved so strict validation rejects it.
 function normalizeImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const trim = item => typeof item === 'string' ? item.trim() : item;
   const normalized = {};
-  for (const key of ['steps', 'complexity', 'evidence_budget', 'reason']) {
+  for (const key of ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
     if (!(key in value)) continue;
     normalized[key] = key === 'steps' && Array.isArray(value.steps)
       ? value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step)
       : trim(value[key]);
   }
+  if (!('large_mutation' in normalized)) normalized.large_mutation = false;
   return normalized;
 }
 
@@ -305,7 +308,7 @@ function validateImplementationPreparation(value) {
     throw new Error('Implementation planner returned a non-object structured result');
   }
   const keys = Object.keys(value);
-  const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'reason'];
+  const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason'];
   if (keys.length !== requiredKeys.length || !requiredKeys.every(key => keys.includes(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
@@ -323,9 +326,12 @@ function validateImplementationPreparation(value) {
   if (!Number.isSafeInteger(evidenceBudget) || evidenceBudget < 0 || evidenceBudget > MAX_PLANNER_EVIDENCE_BUDGET) {
     throw new Error(`Implementation planner returned invalid evidence_budget: ${String(value.evidence_budget)}`);
   }
+  if (typeof value.large_mutation !== 'boolean') {
+    throw new Error(`Implementation planner returned invalid large_mutation: ${String(value.large_mutation)}`);
+  }
   const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
   if (!reason || reason.length > 300) throw new Error('Implementation planner returned an invalid reason');
-  return { steps, complexity: value.complexity, evidenceBudget, reason };
+  return { steps, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
 }
 
 function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
@@ -333,9 +339,9 @@ function plannerTask(env = process.env, { repair = false, layoutHint = null } = 
   const layoutGuidance = layoutHint
     ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
     : '';
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, and separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}): how many repository evidence-gathering actions (reads/searches) the Implementer will likely need before it can safely mutate. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
+  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
 
-Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the four listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "reason": "..." } } and nothing else.` : ''}
+Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "large_mutation": true|false, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the five listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } } and nothing else.` : ''}
 
 Issue title:
 ${issue.title}
@@ -994,18 +1000,30 @@ export default function (pi) {
         }
         const result = controller.setComplexity(prepared.complexity);
         controller.setEvidenceBudget(prepared.evidenceBudget);
+        const automaticLargeMutationArmed =
+          controller.armAutomaticLargeMutationBudget(prepared.largeMutation);
         console.log(`PI_PLAN ${JSON.stringify({
           stage,
           steps: prepared.steps,
           complexity: prepared.complexity,
           evidenceBudget: prepared.evidenceBudget,
+          largeMutation: prepared.largeMutation,
+          largeMutationArmed: automaticLargeMutationArmed,
           reason: prepared.reason,
           usage: prepared.usage,
         })}`);
+        if (automaticLargeMutationArmed) {
+          console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+            stage,
+            phase: 'auto_armed',
+            source: 'implementation-planner',
+          })}`);
+        }
         console.log(`PI_COMPLEXITY ${JSON.stringify({
           stage,
           complexity: prepared.complexity,
           evidenceBudget: prepared.evidenceBudget,
+          largeMutation: prepared.largeMutation,
           reason: prepared.reason,
           usage: prepared.usage,
           source: 'implementation-planner',
@@ -1023,12 +1041,14 @@ export default function (pi) {
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nLarge mutation: ${automaticLargeMutationArmed ? 'auto-arm one-shot elevated mutation budget when evidence is complete' : 'normal mutation budget'}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
           }],
           details: {
             ...result,
             plan: prepared.steps,
             evidenceBudget: prepared.evidenceBudget,
+            largeMutation: prepared.largeMutation,
+            largeMutationArmed: automaticLargeMutationArmed,
             plannerUsage: prepared.usage,
             reason: prepared.reason,
             freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
@@ -1684,6 +1704,14 @@ export default function (pi) {
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
     controller.onToolExecutionEnd(canonicalToolName, event.isError, { madeProgress: effectiveProgress });
+    const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
+    if (autoLargeMutationPending) {
+      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+        stage,
+        phase: 'auto_pending',
+        source: 'implementation-planner',
+      })}`);
+    }
     const transitionRecord = controller.recordTransitionCompleted(canonicalToolName, pendingToolInputs.get(event.toolCallId) ?? {}, event.isError);
     pendingToolInputs.delete(event.toolCallId);
     const productiveState = syncProductiveState();
