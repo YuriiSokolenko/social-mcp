@@ -30,10 +30,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # Keep the Actions pip cache as a fallback until the host bind mount is
+      # deployed and verified on the general runner pool.
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
 
       - name: Install project and development dependencies
         run: |
           python3 --version
+          python3 -m pip --version
           python3 -m venv .venv
           .venv/bin/python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
@@ -67,12 +75,18 @@ jobs:
       - name: Set up BuildKit
         run: |
           if ! docker buildx version >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install --yes docker-buildx-plugin
+            version=0.37.1
+            package="docker-buildx-plugin_${version}-1~ubuntu.24.04~noble_amd64.deb"
+            url="https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/${package}"
+            curl -fsSL "$url" -o "/tmp/$package"
+            echo '3c398af6eea280ddb57f32334d83867efd2bf07c4bc1be75fbd0a61c490ea925  /tmp/'"$package" | sha256sum --check --status
+            sudo apt-get install --yes "/tmp/$package"
           fi
           docker buildx version
           docker buildx inspect
           docker system df
+          docker buildx du
+          id runner
 
       - name: Generate ephemeral test encryption key
         shell: bash

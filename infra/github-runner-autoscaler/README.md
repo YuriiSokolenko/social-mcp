@@ -48,6 +48,19 @@ to that pool's ephemeral runner also has Docker-socket-level access to the
 host -- keep `ci.yml`'s Docker job restricted to trusted, already-checked-out
 repository code. The `pi-agent` pool does not receive the Docker socket.
 
+The general pool can optionally mount a persistent host pip cache by setting
+`PIP_CACHE_HOST_DIR` in the host `.env`. The source must already exist and be
+owned by the `runner` UID/GID from the general worker image; the manager uses
+Docker's `--mount` syntax so a missing source fails instead of creating a root
+owned directory. Leave it unset to disable the mount. This variable is wired
+only to `general-runner-manager`; the Pi pool does not receive it. For up to
+three simultaneous CI runners, use a shared writable directory (for example
+mode `0770`) and current pip (23.3.1 or newer); pip's cache supports normal
+concurrent use, though duplicate downloads can still occur during races.
+
+Until this mount is deployed, `ci.yml` also retains `actions/setup-python`'s
+`cache: pip` as a transitional fallback.
+
 Linux `run_check` uses a separate trusted executor process inside
 `pi-runner-manager`. The manager already has Docker daemon access; the Pi worker
 does not. The executor is published only on host loopback and authenticates each
@@ -65,18 +78,27 @@ Build the Pi worker, the general worker, and the separate check sandbox first:
 
 ```bash
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
-docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.2 .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.3 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
 The Pi worker tag `0.89.1-mini-swe` pins `mini-swe-agent==2.4.6`, `pi-mcp-adapter@3.2.0`,
 `lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`, BasedPyright `1.40.1`, and the official JetBrains
-Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The Pi and general worker tags are `0.89.1-mini-swe` and `0.87.2`; `run_check` tooling lives in the separate `0.1.0` sandbox image. System-package changes must use a new image tag rather than silently reusing an already-built local tag. The sandbox image independently contains Python 3.12, the repository's pinned Ruff and pytest tooling, Node for the configured `node_tests` profile, and Git for repository tests; it contains no runner registration, GitHub CLI, SSH client, or agent runtime. To roll the Pi pool back, set
+Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The Pi and general worker tags are `0.89.1-mini-swe` and `0.87.3`; the general image now includes Buildx. `run_check` tooling lives in the separate `0.1.0` sandbox image. System-package changes must use a new image tag rather than silently reusing an already-built local tag. The sandbox image independently contains Python 3.12, the repository's pinned Ruff and pytest tooling, Node for the configured `node_tests` profile, and Git for repository tests; it contains no runner registration, GitHub CLI, SSH client, or agent runtime. To roll the Pi pool back, set
 `RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
 untracked `.env` and recreate only `pi-runner-manager`:
 
 ```bash
 docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
+```
+
+To deploy the general worker update, build the exact `0.87.3` tag, set
+`GENERAL_RUNNER_IMAGE=n150/github-general-runner-ephemeral:0.87.3` in the host
+`.env`, then recreate only the general manager:
+
+```bash
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.3 .
+docker compose --env-file .env up -d --force-recreate --no-deps general-runner-manager
 ```
 
 ### `run_check` sandbox backend

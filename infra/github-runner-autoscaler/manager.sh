@@ -27,6 +27,7 @@ PI_CONFIG_DIR="${PI_CONFIG_DIR:-/host/pi-home/.pi/agent}"
 # identical manager/worker pair apart.
 MOUNT_PI_CONFIG="${MOUNT_PI_CONFIG:-true}"
 MOUNT_DOCKER_SOCKET="${MOUNT_DOCKER_SOCKET:-false}"
+PIP_CACHE_HOST_DIR="${PIP_CACHE_HOST_DIR:-}"
 RUN_CHECK_EXECUTOR_ENABLED="${RUN_CHECK_EXECUTOR_ENABLED:-${MOUNT_PI_CONFIG}}"
 MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 # This loop has no external supervisor for a hang (only `restart: unless-stopped`,
@@ -37,6 +38,12 @@ CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
 DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
 CURL_TIMEOUT_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS")
+
+if [ -n "$PIP_CACHE_HOST_DIR" ]; then
+  [[ "$PIP_CACHE_HOST_DIR" == /* ]] || { echo "PIP_CACHE_HOST_DIR must be an absolute path" >&2; exit 1; }
+  [[ "$PIP_CACHE_HOST_DIR" != *,* ]] || { echo "PIP_CACHE_HOST_DIR must not contain a comma" >&2; exit 1; }
+  [ "$MOUNT_DOCKER_SOCKET" == true ] || { echo "PIP_CACHE_HOST_DIR is supported only for the general Docker-enabled pool" >&2; exit 1; }
+fi
 
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 AUTH=(
@@ -337,6 +344,9 @@ spawn_runner() {
   fi
   if [ "$MOUNT_DOCKER_SOCKET" == true ]; then
     docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
+  fi
+  if [ -n "$PIP_CACHE_HOST_DIR" ]; then
+    docker_args+=(--mount "type=bind,source=${PIP_CACHE_HOST_DIR},target=/home/runner/.cache/pip")
   fi
 
   log "starting ephemeral runner $name (labels=${RUNNER_LABELS})"
