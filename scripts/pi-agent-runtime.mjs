@@ -295,8 +295,10 @@ async function runStructuredSubagent(pi, ctx, {
   }
 }
 
-// Structured-output validation rejections (wrong/missing `value` envelope, schema mismatch).
-const STRUCTURED_SCHEMA_FAILURE = /validation|schema|\bvalue\b.*(required|missing)|must have required property|additional propert/i;
+// pi-subagents reports a terminal schema/envelope rejection as `Structured output validation failed: <details>`
+// (readStructuredOutput). The structured_output tool's own per-call "Validation failed for tool" errors stay
+// inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
+const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
 
 async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
   const request = {

@@ -108,13 +108,15 @@ function runtimeScenario(mode) {
         assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
         if (mode === 'abort') { signal.abort(); return; }
         const good = { steps: ['Implement example.py'], complexity: 'nontrivial', evidence_budget: 2, reason: 'Needs source evidence' };
-        const schemaError = 'structured_output validation failed: missing required property value';
+        const schemaError = 'Structured output validation failed: value: must have required properties value; steps: schema is false; root: must not have additional properties';
         let reply;
         if (mode === 'envelope-retry') {
           if (attempts === 1) assert.doesNotMatch(request.task, /REPAIR/);
           else assert.match(request.task, /REPAIR[\\s\\S]*\\{ "value": \\{ "steps"/);
           reply = attempts === 2 ? { status: 'completed', result: { kind: 'structured', value: good } } : { status: 'failed', error: schemaError };
         } else if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
+        else if (mode === 'timeout') reply = { status: 'failed', error: 'Subagent timed out after 120000ms.' };
+        else if (mode === 'bad-output-schema') reply = { status: 'failed', error: 'invalid outputSchema: unsupported keyword' };
         else if (mode === 'overlong') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' } } };
         else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
         else if (mode === 'invalid-complexity') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, complexity: 'medium' } } };
@@ -162,11 +164,11 @@ function runtimeScenario(mode) {
         assert.equal(blocked.block, true);
       } else {
         const prepared = await call('prepare_implementation');
-        const oneAttempt = ['success', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
+        const oneAttempt = ['success', 'timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
         assert.equal(attempts, oneAttempt ? 1 : 2);
         const repeated = await handlers.get('tool_call')({ toolName: 'prepare_implementation', input: {} }, ctx);
         assert.match(repeated.reason, /single-shot/);
-        if (['failure', 'prose', 'envelope-exhausted', 'invalid-complexity', 'missing-reason'].includes(mode)) {
+        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'bad-output-schema', 'invalid-complexity', 'missing-reason'].includes(mode)) {
           assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
           assert.equal(prepared.details.complexity, null);
           assert.equal('plan' in prepared.details, false);
@@ -254,5 +256,17 @@ for (const [mode, pattern] of [['invalid-complexity', /invalid complexity/], ['m
     assert.match(logs, /PI_PREPARATION_FALLBACK .*/);
     assert.match(logs, pattern);
     assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
+  });
+}
+
+// Real #314/#319/#320 smoke runs surfaced `implementation-planner failed: Subagent timed out after 120000ms.`
+// after the subagent's in-loop schema retries; retrying would only repeat the 120 s cost.
+for (const [mode, pattern] of [['timeout', /timed out after 120000ms/], ['bad-output-schema', /invalid outputSchema/]]) {
+  test('unrelated planner failure is not retried: ' + mode, () => {
+    const logs = runtimeScenario(mode);
+    assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
+    assert.match(logs, /PI_SUBAGENT_FAILURE .*"reason":"planner_infrastructure_failure","attempt":1/);
+    assert.match(logs, pattern);
+    assert.match(logs, /PI_PREPARATION_FALLBACK/);
   });
 }
