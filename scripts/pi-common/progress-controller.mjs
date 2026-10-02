@@ -218,6 +218,7 @@ export class ProgressController {
     // unlimited escape hatch from the action-required state.
     this.productiveVerificationTool = this.productiveProgress?.verificationTool ?? null;
     this.verificationPermits = 0;
+    this.verificationState = this.productiveVerificationTool ? 'not_yet_available' : null;
     this.productiveInitialEvidenceBudget = positiveInteger(
       Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
       'productiveProgress.initialEvidenceBudget',
@@ -307,6 +308,10 @@ export class ProgressController {
 
   verificationPermitted() {
     return this.verificationPermits > 0;
+  }
+
+  verificationLifecycleState() {
+    return this.verificationState;
   }
 
   largeMutationBudgetPending() {
@@ -557,6 +562,7 @@ export class ProgressController {
           this.productiveState = 'evidence_allowed';
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool && this.verificationPermits > 0) {
           this.verificationPermits -= 1;
+          if (this.verificationPermits === 0) this.verificationState = 'exhausted';
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
             block: true,
@@ -682,6 +688,7 @@ export class ProgressController {
     }
     if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
       this.verificationPermits = 1;
+      this.verificationState = 'available';
     }
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
