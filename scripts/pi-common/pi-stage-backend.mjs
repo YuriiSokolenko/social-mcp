@@ -24,6 +24,10 @@ export function piSessionDir(spec) {
 }
 
 export function buildPiInvocation(spec, workspace) {
+  // Lifecycle invariant: spec.environment is installed on the Pi child at process
+  // creation, before Pi loads/registers any --extension module. Result tools snapshot
+  // restore/validation-repair mode during registration, so those flags must already
+  // be present in spec.environment when this invocation is built.
   const config = stageConfig(spec.stage);
   const extensions = [
     path.join(workspace, 'scripts/pi-bash-timeout.mjs'),
