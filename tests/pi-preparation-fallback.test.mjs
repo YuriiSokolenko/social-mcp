@@ -266,9 +266,12 @@ function runtimeScenario(mode) {
           assert.equal(prepared.details.evidenceBudget, fallbackEvidenceBudget);
           assert.equal('plan' in prepared.details, false);
           assert.match(prepared.content[0].text, /Do not call prepare_implementation again/);
-          assert.ok(prepared.content[0].text.includes('canonical source/test layout before creating new files'));
+          assert.ok(prepared.content[0].text.includes('canonical source/test layout is not already clear'));
+          assert.ok(prepared.content[0].text.includes('guidance, not a mutation gate'));
           assert.ok(prepared.content[0].text.includes('up to ' + fallbackEvidenceBudget + ' repository evidence attempts'));
           assert.ok(prepared.content[0].text.includes('LSP lookup, or subagent inspection'));
+          assert.ok(prepared.content[0].text.includes('even if it fails or returns no useful result'));
+          assert.ok(prepared.content[0].text.includes('begin_coding_session remains blocked until the evidence window is closed'));
           assert.ok(!caps.includes(16384), 'fallback alone must not grant large response');
           assert.ok(active.includes('read'));
           assert.ok(active.includes('request_large_mutation_budget'));
