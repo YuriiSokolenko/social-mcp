@@ -86,7 +86,7 @@ test('implementer integrates latest dev before shared post-backend validation an
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   assert.doesNotMatch(tool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
+  assert.match(validation, /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
   assert.match(runner, /return await runSelectedStage\(spec, \{ backend, workspace \}\)/);
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
@@ -703,7 +703,7 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.ok(guard >= 0);
   assert.ok(guard < tool.indexOf('integrateLatestDev({', guard));
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
-  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
+  assert.match(validation, /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
   for (const field of ['title', 'summary', 'security_notes', 'limitations']) {
     assert.match(tool, new RegExp(field + ".*Required for fresh changed work"));
   }
