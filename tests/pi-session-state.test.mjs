@@ -141,7 +141,7 @@ test('session-state validation guidance follows the verification lifecycle', () 
     state.transitions.transitionNotice(record, verification('not_yet_available')),
     /run_check is not yet available; it becomes available after a successful mutation/,
   );
-  const subagents = state.transitions.completed.get('subagents_enable');
+  const subagents = complete(state, 'subagents_enable');
   const surfaced = state.transitions.transitionNotice(subagents, {
     ...verification('not_yet_available'),
     activeToolNames: ['need_more_evidence', 'submit_result'],
