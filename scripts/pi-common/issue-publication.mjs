@@ -69,7 +69,7 @@ export function pushWithMissingObjectRetry(args, {
  * integrated the latest base, so they keep using the run-start commit for
  * checkpoint recovery.
  */
-function publicationBase(cwd, startCommit) {
+export function publicationBase(cwd, startCommit) {
   const integrated = git(['merge-base','--is-ancestor',baseRef(),'HEAD'], { cwd, allowFailure:true }).status === 0;
   return integrated ? baseRef() : startCommit;
 }
