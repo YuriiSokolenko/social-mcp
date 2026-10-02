@@ -28,7 +28,7 @@ import {
   detectNoOpWrite,
   mutationSnapshotChanged,
 } from './pi-common/mutation-snapshot.mjs';
-import { baseRef } from './pi-common/project-config.mjs';
+import { baseRef, projectConfig } from './pi-common/project-config.mjs';
 import {
   SemanticLoopGuard,
   isSemanticMutationTool,
@@ -443,6 +443,7 @@ export default function (pi) {
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
+  let verificationToolRegistered = false;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -477,14 +478,29 @@ export default function (pi) {
     // where the controller gate lets them execute (evidence_allowed), never in action_required.
     const satisfied = controller.transitions.satisfiedToolNames();
     const current = pi.getActiveTools();
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    if (verificationTool && current.includes(verificationTool)) verificationToolRegistered = true;
+    // run_check is registered once, but it is model-visible only while the controller owns a
+    // permit for the current mutation state. Remember that it exists so a later mutation can
+    // re-expose it even after an earlier surface update hid it.
+    const currentWithPermittedVerification =
+      verificationTool &&
+      verificationToolRegistered &&
+      controller.verificationPermitted() &&
+      !current.includes(verificationTool)
+        ? [...current, verificationTool]
+        : current;
     // Tools added by a control transition appear in the live list but not in the saved baseline.
     if (unrestrictedActiveTools != null) {
-      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, current);
+      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, currentWithPermittedVerification);
     }
-    const visible = names => names.filter(name => !satisfied.has(name));
+    const visible = names => names.filter(name =>
+      !satisfied.has(name) &&
+      (!verificationTool || name !== verificationTool || controller.verificationPermitted())
+    );
 
     if (preComplexityRequired || productiveActionRequired) {
-      if (unrestrictedActiveTools == null) unrestrictedActiveTools = current;
+      if (unrestrictedActiveTools == null) unrestrictedActiveTools = currentWithPermittedVerification;
       const restricted = preComplexityRequired
         ? unrestrictedActiveTools.filter(name =>
             new Set([
@@ -514,8 +530,8 @@ export default function (pi) {
       unrestrictedActiveTools = null;
       return;
     }
-    const remaining = visible(current);
-    if (remaining.length !== current.length) setSurface(remaining, 'transition_complete');
+    const remaining = visible(currentWithPermittedVerification);
+    if (remaining.join('\0') !== current.join('\0')) setSurface(remaining, 'transition_complete');
   }
 
   // Materialize a newly completed one-shot transition into durable runtime state, the active
@@ -612,6 +628,21 @@ export default function (pi) {
       largeMutationBudgetTool: controller.largeMutationBudgetTool,
       codingSessionTool: config.productiveProgress?.codingSessionTool ?? null,
     });
+  }
+
+  function finalValidationGuidance() {
+    const checks = (projectConfig().checks?.final ?? []).map(step => step.name).filter(Boolean);
+    const pipeline = checks.length ? checks.join(' -> ') : 'configured checks.final pipeline';
+    return `Authoritative final checks still run automatically after submit_result and before publication: ${pipeline}.`;
+  }
+
+  function verificationLifecycleGuidance() {
+    const verificationTool = config.productiveProgress?.verificationTool;
+    if (!verificationTool) return finalValidationGuidance();
+    const lifecycle = controller.verificationPermitted()
+      ? `${verificationTool} is available once for the current mutation state.`
+      : `${verificationTool} is exhausted for the current mutation state and is unavailable now. Do not call it again unless a new successful mutation grants a new focused check.`;
+    return `${lifecycle} ${finalValidationGuidance()}`;
   }
 
   syncProductiveState();
@@ -1333,6 +1364,16 @@ export default function (pi) {
     pendingToolInputs.delete(event.toolCallId);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
+    if (
+      stage === 'implementer' &&
+      event.toolName === config.productiveProgress?.verificationTool &&
+      !controller.verificationPermitted()
+    ) {
+      await pi.sendUserMessage(
+        `RUNTIME VALIDATION STATE: ${verificationLifecycleGuidance()}`,
+        { deliverAs: 'steer' },
+      );
+    }
     if (transitionRecord) await announceTransition(transitionRecord, productiveState);
 
     if (loopGuard && pendingLoopCall) {
@@ -1554,7 +1595,7 @@ export default function (pi) {
         : postComplexityRequired
           ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
           : stage === 'implementer'
-            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, begin_coding_session (to implement in a large-output coding session), rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
+            ? `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, begin_coding_session (to implement in a large-output coding session), rollback_last_mutation, or submit_result immediately. ${verificationLifecycleGuidance()} If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.`
             : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
       const reason = stage === 'implementer' && ceilingWithoutToolTurns > 0
         ? `ceiling without tool (${ceilingWithoutToolTurns}/${MAX_CEILING_WITHOUT_TOOL_TURNS})`
