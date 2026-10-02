@@ -7,7 +7,7 @@ const COMPLEXITY_RANK = Object.freeze({ trivial: 0, nontrivial: 1, normal: 1, co
 export const IMPLEMENTER_RESPONSE_MAX_TOKENS = 16384;
 export const RESPONSE_BUDGETS = Object.freeze({ short: 2048, normal: 4096, deep: 8192 });
 // Planner infrastructure fallback gets a deterministic, bounded repository-orientation window.
-// Two evidence actions are enough to locate the canonical source/test layout without reopening
+// Two evidence attempts are enough to locate the canonical source/test layout without reopening
 // general exploration; the first successful mutation closes the window early.
 export const PREPARATION_FALLBACK_EVIDENCE_BUDGET = 2;
 
