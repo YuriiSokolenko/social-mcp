@@ -310,7 +310,7 @@ function runtimeScenario(mode) {
       const { default: parentResultTool } = await import(${JSON.stringify(new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href)});
       parentResultTool(pi);
       assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the provider constraint hook');
-      assert.equal(handlers.has('after_provider_response'), true, 'the parent installs the provider fallback hook');
+      assert.equal(handlers.has('turn_end'), true, 'the parent installs provider error recovery on the authoritative turn boundary');
       const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
       assert.equal(handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx), unarmedPayload, 'unarmed parent request is unchanged');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
