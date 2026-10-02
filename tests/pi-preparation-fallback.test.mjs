@@ -73,7 +73,7 @@ function runtimeScenario(mode) {
           body: 'Add `demo_pkg.diagnostics.smoke_widget.parse_widget` in a new diagnostics module with focused pytest coverage.',
         }
       : { title: 'Example task', body: 'Implement example.py' };
-    fs.writeFileSync(context, JSON.stringify(issue));
+    fs.writeFileSync(context, mode === 'invalid-context' ? '{' : JSON.stringify(issue));
     if (mode === 'layout-aware') {
       fs.mkdirSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics'), { recursive: true });
       fs.mkdirSync(path.join(dir, 'tests', 'diagnostics'), { recursive: true });
@@ -186,6 +186,12 @@ function runtimeScenario(mode) {
         assert.equal(tools.has('prepare_implementation'), false);
         await call('submit_result');
         assert.equal(attempts, 0);
+      } else if (mode === 'invalid-context') {
+        const prepared = await call('prepare_implementation');
+        assert.equal(attempts, 0);
+        assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
+        assert.match(prepared.details.reason, /JSON|Unexpected end/);
+        assert.ok(active.includes('write'));
       } else if (mode === 'abort') {
         await assert.rejects(call('prepare_implementation'), /aborted/);
         assert.equal(attempts, 1);
@@ -268,6 +274,32 @@ function runtimeScenario(mode) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('layout discovery ignores a dotted package member without an explicit module segment', async () => {
+  const { discoverAdditivePythonLayout } = await import('../scripts/pi-agent-runtime.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-layout-member-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'tests', 'diagnostics'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', '__init__.py'), 'def parse_widget(): return 1\n');
+    assert.equal(discoverAdditivePythonLayout(dir, {
+      title: 'Adjust parser',
+      body: 'Update `demo_pkg.diagnostics.parse_widget` and its tests.',
+    }), null);
+    assert.equal(discoverAdditivePythonLayout(dir, {
+      title: 'Adjust parser class',
+      body: 'Update `demo_pkg.diagnostics.Parser.parse_widget` and its tests.',
+    }), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('invalid issue context still enters preparation fallback', () => {
+  const logs = runtimeScenario('invalid-context');
+  assert.match(logs, /PI_PREPARATION_FALLBACK/);
+  assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
+});
 
 test('planner misses structured output twice, then runtime restores the complete execution path', () => {
   const logs = runtimeScenario('failure');
