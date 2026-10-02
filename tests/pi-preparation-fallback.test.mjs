@@ -122,10 +122,10 @@ function runtimeScenario(mode) {
         if (mode === 'layout-aware') {
           assert.match(request.task, /Add smoke widget parser/);
           assert.match(request.task, /source_root=src/);
-          assert.match(request.task, /source_target=src\/demo_pkg\/diagnostics\/smoke_widget\.py/);
-          assert.match(request.task, /nearest_source_convention=src\/demo_pkg\/diagnostics\/smoke_chunks\.py/);
-          assert.match(request.task, /test_directory=tests\/diagnostics/);
-          assert.match(request.task, /nearest_test_convention=tests\/diagnostics\/test_smoke_chunks\.py/);
+          assert.ok(request.task.includes('source_target=src/demo_pkg/diagnostics/smoke_widget.py'));
+          assert.ok(request.task.includes('nearest_source_convention=src/demo_pkg/diagnostics/smoke_chunks.py'));
+          assert.ok(request.task.includes('test_directory=tests/diagnostics'));
+          assert.ok(request.task.includes('nearest_test_convention=tests/diagnostics/test_smoke_chunks.py'));
           assert.match(request.task, /at most one targeted convention read/);
           assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/);
         } else {
