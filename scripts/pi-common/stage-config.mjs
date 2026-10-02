@@ -258,7 +258,7 @@ export const STAGES = Object.freeze({
       // transition/legacy budget tools stay in the 2k phase.
       codingSessionTools: [
         'read', 'bash', 'write', 'edit', 'structural_edit', 'safe_edit', 'rollback_last_mutation',
-        'run_check', 'repo_search', 'indexed_repo_search', 'need_more_evidence', 'submit_result',
+        'run_check', 'retry_last_failed_check', 'repo_search', 'indexed_repo_search', 'need_more_evidence', 'submit_result',
       ],
       actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'],
