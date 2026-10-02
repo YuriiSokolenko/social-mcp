@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+const IGNORED_SCAN_DIRECTORIES = new Set(['.git', '.venv', 'venv', 'node_modules', '__pycache__']);
+
 function containsPythonSource(directory) {
   const stack = [directory];
   while (stack.length) {
@@ -9,7 +11,7 @@ function containsPythonSource(directory) {
       if (entry.isSymbolicLink()) continue;
       const target = path.join(current, entry.name);
       if (entry.isFile() && /\.pyi?$/.test(entry.name)) return true;
-      if (entry.isDirectory()) stack.push(target);
+      if (entry.isDirectory() && !IGNORED_SCAN_DIRECTORIES.has(entry.name)) stack.push(target);
     }
   }
   return false;
