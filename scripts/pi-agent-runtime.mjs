@@ -1555,7 +1555,7 @@ export default function (pi) {
     // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
     // run_check for controller policy after visibility has been checked.
     const enforceActiveSurface =
-      activeToolNames.length > 0 &&
+      lastSurfaceSignature !== null &&
       !alreadySatisfiedTransition &&
       !activeToolNames.includes(event.toolName);
     if (enforceActiveSurface) {
