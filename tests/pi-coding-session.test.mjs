@@ -168,7 +168,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -233,6 +233,17 @@ function runtimeScenario(mode) {
         childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
         childTools.get('submit_result').execute = async () => { fs.writeFileSync(terminal, 'submitted\\n'); return { content: [{ type: 'text', text: 'submitted' }] }; }; // same marker terminalResult() writes
         let turn = 0;
+        if (mode === 'fork-prose-force') {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
+          const actionPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const forced = providerPatch({ payload: actionPayload }, childCtx);
+          assert.equal(forced.tool_choice, 'required', 'coding-session action_required uses the same forced-tool rule');
+        }
         const childCall = async (name, input) => {
           childHandlers.get('turn_start')({ turnIndex: turn });
           if (!definition.tools.includes(name)) { turn++; return { block: true, reason: name + ' is not in the agent tool allowlist' }; }
@@ -262,6 +273,14 @@ function runtimeScenario(mode) {
           assert.match((await childCall('write', { path: '.git/hooks/pre-commit', content: 'x' })).reason, /cannot target .git/);
         }
         await childCall('write', { path: 'generated.py', content: 'REQUIRED_CONSTANT = "' + constant + '"\\nHELP = "q: quit\\\\nr: restart"\\n' });
+        if (mode === 'fork-prose-force') {
+          const actionPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          assert.equal(providerPatch({ payload: actionPayload }, childCtx).tool_choice, undefined, 'child tool call clears forcing');
+        }
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
@@ -290,7 +309,8 @@ function runtimeScenario(mode) {
       // The parent also carries the real implementer result tool (and its submit nudge).
       const { default: parentResultTool } = await import(${JSON.stringify(new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href)});
       parentResultTool(pi);
-      assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the one-turn provider constraint hook');
+      assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the provider constraint hook');
+      assert.equal(handlers.has('after_provider_response'), true, 'the parent installs the provider fallback hook');
       const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
       assert.equal(handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx), unarmedPayload, 'unarmed parent request is unchanged');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
@@ -334,7 +354,7 @@ function runtimeScenario(mode) {
       await call('read', { path: 'config.py' });
       fs.rmSync(cwd + '/config.py');
 
-      if (mode === 'prose-force-direct' || mode === 'action-prose-abort') {
+      if (['prose-force-direct', 'prose-force-4xx', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) {
         // First action_required response is prose only: the runtime arms provider-level
         // required-tool forcing and keeps it armed until a real exposed tool is attempted.
         handlers.get('turn_start')({ turnIndex: turn });
@@ -351,6 +371,28 @@ function runtimeScenario(mode) {
         const constrained = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
         assert.equal(constrained.tool_choice, 'required');
         assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
+
+        if (mode === 'prose-force-4xx') {
+          handlers.get('after_provider_response')({ status: 400, headers: {} }, ctx);
+          const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(fallback.tool_choice, undefined, 'provider 4xx clears forced-tool fallback');
+          process.exit(0);
+        }
+
+        if (mode === 'action-repeat-abort') {
+          handlers.get('turn_start')({ turnIndex: turn });
+          const repeated = await handlers.get('tool_call')({
+            toolName: 'prepare_implementation',
+            toolCallId: 'repeat-' + turn,
+            input: {},
+          }, ctx);
+          assert.ok(repeated?.alreadySatisfied || /already/i.test(String(repeated?.reason ?? '')), 'repeat is rejected as already completed');
+          const afterRepeat = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(afterRepeat.tool_choice, undefined, 'an emitted tool call consumes provider forcing even when it is a no-op');
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 1, 'already-satisfied repeat still counts as no productive action and trips the watchdog');
+          process.exit(0);
+        }
 
         if (mode === 'prose-force-direct') {
           // A forced response that still hits the output ceiling without a tool must not consume
@@ -488,6 +530,23 @@ test('first prose-only action-required retry stays forced through a ceiling turn
   assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 2);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
+});
+
+test('a provider 4xx clears forced tool choice so compatibility retries are not trapped', () => {
+  const logs = runtimeScenario('prose-force-4xx');
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"reason":"provider_4xx".*"status":400/);
+});
+
+test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
+  const logs = runtimeScenario('action-repeat-abort');
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"alreadySatisfied":true/);
+  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+});
+
+test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
+  const logs = runtimeScenario('fork-prose-force');
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
 });
 
 test('a deliberately non-compliant second prose-only turn still aborts with durable execution-failure metadata', () => {
