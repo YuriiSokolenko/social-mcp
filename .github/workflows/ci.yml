@@ -30,27 +30,23 @@ jobs:
         with:
           persist-credentials: false
 
-      # Keep the Actions pip cache as a fallback until the host bind mount is
-      # deployed and verified on the general runner pool.
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-          cache: pip
+      - name: Create Python venv
+        run: |
+          python3 --version
+          python3 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Install project and development dependencies
         run: |
-          python3 --version
-          python3 -m pip --version
-          python3 -m venv .venv
-          .venv/bin/python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          python --version
+          python -m pip --version
+          python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
 
       - name: Ruff
-        run: .venv/bin/ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
+        run: ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
 
       - name: Pytest
-        run: .venv/bin/pytest
+        run: pytest
 
       - name: Agent workflow checks
         run: node --test tests/*.test.mjs
