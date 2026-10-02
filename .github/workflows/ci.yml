@@ -111,7 +111,7 @@ jobs:
   wake-merge-gate:
     if: >-
       always() &&
-      github.event_name == 'push' &&
+      contains(fromJSON('["push","workflow_dispatch"]'), github.event_name) &&
       github.ref == 'refs/heads/dev' &&
       needs.test.result == 'success' &&
       needs.docker.result == 'success'
@@ -126,7 +126,6 @@ jobs:
           ref: dev
 
       - name: Finalize merged issue after green dev CI
-        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pi-post-merge.mjs "$GITHUB_SHA"
