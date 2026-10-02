@@ -448,6 +448,27 @@ test('verification lifecycle distinguishes pre-mutation, available, exhausted, a
   assert.equal(c.verificationPermitted(), true);
 });
 
+test('blocked run_check does not consume an available permit', () => {
+  const cfg = stageConfig('implementer');
+  const c = new ProgressController({
+    ...cfg,
+    maxTurns: 1,
+    requireComplexity: false,
+    productiveProgress: { ...cfg.productiveProgress, startState: 'action_required' },
+  }, {});
+  c.onTurnStart(0);
+  assert.equal(c.checkToolCall('safe_edit', { path: 'a.py' }), undefined);
+  c.onToolExecutionEnd('safe_edit', false);
+  assert.equal(c.verificationLifecycleState(), 'available');
+
+  c.onTurnStart(1);
+  const blocked = c.checkToolCall('run_check', { kind: 'ruff', paths: ['a.py'] });
+  assert.equal(blocked?.block, true);
+  assert.match(blocked.reason, /Global execution limit reached/);
+  assert.equal(c.verificationLifecycleState(), 'available');
+  assert.equal(c.verificationPermitted(), true);
+});
+
 test('controller without a verification tool has no verification lifecycle', () => {
   const c = new ProgressController({ maxTurns: 100, repeatThreshold: 3, requireComplexity: false }, {});
   assert.equal(c.verificationLifecycleState(), null);
