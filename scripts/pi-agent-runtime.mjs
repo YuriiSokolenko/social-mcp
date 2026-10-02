@@ -1022,15 +1022,17 @@ export default function (pi) {
             reason,
           })}`);
           syncActionToolSurface(syncProductiveState());
+          const fallbackActiveToolNames = pi.getActiveTools();
           return {
             content: [{ type: 'text', text:
               `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
-              'Your preparation obligation is satisfied. No planner output or complexity was recorded. ' +
-              'Do not call prepare_implementation again. If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. ' +
-              `You may use up to ${fallback.evidenceBudget} repository evidence attempts; every accepted non-control evidence tool call (for example read/search, LSP lookup, or subagent inspection) consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. ` +
-              'Direct mutation remains allowed during the window and closes it on success; begin_coding_session remains blocked until the evidence window is closed. ' +
-              'run_check is not yet available; it becomes available after a successful mutation. Normal submit_result rules still apply. ' +
+              'Your preparation obligation is satisfied. No planner output or complexity was recorded. Do not repeat preparation. ' +
+              'If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. ' +
+              `You may use up to ${fallback.evidenceBudget} repository evidence attempts; every accepted non-control evidence action consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. ` +
+              'Direct mutation remains allowed during the window and closes it on success. The coding-session action becomes valid only after the evidence window is closed. ' +
+              'Focused verification becomes available only after a successful mutation. Final submission rules are unchanged. ' +
               'After the fallback window closes, use only the blocker action exposed by the runtime when one concrete implementation fact is still missing.\n' +
+              `${activeToolGuidance(fallbackActiveToolNames)}\n` +
               `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.` +
               (layoutHint
                 ? `\nRepository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}. This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.`
