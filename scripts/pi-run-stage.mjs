@@ -9,6 +9,7 @@ import { runPiStage } from './pi-common/pi-stage-backend.mjs';
 import { stageConfig, stagePrompt } from './pi-common/stage-config.mjs';
 import { createStageRunSpec } from './pi-common/stage-run-contract.mjs';
 import { runStageWithValidationRecovery } from './pi-common/stage-validation-recovery.mjs';
+import { startModelTraceProxy } from './pi-common/model-trace-proxy.mjs';
 
 // The model alias selects what operators have already loaded behind the shared
 // Rabbit/Open Responses endpoint; this script does not start or stop runtimes.
@@ -52,9 +53,7 @@ export function resolveModelId(env) {
   return entry.id;
 }
 
-export function forcePiProviderBaseUrl(model, env = process.env) {
-  if (model.provider !== 'hp-laguna') return;
-
+export function overrideProviderBaseUrl(model, env = process.env) {
   const agentDir = env.PI_AGENT_CONFIG_DIR || path.join(env.HOME || homedir(), '.pi', 'agent');
   const modelsFile = path.join(agentDir, 'models.json');
   if (!fs.existsSync(modelsFile)) {
@@ -88,6 +87,11 @@ export function forcePiProviderBaseUrl(model, env = process.env) {
   }
 
   fs.writeFileSync(modelsFile, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+}
+
+export function forcePiProviderBaseUrl(model, env = process.env) {
+  if (model.provider !== 'hp-laguna') return;
+  overrideProviderBaseUrl(model, env);
 }
 
 async function verifyModelIsLoaded(baseUrl, expectedId) {
@@ -175,6 +179,7 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
     PI_BASH_TIMEOUT_SECONDS: env.PI_BASH_TIMEOUT_SECONDS ?? String(config.bashTimeoutSeconds),
     PI_TERMINAL_RESULT_FILE: env.PI_TERMINAL_RESULT_FILE ?? path.join(runnerTemp, `pi-terminal-${suffix}`),
     PI_METRICS_FILE: env.PI_METRICS_FILE ?? path.join(runnerTemp, `pi-usage-${suffix}.jsonl`),
+    PI_MODEL_TRACE_FILE: env.PI_MODEL_TRACE_FILE ?? path.join(runnerTemp, `pi-model-trace-${stage}-${suffix}.jsonl`),
   };
 
   const workspace = controlWorkspace(env);
@@ -211,16 +216,39 @@ export function runSelectedStage(spec, { backend, workspace }, {
 
 export async function runStage(options, env = process.env) {
   const { spec, workspace, backend } = buildStageRunSpec(options, env);
-  if (backend === 'pi') forcePiProviderBaseUrl(spec.model, env);
+  let traceProxy;
   console.log(`PI_MODEL_ENDPOINT backend=${backend} provider=${spec.model.provider} base_url=${spec.model.baseUrl}`);
 
   writeGithubEnv(env, 'PI_METRICS_FILE', spec.artifacts.metricsPath);
+  writeGithubEnv(env, 'PI_MODEL_TRACE_FILE', spec.environment.PI_MODEL_TRACE_FILE);
   writeGithubEnv(env, 'PI_PHASE', spec.environment.PI_PHASE);
   if (spec.environment.PI_ISSUE) writeGithubEnv(env, 'PI_ISSUE', spec.environment.PI_ISSUE);
   fs.rmSync(spec.artifacts.terminalResultPath, { force: true });
 
-  await verifyModelIsLoaded(spec.model.baseUrl, spec.model.id);
-  return runSelectedStage(spec, { backend, workspace });
+  try {
+    if (backend === 'pi') {
+      try {
+        traceProxy = await startModelTraceProxy({
+          targetBaseUrl: spec.model.baseUrl,
+          tracePath: spec.environment.PI_MODEL_TRACE_FILE,
+          stage: spec.stage,
+          issue: spec.environment.PI_ISSUE,
+          provider: spec.model.provider,
+          model: spec.model.id,
+        });
+      } catch {
+        // Tracing is optional. Preserve the established hp-laguna route if the local proxy cannot start.
+        forcePiProviderBaseUrl(spec.model, env);
+      }
+      if (traceProxy) overrideProviderBaseUrl({ ...spec.model, baseUrl: traceProxy.baseUrl }, env);
+    }
+    await verifyModelIsLoaded(spec.model.baseUrl, spec.model.id);
+    return await runSelectedStage(spec, { backend, workspace });
+  } finally {
+    if (traceProxy) {
+      try { overrideProviderBaseUrl(spec.model, env); } finally { await traceProxy.close(); }
+    }
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

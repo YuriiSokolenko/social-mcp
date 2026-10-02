@@ -257,6 +257,15 @@ jobs:
         if: always()
         run: node "$GITHUB_WORKSPACE/scripts/pi-usage-summary.mjs"
 
+      - name: Upload model request and response trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-model-trace-implementer-${{ inputs.issue_number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-model-trace-implementer-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 1
+
       - name: Clean temporary worktree
         if: always()
         run: |

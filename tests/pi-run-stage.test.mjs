@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
+import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
@@ -60,6 +60,7 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
   assert.equal(spec.environment.PI_BASH_TIMEOUT_SECONDS, '600');
   assert.equal(spec.artifacts.terminalResultPath, '/tmp/runner/pi-terminal-123-2');
   assert.equal(spec.artifacts.metricsPath, '/tmp/runner/pi-usage-123-2.jsonl');
+  assert.equal(spec.environment.PI_MODEL_TRACE_FILE, '/tmp/runner/pi-model-trace-dispatcher-123-2.jsonl');
   assert.equal(spec.artifacts.rawLogPath, '/tmp/raw.jsonl');
   assert.ok(Object.isFrozen(spec));
   assert.ok(Object.isFrozen(spec.model));
@@ -159,6 +160,32 @@ test('Pi hp-laguna provider config is forced to the same stage endpoint', () => 
   assert.equal(config.providers['hp-laguna'].models[1].baseUrl, DEFAULT_MODEL_BASE_URL);
   assert.equal(config.providers['hp-laguna'].modelOverrides['laguna-s-2.1-gguf'].baseUrl, DEFAULT_MODEL_BASE_URL);
   assert.equal(config.providers.other.baseUrl, 'http://example.invalid/v1');
+});
+
+test('legacy base URL forcing stays hp-laguna-only while trace override targets the selected provider', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pi-provider-route-'));
+  const agentDir = join(home, '.pi', 'agent');
+  mkdirSync(agentDir, { recursive: true });
+  const modelsFile = join(agentDir, 'models.json');
+  writeFileSync(modelsFile, JSON.stringify({ providers: {
+    'hp-laguna': { baseUrl: 'http://laguna/v1', models: [{ id: 'm1', baseUrl: 'http://laguna/v1' }] },
+    openai: { baseUrl: 'http://openai/v1', models: [{ id: 'm2', baseUrl: 'http://openai/v1' }] },
+  } }));
+
+  forcePiProviderBaseUrl({ provider: 'openai', baseUrl: 'http://proxy/v1' }, { HOME: home });
+  let config = JSON.parse(readFileSync(modelsFile, 'utf8'));
+  assert.equal(config.providers.openai.baseUrl, 'http://openai/v1');
+  assert.equal(config.providers['hp-laguna'].baseUrl, 'http://laguna/v1');
+
+  overrideProviderBaseUrl({ provider: 'openai', baseUrl: 'http://proxy/v1' }, { HOME: home });
+  config = JSON.parse(readFileSync(modelsFile, 'utf8'));
+  assert.equal(config.providers.openai.baseUrl, 'http://proxy/v1');
+  assert.equal(config.providers.openai.models[0].baseUrl, 'http://proxy/v1');
+  assert.equal(config.providers['hp-laguna'].baseUrl, 'http://laguna/v1');
+
+  overrideProviderBaseUrl({ provider: 'openai', baseUrl: 'http://openai/v1' }, { HOME: home });
+  config = JSON.parse(readFileSync(modelsFile, 'utf8'));
+  assert.equal(config.providers.openai.baseUrl, 'http://openai/v1');
 });
 
 test('Pi backend invocation keeps the legacy extension and CLI argument order', () => {

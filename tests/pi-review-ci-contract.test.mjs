@@ -88,7 +88,7 @@ test('implementer integrates latest dev before shared post-backend validation an
   assert.match(validation, /validateFinalProductTree/);
   assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
-  assert.match(runner, /return runSelectedStage\(spec, \{ backend, workspace \}\)/);
+  assert.match(runner, /return await runSelectedStage\(spec, \{ backend, workspace \}\)/);
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(workflow, /issue-publication\.mjs" review/);
   assert.match(publication, /dispatchWorkflow\('pi-pr-review\.yml'/);
