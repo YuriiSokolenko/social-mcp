@@ -954,10 +954,23 @@ test('implementer action-required aborts keep defensive execution-failure proven
   assert.match(workflow, /PI_RUNTIME_FAILURE_FILE=\$RUNNER_TEMP\/pi-runtime-failure-/);
   assert.match(workflow, /Pi execution aborted before terminal submission \[\$FAILURE_CLASS\/\$FAILURE_CODE\]/);
   assert.equal(
-    (workflow.match(/if jq -e 'type == "object"' "\$PI_RUNTIME_FAILURE_FILE" >\/dev\/null 2>&1; then/g) ?? []).length,
+    (workflow.match(/\.failure_code == "PI_ACTION_REQUIRED_ABORT"/g) ?? []).length,
     2,
-    'both workflow failure consumers validate JSON before field extraction under bash -e',
+    'both workflow consumers accept only the known runtime-abort code',
   );
+  assert.equal(
+    (workflow.match(/\(\.reason \| type == "string"\)/g) ?? []).length,
+    2,
+    'both workflow consumers require a string reason before accepting the record',
+  );
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"/g) ?? []).length,
+    2,
+    'accepted records are rendered through fixed trusted text rather than file content',
+  );
+  assert.doesNotMatch(workflow, /FAILURE_REASON="\$\(jq/);
+  assert.doesNotMatch(workflow, /FAILURE_CODE="\$\(jq/);
+  assert.doesNotMatch(workflow, /FAILURE_CLASS="\$\(jq/);
   assert.equal(
     (workflow.match(/runtime_failure_metadata_invalid/g) ?? []).length,
     2,
