@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 import { runProcess } from './process.mjs';
+import { assertNoDuplicatePackageRoots } from './package-root-check.mjs';
 import { baseRef, expandCommand, projectConfig } from './project-config.mjs';
 import { ruffArgs } from './ruff-spec.mjs';
 import {
@@ -141,6 +142,8 @@ export function runProductChecks({ cwd, ledgerPath, backend = 'pi' } = {}) {
     try {
       if (step.builtin === 'ruff') {
         runRuffCheck(cwd);
+      } else if (step.builtin === 'package_roots') {
+        assertNoDuplicatePackageRoots(root, projectConfig().checks.packageRoots);
       } else {
         const { command, args } = expandCommand(step, root);
         const result = run(command, args, cwd, { allowFailure: true });
