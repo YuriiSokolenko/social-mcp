@@ -264,7 +264,7 @@ jobs:
           name: pi-model-trace-implementer-${{ inputs.issue_number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pi-model-trace-implementer-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 1
 
       - name: Clean temporary worktree
         if: always()

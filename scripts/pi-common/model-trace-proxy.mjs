@@ -4,20 +4,29 @@ import path from 'node:path';
 import { once } from 'node:events';
 
 const DEFAULT_MAX_BYTES = 100 * 1024 * 1024;
+const CREDENTIAL_FIELDS = new Set([
+  'authorization', 'proxy_authorization', 'api_key', 'apikey', 'x_api_key',
+  'password', 'passwd', 'client_secret', 'secret', 'cookie', 'set_cookie', 'token',
+]);
+
+function isCredentialField(key) {
+  const normalized = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[\s-]+/g, '_');
+  return CREDENTIAL_FIELDS.has(normalized) || normalized.endsWith('_token');
+}
 
 function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
       key,
-      /authorization|api[_-]?key|token|secret|password|cookie/i.test(key) ? '[REDACTED]' : redact(entry),
+      isCredentialField(key) ? '[REDACTED]' : redact(entry),
     ]));
   }
   if (typeof value === 'string') {
     return value
       .replace(/\b(Bearer\s+)\S+/gi, '$1[REDACTED]')
       .replace(/\b(sk-[A-Za-z0-9_-]{8,})\b/g, '[REDACTED]')
-      .replace(/\b((?:api[_-]?key|access[_-]?token|token|secret|password|cookie)\s*[:=]\s*["']?)[^\s,"'&}]+/gi, '$1[REDACTED]');
+      .replace(/\b((?:access|refresh|id|auth|oauth|session|bearer)[_-]?token|[a-z0-9_-]+[_-]token|api[_-]?key|x-api-key|authorization|client[_-]?secret|password|passwd|cookie)(\s*[:=]\s*["']?)[^\s,"'&}]+/gi, '$1$2[REDACTED]');
   }
   return value;
 }
@@ -25,7 +34,7 @@ function redact(value) {
 function safePath(value) {
   const url = new URL(value || '/', 'http://trace-proxy.invalid');
   for (const key of url.searchParams.keys()) {
-    if (/authorization|api[_-]?key|token|secret|password|cookie/i.test(key)) url.searchParams.set(key, '[REDACTED]');
+    if (isCredentialField(key)) url.searchParams.set(key, '[REDACTED]');
   }
   return `${url.pathname}${url.search}`;
 }
@@ -39,13 +48,39 @@ function safeUrl(value) {
   return url.toString();
 }
 
-function collect(stream) {
+function collect(stream, signal) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    stream.on('data', chunk => chunks.push(Buffer.from(chunk)));
-    stream.on('end', () => resolve(Buffer.concat(chunks)));
-    stream.on('error', reject);
+    const cleanup = () => {
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onData = chunk => chunks.push(Buffer.from(chunk));
+    const onEnd = () => { cleanup(); resolve(Buffer.concat(chunks)); };
+    const onError = error => { cleanup(); reject(error); };
+    const onAbort = () => { cleanup(); reject(signal.reason || new Error('Client disconnected')); };
+    stream.on('data', onData);
+    stream.once('end', onEnd);
+    stream.once('error', onError);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
   });
+}
+
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-encoding',
+  'content-length', 'content-md5',
+]);
+
+function responseHeaders(headers) {
+  const excluded = new Set(HOP_BY_HOP_HEADERS);
+  for (const name of (headers.get('connection') || '').split(',')) {
+    if (name.trim()) excluded.add(name.trim().toLowerCase());
+  }
+  return Object.fromEntries([...headers].filter(([name]) => !excluded.has(name.toLowerCase())));
 }
 
 function parseBody(buffer) {
@@ -58,8 +93,10 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
   let nextSequence = 0;
   let writtenBytes = 0;
   let traceDisabled = false;
-  fs.mkdirSync(path.dirname(tracePath), { recursive: true });
-  fs.rmSync(tracePath, { force: true });
+  try {
+    fs.mkdirSync(path.dirname(tracePath), { recursive: true });
+    fs.rmSync(tracePath, { force: true });
+  } catch { traceDisabled = true; }
 
   const server = http.createServer(async (incoming, outgoing) => {
     const sequence = ++nextSequence;
@@ -70,8 +107,18 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
     let responseBody = Buffer.alloc(0);
     let error = null;
     let transportError = false;
+    const controller = new AbortController();
+    const disconnectError = Object.assign(new Error('Client disconnected'), { name: 'AbortError' });
+    const abortOnRequestClose = () => { if (!incoming.complete) controller.abort(disconnectError); };
+    const abortOnClientClose = () => { if (!outgoing.writableEnded) controller.abort(disconnectError); };
+    const abortOnError = error => { if (!controller.signal.aborted) controller.abort(error); };
+    incoming.on('aborted', abortOnRequestClose);
+    incoming.on('close', abortOnRequestClose);
+    incoming.on('error', abortOnError);
+    outgoing.on('close', abortOnClientClose);
+    outgoing.on('error', abortOnError);
     try {
-      requestBody = await collect(incoming);
+      requestBody = await collect(incoming, controller.signal);
       const base = new URL(targetBaseUrl);
       const requestUrl = new URL(incoming.url || '/', 'http://trace-proxy.invalid');
       const basePath = base.pathname.replace(/\/$/, '');
@@ -83,15 +130,17 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       const headers = new Headers(incoming.headers);
       headers.delete('host');
       headers.delete('content-length');
+      for (const name of ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']) headers.delete(name);
+      for (const name of (incoming.headers.connection || '').split(',')) if (name.trim()) headers.delete(name.trim());
       const response = await fetch(target, {
         method: incoming.method,
         headers,
         body: ['GET', 'HEAD'].includes(incoming.method) ? undefined : requestBody,
-        signal: AbortSignal.timeout(20 * 60 * 1000),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20 * 60 * 1000)]),
       });
       status = response.status;
       if (!response.ok) error = { name: 'HttpError', message: `Model endpoint returned HTTP ${response.status}` };
-      outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+      outgoing.writeHead(response.status, responseHeaders(response.headers));
       const chunks = [];
       if (response.body) {
         for await (const chunk of response.body) {
@@ -104,10 +153,24 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       outgoing.end();
     } catch (cause) {
       transportError = true;
-      status = 502;
-      error = { name: cause?.name || 'Error', message: redact(String(cause?.message || cause)) };
-      if (!outgoing.headersSent) outgoing.writeHead(502, { 'content-type': 'application/json' });
-      if (!outgoing.destroyed) outgoing.end(JSON.stringify({ error: { message: 'Model request failed' } }));
+      const clientDisconnected = controller.signal.aborted && controller.signal.reason === disconnectError;
+      status = clientDisconnected ? 499 : cause?.name === 'TimeoutError' ? 504 : 502;
+      error = {
+        name: clientDisconnected ? 'AbortError' : cause?.name || 'Error',
+        message: redact(clientDisconnected ? 'Client disconnected' : String(cause?.message || cause)),
+      };
+      if (outgoing.headersSent) {
+        outgoing.destroy();
+      } else if (!outgoing.destroyed) {
+        outgoing.writeHead(status, { 'content-type': 'application/json' });
+        outgoing.end(JSON.stringify({ error: { message: 'Model request failed' } }));
+      }
+    } finally {
+      incoming.off('aborted', abortOnRequestClose);
+      incoming.off('close', abortOnRequestClose);
+      incoming.off('error', abortOnError);
+      outgoing.off('close', abortOnClientClose);
+      outgoing.off('error', abortOnError);
     }
 
     const record = {
@@ -124,17 +187,21 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
     };
     const line = `${JSON.stringify(record)}\n`;
     const bytes = Buffer.byteLength(line);
-    if (!traceDisabled && writtenBytes + bytes <= maxBytes) {
+    const marker = `${JSON.stringify({ sequence, timestamp: new Date().toISOString(), stage, issue: issue || null, traceLimitReached: true, maxBytes })}\n`;
+    const nextMarker = `${JSON.stringify({ sequence: sequence + 1, timestamp: new Date().toISOString(), stage, issue: issue || null, traceLimitReached: true, maxBytes })}\n`;
+    const markerBytes = Buffer.byteLength(marker);
+    const reservedMarkerBytes = Buffer.byteLength(nextMarker);
+    if (!traceDisabled && writtenBytes + bytes + reservedMarkerBytes <= maxBytes) {
       try {
         fs.appendFileSync(tracePath, line, { encoding: 'utf8', mode: 0o600 });
         writtenBytes += bytes;
       } catch { traceDisabled = true; }
     } else if (!traceDisabled) {
       traceDisabled = true;
-      try {
-        const marker = `${JSON.stringify({ sequence, timestamp: new Date().toISOString(), stage, issue: issue || null, traceLimitReached: true, maxBytes })}\n`;
-        fs.appendFileSync(tracePath, marker, { encoding: 'utf8', mode: 0o600 });
-      } catch { /* Tracing is best effort; never fail a model call for a disk error. */ }
+      if (writtenBytes + markerBytes <= maxBytes) {
+        try { fs.appendFileSync(tracePath, marker, { encoding: 'utf8', mode: 0o600 }); }
+        catch { /* Tracing is best effort; never fail a model call for a disk error. */ }
+      }
     }
   });
 

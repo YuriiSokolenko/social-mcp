@@ -53,7 +53,7 @@ export function resolveModelId(env) {
   return entry.id;
 }
 
-export function forcePiProviderBaseUrl(model, env = process.env) {
+export function overrideProviderBaseUrl(model, env = process.env) {
   const agentDir = env.PI_AGENT_CONFIG_DIR || path.join(env.HOME || homedir(), '.pi', 'agent');
   const modelsFile = path.join(agentDir, 'models.json');
   if (!fs.existsSync(modelsFile)) {
@@ -87,6 +87,11 @@ export function forcePiProviderBaseUrl(model, env = process.env) {
   }
 
   fs.writeFileSync(modelsFile, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+}
+
+export function forcePiProviderBaseUrl(model, env = process.env) {
+  if (model.provider !== 'hp-laguna') return;
+  overrideProviderBaseUrl(model, env);
 }
 
 async function verifyModelIsLoaded(baseUrl, expectedId) {
@@ -222,21 +227,26 @@ export async function runStage(options, env = process.env) {
 
   try {
     if (backend === 'pi') {
-      traceProxy = await startModelTraceProxy({
-        targetBaseUrl: spec.model.baseUrl,
-        tracePath: spec.environment.PI_MODEL_TRACE_FILE,
-        stage: spec.stage,
-        issue: spec.environment.PI_ISSUE,
-        provider: spec.model.provider,
-        model: spec.model.id,
-      });
-      forcePiProviderBaseUrl({ ...spec.model, baseUrl: traceProxy.baseUrl }, env);
+      try {
+        traceProxy = await startModelTraceProxy({
+          targetBaseUrl: spec.model.baseUrl,
+          tracePath: spec.environment.PI_MODEL_TRACE_FILE,
+          stage: spec.stage,
+          issue: spec.environment.PI_ISSUE,
+          provider: spec.model.provider,
+          model: spec.model.id,
+        });
+      } catch {
+        // Tracing is optional. Preserve the established hp-laguna route if the local proxy cannot start.
+        forcePiProviderBaseUrl(spec.model, env);
+      }
+      if (traceProxy) overrideProviderBaseUrl({ ...spec.model, baseUrl: traceProxy.baseUrl }, env);
     }
     await verifyModelIsLoaded(spec.model.baseUrl, spec.model.id);
     return await runSelectedStage(spec, { backend, workspace });
   } finally {
     if (traceProxy) {
-      try { forcePiProviderBaseUrl(spec.model, env); } finally { await traceProxy.close(); }
+      try { overrideProviderBaseUrl(spec.model, env); } finally { await traceProxy.close(); }
     }
   }
 }
