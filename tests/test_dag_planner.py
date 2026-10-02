@@ -110,6 +110,27 @@ def test_rejects_duplicate_task_definitions() -> None:
     assert excinfo.value.task == "a"
 
 
+def test_rejections_are_reported_deterministically() -> None:
+    mixed = {"b": ["ghost"], "a": ["a"], "c": []}
+    unknowns = {"b": ["yy"], "a": ["zz"]}
+
+    mixed_errors: "list[str]" = []
+    unknown_tasks: "list[str]" = []
+    for seed in range(12):
+        try:
+            plan_execution(_shuffled(mixed, seed))
+        except DependencyPlannerError as error:
+            mixed_errors.append(f"{type(error).__name__}: {error}")
+        with pytest.raises(UnknownTaskError) as excinfo:
+            plan_execution(_shuffled(unknowns, seed))
+        unknown_tasks.append(excinfo.value.task)
+
+    assert set(mixed_errors) == {
+        "SelfDependencyError: task 'a' depends on itself"
+    }
+    assert set(unknown_tasks) == {"a"}
+
+
 def test_detects_multi_node_cycle() -> None:
     graph = {"a": ["b"], "b": ["c"], "c": ["a"], "d": []}
     with pytest.raises(TaskCycleError) as excinfo:

@@ -90,8 +90,11 @@ def _edges(graph: "dict[str, list[str]]") -> "dict[str, list[str]]":
 
     declared = set(graph)
     edges: "dict[str, list[str]]" = {}
-    for task, deps in graph.items():
-        for dependency in deps:
+    # Visit tasks and dependencies in sorted order so the first reported
+    # failure never depends on the caller's insertion order.
+    for task in sorted(graph):
+        deps = graph[task]
+        for dependency in sorted(deps):
             if dependency == task:
                 raise SelfDependencyError(task)
             if dependency not in declared:
