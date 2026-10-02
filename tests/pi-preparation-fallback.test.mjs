@@ -67,7 +67,23 @@ function runtimeScenario(mode) {
   try {
     const context = path.join(dir, 'issue.json');
     const loader = path.join(dir, 'loader.mjs');
-    fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
+    const issue = mode === 'layout-aware'
+      ? {
+          title: '[Workflow smoke] Add smoke widget parser',
+          body: 'Add `demo_pkg.diagnostics.smoke_widget.parse_widget` in a new diagnostics module with focused pytest coverage.',
+        }
+      : { title: 'Example task', body: 'Implement example.py' };
+    fs.writeFileSync(context, JSON.stringify(issue));
+    if (mode === 'layout-aware') {
+      fs.mkdirSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'tests', 'diagnostics'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', '__init__.py'), '');
+      fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', '__init__.py'), '');
+      fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', 'smoke_ratio.py'), 'def ratio(): return 1\n');
+      fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', 'smoke_chunks.py'), 'def chunks(): return []\n');
+      fs.writeFileSync(path.join(dir, 'tests', 'diagnostics', 'test_smoke_ratio.py'), 'def test_ratio(): pass\n');
+      fs.writeFileSync(path.join(dir, 'tests', 'diagnostics', 'test_smoke_chunks.py'), 'def test_chunks(): pass\n');
+    }
     fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
       if (specifier === 'typebox') return {
         url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
@@ -103,11 +119,24 @@ function runtimeScenario(mode) {
       bus.on('prompt-template:subagent:request', request => {
         attempts++;
         assert.equal(request.agent, 'implementation-planner');
-        assert.match(request.task, /Example task/);
-        assert.match(request.task, /Implement example.py/);
+        if (mode === 'layout-aware') {
+          assert.match(request.task, /Add smoke widget parser/);
+          assert.match(request.task, /source_root=src/);
+          assert.match(request.task, /source_target=src\/demo_pkg\/diagnostics\/smoke_widget\.py/);
+          assert.match(request.task, /nearest_source_convention=src\/demo_pkg\/diagnostics\/smoke_chunks\.py/);
+          assert.match(request.task, /test_directory=tests\/diagnostics/);
+          assert.match(request.task, /nearest_test_convention=tests\/diagnostics\/test_smoke_chunks\.py/);
+          assert.match(request.task, /at most one targeted convention read/);
+          assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/);
+        } else {
+          assert.match(request.task, /Example task/);
+          assert.match(request.task, /Implement example.py/);
+        }
         assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
         if (mode === 'abort') { signal.abort(); return; }
-        const good = { steps: ['Implement example.py'], complexity: 'nontrivial', evidence_budget: 2, reason: 'Needs source evidence' };
+        const good = mode === 'layout-aware'
+          ? { steps: ['Read the nearest smoke convention once, then add the module and focused tests'], complexity: 'nontrivial', evidence_budget: 1, reason: 'Layout is already resolved' }
+          : { steps: ['Implement example.py'], complexity: 'nontrivial', evidence_budget: 2, reason: 'Needs source evidence' };
         const schemaError = 'Structured output validation failed: value: must have required properties value; steps: schema is false; root: must not have additional properties';
         let reply;
         if (mode === 'envelope-retry') {
@@ -121,7 +150,7 @@ function runtimeScenario(mode) {
         else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
         else if (mode === 'invalid-complexity') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, complexity: 'medium' } } };
         else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', evidence_budget: 1 } } };
-        else if (mode === 'success' || mode === 'retry-success' && attempts === 2) reply = { status: 'completed', result: { kind: 'structured', value: good } };
+        else if (mode === 'success' || mode === 'layout-aware' || mode === 'retry-success' && attempts === 2) reply = { status: 'completed', result: { kind: 'structured', value: good } };
         else reply = { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' };
         if (attempts === 1) {
           const { steps, additionalProperties, required } = request.result.schema;
@@ -164,7 +193,7 @@ function runtimeScenario(mode) {
         assert.equal(blocked.block, true);
       } else {
         const prepared = await call('prepare_implementation');
-        const oneAttempt = ['success', 'timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
+        const oneAttempt = ['success', 'layout-aware', 'timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
         assert.equal(attempts, oneAttempt ? 1 : 2);
         const repeated = await handlers.get('tool_call')({ toolName: 'prepare_implementation', input: {} }, ctx);
         assert.match(repeated.reason, /single-shot/);
@@ -199,10 +228,28 @@ function runtimeScenario(mode) {
             assert.ok(messages.every(text => !text.includes('CLASSIFICATION REQUIRED')));
           }
         } else {
-          assert.deepEqual(prepared.details.plan, mode === 'overlong'
-            ? ['x'.repeat(240), 'short step'] : ['Implement example.py']);
+          if (mode === 'layout-aware') {
+            assert.deepEqual(prepared.details.plan, ['Read the nearest smoke convention once, then add the module and focused tests']);
+            assert.equal(prepared.details.evidenceBudget, 1);
+            assert.deepEqual(prepared.details.layoutHint, {
+              dottedTarget: 'demo_pkg.diagnostics.smoke_widget.parse_widget',
+              sourceRoot: 'src',
+              sourceDirectory: 'src/demo_pkg/diagnostics',
+              sourceTarget: 'src/demo_pkg/diagnostics/smoke_widget.py',
+              sourceConvention: 'src/demo_pkg/diagnostics/smoke_chunks.py',
+              testDirectory: 'tests/diagnostics',
+              testConvention: 'tests/diagnostics/test_smoke_chunks.py',
+            });
+            assert.match(prepared.content[0].text, /Repository layout hint: source root src/);
+            assert.match(prepared.content[0].text, /Prefer one targeted convention read if needed/);
+            assert.match(prepared.content[0].text, /do not broad-search or re-prove the fresh-worktree provenance/);
+            assert.match(prepared.content[0].text, /Fresh worktree provenance:/);
+          } else {
+            assert.deepEqual(prepared.details.plan, mode === 'overlong'
+              ? ['x'.repeat(240), 'short step'] : ['Implement example.py']);
+            assert.equal(prepared.details.evidenceBudget, 2);
+          }
           assert.equal(prepared.details.complexity, 'nontrivial');
-          assert.equal(prepared.details.evidenceBudget, 2);
           assert.ok(active.includes('read'));
         }
       }
@@ -231,7 +278,7 @@ test('planner misses structured output twice, then runtime restores the complete
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-for (const mode of ['success', 'retry-success', 'abort', 'restored', 'overlong', 'extra-fields', 'envelope-retry']) {
+for (const mode of ['success', 'layout-aware', 'retry-success', 'abort', 'restored', 'overlong', 'extra-fields', 'envelope-retry']) {
   test('runtime preserves preparation behavior: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
