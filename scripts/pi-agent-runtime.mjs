@@ -123,10 +123,12 @@ export function providerErrorStatus(message) {
 
   const text = String(message?.errorMessage ?? '').trim();
   // openai-completions surfaces OpenAI SDK Error.message strings such as
-  // "400: <body>", "400 <body>", or "400 status code (no body)". Prefer this outer
-  // status when present so a nested provider body mentioning another error code cannot override it.
-  const sdkMatch = /^(?:[A-Za-z_$][\w.$ -]*:\s*)?(\d{3})(?=[:\s]|$)/.exec(text);
-  if (sdkMatch) return Number(sdkMatch[1]);
+  // "400: <body>", "400 <json-body>", "400 status code (no body)", or
+  // "BadRequestError: 422 ...". Keep this intentionally narrow: arbitrary prose such as
+  // "Maximum context: 400 tokens" or "500 tokens exceeded" is not an HTTP status.
+  const sdkMatch =
+    /^(?:([45]\d{2})(?::(?:\s|$)|\s+(?=(?:status code\b|[\[{])))|[A-Za-z_$][\w.$]*Error:\s*([45]\d{2})(?=[:\s]|$))/.exec(text);
+  if (sdkMatch) return Number(sdkMatch[1] ?? sdkMatch[2]);
 
   // openai-responses / azure-openai-responses / mistral use Pi's explicit API-error prefix.
   const apiMatch = /\bAPI error \((\d{3})\):/.exec(text);
@@ -1383,6 +1385,9 @@ export default function (pi) {
         status,
         source: 'turn_end',
       })}`);
+      // Rarely, Pi may also classify the 400/422 body text as retryable; in that case this
+      // queued steer can be delivered in addition to Pi's own retry. The forcing flag is already
+      // cleared, so the overlap is bounded and cannot create a forced-request loop.
       await pi.sendUserMessage(
         'RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing and call one exposed action tool immediately.',
         { deliverAs: 'steer' },
