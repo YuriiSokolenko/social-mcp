@@ -20,7 +20,13 @@ import { stageConfig } from './pi-common/stage-config.mjs';
 import { mergeNewlyActiveTools } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
-import { appendCheckRecord, normalizeScope } from './pi-common/validation-ledger.mjs';
+import {
+  appendCheckRecord,
+  latestUnresolvedRunCheckFailure,
+  normalizeScope,
+  readValidationLedger,
+  runCheckRequestForRecord,
+} from './pi-common/validation-ledger.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { structuralEdit } from './pi-common/structural-edit.mjs';
 import {
@@ -40,6 +46,7 @@ import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutat
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 
 // Trust boundary: the coding session's agent definition, tool allowlist and extensions come
 // from THIS module's control checkout (the trusted harness), never from the issue worktree the
@@ -544,6 +551,19 @@ export default function (pi) {
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
 
+  function failedCheckRecoveryState() {
+    if (stage !== 'implementer') return { failure: null, corrupted: false };
+    const { records, corrupted } = readValidationLedger(process.env.PI_VALIDATION_LEDGER_FILE);
+    return {
+      failure: corrupted ? null : latestUnresolvedRunCheckFailure(records),
+      corrupted,
+    };
+  }
+
+  function controllerToolName(toolName) {
+    return toolName === RETRY_FAILED_CHECK_TOOL ? 'run_check' : toolName;
+  }
+
   function syncProductiveState() {
     const state = controller.productiveProgressState();
     process.env.PI_PRODUCTIVE_STATE = state;
@@ -568,6 +588,12 @@ export default function (pi) {
       stage === 'implementer' &&
       config.productiveProgress &&
       productiveState === 'action_required';
+    const recoveryState = productiveActionRequired
+      ? failedCheckRecoveryState()
+      : { failure: null, corrupted: false };
+    const failedCheckRecovery = recoveryState.failure;
+    const recoveryLedgerCorrupted = recoveryState.corrupted;
+    const recoveryRetryReady = Boolean(failedCheckRecovery && controller.verificationPermitted());
 
     const largeMutationBudgetActive = stage === 'implementer' && controller.largeMutationBudgetActive();
     // Completed one-shot control tools disappear. Enabled tools such as `subagent` are shown only
@@ -575,7 +601,10 @@ export default function (pi) {
     const satisfied = controller.transitions.satisfiedToolNames();
     const current = pi.getActiveTools();
     const verificationTool = config.productiveProgress?.verificationTool ?? null;
-    const verificationPermitted = controller.verificationPermitted();
+    // A corrupt ledger is fail-closed: no new ad-hoc verification can pretend
+    // to repair unknown/missing history. Submission remains available so the
+    // harness can report the blocked verification state instead of deadlocking.
+    const verificationPermitted = controller.verificationPermitted() && !recoveryLedgerCorrupted;
     const currentWithPermittedVerification =
       verificationTool &&
       verificationPermitted &&
@@ -583,10 +612,17 @@ export default function (pi) {
       !current.includes(verificationTool)
         ? [...current, verificationTool]
         : current;
+    // retry_last_failed_check is runtime-owned. Activate it deterministically
+    // when recovery is ready even if the parent session's initial allowlist did
+    // not include it.
+    const currentWithRecoveryRetry =
+      recoveryRetryReady && !currentWithPermittedVerification.includes(RETRY_FAILED_CHECK_TOOL)
+        ? [...currentWithPermittedVerification, RETRY_FAILED_CHECK_TOOL]
+        : currentWithPermittedVerification;
 
     // Tools added by a control transition appear in the live list but not in the saved baseline.
     if (unrestrictedActiveTools != null) {
-      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, currentWithPermittedVerification);
+      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, currentWithRecoveryRetry);
       // If some other runtime/control transition removed run_check while we were not hiding it,
       // honor that removal instead of resurrecting it from the saved unrestricted baseline.
       if (
@@ -599,7 +635,8 @@ export default function (pi) {
     }
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
-      (!verificationTool || name !== verificationTool || verificationPermitted)
+      (!verificationTool || name !== verificationTool || verificationPermitted) &&
+      (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
     const applySurface = (names, reason) => {
       if (verificationTool) {
@@ -613,7 +650,7 @@ export default function (pi) {
     };
 
     if (preComplexityRequired || productiveActionRequired) {
-      if (unrestrictedActiveTools == null) unrestrictedActiveTools = currentWithPermittedVerification;
+      if (unrestrictedActiveTools == null) unrestrictedActiveTools = currentWithRecoveryRetry;
       const restricted = preComplexityRequired
         ? unrestrictedActiveTools.filter(name =>
             new Set([
@@ -630,9 +667,11 @@ export default function (pi) {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
             blockerTool: config.productiveProgress.blockerTool,
-            verificationTools: controller.verificationPermitted()
-              ? [config.productiveProgress.verificationTool].filter(Boolean)
-              : [],
+            verificationTools: recoveryRetryReady
+              ? [RETRY_FAILED_CHECK_TOOL]
+              : verificationPermitted
+                ? [config.productiveProgress.verificationTool].filter(Boolean)
+                : [],
           });
       applySurface(visible(restricted), 'restricted');
       return;
@@ -643,7 +682,7 @@ export default function (pi) {
       unrestrictedActiveTools = null;
       return;
     }
-    const remaining = visible(currentWithPermittedVerification);
+    const remaining = visible(currentWithRecoveryRetry);
     // Preserve tool ordering as part of the model-visible surface; only update when the ordered
     // list actually changes, not merely when the list length changes.
     if (remaining.join('\0') !== current.join('\0')) applySurface(remaining, 'transition_complete');
@@ -1058,10 +1097,45 @@ export default function (pi) {
       },
     });
 
+    async function executeAuthoritativeRunCheck(params, ctx, { retry = false } = {}) {
+      const result = await runCheck(ctx.cwd, params);
+      const scope = normalizeScope(params, ctx.cwd);
+      console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
+      appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+        kind: result.kind,
+        scope,
+        status: result.status,
+        exit_code: result.exit_code,
+        source: 'run_check',
+        stage,
+        backend: 'pi',
+        run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
+        diagnostics_count: result.diagnostics.length,
+        summary: result.summary,
+        infrastructure: result.infrastructure ?? null,
+      });
+      if (retry) {
+        console.info(`PI_RUN_CHECK_RETRY ${JSON.stringify({ stage, kind: result.kind, scope, status: result.status })}`);
+      }
+      const response = result.status === 'fail'
+        ? {
+            ...result,
+            recovery: {
+              required: true,
+              tool: RETRY_FAILED_CHECK_TOOL,
+              kind: result.kind,
+              scope,
+              instruction: 'Fix the reported failure with a relevant mutation, then call retry_last_failed_check. Broader or different run_check scopes do not resolve this failure.',
+            },
+          }
+        : result;
+      return { result, response };
+    }
+
     pi.registerTool({
       name: 'run_check',
       label: 'Run focused check',
-      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check after that mutation grants a new permit. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation; the permit is consumed when the call is accepted regardless of the check outcome. Passing does not replace final validation; still call submit_result.',
+      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check creates an exact kind+scope recovery requirement: fix the diagnostic with a mutation, then use retry_last_failed_check; broader or different scopes cannot resolve it. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation; the permit is consumed when the call is accepted regardless of the check outcome. Passing does not replace final validation; still call submit_result.',
       parameters: Type.Object({
         kind: Type.Union(CHECK_KINDS.map(kind => Type.Literal(kind))),
         paths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),
@@ -1069,22 +1143,30 @@ export default function (pi) {
         profile: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
       }),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        const result = await runCheck(ctx.cwd, params);
-        console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
-        appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
-          kind: result.kind,
-          scope: normalizeScope(params, ctx.cwd),
-          status: result.status,
-          exit_code: result.exit_code,
-          source: 'run_check',
-          stage,
-          backend: 'pi',
-          run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
-          diagnostics_count: result.diagnostics.length,
-          summary: result.summary,
-          infrastructure: result.infrastructure ?? null,
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        const { result, response } = await executeAuthoritativeRunCheck(params, ctx);
+        return { content: [{ type: 'text', text: JSON.stringify(response) }], details: result };
+      },
+    });
+
+    pi.registerTool({
+      name: RETRY_FAILED_CHECK_TOOL,
+      label: 'Retry failed check',
+      description: 'Deterministically rerun the exact kind+scope of the unresolved authoritative run_check failure recorded in the validation ledger. It takes no scope arguments and is exposed only after a successful mutation grants a verification permit. Use it instead of choosing a broader or different run_check scope.',
+      parameters: Type.Object({}),
+      async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+        const recoveryState = failedCheckRecoveryState();
+        if (recoveryState.corrupted) {
+          const result = { status: 'invalid', summary: 'The validation ledger is corrupted; exact failed-scope recovery cannot be reconstructed safely.' };
+          return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        }
+        const failed = recoveryState.failure;
+        if (!failed) {
+          const result = { status: 'invalid', summary: 'No unresolved failed run_check scope is available to retry.' };
+          return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        }
+        const params = runCheckRequestForRecord(failed);
+        const { result, response } = await executeAuthoritativeRunCheck(params, ctx, { retry: true });
+        return { content: [{ type: 'text', text: JSON.stringify(response) }], details: result };
       },
     });
 
@@ -1322,7 +1404,32 @@ export default function (pi) {
       codingSessionLog('first_tool_call', { side: 'fork', sessionId: codingSession.sessionId, tool: event.toolName, msSinceReady: codingReadyAt ? Date.now() - codingReadyAt : null });
     }
     const productiveState = controller.productiveProgressState();
-    const blocked = controller.checkToolCall(event.toolName, event.input);
+    const recoveryState = failedCheckRecoveryState();
+    const failedCheckRecovery = recoveryState.failure;
+    let recoveryBlocked = null;
+    if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: retry_last_failed_check cannot execute because the validation ledger is corrupted and the exact authoritative failed scope cannot be reconstructed safely.',
+      };
+    } else if (event.toolName === RETRY_FAILED_CHECK_TOOL && !failedCheckRecovery) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: retry_last_failed_check did not execute because there is no unresolved failed run_check scope.',
+      };
+    } else if (recoveryState.corrupted && event.toolName === 'run_check') {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: run_check did not execute because the validation ledger is corrupted. Submit the implementation so the harness can report the fail-closed verification state instead of attempting ad-hoc recovery.',
+      };
+    } else if (failedCheckRecovery && event.toolName === 'run_check') {
+      recoveryBlocked = {
+        block: true,
+        reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} is still authoritative. Make a relevant mutation, then call retry_last_failed_check so the exact same kind+scope is rerun.`,
+      };
+    }
+    const canonicalToolName = controllerToolName(event.toolName);
+    const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, event.input);
     // Any provider-emitted tool call satisfies the transport-level forcing requirement, even if
     // the controller later classifies it as already completed. Progress accounting remains stricter:
     // an already-satisfied transition still does not reset prose/ceiling watchdogs.
@@ -1340,7 +1447,7 @@ export default function (pi) {
       if (loopGuard) {
         const loopResult = loopGuard.observe({
           stage,
-          tool: event.toolName,
+          tool: canonicalToolName,
           input: event.input ?? {},
           result: blocked,
           blocked: true,
@@ -1421,6 +1528,7 @@ export default function (pi) {
     if (loopGuard) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
+        toolName: canonicalToolName,
         input: structuredClone(event.input ?? {}),
         productiveState,
         repositoryStateBefore,
@@ -1494,8 +1602,9 @@ export default function (pi) {
     }
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
-    controller.onToolExecutionEnd(event.toolName, event.isError, { madeProgress: effectiveProgress });
-    const transitionRecord = controller.recordTransitionCompleted(event.toolName, pendingToolInputs.get(event.toolCallId) ?? {}, event.isError);
+    const canonicalToolName = controllerToolName(event.toolName);
+    controller.onToolExecutionEnd(canonicalToolName, event.isError, { madeProgress: effectiveProgress });
+    const transitionRecord = controller.recordTransitionCompleted(canonicalToolName, pendingToolInputs.get(event.toolCallId) ?? {}, event.isError);
     pendingToolInputs.delete(event.toolCallId);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
@@ -1504,7 +1613,7 @@ export default function (pi) {
     if (loopGuard && pendingLoopCall) {
       const loopResult = loopGuard.observe({
         stage,
-        tool: event.toolName,
+        tool: pendingLoopCall.toolName ?? controllerToolName(event.toolName),
         input: pendingLoopCall.input,
         result: event.result,
         isError: event.isError,
