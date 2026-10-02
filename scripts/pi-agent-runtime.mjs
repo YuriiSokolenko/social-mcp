@@ -123,9 +123,9 @@ export function providerErrorStatus(message) {
 
   const text = String(message?.errorMessage ?? '').trim();
   // openai-completions surfaces OpenAI SDK Error.message strings such as
-  // "400 <body>" or "400 status code (no body)". Prefer this outer status when present so
-  // a nested provider body mentioning another error code cannot override it.
-  const sdkMatch = /^(?:[A-Za-z_$][\w.$ -]*:\s*)?(\d{3})(?=\s|$)/.exec(text);
+  // "400: <body>", "400 <body>", or "400 status code (no body)". Prefer this outer
+  // status when present so a nested provider body mentioning another error code cannot override it.
+  const sdkMatch = /^(?:[A-Za-z_$][\w.$ -]*:\s*)?(\d{3})(?=[:\s]|$)/.exec(text);
   if (sdkMatch) return Number(sdkMatch[1]);
 
   // openai-responses / azure-openai-responses / mistral use Pi's explicit API-error prefix.
