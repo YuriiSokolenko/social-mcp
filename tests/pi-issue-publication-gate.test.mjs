@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { readScript } from './helpers/resolved-source.mjs';
 
-import { isUnsandboxedBackend, nextLabelsForVerification } from '../scripts/pi-common/issue-publication.mjs';
+import { assertPublicationFileSet, isUnsandboxedBackend, nextLabelsForVerification } from '../scripts/pi-common/issue-publication.mjs';
+import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { PIPELINE_LABELS } from '../scripts/pi-common/state-machine.mjs';
 import { VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
 
@@ -110,4 +114,63 @@ test('the issue-agent workflow passes the workflow_dispatch backend input direct
   assert.match(workflow, /verification_state=\$\(jq -r '\.verification_state' <<<"\$PR"\)/);
   const reviewStep = workflow.slice(workflow.indexOf('Start independent PR review'));
   assert.match(reviewStep, /if: steps\.checkpoint\.outputs\.changed == 'true' && steps\.pr\.outputs\.number != '' && steps\.pr\.outputs\.verification_state == 'VERIFIED'/);
+});
+
+
+test('publication rejects a stray probe file that submit_result did not declare (#334)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-file-set-'));
+  const resultFile = path.join(dir, 'implementer-result.json');
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  try {
+    git('init');
+    git('config', 'user.name', 'Pi Test');
+    git('config', 'user.email', 'pi@example.invalid');
+    fs.writeFileSync(path.join(dir, 'helper.py'), 'def trim(value):\n    return value.strip()\n');
+    git('add', '-A');
+    git('commit', '-m', 'base');
+    const base = git('rev-parse', 'HEAD').trim();
+
+    fs.appendFileSync(path.join(dir, 'helper.py'), '\n');
+    fs.writeFileSync(path.join(dir, 'test_helper.py'), 'from helper import trim\n');
+    fs.writeFileSync(path.join(dir, '.probe.py"'), 'probe = True\n');
+    git('add', '-A');
+    git('commit', '-m', 'candidate');
+
+    writeImplementerResult(resultFile, {
+      title: 'Whitespace helper',
+      summary: 'Update helper and test.',
+      changes: ['Update whitespace helper', 'Add helper regression test'],
+      files: ['helper.py', 'test_helper.py'],
+      security_notes: 'No security impact.',
+      limitations: 'None.',
+    });
+
+    assert.throws(
+      () => assertPublicationFileSet({ cwd: dir, base, resultFile }),
+      /Implementer file-set mismatch: unexpected files: \.probe\.py"/,
+    );
+
+    writeImplementerResult(resultFile, {
+      title: 'Whitespace helper',
+      summary: 'Update helper and test, including the explicitly declared probe.',
+      changes: ['Update whitespace helper', 'Add helper regression test', 'Add explicitly declared probe'],
+      files: ['helper.py', 'test_helper.py', '.probe.py"'],
+      security_notes: 'No security impact.',
+      limitations: 'None.',
+    });
+    assert.deepEqual(
+      assertPublicationFileSet({ cwd: dir, base, resultFile }),
+      ['.probe.py"', 'helper.py', 'test_helper.py'],
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('issue-agent passes the trusted result file into issue-branch publication (#334)', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.match(
+    workflow,
+    /issue-publication\.mjs" push "\$ISSUE" "\$JOB_DIR" "\$PI_IMPLEMENTER_START_COMMIT" "\$PI_ISSUE_BRANCH_EXPECTED" "\$PI_IMPLEMENTER_RESULT_FILE"/,
+  );
 });
