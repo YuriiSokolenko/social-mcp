@@ -130,6 +130,24 @@ function candidateEvidencePresence(candidate) {
   return null;
 }
 
+function textSerializesTopLevelResult(result, text) {
+  if (!text?.trim()) return false;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+
+  const keys = Object.keys(parsed);
+  if (keys.length === 0) return false;
+  return keys.every(key =>
+    Object.hasOwn(result, key) &&
+    JSON.stringify(normalizeValue(parsed[key])) === JSON.stringify(normalizeValue(result[key]))
+  );
+}
+
 function structuredEvidencePresence(result) {
   if (!result || typeof result !== 'object') return null;
 
@@ -144,13 +162,17 @@ function structuredEvidencePresence(result) {
   }
 
   // Top-level collection names are less trustworthy because wrappers may use
-  // generic fields such as items/files/entries for unrelated metadata. When
-  // explicit text exists, let the text decide instead of allowing an unrelated
-  // empty top-level collection to erase useful evidence.
+  // generic fields such as items/files/entries for unrelated metadata. Useful
+  // human-readable text therefore wins unless it is just a JSON serialization
+  // of fields already present on the top-level result.
+  const topLevelPresence = candidateEvidencePresence(result);
   const explicitText = explicitResultText(result);
-  if (explicitText?.trim()) return null;
+  if (explicitText?.trim()) {
+    if (topLevelPresence === false && textSerializesTopLevelResult(result, explicitText)) return false;
+    return null;
+  }
 
-  return candidateEvidencePresence(result);
+  return topLevelPresence;
 }
 
 export function hasMeaningfulEvidence(result, toolName = '') {
@@ -268,6 +290,10 @@ export class SemanticLoopGuard {
     this.failureWindow = [];
     this.repositoryWindow = [];
     this.steerOutstanding = false;
+    // Intentional one-shot credit: need_more_evidence declares that one successful
+    // evidence call may resolve the missing fact even with an empty result. Errors
+    // and blocked calls preserve the credit; the next successful eligible evidence
+    // call consumes it, while mutation/terminal completion clears it.
     this.declaredEvidencePending = false;
   }
 

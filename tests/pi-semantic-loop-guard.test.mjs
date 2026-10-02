@@ -47,6 +47,21 @@ test('useful text is not masked by an unrelated empty top-level collection', () 
   }, 'repo_search'), true);
 });
 
+test('serialized top-level empty collection remains no evidence without structured payloads', () => {
+  assert.equal(hasMeaningfulEvidence({
+    matches: [],
+    content: [{ type: 'text', text: '{"matches":[]}' }],
+  }, 'repo_search'), false);
+});
+
+test('top-level empty collection does not mask distinct useful JSON text', () => {
+  assert.equal(hasMeaningfulEvidence({
+    matches: [],
+    content: [{ type: 'text', text: '{"summary":"useful explanation"}' }],
+  }, 'repo_search'), true);
+});
+
+
 test('authoritative structured empty collection remains no evidence despite serialized content', () => {
   assert.equal(hasMeaningfulEvidence({
     content: [{ type: 'text', text: '{"matches":[]}' }],
@@ -748,6 +763,31 @@ function runRuntimeScenario(body, env = {}) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('runtime mock uses the repeated-no-evidence steer message', () => {
+  const result = runRuntimeScenario(`
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+    const ctx = { cwd: "/tmp", abort: () => {} };
+    await handlers.get('tool_call')(
+      { toolCallId: 'empty-read', toolName: 'read', input: { path: 'empty.txt' } },
+      ctx,
+    );
+    await handlers.get('tool_execution_end')(
+      { toolCallId: 'empty-read', toolName: 'read', isError: false, result: { content: [] } },
+      ctx,
+    );
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /repeated evidence calls completed successfully but returned no usable evidence/);
+    console.log('NO_EVIDENCE_STEER_MESSAGE_OK');
+  `, {
+    PI_LOOP_GUARD_WINDOW: '4',
+    PI_LOOP_GUARD_THRESHOLD: '1',
+  });
+  assert.match(result.stdout, /NO_EVIDENCE_STEER_MESSAGE_OK/);
+});
 
 test('runtime mock attributes interleaved mutations by toolCallId and aborts after a steer', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-runtime-repo-'));
