@@ -27,6 +27,12 @@ function specFor(stage) {
   });
 }
 
+function temporaryDirectory(t, prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
 function implementerStartup(t, extraEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pi-implementer-startup-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -93,8 +99,8 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
   assert.ok(Object.isFrozen(spec.artifacts));
 });
 
-test('versioned default model resolves qwen from the trusted control workspace', () => {
-  const workspace = mkdtempSync(join(tmpdir(), 'pi-default-model-'));
+test('versioned default model resolves qwen from the trusted control workspace', (t) => {
+  const workspace = temporaryDirectory(t, 'pi-default-model-');
   mkdirSync(join(workspace, '.pi'), { recursive: true });
   writeFileSync(join(workspace, '.pi', 'default-model'), 'qwen\n');
 
@@ -104,8 +110,8 @@ test('versioned default model resolves qwen from the trusted control workspace',
   );
 });
 
-test('explicit laguna workflow choice overrides the versioned qwen default', () => {
-  const workspace = mkdtempSync(join(tmpdir(), 'pi-default-model-'));
+test('explicit laguna workflow choice overrides the versioned qwen default', (t) => {
+  const workspace = temporaryDirectory(t, 'pi-default-model-');
   mkdirSync(join(workspace, '.pi'), { recursive: true });
   writeFileSync(join(workspace, '.pi', 'default-model'), 'qwen\n');
 
@@ -115,8 +121,8 @@ test('explicit laguna workflow choice overrides the versioned qwen default', () 
   );
 });
 
-test('automatic runs use the versioned default and invalid or missing config fails loudly', () => {
-  const workspace = mkdtempSync(join(tmpdir(), 'pi-default-model-'));
+test('automatic runs use the versioned default and invalid or missing config fails loudly', (t) => {
+  const workspace = temporaryDirectory(t, 'pi-default-model-');
   mkdirSync(join(workspace, '.pi'), { recursive: true });
   const defaultFile = join(workspace, '.pi', 'default-model');
   writeFileSync(defaultFile, 'qwen\n');
@@ -132,15 +138,15 @@ test('automatic runs use the versioned default and invalid or missing config fai
     /Invalid default Pi model/,
   );
 
-  const missingWorkspace = mkdtempSync(join(tmpdir(), 'pi-default-model-missing-'));
+  const missingWorkspace = temporaryDirectory(t, 'pi-default-model-missing-');
   assert.throws(
     () => resolveModelId({ GITHUB_WORKSPACE: missingWorkspace, PI_MODEL_CHOICE: 'default' }),
     /Default Pi model config is missing/,
   );
 });
 
-test('local stage runs receive a process-unique validation run id that repair specs inherit', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-local-validation-run-'));
+test('local stage runs receive a process-unique validation run id that repair specs inherit', (t) => {
+  const dir = temporaryDirectory(t, 'pi-local-validation-run-');
   const issueContext = join(dir, 'issue.json');
   writeFileSync(issueContext, JSON.stringify({ title: 'Local task', body: 'Exercise local validation identity.' }));
 
@@ -177,8 +183,8 @@ test('model endpoint defaults to the shared Open Responses server on port 4001',
   assert.equal(new URL(spec.model.baseUrl).port, '4001');
 });
 
-test('Pi hp-laguna provider config is forced to the same stage endpoint', () => {
-  const home = mkdtempSync(join(tmpdir(), 'pi-model-route-'));
+test('Pi hp-laguna provider config is forced to the same stage endpoint', (t) => {
+  const home = temporaryDirectory(t, 'pi-model-route-');
   const agentDir = join(home, '.pi', 'agent');
   mkdirSync(agentDir, { recursive: true });
   const modelsFile = join(agentDir, 'models.json');
@@ -211,8 +217,8 @@ test('Pi hp-laguna provider config is forced to the same stage endpoint', () => 
   assert.equal(config.providers.other.baseUrl, 'http://example.invalid/v1');
 });
 
-test('legacy base URL forcing stays hp-laguna-only while trace override targets the selected provider', () => {
-  const home = mkdtempSync(join(tmpdir(), 'pi-provider-route-'));
+test('legacy base URL forcing stays hp-laguna-only while trace override targets the selected provider', (t) => {
+  const home = temporaryDirectory(t, 'pi-provider-route-');
   const agentDir = join(home, '.pi', 'agent');
   mkdirSync(agentDir, { recursive: true });
   const modelsFile = join(agentDir, 'models.json');
@@ -366,8 +372,8 @@ test('validation repair spec is backend-neutral and keeps the same worktree and 
   assert.match(repair.prompt, /Do not restart or re-plan/i);
 });
 
-test('shared validation recovery gives any implementer backend one focused repair attempt', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'stage-validation-recovery-'));
+test('shared validation recovery gives any implementer backend one focused repair attempt', async (t) => {
+  const dir = temporaryDirectory(t, 'stage-validation-recovery-');
   const spec = createStageRunSpec({
     stage: 'implementer',
     cwd: dir,
@@ -416,8 +422,8 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.equal(result.durationMs, 3);
 });
 
-test('runtime failure metadata is cleared before every backend attempt', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'stage-runtime-failure-reset-'));
+test('runtime failure metadata is cleared before every backend attempt', async (t) => {
+  const dir = temporaryDirectory(t, 'stage-runtime-failure-reset-');
   const failureFile = join(dir, 'runtime-failure.json');
   const spec = createStageRunSpec({
     stage: 'implementer',
@@ -462,8 +468,8 @@ test('runtime failure metadata is cleared before every backend attempt', async (
   assert.equal(existsSync(failureFile), false, 'successful repair leaves no stale failure record');
 });
 
-test('successful stage clears recoverable runtime abort provenance while failed stage preserves it', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'stage-runtime-failure-lifecycle-'));
+test('successful stage clears recoverable runtime abort provenance while failed stage preserves it', async (t) => {
+  const dir = temporaryDirectory(t, 'stage-runtime-failure-lifecycle-');
   const failureFile = join(dir, 'runtime-failure.json');
   const base = createStageRunSpec({
     stage: 'implementer',
@@ -534,8 +540,8 @@ test('Pi and mini-swe both run post-backend validation', async () => {
   }
 });
 
-test('shared validation harness treats blocked implementer outcome as terminal without validation repair', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'stage-blocked-outcome-'));
+test('shared validation harness treats blocked implementer outcome as terminal without validation repair', async (t) => {
+  const dir = temporaryDirectory(t, 'stage-blocked-outcome-');
   const resultFile = join(dir, 'implementer-result.json');
   const spec = createStageRunSpec({
     stage: 'implementer',
@@ -585,8 +591,8 @@ test('shared validation harness treats blocked implementer outcome as terminal w
   assert.equal(result.durationMs, 7);
 });
 
-test('shared validation recovery stops after one failed repair attempt', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'stage-validation-failure-'));
+test('shared validation recovery stops after one failed repair attempt', async (t) => {
+  const dir = temporaryDirectory(t, 'stage-validation-failure-');
   const spec = createStageRunSpec({
     stage: 'implementer',
     cwd: dir,
@@ -627,8 +633,8 @@ test('validation repair prompt keeps diagnostics bounded and focused', () => {
   assert.match(prompt, /Fix only the concrete validation failures/i);
 });
 
-test('mini-swe backend receives issue task plus worktree routing instead of the Pi operating contract', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'mini-swe-stage-'));
+test('mini-swe backend receives issue task plus worktree routing instead of the Pi operating contract', (t) => {
+  const dir = temporaryDirectory(t, 'mini-swe-stage-');
   const issueContext = join(dir, 'issue.json');
   writeFileSync(issueContext, JSON.stringify({
     number: 77,
@@ -707,14 +713,14 @@ test('mini-swe never receives the validation ledger path in its model-facing env
   assert.ok(!Object.keys(invocation.options.env).includes('PI_VALIDATION_LEDGER_FILE'));
 });
 
-test('discardModelPhaseLedger removes whatever is at the ledger path, not just hides it', () => {
+test('discardModelPhaseLedger removes whatever is at the ledger path, not just hides it', (t) => {
   // The path is mechanically derivable by a raw-shell agent (RUNNER_TEMP +
   // GITHUB_RUN_ID + GITHUB_RUN_ATTEMPT + the naming template committed in
   // the workflow file) even though modelFacingEnv hides the variable name.
   // The actual guarantee has to be that nothing written there survives, not
   // that the agent doesn't know where to write it -- so this must delete
   // real forged content, not merely be a documented intention.
-  const dir = mkdtempSync(join(tmpdir(), 'mini-swe-ledger-'));
+  const dir = temporaryDirectory(t, 'mini-swe-ledger-');
   const ledgerPath = join(dir, 'ledger.jsonl');
   writeFileSync(ledgerPath, '{"kind":"python_compile","scope":{"paths":["x.py"]},"status":"pass","source":"run_check","stage":"implementer","backend":"mini-swe","run_id":"forged"}\n');
   discardModelPhaseLedger({ environment: { PI_VALIDATION_LEDGER_FILE: ledgerPath } });
