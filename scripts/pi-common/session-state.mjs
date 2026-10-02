@@ -109,11 +109,8 @@ export class SessionTransitions {
         ? [
             '',
             'Valid next progress:',
-            '- inspect/query repository',
-            '- begin coding session when needed',
-            '- mutate task files',
+            '- use only tools currently exposed by the runtime',
             validation.progressLine,
-            '- submit terminal result',
           ]
         : [
             '',
@@ -132,11 +129,17 @@ export class SessionTransitions {
     const repeatTool = record.key === PREPARATION_KEY ? this.preparationTool : record.tool;
     const validation = this.verificationGuidance(verification);
     const activeToolNames = verification?.activeToolNames ?? null;
+    const active = new Set(activeToolNames ?? []);
+    const delegatedEvidence = record.key === SUBAGENTS_ENABLE_TOOL && activeToolNames != null
+      ? (active.has('subagent')
+        ? 'Delegated inspection is exposed now for the current evidence action.'
+        : active.has('need_more_evidence')
+          ? 'If delegated evidence is needed, call need_more_evidence first; the delegated-inspection tool will be exposed for that unlocked evidence action.'
+          : '')
+      : '';
     const tail = activeToolNames == null
-      ? (record.key === SUBAGENTS_ENABLE_TOOL
-        ? `If subagent evidence is needed, call need_more_evidence first; subagent(...) is then permitted for that evidence action.\nOtherwise continue implementation; ${validation.sentence}.`
-        : `Continue with repository inspection or implementation; ${validation.sentence}; or submit the terminal result.`)
-      : `${activeToolGuidance(activeToolNames)} Verification status: ${validation.sentence}.`;
+      ? `Continue using only the current runtime tool surface; ${validation.sentence}.`
+      : `${activeToolGuidance(activeToolNames)}${delegatedEvidence ? ` ${delegatedEvidence}` : ''} Verification status: ${validation.sentence}.`;
     return [
       'STATE TRANSITION COMPLETE (control transition only; the GitHub issue is not complete)',
       '',
@@ -152,13 +155,14 @@ export class SessionTransitions {
     actionRequired = false,
     verificationTool = null,
     verificationState = null,
+    activeToolNames = null,
   } = {}) {
     const record = this.completed.get(key);
-    const verification = { verificationTool, verificationState };
+    const verification = { verificationTool, verificationState, activeToolNames };
     const validation = this.verificationGuidance(verification);
-    const next = actionRequired
-      ? `Mutate a task file, call begin_coding_session, or submit_result now; ${validation.sentence}.`
-      : `Inspect the repository or mutate task files; ${validation.sentence}; or submit_result.`;
+    const next = activeToolNames == null
+      ? `Use only the current runtime tool surface; ${validation.sentence}.`
+      : activeToolGuidance(activeToolNames);
     return `ALREADY_SATISFIED: ${toolName} is single-shot and already completed; it did not execute. ${this.transitionNotice(record, verification).split('\n').slice(2, 4).join(' ')} This repeat is not progress. ${next}`;
   }
 }
