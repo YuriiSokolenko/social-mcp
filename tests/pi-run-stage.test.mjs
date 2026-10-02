@@ -256,7 +256,7 @@ test('Pi backend invocation keeps the legacy extension and CLI argument order', 
   assert.deepEqual(invocation.filter.options.stdio, ['pipe', 'inherit', 'inherit']);
 });
 
-test('restored implementer env reaches the Pi child before result-tool extension registration', () => {
+test('restored implementer env is present in the Pi child when the result-tool extension is loaded', () => {
   const resumePatch = '/tmp/pi-resume.patch';
   const { spec, workspace } = implementerStartup({
     PI_RESUME_ACTIVE: 'true',
@@ -270,7 +270,7 @@ test('restored implementer env reaches the Pi child before result-tool extension
   assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
 });
 
-test('validation-repair env reaches the Pi child before result-tool extension registration', () => {
+test('validation-repair env is present in the Pi child when the result-tool extension is loaded', () => {
   const { spec, workspace } = implementerStartup();
   const repair = createValidationRepairSpec(spec, new Error('ruff failed'), 1);
   const invocation = buildPiInvocation(repair, workspace);
