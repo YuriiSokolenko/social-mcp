@@ -609,10 +609,11 @@ export default function (pi) {
     const satisfied = controller.transitions.satisfiedToolNames();
     const current = pi.getActiveTools();
     const verificationTool = config.productiveProgress?.verificationTool ?? null;
-    // A corrupt ledger is fail-closed: no new ad-hoc verification can pretend
-    // to repair unknown/missing history. Submission remains available so the
-    // harness can report the blocked verification state instead of deadlocking.
-    const verificationPermitted = controller.verificationPermitted() && !recoveryLedgerCorrupted;
+    // Ledger corruption affects the final verification verdict, not whether
+    // the implementer may gather new local evidence. Keep ordinary run_check
+    // usable; only exact retry is disabled because its historical scope cannot
+    // be reconstructed safely from an incomplete ledger.
+    const verificationPermitted = controller.verificationPermitted();
     const currentWithPermittedVerification =
       verificationTool &&
       verificationPermitted &&
@@ -620,11 +621,17 @@ export default function (pi) {
       !current.includes(verificationTool)
         ? [...current, verificationTool]
         : current;
-    // retry_last_failed_check is runtime-owned. Activate it deterministically
-    // when recovery is ready even if the parent session's initial allowlist did
-    // not include it.
+    // Exact retry substitutes for an existing verification capability; it must
+    // never resurrect verification after another owner deliberately removed
+    // run_check. Runtime-owned hiding is tracked explicitly and may restore it.
+    const verificationCapabilityOwned = Boolean(
+      verificationTool &&
+      (current.includes(verificationTool) || verificationToolHiddenByPermitGate)
+    );
     const currentWithRecoveryRetry =
-      recoveryRetryReady && !currentWithPermittedVerification.includes(RETRY_FAILED_CHECK_TOOL)
+      recoveryRetryReady &&
+      verificationCapabilityOwned &&
+      !currentWithPermittedVerification.includes(RETRY_FAILED_CHECK_TOOL)
         ? [...currentWithPermittedVerification, RETRY_FAILED_CHECK_TOOL]
         : currentWithPermittedVerification;
 
@@ -651,7 +658,7 @@ export default function (pi) {
         if (
           current.includes(verificationTool) &&
           !names.includes(verificationTool) &&
-          (!verificationPermitted || recoveryRetryReady || recoveryLedgerCorrupted)
+          (!verificationPermitted || recoveryRetryReady)
         ) {
           verificationToolHiddenByPermitGate = true;
         } else if (verificationPermitted && !recoveryRetryReady && names.includes(verificationTool)) {
@@ -1435,11 +1442,6 @@ export default function (pi) {
       recoveryBlocked = {
         block: true,
         reason: 'BLOCKED: retry_last_failed_check did not execute because there is no unresolved failed run_check scope.',
-      };
-    } else if (recoveryState.corrupted && event.toolName === 'run_check') {
-      recoveryBlocked = {
-        block: true,
-        reason: 'BLOCKED: run_check did not execute because the validation ledger is corrupted. Submit the implementation so the harness can report the fail-closed verification state instead of attempting ad-hoc recovery.',
       };
     } else if (recoveryRetryReady && event.toolName === 'run_check') {
       recoveryBlocked = {
