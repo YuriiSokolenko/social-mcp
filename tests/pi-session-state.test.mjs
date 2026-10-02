@@ -119,6 +119,36 @@ test('D: runtime state == model-visible state == tool surface for each transitio
   assert.equal(state.checkToolCall('lsp_start_server', LSP).alreadySatisfied, true);
 });
 
+test('session-state validation guidance follows the verification lifecycle', () => {
+  const state = fallbackController();
+  const verification = verificationState => ({ verificationTool: 'run_check', verificationState });
+
+  const beforeMutation = state.transitions.stateBlock(verification('not_yet_available'));
+  assert.match(beforeMutation, /run_check is not yet available; it becomes available after a successful mutation/);
+  assert.doesNotMatch(beforeMutation, /- run validation\b/);
+  assert.doesNotMatch(beforeMutation, /run_check is exhausted/);
+
+  const available = state.transitions.stateBlock(verification('available'));
+  assert.match(available, /run validation with run_check \(available once for the current mutation state\)/);
+
+  const exhausted = state.transitions.stateBlock(verification('exhausted'));
+  assert.match(exhausted, /run_check is exhausted for the current mutation state/);
+  assert.doesNotMatch(exhausted, /run_check is not yet available/);
+
+  const record = state.transitions.completed.get('preparation');
+  assert.match(
+    state.transitions.transitionNotice(record, verification('not_yet_available')),
+    /run_check is not yet available; it becomes available after a successful mutation/,
+  );
+  assert.match(
+    state.transitions.alreadySatisfiedReason('prepare_implementation', 'preparation', {
+      actionRequired: true,
+      ...verification('exhausted'),
+    }),
+    /run_check is exhausted for the current mutation state/,
+  );
+});
+
 test('mergeNewlyActiveTools keeps baseline order and adds newly enabled tools', () => {
   assert.deepEqual(mergeNewlyActiveTools(['a', 'b'], ['b', 'subagent']), ['a', 'b', 'subagent']);
 });
