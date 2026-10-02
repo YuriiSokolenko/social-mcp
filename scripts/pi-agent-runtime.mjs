@@ -654,10 +654,14 @@ export default function (pi) {
   async function announceTransition(record, productiveState) {
     console.log(`PI_STATE_TRANSITION_COMPLETE ${JSON.stringify({ stage, ...record })}`);
     syncActionToolSurface(productiveState);
-    const block = controller.transitions.stateBlock();
+    const verification = {
+      verificationTool: config.productiveProgress?.verificationTool ?? null,
+      verificationState: controller.verificationLifecycleState(),
+    };
+    const block = controller.transitions.stateBlock(verification);
     console.log(`PI_SESSION_STATE ${JSON.stringify({ stage, completed: [...controller.transitions.completed.keys()], block })}`);
     await pi.sendUserMessage(
-      `${controller.transitions.transitionNotice(record)}\n\n${block}`,
+      `${controller.transitions.transitionNotice(record, verification)}\n\n${block}`,
       { deliverAs: 'steer' },
     );
   }
