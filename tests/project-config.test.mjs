@@ -81,3 +81,18 @@ test('package-root policy has an explicit allow-list escape hatch and rejects un
   invalid.checks.packageRoots.unexpected = true;
   assert.throws(() => validateConfig(invalid), /checks\.packageRoots\.unexpected/);
 });
+
+test('package-root canonical roots reject unsafe paths and typos when validated against the checkout', () => {
+  for (const badRoot of ['../src', '/tmp/src', 'src/../src']) {
+    const configured = raw();
+    configured.checks.packageRoots.canonicalRoots = [badRoot];
+    assert.throws(() => validateConfig(configured), /must be a relative directory path/);
+  }
+
+  const typo = raw();
+  typo.checks.packageRoots.canonicalRoots = ['scr'];
+  assert.throws(
+    () => validateConfig(typo, { root: process.cwd() }),
+    /does not identify an existing directory: scr/,
+  );
+});
