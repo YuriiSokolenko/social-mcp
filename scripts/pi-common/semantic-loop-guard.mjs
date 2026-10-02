@@ -106,6 +106,7 @@ const EVIDENCE_COLLECTION_KEYS = Object.freeze([
 function structuredEvidencePresence(result) {
   if (!result || typeof result !== 'object') return null;
   const candidates = [];
+  if (result.structuredContent && typeof result.structuredContent === 'object') candidates.push(result.structuredContent);
   if (result.details && typeof result.details === 'object') candidates.push(result.details);
   candidates.push(result);
 
@@ -132,13 +133,18 @@ function structuredEvidencePresence(result) {
   return null;
 }
 
-export function hasMeaningfulEvidence(result) {
+export function hasMeaningfulEvidence(result, toolName = '') {
   const structured = structuredEvidencePresence(result);
   if (structured != null) return structured;
   if (result == null) return false;
   if (Array.isArray(result) && result.length === 0) return false;
   if (typeof result === 'object' && Object.keys(result).length === 0) return false;
-  return boundedResultText(result).trim().length > 0;
+  const text = boundedResultText(result).trim();
+  // Pi 0.87.x exposes no structured stdout/stderr for a successful empty bash call;
+  // the built-in bash tool returns this exact result sentinel instead. This is result-shape
+  // handling, not command-string inspection, and newer Pi structuredContent.output above wins.
+  if (toolName === 'bash' && text === '(no output)') return false;
+  return text.length > 0;
 }
 
 export function normalizeErrorClass(result, blocked = false) {
@@ -307,13 +313,11 @@ export class SemanticLoopGuard {
       tripped: false,
       action: null,
     };
-    const consumesDeclaredEvidence =
+    const declaredEvidenceEligible =
       this.declaredEvidencePending &&
       !TERMINAL_TOOLS.has(tool) &&
       !MUTATION_TOOLS.has(tool) &&
       !NEUTRAL_TOOLS.has(tool);
-    const declaredEvidence = consumesDeclaredEvidence;
-    if (consumesDeclaredEvidence) this.declaredEvidencePending = false;
 
     if (TERMINAL_TOOLS.has(tool)) {
       this.declaredEvidencePending = false;
@@ -417,11 +421,14 @@ export class SemanticLoopGuard {
       return { ...base, classification: 'success_neutral' };
     }
 
-    const meaningfulEvidence = hasMeaningfulEvidence(result);
+    const declaredEvidence = declaredEvidenceEligible;
+    if (declaredEvidence) this.declaredEvidencePending = false;
+    const meaningfulEvidence = hasMeaningfulEvidence(result, tool);
     const resultHash = boundedStableHash(result);
     if (!meaningfulEvidence && !declaredEvidence) {
       const family = boundedStableHash({
         tool,
+        input: normalizeValue(input),
         productiveState,
         classification: 'success_no_evidence',
       });
