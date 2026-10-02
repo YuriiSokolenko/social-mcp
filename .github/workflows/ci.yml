@@ -48,6 +48,14 @@ jobs:
       - name: Pytest
         run: pytest
 
+      - name: Install the Pi runtime TypeBox contract dependency
+        run: npm install --prefix "$RUNNER_TEMP/pi-typebox-contract" --no-save --no-package-lock typebox@1.3.27
+
+      - name: Validate the registered submit_result schema with real TypeBox
+        env:
+          PI_TYPEBOX_PACKAGE_ROOT: ${{ runner.temp }}/pi-typebox-contract
+        run: node --test tests/pi-implementer-typebox-schema-contract.test.mjs
+
       - name: Agent workflow checks
         run: node --test tests/*.test.mjs
 
