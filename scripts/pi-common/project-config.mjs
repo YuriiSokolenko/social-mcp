@@ -58,6 +58,23 @@ function stringList(value, where, { optional = false } = {}) {
   return value.map((item, index) => string(item, `${where}[${index}]`));
 }
 
+function relativeDirectoryList(value, where, { optional = false, root = null } = {}) {
+  return stringList(value, where, { optional }).map((item, index) => {
+    const normalized = item.replaceAll('\\\\', '/');
+    const parts = normalized.split('/');
+    if (/^(?:\/|[A-Za-z]:\/)/.test(normalized) || parts.some(part => part === '.' || part === '..')) {
+      throw new ConfigError(`${where}[${index}] must be a relative directory path without . or .. segments`);
+    }
+    if (root) {
+      const target = path.resolve(root, item);
+      if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
+        throw new ConfigError(`${where}[${index}] does not identify an existing directory: ${item}`);
+      }
+    }
+    return item;
+  });
+}
+
 function rejectUnknown(value, allowed, where) {
   for (const key of Object.keys(value)) {
     if (!allowed.includes(key)) throw new ConfigError(`${where}.${key} is not a known setting`);
@@ -89,13 +106,13 @@ function commandList(value, where) {
   return Object.freeze(value.map((item, index) => command(item, `${where}[${index}]`)));
 }
 
-export function parseConfigText(text, source = CONFIG_FILE_NAME) {
+export function parseConfigText(text, source = CONFIG_FILE_NAME, options = {}) {
   let raw;
   try { raw = JSON.parse(text); } catch (error) { throw new ConfigError(`${source} is not valid JSON: ${error.message}`); }
-  return validateConfig(raw);
+  return validateConfig(raw, options);
 }
 
-export function validateConfig(raw) {
+export function validateConfig(raw, options = {}) {
   object(raw, 'root');
   for (const key of Object.keys(raw)) {
     if (!TOP_LEVEL.has(key)) throw new ConfigError(`${key} is not a known top-level setting`);
@@ -182,7 +199,10 @@ export function validateConfig(raw) {
       final: checks.final === undefined ? Object.freeze([]) : commandList(checks.final, 'checks.final'),
       profiles: Object.freeze(profiles),
       packageRoots: Object.freeze({
-        canonicalRoots: Object.freeze(stringList(packageRoots.canonicalRoots, 'checks.packageRoots.canonicalRoots', { optional: true })),
+        canonicalRoots: Object.freeze(relativeDirectoryList(packageRoots.canonicalRoots, 'checks.packageRoots.canonicalRoots', {
+          optional: true,
+          root: options.root ?? null,
+        })),
         allowDuplicatePackages: Object.freeze(stringList(packageRoots.allowDuplicatePackages, 'checks.packageRoots.allowDuplicatePackages', { optional: true })),
       }),
     }),
@@ -221,7 +241,7 @@ export function loadProjectConfig(options = {}) {
   if (!file) {
     throw new ConfigError(`not found. Set ${CONFIG_ENV}, or add ${CONFIG_FILE_NAME} to the trusted control checkout`);
   }
-  return parseConfigText(fs.readFileSync(file, 'utf8'), file);
+  return parseConfigText(fs.readFileSync(file, 'utf8'), file, { root: path.dirname(file) });
 }
 
 let cached = null;
