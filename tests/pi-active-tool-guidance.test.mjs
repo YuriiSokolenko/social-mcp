@@ -95,6 +95,8 @@ test('runtime counts an attempted tool that is absent from the current surface',
     const context = path.join(dir, 'issue.json');
     const loader = path.join(dir, 'loader.mjs');
     fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Example' }));
+    // The runtime imports typebox, but this child-process test only exercises event hooks.
+    // Stub the module so the fixture stays dependency-light and does not depend on node_modules.
     fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
       if (specifier === 'typebox') return {
         url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
@@ -128,6 +130,16 @@ test('runtime counts an attempted tool that is absent from the current surface',
       assert.match(blocked.reason, /not currently exposed/);
       assert.match(blocked.reason, /CURRENTLY EXPOSED TOOLS/);
       assert.doesNotMatch(blocked.reason.split('CURRENTLY EXPOSED TOOLS')[1], /\\bread\\b/);
+
+      // Provider-facing aliases are compared before controller canonicalization.
+      active = ['retry_last_failed_check'];
+      const retryAlias = await handlers.get('tool_call')(
+        { toolName: 'retry_last_failed_check', toolCallId: 'retry-alias', input: {} },
+        { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 2048 }, abort: () => {} },
+      );
+      assert.equal(retryAlias.block, true);
+      assert.match(retryAlias.reason, /no unresolved failed run_check scope/);
+      assert.doesNotMatch(retryAlias.reason, /not currently exposed/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url),
