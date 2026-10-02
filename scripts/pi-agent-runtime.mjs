@@ -95,8 +95,9 @@ export function disableThinkingInPayload(payload) {
 
 // Both OpenAI-compatible Chat Completions and Responses requests accept tool_choice="required".
 // The active Pi tool surface has already been reduced to the valid action_required tools before
-// the request is built, so this forces one real tool call without choosing the tool on the model's
-// behalf. Keep this as a one-request patch, never a global provider default.
+// the request is built, so this forces a real tool call without choosing the tool on the model's
+// behalf. The runtime keeps this request constraint armed until a real tool attempt is observed;
+// transport retries or ceiling-hit responses must not consume it.
 export function requireToolChoiceInPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
     return payload;
@@ -596,9 +597,10 @@ export default function (pi) {
 
   // Provider-request patches are deliberately narrow:
   // - coding sessions keep thinking disabled on every request;
-  // - after the first prose-only Implementer action_required violation, exactly one next request
-  //   gets tool_choice="required". Pi has already restricted payload.tools to the valid action
-  //   surface, so the model still chooses direct mutation vs coding session vs submit/escape hatch.
+  // - after the first prose-only Implementer action_required violation, requests keep
+  //   tool_choice="required" until the model actually attempts one exposed tool. Pi has already
+  //   restricted payload.tools to the valid action surface, so the model still chooses direct
+  //   mutation vs coding session vs submit/escape hatch.
   let codingReadyAt = null;
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
@@ -617,7 +619,6 @@ export default function (pi) {
       if (requireToolOnNextProviderRequest) {
         const constrained = requireToolChoiceInPayload(patched);
         if (constrained !== patched) {
-          requireToolOnNextProviderRequest = false;
           console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({ stage, mode: 'required', activeTools: pi.getActiveTools() })}`);
           patched = constrained;
         }
@@ -1116,8 +1117,14 @@ export default function (pi) {
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
     // A repeated already-completed transition is not a real tool attempt: it must not reset the
-    // prose-only / ceiling-without-tool watchdogs.
-    if (!blocked?.alreadySatisfied) actionTurnAttemptedTool = true;
+    // prose-only / ceiling-without-tool watchdogs or satisfy an armed provider-level tool requirement.
+    if (!blocked?.alreadySatisfied) {
+      actionTurnAttemptedTool = true;
+      if (requireToolOnNextProviderRequest) {
+        requireToolOnNextProviderRequest = false;
+        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({ stage, tool: event.toolName })}`);
+      }
+    }
     if (blocked) {
       if (blocked.alreadySatisfied) {
         console.warn(`PI_ALREADY_SATISFIED ${JSON.stringify({ stage, ...controller.lastAlreadySatisfied, suppressed: true, productive: false })}`);
