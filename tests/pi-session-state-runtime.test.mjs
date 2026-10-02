@@ -129,10 +129,6 @@ test('runtime materializes completed transitions into context and tool surface',
 
       // Failed-check recovery is exercised through the real runtime hooks, not
       // by regex-matching pi-agent-runtime.mjs source text.
-      // The earlier unrelated-owner test deliberately removed run_check; model
-      // that owner explicitly enabling it again before this independent scenario.
-      if (!active.includes('run_check')) active.push('run_check');
-
       const appendRuntimeCheck = (status, scope = { paths: ['example.py'] }, summary = status) => {
         fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
           kind: 'python_compile',
@@ -151,9 +147,19 @@ test('runtime materializes completed transitions into context and tool surface',
         }) + '\\n');
       };
 
+      // The earlier unrelated-owner scenario deliberately removed run_check.
+      // An unresolved failure must not let retry_last_failed_check resurrect
+      // verification capability that another owner took away.
       appendRuntimeCheck('fail', { paths: ['example.py'] }, 'focused failure');
       handlers.get('turn_start')({ turnIndex: turn });
-      assert.ok(active.includes('retry_last_failed_check'), 'runtime activates exact retry even when the parent allowlist omitted it');
+      assert.ok(!active.includes('run_check'));
+      assert.ok(!active.includes('retry_last_failed_check'), 'exact retry does not resurrect an externally removed run_check');
+
+      // Model that external owner explicitly enabling verification again. The
+      // runtime may now substitute its deterministic exact retry.
+      active.push('run_check');
+      handlers.get('turn_start')({ turnIndex: turn });
+      assert.ok(active.includes('retry_last_failed_check'), 'runtime activates exact retry once run_check capability is present');
       assert.ok(active.includes('rollback_last_mutation'), 'rollback remains available during recovery');
       assert.ok(active.includes('need_more_evidence'), 'one-evidence escape remains available during recovery');
       assert.ok(active.includes('submit_result'), 'terminal submission remains available during recovery');
@@ -241,16 +247,21 @@ test('runtime materializes completed transitions into context and tool surface',
 
       fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, '{"broken":');
       handlers.get('turn_start')({ turnIndex: ++turn });
-      assert.ok(!active.includes('run_check'), 'corrupt ledger keeps ad-hoc run_check fail-closed');
-      assert.ok(!active.includes('retry_last_failed_check'), 'corrupt ledger hides exact retry because the authoritative scope is unknowable');
-      assert.ok(active.includes('submit_result'), 'corrupt ledger still allows terminal submission so the harness can report blocked verification');
-      const corruptCheck = await handlers.get('tool_call')({
+      assert.ok(active.includes('run_check'), 'corrupt ledger does not permanently disable new local verification');
+      assert.ok(!active.includes('retry_last_failed_check'), 'corrupt ledger hides exact retry because historical scope is unknowable');
+      assert.ok(active.includes('submit_result'), 'corrupt ledger still allows terminal submission while final verification remains fail-closed');
+      const corruptCheckEvent = {
         toolName: 'run_check',
         toolCallId: 'corrupt-check-' + turn,
         input: { kind: 'python_compile', paths: ['example.py'] },
+      };
+      const corruptCheck = await handlers.get('tool_call')(corruptCheckEvent, ctx);
+      assert.equal(corruptCheck, undefined, 'ordinary run_check remains usable after ledger corruption');
+      await handlers.get('tool_execution_end')({
+        ...corruptCheckEvent,
+        isError: true,
+        result: { content: [{ type: 'text', text: 'stub check not executed' }] },
       }, ctx);
-      assert.equal(corruptCheck.block, true);
-      assert.match(corruptCheck.reason, /ledger is corrupted/);
       const corruptRetry = await handlers.get('tool_call')({
         toolName: 'retry_last_failed_check',
         toolCallId: 'corrupt-retry-' + turn,
