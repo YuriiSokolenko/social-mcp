@@ -97,14 +97,23 @@ export function disableThinkingInPayload(payload) {
 // The active Pi tool surface has already been reduced to the valid action_required tools before
 // the request is built, so this forces a real tool call without choosing the tool on the model's
 // behalf. The runtime keeps this request constraint armed until the provider emits a tool call;
-// transport retries or ceiling-hit responses must not consume it. Only a non-retryable compatibility
-// status (400/422) on a request that was actually forced clears the constraint; transient
-// statuses such as 408/429 leave it armed for the retry.
+// transport retries or ceiling-hit responses must not consume it. Pi surfaces rejected provider
+// requests as turn_end error messages, so a forced 400/422 is retried once without provider-level
+// forcing; transient statuses such as 408/429 leave the requirement armed for Pi's transport retry.
 export function requireToolChoiceInPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
     return payload;
   }
   return { ...payload, tool_choice: 'required' };
+}
+
+export function providerErrorStatus(message) {
+  if (message?.stopReason !== 'error') return null;
+  const text = String(message?.errorMessage ?? '');
+  const match = /\bAPI error \((\d{3})\):/.exec(text);
+  if (!match) return null;
+  const status = Number(match[1]);
+  return Number.isInteger(status) ? status : null;
 }
 
 // Set (only) for the forked coding session: switches this runtime into coding-session mode.
@@ -635,21 +644,6 @@ export default function (pi) {
         }
       }
       return patched;
-    });
-    pi.on('after_provider_response', (event) => {
-      const status = Number(event?.status ?? 0);
-      const wasForced = forcedProviderRequestInFlight;
-      forcedProviderRequestInFlight = false;
-      // Clear only on non-retryable request-shape failures. Transient 408/429
-      // responses must preserve the requirement so the transport retry is still forced.
-      if (
-        requireToolOnNextProviderRequest &&
-        wasForced &&
-        [400, 422].includes(status)
-      ) {
-        requireToolOnNextProviderRequest = false;
-        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'provider_incompatible_status', status })}`);
-      }
     });
   }
 
@@ -1355,6 +1349,32 @@ export default function (pi) {
   });
 
   pi.on('turn_end', async (event, ctx) => {
+    const status = providerErrorStatus(event.message);
+    const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
+    forcedProviderRequestInFlight = false;
+
+    // Pi 0.79.4 surfaces provider 4xx failures as assistant error turns; its
+    // after_provider_response hook is not emitted on this path. An error turn is transport
+    // failure, not model prose, so it must not consume the prose/ceiling watchdogs.
+    if (forcedRequestErrored && [400, 422].includes(status)) {
+      requireToolOnNextProviderRequest = false;
+      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({
+        stage,
+        reason: 'provider_request_rejected',
+        status,
+        source: 'turn_end',
+      })}`);
+      await pi.sendUserMessage(
+        'RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing and call one exposed action tool immediately.',
+        { deliverAs: 'steer' },
+      );
+      return { continue: true };
+    }
+    if (event.message?.stopReason === 'error') {
+      console.warn(`PI_PROVIDER_ERROR_TURN ${JSON.stringify({ stage, status, forced: forcedRequestErrored })}`);
+      return undefined;
+    }
+
     const outputTokens = Number(event.message?.usage?.output || 0);
     if (codingSession && !codingFirstResponseLogged) {
       codingFirstResponseLogged = true;
