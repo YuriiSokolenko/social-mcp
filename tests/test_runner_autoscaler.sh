@@ -119,6 +119,22 @@ STATUS_FAIL=1
 assert_failure model_start_capacity 0
 unset STATUS_FAIL
 
+# Qwen's configured global capacity is independent of runner capacity. Verify
+# the eight-slot boundary and that finishing one active job opens exactly one
+# admission place for the waiting queue.
+MODEL_MAX_CONCURRENCY=8
+STATUS_RESPONSE='[{"id":0,"is_processing":false},{"id":1,"is_processing":false},{"id":2,"is_processing":false},{"id":3,"is_processing":false},{"id":4,"is_processing":false},{"id":5,"is_processing":false},{"id":6,"is_processing":false},{"id":7,"is_processing":false}]'
+[[ "$(model_start_capacity 0)" == $'8\t0\t8' ]] || fail 'zero active jobs admit up to eight Qwen jobs'
+STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"id":2,"is_processing":true},{"id":3,"is_processing":true},{"id":4,"is_processing":true},{"id":5,"is_processing":true},{"id":6,"is_processing":true},{"id":7,"is_processing":false}]'
+[[ "$(model_start_capacity 7)" == $'8\t7\t1' ]] || fail 'seven active model jobs leave one Qwen slot'
+[[ "$(model_start_capacity 8)" == $'8\t7\t0' ]] || fail 'eight active model jobs block a ninth job'
+[[ "$(model_start_capacity 7)" == $'8\t7\t1' ]] || fail 'completing one job frees one Qwen slot'
+STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"id":2,"is_processing":true},{"id":3,"is_processing":true},{"id":4,"is_processing":true},{"id":5,"is_processing":true},{"id":6,"is_processing":true},{"id":7,"is_processing":true},{"id":8,"is_processing":true}]'
+[[ "$(model_start_capacity 0)" == $'8\t8\t0' ]] || fail 'runtime slots and busy count are capped by configured model capacity'
+MODEL_MAX_CONCURRENCY=invalid
+assert_failure model_start_capacity 0
+MODEL_MAX_CONCURRENCY=8
+
 STOPPED_NAMES="$(mktemp)"
 STATUS_LOG="$(mktemp)"
 trap 'rm -f "$DELETED_IDS" "$STOPPED_NAMES" "$STATUS_LOG"' EXIT
@@ -180,6 +196,19 @@ STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"
   main >/dev/null
 )
 
+STATUS_RESPONSE='[{"id":0,"is_processing":false},{"id":1,"is_processing":false},{"id":2,"is_processing":false},{"id":3,"is_processing":false},{"id":4,"is_processing":false},{"id":5,"is_processing":false},{"id":6,"is_processing":false},{"id":7,"is_processing":false}]'
+(
+  queued_jobs() { printf '8\n'; }
+  busy_ephemeral_runners() { printf '0\n'; }
+  active_containers() { printf '0\n'; }
+  cleanup_stale_registrations() { :; }
+  MAX_RUNNERS=8
+  spawned=0
+  spawn_runner() { spawned=$((spawned + 1)); }
+  sleep() { [[ "$spawned" == 8 ]] || fail "expected eight runners, got $spawned"; exit 0; }
+  main >/dev/null
+)
+
 STATUS_RESPONSE='[{"id":0,"is_processing":false},{"id":1,"is_processing":false},{"id":2,"is_processing":false},{"id":3,"is_processing":false}]'
 (
   queued_jobs() { printf '4\n'; }
@@ -208,9 +237,9 @@ STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"
 
 MODEL_STATUS_URL='http://model:3009/metrics'
 STATUS_RESPONSE=$'vllm:num_requests_running{model_name="test"} 4\nvllm:num_requests_waiting{model_name="test"} 0\n'
-[[ "$(model_start_capacity 0)" == "unknown unknown $MAX_RUNNERS" ]] || fail 'vLLM without a backlog admits runners'
+[[ "$(model_start_capacity 0)" == '8 4 4' ]] || fail 'vLLM reports running requests and admits remaining model capacity'
 STATUS_RESPONSE=$'vllm:num_requests_waiting{model_name="a"} 0\nvllm:num_requests_waiting{model_name="b"} 2\n'
-[[ "$(model_start_capacity 0)" == 'unknown unknown 0' ]] || fail 'vLLM backlog defers runners'
+[[ "$(model_start_capacity 0)" == '8 0 0' ]] || fail 'vLLM backlog defers runners'
 STATUS_RESPONSE='vllm:num_requests_running 0'
 assert_failure model_start_capacity 0
 

@@ -4,7 +4,8 @@ set -euo pipefail
 : "${GH_ADMIN_TOKEN:?GH_ADMIN_TOKEN is required}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}"
 
-MAX_RUNNERS="${MAX_RUNNERS:-4}"
+MAX_RUNNERS="${MAX_RUNNERS:-8}"
+MODEL_MAX_CONCURRENCY="${MODEL_MAX_CONCURRENCY:-8}"
 POLL_SECONDS="${POLL_SECONDS:-6}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.89.1-mini-swe}"
 RUN_CHECK_SANDBOX_IMAGE="${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.0}"
@@ -209,41 +210,57 @@ retire_idle_runners() {
 }
 
 model_start_capacity() {
-  local active="$1" status waiting
+  local active="$1" status waiting busy metrics available
+  if [[ ! "$MODEL_MAX_CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
+    log "error: MODEL_MAX_CONCURRENCY must be a positive integer"
+    return 1
+  fi
   # A Pi job makes many model calls. Reserve runner slots for the entire job;
   # an idle inference slot does not imply an existing Pi job is finished.
   if [ -z "$MODEL_STATUS_URL" ]; then
-    printf 'unknown unknown %s\n' "$MAX_RUNNERS"
+    local available=$((MODEL_MAX_CONCURRENCY - active))
+    [ "$available" -gt 0 ] || available=0
+    printf '%s unknown %s\n' "$MODEL_MAX_CONCURRENCY" "$available"
     return 0
   fi
   status="$(curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time 5 "$MODEL_STATUS_URL")" || return 1
   case "$MODEL_STATUS_URL" in
     */slots|*/slots\?*)
       # Busy slots may belong to these jobs; use the larger reservation count.
-      printf '%s\n' "$status" | jq -er --argjson active "$active" '
+      printf '%s\n' "$status" | jq -er --argjson active "$active" --argjson model_limit "$MODEL_MAX_CONCURRENCY" '
         if type != "array" or length == 0 or any(.[]; (.is_processing | type) != "boolean")
         then error("invalid llama.cpp slots")
-        else length as $total
-          | ([.[] | select(.is_processing)] | length) as $busy
+        else length as $runtime_total
+          | ([.[] | select(.is_processing)] | length) as $runtime_busy
+          | ([$runtime_total, $model_limit] | min) as $total
+          | ([$runtime_busy, $total] | min) as $busy
           | ($total - (if $active > $busy then $active else $busy end)) as $capacity
           | [$total, $busy, (if $capacity > 0 then $capacity else 0 end)] | @tsv
         end
       '
       ;;
     *)
-      waiting="$(printf '%s\n' "$status" | awk '
+      metrics="$(printf '%s\n' "$status" | awk '
+    /^vllm:num_requests_running(\{[^}]*\})?[[:space:]]/ {
+      value = $NF
+      if (value !~ /^[0-9]+(\.[0-9]+)?$/) exit 2
+      running += value
+    }
     /^vllm:num_requests_waiting(\{[^}]*\})?[[:space:]]/ {
       value = $NF
       if (value !~ /^[0-9]+(\.[0-9]+)?$/) exit 2
       total += value
       found = 1
     }
-    END { if (!found) exit 2; print total + 0 }
+    END { if (!found) exit 2; printf "%d %d\n", running, total }
       ')" || return 1
+      read -r busy waiting <<< "$metrics"
       if awk -v waiting="$waiting" 'BEGIN { exit !(waiting > 0) }'; then
-        printf 'unknown unknown 0\n'
+        printf '%s %s 0\n' "$MODEL_MAX_CONCURRENCY" "$busy"
       else
-        printf 'unknown unknown %s\n' "$MAX_RUNNERS"
+        available=$((MODEL_MAX_CONCURRENCY - (active > busy ? active : busy)))
+        [ "$available" -gt 0 ] || available=0
+        printf '%s %s %s\n' "$MODEL_MAX_CONCURRENCY" "$busy" "$available"
       fi
       ;;
   esac
