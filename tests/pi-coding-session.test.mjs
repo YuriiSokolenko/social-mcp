@@ -137,6 +137,7 @@ function runtimeScenario(mode) {
     const scenario = path.join(dir, 'scenario.mjs');
     const work = path.join(dir, 'work');
     const terminal = path.join(dir, 'terminal.json');
+    const runtimeFailure = path.join(dir, 'runtime-failure.json');
     fs.mkdirSync(work);
     fs.writeFileSync(context, JSON.stringify({ title: 'Coding session smoke', body: 'Create generated.py and its test' }));
     fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
@@ -149,6 +150,7 @@ function runtimeScenario(mode) {
       const mode = ${JSON.stringify(mode)};
       const cwd = ${JSON.stringify(work)};
       const terminal = ${JSON.stringify(terminal)};
+      const runtimeFailure = ${JSON.stringify(runtimeFailure)};
       const controlScripts = ${JSON.stringify(path.dirname(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).pathname))};
       const sessionFile = ${JSON.stringify(path.join(dir, 'parent-session.jsonl'))};
       const bus = new EventEmitter();
@@ -166,7 +168,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (mode !== 'ceiling-draft') throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -288,7 +290,9 @@ function runtimeScenario(mode) {
       // The parent also carries the real implementer result tool (and its submit nudge).
       const { default: parentResultTool } = await import(${JSON.stringify(new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href)});
       parentResultTool(pi);
-      assert.equal(handlers.has('before_provider_request'), false, 'the 2K parent keeps its normal provider requests');
+      assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the one-turn provider constraint hook');
+      const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
+      assert.equal(handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx), unarmedPayload, 'unarmed parent request is unchanged');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
       async function call(name, input = {}, { expectError = null } = {}) {
@@ -329,6 +333,45 @@ function runtimeScenario(mode) {
       if (mode === 'fallback' || mode === 'restored') await call('need_more_evidence', { missing: 'constant', reason: 'value' });
       await call('read', { path: 'config.py' });
       fs.rmSync(cwd + '/config.py');
+
+      if (mode === 'prose-force-direct' || mode === 'action-prose-abort') {
+        // First action_required response is prose only: the runtime arms one provider-level
+        // required-tool retry while keeping every currently exposed action available.
+        handlers.get('turn_start')({ turnIndex: turn });
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        const exposedBeforeForce = [...active];
+        for (const name of ['write', 'begin_coding_session', 'submit_result', 'need_more_evidence']) {
+          assert.ok(exposedBeforeForce.includes(name), name + ' remains an available model choice');
+        }
+        const providerPayload = {
+          model: 'm',
+          messages: [],
+          tools: exposedBeforeForce.map(name => ({ type: 'function', function: { name } })),
+        };
+        const constrained = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+        assert.equal(constrained.tool_choice, 'required');
+        assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
+        const consumed = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+        assert.equal(consumed.tool_choice, undefined, 'the provider constraint is exactly one request');
+
+        if (mode === 'prose-force-direct') {
+          await call('write', { path: 'small.txt', content: 'small change\n' });
+          assert.equal(fs.readFileSync(cwd + '/small.txt', 'utf8'), 'small change\n');
+          process.exit(0);
+        }
+
+        // Deliberately simulate a non-compliant provider/model that returned prose even though
+        // tool_choice was required. The existing second-strike watchdog must still terminate.
+        handlers.get('turn_start')({ turnIndex: turn });
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(aborts, 1);
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_class, 'model_execution_abort');
+        assert.equal(failure.failure_code, 'PI_ACTION_REQUIRED_ABORT');
+        assert.match(failure.reason, /second consecutive prose-only/);
+        console.log('RUNTIME_FAILURE_RECORD ' + JSON.stringify(failure));
+        process.exit(0);
+      }
 
       if (mode === 'ceiling-draft') {
         for (let i = 1; i <= 3; i++) {
@@ -393,7 +436,7 @@ function runtimeScenario(mode) {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context, PI_TERMINAL_RESULT_FILE: terminal,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
-        PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '' },
+        PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure },
     });
     assert.equal(result.status, 0, result.stderr + result.stdout);
     return result.stdout + result.stderr;
@@ -430,6 +473,19 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   const logs = runtimeScenario('no-submit');
   assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
+});
+
+test('first prose-only action-required retry is forced to a real exposed tool without choosing the action', () => {
+  const logs = runtimeScenario('prose-force-direct');
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
+});
+
+test('a deliberately non-compliant second prose-only turn still aborts with durable execution-failure metadata', () => {
+  const logs = runtimeScenario('action-prose-abort');
+  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+  assert.match(logs, /RUNTIME_FAILURE_RECORD .*"failure_class":"model_execution_abort".*"failure_code":"PI_ACTION_REQUIRED_ABORT"/);
 });
 
 test('cancellation, a missing session, and drafting loops fail closed', () => {
