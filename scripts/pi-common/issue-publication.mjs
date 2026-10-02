@@ -88,7 +88,7 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   if (git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0) git(['commit','-m',`feat: implement issue #${issue}`], { cwd });
   const base = publicationBase(cwd, startCommit);
   if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
-  const changed = lines(git(['diff','--no-renames','--name-only',base,'HEAD'], { cwd }).out);
+  const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Implementer attempted to modify protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
@@ -178,7 +178,10 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, 
   const { api, replaceLabels } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   const metadata = readImplementerResult(resultFile);
-  if (!metadata || metadata.outcome !== IMPLEMENTER_OUTCOMES.changed) {
+  if (!metadata) {
+    throw new Error('Implementer result metadata is required before PR publication');
+  }
+  if (metadata.outcome !== IMPLEMENTER_OUTCOMES.changed) {
     throw new Error('Changed implementer result metadata is required before PR publication');
   }
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
