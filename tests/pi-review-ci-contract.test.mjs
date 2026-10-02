@@ -940,6 +940,23 @@ test('text architecture map is maintained only for architecture-changing work', 
   assert.match(context, /docs\/architecture\/PROJECT_MAP\.md/);
 });
 
+test('implementer action-required aborts keep execution-failure provenance through publication fallback', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+
+  assert.match(runtime, /tool_choice: 'required'/);
+  assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.match(runtime, /failure_class: 'model_execution_abort'/);
+  assert.match(runtime, /PI_RUNTIME_FAILURE_FILE/);
+
+  assert.match(workflow, /PI_RUNTIME_FAILURE_FILE=\$RUNNER_TEMP\/pi-runtime-failure-/);
+  assert.match(workflow, /Pi execution aborted before terminal submission \[\$FAILURE_CLASS\/\$FAILURE_CODE\]/);
+  assert.match(workflow, /FAILURE_REASON="\$\(jq -r '\.reason/);
+  const abortIndex = workflow.indexOf('Pi execution aborted before terminal submission');
+  const genericNoChangeIndex = workflow.indexOf('Pi completed the task but produced no repository changes');
+  assert.ok(abortIndex >= 0 && genericNoChangeIndex > abortIndex, 'runtime abort is classified before generic no-change fallback');
+});
+
 test('blocked implementer outcome is a deliberate human gate', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
