@@ -87,7 +87,8 @@ test('terminal issue may retain a checkpoint for human recovery without reconcil
   assert.equal(findings.some(item => item.code === 'orphaned-implementer-state'), false);
 });
 
-test('triage or a human retry may queue unowned and needs-human issues', () => {
+test('triage ownership or a human retry may queue eligible issues', () => {
+  assert.equal(validateIssueTransition(issue('open', ['triage:ready']), 'queued'), 'dispatcher:ready');
   assert.equal(validateIssueTransition(issue('open', []), 'queued'), 'dispatcher:ready');
   assert.equal(validateIssueTransition(issue('open', ['pi:needs-human']), 'queued'), 'dispatcher:ready');
   assert.throws(() => validateIssueTransition(issue('open', ['pi:blocked']), 'queued'), /blocked issue/);
@@ -170,6 +171,20 @@ test('all pipeline transitions are no-ops once an issue is closed', () => {
   assert.equal(isIssueTransitionNoop(issue('closed', []), 'needs-human'), true);
   assert.equal(isIssueTransitionNoop(issue('closed', []), 'running-manual'), true);
   assert.equal(isIssueTransitionNoop(issue('open', ['architect:ready']), 'stopped'), false);
+});
+
+test('triage transition replaces triage ownership instead of leaving both labels', async () => {
+  const triage = issue('open', ['triage:ready', 'keep-me']);
+  const target = validateIssueTransition(triage, 'queued');
+  let patched;
+  await replaceIssueState({
+    number: 7,
+    expected: triage,
+    target,
+    load: async () => triage,
+    patch: async (_number, labels) => { patched = labels; },
+  });
+  assert.deepEqual(patched, ['keep-me', 'dispatcher:ready']);
 });
 
 test('stopped transition removes pipeline ownership and preserves unrelated labels', async () => {
