@@ -332,6 +332,52 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.equal(result.durationMs, 3);
 });
 
+test('runtime failure metadata is cleared before every backend attempt', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'stage-runtime-failure-reset-'));
+  const failureFile = join(dir, 'runtime-failure.json');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: {
+      PI_STAGE: 'implementer',
+      PI_PHASE: 'implementation',
+      PI_RUNTIME_FAILURE_FILE: failureFile,
+      PI_VALIDATION_LEDGER_FILE: join(dir, 'ledger.jsonl'),
+    },
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+
+  writeFileSync(failureFile, '{"failure_code":"STALE"}\n');
+  let attempts = 0;
+  let validations = 0;
+  await runStageWithValidationRecovery(
+    spec,
+    async candidate => {
+      attempts += 1;
+      assert.equal(existsSync(failureFile), false, 'stale failure metadata is cleared before each backend attempt');
+      writeFileSync(candidate.artifacts.terminalResultPath, 'submitted\n');
+      if (attempts === 1) writeFileSync(failureFile, '{"failure_code":"FIRST_ATTEMPT"}\n');
+      return createStageRunResult({ backend: 'fake', durationMs: 1, artifacts: candidate.artifacts });
+    },
+    {
+      validate: () => {
+        validations += 1;
+        if (validations === 1) throw new Error('force repair');
+      },
+    },
+  );
+
+  assert.equal(attempts, 2);
+  assert.equal(validations, 2);
+  assert.equal(existsSync(failureFile), false, 'successful repair leaves no stale failure record');
+});
+
 test('Pi and mini-swe both run post-backend validation', async () => {
   for (const backend of ['pi', 'mini-swe']) {
     const spec = specFor('implementer');
