@@ -300,6 +300,11 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.match(logs, new RegExp(marker), marker);
     }
     assert.match(logs, /PI_SESSION_STATE .*"activeTools":\[/, 'transition log includes the authoritative active surface');
+    assert.doesNotMatch(
+      logs,
+      /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"retry_last_failed_check"/,
+      'runtime-owned retry recovery policy is not counted as an ordinary unavailable-tool attempt',
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
