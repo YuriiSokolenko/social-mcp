@@ -129,25 +129,35 @@ test('runtime materializes completed transitions into context and tool surface',
 
       // Failed-check recovery is exercised through the real runtime hooks, not
       // by regex-matching pi-agent-runtime.mjs source text.
-      fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
-        kind: 'python_compile',
-        scope: { paths: ['example.py'] },
-        status: 'fail',
-        exit_code: 1,
-        source: 'run_check',
-        stage: 'implementer',
-        backend: 'pi',
-        run_id: 'runtime-test',
-        diagnostics_count: 1,
-        summary: 'focused failure',
-        infrastructure: null,
-      }) + '\\n');
+      // The earlier unrelated-owner test deliberately removed run_check; model
+      // that owner explicitly enabling it again before this independent scenario.
+      if (!active.includes('run_check')) active.push('run_check');
+
+      const appendRuntimeCheck = (status, scope = { paths: ['example.py'] }, summary = status) => {
+        fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
+          kind: 'python_compile',
+          scope,
+          status,
+          exit_code: status === 'pass' ? 0 : 1,
+          source: 'run_check',
+          stage: 'implementer',
+          backend: 'pi',
+          run_id: 'runtime-test',
+          diagnostics_count: status === 'fail' ? 1 : 0,
+          summary,
+          infrastructure: status === 'infra_error'
+            ? { component: 'sandbox', code: 'SANDBOX_EXECUTOR_ERROR' }
+            : null,
+        }) + '\n');
+      };
+
+      appendRuntimeCheck('fail', { paths: ['example.py'] }, 'focused failure');
       handlers.get('turn_start')({ turnIndex: turn });
       assert.ok(active.includes('retry_last_failed_check'), 'runtime activates exact retry even when the parent allowlist omitted it');
       assert.ok(active.includes('rollback_last_mutation'), 'rollback remains available during recovery');
       assert.ok(active.includes('need_more_evidence'), 'one-evidence escape remains available during recovery');
       assert.ok(active.includes('submit_result'), 'terminal submission remains available during recovery');
-      assert.ok(!active.includes('run_check'), 'arbitrary run_check is hidden while exact recovery is pending');
+      assert.ok(!active.includes('run_check'), 'arbitrary run_check is hidden while exact recovery is actionable');
 
       const broader = await handlers.get('tool_call')({
         toolName: 'run_check',
@@ -157,21 +167,59 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.equal(broader.block, true);
       assert.match(broader.reason, /retry_last_failed_check/);
 
-      const retryEvent = { toolName: 'retry_last_failed_check', toolCallId: 'retry-' + turn, input: {} };
+      const submitWhilePending = await handlers.get('tool_call')({
+        toolName: 'submit_result',
+        toolCallId: 'submit-pending-' + turn,
+        input: {},
+      }, ctx);
+      assert.equal(submitWhilePending, undefined, 'recovery never deadlocks terminal submission');
+
+      // Leaving action_required removes the recovery substitution instead of
+      // exposing run_check while hard-blocking it with an invisible retry tool.
+      await call('need_more_evidence', { missing: 'one fact', reason: 'exercise recovery surface' });
+      assert.ok(!active.includes('retry_last_failed_check'), 'exact retry is action-phase only');
+      assert.ok(active.includes('run_check'), 'ordinary run_check surface returns outside action_required');
+
+      // A relevant mutation returns to action_required and re-arms exactly one
+      // verification permit, so the exact retry substitutes for run_check again.
+      await call('edit', { path: 'example.py' });
+      assert.ok(active.includes('retry_last_failed_check'));
+      assert.ok(!active.includes('run_check'));
+
+      const retryEvent = { toolName: 'retry_last_failed_check', toolCallId: 'retry-pass-' + turn, input: {} };
       assert.equal(await handlers.get('tool_call')(retryEvent, ctx), undefined, 'exact retry is accepted through the normal run_check permit');
+      appendRuntimeCheck('pass', { paths: ['example.py'] }, 'exact retry passed');
       await handlers.get('tool_execution_end')({
         ...retryEvent,
         isError: false,
-        result: { content: [{ type: 'text', text: '{"status":"fail"}' }] },
+        result: { content: [{ type: 'text', text: '{"status":"pass"}' }] },
       }, ctx);
-      assert.ok(!active.includes('retry_last_failed_check'), 'retry consumes the one verification permit');
+      assert.ok(!active.includes('retry_last_failed_check'), 'successful exact retry clears recovery');
+      assert.ok(!active.includes('run_check'), 'consumed permit keeps run_check hidden until another mutation');
 
-      const submitAfterRetry = await handlers.get('tool_call')({
-        toolName: 'submit_result',
-        toolCallId: 'submit-after-retry-' + turn,
-        input: {},
+      await call('edit', { path: 'example.py' });
+      assert.ok(active.includes('run_check'), 'ordinary run_check is restored after recovery clears and a later mutation grants a permit');
+      assert.ok(!active.includes('retry_last_failed_check'));
+
+      // A new failure followed by an exact infrastructure error must end the
+      // forced-retry episode. Verification remains fail-closed in the ledger,
+      // but runtime must not keep steering into a broken sandbox.
+      appendRuntimeCheck('fail', { paths: ['example.py'] }, 'second failure');
+      handlers.get('turn_start')({ turnIndex: turn });
+      assert.ok(active.includes('retry_last_failed_check'));
+      const infraRetry = { toolName: 'retry_last_failed_check', toolCallId: 'retry-infra-' + turn, input: {} };
+      assert.equal(await handlers.get('tool_call')(infraRetry, ctx), undefined);
+      appendRuntimeCheck('infra_error', { paths: ['example.py'] }, 'sandbox unavailable');
+      await handlers.get('tool_execution_end')({
+        ...infraRetry,
+        isError: false,
+        result: { content: [{ type: 'text', text: '{"status":"infra_error"}' }] },
       }, ctx);
-      assert.equal(submitAfterRetry, undefined, 'persistent/flaky failure does not deadlock terminal submission');
+      assert.ok(!active.includes('retry_last_failed_check'), 'infra_error closes forced retry instead of looping');
+
+      await call('edit', { path: 'example.py' });
+      assert.ok(active.includes('run_check'), 'after infra exit a later mutation exposes ordinary verification rather than forced retry');
+      assert.ok(!active.includes('retry_last_failed_check'));
 
       fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, '{"broken":');
       handlers.get('turn_start')({ turnIndex: ++turn });
