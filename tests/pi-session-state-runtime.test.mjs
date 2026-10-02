@@ -148,7 +148,7 @@ test('runtime materializes completed transitions into context and tool surface',
           infrastructure: status === 'infra_error'
             ? { component: 'sandbox', code: 'SANDBOX_EXECUTOR_ERROR' }
             : null,
-        }) + '\n');
+        }) + '\\n');
       };
 
       appendRuntimeCheck('fail', { paths: ['example.py'] }, 'focused failure');
@@ -167,18 +167,36 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.equal(broader.block, true);
       assert.match(broader.reason, /retry_last_failed_check/);
 
-      const submitWhilePending = await handlers.get('tool_call')({
+      const submitEvent = {
         toolName: 'submit_result',
         toolCallId: 'submit-pending-' + turn,
         input: {},
-      }, ctx);
+      };
+      const submitWhilePending = await handlers.get('tool_call')(submitEvent, ctx);
       assert.equal(submitWhilePending, undefined, 'recovery never deadlocks terminal submission');
+      await handlers.get('tool_execution_end')({
+        ...submitEvent,
+        isError: true,
+        result: { content: [{ type: 'text', text: 'stub terminal tool did not actually exit' }] },
+      }, ctx);
 
       // Leaving action_required removes the recovery substitution instead of
       // exposing run_check while hard-blocking it with an invisible retry tool.
       await call('need_more_evidence', { missing: 'one fact', reason: 'exercise recovery surface' });
       assert.ok(!active.includes('retry_last_failed_check'), 'exact retry is action-phase only');
       assert.ok(active.includes('run_check'), 'ordinary run_check surface returns outside action_required');
+      const outsideActionCheck = {
+        toolName: 'run_check',
+        toolCallId: 'outside-action-check-' + turn,
+        input: { kind: 'python_compile', paths: ['example.py', 'other.py'] },
+      };
+      const outsideActionBlocked = await handlers.get('tool_call')(outsideActionCheck, ctx);
+      assert.equal(outsideActionBlocked, undefined, 'recovery hard-block is tied to the action-phase retry surface');
+      await handlers.get('tool_execution_end')({
+        ...outsideActionCheck,
+        isError: true,
+        result: { content: [{ type: 'text', text: 'stub check not executed' }] },
+      }, ctx);
 
       // A relevant mutation returns to action_required and re-arms exactly one
       // verification permit, so the exact retry substitutes for run_check again.
