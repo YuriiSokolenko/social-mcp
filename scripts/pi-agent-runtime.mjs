@@ -232,9 +232,13 @@ export function discoverAdditivePythonLayout(cwd, issue) {
       if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) break;
       existingPackageParts = length;
     }
-    if (existingPackageParts === 0 || existingPackageParts >= parts.length) continue;
+    // A safe additive hint needs an explicit new module *and* a symbol inside it. If only one
+    // dotted segment remains after the existing package, it could just as well be an existing
+    // function/class exported from that package, so leave discovery to normal evidence tools.
+    if (existingPackageParts === 0 || parts.length - existingPackageParts < 2) continue;
 
     const moduleName = parts[existingPackageParts];
+    if (!/^[a-z_]\w*$/.test(moduleName)) continue;
     const sourceDirectoryParts = parts.slice(0, existingPackageParts);
     const sourceDirectory = path.join(srcRoot, ...sourceDirectoryParts);
     const sourceTargetAbsolute = path.join(sourceDirectory, `${moduleName}.py`);
@@ -804,9 +808,11 @@ export default function (pi) {
       description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result, or PREPARATION_FALLBACK if planner infrastructure fails; do not write a competing plan in the main agent.',
       parameters: Type.Object({}),
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-        const layoutHint = discoverAdditivePythonLayout(ctx.cwd, implementerIssueContext());
+        let layoutHint = null;
         let prepared;
         try {
+          const issue = implementerIssueContext();
+          layoutHint = discoverAdditivePythonLayout(ctx.cwd, issue);
           prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint);
         } catch (error) {
           // Cancellation is not a recovery request: never unlock execution on abort.
