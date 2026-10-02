@@ -246,6 +246,14 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.ok(active.includes('run_check'), 'after infra exit a later mutation exposes ordinary verification rather than forced retry');
       assert.ok(!active.includes('retry_last_failed_check'));
 
+      // Defensive legacy/malformed history: a fail with an unreconstructable
+      // whole_repo scope must never replace ordinary run_check with a retry
+      // tool that can only throw.
+      appendRuntimeCheck('fail', { whole_repo: true }, 'legacy whole-repo failure');
+      handlers.get('turn_start')({ turnIndex: turn });
+      assert.ok(active.includes('run_check'), 'unreconstructable recovery history leaves ordinary run_check available');
+      assert.ok(!active.includes('retry_last_failed_check'), 'unreconstructable recovery history never exposes a dead-end retry tool');
+
       fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, '{"broken":');
       handlers.get('turn_start')({ turnIndex: ++turn });
       assert.ok(active.includes('run_check'), 'corrupt ledger does not permanently disable new local verification');
