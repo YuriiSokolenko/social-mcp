@@ -6,6 +6,10 @@
 * ``HTTP-date``: an absolute timestamp at or after which the request may be
   repeated.
 
+Programmatic numeric values follow the same integer semantics as the wire
+format: integer values and finite floats representing whole seconds are
+accepted, while fractional or non-finite floats are rejected.
+
 Absolute timestamps cannot be turned into a duration without knowing *when*
 the response was produced, so callers must supply the reference datetime
 explicitly. This module never reads the wall clock, which keeps smoke checks
@@ -14,6 +18,7 @@ reproducible.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -62,9 +67,10 @@ def parse_retry_after(value: "str | int | float", reference: datetime) -> float:
     """Convert an HTTP ``Retry-After`` value into a non-negative delay.
 
     Args:
-        value: The raw header value. Integers/floats are treated as
-            ``delay-seconds``. Strings may hold either an integer
-            ``delay-seconds`` value or an RFC-compatible ``HTTP-date``.
+        value: The raw header value. Integers and finite floats representing
+            whole seconds are treated as ``delay-seconds``. Strings may hold
+            either an integer ``delay-seconds`` value or an RFC-compatible
+            ``HTTP-date``. Fractional and non-finite floats are rejected.
         reference: The moment the response was received. Required so date
             based values resolve deterministically; the current clock is
             never read.
@@ -73,16 +79,26 @@ def parse_retry_after(value: "str | int | float", reference: datetime) -> float:
         The delay in seconds. Past HTTP-date values clamp to ``0.0``.
 
     Raises:
-        ValueError: If ``value`` is a negative delta, a malformed date, or is
-            neither a supported delta-seconds nor an HTTP-date value.
+        ValueError: If ``value`` is a negative, fractional, or non-finite
+            numeric delta, a malformed date, or is neither a supported
+            delta-seconds nor an HTTP-date value.
     """
 
     if isinstance(value, bool):
         raise ValueError(f"unsupported Retry-After value: {value!r}")
 
     if isinstance(value, (int, float)):
+        if isinstance(value, float) and (
+            not math.isfinite(value) or not value.is_integer()
+        ):
+            raise ValueError(
+                "Retry-After delta-seconds must be a finite integer: "
+                f"{value!r}"
+            )
         if value < 0:
-            raise ValueError(f"Retry-After delta-seconds must not be negative: {value!r}")
+            raise ValueError(
+                f"Retry-After delta-seconds must not be negative: {value!r}"
+            )
         return float(value)
 
     if not isinstance(value, str):
