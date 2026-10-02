@@ -891,7 +891,7 @@ export default function (pi) {
               'Do not call prepare_implementation again. If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. ' +
               `You may use up to ${fallback.evidenceBudget} repository evidence attempts; every accepted non-control evidence tool call (for example read/search, LSP lookup, or subagent inspection) consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. ` +
               'Direct mutation remains allowed during the window and closes it on success; begin_coding_session remains blocked until the evidence window is closed. ' +
-              'Normal run_check-after-mutation and submit_result rules apply. ' +
+              'run_check is not yet available; it becomes available after a successful mutation. Normal submit_result rules still apply. ' +
               'After the fallback window closes, use need_more_evidence only when one concrete implementation fact is still missing.\n' +
               `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.` +
               (layoutHint
