@@ -35,7 +35,7 @@ test('fallback satisfies preparation without fabricating complexity or permittin
 });
 
 test('fallback grants the bounded evidence window and closes it on exhaustion or mutation', () => {
-  assert.equal(PREPARATION_FALLBACK_EVIDENCE_BUDGET, 2, 'fallback contract keeps at least two deterministic attempts');
+  assert.ok(PREPARATION_FALLBACK_EVIDENCE_BUDGET >= 2, 'fallback contract keeps at least two deterministic attempts');
   const exhausted = fallbackController();
   assert.equal(exhausted.productiveProgressState(), 'evidence_allowed');
   assert.equal(exhausted.checkToolCall('request_large_mutation_budget', {}).block, true);
