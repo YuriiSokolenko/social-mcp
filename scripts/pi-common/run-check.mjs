@@ -402,7 +402,13 @@ export async function runCheck(root, params, options = {}) {
     throw error;
   }
 
-  const packageRootDiagnostics = duplicatePackageRootDiagnostics(root, projectConfig().checks.packageRoots);
+  const checksPythonLayout = request.kind === 'python_compile'
+    || request.kind === 'ruff'
+    || request.kind === 'pytest'
+    || (request.kind === 'profile' && request.profile === 'pytest_all');
+  const packageRootDiagnostics = checksPythonLayout
+    ? duplicatePackageRootDiagnostics(root, projectConfig().checks.packageRoots)
+    : [];
   if (packageRootDiagnostics.length) {
     return {
       status: 'fail',
