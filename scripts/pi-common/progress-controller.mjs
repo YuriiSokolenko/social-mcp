@@ -442,6 +442,7 @@ export class ProgressController {
       this.preComplexityTransitionTools.has(toolName);
     const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
+    let acceptedVerificationCall = false;
 
     const preComplexityEvidenceTool =
       this.requireComplexity &&
@@ -561,8 +562,7 @@ export class ProgressController {
           this.productiveEvidenceRemaining = 1;
           this.productiveState = 'evidence_allowed';
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool && this.verificationPermits > 0) {
-          this.verificationPermits -= 1;
-          if (this.verificationPermits === 0) this.verificationState = 'exhausted';
+          acceptedVerificationCall = true;
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
             block: true,
@@ -619,6 +619,10 @@ export class ProgressController {
       this.preComplexityEvidenceRemaining = Math.max(0, this.preComplexityEvidenceRemaining - 1);
     }
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
+    if (acceptedVerificationCall) {
+      this.verificationPermits -= 1;
+      if (this.verificationPermits === 0) this.verificationState = 'exhausted';
+    }
     this.turnUsedTool = true;
     return undefined;
   }
