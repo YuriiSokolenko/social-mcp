@@ -100,28 +100,32 @@ test('merge gate requires successful PR CI for the exact head SHA and classifies
   assert.doesNotMatch(source, /social-mcp\/(?:integration|integration-conflict|pi-review|repair-)/);
 });
 
-test('current dev CI must be green before a merge attempt, making repeated wakes harmless', () => {
+test('current dev CI must be green before a merge attempt, including explicit post-merge dispatches', () => {
   assert.deepEqual(devCiVerdict([], 'dev-sha'), { state: 'pending', run: null });
   assert.equal(devCiVerdict([
     { id: 1, event: 'push', head_sha: 'dev-old', status: 'completed', conclusion: 'success' },
   ], 'dev-sha').state, 'pending');
   assert.equal(devCiVerdict([
-    { id: 2, event: 'push', head_sha: 'dev-sha', status: 'in_progress', conclusion: null },
+    { id: 2, event: 'workflow_dispatch', head_sha: 'dev-sha', status: 'in_progress', conclusion: null },
   ], 'dev-sha').state, 'pending');
   assert.equal(devCiVerdict([
-    { id: 3, event: 'push', head_sha: 'dev-sha', status: 'completed', conclusion: 'failure' },
+    { id: 3, event: 'workflow_dispatch', head_sha: 'dev-sha', status: 'completed', conclusion: 'failure' },
   ], 'dev-sha').state, 'failed');
   assert.equal(devCiVerdict([
-    { id: 4, event: 'push', head_sha: 'dev-sha', status: 'completed', conclusion: 'success' },
+    { id: 4, event: 'workflow_dispatch', head_sha: 'dev-sha', status: 'completed', conclusion: 'success' },
   ], 'dev-sha').state, 'success');
+  assert.equal(devCiVerdict([
+    { id: 5, event: 'pull_request', head_sha: 'dev-sha', status: 'completed', conclusion: 'success' },
+  ], 'dev-sha').state, 'pending');
 
   const source = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   assert.match(source, /git\/ref\/heads/);
-  assert.match(source, /runs\?event=push&head_sha=/);
+  assert.match(source, /runs\?branch=.*&head_sha=/);
+  assert.match(source, /\['push', 'workflow_dispatch'\]/);
   assert.match(source, /waiting for green .* CI/);
 });
 
-test('terminal PR CI wakes merge gate only after workflow completion while dev pushes keep their green-CI wake', () => {
+test('terminal PR CI wakes merge gate only after workflow completion while push and explicit dev CI keep their green-CI wake', () => {
   const workflow = parseWorkflow('.github/workflows/ci.yml');
   const wake = workflow.jobs['wake-merge-gate'];
   assert.deepEqual(wake.needs, ['test', 'docker']);
@@ -129,7 +133,7 @@ test('terminal PR CI wakes merge gate only after workflow completion while dev p
   const condition = wake.if.replace(/\s+/g, ' ').trim();
   assert.equal(
     condition,
-    "always() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success'",
+    "always() && contains(fromJSON('[\"push\",\"workflow_dispatch\"]'), github.event_name) && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success'",
   );
   assert.ok(wake.steps.map(step => step.name).includes('Continue merge queue after green dev CI'));
 
@@ -184,13 +188,14 @@ test('agent workflows execute control scripts only from fresh GITHUB_WORKSPACE c
 });
 
 
-test('merge gate merges at most one PR per dev CI cycle', () => {
+test('merge gate merges at most one PR per dev CI cycle and explicitly starts the next cycle', () => {
   const gate = readScript('scripts/pi-auto-merge.mjs', 'utf8');
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(gate, /if \(await processPR\(pr\)\) break/);
   assert.match(gate, /const devCi = await loadDevCiVerdict\(\)/);
   assert.match(gate, /if \(devCi\.state !== 'success'\)/);
   assert.match(gate, /return 'blocked'/);
+  assert.match(gate, /await dispatchWorkflow\(workflowFile\('ci'\)\)/);
   assert.match(ci, /needs: \[test, docker\]/);
   assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
   assert.match(ci, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
