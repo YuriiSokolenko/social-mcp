@@ -140,6 +140,16 @@ test('runtime counts an attempted tool that is absent from the current surface',
       assert.equal(retryAlias.block, true);
       assert.match(retryAlias.reason, /no unresolved failed run_check scope/);
       assert.doesNotMatch(retryAlias.reason, /not currently exposed/);
+
+      // Once the runtime owns the surface, an explicitly empty surface is authoritative:
+      // no ordinary tool call is valid until the runtime exposes one again.
+      active = [];
+      const emptySurface = await handlers.get('tool_call')(
+        { toolName: 'write', toolCallId: 'empty-surface', input: { path: 'x.py', content: 'x' } },
+        { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 2048 }, abort: () => {} },
+      );
+      assert.equal(emptySurface.block, true);
+      assert.match(emptySurface.reason, /CURRENTLY EXPOSED TOOLS \(authoritative\): none/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url),
@@ -155,6 +165,7 @@ test('runtime counts an attempted tool that is absent from the current surface',
     });
     assert.equal(result.status, 0, result.stderr + result.stdout);
     assert.match(result.stderr + result.stdout, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"count":1/);
+    assert.match(result.stderr + result.stdout, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"count":2.*"attemptedTool":"write"/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
