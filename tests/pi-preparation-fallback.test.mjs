@@ -107,13 +107,31 @@ function runtimeScenario(mode) {
         assert.match(request.task, /Implement example.py/);
         assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
         if (mode === 'abort') { signal.abort(); return; }
+        const good = { steps: ['Implement example.py'], complexity: 'nontrivial', evidence_budget: 2, reason: 'Needs source evidence' };
+        const schemaError = 'structured_output validation failed: missing required property value';
+        let reply;
+        if (mode === 'envelope-retry') {
+          if (attempts === 1) assert.doesNotMatch(request.task, /REPAIR/);
+          else assert.match(request.task, /REPAIR[\\s\\S]*\\{ "value": \\{ "steps"/);
+          reply = attempts === 2 ? { status: 'completed', result: { kind: 'structured', value: good } } : { status: 'failed', error: schemaError };
+        } else if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
+        else if (mode === 'overlong') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' } } };
+        else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
+        else if (mode === 'invalid-complexity') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, complexity: 'medium' } } };
+        else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', evidence_budget: 1 } } };
+        else if (mode === 'success' || mode === 'retry-success' && attempts === 2) reply = { status: 'completed', result: { kind: 'structured', value: good } };
+        else reply = { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' };
+        if (attempts === 1) {
+          const { steps, additionalProperties, required } = request.result.schema;
+          assert.equal(steps, undefined);
+          assert.equal(request.result.schema.properties.steps.items.maxLength, undefined);
+          assert.equal(additionalProperties, true);
+          assert.deepEqual(required, ['steps', 'complexity', 'evidence_budget', 'reason']);
+          assert.match(request.task, /"value"/);
+          assert.match(request.task, /240 characters/);
+        }
         bus.emit('prompt-template:subagent:response', {
-          requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId,
-          ...(mode === 'success' || mode === 'retry-success' && attempts === 2 ? {
-            status: 'completed', result: { kind: 'structured', value: {
-              steps: ['Implement example.py'], complexity: 'nontrivial', evidence_budget: 2, reason: 'Needs source evidence',
-            } },
-          } : { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' }),
+          requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, ...reply,
         });
       });
       runtime(pi);
@@ -144,10 +162,11 @@ function runtimeScenario(mode) {
         assert.equal(blocked.block, true);
       } else {
         const prepared = await call('prepare_implementation');
-        assert.equal(attempts, mode === 'success' ? 1 : 2);
+        const oneAttempt = ['success', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
+        assert.equal(attempts, oneAttempt ? 1 : 2);
         const repeated = await handlers.get('tool_call')({ toolName: 'prepare_implementation', input: {} }, ctx);
         assert.match(repeated.reason, /single-shot/);
-        if (mode === 'failure' || mode === 'prose') {
+        if (['failure', 'prose', 'envelope-exhausted', 'invalid-complexity', 'missing-reason'].includes(mode)) {
           assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
           assert.equal(prepared.details.complexity, null);
           assert.equal('plan' in prepared.details, false);
@@ -178,7 +197,8 @@ function runtimeScenario(mode) {
             assert.ok(messages.every(text => !text.includes('CLASSIFICATION REQUIRED')));
           }
         } else {
-          assert.deepEqual(prepared.details.plan, ['Implement example.py']);
+          assert.deepEqual(prepared.details.plan, mode === 'overlong'
+            ? ['x'.repeat(240), 'short step'] : ['Implement example.py']);
           assert.equal(prepared.details.complexity, 'nontrivial');
           assert.equal(prepared.details.evidenceBudget, 2);
           assert.ok(active.includes('read'));
@@ -209,7 +229,7 @@ test('planner misses structured output twice, then runtime restores the complete
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-for (const mode of ['success', 'retry-success', 'abort', 'restored']) {
+for (const mode of ['success', 'retry-success', 'abort', 'restored', 'overlong', 'extra-fields', 'envelope-retry']) {
   test('runtime preserves preparation behavior: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
@@ -219,3 +239,20 @@ for (const mode of ['success', 'retry-success', 'abort', 'restored']) {
 test('fallback keeps the execution prose-only guard bounded', () => {
   assert.match(runtimeScenario('prose'), /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only/);
 });
+
+test('envelope/schema failure is retried once with repair guidance, then falls back', () => {
+  const logs = runtimeScenario('envelope-exhausted');
+  assert.match(logs, /PI_SUBAGENT_RETRY .*"reason":"structured_output_schema_failure","attempt":1/);
+  assert.match(logs, /PI_SUBAGENT_FAILURE .*"attempt":2,"retriesExhausted":true/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK/);
+  assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
+});
+
+for (const [mode, pattern] of [['invalid-complexity', /invalid complexity/], ['missing-reason', /unexpected structured fields/]]) {
+  test('normalization fails closed without inventing fields: ' + mode, () => {
+    const logs = runtimeScenario(mode);
+    assert.match(logs, /PI_PREPARATION_FALLBACK .*/);
+    assert.match(logs, pattern);
+    assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
+  });
+}

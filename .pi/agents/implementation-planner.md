@@ -18,7 +18,7 @@ Use inherited skill guidance only as planning heuristics. Prefer KISS/YAGNI/SOLI
 
 Plan rules:
 - 1–8 ordered concrete steps; usually 2–6.
-- Keep each step short and action-oriented.
+- Keep each step short and action-oriented: hard limit 240 characters, aim for 200 or fewer.
 - Mention a specific path/module/symbol only when the issue itself makes it known; otherwise describe the evidence/target the Implementer should locate.
 - When the issue already names a source symbol, describe the semantic fact to resolve. Do not phrase that step as broad search.
 - Describe evidence and intended edits, never tool routing: do not name LSP, Zoekt, Orbit, Git Context, scout, subagent, direct read, grep, find, ls, or bash.
@@ -37,8 +37,8 @@ Evidence budget (`evidence_budget`, an integer 0-6):
 - `3-6` — several related files/symbols plausibly need locating or cross-checking first.
 - Do not inflate this merely because the task is `nontrivial`; a nontrivial task can still need `0`.
 
-Return only the requested structured result with exactly:
+Return only the requested structured result, via the structured-output call with the required outer `value` wrapper (`{ "value": { ... } }`), containing exactly these fields and no others (extra fields are forbidden):
 - `steps`
 - `complexity`: `trivial | nontrivial`
 - `evidence_budget`: integer 0-6
-- `reason`: one short sentence
+- `reason`: one short sentence, at most 300 characters

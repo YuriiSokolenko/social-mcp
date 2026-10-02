@@ -128,6 +128,28 @@ const IMPLEMENTATION_PREPARATION_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
+const MAX_PLANNER_STEP_LENGTH = 240;
+
+// Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
+// reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
+// The strict IMPLEMENTATION_PREPARATION_SCHEMA contract is enforced locally by validation.
+const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    steps: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 8,
+      items: { type: 'string', minLength: 1 },
+    },
+    complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
+    evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
+    reason: { type: 'string', minLength: 1, maxLength: 300 },
+  },
+  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
+  additionalProperties: true,
+});
+
 function implementerIssueContext(env = process.env) {
   const contextFile = env.PI_ISSUE_CONTEXT;
   if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for runtime implementation preparation');
@@ -136,6 +158,21 @@ function implementerIssueContext(env = process.env) {
     title: String(context.title ?? ''),
     body: String(context.body ?? ''),
   };
+}
+
+// Safe repairs only: keep the four canonical fields, trim strings, truncate overlong steps.
+// Missing or invalid required fields are left untouched so strict validation fails closed.
+function normalizeImplementationPreparation(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const trim = item => typeof item === 'string' ? item.trim() : item;
+  const normalized = {};
+  for (const key of ['steps', 'complexity', 'evidence_budget', 'reason']) {
+    if (!(key in value)) continue;
+    normalized[key] = key === 'steps' && Array.isArray(value.steps)
+      ? value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step)
+      : trim(value[key]);
+  }
+  return normalized;
 }
 
 function validateImplementationPreparation(value) {
@@ -151,7 +188,7 @@ function validateImplementationPreparation(value) {
     throw new Error('Implementation planner returned an invalid step list');
   }
   const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
-  if (steps.some(step => !step || step.length > 240)) {
+  if (steps.some(step => !step || step.length > MAX_PLANNER_STEP_LENGTH)) {
     throw new Error('Implementation planner returned an invalid plan step');
   }
   if (!['trivial', 'nontrivial'].includes(value.complexity)) {
@@ -166,9 +203,11 @@ function validateImplementationPreparation(value) {
   return { steps, complexity: value.complexity, evidenceBudget, reason };
 }
 
-function plannerTask(env = process.env) {
+function plannerTask(env = process.env, { repair = false } = {}) {
   const issue = implementerIssueContext(env);
   return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, and separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}): how many repository evidence-gathering actions (reads/searches) the Implementer will likely need before it can safely mutate. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.
+
+Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the four listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "reason": "..." } } and nothing else.` : ''}
 
 Issue title:
 ${issue.title}
@@ -256,12 +295,15 @@ async function runStructuredSubagent(pi, ctx, {
   }
 }
 
+// Structured-output validation rejections (wrong/missing `value` envelope, schema mismatch).
+const STRUCTURED_SCHEMA_FAILURE = /validation|schema|\bvalue\b.*(required|missing)|must have required property|additional propert/i;
+
 async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
   const request = {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
     task: plannerTask(),
-    schema: IMPLEMENTATION_PREPARATION_SCHEMA,
+    schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
     toolBudget: { hard: 3 },
@@ -274,10 +316,14 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
       break;
     } catch (error) {
       const message = String(error?.message ?? error);
-      const retryable = message.includes('Missing structured_output call');
+      const missing = message.includes('Missing structured_output call');
+      const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
+      const retryable = missing || schemaFailure;
+      const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
+      if (schemaFailure) request.task = plannerTask(process.env, { repair: true });
       console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
         agent: config.implementationPlannerAgent,
-        reason: retryable ? 'missing_structured_output' : 'planner_infrastructure_failure',
+        reason,
         attempt: attempt + 1,
         retriesExhausted: retryable && attempt >= retries,
         error: message,
@@ -285,13 +331,13 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
       if (!retryable || attempt >= retries) throw error;
       console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
         agent: config.implementationPlannerAgent,
-        reason: 'missing_structured_output',
+        reason,
         attempt: attempt + 1,
       })}`);
     }
   }
   return {
-    ...validateImplementationPreparation(response.result.value),
+    ...validateImplementationPreparation(normalizeImplementationPreparation(response.result.value)),
     usage: response.usage ?? null,
   };
 }
