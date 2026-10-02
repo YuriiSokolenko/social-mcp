@@ -93,6 +93,17 @@ export function disableThinkingInPayload(payload) {
   };
 }
 
+// Both OpenAI-compatible Chat Completions and Responses requests accept tool_choice="required".
+// The active Pi tool surface has already been reduced to the valid action_required tools before
+// the request is built, so this forces one real tool call without choosing the tool on the model's
+// behalf. Keep this as a one-request patch, never a global provider default.
+export function requireToolChoiceInPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
+    return payload;
+  }
+  return { ...payload, tool_choice: 'required' };
+}
+
 // Set (only) for the forked coding session: switches this runtime into coding-session mode.
 function codingSessionSpec(env = process.env) {
   try {
@@ -395,6 +406,7 @@ export default function (pi) {
   let actionTurnAttemptedTool = false;
   let actionRequiredProseOnlyTurns = 0;
   let ceilingWithoutToolTurns = 0;
+  let requireToolOnNextProviderRequest = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
@@ -485,6 +497,24 @@ export default function (pi) {
     );
   }
 
+  function recordRuntimeAbort(failureCode, reason, details = {}) {
+    const failureFile = String(process.env.PI_RUNTIME_FAILURE_FILE ?? '').trim();
+    if (!failureFile) return;
+    const record = {
+      schema_version: 1,
+      stage,
+      failure_class: 'model_execution_abort',
+      failure_code: failureCode,
+      reason,
+      ...details,
+    };
+    fs.mkdirSync(path.dirname(failureFile), { recursive: true });
+    const tempFile = `${failureFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tempFile, failureFile);
+    console.error(`PI_RUNTIME_FAILURE ${JSON.stringify(record)}`);
+  }
+
   async function handleLoopResult(loopResult, ctx) {
     if (!loopResult?.tripped) return;
     const metric = {
@@ -553,21 +583,33 @@ export default function (pi) {
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
 
-  // Coding session only: enforce thinking off on the wire and record how fast it acts.
+  // Provider-request patches are deliberately narrow:
+  // - coding sessions keep thinking disabled on every request;
+  // - after the first prose-only Implementer action_required violation, exactly one next request
+  //   gets tool_choice="required". Pi has already restricted payload.tools to the valid action
+  //   surface, so the model still chooses direct mutation vs coding session vs submit/escape hatch.
   let codingReadyAt = null;
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
-  if (codingSession) {
-    let patchedRequests = 0;
+  if (stage === 'implementer') {
+    let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
-      const patched = disableThinkingInPayload(event.payload);
-      if (patched !== event.payload && ++patchedRequests === 1) {
+      let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
+      if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
         codingSessionLog('thinking_disabled', {
           side: 'fork',
           sessionId: codingSession.sessionId,
           enableThinking: patched.chat_template_kwargs.enable_thinking,
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
         });
+      }
+      if (requireToolOnNextProviderRequest) {
+        const constrained = requireToolChoiceInPayload(patched);
+        if (constrained !== patched) {
+          requireToolOnNextProviderRequest = false;
+          console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({ stage, mode: 'required', activeTools: pi.getActiveTools() })}`);
+          patched = constrained;
+        }
       }
       return patched;
     });
@@ -1332,9 +1374,29 @@ export default function (pi) {
     );
 
     if (actionRequiredProseOnlyTurns >= 2) {
+      recordRuntimeAbort(
+        'PI_ACTION_REQUIRED_ABORT',
+        'second consecutive prose-only action-required turn; aborting stage',
+        { actionRequiredProseOnlyTurns, ceilingWithoutToolTurns },
+      );
       console.error('PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn; aborting stage');
       ctx.abort();
       return;
+    }
+
+    // The first genuine prose-only violation in the productive Implementer state gets one
+    // provider-level retry constraint. Output-ceiling turns are handled by their independent
+    // watchdog and are intentionally not converted into prose strikes.
+    if (
+      stage === 'implementer' &&
+      productiveActionRequired &&
+      actionRequiredProseOnlyTurns === 1 &&
+      !responseHitOutputCeiling &&
+      !actionTurnAttemptedTool &&
+      !controller.turnMadeProgress
+    ) {
+      requireToolOnNextProviderRequest = true;
+      console.warn('PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED: next provider request requires one exposed tool call');
     }
 
     ceilingWithoutToolTurns = nextCeilingWithoutToolTurns(ceilingWithoutToolTurns, {
@@ -1344,7 +1406,13 @@ export default function (pi) {
       responseHitOutputCeiling,
     });
     if (ceilingWithoutToolTurns >= MAX_CEILING_WITHOUT_TOOL_TURNS) {
-      console.error(`PI_ACTION_REQUIRED_ABORT: ${ceilingWithoutToolTurns} consecutive action-required responses hit the output ceiling without a tool call; aborting stage`);
+      const reason = `${ceilingWithoutToolTurns} consecutive action-required responses hit the output ceiling without a tool call; aborting stage`;
+      recordRuntimeAbort(
+        'PI_ACTION_REQUIRED_ABORT',
+        reason,
+        { actionRequiredProseOnlyTurns, ceilingWithoutToolTurns },
+      );
+      console.error(`PI_ACTION_REQUIRED_ABORT: ${reason}`);
       ctx.abort();
       return;
     }
