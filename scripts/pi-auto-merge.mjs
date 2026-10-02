@@ -72,7 +72,7 @@ export function prCiVerdict(runs, headSha, jobs = []) {
 
 export function devCiVerdict(runs, headSha) {
   const matching = runs
-    .filter(run => run?.event === 'push' && run?.head_sha === headSha)
+    .filter(run => ['push', 'workflow_dispatch'].includes(run?.event) && run?.head_sha === headSha)
     .sort((a, b) => Number(b.id ?? 0) - Number(a.id ?? 0));
   if (!matching.length) return { state: 'pending', run: null };
 
@@ -88,7 +88,7 @@ async function loadDevCiVerdict() {
 
   const workflow = workflowFile('ci');
   const runs = await workflowRuns(
-    `/actions/workflows/${encodeURIComponent(workflow)}/runs?event=push&head_sha=${encodeURIComponent(sha)}`,
+    `/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(baseBranch())}&head_sha=${encodeURIComponent(sha)}`,
   );
   return { sha, ...devCiVerdict(runs, sha) };
 }
@@ -268,7 +268,8 @@ async function processPR(prSummary) {
   try {
     const merged = await api(`/pulls/${pr.number}/merge`, 'PUT', { sha, merge_method: 'squash' });
     if (!merged.merged) throw new Error(`merge API did not confirm merge`);
-    console.log(`#${pr.number}: merged ${sha} after green PR CI; dev push CI now validates the merged result`);
+    await dispatchWorkflow(workflowFile('ci'));
+    console.log(`#${pr.number}: merged ${sha} after green PR CI; dispatched explicit ${baseBranch()} CI for the merged result`);
     return true;
   } catch (error) {
     if (!/merge conflicts/i.test(error.message)) throw error;
