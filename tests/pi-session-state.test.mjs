@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
+import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
 import { mergeNewlyActiveTools } from '../scripts/pi-common/session-state.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
@@ -89,23 +89,33 @@ test('D: runtime state == model-visible state == tool surface for each transitio
   complete(state, 'lsp_start_server', LSP);
   const all = ['read', 'prepare_implementation', 'subagents_enable', 'lsp_start_server', 'subagent', 'safe_edit', 'submit_result', 'begin_coding_session', 'need_more_evidence'];
   const cfg = stageConfig('implementer').productiveProgress;
-  const surface = actionRequiredToolNames(all, {
+  const visibleDuringEvidence = all.filter(name => !state.transitions.satisfiedToolNames().has(name));
+
+  for (const tool of ['prepare_implementation', 'subagents_enable']) {
+    assert.ok(!visibleDuringEvidence.includes(tool), `${tool} removed from surface`);
+    assert.equal(state.checkToolCall(tool, {}).alreadySatisfied, true, `${tool} deterministic no-op`);
+  }
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.ok(visibleDuringEvidence.includes('subagent'), 'subagent remains visible during fallback evidence window');
+
+  for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
+    assert.equal(state.checkToolCall('read', { path: 'fallback-evidence-' + i }), undefined);
+  }
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  const actionSurface = actionRequiredToolNames(visibleDuringEvidence, {
     actionTools: cfg.actionTools,
     controlTools: cfg.controlTools,
     blockerTool: cfg.blockerTool,
-  }).filter(name => !state.transitions.satisfiedToolNames().has(name));
-  for (const tool of ['prepare_implementation', 'subagents_enable']) {
-    assert.ok(!surface.includes(tool), `${tool} removed from surface`);
-    assert.equal(state.checkToolCall(tool, {}).alreadySatisfied, true, `${tool} deterministic no-op`);
-  }
-  assert.ok(!surface.includes('subagent'), 'subagent hidden in action_required: the gate would block it');
+  });
+  assert.ok(!actionSurface.includes('subagent'), 'subagent hidden after fallback evidence is exhausted');
   assert.equal(state.checkToolCall('subagent', {}).block, true);
   assert.equal(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }), undefined);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
-  assert.equal(state.checkToolCall('subagent', {}), undefined, 'subagent executes once evidence is allowed');
+  assert.equal(state.checkToolCall('subagent', {}), undefined, 'subagent executes once extra evidence is allowed');
   assert.match(state.transitions.stateBlock(), /subagents: enabled/);
-  // LSP stays visible (keyed per workspace) but the identical call is satisfied
-  assert.ok(surface.includes('lsp_start_server'));
+  // LSP stays visible (keyed per workspace) but the identical call is satisfied.
+  assert.ok(actionSurface.includes('lsp_start_server'));
   assert.equal(state.checkToolCall('lsp_start_server', LSP).alreadySatisfied, true);
 });
 
