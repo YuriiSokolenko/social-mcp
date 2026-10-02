@@ -182,7 +182,7 @@ const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
     large_mutation: { type: 'boolean' },
     reason: { type: 'string', minLength: 1, maxLength: 300 },
   },
-  required: ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason'],
+  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
   additionalProperties: true,
 });
 
@@ -287,7 +287,8 @@ export function discoverAdditivePythonLayout(cwd, issue) {
 }
 
 // Safe repairs only: keep the five canonical fields, trim strings, truncate overlong steps.
-// Missing or invalid required fields are left untouched so strict validation fails closed.
+// large_mutation is an optional planner hint: omission safely defaults to false, while an
+// explicitly present non-boolean value is preserved so strict validation rejects it.
 function normalizeImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const trim = item => typeof item === 'string' ? item.trim() : item;
@@ -298,6 +299,7 @@ function normalizeImplementationPreparation(value) {
       ? value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step)
       : trim(value[key]);
   }
+  if (!('large_mutation' in normalized)) normalized.large_mutation = false;
   return normalized;
 }
 
@@ -998,17 +1000,19 @@ export default function (pi) {
         }
         const result = controller.setComplexity(prepared.complexity);
         controller.setEvidenceBudget(prepared.evidenceBudget);
-        controller.armAutomaticLargeMutationBudget(prepared.largeMutation);
+        const automaticLargeMutationArmed =
+          controller.armAutomaticLargeMutationBudget(prepared.largeMutation);
         console.log(`PI_PLAN ${JSON.stringify({
           stage,
           steps: prepared.steps,
           complexity: prepared.complexity,
           evidenceBudget: prepared.evidenceBudget,
           largeMutation: prepared.largeMutation,
+          largeMutationArmed: automaticLargeMutationArmed,
           reason: prepared.reason,
           usage: prepared.usage,
         })}`);
-        if (prepared.largeMutation) {
+        if (automaticLargeMutationArmed) {
           console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
             stage,
             phase: 'auto_armed',
@@ -1037,13 +1041,14 @@ export default function (pi) {
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nLarge mutation: ${prepared.largeMutation ? 'auto-arm one-shot elevated mutation budget when evidence is complete' : 'normal mutation budget'}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nLarge mutation: ${automaticLargeMutationArmed ? 'auto-arm one-shot elevated mutation budget when evidence is complete' : 'normal mutation budget'}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
           }],
           details: {
             ...result,
             plan: prepared.steps,
             evidenceBudget: prepared.evidenceBudget,
             largeMutation: prepared.largeMutation,
+            largeMutationArmed: automaticLargeMutationArmed,
             plannerUsage: prepared.usage,
             reason: prepared.reason,
             freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
