@@ -28,24 +28,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
           persist-credentials: false
 
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-
       - name: Install project and development dependencies
-        run: pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Ruff
-        run: ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
+        run: .venv/bin/ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
 
       - name: Pytest
-        run: pytest
+        run: .venv/bin/pytest
 
       - name: Agent workflow checks
         run: node --test tests/*.test.mjs
@@ -64,23 +60,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
 
       - name: Generate ephemeral test encryption key
         shell: bash
         run: |
-          pip install --quiet "cryptography>=45,<47"
-          python - <<'PY' >> "$GITHUB_ENV"
-          from cryptography.fernet import Fernet
-          print(f"TOKEN_ENCRYPTION_KEY={Fernet.generate_key().decode()}")
-          PY
+          key="$(head -c32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n')"
+          test "${#key}" -eq 44
+          [[ "$key" == *= ]]
+          echo "TOKEN_ENCRYPTION_KEY=$key" >> "$GITHUB_ENV"
 
       - name: Build and start isolated Compose environment
         run: docker compose up --build --wait
@@ -96,7 +84,7 @@ jobs:
           echo "CI_BASE_URL=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
 
       - name: Integration tests against the running container
-        run: python tests/test_ci_container.py
+        run: python3 tests/test_ci_container.py
 
       - name: Show Compose logs on failure
         if: failure()
