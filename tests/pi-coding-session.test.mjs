@@ -355,8 +355,8 @@ function runtimeScenario(mode) {
         assert.equal(consumed.tool_choice, undefined, 'the provider constraint is exactly one request');
 
         if (mode === 'prose-force-direct') {
-          await call('write', { path: 'small.txt', content: 'small change\n' });
-          assert.equal(fs.readFileSync(cwd + '/small.txt', 'utf8'), 'small change\n');
+          await call('write', { path: 'small.txt', content: 'small change\\n' });
+          assert.equal(fs.readFileSync(cwd + '/small.txt', 'utf8'), 'small change\\n');
           process.exit(0);
         }
 
