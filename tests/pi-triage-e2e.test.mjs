@@ -71,7 +71,7 @@ function run(args, storeFile) {
   });
 }
 
-test('prepare lists untriaged issues and re-checks pi:needs-human issues whose body changed', () => {
+test('prepare re-checks only triage-owned pi:needs-human issues whose body changed', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-triage-'));
   const storeFile = join(dir, 'store.json');
   const outFile = join(dir, 'context.json');
@@ -95,6 +95,11 @@ test('prepare lists untriaged issues and re-checks pi:needs-human issues whose b
       },
       // A manual block is durable even if the body changes.
       5: { number: 5, title: 'Do not run', body: 'changed text', labels: [{ name: 'pi:blocked' }] },
+      // Manual needs-human has no Triage marker and must remain durable.
+      6: {
+        number: 6, title: 'Human decision required', body: 'changed text',
+        labels: [{ name: 'pi:needs-human' }], comments: [],
+      },
     },
   }));
 
@@ -117,7 +122,8 @@ test('apply marks ready issues dispatcher:ready and flags needs_human issues wit
       3: {
         number: 3, state: 'open', title: 'Clarified retry',
         body: '## Goal\nClear now.\n\n## Acceptance criteria\n- Deliver the requested behavior.\n- Keep the change scoped.\n- Add focused tests.',
-        labels: [{ name: 'pi:needs-human' }], comments: [],
+        labels: [{ name: 'pi:needs-human' }],
+        comments: [{ body: `<!-- pi-triage:hash:${crypto.createHash('sha1').update('old ambiguous body').digest('hex').slice(0, 16)} -->` }],
       },
     },
   }));
@@ -142,4 +148,5 @@ test('apply marks ready issues dispatcher:ready and flags needs_human issues wit
   assert.deepEqual(store.issues[3].labels.map(l => l.name), ['dispatcher:ready']);
   assert.equal(store.issues[2].comments.length, 1);
   assert.match(store.issues[2].comments[0].body, /needs a person before this can be dispatched/);
+  assert.match(store.issues[2].comments[0].body, /<!-- pi-triage:hash:[0-9a-f]{16} -->/);
 });
