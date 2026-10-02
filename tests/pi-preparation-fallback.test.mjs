@@ -35,10 +35,13 @@ test('fallback satisfies preparation without fabricating complexity or permittin
 });
 
 test('fallback grants the bounded evidence window and closes it on exhaustion or mutation', () => {
-  assert.ok(PREPARATION_FALLBACK_EVIDENCE_BUDGET >= 2, 'fallback contract keeps at least two deterministic attempts');
   const exhausted = fallbackController();
   assert.equal(exhausted.productiveProgressState(), 'evidence_allowed');
+  assert.equal(exhausted.checkToolCall('run_check', {}).block, true, 'verification still requires mutation');
   assert.equal(exhausted.checkToolCall('request_large_mutation_budget', {}).block, true);
+  for (const tool of ['write', 'edit', 'safe_edit', 'structural_edit', 'submit_result']) {
+    assert.equal(fallbackController().checkToolCall(tool, {}), undefined, tool + ' remains allowed during fallback evidence');
+  }
   for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
     assert.equal(exhausted.checkToolCall('read', { path: 'evidence-' + i }), undefined);
     assert.equal(
@@ -47,6 +50,20 @@ test('fallback grants the bounded evidence window and closes it on exhaustion or
     );
   }
   assert.equal(exhausted.checkToolCall('read', { path: 'after-budget' }).block, true);
+
+  const failed = fallbackController();
+  for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
+    assert.equal(failed.checkToolCall('read', { path: 'missing-' + i }), undefined);
+    failed.onToolExecutionEnd('read', true);
+  }
+  assert.equal(failed.productiveProgressState(), 'action_required', 'failed evidence still consumes accepted attempts');
+  assert.equal(failed.checkToolCall('read', { path: 'still-blocked' }).block, true);
+  assert.equal(
+    failed.checkToolCall('need_more_evidence', { missing: 'layout', reason: 'accepted attempts produced no usable evidence' }),
+    undefined,
+    'post-window escape hatch remains available after failed evidence attempts',
+  );
+  assert.equal(failed.checkToolCall('read', { path: 'retry-after-blocker' }), undefined);
 
   const mutated = fallbackController();
   assert.equal(mutated.checkToolCall('read', { path: 'src' }), undefined);
