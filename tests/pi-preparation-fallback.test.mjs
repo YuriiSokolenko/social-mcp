@@ -382,7 +382,7 @@ function runtimeScenario(mode) {
           assert.ok(prepared.content[0].text.includes('even if it fails or returns no useful result'));
           assert.ok(prepared.content[0].text.includes('coding-session action becomes valid only after the evidence window is closed'));
           assert.ok(prepared.content[0].text.includes('Focused verification becomes available only after a successful mutation'));
-          assert.match(prepared.content[0].text, /CURRENTLY EXPOSED TOOLS \(authoritative\):/);
+          assert.match(prepared.content[0].text, /CURRENTLY EXPOSED TOOLS \\(authoritative\\):/);
           assert.ok(!caps.includes(16384), 'fallback alone must not grant large response');
           assert.ok(active.includes('read'));
           assert.ok(active.includes('request_large_mutation_budget'));
