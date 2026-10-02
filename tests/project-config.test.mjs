@@ -16,6 +16,7 @@ test('the committed config is valid and describes this repository', () => {
   assert.equal(config.git.defaultBranch, 'dev');
   assert.equal(workflowFile('implementer'), 'pi-issue-agent.yml');
   assert.equal(config.labels.blocked, 'pi:blocked');
+  assert.equal(config.labels.triageReady, 'triage:ready');
   assert.equal(issueBranch(7), 'pi/issue-7');
 });
 

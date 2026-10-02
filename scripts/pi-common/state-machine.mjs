@@ -14,6 +14,7 @@ import { projectConfig } from './project-config.mjs';
 const configuredLabels = projectConfig().labels;
 export const PIPELINE_LABELS = Object.freeze({
   queued: configuredLabels.queued,
+  triageReady: configuredLabels.triageReady,
   ready: configuredLabels.ready,
   running: configuredLabels.running,
   pr: configuredLabels.pr,
@@ -24,7 +25,7 @@ export const PIPELINE_LABELS = Object.freeze({
 });
 
 export const ISSUE_ACTIVE = new Set([
-  PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
+  PIPELINE_LABELS.triageReady, PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
 ]);
 
 export const ISSUE_TERMINAL = new Set([
@@ -33,7 +34,7 @@ export const ISSUE_TERMINAL = new Set([
 ]);
 
 export const ISSUE_STATE_LABELS = new Set([
-  PIPELINE_LABELS.queued,
+  PIPELINE_LABELS.queued, PIPELINE_LABELS.triageReady,
   PIPELINE_LABELS.ready, PIPELINE_LABELS.running, PIPELINE_LABELS.pr, PIPELINE_LABELS.architectReady,
   ...ISSUE_TERMINAL,
 ]);
@@ -70,7 +71,7 @@ export function inspectIssueState(issue, { hasOpenPiPr = false, hasLiveImplement
   }
   if (active.length > 1) {
     const precedence = [
-      PIPELINE_LABELS.pr, PIPELINE_LABELS.running, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.ready,
+      PIPELINE_LABELS.pr, PIPELINE_LABELS.running, PIPELINE_LABELS.architectReady, PIPELINE_LABELS.ready, PIPELINE_LABELS.triageReady,
     ];
     const keep = precedence.find(label => labels.has(label));
     findings.push({ code: 'multiple-active', severity: 'repair', labels: active,
@@ -151,12 +152,13 @@ export function validateIssueTransition(issue, action) {
   if (action === 'queued') {
     const owned = [...ISSUE_STATE_LABELS].filter(label => labels.has(label));
     const allowedSource = owned.length === 0 ||
+      labels.has(PIPELINE_LABELS.triageReady) ||
       labels.has(PIPELINE_LABELS.ready) ||
       labels.has(PIPELINE_LABELS.architectReady) ||
       labels.has(PIPELINE_LABELS.needsHuman) ||
       labels.has(PIPELINE_LABELS.queued);
     if (!allowedSource) {
-      throw new Error(`queued requires an unowned issue, ${PIPELINE_LABELS.ready}, ${PIPELINE_LABELS.architectReady}, ${PIPELINE_LABELS.needsHuman}, or an idempotent ${PIPELINE_LABELS.queued} state`);
+      throw new Error(`queued requires an unowned issue, ${PIPELINE_LABELS.triageReady}, ${PIPELINE_LABELS.ready}, ${PIPELINE_LABELS.architectReady}, ${PIPELINE_LABELS.needsHuman}, or an idempotent ${PIPELINE_LABELS.queued} state`);
     }
   }
   if (action === 'running' && !labels.has(PIPELINE_LABELS.ready) && !labels.has(PIPELINE_LABELS.running)) {

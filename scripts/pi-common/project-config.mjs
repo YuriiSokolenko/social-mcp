@@ -24,7 +24,7 @@ export const CONFIG_FILE_NAME = '.agent-harness.json';
 export const CONFIG_ENV = 'AGENT_HARNESS_CONFIG';
 
 const REQUIRED_LABEL_ROLES = Object.freeze([
-  'queued', 'ready', 'running', 'pr', 'needsHuman', 'architectReady', 'epic', 'reviewPassed', 'reviewChangesRequested',
+  'queued', 'triageReady', 'ready', 'running', 'pr', 'needsHuman', 'architectReady', 'epic', 'reviewPassed', 'reviewChangesRequested',
 ]);
 const OPTIONAL_LABEL_ROLES = Object.freeze(['blocked']);
 const LABEL_ROLES = Object.freeze([...REQUIRED_LABEL_ROLES, ...OPTIONAL_LABEL_ROLES]);

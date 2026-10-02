@@ -77,7 +77,7 @@ test('prepare re-checks only triage-owned pi:needs-human issues whose body chang
   const outFile = join(dir, 'context.json');
   writeFileSync(storeFile, JSON.stringify({
     issues: {
-      // Untriaged, no pipeline label yet: a plain candidate.
+      // Unlabeled issues are outside automation ownership and must be ignored.
       1: { number: 1, title: 'New idea', body: 'Just a rough idea.', labels: [] },
       // Already owned by the pipeline: never re-triaged.
       2: { number: 2, title: 'In progress', body: 'x', labels: [{ name: 'dispatcher:ready' }] },
@@ -100,15 +100,18 @@ test('prepare re-checks only triage-owned pi:needs-human issues whose body chang
         number: 6, title: 'Human decision required', body: 'changed text',
         labels: [{ name: 'pi:needs-human' }], comments: [],
       },
+      // Explicit Triage ownership is the only way a new issue enters this stage.
+      7: { number: 7, title: 'Ready for triage', body: 'Needs classification.', labels: [{ name: 'triage:ready' }] },
     },
   }));
 
   const result = run(['prepare', outFile], storeFile);
   assert.equal(result.status, 0, result.stderr);
   const context = JSON.parse(readFileSync(outFile, 'utf8'));
-  assert.deepEqual(context.candidates.map(c => c.issue), [1, 4]);
+  assert.deepEqual(context.candidates.map(c => c.issue), [4, 7]);
   assert.equal(context.candidates.find(c => c.issue === 4).reconsidering, true);
   assert.match(result.stdout, /2 candidate issue/);
+  assert.equal(context.candidates.some(c => c.issue === 1), false);
 });
 
 test('apply marks ready issues dispatcher:ready and flags needs_human issues with a comment', () => {
@@ -117,8 +120,8 @@ test('apply marks ready issues dispatcher:ready and flags needs_human issues wit
   const jsonlFile = join(dir, 'result.jsonl');
   writeFileSync(storeFile, JSON.stringify({
     issues: {
-      1: { number: 1, state: 'open', title: 'Ready to go', body: '## Goal\nClear scope.\n\n## Acceptance criteria\n- Deliver the requested behavior.\n- Keep the change scoped.\n- Add focused tests.', labels: [] },
-      2: { number: 2, state: 'open', title: 'Needs clarification', body: 'Ambiguous ask.', labels: [] },
+      1: { number: 1, state: 'open', title: 'Ready to go', body: '## Goal\nClear scope.\n\n## Acceptance criteria\n- Deliver the requested behavior.\n- Keep the change scoped.\n- Add focused tests.', labels: [{ name: 'triage:ready' }] },
+      2: { number: 2, state: 'open', title: 'Needs clarification', body: 'Ambiguous ask.', labels: [{ name: 'triage:ready' }] },
       3: {
         number: 3, state: 'open', title: 'Clarified retry',
         body: '## Goal\nClear now.\n\n## Acceptance criteria\n- Deliver the requested behavior.\n- Keep the change scoped.\n- Add focused tests.',
