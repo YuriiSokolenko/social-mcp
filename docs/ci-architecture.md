@@ -12,6 +12,18 @@ The control plane intentionally uses a simple contract:
 
 The actual merged `dev` commit is the integration truth.
 
+## General runner pip cache
+
+The general runner pool may share a host-backed writable pip download cache
+between ephemeral CI workers. Fork pull requests are excluded from these jobs
+by the workflow-level `if`; same-repository PR jobs and `dev` CI therefore
+share the cache. This is an accepted trust assumption: the general `docker`
+job already receives `/var/run/docker.sock`, which is effectively root access
+to the host. The shared cache is an optimization, not a trust boundary. A
+safer alternative is a pull-through package proxy such as devpi configured
+only to proxy PyPI and accept no direct uploads; that adds a separately
+managed service and is not part of this change.
+
 ## Test ownership rule
 
 Agents use focused product tests when useful for implementation or reasoning. Authoritative full `pytest`, Ruff, and diff checks belong to trusted product-stage workflow/submit tooling and are not duplicated by the model merely as a completion ritual. Agents do not run CI/control-plane contract suites (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests). `ci.yml` exclusively owns those control-plane checks and runs them on the triggering `dev` commit, together with an isolated Docker Compose integration test.
