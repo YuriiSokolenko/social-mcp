@@ -735,9 +735,10 @@ export default function (pi) {
             content: [{ type: 'text', text:
               `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
               'Your preparation obligation is satisfied. No planner output or complexity was recorded. ' +
-              'Do not call prepare_implementation again. Continue implementing from the issue and loaded contract. ' +
+              'Do not call prepare_implementation again. Use the bounded fallback evidence window to establish the canonical source/test layout before creating new files. ' +
+              `You may use up to ${fallback.evidenceBudget} repository evidence actions; the window closes when they are consumed or on the first successful mutation. ` +
               'Normal mutation, begin_coding_session for the coding phase, run_check after mutation, and submit_result rules apply. ' +
-              'If one concrete fact is missing, use need_more_evidence to unlock a read/search before acting.\n' +
+              'After the fallback window closes, use need_more_evidence only when one concrete implementation fact is still missing.\n' +
               `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.`,
             }],
             details: { ...fallback, failureClass: 'preparation_infrastructure_failure', reason,
