@@ -335,8 +335,8 @@ function runtimeScenario(mode) {
       fs.rmSync(cwd + '/config.py');
 
       if (mode === 'prose-force-direct' || mode === 'action-prose-abort') {
-        // First action_required response is prose only: the runtime arms one provider-level
-        // required-tool retry while keeping every currently exposed action available.
+        // First action_required response is prose only: the runtime arms provider-level
+        // required-tool forcing and keeps it armed until a real exposed tool is attempted.
         handlers.get('turn_start')({ turnIndex: turn });
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
         const exposedBeforeForce = [...active];
@@ -351,12 +351,19 @@ function runtimeScenario(mode) {
         const constrained = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
         assert.equal(constrained.tool_choice, 'required');
         assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
-        const consumed = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-        assert.equal(consumed.tool_choice, undefined, 'the provider constraint is exactly one request');
 
         if (mode === 'prose-force-direct') {
+          // A forced response that still hits the output ceiling without a tool must not consume
+          // the requirement. The following provider request remains constrained.
+          handlers.get('turn_start')({ turnIndex: turn });
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 2048 } } }, ctx);
+          const afterCeiling = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(afterCeiling.tool_choice, 'required', 'ceiling-hit response does not consume tool forcing');
+
           await call('write', { path: 'small.txt', content: 'small change\\n' });
           assert.equal(fs.readFileSync(cwd + '/small.txt', 'utf8'), 'small change\\n');
+          const afterTool = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(afterTool.tool_choice, undefined, 'a real tool attempt satisfies the provider constraint');
           process.exit(0);
         }
 
@@ -475,10 +482,11 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
 });
 
-test('first prose-only action-required retry is forced to a real exposed tool without choosing the action', () => {
+test('first prose-only action-required retry stays forced through a ceiling turn until a real exposed tool', () => {
   const logs = runtimeScenario('prose-force-direct');
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/);
+  assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 2);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
