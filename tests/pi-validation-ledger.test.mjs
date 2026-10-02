@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   appendCheckRecord,
   readValidationLedger,
+  resolveValidationRunId,
   normalizeScope,
   reconcile,
   latestUnresolvedRunCheckFailure,
@@ -21,6 +22,18 @@ function tempLedger() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-validation-ledger-'));
   return path.join(dir, 'ledger.jsonl');
 }
+
+test('resolveValidationRunId trims explicit ids and falls back consistently', () => {
+  assert.equal(
+    resolveValidationRunId({ PI_VALIDATION_RUN_ID: '  explicit-run  ', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' }),
+    'explicit-run',
+  );
+  assert.equal(
+    resolveValidationRunId({ PI_VALIDATION_RUN_ID: '   ', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' }),
+    '123-2',
+  );
+  assert.equal(resolveValidationRunId({}), `local-${process.pid}-1`);
+});
 
 const focused = (overrides = {}) => ({
   kind: 'python_compile',
