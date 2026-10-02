@@ -171,9 +171,12 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
 
   const runnerTemp = env.RUNNER_TEMP || cwd;
   const suffix = `${env.GITHUB_RUN_ID ?? process.pid}-${env.GITHUB_RUN_ATTEMPT ?? 1}`;
+  const validationRunId = env.PI_VALIDATION_RUN_ID ??
+    `${env.GITHUB_RUN_ID ?? `local-${process.pid}`}-${env.GITHUB_RUN_ATTEMPT ?? 1}`;
   const childEnv = {
     ...env,
     PI_STAGE: stage,
+    PI_VALIDATION_RUN_ID: validationRunId,
     PI_PHASE: env.PI_PHASE ?? config.phase ?? stage,
     PI_ISSUE: env.PI_ISSUE ?? env.ISSUE ?? '',
     PI_BASH_TIMEOUT_SECONDS: env.PI_BASH_TIMEOUT_SECONDS ?? String(config.bashTimeoutSeconds),
