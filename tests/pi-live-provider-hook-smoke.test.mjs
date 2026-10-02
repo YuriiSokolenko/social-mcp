@@ -38,15 +38,28 @@ test('live pi transport emits after_provider_response for a real provider 4xx', 
     fs.writeFileSync(extension, `
 export default function (pi) {
   let corrupted = false;
+  let sawRejectedTurn = false;
+
   pi.on('before_provider_request', event => {
     if (corrupted) return event.payload;
     corrupted = true;
     return { ...event.payload, model: { invalid: true } };
   });
-  pi.on('after_provider_response', event => {
-    const status = Number(event?.status ?? 0);
-    console.error('PI_LIVE_AFTER_PROVIDER_RESPONSE ' + JSON.stringify({ status }));
-    if (status >= 400 && status < 500) process.exit(0);
+
+  pi.on('turn_end', async event => {
+    const message = event?.message;
+    const match = /\\bAPI error \\((\\d{3})\\):/.exec(String(message?.errorMessage ?? ''));
+    const status = match ? Number(match[1]) : null;
+    if (!sawRejectedTurn && message?.stopReason === 'error') {
+      sawRejectedTurn = true;
+      console.error('PI_LIVE_TURN_END_PROVIDER_ERROR ' + JSON.stringify({ status }));
+      await pi.sendUserMessage('Retry now and reply with OK.', { deliverAs: 'steer' });
+      return { continue: true };
+    }
+    if (sawRejectedTurn && message?.stopReason !== 'error') {
+      console.error('PI_LIVE_TURN_END_RECOVERED ' + JSON.stringify({ stopReason: message?.stopReason ?? null }));
+      process.exit(0);
+    }
   });
 }
 `);
@@ -68,7 +81,9 @@ export default function (pi) {
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
     assert.equal(result.error, undefined, result.error?.message);
     assert.equal(result.status, 0, output);
-    assert.match(output, /PI_LIVE_AFTER_PROVIDER_RESPONSE \{"status":4\d\d\}/, output);
+    assert.match(output, /PI_LIVE_TURN_END_PROVIDER_ERROR \{"status":400\}/, output);
+    assert.match(output, /PI_LIVE_TURN_END_RECOVERED /, output);
+    assert.doesNotMatch(output, /PI_LIVE_AFTER_PROVIDER_RESPONSE/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
