@@ -443,7 +443,9 @@ export default function (pi) {
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
-  let verificationToolRegistered = false;
+  // True only when this runtime's permit gate removed the verification tool from the model
+  // surface. A later permit may restore it only in that case; unrelated removals stay removed.
+  let verificationToolHiddenByPermitGate = false;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -479,25 +481,42 @@ export default function (pi) {
     const satisfied = controller.transitions.satisfiedToolNames();
     const current = pi.getActiveTools();
     const verificationTool = config.productiveProgress?.verificationTool ?? null;
-    if (verificationTool && current.includes(verificationTool)) verificationToolRegistered = true;
-    // run_check is registered once, but it is model-visible only while the controller owns a
-    // permit for the current mutation state. Remember that it exists so a later mutation can
-    // re-expose it even after an earlier surface update hid it.
+    const verificationPermitted = controller.verificationPermitted();
     const currentWithPermittedVerification =
       verificationTool &&
-      verificationToolRegistered &&
-      controller.verificationPermitted() &&
+      verificationPermitted &&
+      verificationToolHiddenByPermitGate &&
       !current.includes(verificationTool)
         ? [...current, verificationTool]
         : current;
+
     // Tools added by a control transition appear in the live list but not in the saved baseline.
     if (unrestrictedActiveTools != null) {
       unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, currentWithPermittedVerification);
+      // If some other runtime/control transition removed run_check while we were not hiding it,
+      // honor that removal instead of resurrecting it from the saved unrestricted baseline.
+      if (
+        verificationTool &&
+        !current.includes(verificationTool) &&
+        !verificationToolHiddenByPermitGate
+      ) {
+        unrestrictedActiveTools = unrestrictedActiveTools.filter(name => name !== verificationTool);
+      }
     }
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
-      (!verificationTool || name !== verificationTool || controller.verificationPermitted())
+      (!verificationTool || name !== verificationTool || verificationPermitted)
     );
+    const applySurface = (names, reason) => {
+      if (verificationTool) {
+        if (!verificationPermitted && current.includes(verificationTool) && !names.includes(verificationTool)) {
+          verificationToolHiddenByPermitGate = true;
+        } else if (verificationPermitted && names.includes(verificationTool)) {
+          verificationToolHiddenByPermitGate = false;
+        }
+      }
+      setSurface(names, reason);
+    };
 
     if (preComplexityRequired || productiveActionRequired) {
       if (unrestrictedActiveTools == null) unrestrictedActiveTools = currentWithPermittedVerification;
@@ -521,17 +540,19 @@ export default function (pi) {
               ? [config.productiveProgress.verificationTool].filter(Boolean)
               : [],
           });
-      setSurface(visible(restricted), 'restricted');
+      applySurface(visible(restricted), 'restricted');
       return;
     }
 
     if (unrestrictedActiveTools != null) {
-      setSurface(visible(unrestrictedActiveTools), 'restored');
+      applySurface(visible(unrestrictedActiveTools), 'restored');
       unrestrictedActiveTools = null;
       return;
     }
     const remaining = visible(currentWithPermittedVerification);
-    if (remaining.join('\0') !== current.join('\0')) setSurface(remaining, 'transition_complete');
+    // Preserve tool ordering as part of the model-visible surface; only update when the ordered
+    // list actually changes, not merely when the list length changes.
+    if (remaining.join('\0') !== current.join('\0')) applySurface(remaining, 'transition_complete');
   }
 
   // Materialize a newly completed one-shot transition into durable runtime state, the active
@@ -632,16 +653,20 @@ export default function (pi) {
 
   function finalValidationGuidance() {
     const checks = (projectConfig().checks?.final ?? []).map(step => step.name).filter(Boolean);
-    const pipeline = checks.length ? checks.join(' -> ') : 'configured checks.final pipeline';
-    return `Authoritative final checks still run automatically after submit_result and before publication: ${pipeline}.`;
+    return checks.length
+      ? `Authoritative final checks still run automatically after submit_result and before publication: ${checks.join(' -> ')}.`
+      : 'Authoritative final validation still runs automatically after submit_result and before publication.';
   }
 
   function verificationLifecycleGuidance() {
     const verificationTool = config.productiveProgress?.verificationTool;
     if (!verificationTool) return finalValidationGuidance();
-    const lifecycle = controller.verificationPermitted()
+    const state = controller.verificationLifecycleState();
+    const lifecycle = state === 'available'
       ? `${verificationTool} is available once for the current mutation state.`
-      : `${verificationTool} is exhausted for the current mutation state and is unavailable now. Do not call it again unless a new successful mutation grants a new focused check.`;
+      : state === 'exhausted'
+        ? `${verificationTool} is exhausted for the current mutation state and is unavailable now. Do not call it again unless a new successful mutation grants a new focused check.`
+        : `${verificationTool} is not yet available; it becomes available after a successful mutation.`;
     return `${lifecycle} ${finalValidationGuidance()}`;
   }
 
@@ -926,7 +951,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'run_check',
       label: 'Run focused check',
-      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation. Passing does not replace final validation; still call submit_result.',
+      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check after that mutation grants a new permit. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation; the permit is consumed when the call is accepted regardless of the check outcome. Passing does not replace final validation; still call submit_result.',
       parameters: Type.Object({
         kind: Type.Union(CHECK_KINDS.map(kind => Type.Literal(kind))),
         paths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),
@@ -1364,16 +1389,6 @@ export default function (pi) {
     pendingToolInputs.delete(event.toolCallId);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
-    if (
-      stage === 'implementer' &&
-      event.toolName === config.productiveProgress?.verificationTool &&
-      !controller.verificationPermitted()
-    ) {
-      await pi.sendUserMessage(
-        `RUNTIME VALIDATION STATE: ${verificationLifecycleGuidance()}`,
-        { deliverAs: 'steer' },
-      );
-    }
     if (transitionRecord) await announceTransition(transitionRecord, productiveState);
 
     if (loopGuard && pendingLoopCall) {
