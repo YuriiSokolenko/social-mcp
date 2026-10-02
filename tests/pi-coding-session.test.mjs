@@ -147,6 +147,7 @@ function runtimeScenario(mode) {
       import { EventEmitter } from 'node:events';
       const runtimeUrl = ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
       const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'BadRequestError: 422 tool_choice unsupported' }), 422);
@@ -406,7 +407,7 @@ function runtimeScenario(mode) {
             turnIndex: turn++,
             message: {
               stopReason: 'error',
-              errorMessage: '422 {"error":"tool_choice required is unsupported"}',
+              errorMessage: '422: {"error":"tool_choice required is unsupported"}',
               usage: { output: 0 },
             },
           }, ctx);
