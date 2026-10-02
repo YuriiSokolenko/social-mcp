@@ -33,6 +33,7 @@ jobs:
 
       - name: Install project and development dependencies
         run: |
+          python3 --version
           python3 -m venv .venv
           .venv/bin/python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
@@ -70,6 +71,8 @@ jobs:
             sudo apt-get install --yes docker-buildx-plugin
           fi
           docker buildx version
+          docker buildx inspect
+          docker system df
 
       - name: Generate ephemeral test encryption key
         shell: bash
