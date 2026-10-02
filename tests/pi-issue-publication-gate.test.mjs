@@ -3,13 +3,27 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readScript } from './helpers/resolved-source.mjs';
 
-import { assertPublicationFileSet, isUnsandboxedBackend, nextLabelsForVerification } from '../scripts/pi-common/issue-publication.mjs';
+import { assertPublicationFileSet, isUnsandboxedBackend, nextLabelsForVerification, publicationBase } from '../scripts/pi-common/issue-publication.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { PIPELINE_LABELS } from '../scripts/pi-common/state-machine.mjs';
 import { VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
+
+const TYPEBOX_STUB_LOADER = `export async function resolve(specifier, context, nextResolve) {
+  if (specifier === 'typebox') return {
+    url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
+    shortCircuit: true,
+  };
+  return nextResolve(specifier, context);
+}`;
+
+function configureTestGit(git) {
+  git('config', 'user.name', 'Pi Test');
+  git('config', 'user.email', 'pi@example.invalid');
+  git('config', 'commit.gpgsign', 'false');
+}
 
 /**
  * Regression for the exact smoke-run shape: focused run_check infra_error on
@@ -123,8 +137,7 @@ test('publication rejects a stray probe file that submit_result did not declare 
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
   try {
     git('init');
-    git('config', 'user.name', 'Pi Test');
-    git('config', 'user.email', 'pi@example.invalid');
+    configureTestGit(git);
     fs.writeFileSync(path.join(dir, 'helper.py'), 'def trim(value):\n    return value.strip()\n');
     git('add', '-A');
     git('commit', '-m', 'base');
@@ -173,4 +186,169 @@ test('issue-agent passes the trusted result file into issue-branch publication (
     workflow,
     /issue-publication\.mjs" push "\$ISSUE" "\$JOB_DIR" "\$PI_IMPLEMENTER_START_COMMIT" "\$PI_ISSUE_BRANCH_EXPECTED" "\$PI_IMPLEMENTER_RESULT_FILE"/,
   );
+});
+
+
+test('publication detects both sides of a rename instead of folding it (#338 review)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-rename-'));
+  const resultFile = path.join(dir, 'implementer-result.json');
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  try {
+    git('init');
+    configureTestGit(git);
+    fs.writeFileSync(path.join(dir, 'old.py'), 'value = 1\n');
+    git('add', '-A');
+    git('commit', '-m', 'base');
+    const base = git('rev-parse', 'HEAD').trim();
+
+    git('mv', 'old.py', 'new.py');
+    git('commit', '-am', 'rename');
+
+    writeImplementerResult(resultFile, {
+      title: 'Rename helper',
+      summary: 'Rename the helper.',
+      changes: ['Rename helper'],
+      files: ['old.py', 'new.py'],
+      security_notes: 'No security impact.',
+      limitations: 'None.',
+    });
+
+    assert.deepEqual(
+      assertPublicationFileSet({ cwd: dir, base, resultFile }),
+      ['new.py', 'old.py'],
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('publication reports declared files that are missing from the diff', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-missing-'));
+  const resultFile = path.join(dir, 'implementer-result.json');
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  try {
+    git('init');
+    configureTestGit(git);
+    fs.writeFileSync(path.join(dir, 'helper.py'), 'value = 1\n');
+    git('add', '-A');
+    git('commit', '-m', 'base');
+    const base = git('rev-parse', 'HEAD').trim();
+    fs.appendFileSync(path.join(dir, 'helper.py'), 'value2 = 2\n');
+    git('commit', '-am', 'candidate');
+
+    writeImplementerResult(resultFile, {
+      title: 'Update helper',
+      summary: 'Update helper.',
+      changes: ['Update helper'],
+      files: ['helper.py', 'not-changed.py'],
+      security_notes: 'No security impact.',
+      limitations: 'None.',
+    });
+
+    assert.throws(
+      () => assertPublicationFileSet({ cwd: dir, base, resultFile }),
+      /missing files: not-changed\.py/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('publication base stays on integrated origin/dev even when the run started earlier', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-base-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  try {
+    git('init');
+    configureTestGit(git);
+    fs.writeFileSync(path.join(dir, 'base.txt'), 'start\n');
+    git('add', '-A');
+    git('commit', '-m', 'run start');
+    const startCommit = git('rev-parse', 'HEAD').trim();
+
+    fs.appendFileSync(path.join(dir, 'base.txt'), 'dev advanced\n');
+    git('commit', '-am', 'latest dev');
+    const latestDev = git('rev-parse', 'HEAD').trim();
+    git('update-ref', 'refs/remotes/origin/dev', latestDev);
+
+    fs.writeFileSync(path.join(dir, 'implementation.txt'), 'candidate\n');
+    git('add', '-A');
+    git('commit', '-m', 'implementation');
+
+    assert.equal(publicationBase(dir, startCommit), 'origin/dev');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('fresh submit_result rejects an undeclared untracked probe before checkpoint publication', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-file-set-'));
+  const remote = path.join(root, 'remote.git');
+  const work = path.join(root, 'work');
+  const context = path.join(root, 'issue.json');
+  const resultFile = path.join(root, 'result.json');
+  const loader = path.join(root, 'loader.mjs');
+  const git = (...args) => execFileSync('git', args, { cwd: work, encoding: 'utf8' });
+  try {
+    execFileSync('git', ['init', '--bare', remote], { encoding: 'utf8' });
+    fs.mkdirSync(work);
+    git('init');
+    configureTestGit(git);
+    git('remote', 'add', 'origin', remote);
+    fs.writeFileSync(path.join(work, 'helper.py'), 'value = 1\n');
+    git('add', '-A');
+    git('commit', '-m', 'base');
+    git('branch', '-M', 'dev');
+    git('push', '-u', 'origin', 'dev');
+
+    fs.appendFileSync(path.join(work, 'helper.py'), 'value2 = 2\n');
+    fs.writeFileSync(path.join(work, 'test_helper.py'), 'from helper import value\n');
+    fs.writeFileSync(path.join(work, '.probe.py"'), 'probe = True\n');
+    fs.writeFileSync(context, JSON.stringify({ number: 334, title: 'Probe regression', body: 'Reject stray files' }));
+    fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
+
+    const moduleUrl = new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href;
+    const program = `
+      const { default: register } = await import(${JSON.stringify(moduleUrl)});
+      let submit;
+      const pi = {
+        registerTool(tool) { if (tool.name === 'submit_result') submit = tool; },
+        on() {},
+        appendEntry() {},
+      };
+      register(pi);
+      try {
+        await submit.execute('submit', {
+          title: 'Probe regression',
+          summary: 'Update helper and test.',
+          changes: ['Update helper', 'Add regression test'],
+          files: ['helper.py', 'test_helper.py'],
+          security_notes: 'No security impact.',
+          limitations: 'None.',
+        }, null, null, { cwd: process.cwd() });
+        process.exitCode = 10;
+      } catch (error) {
+        console.error(error.message);
+        process.exitCode = 42;
+      }
+    `;
+    const child = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', program], {
+      cwd: work,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GITHUB_WORKSPACE: process.cwd(),
+        PI_ISSUE: '334',
+        PI_ISSUE_CONTEXT: context,
+        PI_IMPLEMENTER_RESULT_FILE: resultFile,
+        PI_RESUME_ACTIVE: 'false',
+        PI_VALIDATION_REPAIR: 'false',
+      },
+    });
+
+    assert.equal(child.status, 42, child.stderr + child.stdout);
+    assert.match(child.stderr, /Implementer file-set mismatch: unexpected files: \.probe\.py"/);
+    assert.equal(fs.existsSync(resultFile), false, 'failed submit must not record publishable metadata');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
