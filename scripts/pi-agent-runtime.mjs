@@ -589,13 +589,15 @@ export default function (pi) {
       stage === 'implementer' &&
       config.productiveProgress &&
       productiveState === 'action_required';
-    // Recovery follows the authoritative ledger + verification permit, not the
-    // productive-state surface. If a permit exists, the exact retry must be
-    // visible anywhere an arbitrary run_check would otherwise be callable.
+    // Exact retry is an action-phase substitution for run_check. Outside
+    // action_required we do not impose the recovery gate; after the relevant
+    // mutation the controller always returns to action_required and the exact
+    // retry becomes the verification action for that permit.
     const recoveryState = failedCheckRecoveryState();
-    const failedCheckRecovery = recoveryState.failure;
+    const failedCheckRecovery = productiveActionRequired ? recoveryState.failure : null;
     const recoveryLedgerCorrupted = recoveryState.corrupted;
     const recoveryRetryReady = Boolean(
+      productiveActionRequired &&
       failedCheckRecovery &&
       !recoveryLedgerCorrupted &&
       controller.verificationPermitted()
@@ -1417,6 +1419,7 @@ export default function (pi) {
     const recoveryState = failedCheckRecoveryState();
     const failedCheckRecovery = recoveryState.failure;
     const recoveryRetryReady = Boolean(
+      productiveState === 'action_required' &&
       failedCheckRecovery &&
       !recoveryState.corrupted &&
       controller.verificationPermitted()
