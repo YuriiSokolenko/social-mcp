@@ -187,6 +187,96 @@ function implementerIssueContext(env = process.env) {
   };
 }
 
+function repoRelativePath(...parts) {
+  return path.join(...parts).split(path.sep).join('/');
+}
+
+function nearestPythonSibling(directory, preferredPrefix, excludeName = '') {
+  let entries;
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const files = entries
+    .filter(entry => entry.isFile() && entry.name.endsWith('.py') && entry.name !== '__init__.py' && entry.name !== excludeName)
+    .map(entry => entry.name);
+  if (files.length === 0) return null;
+  files.sort((left, right) => {
+    const leftPreferred = preferredPrefix && left.startsWith(preferredPrefix) ? 0 : 1;
+    const rightPreferred = preferredPrefix && right.startsWith(preferredPrefix) ? 0 : 1;
+    return leftPreferred - rightPreferred || left.localeCompare(right);
+  });
+  return files[0];
+}
+
+// Bounded, model-free orientation for additive Python work. It recognizes a conventional src/
+// layout from a dotted target already present in the issue, then looks only at that package
+// directory and its nearest mirrored tests directory. Package names remain data from the issue
+// and worktree; the generic runtime never hard-codes product-specific paths.
+export function discoverAdditivePythonLayout(cwd, issue) {
+  const srcRoot = path.join(cwd, 'src');
+  const testsRoot = path.join(cwd, 'tests');
+  if (!fs.existsSync(srcRoot) || !fs.statSync(srcRoot).isDirectory() ||
+      !fs.existsSync(testsRoot) || !fs.statSync(testsRoot).isDirectory()) return null;
+
+  const issueText = `${String(issue?.title ?? '')}\n${String(issue?.body ?? '')}`;
+  const dottedTargets = [...issueText.matchAll(/`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,})`/g)]
+    .map(match => match[1]);
+
+  for (const dottedTarget of dottedTargets) {
+    const parts = dottedTarget.split('.');
+    let existingPackageParts = 0;
+    for (let length = 1; length < parts.length; length += 1) {
+      const candidate = path.join(srcRoot, ...parts.slice(0, length));
+      if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) break;
+      existingPackageParts = length;
+    }
+    // A safe additive hint needs an explicit new module *and* a symbol inside it. If only one
+    // dotted segment remains after the existing package, it could just as well be an existing
+    // function/class exported from that package, so leave discovery to normal evidence tools.
+    if (existingPackageParts === 0 || parts.length - existingPackageParts < 2) continue;
+
+    const moduleName = parts[existingPackageParts];
+    if (!/^[a-z_]\w*$/.test(moduleName)) continue;
+    const sourceDirectoryParts = parts.slice(0, existingPackageParts);
+    const sourceDirectory = path.join(srcRoot, ...sourceDirectoryParts);
+    const sourceTargetAbsolute = path.join(sourceDirectory, `${moduleName}.py`);
+    if (fs.existsSync(sourceTargetAbsolute)) continue;
+
+    const mirroredTestParts = sourceDirectoryParts.slice(1);
+    const testCandidates = [
+      path.join(testsRoot, ...mirroredTestParts),
+      path.join(testsRoot, ...sourceDirectoryParts),
+      testsRoot,
+    ];
+    const testDirectory = testCandidates.find(candidate =>
+      fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()
+    );
+    if (!testDirectory) continue;
+
+    const sharedPrefix = moduleName.includes('_') ? `${moduleName.split('_')[0]}_` : '';
+    const sourceSibling = nearestPythonSibling(sourceDirectory, sharedPrefix, `${moduleName}.py`);
+    const testPrefix = `test_${sharedPrefix}`;
+    const testSibling = nearestPythonSibling(testDirectory, testPrefix, `test_${moduleName}.py`);
+
+    return {
+      dottedTarget,
+      sourceRoot: 'src',
+      sourceDirectory: repoRelativePath(path.relative(cwd, sourceDirectory)),
+      sourceTarget: repoRelativePath(path.relative(cwd, sourceTargetAbsolute)),
+      sourceConvention: sourceSibling
+        ? repoRelativePath(path.relative(cwd, path.join(sourceDirectory, sourceSibling)))
+        : null,
+      testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
+      testConvention: testSibling
+        ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
+        : null,
+    };
+  }
+  return null;
+}
+
 // Safe repairs only: keep the four canonical fields, trim strings, truncate overlong steps.
 // Missing or invalid required fields are left untouched so strict validation fails closed.
 function normalizeImplementationPreparation(value) {
@@ -230,9 +320,12 @@ function validateImplementationPreparation(value) {
   return { steps, complexity: value.complexity, evidenceBudget, reason };
 }
 
-function plannerTask(env = process.env, { repair = false } = {}) {
+function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
   const issue = implementerIssueContext(env);
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, and separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}): how many repository evidence-gathering actions (reads/searches) the Implementer will likely need before it can safely mutate. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.
+  const layoutGuidance = layoutHint
+    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
+    : '';
+  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, and separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}): how many repository evidence-gathering actions (reads/searches) the Implementer will likely need before it can safely mutate. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
 
 Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the four listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "reason": "..." } } and nothing else.` : ''}
 
@@ -327,11 +420,11 @@ async function runStructuredSubagent(pi, ctx, {
 // inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
 const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
 
-async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
+async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null) {
   const request = {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
-    task: plannerTask(),
+    task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
@@ -349,7 +442,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
       const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
       const retryable = missing || schemaFailure;
       const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
-      if (schemaFailure) request.task = plannerTask(process.env, { repair: true });
+      if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
       console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
         agent: config.implementationPlannerAgent,
         reason,
@@ -368,6 +461,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
   return {
     ...validateImplementationPreparation(normalizeImplementationPreparation(response.result.value)),
     usage: response.usage ?? null,
+    layoutHint,
   };
 }
 
@@ -770,9 +864,12 @@ export default function (pi) {
       description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result, or PREPARATION_FALLBACK if planner infrastructure fails; do not write a competing plan in the main agent.',
       parameters: Type.Object({}),
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+        let layoutHint = null;
         let prepared;
         try {
-          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal);
+          const issue = implementerIssueContext();
+          layoutHint = discoverAdditivePythonLayout(ctx.cwd, issue);
+          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint);
         } catch (error) {
           // Cancellation is not a recovery request: never unlock execution on abort.
           if (signal?.aborted) throw error;
@@ -794,10 +891,13 @@ export default function (pi) {
               'Do not call prepare_implementation again. Continue implementing from the issue and loaded contract. ' +
               'Normal mutation, begin_coding_session for the coding phase, run_check after mutation, and submit_result rules apply. ' +
               'If one concrete fact is missing, use need_more_evidence to unlock a read/search before acting.\n' +
-              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.`,
+              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.` +
+              (layoutHint
+                ? `\nRepository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}. This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.`
+                : ''),
             }],
             details: { ...fallback, failureClass: 'preparation_infrastructure_failure', reason,
-              lspWorkspaceRoot: ctx.cwd, freshBaseCommit },
+              lspWorkspaceRoot: ctx.cwd, freshBaseCommit, layoutHint },
           };
         }
         const result = controller.setComplexity(prepared.complexity);
@@ -825,10 +925,13 @@ export default function (pi) {
         const lspWorkspace = stage === 'implementer' && !resumedImplementer
           ? `\n\nLSP workspace root: ${ctx.cwd}. For a cold name-only lookup with an explicit language, call lsp_start_server once with the matching server_id and this exact absolute workspace_root before lsp_find_symbol; lsp_start_server is a control action and does not consume evidence budget.`
           : '';
+        const layoutGuidance = prepared.layoutHint
+          ? `\n\nRepository layout hint: source root ${prepared.layoutHint.sourceRoot}; new module target ${prepared.layoutHint.sourceTarget}; source directory ${prepared.layoutHint.sourceDirectory}${prepared.layoutHint.sourceConvention ? `; nearest source convention ${prepared.layoutHint.sourceConvention}` : ''}; tests ${prepared.layoutHint.testDirectory}${prepared.layoutHint.testConvention ? `; nearest test convention ${prepared.layoutHint.testConvention}` : ''}. This bounded current-worktree lookup is authoritative layout evidence. Prefer one targeted convention read if needed; do not broad-search or re-prove the fresh-worktree provenance.`
+          : '';
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
           }],
           details: {
             ...result,
@@ -839,6 +942,7 @@ export default function (pi) {
             freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
             freshWorktreeIsLatestDev: stage === 'implementer' && !resumedImplementer,
             lspWorkspaceRoot: stage === 'implementer' && !resumedImplementer ? ctx.cwd : null,
+            layoutHint: prepared.layoutHint,
           },
         };
       },
