@@ -14,6 +14,7 @@ test('runtime materializes completed transitions into context and tool surface',
     const context = path.join(dir, 'issue.json');
     const loader = path.join(dir, 'loader.mjs');
     fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
+    fs.writeFileSync(path.join(dir, 'example.py'), 'value = 1\n');
     fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
       if (specifier === 'typebox') return {
         url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
@@ -29,7 +30,7 @@ test('runtime materializes completed transitions into context and tool surface',
       const tools = new Map();
       const handlers = new Map();
       const messages = [];
-      let active = ['read', 'safe_edit', 'run_check', 'submit_result', 'need_more_evidence', 'begin_coding_session',
+      let active = ['read', 'safe_edit', 'edit', 'run_check', 'submit_result', 'need_more_evidence', 'begin_coding_session',
         'request_large_mutation_budget', 'prepare_implementation', 'subagents_enable', 'lsp_start_server'];
       const ctx = { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 32000 },
         sessionManager: { getSessionId: () => 'parent' }, abort: () => { aborts++; } };
@@ -56,7 +57,7 @@ test('runtime materializes completed transitions into context and tool surface',
         if (blocked) return blocked;
         let result = { content: [{ type: 'text', text: 'ok' }] };
         if (name === 'lsp_start_server') startups++;
-        if (tools.has(name)) result = await tools.get(name).execute(event.toolCallId, input, null, null, ctx);
+        if (tools.has(name) && name !== 'run_check') result = await tools.get(name).execute(event.toolCallId, input, null, null, ctx);
         if (enables) active.push(enables); // extension adds the newly enabled tool
         await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
@@ -64,7 +65,18 @@ test('runtime materializes completed transitions into context and tool surface',
       }
       await call('prepare_implementation');
       assert.ok(!active.includes('prepare_implementation'), 'prepare_implementation removed');
+      assert.ok(!active.includes('run_check'), 'run_check hidden before a mutation grants a permit');
       assert.ok(messages.some(m => /preparation: fallback-complete/.test(m)), 'preparation state injected');
+
+      await call('edit', { path: 'example.py' });
+      assert.ok(active.includes('run_check'), 'run_check exposed after a successful mutation grants a permit');
+      const validationMessageStart = messages.length;
+      await call('run_check', { kind: 'ruff', paths: ['example.py'] });
+      assert.ok(!active.includes('run_check'), 'run_check hidden immediately after its permit is consumed');
+      const validationGuidance = messages.slice(validationMessageStart).join('\n');
+      assert.match(validationGuidance, /run_check is exhausted for the current mutation state and is unavailable now/);
+      assert.match(validationGuidance, /Authoritative final checks still run automatically after submit_result and before publication: ruff -> git diff --check -> pytest/);
+      assert.doesNotMatch(validationGuidance, /run_check is available once for the current mutation state/);
 
       await call('subagents_enable', {}, { enables: 'subagent' });
       assert.ok(!active.includes('subagents_enable'), 'subagents_enable removed');
