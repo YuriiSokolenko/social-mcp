@@ -97,8 +97,9 @@ export function disableThinkingInPayload(payload) {
 // The active Pi tool surface has already been reduced to the valid action_required tools before
 // the request is built, so this forces a real tool call without choosing the tool on the model's
 // behalf. The runtime keeps this request constraint armed until the provider emits a tool call;
-// transport retries or ceiling-hit responses must not consume it. A 4xx on a request that was
-// actually forced clears the constraint so a provider that rejects "required" cannot retry forever.
+// transport retries or ceiling-hit responses must not consume it. Only a non-retryable compatibility
+// status (400/404/422) on a request that was actually forced clears the constraint; transient
+// statuses such as 408/429 leave it armed for the retry.
 export function requireToolChoiceInPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
     return payload;
@@ -639,9 +640,15 @@ export default function (pi) {
       const status = Number(event?.status ?? 0);
       const wasForced = forcedProviderRequestInFlight;
       forcedProviderRequestInFlight = false;
-      if (requireToolOnNextProviderRequest && wasForced && status >= 400 && status < 500) {
+      // Clear only on non-retryable compatibility/request-shape failures. Transient 408/429
+      // responses must preserve the requirement so the transport retry is still forced.
+      if (
+        requireToolOnNextProviderRequest &&
+        wasForced &&
+        [400, 404, 422].includes(status)
+      ) {
         requireToolOnNextProviderRequest = false;
-        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'provider_4xx', status })}`);
+        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'provider_incompatible_status', status })}`);
       }
     });
   }
