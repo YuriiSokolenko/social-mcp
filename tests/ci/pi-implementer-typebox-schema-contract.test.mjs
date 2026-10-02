@@ -6,9 +6,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
-const RESULT_TOOL_URL = new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href;
+const PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const RESULT_TOOL_URL = new URL('../../scripts/pi-implementer-result-tool.mjs', import.meta.url).href;
 const TYPEBOX_PACKAGE_ROOT = process.env.PI_TYPEBOX_PACKAGE_ROOT;
+
+if (!TYPEBOX_PACKAGE_ROOT) {
+  throw new Error('PI_TYPEBOX_PACKAGE_ROOT is required for the real TypeBox CI contract check.');
+}
 
 const EXPECTED_PROPERTIES = {
   title: 'Required for fresh changed work: PR title.',
@@ -35,15 +39,13 @@ function writeTypeboxLoader(dir) {
   return loader;
 }
 
-test('registered submit_result schema matches the real Pi TypeBox transport contract', {
-  skip: TYPEBOX_PACKAGE_ROOT ? false : 'Set PI_TYPEBOX_PACKAGE_ROOT to run the real TypeBox contract check.',
-}, async () => {
+test('registered submit_result schema matches the real Pi TypeBox transport contract', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-real-typebox-'));
   try {
     const loader = writeTypeboxLoader(dir);
     const program = `
       import assert from 'node:assert/strict';
-      import { Value } from 'typebox/value';
+      const { Value } = await import('typebox/value');
       const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
 
       let tool;
