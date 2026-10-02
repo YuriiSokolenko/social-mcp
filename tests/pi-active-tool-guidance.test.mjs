@@ -149,7 +149,7 @@ test('runtime counts an attempted tool that is absent from the current surface',
         { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 2048 }, abort: () => {} },
       );
       assert.equal(emptySurface.block, true);
-      assert.match(emptySurface.reason, /CURRENTLY EXPOSED TOOLS \(authoritative\): none/);
+      assert.match(emptySurface.reason, /CURRENTLY EXPOSED TOOLS \\(authoritative\\): none/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url),
