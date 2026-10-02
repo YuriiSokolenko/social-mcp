@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from '../scripts/pi-common/progress-controller.mjs';
 
 // Real runtime with a stubbed pi host: after PREPARATION_FALLBACK, subagents_enable and
 // lsp_start_server succeed once; the runtime must materialize state, update the tool surface,
@@ -25,6 +26,7 @@ test('runtime materializes completed transitions into context and tool surface',
       import assert from 'node:assert/strict';
       import { EventEmitter } from 'node:events';
       const { default: runtime } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
+      const fallbackEvidenceBudget = ${PREPARATION_FALLBACK_EVIDENCE_BUDGET};
       const bus = new EventEmitter();
       const tools = new Map();
       const handlers = new Map();
@@ -71,10 +73,14 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.ok(active.includes('subagent'), 'subagent remains visible during fallback evidence window');
       assert.ok(messages.some(m => /subagents: enabled/.test(m) && /Do not call subagents_enable again/.test(m)));
 
-      await call('read', { path: 'source-layout' });
-      assert.ok(active.includes('subagent'), 'one fallback evidence attempt remains');
-      await call('read', { path: 'test-layout' });
-      assert.ok(!active.includes('subagent'), 'subagent hidden after fallback evidence is exhausted');
+      for (let i = 0; i < fallbackEvidenceBudget; i++) {
+        await call('read', { path: 'fallback-evidence-' + i });
+        assert.equal(
+          active.includes('subagent'),
+          i < fallbackEvidenceBudget - 1,
+          'subagent visibility follows remaining fallback evidence attempts',
+        );
+      }
 
       const lsp = { server_id: 'python', workspace_root: ctx.cwd };
       await call('lsp_start_server', lsp);
