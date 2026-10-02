@@ -65,6 +65,24 @@ test('python_compile passes on valid source and reports a syntax error with file
   assert.ok(fail.diagnostics[0].message.length > 0);
 });
 
+test('focused validation fails early when a top-level package duplicates the configured src-layout package', async () => {
+  const dir = worktree({
+    'src/demo_pkg/__init__.py': '',
+    'demo_pkg/__init__.py': '',
+    'probe.py': 'answer = 42\\n',
+  });
+  const result = await runCheck(
+    dir,
+    { kind: 'python_compile', paths: ['probe.py'] },
+    directOptions({ bins: { python: pythonBin ?? 'python3' } }),
+  );
+  assert.equal(result.status, 'fail');
+  assert.equal(result.exit_code, null);
+  assert.equal(result.diagnostics[0].code, 'DuplicatePackageRoot');
+  assert.equal(result.diagnostics[0].file, 'demo_pkg/');
+  assert.match(result.diagnostics[0].message, /src\/demo_pkg\//);
+});
+
 test('newly created smoke file compiles with a worktree-absolute path', { skip: !hasPython }, async t => {
   const dir = worktree();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
