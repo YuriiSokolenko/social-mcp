@@ -64,7 +64,7 @@ test('runtime materializes completed transitions into context and tool surface',
         if (blocked) return blocked;
         let result = { content: [{ type: 'text', text: 'ok' }] };
         if (name === 'lsp_start_server') startups++;
-        if (name === 'edit') fs.appendFileSync(path.join(ctx.cwd, input.path), '# mutation ' + turn + '\n');
+        if (name === 'edit') fs.appendFileSync(path.join(ctx.cwd, input.path), '# mutation ' + turn + '\\n');
         if (tools.has(name) && name !== 'run_check') result = await tools.get(name).execute(event.toolCallId, input, null, null, ctx);
         if (enables) active.push(enables); // extension adds the newly enabled tool
         await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
@@ -75,7 +75,7 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.ok(!active.includes('prepare_implementation'), 'prepare_implementation removed');
       assert.ok(!active.includes('run_check'), 'run_check hidden before a mutation grants a permit');
       assert.ok(messages.some(m => /preparation: fallback-complete/.test(m)), 'preparation state injected');
-      const beforeMutationGuidance = messages.join('\n');
+      const beforeMutationGuidance = messages.join('\\n');
       assert.match(beforeMutationGuidance, /run_check is not yet available; it becomes available after a successful mutation/);
       assert.doesNotMatch(beforeMutationGuidance, /run_check is exhausted for the current mutation state/);
 
@@ -84,7 +84,7 @@ test('runtime materializes completed transitions into context and tool surface',
       const validationMessageStart = messages.length;
       await call('run_check', { kind: 'ruff', paths: ['example.py'] });
       assert.ok(!active.includes('run_check'), 'run_check hidden immediately after its permit is consumed');
-      const validationGuidance = messages.slice(validationMessageStart).join('\n');
+      const validationGuidance = messages.slice(validationMessageStart).join('\\n');
       assert.match(validationGuidance, /run_check is exhausted for the current mutation state and is unavailable now/);
       assert.ok(validationGuidance.includes(${JSON.stringify(expectedFinalGuidance)}));
       assert.doesNotMatch(validationGuidance, /run_check is available once for the current mutation state/);
