@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -66,6 +67,13 @@ def test_reference_is_not_mutated():
     assert reference.tzinfo is None
 
 
+def test_negative_zero_is_normalized():
+    reference = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    result = parse_retry_after(-0.0, reference)
+    assert result == 0.0
+    assert math.copysign(1.0, result) == 1.0
+
+
 @pytest.mark.parametrize(
     "value",
     ["-1", "-30", " -5", "-0.5", -1, -30],
@@ -92,6 +100,7 @@ def test_fractional_or_non_finite_numeric_values_rejected(value):
         "",
         "   ",
         "soon",
+        "1.5",
         "12.5",
         "1e3",
         "30 seconds",
