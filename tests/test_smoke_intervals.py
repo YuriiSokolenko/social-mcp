@@ -55,6 +55,16 @@ def test_decimal_bounds_are_supported():
     assert merge_intervals([(two, three), (one, two)]) == [(one, three)]
 
 
+def test_mixed_supported_numeric_types_are_ordered_and_merged():
+    assert merge_intervals(
+        [
+            (Decimal("1.0"), 2.0),
+            (Fraction(1, 2), 1),
+            (2, Decimal("3.0")),
+        ]
+    ) == [(Fraction(1, 2), Decimal("3.0"))]
+
+
 def test_other_real_bounds_remain_supported():
     half = Fraction(1, 2)
     one = Fraction(1, 1)
@@ -75,6 +85,22 @@ def test_complex_bounds_are_rejected_deterministically():
         match=r"interval start must be a numbers\.Real or decimal\.Decimal value",
     ):
         merge_intervals([(1 + 2j, 3)])
+
+
+@pytest.mark.parametrize(
+    "interval",
+    [
+        (float("nan"), 1),
+        (0, float("nan")),
+        (Decimal("NaN"), 1),
+        (0, Decimal("NaN")),
+        (Decimal("sNaN"), 1),
+        (0, Decimal("sNaN")),
+    ],
+)
+def test_nan_bounds_are_rejected_with_value_error(interval):
+    with pytest.raises(ValueError, match=r"must not be NaN"):
+        merge_intervals([interval])
 
 
 def test_lists_are_accepted_and_returned_as_tuples():
