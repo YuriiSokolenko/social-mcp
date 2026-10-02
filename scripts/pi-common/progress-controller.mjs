@@ -254,6 +254,9 @@ export class ProgressController {
     this.largeMutationBudgetTool = this.productiveProgress?.largeMutationBudgetTool ?? null;
     this.largeMutationBudgetMaxTokens = this.productiveProgress?.largeMutationBudgetMaxTokens ?? null;
     this.largeMutationBudgetState = 'idle';
+    // Planner-owned intent is separate from the pending/active grant so evidence turns
+    // stay on the normal budget until the action phase is actually reached.
+    this.automaticLargeMutationBudgetArmed = false;
     this.codingSessionTool = this.productiveProgress?.codingSessionTool ?? null;
     this.lspServerReady = !this.requireLspStartBeforeFindSymbol;
 
@@ -316,6 +319,28 @@ export class ProgressController {
 
   verificationLifecycleState() {
     return this.verificationState;
+  }
+
+  armAutomaticLargeMutationBudget(enabled) {
+    if (!this.largeMutationBudgetTool) {
+      this.automaticLargeMutationBudgetArmed = false;
+      return false;
+    }
+    this.automaticLargeMutationBudgetArmed = enabled === true;
+    return this.automaticLargeMutationBudgetArmed;
+  }
+
+  // Promote planner intent only after evidence is closed. The promoted grant reuses the
+  // existing pending -> active -> idle one-shot lifecycle and mutation-only hard gate.
+  maybeGrantAutomaticLargeMutationBudget() {
+    if (!this.automaticLargeMutationBudgetArmed ||
+        this.largeMutationBudgetState !== 'idle' ||
+        this.productiveState !== 'action_required') {
+      return false;
+    }
+    this.automaticLargeMutationBudgetArmed = false;
+    this.largeMutationBudgetState = 'pending';
+    return true;
   }
 
   largeMutationBudgetPending() {
@@ -719,7 +744,14 @@ export class ProgressController {
       this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
       this.evidenceUnlockUsedSinceProgress = false;
     }
+    if (!isError && this.automaticLargeMutationBudgetArmed &&
+        (FINISH_TOOLS.has(toolName) || toolName === this.codingSessionTool)) {
+      // If a productive action happened before the automatic grant could activate, discard
+      // the intent rather than shifting its elevated response onto an unrelated later action.
+      this.automaticLargeMutationBudgetArmed = false;
+    }
     if (!isError && this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool) {
+      this.automaticLargeMutationBudgetArmed = false;
       this.largeMutationBudgetState = 'pending';
     }
     if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
