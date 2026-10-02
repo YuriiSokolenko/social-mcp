@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import { runProcess } from './process.mjs';
 import { baseRef, expandCommand, projectConfig } from './project-config.mjs';
 import { ruffArgs } from './ruff-spec.mjs';
-import { appendCheckRecord, FINAL_PIPELINE_COMPLETE_SOURCE } from './validation-ledger.mjs';
+import {
+  appendCheckRecord,
+  FINAL_PIPELINE_COMPLETE_SOURCE,
+  resolveValidationRunId,
+} from './validation-ledger.mjs';
 
 /**
  * Run the deterministic checks that validate PRODUCT CODE before a Pi stage
@@ -103,7 +107,7 @@ function recordFinalCheck(ledgerPath, step, status, backend, error) {
     source: 'checks_final',
     stage: 'implementer',
     backend,
-    run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
+    run_id: resolveValidationRunId(process.env),
     summary: status === 'pass' ? 'Check passed' : String(error?.message ?? '').slice(0, 400),
     infrastructure: status === 'infra_error' ? { component: 'check_command', code: 'PRODUCT_CHECK_SPAWN_ERROR' } : null,
   });
@@ -163,7 +167,7 @@ export function runProductChecks({ cwd, ledgerPath, backend = 'pi' } = {}) {
       source: FINAL_PIPELINE_COMPLETE_SOURCE,
       stage: 'implementer',
       backend,
-      run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
+      run_id: resolveValidationRunId(process.env),
       summary: 'All checks.final steps completed',
     });
   }
