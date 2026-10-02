@@ -508,11 +508,16 @@ export default function (pi) {
       reason,
       ...details,
     };
-    fs.mkdirSync(path.dirname(failureFile), { recursive: true });
-    const tempFile = `${failureFile}.${process.pid}.tmp`;
-    fs.writeFileSync(tempFile, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tempFile, failureFile);
-    console.error(`PI_RUNTIME_FAILURE ${JSON.stringify(record)}`);
+    try {
+      fs.mkdirSync(path.dirname(failureFile), { recursive: true });
+      const tempFile = `${failureFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tempFile, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(tempFile, failureFile);
+      console.error(`PI_RUNTIME_FAILURE ${JSON.stringify(record)}`);
+    } catch (error) {
+      // Failure classification is best-effort metadata; it must never suppress the watchdog abort.
+      console.error(`PI_RUNTIME_FAILURE_WRITE_ERROR ${JSON.stringify({ stage, failureCode, error: String(error?.message ?? error) })}`);
+    }
   }
 
   async function handleLoopResult(loopResult, ctx) {
