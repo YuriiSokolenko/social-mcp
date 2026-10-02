@@ -66,7 +66,7 @@ export default function (pi) {
         integrateLatestDev({
           conflictMessage: files => `Latest dev conflicts while verifying blocked work: ${files.join(', ')}`,
         });
-        const changedPaths = gitPaths(git(['diff', '--name-only', '-z', baseRef()]).out);
+        const changedPaths = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
         const dirty = lines(git(['status', '--porcelain', '--untracked-files=all']).out);
         if (changedPaths.length || dirty.length) {
           throw new Error('blocked_reason requires a clean worktree with zero diff against latest dev');
@@ -108,7 +108,7 @@ export default function (pi) {
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
       });
-      const changedPaths = gitPaths(git(['diff', '--name-only', '-z', baseRef()]).out);
+      const changedPaths = gitPaths(git(['diff', '--no-renames', '--name-only', '-z', baseRef()]).out);
       const hasDiff = changedPaths.length > 0;
       let data;
 
