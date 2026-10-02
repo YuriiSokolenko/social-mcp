@@ -63,6 +63,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up BuildKit
+        run: |
+          if ! docker buildx version >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes docker-buildx-plugin
+          fi
+          docker buildx version
+
       - name: Generate ephemeral test encryption key
         shell: bash
         run: |
