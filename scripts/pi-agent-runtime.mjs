@@ -1634,7 +1634,7 @@ export default function (pi) {
     const canonicalToolName = controllerToolName(event.toolName);
     const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput);
     if (blocked?.alreadySatisfied) {
-      blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is already completed and did not execute. ${activeToolGuidance(activeToolNames)}`;
+      blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is single-shot and already completed; it did not execute. ${activeToolGuidance(activeToolNames)}`;
     }
     if (satisfiedProviderForcing) {
       console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({
