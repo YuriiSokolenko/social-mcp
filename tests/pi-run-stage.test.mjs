@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -27,8 +27,9 @@ function specFor(stage) {
   });
 }
 
-function implementerStartup(extraEnv = {}) {
+function implementerStartup(t, extraEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pi-implementer-startup-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const issueContext = join(dir, 'issue.json');
   writeFileSync(issueContext, JSON.stringify({
     number: 42,
@@ -256,9 +257,9 @@ test('Pi backend invocation keeps the legacy extension and CLI argument order', 
   assert.deepEqual(invocation.filter.options.stdio, ['pipe', 'inherit', 'inherit']);
 });
 
-test('restored implementer env is present in the Pi child when the result-tool extension is loaded', () => {
+test('restored implementer env is present in the Pi child when the result-tool extension is loaded', (t) => {
   const resumePatch = '/tmp/pi-resume.patch';
-  const { spec, workspace } = implementerStartup({
+  const { spec, workspace } = implementerStartup(t, {
     PI_RESUME_ACTIVE: 'true',
     PI_RESUME_PATCH: resumePatch,
   });
@@ -270,8 +271,8 @@ test('restored implementer env is present in the Pi child when the result-tool e
   assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
 });
 
-test('validation-repair env is present in the Pi child when the result-tool extension is loaded', () => {
-  const { spec, workspace } = implementerStartup();
+test('validation-repair env is present in the Pi child when the result-tool extension is loaded', (t) => {
+  const { spec, workspace } = implementerStartup(t);
   const repair = createValidationRepairSpec(spec, new Error('ruff failed'), 1);
   const invocation = buildPiInvocation(repair, workspace);
 
@@ -281,8 +282,8 @@ test('validation-repair env is present in the Pi child when the result-tool exte
   assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
 });
 
-test('fresh implementer starts without restored or validation-repair mode env', () => {
-  const { spec, workspace } = implementerStartup();
+test('fresh implementer starts without restored or validation-repair mode env', (t) => {
+  const { spec, workspace } = implementerStartup(t);
   const invocation = buildPiInvocation(spec, workspace);
 
   assert.equal(invocation.pi.options.env.PI_RESUME_ACTIVE, undefined);
