@@ -4,10 +4,13 @@ const clean = value => typeof value === 'string' ? value.trim() : '';
 
 function normalizeFiles(value) {
   if (!Array.isArray(value)) return [];
-  const files = value.map(clean).filter(Boolean);
+  const files = [...value];
   for (const file of files) {
-    if (file.startsWith('/') || file.split('/').includes('..')) {
-      throw new Error(`Implementer result files must be repository-relative paths: ${file}`);
+    if (typeof file !== 'string' || !file.length) {
+      throw new Error('Implementer result files must be non-empty strings');
+    }
+    if (file.startsWith('/') || file.startsWith('./') || file.split('/').includes('..')) {
+      throw new Error(`Implementer result files must be exact repository-relative git paths: ${file}`);
     }
   }
   return [...new Set(files)].sort();
