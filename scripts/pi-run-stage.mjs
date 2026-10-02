@@ -203,7 +203,7 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
   return { spec, workspace, backend };
 }
 
-export function runSelectedStage(spec, { backend, workspace }, {
+export async function runSelectedStage(spec, { backend, workspace }, {
   runPi = runPiStage,
   runMiniSwe = runMiniSweStage,
   validate,
@@ -211,7 +211,13 @@ export function runSelectedStage(spec, { backend, workspace }, {
   const runBackend = backend === 'mini-swe'
     ? candidate => runMiniSwe(candidate)
     : candidate => runPi(candidate, { workspace });
-  return runStageWithValidationRecovery(spec, runBackend, validate ? { validate } : {});
+  const failureFile = String(spec.environment.PI_RUNTIME_FAILURE_FILE ?? '').trim();
+  if (failureFile) fs.rmSync(failureFile, { force: true });
+  const result = await runStageWithValidationRecovery(spec, runBackend, validate ? { validate } : {});
+  // A successful overall stage supersedes any recoverable nested/earlier-attempt abort.
+  // Publication may fail later, so leave no model-abort record that could misattribute it.
+  if (failureFile) fs.rmSync(failureFile, { force: true });
+  return result;
 }
 
 export async function runStage(options, env = process.env) {
