@@ -28,6 +28,10 @@ managed service and is not part of this change.
 
 Agents use focused product tests when useful for implementation or reasoning. Authoritative full `pytest`, Ruff, and diff checks belong to trusted product-stage workflow/submit tooling and are not duplicated by the model merely as a completion ritual. Agents do not run CI/control-plane contract suites (`tests/*.test.mjs`, runner-autoscaler tests, or workflow self-tests). `ci.yml` exclusively owns those control-plane checks and runs them on the triggering `dev` commit, together with an isolated Docker Compose integration test.
 
+## Pi `submit_result` TypeBox contract
+
+The lightweight `tests/pi-implementer-submit-result-contract.test.mjs` loader keeps the ordinary Node test suite independent of the Pi runtime's `typebox` package. It covers registration and runtime behavior, but its compatible schema builder cannot validate TypeBox's generated JSON Schema metadata. CI therefore installs the Pi runtime's pinned `typebox@1.3.27` into the runner temp directory and runs `tests/ci/pi-implementer-typebox-schema-contract.test.mjs` as a separate step before the general workflow tests. The pin mirrors the `typebox` dependency in `@earendil-works/pi-coding-agent`; the dedicated test requires the temp package path and cannot silently skip. It loads the production tool through a resolver pointed at the real package and checks the generated flat schema, optional outcome fields, public descriptions, and the split between permissive transport validation and authoritative fresh-changed runtime validation.
+
 ## Complexity guard
 
 Do not reintroduce synthetic pre-merge exact-pair orchestration. The merge decision must not depend on captured dev SHAs, `integration_base_sha`, `repair_base_sha`, synthetic dev+PR merge commits, or a custom dev+PR integration state machine.
