@@ -442,6 +442,8 @@ export class ProgressController {
         alreadySatisfied: true,
         reason: this.transitions.alreadySatisfiedReason(toolName, transitionKey, {
           actionRequired: this.productiveState === 'action_required',
+          verificationTool: this.productiveVerificationTool,
+          verificationState: this.verificationLifecycleState(),
         }),
       };
     }
