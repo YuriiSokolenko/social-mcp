@@ -430,11 +430,14 @@ function runRuntimeScenario(body, env = {}) {
       const CONTROLLER_URL = ${JSON.stringify(controllerUrl)};
       const handlers = new Map();
       const messages = [];
+      // This mock exercises loop-guard behavior, not tool-surface policy. Mirror Pi's mutable
+      // active surface so runtime setActiveTools() calls remain observable on later tool calls.
+      let activeTools = ['read', 'write', 'safe_edit', 'rollback_last_mutation'];
       const pi = {
         on: (name, handler) => handlers.set(name, handler),
         registerTool: () => {},
-        getActiveTools: () => [],
-        setActiveTools: () => {},
+        getActiveTools: () => [...activeTools],
+        setActiveTools: names => { activeTools = [...names]; },
         sendUserMessage: async (...args) => messages.push(args),
         setModel: async () => true,
       };

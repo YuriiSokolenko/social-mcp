@@ -7,8 +7,11 @@ import path from 'node:path';
 import {
   appendCheckRecord,
   readValidationLedger,
+  resolveValidationRunId,
   normalizeScope,
   reconcile,
+  latestUnresolvedRunCheckFailure,
+  runCheckRequestForRecord,
   computeVerificationState,
   renderValidationSection,
   VERIFICATION_STATES,
@@ -19,6 +22,18 @@ function tempLedger() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-validation-ledger-'));
   return path.join(dir, 'ledger.jsonl');
 }
+
+test('resolveValidationRunId trims explicit ids and falls back consistently', () => {
+  assert.equal(
+    resolveValidationRunId({ PI_VALIDATION_RUN_ID: '  explicit-run  ', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' }),
+    'explicit-run',
+  );
+  assert.equal(
+    resolveValidationRunId({ PI_VALIDATION_RUN_ID: '   ', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' }),
+    '123-2',
+  );
+  assert.equal(resolveValidationRunId({}), `local-${process.pid}-1`);
+});
 
 const focused = (overrides = {}) => ({
   kind: 'python_compile',
@@ -141,6 +156,246 @@ test('an unrelated broad pytest pass does not satisfy a failed/infra-error focus
   // This is the literal shape of smoke run 36782519549: a focused python_compile
   // infra_error plus a broad, unrelated pytest pass.
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.BLOCKED_INFRA);
+});
+
+test('#342 recovery keeps the exact failed pytest scope pending across a broader pass until that scope passes', () => {
+  const failed = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    status: 'fail',
+  });
+  const broaderPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py'] },
+    status: 'pass',
+  });
+  const records = [failed, broaderPass];
+
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.FAILED);
+  assert.equal(latestUnresolvedRunCheckFailure(records), failed);
+  assert.deepEqual(runCheckRequestForRecord(failed), {
+    kind: 'pytest',
+    targets: ['tests/test_feature.py::test_exact_case'],
+  });
+
+  const exactPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    status: 'pass',
+  });
+  records.push(exactPass);
+  assert.equal(latestUnresolvedRunCheckFailure(records), null);
+  assert.equal(reconcile(records).find(record => record.scope.targets?.includes('tests/test_feature.py::test_exact_case'))?.status, 'pass');
+});
+
+test('exact-scope timeout, invalid, and infra_error stop forced retry but remain fail-closed verification', () => {
+  const failure = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    status: 'fail',
+  });
+  for (const status of ['timeout', 'invalid', 'infra_error']) {
+    const later = focused({
+      kind: 'pytest',
+      scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+      status,
+    });
+    const records = [failure, later];
+    assert.equal(
+      latestUnresolvedRunCheckFailure(records),
+      null,
+      `${status} must end the forced retry episode`,
+    );
+    assert.equal(
+      computeVerificationState(records),
+      VERIFICATION_STATES.BLOCKED_INFRA,
+      `${status} remains fail-closed verification evidence`,
+    );
+  }
+});
+
+test('multiple failed scopes remain independently recoverable within one workflow run', () => {
+  const firstFailure = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    status: 'fail',
+    run_id: 'run-1',
+  });
+  const secondFailure = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_other.py::test_other_case'] },
+    status: 'fail',
+    run_id: 'run-1',
+  });
+  const broaderPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_feature.py'] },
+    status: 'pass',
+    run_id: 'run-1',
+  });
+  const secondPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_other.py::test_other_case'] },
+    status: 'pass',
+    run_id: 'run-1',
+  });
+
+  const records = [firstFailure, secondFailure, broaderPass];
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
+    secondFailure,
+    'most recent unresolved exact failure is recovered first',
+  );
+
+  records.push(secondPass);
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
+    firstFailure,
+    'resolving one scope exposes the remaining exact failure instead of dropping it',
+  );
+});
+
+test('a repeated exact fail refreshes the active recovery evidence without creating another obligation', () => {
+  const first = focused({
+    kind: 'ruff',
+    scope: { paths: ['src/a.py'] },
+    status: 'fail',
+    summary: 'first',
+  });
+  const second = focused({
+    kind: 'ruff',
+    scope: { paths: ['src/a.py'] },
+    status: 'fail',
+    summary: 'second',
+  });
+  assert.equal(latestUnresolvedRunCheckFailure([first, second]), second);
+});
+
+test('failed-check recovery is scoped to the current workflow run and spans repair attempts', () => {
+  const oldRun = focused({
+    kind: 'ruff',
+    scope: { paths: ['old.py'] },
+    status: 'fail',
+    run_id: 'run-0',
+    attempt_id: 'primary',
+  });
+  const primary = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_primary.py::test_case'] },
+    status: 'fail',
+    run_id: 'run-1',
+    attempt_id: 'primary',
+  });
+  const records = [oldRun, primary];
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
+    primary,
+    'a validation-repair session inherits an unresolved failure from the primary attempt',
+  );
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-2' }),
+    null,
+    'failures from an earlier workflow run never control a new run',
+  );
+
+  const repairPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_primary.py::test_case'] },
+    status: 'pass',
+    run_id: 'run-1',
+    attempt_id: 'validation-repair:2',
+  });
+  records.push(repairPass);
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
+    null,
+    'a later repair can resolve an exact failure recorded by an earlier attempt',
+  );
+});
+
+test('legacy run_check records without attempt_id still participate in current-run recovery', () => {
+  const legacyFailure = focused({
+    kind: 'ruff',
+    scope: { paths: ['legacy.py'] },
+    status: 'fail',
+    run_id: 'run-1',
+  });
+  delete legacyFailure.attempt_id;
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure([legacyFailure], { runId: 'run-1', stage: 'implementer' }),
+    legacyFailure,
+  );
+});
+
+test('an unreconstructable newer failure does not hide an older exact recovery obligation', () => {
+  const older = focused({
+    kind: 'ruff',
+    scope: { paths: ['src/a.py'] },
+    status: 'fail',
+    run_id: 'run-1',
+    stage: 'implementer',
+  });
+  const malformedNewer = focused({
+    kind: 'pytest',
+    scope: { whole_repo: true },
+    status: 'fail',
+    run_id: 'run-1',
+    stage: 'implementer',
+  });
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure([older, malformedNewer], { runId: 'run-1', stage: 'implementer' }),
+    older,
+  );
+});
+
+test('recovery selection ignores run_check failures from other stages', () => {
+  const implementerFailure = focused({
+    kind: 'ruff',
+    scope: { paths: ['src/a.py'] },
+    status: 'fail',
+    run_id: 'run-1',
+    stage: 'implementer',
+  });
+  const reviewerFailure = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_review.py::test_case'] },
+    status: 'fail',
+    run_id: 'run-1',
+    stage: 'reviewer',
+  });
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure([implementerFailure, reviewerFailure], { runId: 'run-1', stage: 'implementer' }),
+    implementerFailure,
+  );
+});
+
+test('runCheckRequestForRecord rejects mixed scopes instead of replaying a different check', () => {
+  assert.throws(
+    () => runCheckRequestForRecord(focused({
+      kind: 'pytest',
+      scope: {
+        paths: ['src/a.py'],
+        targets: ['tests/test_a.py::test_case'],
+      },
+      status: 'fail',
+    })),
+    /ambiguous or unsupported scope/,
+  );
+});
+
+test('runCheckRequestForRecord rejects a scope field that does not match the check kind', () => {
+  assert.throws(
+    () => runCheckRequestForRecord(focused({
+      kind: 'pytest',
+      scope: { paths: ['src/a.py'] },
+      status: 'fail',
+    })),
+    /scope does not match check kind/,
+  );
 });
 
 test('a ledger with an unparseable line is treated as blocked, never as evidence of VERIFIED', () => {

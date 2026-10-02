@@ -10,6 +10,7 @@ import { stageConfig, stagePrompt } from './pi-common/stage-config.mjs';
 import { createStageRunSpec } from './pi-common/stage-run-contract.mjs';
 import { runStageWithValidationRecovery } from './pi-common/stage-validation-recovery.mjs';
 import { startModelTraceProxy } from './pi-common/model-trace-proxy.mjs';
+import { resolveValidationRunId } from './pi-common/validation-ledger.mjs';
 
 // The model alias selects what operators have already loaded behind the shared
 // Rabbit/Open Responses endpoint; this script does not start or stop runtimes.
@@ -171,9 +172,11 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
 
   const runnerTemp = env.RUNNER_TEMP || cwd;
   const suffix = `${env.GITHUB_RUN_ID ?? process.pid}-${env.GITHUB_RUN_ATTEMPT ?? 1}`;
+  const validationRunId = resolveValidationRunId(env);
   const childEnv = {
     ...env,
     PI_STAGE: stage,
+    PI_VALIDATION_RUN_ID: validationRunId,
     PI_PHASE: env.PI_PHASE ?? config.phase ?? stage,
     PI_ISSUE: env.PI_ISSUE ?? env.ISSUE ?? '',
     PI_BASH_TIMEOUT_SECONDS: env.PI_BASH_TIMEOUT_SECONDS ?? String(config.bashTimeoutSeconds),

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { ProgressController } from '../scripts/pi-common/progress-controller.mjs';
+import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController } from '../scripts/pi-common/progress-controller.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 function fallbackController() {
@@ -34,12 +34,124 @@ test('fallback satisfies preparation without fabricating complexity or permittin
   assert.throws(() => state.enterPreparationFallback(), /attempted, unresolved/);
 });
 
-test('fallback preserves normal mutation, verification, evidence and one-shot budget rules', () => {
+test('fallback grants the bounded evidence window and closes it on exhaustion or mutation', () => {
+  const exhausted = fallbackController();
+  assert.equal(exhausted.productiveProgressState(), 'evidence_allowed');
+  assert.equal(exhausted.checkToolCall('run_check', {}).block, true, 'verification still requires mutation');
+  assert.equal(exhausted.checkToolCall('request_large_mutation_budget', {}).block, true);
   for (const tool of ['write', 'edit', 'safe_edit', 'structural_edit', 'submit_result']) {
-    assert.equal(fallbackController().checkToolCall(tool, {}), undefined, tool);
+    assert.equal(fallbackController().checkToolCall(tool, {}), undefined, tool + ' remains allowed during fallback evidence');
   }
+  for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
+    assert.equal(exhausted.checkToolCall('read', { path: 'evidence-' + i }), undefined);
+    assert.equal(
+      exhausted.productiveProgressState(),
+      i === PREPARATION_FALLBACK_EVIDENCE_BUDGET - 1 ? 'action_required' : 'evidence_allowed',
+    );
+  }
+  assert.equal(exhausted.checkToolCall('read', { path: 'after-budget' }).block, true);
+
+  const failed = fallbackController();
+  for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
+    assert.equal(failed.checkToolCall('read', { path: 'missing-' + i }), undefined);
+    failed.onToolExecutionEnd('read', true);
+  }
+  assert.equal(failed.productiveProgressState(), 'action_required', 'failed evidence still consumes accepted attempts');
+  assert.equal(failed.checkToolCall('read', { path: 'still-blocked' }).block, true);
+  assert.equal(
+    failed.checkToolCall('need_more_evidence', { missing: 'layout', reason: 'accepted attempts produced no usable evidence' }),
+    undefined,
+    'post-window escape hatch remains available after failed evidence attempts',
+  );
+  assert.equal(failed.checkToolCall('read', { path: 'retry-after-blocker' }), undefined);
+
+  const mutated = fallbackController();
+  assert.equal(mutated.checkToolCall('read', { path: 'src' }), undefined);
+  assert.equal(mutated.productiveProgressState(), 'evidence_allowed');
+  assert.equal(mutated.checkToolCall('write', { path: 'example.py', content: 'x' }), undefined);
+  mutated.onToolExecutionEnd('write', false);
+  assert.equal(mutated.productiveProgressState(), 'action_required');
+  assert.equal(mutated.checkToolCall('read', { path: 'tests' }).block, true);
+  assert.equal(mutated.checkToolCall('run_check', {}), undefined, 'successful mutation grants verification');
+});
+
+test('automatic large mutation budget waits for evidence completion and remains one-shot', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(1);
+  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false);
+  assert.equal(state.largeMutationBudgetState, 'idle');
+
+  assert.equal(state.checkToolCall('read', { path: 'src/example.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true);
+  assert.equal(state.largeMutationBudgetPending(), true);
+  assert.equal(state.activateLargeMutationBudget(), true);
+  assert.equal(state.checkToolCall('read', { path: 'src/other.py' }).block, true);
+  assert.equal(state.checkToolCall('write', { path: 'src/example.py' }), undefined);
+  state.onToolExecutionEnd('write', false);
+  assert.equal(state.resetLargeMutationBudget(), true);
+  assert.equal(state.largeMutationBudgetState, 'idle');
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false, 'automatic grant is not reusable');
+});
+
+test('automatic large mutation intent is discarded by a direct mutation before activation', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(2);
+  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  assert.equal(state.checkToolCall('safe_edit', { path: 'src/example.py' }), undefined);
+  state.onToolExecutionEnd('safe_edit', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.automaticLargeMutationBudgetArmed, false);
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false, 'stale planner intent must not grant a later action');
+});
+
+test('zero-evidence automatic large mutation becomes pending immediately after preparation', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(0);
+  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true);
+  assert.equal(state.largeMutationBudgetPending(), true);
+});
+
+test('explicit large mutation request clears any planner-owned armed intent', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(1);
+  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  assert.equal(state.checkToolCall('read', { path: 'src/example.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'explicit fallback' }), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.automaticLargeMutationBudgetArmed, false);
+  assert.equal(state.largeMutationBudgetPending(), true);
+});
+
+test('fallback preserves one-shot mutation budget and post-window evidence escape hatch', () => {
   const state = fallbackController();
-  assert.equal(state.checkToolCall('run_check', {}).block, true, 'verification still requires mutation');
+  for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
+    assert.equal(state.checkToolCall('read', { path: 'evidence-' + i }), undefined);
+  }
   assert.equal(state.checkToolCall('request_large_mutation_budget', {}), undefined);
   state.onToolExecutionEnd('request_large_mutation_budget', false);
   assert.equal(state.largeMutationBudgetPending(), true);
@@ -52,8 +164,12 @@ test('fallback preserves normal mutation, verification, evidence and one-shot bu
   state.onToolExecutionEnd('run_check', false);
   assert.equal(state.checkToolCall('run_check', {}).block, true);
   assert.equal(state.checkToolCall('submit_result', {}), undefined);
+
   for (const tool of ['read', 'repo_search', 'lsp_goto_definition', 'subagent']) {
     const evidence = fallbackController();
+    for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
+      assert.equal(evidence.checkToolCall('read', { path: 'evidence-' + i }), undefined);
+    }
     assert.equal(evidence.checkToolCall('need_more_evidence', { missing: 'target', reason: 'resolve edit' }), undefined);
     assert.equal(evidence.checkToolCall(tool, {}), undefined, tool);
     assert.equal(evidence.productiveProgressState(), 'action_required');
@@ -67,7 +183,37 @@ function runtimeScenario(mode) {
   try {
     const context = path.join(dir, 'issue.json');
     const loader = path.join(dir, 'loader.mjs');
-    fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
+    const issue = mode === 'layout-aware'
+      ? {
+          title: '[Workflow smoke] Add smoke widget parser',
+          body: 'Add `demo_pkg.diagnostics.smoke_widget.parse_widget` in a new diagnostics module with focused pytest coverage.',
+        }
+      : mode === 'non-additive-target'
+        ? {
+            title: 'Adjust existing parser',
+            body: 'Update `demo_pkg.diagnostics.parse_widget` and `demo_pkg.diagnostics.Parser.parse_widget` with focused tests.',
+          }
+        : mode === 'small-auto'
+          ? {
+              title: 'Rename one config label',
+              body: 'Change the single label in config.py from old to new.',
+            }
+          : { title: 'Example task', body: 'Implement example.py' };
+    fs.writeFileSync(context, mode === 'invalid-context' ? '{' : JSON.stringify(issue));
+    if (mode === 'small-auto') fs.writeFileSync(path.join(dir, 'config.py'), 'old\n');
+    if (mode === 'layout-aware' || mode === 'non-additive-target') {
+      fs.mkdirSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'tests', 'diagnostics'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', '__init__.py'), '');
+      fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', '__init__.py'), '');
+      fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', 'smoke_ratio.py'), 'def ratio(): return 1\n');
+      fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', 'smoke_chunks.py'), 'def chunks(): return []\n');
+      fs.writeFileSync(path.join(dir, 'tests', 'diagnostics', 'test_smoke_ratio.py'), 'def test_ratio(): pass\n');
+      fs.writeFileSync(path.join(dir, 'tests', 'diagnostics', 'test_smoke_chunks.py'), 'def test_chunks(): pass\n');
+      if (mode === 'non-additive-target') {
+        fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', '__init__.py'), 'def parse_widget(): return 1\n');
+      }
+    }
     fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
       if (specifier === 'typebox') return {
         url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
@@ -81,6 +227,7 @@ function runtimeScenario(mode) {
       import { EventEmitter } from 'node:events';
       const { default: runtime } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
       const mode = ${JSON.stringify(mode)};
+      const fallbackEvidenceBudget = ${PREPARATION_FALLBACK_EVIDENCE_BUDGET};
       const bus = new EventEmitter();
       const tools = new Map();
       const handlers = new Map();
@@ -103,11 +250,51 @@ function runtimeScenario(mode) {
       bus.on('prompt-template:subagent:request', request => {
         attempts++;
         assert.equal(request.agent, 'implementation-planner');
-        assert.match(request.task, /Example task/);
-        assert.match(request.task, /Implement example.py/);
+        if (mode === 'layout-aware') {
+          assert.match(request.task, /Add smoke widget parser/);
+          assert.match(request.task, /source_root=src/);
+          assert.ok(request.task.includes('source_target=src/demo_pkg/diagnostics/smoke_widget.py'));
+          assert.ok(request.task.includes('nearest_source_convention=src/demo_pkg/diagnostics/smoke_chunks.py'));
+          assert.ok(request.task.includes('test_directory=tests/diagnostics'));
+          assert.ok(request.task.includes('nearest_test_convention=tests/diagnostics/test_smoke_chunks.py'));
+          assert.match(request.task, /at most one targeted convention read/);
+          assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/);
+        } else if (mode === 'non-additive-target') {
+          assert.match(request.task, /Adjust existing parser/);
+          assert.doesNotMatch(request.task, /Runtime repository layout hint/);
+          assert.doesNotMatch(request.task, /source_target=/);
+        } else if (mode === 'small-auto') {
+          assert.match(request.task, /Rename one config label/);
+          assert.match(request.task, /single label in config\.py/);
+        } else {
+          assert.match(request.task, /Example task/);
+          assert.match(request.task, /Implement example.py/);
+        }
         assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
         if (mode === 'abort') { signal.abort(); return; }
-        const good = { steps: ['Implement example.py'], complexity: 'nontrivial', evidence_budget: 2, reason: 'Needs source evidence' };
+        const good = mode === 'layout-aware'
+          ? {
+              steps: ['Read the nearest smoke convention once, then add the module and focused tests'],
+              complexity: 'nontrivial',
+              evidence_budget: 1,
+              large_mutation: true,
+              reason: 'Layout is resolved and the new module plus tests need a large write',
+            }
+          : mode === 'small-auto'
+            ? {
+                steps: ['Change the one config label'],
+                complexity: 'trivial',
+                evidence_budget: 0,
+                large_mutation: false,
+                reason: 'One bounded line replacement',
+              }
+            : {
+                steps: ['Implement example.py'],
+                complexity: 'nontrivial',
+                evidence_budget: 2,
+                large_mutation: false,
+                reason: 'Needs source evidence',
+              };
         const schemaError = 'Structured output validation failed: value: must have required properties value; steps: schema is false; root: must not have additional properties';
         let reply;
         if (mode === 'envelope-retry') {
@@ -120,8 +307,13 @@ function runtimeScenario(mode) {
         else if (mode === 'overlong') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' } } };
         else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
         else if (mode === 'invalid-complexity') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, complexity: 'medium' } } };
-        else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', evidence_budget: 1 } } };
-        else if (mode === 'success' || mode === 'retry-success' && attempts === 2) reply = { status: 'completed', result: { kind: 'structured', value: good } };
+        else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', evidence_budget: 1, large_mutation: false } } };
+        else if (mode === 'missing-large-mutation') {
+          const { large_mutation, ...withoutLargeMutation } = good;
+          reply = { status: 'completed', result: { kind: 'structured', value: withoutLargeMutation } };
+        }
+        else if (mode === 'invalid-large-mutation') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, large_mutation: 'true' } } };
+        else if (mode === 'success' || mode === 'layout-aware' || mode === 'non-additive-target' || mode === 'small-auto' || mode === 'retry-success' && attempts === 2) reply = { status: 'completed', result: { kind: 'structured', value: good } };
         else reply = { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' };
         if (attempts === 1) {
           const { steps, additionalProperties, required } = request.result.schema;
@@ -129,7 +321,10 @@ function runtimeScenario(mode) {
           assert.equal(request.result.schema.properties.steps.items.maxLength, undefined);
           assert.equal(additionalProperties, true);
           assert.deepEqual(required, ['steps', 'complexity', 'evidence_budget', 'reason']);
+          assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
           assert.match(request.task, /"value"/);
+          assert.match(request.task, /large_mutation/);
+          assert.match(request.task, /new module plus its test implementation/);
           assert.match(request.task, /240 characters/);
         }
         bus.emit('prompt-template:subagent:response', {
@@ -157,6 +352,12 @@ function runtimeScenario(mode) {
         assert.equal(tools.has('prepare_implementation'), false);
         await call('submit_result');
         assert.equal(attempts, 0);
+      } else if (mode === 'invalid-context') {
+        const prepared = await call('prepare_implementation');
+        assert.equal(attempts, 0);
+        assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
+        assert.match(prepared.details.reason, /JSON|Unexpected end/);
+        assert.ok(active.includes('write'));
       } else if (mode === 'abort') {
         await assert.rejects(call('prepare_implementation'), /aborted/);
         assert.equal(attempts, 1);
@@ -164,17 +365,37 @@ function runtimeScenario(mode) {
         assert.equal(blocked.block, true);
       } else {
         const prepared = await call('prepare_implementation');
-        const oneAttempt = ['success', 'timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
+        const oneAttempt = ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'invalid-large-mutation', 'timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
         assert.equal(attempts, oneAttempt ? 1 : 2);
         const repeated = await handlers.get('tool_call')({ toolName: 'prepare_implementation', input: {} }, ctx);
         assert.match(repeated.reason, /single-shot/);
-        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'bad-output-schema', 'invalid-complexity', 'missing-reason'].includes(mode)) {
+        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'bad-output-schema', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)) {
           assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
           assert.equal(prepared.details.complexity, null);
+          assert.equal(prepared.details.evidenceBudget, fallbackEvidenceBudget);
           assert.equal('plan' in prepared.details, false);
-          assert.match(prepared.content[0].text, /Do not call prepare_implementation again/);
+          assert.match(prepared.content[0].text, /Do not repeat preparation/);
+          assert.ok(prepared.content[0].text.includes('canonical source/test layout is not already clear'));
+          assert.ok(prepared.content[0].text.includes('guidance, not a mutation gate'));
+          assert.ok(prepared.content[0].text.includes('up to ' + fallbackEvidenceBudget + ' repository evidence attempts'));
+          assert.ok(prepared.content[0].text.includes('every accepted non-control evidence action consumes one attempt'));
+          assert.ok(prepared.content[0].text.includes('even if it fails or returns no useful result'));
+          assert.ok(prepared.content[0].text.includes('coding-session action becomes valid only after the evidence window is closed'));
+          assert.ok(prepared.content[0].text.includes('Focused verification becomes available only after a successful mutation'));
+          assert.match(prepared.content[0].text, /CURRENTLY EXPOSED TOOLS \\(authoritative\\):/);
           assert.ok(!caps.includes(16384), 'fallback alone must not grant large response');
+          assert.ok(active.includes('read'));
           assert.ok(active.includes('request_large_mutation_budget'));
+          const earlyBudget = await handlers.get('tool_call')({
+            toolName: 'request_large_mutation_budget',
+            input: { reason: 'too early' },
+          }, ctx);
+          assert.equal(earlyBudget.block, true);
+          assert.match(earlyBudget.reason, /finish gathering evidence first/);
+          for (let i = 0; i < fallbackEvidenceBudget; i++) {
+            await call('read', { path: 'evidence-' + i });
+            assert.equal(active.includes('read'), i < fallbackEvidenceBudget - 1);
+          }
           if (mode === 'prose') {
             for (let i = 0; i < 2; i++) {
               handlers.get('turn_start')({ turnIndex: turn });
@@ -199,11 +420,59 @@ function runtimeScenario(mode) {
             assert.ok(messages.every(text => !text.includes('CLASSIFICATION REQUIRED')));
           }
         } else {
-          assert.deepEqual(prepared.details.plan, mode === 'overlong'
-            ? ['x'.repeat(240), 'short step'] : ['Implement example.py']);
-          assert.equal(prepared.details.complexity, 'nontrivial');
-          assert.equal(prepared.details.evidenceBudget, 2);
-          assert.ok(active.includes('read'));
+          if (mode === 'layout-aware') {
+            assert.deepEqual(prepared.details.plan, ['Read the nearest smoke convention once, then add the module and focused tests']);
+            assert.equal(prepared.details.evidenceBudget, 1);
+            assert.equal(prepared.details.largeMutation, true);
+            assert.deepEqual(prepared.details.layoutHint, {
+              dottedTarget: 'demo_pkg.diagnostics.smoke_widget.parse_widget',
+              sourceRoot: 'src',
+              sourceDirectory: 'src/demo_pkg/diagnostics',
+              sourceTarget: 'src/demo_pkg/diagnostics/smoke_widget.py',
+              sourceConvention: 'src/demo_pkg/diagnostics/smoke_chunks.py',
+              testDirectory: 'tests/diagnostics',
+              testConvention: 'tests/diagnostics/test_smoke_chunks.py',
+            });
+            assert.match(prepared.content[0].text, /Repository layout hint: source root src/);
+            assert.match(prepared.content[0].text, /Prefer one targeted convention read if needed/);
+            assert.match(prepared.content[0].text, /do not broad-search or re-prove the fresh-worktree provenance/);
+            assert.match(prepared.content[0].text, /Fresh worktree provenance:/);
+            assert.ok(active.includes('read'));
+            await call('read', { path: 'src/demo_pkg/diagnostics/smoke_chunks.py' });
+            assert.equal(caps.at(-1), 16384, 'new module plus tests is elevated after its evidence read');
+            assert.ok(active.includes('write'));
+            assert.ok(!active.includes('read'));
+            await call('write', { path: 'example.py', content: 'print("large")\\n' });
+            assert.equal(caps.at(-1), 2048, 'automatic grant collapses after one mutation response');
+          } else if (mode === 'small-auto') {
+            assert.deepEqual(prepared.details.plan, ['Change the one config label']);
+            assert.equal(prepared.details.evidenceBudget, 0);
+            assert.equal(prepared.details.largeMutation, false);
+            assert.equal(prepared.details.complexity, 'trivial');
+            assert.ok(!caps.includes(16384), 'small edit does not receive the elevated budget');
+            await call('safe_edit', {
+              path: 'config.py',
+              operation: 'replace',
+              start_line: 1,
+              text: 'new',
+              expected_marker: 'old',
+            });
+            assert.equal(caps.at(-1), 2048);
+          } else if (mode === 'non-additive-target') {
+            assert.equal(prepared.details.layoutHint, null);
+            assert.doesNotMatch(prepared.content[0].text, /Repository layout hint:/);
+            assert.equal(prepared.details.evidenceBudget, 2);
+            assert.equal(prepared.details.largeMutation, false);
+            assert.equal(prepared.details.complexity, 'nontrivial');
+            assert.ok(active.includes('read'));
+          } else {
+            assert.deepEqual(prepared.details.plan, mode === 'overlong'
+              ? ['x'.repeat(240), 'short step'] : ['Implement example.py']);
+            assert.equal(prepared.details.evidenceBudget, 2);
+            assert.equal(prepared.details.largeMutation, false);
+            assert.equal(prepared.details.complexity, 'nontrivial');
+            assert.ok(active.includes('read'));
+          }
         }
       }
       assert.equal(aborts, mode === 'prose' ? 1 : 0);
@@ -222,6 +491,17 @@ function runtimeScenario(mode) {
   }
 }
 
+test('layout discovery ignores dotted package members without an explicit module segment', () => {
+  const logs = runtimeScenario('non-additive-target');
+  assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
+});
+
+test('invalid issue context still enters preparation fallback', () => {
+  const logs = runtimeScenario('invalid-context');
+  assert.match(logs, /PI_PREPARATION_FALLBACK/);
+  assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
+});
+
 test('planner misses structured output twice, then runtime restores the complete execution path', () => {
   const logs = runtimeScenario('failure');
   assert.match(logs, /PI_SUBAGENT_FAILURE .*"attempt":1,"retriesExhausted":false/);
@@ -231,12 +511,35 @@ test('planner misses structured output twice, then runtime restores the complete
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-for (const mode of ['success', 'retry-success', 'abort', 'restored', 'overlong', 'extra-fields', 'envelope-retry']) {
+for (const mode of ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'retry-success', 'abort', 'restored', 'overlong', 'extra-fields', 'envelope-retry']) {
   test('runtime preserves preparation behavior: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
   });
 }
+
+test('new module plus tests automatically receives one elevated mutation response', () => {
+  const logs = runtimeScenario('layout-aware');
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"auto_armed"/);
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"auto_pending"/);
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"granted","maxTokens":16384/);
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"consumed","attemptedFinishTool":true/);
+});
+
+test('genuinely small edit stays on the normal mutation budget', () => {
+  const logs = runtimeScenario('small-auto');
+  assert.doesNotMatch(logs, /"phase":"auto_armed"/);
+  assert.doesNotMatch(logs, /"phase":"auto_pending"/);
+  assert.doesNotMatch(logs, /"phase":"granted","maxTokens":16384/);
+});
+
+test('missing large_mutation planner hint defaults safely to the normal budget', () => {
+  const logs = runtimeScenario('missing-large-mutation');
+  assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
+  assert.doesNotMatch(logs, /"phase":"auto_armed"/);
+  assert.doesNotMatch(logs, /"phase":"auto_pending"/);
+  assert.doesNotMatch(logs, /"phase":"granted","maxTokens":16384/);
+});
 
 test('fallback keeps the execution prose-only guard bounded', () => {
   assert.match(runtimeScenario('prose'), /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only/);
@@ -250,7 +553,11 @@ test('envelope/schema failure is retried once with repair guidance, then falls b
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-for (const [mode, pattern] of [['invalid-complexity', /invalid complexity/], ['missing-reason', /unexpected structured fields/]]) {
+for (const [mode, pattern] of [
+  ['invalid-complexity', /invalid complexity/],
+  ['invalid-large-mutation', /invalid large_mutation/],
+  ['missing-reason', /unexpected structured fields/],
+]) {
   test('normalization fails closed without inventing fields: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.match(logs, /PI_PREPARATION_FALLBACK .*/);

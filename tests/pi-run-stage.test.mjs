@@ -56,6 +56,7 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
   });
   assert.equal(spec.environment.PI_STAGE, 'dispatcher');
   assert.equal(spec.environment.PI_PHASE, 'dispatcher');
+  assert.equal(spec.environment.PI_VALIDATION_RUN_ID, '123-2');
   assert.equal(spec.environment.PI_ISSUE, '42');
   assert.equal(spec.environment.PI_BASH_TIMEOUT_SECONDS, '600');
   assert.equal(spec.artifacts.terminalResultPath, '/tmp/runner/pi-terminal-123-2');
@@ -111,6 +112,29 @@ test('automatic runs use the versioned default and invalid or missing config fai
     () => resolveModelId({ GITHUB_WORKSPACE: missingWorkspace, PI_MODEL_CHOICE: 'default' }),
     /Default Pi model config is missing/,
   );
+});
+
+test('local stage runs receive a process-unique validation run id that repair specs inherit', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-local-validation-run-'));
+  const issueContext = join(dir, 'issue.json');
+  writeFileSync(issueContext, JSON.stringify({ title: 'Local task', body: 'Exercise local validation identity.' }));
+
+  const { spec } = buildStageRunSpec({
+    stage: 'implementer',
+    cwd: '/work',
+  }, {
+    RUNNER_TEMP: '/tmp/runner',
+    GITHUB_WORKSPACE: process.cwd(),
+    PI_MODEL: 'model-x',
+    PI_VALIDATION_RUN_ID: '   ',
+    ISSUE: '42',
+    PI_ISSUE_CONTEXT: issueContext,
+  });
+
+  assert.equal(spec.environment.PI_VALIDATION_RUN_ID, `local-${process.pid}-1`);
+
+  const repair = createValidationRepairSpec(spec, new Error('pytest failed'), 1);
+  assert.equal(repair.environment.PI_VALIDATION_RUN_ID, spec.environment.PI_VALIDATION_RUN_ID);
 });
 
 test('model endpoint defaults to the shared Open Responses server on port 4001', () => {

@@ -17,10 +17,17 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
-import { mergeNewlyActiveTools } from './pi-common/session-state.mjs';
+import { activeToolGuidance, mergeNewlyActiveTools } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
-import { appendCheckRecord, normalizeScope } from './pi-common/validation-ledger.mjs';
+import {
+  appendCheckRecord,
+  latestUnresolvedRunCheckFailure,
+  normalizeScope,
+  readValidationLedger,
+  resolveValidationRunId,
+  runCheckRequestForRecord,
+} from './pi-common/validation-ledger.mjs';
 import { safeEdit } from './pi-common/safe-edit.mjs';
 import { structuralEdit } from './pi-common/structural-edit.mjs';
 import {
@@ -28,7 +35,7 @@ import {
   detectNoOpWrite,
   mutationSnapshotChanged,
 } from './pi-common/mutation-snapshot.mjs';
-import { baseRef } from './pi-common/project-config.mjs';
+import { baseRef, projectConfig } from './pi-common/project-config.mjs';
 import {
   SemanticLoopGuard,
   isSemanticMutationTool,
@@ -40,6 +47,7 @@ import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutat
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 
 // Trust boundary: the coding session's agent definition, tool allowlist and extensions come
 // from THIS module's control checkout (the trusted harness), never from the issue worktree the
@@ -54,7 +62,7 @@ const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing y
 
 The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
 
-Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules: write the code, add or update tests where the task needs them, run_check, fix what the checks report, and call submit_result when the work is complete. If one concrete fact is missing, use need_more_evidence.`;
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
 
 export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
   return {
@@ -171,6 +179,7 @@ const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
     },
     complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
     evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
+    large_mutation: { type: 'boolean' },
     reason: { type: 'string', minLength: 1, maxLength: 300 },
   },
   required: ['steps', 'complexity', 'evidence_budget', 'reason'],
@@ -187,18 +196,110 @@ function implementerIssueContext(env = process.env) {
   };
 }
 
-// Safe repairs only: keep the four canonical fields, trim strings, truncate overlong steps.
-// Missing or invalid required fields are left untouched so strict validation fails closed.
+function repoRelativePath(...parts) {
+  return path.join(...parts).split(path.sep).join('/');
+}
+
+function nearestPythonSibling(directory, preferredPrefix, excludeName = '') {
+  let entries;
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const files = entries
+    .filter(entry => entry.isFile() && entry.name.endsWith('.py') && entry.name !== '__init__.py' && entry.name !== excludeName)
+    .map(entry => entry.name);
+  if (files.length === 0) return null;
+  files.sort((left, right) => {
+    const leftPreferred = preferredPrefix && left.startsWith(preferredPrefix) ? 0 : 1;
+    const rightPreferred = preferredPrefix && right.startsWith(preferredPrefix) ? 0 : 1;
+    return leftPreferred - rightPreferred || left.localeCompare(right);
+  });
+  return files[0];
+}
+
+// Bounded, model-free orientation for additive Python work. It recognizes a conventional src/
+// layout from a dotted target already present in the issue, then looks only at that package
+// directory and its nearest mirrored tests directory. Package names remain data from the issue
+// and worktree; the generic runtime never hard-codes product-specific paths.
+export function discoverAdditivePythonLayout(cwd, issue) {
+  const srcRoot = path.join(cwd, 'src');
+  const testsRoot = path.join(cwd, 'tests');
+  if (!fs.existsSync(srcRoot) || !fs.statSync(srcRoot).isDirectory() ||
+      !fs.existsSync(testsRoot) || !fs.statSync(testsRoot).isDirectory()) return null;
+
+  const issueText = `${String(issue?.title ?? '')}\n${String(issue?.body ?? '')}`;
+  const dottedTargets = [...issueText.matchAll(/`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,})`/g)]
+    .map(match => match[1]);
+
+  for (const dottedTarget of dottedTargets) {
+    const parts = dottedTarget.split('.');
+    let existingPackageParts = 0;
+    for (let length = 1; length < parts.length; length += 1) {
+      const candidate = path.join(srcRoot, ...parts.slice(0, length));
+      if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) break;
+      existingPackageParts = length;
+    }
+    // A safe additive hint needs an explicit new module *and* a symbol inside it. If only one
+    // dotted segment remains after the existing package, it could just as well be an existing
+    // function/class exported from that package, so leave discovery to normal evidence tools.
+    if (existingPackageParts === 0 || parts.length - existingPackageParts < 2) continue;
+
+    const moduleName = parts[existingPackageParts];
+    if (!/^[a-z_]\w*$/.test(moduleName)) continue;
+    const sourceDirectoryParts = parts.slice(0, existingPackageParts);
+    const sourceDirectory = path.join(srcRoot, ...sourceDirectoryParts);
+    const sourceTargetAbsolute = path.join(sourceDirectory, `${moduleName}.py`);
+    if (fs.existsSync(sourceTargetAbsolute)) continue;
+
+    const mirroredTestParts = sourceDirectoryParts.slice(1);
+    const testCandidates = [
+      path.join(testsRoot, ...mirroredTestParts),
+      path.join(testsRoot, ...sourceDirectoryParts),
+      testsRoot,
+    ];
+    const testDirectory = testCandidates.find(candidate =>
+      fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()
+    );
+    if (!testDirectory) continue;
+
+    const sharedPrefix = moduleName.includes('_') ? `${moduleName.split('_')[0]}_` : '';
+    const sourceSibling = nearestPythonSibling(sourceDirectory, sharedPrefix, `${moduleName}.py`);
+    const testPrefix = `test_${sharedPrefix}`;
+    const testSibling = nearestPythonSibling(testDirectory, testPrefix, `test_${moduleName}.py`);
+
+    return {
+      dottedTarget,
+      sourceRoot: 'src',
+      sourceDirectory: repoRelativePath(path.relative(cwd, sourceDirectory)),
+      sourceTarget: repoRelativePath(path.relative(cwd, sourceTargetAbsolute)),
+      sourceConvention: sourceSibling
+        ? repoRelativePath(path.relative(cwd, path.join(sourceDirectory, sourceSibling)))
+        : null,
+      testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
+      testConvention: testSibling
+        ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
+        : null,
+    };
+  }
+  return null;
+}
+
+// Safe repairs only: keep the five canonical fields, trim strings, truncate overlong steps.
+// large_mutation is an optional planner hint: omission safely defaults to false, while an
+// explicitly present non-boolean value is preserved so strict validation rejects it.
 function normalizeImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const trim = item => typeof item === 'string' ? item.trim() : item;
   const normalized = {};
-  for (const key of ['steps', 'complexity', 'evidence_budget', 'reason']) {
+  for (const key of ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
     if (!(key in value)) continue;
     normalized[key] = key === 'steps' && Array.isArray(value.steps)
       ? value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step)
       : trim(value[key]);
   }
+  if (!('large_mutation' in normalized)) normalized.large_mutation = false;
   return normalized;
 }
 
@@ -207,7 +308,7 @@ function validateImplementationPreparation(value) {
     throw new Error('Implementation planner returned a non-object structured result');
   }
   const keys = Object.keys(value);
-  const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'reason'];
+  const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason'];
   if (keys.length !== requiredKeys.length || !requiredKeys.every(key => keys.includes(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
@@ -225,16 +326,22 @@ function validateImplementationPreparation(value) {
   if (!Number.isSafeInteger(evidenceBudget) || evidenceBudget < 0 || evidenceBudget > MAX_PLANNER_EVIDENCE_BUDGET) {
     throw new Error(`Implementation planner returned invalid evidence_budget: ${String(value.evidence_budget)}`);
   }
+  if (typeof value.large_mutation !== 'boolean') {
+    throw new Error(`Implementation planner returned invalid large_mutation: ${String(value.large_mutation)}`);
+  }
   const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
   if (!reason || reason.length > 300) throw new Error('Implementation planner returned an invalid reason');
-  return { steps, complexity: value.complexity, evidenceBudget, reason };
+  return { steps, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
 }
 
-function plannerTask(env = process.env, { repair = false } = {}) {
+function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
   const issue = implementerIssueContext(env);
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, and separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}): how many repository evidence-gathering actions (reads/searches) the Implementer will likely need before it can safely mutate. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.
+  const layoutGuidance = layoutHint
+    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
+    : '';
+  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
 
-Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the four listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "reason": "..." } } and nothing else.` : ''}
+Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "large_mutation": true|false, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the five listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } } and nothing else.` : ''}
 
 Issue title:
 ${issue.title}
@@ -327,11 +434,11 @@ async function runStructuredSubagent(pi, ctx, {
 // inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
 const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
 
-async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
+async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null) {
   const request = {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
-    task: plannerTask(),
+    task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
@@ -349,7 +456,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
       const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
       const retryable = missing || schemaFailure;
       const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
-      if (schemaFailure) request.task = plannerTask(process.env, { repair: true });
+      if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
       console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
         agent: config.implementationPlannerAgent,
         reason,
@@ -368,6 +475,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
   return {
     ...validateImplementationPreparation(normalizeImplementationPreparation(response.result.value)),
     usage: response.usage ?? null,
+    layoutHint,
   };
 }
 
@@ -443,9 +551,54 @@ export default function (pi) {
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
+  let unavailableToolAttempts = 0;
+  // True only when this runtime itself removed the verification tool from the model
+  // surface (permit exhaustion or exact-retry substitution). A later valid
+  // permit may restore it only in that case; unrelated removals stay removed.
+  let verificationToolHiddenByPermitGate = false;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
+
+  function validationRunId() {
+    return resolveValidationRunId(process.env);
+  }
+
+  function validationAttemptId() {
+    if (process.env.PI_VALIDATION_REPAIR === 'true') {
+      return `validation-repair:${process.env.PI_VALIDATION_REPAIR_ATTEMPT ?? '1'}`;
+    }
+    return 'primary';
+  }
+
+  function failedCheckRecoveryState() {
+    if (stage !== 'implementer') return { failure: null, request: null, corrupted: false };
+    const { records, corrupted } = readValidationLedger(process.env.PI_VALIDATION_LEDGER_FILE);
+    if (corrupted) return { failure: null, request: null, corrupted: true };
+
+    const failure = latestUnresolvedRunCheckFailure(records, {
+      runId: validationRunId(),
+      stage,
+    });
+    if (!failure) return { failure: null, request: null, corrupted: false };
+
+    try {
+      return {
+        failure,
+        request: runCheckRequestForRecord(failure),
+        corrupted: false,
+      };
+    } catch {
+      // Malformed/legacy ledger history must never hide ordinary run_check or
+      // create a retry tool that cannot execute. Final verification still
+      // sees the original record and remains fail-closed.
+      return { failure: null, request: null, corrupted: false };
+    }
+  }
+
+  function controllerToolName(toolName) {
+    return toolName === RETRY_FAILED_CHECK_TOOL ? 'run_check' : toolName;
+  }
 
   function syncProductiveState() {
     const state = controller.productiveProgressState();
@@ -471,20 +624,87 @@ export default function (pi) {
       stage === 'implementer' &&
       config.productiveProgress &&
       productiveState === 'action_required';
+    // Exact retry is an action-phase substitution for run_check. Outside
+    // action_required we do not impose the recovery gate; after the relevant
+    // mutation the controller always returns to action_required and the exact
+    // retry becomes the verification action for that permit.
+    const recoveryState = failedCheckRecoveryState();
+    const failedCheckRecovery = productiveActionRequired ? recoveryState.failure : null;
+    const recoveryLedgerCorrupted = recoveryState.corrupted;
+    const recoveryRetryReady = Boolean(
+      productiveActionRequired &&
+      failedCheckRecovery &&
+      !recoveryLedgerCorrupted &&
+      controller.verificationPermitted()
+    );
 
     const largeMutationBudgetActive = stage === 'implementer' && controller.largeMutationBudgetActive();
     // Completed one-shot control tools disappear. Enabled tools such as `subagent` are shown only
     // where the controller gate lets them execute (evidence_allowed), never in action_required.
     const satisfied = controller.transitions.satisfiedToolNames();
     const current = pi.getActiveTools();
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    // Ledger corruption affects the final verification verdict, not whether
+    // the implementer may gather new local evidence. Keep ordinary run_check
+    // usable; only exact retry is disabled because its historical scope cannot
+    // be reconstructed safely from an incomplete ledger.
+    const verificationPermitted = controller.verificationPermitted();
+    const currentWithPermittedVerification =
+      verificationTool &&
+      verificationPermitted &&
+      verificationToolHiddenByPermitGate &&
+      !current.includes(verificationTool)
+        ? [...current, verificationTool]
+        : current;
+    // Exact retry substitutes for an existing verification capability; it must
+    // never resurrect verification after another owner deliberately removed
+    // run_check. Runtime-owned hiding is tracked explicitly and may restore it.
+    const verificationCapabilityOwned = Boolean(
+      verificationTool &&
+      (current.includes(verificationTool) || verificationToolHiddenByPermitGate)
+    );
+    const currentWithRecoveryRetry =
+      recoveryRetryReady &&
+      verificationCapabilityOwned &&
+      !currentWithPermittedVerification.includes(RETRY_FAILED_CHECK_TOOL)
+        ? [...currentWithPermittedVerification, RETRY_FAILED_CHECK_TOOL]
+        : currentWithPermittedVerification;
+
     // Tools added by a control transition appear in the live list but not in the saved baseline.
     if (unrestrictedActiveTools != null) {
-      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, current);
+      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, currentWithRecoveryRetry);
+      // If some other runtime/control transition removed run_check while we were not hiding it,
+      // honor that removal instead of resurrecting it from the saved unrestricted baseline.
+      if (
+        verificationTool &&
+        !current.includes(verificationTool) &&
+        !verificationToolHiddenByPermitGate
+      ) {
+        unrestrictedActiveTools = unrestrictedActiveTools.filter(name => name !== verificationTool);
+      }
     }
-    const visible = names => names.filter(name => !satisfied.has(name));
+    const visible = names => names.filter(name =>
+      !satisfied.has(name) &&
+      (!verificationTool || name !== verificationTool || (verificationPermitted && !recoveryRetryReady)) &&
+      (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
+    );
+    const applySurface = (names, reason) => {
+      if (verificationTool) {
+        if (
+          current.includes(verificationTool) &&
+          !names.includes(verificationTool) &&
+          (!verificationPermitted || recoveryRetryReady)
+        ) {
+          verificationToolHiddenByPermitGate = true;
+        } else if (verificationPermitted && !recoveryRetryReady && names.includes(verificationTool)) {
+          verificationToolHiddenByPermitGate = false;
+        }
+      }
+      setSurface(names, reason);
+    };
 
     if (preComplexityRequired || productiveActionRequired) {
-      if (unrestrictedActiveTools == null) unrestrictedActiveTools = current;
+      if (unrestrictedActiveTools == null) unrestrictedActiveTools = currentWithRecoveryRetry;
       const restricted = preComplexityRequired
         ? unrestrictedActiveTools.filter(name =>
             new Set([
@@ -501,21 +721,25 @@ export default function (pi) {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
             blockerTool: config.productiveProgress.blockerTool,
-            verificationTools: controller.verificationPermitted()
-              ? [config.productiveProgress.verificationTool].filter(Boolean)
-              : [],
+            verificationTools: recoveryRetryReady
+              ? [RETRY_FAILED_CHECK_TOOL]
+              : verificationPermitted
+                ? [config.productiveProgress.verificationTool].filter(Boolean)
+                : [],
           });
-      setSurface(visible(restricted), 'restricted');
+      applySurface(visible(restricted), 'restricted');
       return;
     }
 
     if (unrestrictedActiveTools != null) {
-      setSurface(visible(unrestrictedActiveTools), 'restored');
+      applySurface(visible(unrestrictedActiveTools), 'restored');
       unrestrictedActiveTools = null;
       return;
     }
-    const remaining = visible(current);
-    if (remaining.length !== current.length) setSurface(remaining, 'transition_complete');
+    const remaining = visible(currentWithRecoveryRetry);
+    // Preserve tool ordering as part of the model-visible surface; only update when the ordered
+    // list actually changes, not merely when the list length changes.
+    if (remaining.join('\0') !== current.join('\0')) applySurface(remaining, 'transition_complete');
   }
 
   // Materialize a newly completed one-shot transition into durable runtime state, the active
@@ -523,10 +747,16 @@ export default function (pi) {
   async function announceTransition(record, productiveState) {
     console.log(`PI_STATE_TRANSITION_COMPLETE ${JSON.stringify({ stage, ...record })}`);
     syncActionToolSurface(productiveState);
-    const block = controller.transitions.stateBlock();
-    console.log(`PI_SESSION_STATE ${JSON.stringify({ stage, completed: [...controller.transitions.completed.keys()], block })}`);
+    const activeToolNames = pi.getActiveTools();
+    const verification = {
+      verificationTool: config.productiveProgress?.verificationTool ?? null,
+      verificationState: controller.verificationLifecycleState(),
+      activeToolNames,
+    };
+    const block = controller.transitions.stateBlock(verification);
+    console.log(`PI_SESSION_STATE ${JSON.stringify({ stage, completed: [...controller.transitions.completed.keys()], block, activeTools: activeToolNames })}`);
     await pi.sendUserMessage(
-      `${controller.transitions.transitionNotice(record)}\n\n${block}`,
+      `${controller.transitions.transitionNotice(record, verification)}\n\n${block}`,
       { deliverAs: 'steer' },
     );
   }
@@ -612,6 +842,69 @@ export default function (pi) {
       largeMutationBudgetTool: controller.largeMutationBudgetTool,
       codingSessionTool: config.productiveProgress?.codingSessionTool ?? null,
     });
+  }
+
+  function finalValidationGuidance() {
+    const checks = (projectConfig().checks?.final ?? []).map(step => step.name).filter(Boolean);
+    return checks.length
+      ? `Authoritative final checks still run automatically after submit_result and before publication: ${checks.join(' -> ')}.`
+      : 'Authoritative final validation still runs automatically after submit_result and before publication.';
+  }
+
+  function verificationLifecycleGuidance() {
+    const verificationTool = config.productiveProgress?.verificationTool;
+    if (!verificationTool) return finalValidationGuidance();
+    const state = controller.verificationLifecycleState();
+    const lifecycle = state === 'available'
+      ? `${verificationTool} is available once for the current mutation state.`
+      : state === 'exhausted'
+        ? `${verificationTool} is exhausted for the current mutation state and is unavailable now. Do not call it again unless a new successful mutation grants a new focused check.`
+        : `${verificationTool} is not yet available; it becomes available after a successful mutation.`;
+    return `${lifecycle} ${finalValidationGuidance()}`;
+  }
+
+  function taskSpecificToolGuidance(activeToolNames, {
+    ceilingHit = false,
+    preComplexityRequired = false,
+    postComplexityRequired = false,
+  } = {}) {
+    const active = new Set(activeToolNames);
+    const hints = [];
+
+    if (preComplexityRequired && active.has('declare_task_complexity')) {
+      hints.push('Call declare_task_complexity immediately with the classification already supported by the current evidence.');
+    }
+
+    if (stage === 'reviewer' && postComplexityRequired) {
+      if (active.has('submit_result')) {
+        hints.push('If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED.');
+      }
+      const reviewerEvidenceTools = activeToolNames.filter(name =>
+        !['submit_result', 'declare_task_complexity', 'set_response_budget'].includes(name)
+      );
+      if (reviewerEvidenceTools.length > 0) {
+        hints.push('Otherwise use exactly one currently exposed evidence tool for the unresolved review question, then decide.');
+      }
+    }
+
+    if (stage === 'implementer') {
+      const codingSessionTool = config.productiveProgress?.codingSessionTool;
+      if (ceilingHit && codingSessionTool && active.has(codingSessionTool)) {
+        hints.push(`If the implementation is large, call ${codingSessionTool} now; it keeps the current context and provides the large coding ceiling instead of drafting code here.`);
+      }
+      if (active.has('submit_result')) {
+        hints.push('If explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now.');
+      }
+      const blockerTool = config.productiveProgress?.blockerTool;
+      if (blockerTool && active.has(blockerTool)) {
+        hints.push(`Call ${blockerTool} only when exactly one concrete missing fact prevents the next safe action.`);
+      }
+      if (active.has(RETRY_FAILED_CHECK_TOOL)) {
+        hints.push(`Use ${RETRY_FAILED_CHECK_TOOL} to rerun the exact unresolved failed verification scope after fixing it.`);
+      }
+    }
+
+    return hints.join(' ');
   }
 
   syncProductiveState();
@@ -714,9 +1007,12 @@ export default function (pi) {
       description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result, or PREPARATION_FALLBACK if planner infrastructure fails; do not write a competing plan in the main agent.',
       parameters: Type.Object({}),
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+        let layoutHint = null;
         let prepared;
         try {
-          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal);
+          const issue = implementerIssueContext();
+          layoutHint = discoverAdditivePythonLayout(ctx.cwd, issue);
+          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint);
         } catch (error) {
           // Cancellation is not a recovery request: never unlock execution on abort.
           if (signal?.aborted) throw error;
@@ -731,33 +1027,52 @@ export default function (pi) {
             reason,
           })}`);
           syncActionToolSurface(syncProductiveState());
+          const fallbackActiveToolNames = pi.getActiveTools();
           return {
             content: [{ type: 'text', text:
               `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
-              'Your preparation obligation is satisfied. No planner output or complexity was recorded. ' +
-              'Do not call prepare_implementation again. Continue implementing from the issue and loaded contract. ' +
-              'Normal mutation, begin_coding_session for the coding phase, run_check after mutation, and submit_result rules apply. ' +
-              'If one concrete fact is missing, use need_more_evidence to unlock a read/search before acting.\n' +
-              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.`,
+              'Your preparation obligation is satisfied. No planner output or complexity was recorded. Do not repeat preparation. ' +
+              'If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. ' +
+              `You may use up to ${fallback.evidenceBudget} repository evidence attempts; every accepted non-control evidence action consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. ` +
+              'Direct mutation remains allowed during the window and closes it on success. The coding-session action becomes valid only after the evidence window is closed. ' +
+              'Focused verification becomes available only after a successful mutation. Final submission rules are unchanged. ' +
+              'After the fallback window closes, use only the blocker action exposed by the runtime when one concrete implementation fact is still missing.\n' +
+              `${activeToolGuidance(fallbackActiveToolNames)}\n` +
+              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.` +
+              (layoutHint
+                ? `\nRepository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}. This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.`
+                : ''),
             }],
             details: { ...fallback, failureClass: 'preparation_infrastructure_failure', reason,
-              lspWorkspaceRoot: ctx.cwd, freshBaseCommit },
+              lspWorkspaceRoot: ctx.cwd, freshBaseCommit, layoutHint },
           };
         }
         const result = controller.setComplexity(prepared.complexity);
         controller.setEvidenceBudget(prepared.evidenceBudget);
+        const automaticLargeMutationArmed =
+          controller.armAutomaticLargeMutationBudget(prepared.largeMutation);
         console.log(`PI_PLAN ${JSON.stringify({
           stage,
           steps: prepared.steps,
           complexity: prepared.complexity,
           evidenceBudget: prepared.evidenceBudget,
+          largeMutation: prepared.largeMutation,
+          largeMutationArmed: automaticLargeMutationArmed,
           reason: prepared.reason,
           usage: prepared.usage,
         })}`);
+        if (automaticLargeMutationArmed) {
+          console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+            stage,
+            phase: 'auto_armed',
+            source: 'implementation-planner',
+          })}`);
+        }
         console.log(`PI_COMPLEXITY ${JSON.stringify({
           stage,
           complexity: prepared.complexity,
           evidenceBudget: prepared.evidenceBudget,
+          largeMutation: prepared.largeMutation,
           reason: prepared.reason,
           usage: prepared.usage,
           source: 'implementation-planner',
@@ -767,22 +1082,28 @@ export default function (pi) {
           ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful structural_edit/safe_edit/edit/write, direct reads of this worktree are authoritative latest-base evidence; do not use extra Git/evidence calls to re-prove that provenance.`
           : '';
         const lspWorkspace = stage === 'implementer' && !resumedImplementer
-          ? `\n\nLSP workspace root: ${ctx.cwd}. For a cold name-only lookup with an explicit language, call lsp_start_server once with the matching server_id and this exact absolute workspace_root before lsp_find_symbol; lsp_start_server is a control action and does not consume evidence budget.`
+          ? `\n\nLSP workspace root: ${ctx.cwd}. Use only inspection/control tools currently exposed by the runtime; runtime steering is authoritative for valid tool names.`
+          : '';
+        const layoutGuidance = prepared.layoutHint
+          ? `\n\nRepository layout hint: source root ${prepared.layoutHint.sourceRoot}; new module target ${prepared.layoutHint.sourceTarget}; source directory ${prepared.layoutHint.sourceDirectory}${prepared.layoutHint.sourceConvention ? `; nearest source convention ${prepared.layoutHint.sourceConvention}` : ''}; tests ${prepared.layoutHint.testDirectory}${prepared.layoutHint.testConvention ? `; nearest test convention ${prepared.layoutHint.testConvention}` : ''}. This bounded current-worktree lookup is authoritative layout evidence. Prefer one targeted convention read if needed; do not broad-search or re-prove the fresh-worktree provenance.`
           : '';
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nLarge mutation: ${automaticLargeMutationArmed ? 'auto-arm one-shot elevated mutation budget when evidence is complete' : 'normal mutation budget'}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
           }],
           details: {
             ...result,
             plan: prepared.steps,
             evidenceBudget: prepared.evidenceBudget,
+            largeMutation: prepared.largeMutation,
+            largeMutationArmed: automaticLargeMutationArmed,
             plannerUsage: prepared.usage,
             reason: prepared.reason,
             freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
             freshWorktreeIsLatestDev: stage === 'implementer' && !resumedImplementer,
             lspWorkspaceRoot: stage === 'implementer' && !resumedImplementer ? ctx.cwd : null,
+            layoutHint: prepared.layoutHint,
           },
         };
       },
@@ -892,10 +1213,63 @@ export default function (pi) {
       },
     });
 
+    async function executeAuthoritativeRunCheck(params, ctx, { retry = false } = {}) {
+      const result = await runCheck(ctx.cwd, params);
+      const scope = normalizeScope(params, ctx.cwd);
+      console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
+      const appendedRecord = appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+        kind: result.kind,
+        scope,
+        status: result.status,
+        exit_code: result.exit_code,
+        source: 'run_check',
+        stage,
+        backend: 'pi',
+        run_id: validationRunId(),
+        attempt_id: validationAttemptId(),
+        diagnostics_count: result.diagnostics.length,
+        summary: result.summary,
+        infrastructure: result.infrastructure ?? null,
+      });
+      if (retry) {
+        console.info(`PI_RUN_CHECK_RETRY ${JSON.stringify({ stage, kind: result.kind, scope, status: result.status })}`);
+      }
+      // Re-read recovery state after appending the result. Emit retry guidance
+      // only when this exact failed record became the active deterministic
+      // recovery obligation and its scope can actually be reconstructed.
+      const recoveryAfterAppend = failedCheckRecoveryState();
+      const exactRetryAvailable = Boolean(
+        result.status === 'fail' &&
+        stage === 'implementer' &&
+        config.productiveProgress?.verificationTool === 'run_check' &&
+        recoveryAfterAppend.request &&
+        recoveryAfterAppend.failure?.seq === appendedRecord.seq &&
+        recoveryAfterAppend.failure?.run_id === appendedRecord.run_id &&
+        recoveryAfterAppend.failure?.stage === appendedRecord.stage &&
+        (
+          pi.getActiveTools().includes('run_check') ||
+          verificationToolHiddenByPermitGate
+        )
+      );
+      const response = exactRetryAvailable
+        ? {
+            ...result,
+            recovery: {
+              required: true,
+              tool: RETRY_FAILED_CHECK_TOOL,
+              kind: result.kind,
+              scope,
+              instruction: 'Fix the reported failure with a relevant mutation, then call retry_last_failed_check. Broader or different run_check scopes do not resolve this failure.',
+            },
+          }
+        : result;
+      return { result, response };
+    }
+
     pi.registerTool({
       name: 'run_check',
       label: 'Run focused check',
-      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation. Passing does not replace final validation; still call submit_result.',
+      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check creates an exact kind+scope recovery requirement: fix the diagnostic with a mutation, then use retry_last_failed_check; broader or different scopes cannot resolve it. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation; the permit is consumed when the call is accepted regardless of the check outcome. Passing does not replace final validation; still call submit_result.',
       parameters: Type.Object({
         kind: Type.Union(CHECK_KINDS.map(kind => Type.Literal(kind))),
         paths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),
@@ -903,22 +1277,30 @@ export default function (pi) {
         profile: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
       }),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        const result = await runCheck(ctx.cwd, params);
-        console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
-        appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
-          kind: result.kind,
-          scope: normalizeScope(params, ctx.cwd),
-          status: result.status,
-          exit_code: result.exit_code,
-          source: 'run_check',
-          stage,
-          backend: 'pi',
-          run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
-          diagnostics_count: result.diagnostics.length,
-          summary: result.summary,
-          infrastructure: result.infrastructure ?? null,
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        const { result, response } = await executeAuthoritativeRunCheck(params, ctx);
+        return { content: [{ type: 'text', text: JSON.stringify(response) }], details: result };
+      },
+    });
+
+    pi.registerTool({
+      name: RETRY_FAILED_CHECK_TOOL,
+      label: 'Retry failed check',
+      description: 'Deterministically rerun the exact kind+scope of the unresolved authoritative run_check failure recorded in the validation ledger. It takes no scope arguments and is exposed only after a successful mutation grants a verification permit. Use it instead of choosing a broader or different run_check scope.',
+      parameters: Type.Object({}),
+      async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+        const recoveryState = failedCheckRecoveryState();
+        if (recoveryState.corrupted) {
+          const result = { status: 'invalid', summary: 'The validation ledger is corrupted; exact failed-scope recovery cannot be reconstructed safely.' };
+          return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        }
+        const failed = recoveryState.failure;
+        if (!failed) {
+          const result = { status: 'invalid', summary: 'No unresolved failed run_check scope is available to retry.' };
+          return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        }
+        const params = runCheckRequestForRecord(failed);
+        const { result, response } = await executeAuthoritativeRunCheck(params, ctx, { retry: true });
+        return { content: [{ type: 'text', text: JSON.stringify(response) }], details: result };
       },
     });
 
@@ -978,7 +1360,7 @@ export default function (pi) {
       pi.registerTool({
         name: codingSessionTool,
         label: 'Begin coding session',
-        description: `Call once exploration is done and you know what to implement, in particular when the code will not fit your normal ${sessionConfig.actionResponseMaxTokens}-token response. The runtime continues THIS session (same conversation, evidence and decisions) as a coding session with a ${sessionConfig.codingSessionMaxTokens}-token response ceiling and your normal coding tools (write/edit/safe_edit/structural_edit, rollback, run_check, repo_search, need_more_evidence, submit_result) under the same runtime rules. Write the code and tests there, run checks, fix, and submit_result. Call it as soon as you are ready; do NOT draft the code here first. Small changes can stay direct.`,
+        description: `Call once exploration is done and you know what to implement, in particular when the code will not fit your normal ${sessionConfig.actionResponseMaxTokens}-token response. The runtime continues THIS session (same conversation, evidence and decisions) as a coding session with a ${sessionConfig.codingSessionMaxTokens}-token response ceiling under the same runtime rules. Inside the fork, use only the tool surface exposed there. Call it as soon as you are ready; do NOT draft the code here first. Small changes can stay direct.`,
         parameters: Type.Object({
           reason: Type.Optional(Type.String({ maxLength: 300, description: 'Optional one-line note for logs' })),
         }),
@@ -1022,7 +1404,7 @@ export default function (pi) {
             response = await runStructuredSubagent(pi, ctx, {
               agent: sessionConfig.codingSessionAgent,
               nodeId: `coding-session-${toolCallId}`,
-              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code (and tests where the task needs them), run_check, fix what fails, and call submit_result when the work is complete. Write code directly in tool arguments.',
+              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code and tests where needed using only tools currently exposed by the fork runtime. Verify when verification is exposed, fix failures, and finish through the exposed terminal action. Write code directly in tool arguments.',
               timeoutMs: Number(sessionConfig.codingSessionTimeoutMs ?? 5400000),
               maxTokens: sessionConfig.codingSessionMaxTokens,
               // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
@@ -1056,7 +1438,15 @@ export default function (pi) {
             };
           }
           const remaining = maxSessions - sessionsStarted;
-          const message = `Coding session ended without submit_result${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${remaining > 0 ? `You may call ${codingSessionTool} once more (${remaining} left), ` : ''}finish with direct edits/run_check, or submit_result.`;
+          const activeToolNames = pi.getActiveTools();
+          const terminalStatus = activeToolNames.includes('submit_result')
+            ? 'Coding session ended without submit_result'
+            : 'Coding session ended without a terminal result';
+          const continuation =
+            remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
+              ? `You may call ${codingSessionTool} once more (${remaining} left). `
+              : '';
+          const message = `${terminalStatus}${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
           if (sessionError) throw new Error(message);
           return { content: [{ type: 'text', text: message }], details: { ...base, submitted: false } };
         },
@@ -1156,13 +1546,116 @@ export default function (pi) {
       codingSessionLog('first_tool_call', { side: 'fork', sessionId: codingSession.sessionId, tool: event.toolName, msSinceReady: codingReadyAt ? Date.now() - codingReadyAt : null });
     }
     const productiveState = controller.productiveProgressState();
-    const blocked = controller.checkToolCall(event.toolName, event.input);
-    // Any provider-emitted tool call satisfies the transport-level forcing requirement, even if
-    // the controller later classifies it as already completed. Progress accounting remains stricter:
-    // an already-satisfied transition still does not reset prose/ceiling watchdogs.
-    if (requireToolOnNextProviderRequest) {
-      requireToolOnNextProviderRequest = false;
-      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({ stage, tool: event.toolName, alreadySatisfied: blocked?.alreadySatisfied === true })}`);
+    const activeToolNames = pi.getActiveTools();
+    const transitionKey = controller.transitions.keyFor(event.toolName, event.input);
+    const alreadySatisfiedTransition = controller.transitions.has(transitionKey);
+
+    // Provider forcing is transport-level: any emitted tool call proves tool_choice=required
+    // was satisfied. Local policy may still reject that call as hidden/already-satisfied, but
+    // forcing must not remain stuck across the next provider request.
+    const satisfiedProviderForcing = requireToolOnNextProviderRequest;
+    if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
+
+    // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
+    // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
+    // run_check for controller policy after visibility has been checked.
+    // retry_last_failed_check is a runtime-owned recovery pseudo-tool. Even while hidden,
+    // it must reach the recovery policy below so callers get the deterministic recovery-state
+    // reason (corrupt ledger / no pending failure / not available in this action state) rather
+    // than being misclassified as an ordinary unavailable-tool attempt.
+    const recoveryPolicyTool = event.toolName === RETRY_FAILED_CHECK_TOOL;
+    const enforceActiveSurface =
+      lastSurfaceSignature !== null &&
+      !alreadySatisfiedTransition &&
+      !recoveryPolicyTool &&
+      !activeToolNames.includes(event.toolName);
+    if (enforceActiveSurface) {
+      unavailableToolAttempts += 1;
+      const unavailable = {
+        block: true,
+        reason: `BLOCKED: that tool is not currently exposed by the runtime. ${activeToolGuidance(activeToolNames)}`,
+      };
+      console.warn(`PI_UNAVAILABLE_TOOL_ATTEMPT ${JSON.stringify({
+        stage,
+        count: unavailableToolAttempts,
+        productiveState,
+        attemptedTool: event.toolName,
+        activeTools: activeToolNames,
+      })}`);
+      if (satisfiedProviderForcing) {
+        console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({
+          stage,
+          tool: event.toolName,
+          alreadySatisfied: false,
+          unavailable: true,
+        })}`);
+      }
+      if (loopGuard) {
+        const loopResult = loopGuard.observe({
+          stage,
+          tool: event.toolName,
+          input: event.input ?? {},
+          result: unavailable,
+          blocked: true,
+          productiveState,
+        });
+        await handleLoopResult(loopResult, ctx).catch(error => {
+          console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
+        });
+      }
+      return unavailable;
+    }
+    const recoveryState = failedCheckRecoveryState();
+    const failedCheckRecovery = recoveryState.failure;
+    const recoveryRetryReady = Boolean(
+      productiveState === 'action_required' &&
+      failedCheckRecovery &&
+      !recoveryState.corrupted &&
+      controller.verificationPermitted()
+    );
+    let recoveryBlocked = null;
+    let canonicalInput = event.input ?? {};
+    if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: retry_last_failed_check cannot execute because the validation ledger is corrupted and the exact authoritative failed scope cannot be reconstructed safely.',
+      };
+    } else if (event.toolName === RETRY_FAILED_CHECK_TOOL && !failedCheckRecovery) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: retry_last_failed_check did not execute because there is no unresolved failed run_check scope.',
+      };
+    } else if (
+      event.toolName === RETRY_FAILED_CHECK_TOOL &&
+      !pi.getActiveTools().includes(RETRY_FAILED_CHECK_TOOL)
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: retry_last_failed_check is not available in the current action state. Continue with the visible tools; the exact retry is exposed only when recovery is actionable.',
+      };
+    } else if (recoveryRetryReady && event.toolName === 'run_check') {
+      recoveryBlocked = {
+        block: true,
+        reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} has an exact retry ready now; call retry_last_failed_check so the same kind+scope consumes this verification permit.`,
+      };
+    }
+
+    if (!recoveryBlocked && event.toolName === RETRY_FAILED_CHECK_TOOL && failedCheckRecovery) {
+      canonicalInput = recoveryState.request;
+    }
+
+    const canonicalToolName = controllerToolName(event.toolName);
+    const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput);
+    if (blocked?.alreadySatisfied) {
+      blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is single-shot and already completed; it did not execute. ${activeToolGuidance(activeToolNames)}`;
+    }
+    if (satisfiedProviderForcing) {
+      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({
+        stage,
+        tool: event.toolName,
+        alreadySatisfied: blocked?.alreadySatisfied === true,
+        unavailable: false,
+      })}`);
     }
     if (!blocked?.alreadySatisfied) {
       actionTurnAttemptedTool = true;
@@ -1174,8 +1667,8 @@ export default function (pi) {
       if (loopGuard) {
         const loopResult = loopGuard.observe({
           stage,
-          tool: event.toolName,
-          input: event.input ?? {},
+          tool: canonicalToolName,
+          input: canonicalInput,
           result: blocked,
           blocked: true,
           productiveState,
@@ -1251,11 +1744,12 @@ export default function (pi) {
         }));
       }
     }
-    pendingToolInputs.set(event.toolCallId, structuredClone(event.input ?? {}));
+    pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
     if (loopGuard) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
-        input: structuredClone(event.input ?? {}),
+        toolName: canonicalToolName,
+        input: structuredClone(canonicalInput),
         productiveState,
         repositoryStateBefore,
       });
@@ -1328,8 +1822,17 @@ export default function (pi) {
     }
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
-    controller.onToolExecutionEnd(event.toolName, event.isError, { madeProgress: effectiveProgress });
-    const transitionRecord = controller.recordTransitionCompleted(event.toolName, pendingToolInputs.get(event.toolCallId) ?? {}, event.isError);
+    const canonicalToolName = controllerToolName(event.toolName);
+    controller.onToolExecutionEnd(canonicalToolName, event.isError, { madeProgress: effectiveProgress });
+    const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
+    if (autoLargeMutationPending) {
+      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+        stage,
+        phase: 'auto_pending',
+        source: 'implementation-planner',
+      })}`);
+    }
+    const transitionRecord = controller.recordTransitionCompleted(canonicalToolName, pendingToolInputs.get(event.toolCallId) ?? {}, event.isError);
     pendingToolInputs.delete(event.toolCallId);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
@@ -1338,7 +1841,7 @@ export default function (pi) {
     if (loopGuard && pendingLoopCall) {
       const loopResult = loopGuard.observe({
         stage,
-        tool: event.toolName,
+        tool: pendingLoopCall.toolName ?? controllerToolName(event.toolName),
         input: pendingLoopCall.input,
         result: event.result,
         isError: event.isError,
@@ -1388,8 +1891,9 @@ export default function (pi) {
       // Rarely, Pi may also classify the 400/422 body text as retryable; in that case this
       // queued steer can be delivered in addition to Pi's own retry. The forcing flag is already
       // cleared, so the overlap is bounded and cannot create a forced-request loop.
+      const activeToolNames = pi.getActiveTools();
       await pi.sendUserMessage(
-        'RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing and call one exposed action tool immediately.',
+        `RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
         { deliverAs: 'steer' },
       );
       // Pi continues because sendUserMessage() queues a steer consumed by its post-agent-run loop;
@@ -1545,17 +2049,22 @@ export default function (pi) {
     }
 
     if (runtimeActionRequired && !controller.turnMadeProgress && !loopGuardSteeredThisTurn) {
-      const codingSessionTool = config.productiveProgress?.codingSessionTool;
+      const activeToolNames = pi.getActiveTools();
+      const currentToolGuidance = activeToolGuidance(activeToolNames);
+      const semantics = taskSpecificToolGuidance(activeToolNames, {
+        ceilingHit: stage === 'implementer' && ceilingWithoutToolTurns > 0,
+        preComplexityRequired,
+        postComplexityRequired,
+      });
       const directive = stage === 'implementer' && ceilingWithoutToolTurns > 0
-        // Code drafted in reasoning (or a cut-off call) ate the whole response: name it exactly.
-        ? `RUNTIME: your last response used the entire ${actionCap || 'output'}-token ceiling without calling any tool. Do not draft, outline, or reason through file contents in this session; that output is discarded. In the next response call a tool immediately.${codingSessionTool ? ` If you are ready to implement and the code is large, call ${codingSessionTool} now; that coding session has your full context and a large output ceiling and writes the code itself.` : ''} If it is small, call the direct mutation tool now.`
+        ? `RUNTIME: your last response used the entire ${actionCap || 'output'}-token ceiling without calling any tool. Do not draft, outline, or reason through file contents in this session; that output is discarded. In the next response call a tool immediately. ${currentToolGuidance} ${semantics}`
         : preComplexityRequired
-        ? 'RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. Call declare_task_complexity immediately with the classification already supported by the issue, diff, and changed code.'
+        ? `RUNTIME CLASSIFICATION REQUIRED: startup evidence is complete. In the next response, do not narrate or reconsider the review plan. ${currentToolGuidance} ${semantics}`
         : postComplexityRequired
-          ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
+          ? `RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. ${currentToolGuidance} ${semantics}`
           : stage === 'implementer'
-            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, begin_coding_session (to implement in a large-output coding session), rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
-            : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
+            ? `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. ${currentToolGuidance} ${semantics} Verification status: ${verificationLifecycleGuidance()}`
+            : `RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. ${currentToolGuidance} ${semantics}`;
       const reason = stage === 'implementer' && ceilingWithoutToolTurns > 0
         ? `ceiling without tool (${ceilingWithoutToolTurns}/${MAX_CEILING_WITHOUT_TOOL_TURNS})`
         : actionRequiredProseOnlyTurns > 0

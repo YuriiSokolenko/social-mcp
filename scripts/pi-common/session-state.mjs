@@ -11,6 +11,16 @@ export function mergeNewlyActiveTools(baseline, current) {
   return [...baseline, ...current.filter(name => !known.has(name))];
 }
 
+export function activeToolGuidance(activeToolNames) {
+  const names = [...new Set(
+    (Array.isArray(activeToolNames) ? activeToolNames : [])
+      .filter(name => typeof name === 'string' && name.length > 0),
+  )];
+  return names.length > 0
+    ? `CURRENTLY EXPOSED TOOLS (authoritative): ${names.join(', ')}. Call only a tool from this list.`
+    : 'CURRENTLY EXPOSED TOOLS (authoritative): none. Do not invent a tool call.';
+}
+
 export class SessionTransitions {
   constructor({ preparationTool = null } = {}) {
     this.preparationTool = preparationTool;
@@ -62,10 +72,31 @@ export class SessionTransitions {
     return lines;
   }
 
+  verificationGuidance({ verificationTool = null, verificationState = null } = {}) {
+    if (!verificationTool || !verificationState) return {
+      progressLine: '- run validation',
+      sentence: 'run validation',
+    };
+    if (verificationState === 'available') return {
+      progressLine: `- run validation with ${verificationTool} (available once for the current mutation state)`,
+      sentence: `run validation with ${verificationTool} while its current mutation permit is available`,
+    };
+    if (verificationState === 'exhausted') return {
+      progressLine: `- ${verificationTool} is exhausted for the current mutation state; a new successful mutation is required before another focused verification`,
+      sentence: `${verificationTool} is exhausted for the current mutation state; mutate successfully before validating again`,
+    };
+    return {
+      progressLine: `- ${verificationTool} is not yet available; it becomes available after a successful mutation`,
+      sentence: `${verificationTool} is not yet available; it becomes available after a successful mutation`,
+    };
+  }
+
   // Session-state block for the model; empty string when nothing has completed.
-  stateBlock() {
+  stateBlock(verification = {}) {
     const lines = this.lines();
     if (!lines.length) return '';
+    const validation = this.verificationGuidance(verification);
+    const activeToolNames = verification?.activeToolNames ?? null;
     return [
       'SESSION STATE (runtime-generated; not task completion)',
       '',
@@ -74,26 +105,41 @@ export class SessionTransitions {
       '',
       'These control transitions are already applied to this session. Do not repeat them.',
       'The GitHub issue itself is NOT complete.',
-      '',
-      'Valid next progress:',
-      '- inspect/query repository',
-      '- begin coding session when needed',
-      '- mutate task files',
-      '- run validation',
-      '- submit terminal result',
+      ...(activeToolNames == null
+        ? [
+            '',
+            'Valid next progress:',
+            '- use only tools currently exposed by the runtime',
+            validation.progressLine,
+          ]
+        : [
+            '',
+            activeToolGuidance(activeToolNames),
+            `Verification status: ${validation.sentence}.`,
+          ]),
     ].join('\n');
   }
 
-  transitionNotice(record) {
+  transitionNotice(record, verification = {}) {
     const subject = record.key === PREPARATION_KEY
       ? `preparation: ${record.fallback ? 'fallback-complete' : 'complete'}`
       : record.key === SUBAGENTS_ENABLE_TOOL
         ? 'subagents: enabled'
         : `${record.serverId} LSP: running`;
     const repeatTool = record.key === PREPARATION_KEY ? this.preparationTool : record.tool;
-    const tail = record.key === SUBAGENTS_ENABLE_TOOL
-      ? 'If subagent evidence is needed, call need_more_evidence first; subagent(...) is then permitted for that evidence action.\nOtherwise continue implementation.'
-      : 'Continue with repository inspection, implementation, validation, or terminal result.';
+    const validation = this.verificationGuidance(verification);
+    const activeToolNames = verification?.activeToolNames ?? null;
+    const active = new Set(activeToolNames ?? []);
+    const delegatedEvidence = record.key === SUBAGENTS_ENABLE_TOOL && activeToolNames != null
+      ? (active.has('subagent')
+        ? 'Delegated inspection is exposed now for the current evidence action.'
+        : active.has('need_more_evidence')
+          ? 'If delegated evidence is needed, call need_more_evidence first; the delegated-inspection tool will be exposed for that unlocked evidence action.'
+          : '')
+      : '';
+    const tail = activeToolNames == null
+      ? `Continue using only the current runtime tool surface; ${validation.sentence}.`
+      : `${activeToolGuidance(activeToolNames)}${delegatedEvidence ? ` ${delegatedEvidence}` : ''} Verification status: ${validation.sentence}.`;
     return [
       'STATE TRANSITION COMPLETE (control transition only; the GitHub issue is not complete)',
       '',
@@ -105,11 +151,18 @@ export class SessionTransitions {
     ].join('\n');
   }
 
-  alreadySatisfiedReason(toolName, key, { actionRequired = false } = {}) {
+  alreadySatisfiedReason(toolName, key, {
+    actionRequired = false,
+    verificationTool = null,
+    verificationState = null,
+    activeToolNames = null,
+  } = {}) {
     const record = this.completed.get(key);
-    const next = actionRequired
-      ? 'Mutate a task file, call begin_coding_session, run validation, or submit_result now.'
-      : 'Inspect the repository, mutate task files, run validation, or submit_result.';
-    return `ALREADY_SATISFIED: ${toolName} is single-shot and already completed; it did not execute. ${this.transitionNotice(record).split('\n').slice(2, 4).join(' ')} This repeat is not progress. ${next}`;
+    const verification = { verificationTool, verificationState, activeToolNames };
+    const validation = this.verificationGuidance(verification);
+    const next = activeToolNames == null
+      ? `Use only the current runtime tool surface; ${validation.sentence}.`
+      : activeToolGuidance(activeToolNames);
+    return `ALREADY_SATISFIED: ${toolName} is single-shot and already completed; it did not execute. ${this.transitionNotice(record, verification).split('\n').slice(2, 4).join(' ')} This repeat is not progress. ${next}`;
   }
 }

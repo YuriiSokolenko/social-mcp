@@ -17,6 +17,15 @@ import { CHECK_STATUSES } from './run-check.mjs';
 
 export const LEDGER_STATUSES = Object.freeze([...CHECK_STATUSES, 'not_run']);
 
+export function resolveValidationRunId(env = process.env) {
+  const explicit = String(env.PI_VALIDATION_RUN_ID ?? '').trim();
+  if (explicit) return explicit;
+
+  const githubRunId = String(env.GITHUB_RUN_ID ?? '').trim();
+  const githubRunAttempt = String(env.GITHUB_RUN_ATTEMPT ?? '1').trim() || '1';
+  return `${githubRunId || `local-${process.pid}`}-${githubRunAttempt}`;
+}
+
 export const VERIFICATION_STATES = Object.freeze({
   NOT_APPLICABLE: 'VERIFICATION_NOT_APPLICABLE',
   PENDING: 'VERIFICATION_PENDING',
@@ -164,6 +173,85 @@ export function reconcile(records) {
     groups.set(groupKey(record.kind, record.scope), record);
   }
   return [...groups.values()];
+}
+
+/**
+ * Returns the most recent unresolved exact-scope run_check failure for the
+ * selected workflow run.
+ *
+ * Recovery state is tracked independently per exact kind+scope:
+ * - fail: that scope requires exact recovery;
+ * - pass: resolves that exact scope;
+ * - timeout/invalid/infra_error: stop forcing retry for that exact scope while
+ *   normal ledger reconciliation remains fail-closed;
+ * - broader/different scopes never resolve each other.
+ *
+ * Multiple failed scopes may therefore remain outstanding within one workflow
+ * run. The most recently failed unresolved scope is offered first; after it is
+ * resolved, an older unresolved scope becomes active. Scoping by runId prevents
+ * failures from earlier workflow runs from leaking into the current session.
+ */
+export function latestUnresolvedRunCheckFailure(records, { runId = null, stage = null } = {}) {
+  const stateByGroup = new Map();
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record.source !== 'run_check') continue;
+    if (runId != null && record.run_id !== runId) continue;
+    if (stage != null && record.stage !== stage) continue;
+
+    const key = groupKey(record.kind, record.scope);
+    if (record.status === 'fail') {
+      stateByGroup.set(key, { record, index });
+    } else if (record.status === 'pass' || BLOCKING_STATUSES.has(record.status)) {
+      stateByGroup.delete(key);
+    }
+  }
+
+  const candidates = [...stateByGroup.values()].sort((left, right) => right.index - left.index);
+  for (const candidate of candidates) {
+    try {
+      // Recovery can only select a record that the deterministic retry tool
+      // can faithfully reconstruct. Malformed/legacy records stay in the
+      // ledger for final fail-closed verification but never mask an older,
+      // valid recovery obligation.
+      runCheckRequestForRecord(candidate.record);
+      return candidate.record;
+    } catch {
+      // Try the next unresolved exact scope.
+    }
+  }
+  return null;
+}
+
+/**
+ * Reconstruct the closed run_check request for a ledger record. Scope
+ * normalization may reorder or deduplicate entries, but preserves the exact
+ * semantic kind+scope used for reconciliation.
+ */
+export function runCheckRequestForRecord(record) {
+  if (!record || typeof record.kind !== 'string' || !record.scope || typeof record.scope !== 'object') {
+    throw new Error('cannot reconstruct run_check request from an invalid ledger record');
+  }
+
+  const hasPaths = Array.isArray(record.scope.paths) && record.scope.paths.length > 0;
+  const hasTargets = Array.isArray(record.scope.targets) && record.scope.targets.length > 0;
+  const hasProfile = typeof record.scope.profile === 'string' && record.scope.profile.length > 0;
+  const scopeFieldCount = Number(hasPaths) + Number(hasTargets) + Number(hasProfile);
+  if (scopeFieldCount !== 1 || record.scope.whole_repo === true) {
+    throw new Error(`cannot reconstruct run_check request for ${record.kind}: ambiguous or unsupported scope`);
+  }
+
+  if ((record.kind === 'python_compile' || record.kind === 'ruff') && hasPaths) {
+    return { kind: record.kind, paths: [...record.scope.paths] };
+  }
+  if (record.kind === 'pytest' && hasTargets) {
+    return { kind: record.kind, targets: [...record.scope.targets] };
+  }
+  if (record.kind === 'profile' && hasProfile) {
+    return { kind: record.kind, profile: record.scope.profile };
+  }
+  throw new Error(`cannot reconstruct run_check request for ${record.kind}: scope does not match check kind`);
 }
 
 /**

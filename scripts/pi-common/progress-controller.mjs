@@ -6,6 +6,10 @@ const COMPLEXITY_RANK = Object.freeze({ trivial: 0, nontrivial: 1, normal: 1, co
 // implementer turns use the small `RESPONSE_BUDGETS`/`actionResponseMaxTokens` ceiling.
 export const IMPLEMENTER_RESPONSE_MAX_TOKENS = 16384;
 export const RESPONSE_BUDGETS = Object.freeze({ short: 2048, normal: 4096, deep: 8192 });
+// Planner infrastructure fallback gets a deterministic, bounded repository-orientation window.
+// Two evidence attempts are enough to locate the canonical source/test layout without reopening
+// general exploration; the first successful mutation closes the window early.
+export const PREPARATION_FALLBACK_EVIDENCE_BUDGET = 2;
 
 function safePathToken(value) {
   return typeof value === 'string' &&
@@ -218,6 +222,7 @@ export class ProgressController {
     // unlimited escape hatch from the action-required state.
     this.productiveVerificationTool = this.productiveProgress?.verificationTool ?? null;
     this.verificationPermits = 0;
+    this.verificationState = this.productiveVerificationTool ? 'not_yet_available' : null;
     this.productiveInitialEvidenceBudget = positiveInteger(
       Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
       'productiveProgress.initialEvidenceBudget',
@@ -249,6 +254,9 @@ export class ProgressController {
     this.largeMutationBudgetTool = this.productiveProgress?.largeMutationBudgetTool ?? null;
     this.largeMutationBudgetMaxTokens = this.productiveProgress?.largeMutationBudgetMaxTokens ?? null;
     this.largeMutationBudgetState = 'idle';
+    // Planner-owned intent is separate from the pending/active grant so evidence turns
+    // stay on the normal budget until the action phase is actually reached.
+    this.automaticLargeMutationBudgetArmed = false;
     this.codingSessionTool = this.productiveProgress?.codingSessionTool ?? null;
     this.lspServerReady = !this.requireLspStartBeforeFindSymbol;
 
@@ -309,6 +317,32 @@ export class ProgressController {
     return this.verificationPermits > 0;
   }
 
+  verificationLifecycleState() {
+    return this.verificationState;
+  }
+
+  armAutomaticLargeMutationBudget(enabled) {
+    if (!this.largeMutationBudgetTool) {
+      this.automaticLargeMutationBudgetArmed = false;
+      return false;
+    }
+    this.automaticLargeMutationBudgetArmed = enabled === true;
+    return this.automaticLargeMutationBudgetArmed;
+  }
+
+  // Promote planner intent only after evidence is closed. The promoted grant reuses the
+  // existing pending -> active -> idle one-shot lifecycle and mutation-only hard gate.
+  maybeGrantAutomaticLargeMutationBudget() {
+    if (!this.automaticLargeMutationBudgetArmed ||
+        this.largeMutationBudgetState !== 'idle' ||
+        this.productiveState !== 'action_required') {
+      return false;
+    }
+    this.automaticLargeMutationBudgetArmed = false;
+    this.largeMutationBudgetState = 'pending';
+    return true;
+  }
+
   largeMutationBudgetPending() {
     return this.largeMutationBudgetState === 'pending';
   }
@@ -355,12 +389,18 @@ export class ProgressController {
       throw new Error('Preparation fallback requires an attempted, unresolved preparation action');
     }
     this.preparationState = 'PREPARATION_FALLBACK';
-    // No planner estimate is available. Start with an action and preserve the normal
-    // need_more_evidence escape hatch for any concrete missing implementation fact.
-    this.productiveEvidenceRemaining = 0;
-    this.productiveState = 'action_required';
+    // No planner estimate is available, so grant a small deterministic orientation window
+    // to establish the canonical source/test layout before mutation. The normal bounded
+    // evidence state machine consumes this at accepted-call time, and any successful mutation
+    // closes the window early in onToolExecutionEnd().
+    this.productiveEvidenceRemaining = PREPARATION_FALLBACK_EVIDENCE_BUDGET;
+    this.productiveState = 'evidence_allowed';
     this.evidenceUnlockUsedSinceProgress = false;
-    return { preparationState: this.preparationState, complexity: this.complexity };
+    return {
+      preparationState: this.preparationState,
+      complexity: this.complexity,
+      evidenceBudget: PREPARATION_FALLBACK_EVIDENCE_BUDGET,
+    };
   }
 
   preComplexityActionRequired() {
@@ -427,6 +467,8 @@ export class ProgressController {
         alreadySatisfied: true,
         reason: this.transitions.alreadySatisfiedReason(toolName, transitionKey, {
           actionRequired: this.productiveState === 'action_required',
+          verificationTool: this.productiveVerificationTool,
+          verificationState: this.verificationLifecycleState(),
         }),
       };
     }
@@ -437,6 +479,7 @@ export class ProgressController {
       this.preComplexityTransitionTools.has(toolName);
     const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
+    let acceptedVerificationCall = false;
 
     const preComplexityEvidenceTool =
       this.requireComplexity &&
@@ -555,8 +598,17 @@ export class ProgressController {
           this.evidenceUnlockUsedSinceProgress = true;
           this.productiveEvidenceRemaining = 1;
           this.productiveState = 'evidence_allowed';
-        } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool && this.verificationPermits > 0) {
-          this.verificationPermits -= 1;
+        } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
+          if (this.verificationPermits > 0) {
+            acceptedVerificationCall = true;
+          } else {
+            return {
+              block: true,
+              reason: this.verificationState === 'exhausted'
+                ? `BLOCKED: ${toolName} is exhausted for the current mutation state. A new successful mutation is required before another focused verification.`
+                : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
+            };
+          }
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
             block: true,
@@ -572,7 +624,18 @@ export class ProgressController {
             reason: 'BLOCKED: one evidence action is already permitted. Execute that evidence action before declaring another blocker.',
           };
         }
-        if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
+        if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
+          if (this.verificationPermits > 0) {
+            acceptedVerificationCall = true;
+          } else {
+            return {
+              block: true,
+              reason: this.verificationState === 'exhausted'
+                ? `BLOCKED: ${toolName} is exhausted for the current mutation state. A new successful mutation is required before another focused verification.`
+                : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
+            };
+          }
+        } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           const semanticFallback = this.semanticLookupAwaitingRead &&
             !this.semanticFallbackEvidenceUsed &&
             toolName !== 'read' &&
@@ -613,6 +676,10 @@ export class ProgressController {
       this.preComplexityEvidenceRemaining = Math.max(0, this.preComplexityEvidenceRemaining - 1);
     }
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
+    if (acceptedVerificationCall) {
+      this.verificationPermits -= 1;
+      if (this.verificationPermits === 0) this.verificationState = 'exhausted';
+    }
     this.turnUsedTool = true;
     return undefined;
   }
@@ -677,11 +744,19 @@ export class ProgressController {
       this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
       this.evidenceUnlockUsedSinceProgress = false;
     }
+    if (!isError && this.automaticLargeMutationBudgetArmed &&
+        (FINISH_TOOLS.has(toolName) || toolName === this.codingSessionTool)) {
+      // If a productive action happened before the automatic grant could activate, discard
+      // the intent rather than shifting its elevated response onto an unrelated later action.
+      this.automaticLargeMutationBudgetArmed = false;
+    }
     if (!isError && this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool) {
+      this.automaticLargeMutationBudgetArmed = false;
       this.largeMutationBudgetState = 'pending';
     }
     if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
       this.verificationPermits = 1;
+      this.verificationState = 'available';
     }
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;

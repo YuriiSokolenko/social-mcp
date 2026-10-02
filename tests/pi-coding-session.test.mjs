@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { resolveMutationTarget } from '../scripts/pi-common/mutation-target.mjs';
 import {
   MAX_CEILING_WITHOUT_TOOL_TURNS,
+  PREPARATION_FALLBACK_EVIDENCE_BUDGET,
   ProgressController,
   nextCeilingWithoutToolTurns,
   truncatedToolCallGuidance,
@@ -67,7 +68,11 @@ test('the coding session starts only after preparation and once evidence is comp
   assert.equal(ready.checkToolCall('prepare_implementation', {}), undefined);
   ready.enterPreparationFallback();
   ready.onToolExecutionEnd('prepare_implementation', false);
-  assert.equal(ready.checkToolCall('begin_coding_session', {}), undefined, 'available under PREPARATION_FALLBACK');
+  assert.match(ready.checkToolCall('begin_coding_session', {}).reason, /only once evidence is complete/);
+  for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
+    assert.equal(ready.checkToolCall('read', { path: 'fallback-evidence-' + i }), undefined);
+  }
+  assert.equal(ready.checkToolCall('begin_coding_session', {}), undefined, 'available after fallback evidence is complete');
   ready.onToolExecutionEnd('begin_coding_session', true);
   assert.equal(ready.verificationPermitted(), false, 'a failed session earns no verification permit');
   assert.equal(ready.checkToolCall('begin_coding_session', {}), undefined);
@@ -160,6 +165,7 @@ function runtimeScenario(mode) {
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400abc' }), null);
       assert.equal(providerErrorStatus({ stopReason: 'stop', errorMessage: '400 nope' }), null);
       const mode = ${JSON.stringify(mode)};
+      const fallbackEvidenceBudget = ${PREPARATION_FALLBACK_EVIDENCE_BUDGET};
       const cwd = ${JSON.stringify(work)};
       const terminal = ${JSON.stringify(terminal)};
       const runtimeFailure = ${JSON.stringify(runtimeFailure)};
@@ -180,7 +186,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -362,11 +368,20 @@ function runtimeScenario(mode) {
       }
       // Evidence gathered by the parent earlier in its own session; never repeated in the request.
       fs.writeFileSync(cwd + '/config.py', 'REQUIRED_CONSTANT = "abc123"\\n');
-      if (mode === 'fallback' || mode === 'restored') await call('need_more_evidence', { missing: 'constant', reason: 'value' });
-      await call('read', { path: 'config.py' });
+      if (mode === 'fallback') {
+        for (let i = 1; i < fallbackEvidenceBudget; i++) {
+          fs.writeFileSync(cwd + '/fallback-layout-' + i + '.txt', 'layout evidence ' + i + '\\n');
+          await call('read', { path: 'fallback-layout-' + i + '.txt' });
+        }
+        await call('read', { path: 'config.py' });
+      } else {
+        if (mode === 'restored') await call('need_more_evidence', { missing: 'constant', reason: 'value' });
+        await call('read', { path: 'config.py' });
+      }
       fs.rmSync(cwd + '/config.py');
+      for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
 
-      if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) {
+      if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort'].includes(mode)) {
         // First action_required response is prose only: the runtime arms provider-level
         // required-tool forcing and keeps it armed until a real exposed tool is attempted.
         handlers.get('turn_start')({ turnIndex: turn });
@@ -422,6 +437,8 @@ function runtimeScenario(mode) {
           const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
           assert.equal(fallback.tool_choice, undefined, '422 clears provider-level forced-tool fallback');
           assert.match(steers.at(-1), /provider rejected the provider-level required-tool request/);
+          assert.match(steers.at(-1), /CURRENTLY EXPOSED TOOLS/);
+          assert.match(steers.at(-1), /submit_result with blocked_reason/);
           process.exit(0);
         }
 
@@ -437,10 +454,28 @@ function runtimeScenario(mode) {
             input: {},
           }, ctx);
           assert.ok(repeated?.alreadySatisfied || /already/i.test(String(repeated?.reason ?? '')), 'repeat is rejected as already completed');
+          assert.match(String(repeated.reason), /CURRENTLY EXPOSED TOOLS/);
           const afterRepeat = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
           assert.equal(afterRepeat.tool_choice, undefined, 'an emitted tool call consumes provider forcing even when it is a no-op');
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
           assert.equal(aborts, 1, 'already-satisfied repeat still counts as no productive action and trips the watchdog');
+          process.exit(0);
+        }
+
+        if (mode === 'action-hidden-abort') {
+          handlers.get('turn_start')({ turnIndex: turn });
+          const hidden = await handlers.get('tool_call')({
+            toolName: 'read',
+            toolCallId: 'hidden-' + turn,
+            input: { path: 'config.py' },
+          }, ctx);
+          assert.equal(hidden.block, true);
+          assert.match(hidden.reason, /not currently exposed/);
+          assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
+          const afterHidden = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(afterHidden.tool_choice, undefined, 'hidden provider-emitted tool clears transport forcing');
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 1, 'hidden tool remains non-progress and trips the second-strike watchdog');
           process.exit(0);
         }
 
@@ -594,6 +629,13 @@ test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover on
 test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
   const logs = runtimeScenario('action-repeat-abort');
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"alreadySatisfied":true/);
+  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+});
+
+test('a hidden provider-emitted tool clears forcing but remains non-progress and aborts on the watchdog', () => {
+  const logs = runtimeScenario('action-hidden-abort');
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"read".*"unavailable":true/);
   assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
