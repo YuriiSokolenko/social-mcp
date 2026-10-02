@@ -7,26 +7,42 @@ can exercise interval logic without touching any external service.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from decimal import Decimal
 from numbers import Real
 
 __all__ = ["merge_intervals"]
 
+IntervalBound = Real | Decimal
 
-def _require_number(name: str, value: object) -> float:
-    """Return ``value`` when it is a real number.
 
-    Booleans are rejected on purpose: they are not meaningful interval bounds
-    and accepting them would let ``True`` silently behave like ``1``.
+def _require_number(name: str, value: object) -> IntervalBound:
+    """Return an explicitly supported ordered numeric bound.
+
+    Supported bounds are instances of ``numbers.Real`` plus
+    ``decimal.Decimal``. Booleans are rejected on purpose despite being
+    ``int`` subclasses, complex values are rejected because interval ordering
+    is not defined for them, and NaN values are rejected because they are not
+    totally ordered.
     """
 
-    if isinstance(value, bool) or not isinstance(value, Real):
+    if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
         raise ValueError(
-            f"interval {name} must be a number, got {value!r}"
+            f"interval {name} must be a numbers.Real or decimal.Decimal value "
+            f"(bool is not supported), got {value!r}"
         )
+
+    if isinstance(value, Decimal):
+        is_nan = value.is_nan()
+    else:
+        is_nan = value != value
+
+    if is_nan:
+        raise ValueError(f"interval {name} must not be NaN, got {value!r}")
+
     return value
 
 
-def _as_pair(interval: object) -> tuple[float, float]:
+def _as_pair(interval: object) -> tuple[IntervalBound, IntervalBound]:
     """Validate a single two-item interval without touching the caller's data."""
 
     try:
@@ -45,8 +61,17 @@ def _as_pair(interval: object) -> tuple[float, float]:
     return start, end
 
 
-def merge_intervals(intervals: Iterable[Sequence[float]]) -> list[tuple[float, float]]:
+def merge_intervals(
+    intervals: Iterable[Sequence[IntervalBound]],
+) -> list[tuple[IntervalBound, IntervalBound]]:
     """Merge overlapping and touching numeric intervals.
+
+    Supported interval bounds are ``numbers.Real`` values (including
+    ``int``, ``float``, and ``fractions.Fraction``) plus
+    ``decimal.Decimal``. ``bool`` is explicitly unsupported despite being
+    an ``int`` subclass. Complex values and NaN values are unsupported
+    because they do not provide the total ordering required by the merge
+    algorithm.
 
     Args:
         intervals: Any iterable of two-item ``[start, end]`` numeric intervals.
@@ -59,13 +84,13 @@ def merge_intervals(intervals: Iterable[Sequence[float]]) -> list[tuple[float, f
         intervals are preserved as separate entries.
 
     Raises:
-        ValueError: If an interval does not hold exactly two numbers, holds a
-            non-numeric bound, or starts after it ends.
+        ValueError: If an interval does not hold exactly two bounds, contains an
+            unsupported bound type or NaN value, or starts after it ends.
     """
 
     normalized = sorted((_as_pair(interval) for interval in intervals))
 
-    merged: list[tuple[float, float]] = []
+    merged: list[tuple[IntervalBound, IntervalBound]] = []
     for start, end in normalized:
         if merged and start <= merged[-1][1]:
             # Overlapping or touching: extend the current span when needed.
