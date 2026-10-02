@@ -28,7 +28,7 @@ import {
   detectNoOpWrite,
   mutationSnapshotChanged,
 } from './pi-common/mutation-snapshot.mjs';
-import { baseRef } from './pi-common/project-config.mjs';
+import { baseRef, projectConfig } from './pi-common/project-config.mjs';
 import {
   SemanticLoopGuard,
   isSemanticMutationTool,
@@ -187,6 +187,96 @@ function implementerIssueContext(env = process.env) {
   };
 }
 
+function repoRelativePath(...parts) {
+  return path.join(...parts).split(path.sep).join('/');
+}
+
+function nearestPythonSibling(directory, preferredPrefix, excludeName = '') {
+  let entries;
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const files = entries
+    .filter(entry => entry.isFile() && entry.name.endsWith('.py') && entry.name !== '__init__.py' && entry.name !== excludeName)
+    .map(entry => entry.name);
+  if (files.length === 0) return null;
+  files.sort((left, right) => {
+    const leftPreferred = preferredPrefix && left.startsWith(preferredPrefix) ? 0 : 1;
+    const rightPreferred = preferredPrefix && right.startsWith(preferredPrefix) ? 0 : 1;
+    return leftPreferred - rightPreferred || left.localeCompare(right);
+  });
+  return files[0];
+}
+
+// Bounded, model-free orientation for additive Python work. It recognizes a conventional src/
+// layout from a dotted target already present in the issue, then looks only at that package
+// directory and its nearest mirrored tests directory. Package names remain data from the issue
+// and worktree; the generic runtime never hard-codes product-specific paths.
+export function discoverAdditivePythonLayout(cwd, issue) {
+  const srcRoot = path.join(cwd, 'src');
+  const testsRoot = path.join(cwd, 'tests');
+  if (!fs.existsSync(srcRoot) || !fs.statSync(srcRoot).isDirectory() ||
+      !fs.existsSync(testsRoot) || !fs.statSync(testsRoot).isDirectory()) return null;
+
+  const issueText = `${String(issue?.title ?? '')}\n${String(issue?.body ?? '')}`;
+  const dottedTargets = [...issueText.matchAll(/`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,})`/g)]
+    .map(match => match[1]);
+
+  for (const dottedTarget of dottedTargets) {
+    const parts = dottedTarget.split('.');
+    let existingPackageParts = 0;
+    for (let length = 1; length < parts.length; length += 1) {
+      const candidate = path.join(srcRoot, ...parts.slice(0, length));
+      if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) break;
+      existingPackageParts = length;
+    }
+    // A safe additive hint needs an explicit new module *and* a symbol inside it. If only one
+    // dotted segment remains after the existing package, it could just as well be an existing
+    // function/class exported from that package, so leave discovery to normal evidence tools.
+    if (existingPackageParts === 0 || parts.length - existingPackageParts < 2) continue;
+
+    const moduleName = parts[existingPackageParts];
+    if (!/^[a-z_]\w*$/.test(moduleName)) continue;
+    const sourceDirectoryParts = parts.slice(0, existingPackageParts);
+    const sourceDirectory = path.join(srcRoot, ...sourceDirectoryParts);
+    const sourceTargetAbsolute = path.join(sourceDirectory, `${moduleName}.py`);
+    if (fs.existsSync(sourceTargetAbsolute)) continue;
+
+    const mirroredTestParts = sourceDirectoryParts.slice(1);
+    const testCandidates = [
+      path.join(testsRoot, ...mirroredTestParts),
+      path.join(testsRoot, ...sourceDirectoryParts),
+      testsRoot,
+    ];
+    const testDirectory = testCandidates.find(candidate =>
+      fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()
+    );
+    if (!testDirectory) continue;
+
+    const sharedPrefix = moduleName.includes('_') ? `${moduleName.split('_')[0]}_` : '';
+    const sourceSibling = nearestPythonSibling(sourceDirectory, sharedPrefix, `${moduleName}.py`);
+    const testPrefix = `test_${sharedPrefix}`;
+    const testSibling = nearestPythonSibling(testDirectory, testPrefix, `test_${moduleName}.py`);
+
+    return {
+      dottedTarget,
+      sourceRoot: 'src',
+      sourceDirectory: repoRelativePath(path.relative(cwd, sourceDirectory)),
+      sourceTarget: repoRelativePath(path.relative(cwd, sourceTargetAbsolute)),
+      sourceConvention: sourceSibling
+        ? repoRelativePath(path.relative(cwd, path.join(sourceDirectory, sourceSibling)))
+        : null,
+      testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
+      testConvention: testSibling
+        ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
+        : null,
+    };
+  }
+  return null;
+}
+
 // Safe repairs only: keep the four canonical fields, trim strings, truncate overlong steps.
 // Missing or invalid required fields are left untouched so strict validation fails closed.
 function normalizeImplementationPreparation(value) {
@@ -230,9 +320,12 @@ function validateImplementationPreparation(value) {
   return { steps, complexity: value.complexity, evidenceBudget, reason };
 }
 
-function plannerTask(env = process.env, { repair = false } = {}) {
+function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
   const issue = implementerIssueContext(env);
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, and separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}): how many repository evidence-gathering actions (reads/searches) the Implementer will likely need before it can safely mutate. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.
+  const layoutGuidance = layoutHint
+    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
+    : '';
+  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, and separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}): how many repository evidence-gathering actions (reads/searches) the Implementer will likely need before it can safely mutate. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
 
 Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the four listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "reason": "..." } } and nothing else.` : ''}
 
@@ -327,11 +420,11 @@ async function runStructuredSubagent(pi, ctx, {
 // inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
 const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
 
-async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
+async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null) {
   const request = {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
-    task: plannerTask(),
+    task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
@@ -349,7 +442,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
       const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
       const retryable = missing || schemaFailure;
       const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
-      if (schemaFailure) request.task = plannerTask(process.env, { repair: true });
+      if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
       console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
         agent: config.implementationPlannerAgent,
         reason,
@@ -368,6 +461,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal) {
   return {
     ...validateImplementationPreparation(normalizeImplementationPreparation(response.result.value)),
     usage: response.usage ?? null,
+    layoutHint,
   };
 }
 
@@ -443,6 +537,9 @@ export default function (pi) {
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
+  // True only when this runtime's permit gate removed the verification tool from the model
+  // surface. A later permit may restore it only in that case; unrelated removals stay removed.
+  let verificationToolHiddenByPermitGate = false;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -477,14 +574,46 @@ export default function (pi) {
     // where the controller gate lets them execute (evidence_allowed), never in action_required.
     const satisfied = controller.transitions.satisfiedToolNames();
     const current = pi.getActiveTools();
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    const verificationPermitted = controller.verificationPermitted();
+    const currentWithPermittedVerification =
+      verificationTool &&
+      verificationPermitted &&
+      verificationToolHiddenByPermitGate &&
+      !current.includes(verificationTool)
+        ? [...current, verificationTool]
+        : current;
+
     // Tools added by a control transition appear in the live list but not in the saved baseline.
     if (unrestrictedActiveTools != null) {
-      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, current);
+      unrestrictedActiveTools = mergeNewlyActiveTools(unrestrictedActiveTools, currentWithPermittedVerification);
+      // If some other runtime/control transition removed run_check while we were not hiding it,
+      // honor that removal instead of resurrecting it from the saved unrestricted baseline.
+      if (
+        verificationTool &&
+        !current.includes(verificationTool) &&
+        !verificationToolHiddenByPermitGate
+      ) {
+        unrestrictedActiveTools = unrestrictedActiveTools.filter(name => name !== verificationTool);
+      }
     }
-    const visible = names => names.filter(name => !satisfied.has(name));
+    const visible = names => names.filter(name =>
+      !satisfied.has(name) &&
+      (!verificationTool || name !== verificationTool || verificationPermitted)
+    );
+    const applySurface = (names, reason) => {
+      if (verificationTool) {
+        if (!verificationPermitted && current.includes(verificationTool) && !names.includes(verificationTool)) {
+          verificationToolHiddenByPermitGate = true;
+        } else if (verificationPermitted && names.includes(verificationTool)) {
+          verificationToolHiddenByPermitGate = false;
+        }
+      }
+      setSurface(names, reason);
+    };
 
     if (preComplexityRequired || productiveActionRequired) {
-      if (unrestrictedActiveTools == null) unrestrictedActiveTools = current;
+      if (unrestrictedActiveTools == null) unrestrictedActiveTools = currentWithPermittedVerification;
       const restricted = preComplexityRequired
         ? unrestrictedActiveTools.filter(name =>
             new Set([
@@ -505,17 +634,19 @@ export default function (pi) {
               ? [config.productiveProgress.verificationTool].filter(Boolean)
               : [],
           });
-      setSurface(visible(restricted), 'restricted');
+      applySurface(visible(restricted), 'restricted');
       return;
     }
 
     if (unrestrictedActiveTools != null) {
-      setSurface(visible(unrestrictedActiveTools), 'restored');
+      applySurface(visible(unrestrictedActiveTools), 'restored');
       unrestrictedActiveTools = null;
       return;
     }
-    const remaining = visible(current);
-    if (remaining.length !== current.length) setSurface(remaining, 'transition_complete');
+    const remaining = visible(currentWithPermittedVerification);
+    // Preserve tool ordering as part of the model-visible surface; only update when the ordered
+    // list actually changes, not merely when the list length changes.
+    if (remaining.join('\0') !== current.join('\0')) applySurface(remaining, 'transition_complete');
   }
 
   // Materialize a newly completed one-shot transition into durable runtime state, the active
@@ -612,6 +743,25 @@ export default function (pi) {
       largeMutationBudgetTool: controller.largeMutationBudgetTool,
       codingSessionTool: config.productiveProgress?.codingSessionTool ?? null,
     });
+  }
+
+  function finalValidationGuidance() {
+    const checks = (projectConfig().checks?.final ?? []).map(step => step.name).filter(Boolean);
+    return checks.length
+      ? `Authoritative final checks still run automatically after submit_result and before publication: ${checks.join(' -> ')}.`
+      : 'Authoritative final validation still runs automatically after submit_result and before publication.';
+  }
+
+  function verificationLifecycleGuidance() {
+    const verificationTool = config.productiveProgress?.verificationTool;
+    if (!verificationTool) return finalValidationGuidance();
+    const state = controller.verificationLifecycleState();
+    const lifecycle = state === 'available'
+      ? `${verificationTool} is available once for the current mutation state.`
+      : state === 'exhausted'
+        ? `${verificationTool} is exhausted for the current mutation state and is unavailable now. Do not call it again unless a new successful mutation grants a new focused check.`
+        : `${verificationTool} is not yet available; it becomes available after a successful mutation.`;
+    return `${lifecycle} ${finalValidationGuidance()}`;
   }
 
   syncProductiveState();
@@ -714,9 +864,12 @@ export default function (pi) {
       description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result, or PREPARATION_FALLBACK if planner infrastructure fails; do not write a competing plan in the main agent.',
       parameters: Type.Object({}),
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+        let layoutHint = null;
         let prepared;
         try {
-          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal);
+          const issue = implementerIssueContext();
+          layoutHint = discoverAdditivePythonLayout(ctx.cwd, issue);
+          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint);
         } catch (error) {
           // Cancellation is not a recovery request: never unlock execution on abort.
           if (signal?.aborted) throw error;
@@ -739,10 +892,13 @@ export default function (pi) {
               `You may use up to ${fallback.evidenceBudget} repository evidence attempts; each accepted non-control evidence tool call (for example read/search, LSP lookup, or subagent inspection) consumes one attempt. The window closes when the attempts are consumed or on the first successful mutation. ` +
               'Normal mutation, begin_coding_session for the coding phase, run_check after mutation, and submit_result rules apply. ' +
               'After the fallback window closes, use need_more_evidence only when one concrete implementation fact is still missing.\n' +
-              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.`,
+              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.` +
+              (layoutHint
+                ? `\nRepository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}. This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.`
+                : ''),
             }],
             details: { ...fallback, failureClass: 'preparation_infrastructure_failure', reason,
-              lspWorkspaceRoot: ctx.cwd, freshBaseCommit },
+              lspWorkspaceRoot: ctx.cwd, freshBaseCommit, layoutHint },
           };
         }
         const result = controller.setComplexity(prepared.complexity);
@@ -770,10 +926,13 @@ export default function (pi) {
         const lspWorkspace = stage === 'implementer' && !resumedImplementer
           ? `\n\nLSP workspace root: ${ctx.cwd}. For a cold name-only lookup with an explicit language, call lsp_start_server once with the matching server_id and this exact absolute workspace_root before lsp_find_symbol; lsp_start_server is a control action and does not consume evidence budget.`
           : '';
+        const layoutGuidance = prepared.layoutHint
+          ? `\n\nRepository layout hint: source root ${prepared.layoutHint.sourceRoot}; new module target ${prepared.layoutHint.sourceTarget}; source directory ${prepared.layoutHint.sourceDirectory}${prepared.layoutHint.sourceConvention ? `; nearest source convention ${prepared.layoutHint.sourceConvention}` : ''}; tests ${prepared.layoutHint.testDirectory}${prepared.layoutHint.testConvention ? `; nearest test convention ${prepared.layoutHint.testConvention}` : ''}. This bounded current-worktree lookup is authoritative layout evidence. Prefer one targeted convention read if needed; do not broad-search or re-prove the fresh-worktree provenance.`
+          : '';
         return {
           content: [{
             type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}`,
+            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
           }],
           details: {
             ...result,
@@ -784,6 +943,7 @@ export default function (pi) {
             freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
             freshWorktreeIsLatestDev: stage === 'implementer' && !resumedImplementer,
             lspWorkspaceRoot: stage === 'implementer' && !resumedImplementer ? ctx.cwd : null,
+            layoutHint: prepared.layoutHint,
           },
         };
       },
@@ -896,7 +1056,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'run_check',
       label: 'Run focused check',
-      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation. Passing does not replace final validation; still call submit_result.',
+      description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (files/dirs in the worktree); kind=pytest takes targets (test files or node ids); kind=profile takes profile=node_tests|pytest_all. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check is evidence, not task failure: fix the reported diagnostic with an edit, then re-check after that mutation grants a new permit. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation; the permit is consumed when the call is accepted regardless of the check outcome. Passing does not replace final validation; still call submit_result.',
       parameters: Type.Object({
         kind: Type.Union(CHECK_KINDS.map(kind => Type.Literal(kind))),
         paths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),
@@ -1555,7 +1715,7 @@ export default function (pi) {
         : postComplexityRequired
           ? 'RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED. Otherwise call exactly one concrete evidence tool for the unresolved review question, then decide.'
           : stage === 'implementer'
-            ? 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, begin_coding_session (to implement in a large-output coding session), rollback_last_mutation, or submit_result immediately (run_check is also available once after a mutation). If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.'
+            ? `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. Call structural_edit, safe_edit, edit, write, begin_coding_session (to implement in a large-output coding session), rollback_last_mutation, or submit_result immediately. ${verificationLifecycleGuidance()} If authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now. If exactly one concrete fact still prevents a safe action, call need_more_evidence as the tool action.`
             : 'RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. Call submit_result immediately with the complete structured result.';
       const reason = stage === 'implementer' && ceilingWithoutToolTurns > 0
         ? `ceiling without tool (${ceilingWithoutToolTurns}/${MAX_CEILING_WITHOUT_TOOL_TURNS})`

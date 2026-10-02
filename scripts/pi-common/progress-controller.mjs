@@ -222,6 +222,7 @@ export class ProgressController {
     // unlimited escape hatch from the action-required state.
     this.productiveVerificationTool = this.productiveProgress?.verificationTool ?? null;
     this.verificationPermits = 0;
+    this.verificationState = this.productiveVerificationTool ? 'not_yet_available' : null;
     this.productiveInitialEvidenceBudget = positiveInteger(
       Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
       'productiveProgress.initialEvidenceBudget',
@@ -311,6 +312,10 @@ export class ProgressController {
 
   verificationPermitted() {
     return this.verificationPermits > 0;
+  }
+
+  verificationLifecycleState() {
+    return this.verificationState;
   }
 
   largeMutationBudgetPending() {
@@ -447,6 +452,7 @@ export class ProgressController {
       this.preComplexityTransitionTools.has(toolName);
     const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
+    let acceptedVerificationCall = false;
 
     const preComplexityEvidenceTool =
       this.requireComplexity &&
@@ -566,7 +572,7 @@ export class ProgressController {
           this.productiveEvidenceRemaining = 1;
           this.productiveState = 'evidence_allowed';
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool && this.verificationPermits > 0) {
-          this.verificationPermits -= 1;
+          acceptedVerificationCall = true;
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
             block: true,
@@ -623,6 +629,10 @@ export class ProgressController {
       this.preComplexityEvidenceRemaining = Math.max(0, this.preComplexityEvidenceRemaining - 1);
     }
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
+    if (acceptedVerificationCall) {
+      this.verificationPermits -= 1;
+      if (this.verificationPermits === 0) this.verificationState = 'exhausted';
+    }
     this.turnUsedTool = true;
     return undefined;
   }
@@ -692,6 +702,7 @@ export class ProgressController {
     }
     if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
       this.verificationPermits = 1;
+      this.verificationState = 'available';
     }
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
