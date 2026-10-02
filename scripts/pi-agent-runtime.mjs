@@ -98,8 +98,8 @@ export function disableThinkingInPayload(payload) {
 // the request is built, so this forces a real tool call without choosing the tool on the model's
 // behalf. The runtime keeps this request constraint armed until the provider emits a tool call;
 // transport retries or ceiling-hit responses must not consume it. Pi surfaces rejected provider
-// requests as turn_end error messages, so a forced 400/422 is retried once without provider-level
-// forcing; transient statuses such as 408/429 leave the requirement armed for Pi's transport retry.
+// requests as turn_end error messages, so a forced 400/422 gets one runtime continuation without
+// provider-level forcing. Other provider errors leave the requirement armed in case Pi itself retries.
 export function requireToolChoiceInPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
     return payload;
@@ -109,11 +109,30 @@ export function requireToolChoiceInPayload(payload) {
 
 export function providerErrorStatus(message) {
   if (message?.stopReason !== 'error') return null;
-  const text = String(message?.errorMessage ?? '');
-  const match = /\bAPI error \((\d{3})\):/.exec(text);
-  if (!match) return null;
-  const status = Number(match[1]);
-  return Number.isInteger(status) ? status : null;
+
+  const structuredCandidates = [
+    message?.status,
+    message?.statusCode,
+    message?.error?.status,
+    message?.error?.statusCode,
+  ];
+  for (const candidate of structuredCandidates) {
+    const status = Number(candidate);
+    if (Number.isInteger(status) && status >= 100 && status <= 599) return status;
+  }
+
+  const text = String(message?.errorMessage ?? '').trim();
+  // openai-completions surfaces OpenAI SDK Error.message strings such as
+  // "400 <body>" or "400 status code (no body)". Prefer this outer status when present so
+  // a nested provider body mentioning another error code cannot override it.
+  const sdkMatch = /^(?:[A-Za-z_$][\w.$ -]*:\s*)?(\d{3})(?=\s|$)/.exec(text);
+  if (sdkMatch) return Number(sdkMatch[1]);
+
+  // openai-responses / azure-openai-responses / mistral use Pi's explicit API-error prefix.
+  const apiMatch = /\bAPI error \((\d{3})\):/.exec(text);
+  if (apiMatch) return Number(apiMatch[1]);
+
+  return null;
 }
 
 // Set (only) for the forked coding session: switches this runtime into coding-session mode.
@@ -1368,9 +1387,13 @@ export default function (pi) {
         'RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing and call one exposed action tool immediately.',
         { deliverAs: 'steer' },
       );
-      return { continue: true };
+      // Pi continues because sendUserMessage() queues a steer consumed by its post-agent-run loop;
+      // turn_end return values are not part of that continuation contract.
+      return undefined;
     }
     if (event.message?.stopReason === 'error') {
+      // Provider/transport error turns are not model attempts: do not consume prose/ceiling
+      // watchdogs or one-shot mutation budget. Any active grant remains available if Pi retries.
       console.warn(`PI_PROVIDER_ERROR_TURN ${JSON.stringify({ stage, status, forced: forcedRequestErrored })}`);
       return undefined;
     }
