@@ -138,7 +138,8 @@ test('runtime materializes completed transitions into context and tool surface',
           source: 'run_check',
           stage: 'implementer',
           backend: 'pi',
-          run_id: 'runtime-test',
+          run_id: 'runtime-test-1',
+          attempt_id: 'primary',
           diagnostics_count: status === 'fail' ? 1 : 0,
           summary,
           infrastructure: status === 'infra_error'
@@ -273,6 +274,7 @@ test('runtime materializes completed transitions into context and tool surface',
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 15000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context,
+        GITHUB_RUN_ID: 'runtime-test', GITHUB_RUN_ATTEMPT: '1',
         PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false', PI_VALIDATION_LEDGER_FILE: ledger,
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
     });
