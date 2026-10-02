@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -21,7 +22,7 @@ UTC = timezone.utc
         ("+5", 5.0),
         (0, 0.0),
         (45, 45.0),
-        (1.5, 1.5),
+        (1.0, 1.0),
     ],
 )
 def test_delta_seconds(value, expected):
@@ -66,11 +67,28 @@ def test_reference_is_not_mutated():
     assert reference.tzinfo is None
 
 
+def test_negative_zero_is_normalized():
+    reference = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    result = parse_retry_after(-0.0, reference)
+    assert result == 0.0
+    assert math.copysign(1.0, result) == 1.0
+
+
 @pytest.mark.parametrize(
     "value",
-    ["-1", "-30", " -5", "-0.5", -1, -30, -0.5],
+    ["-1", "-30", " -5", "-0.5", -1, -30],
 )
 def test_negative_values_rejected(value):
+    reference = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    with pytest.raises(ValueError):
+        parse_retry_after(value, reference)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [1.5, -0.5, float("nan"), float("inf"), float("-inf")],
+)
+def test_fractional_or_non_finite_numeric_values_rejected(value):
     reference = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
     with pytest.raises(ValueError):
         parse_retry_after(value, reference)
@@ -82,6 +100,7 @@ def test_negative_values_rejected(value):
         "",
         "   ",
         "soon",
+        "1.5",
         "12.5",
         "1e3",
         "30 seconds",
