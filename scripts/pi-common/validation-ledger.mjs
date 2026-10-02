@@ -167,6 +167,48 @@ export function reconcile(records) {
 }
 
 /**
+ * Returns the most recent run_check failure that is still authoritative for
+ * its exact kind+scope. A later record for the same group replaces it by the
+ * ledger's existing last-write-wins rule; broader or different scopes remain
+ * separate groups and therefore cannot resolve this requirement.
+ */
+export function latestUnresolvedRunCheckFailure(records) {
+  const latestByGroup = new Map();
+  for (const record of records) {
+    if (record.source === FINAL_PIPELINE_COMPLETE_SOURCE) continue;
+    latestByGroup.set(groupKey(record.kind, record.scope), record);
+  }
+
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record.source !== 'run_check' || record.status !== 'fail') continue;
+    if (latestByGroup.get(groupKey(record.kind, record.scope)) === record) return record;
+  }
+  return null;
+}
+
+/**
+ * Reconstruct the closed run_check request for a ledger record. Scope
+ * normalization may reorder or deduplicate entries, but preserves the exact
+ * semantic kind+scope used for reconciliation.
+ */
+export function runCheckRequestForRecord(record) {
+  if (!record || typeof record.kind !== 'string' || !record.scope || typeof record.scope !== 'object') {
+    throw new Error('cannot reconstruct run_check request from an invalid ledger record');
+  }
+  if (Array.isArray(record.scope.paths) && record.scope.paths.length) {
+    return { kind: record.kind, paths: [...record.scope.paths] };
+  }
+  if (Array.isArray(record.scope.targets) && record.scope.targets.length) {
+    return { kind: record.kind, targets: [...record.scope.targets] };
+  }
+  if (typeof record.scope.profile === 'string' && record.scope.profile) {
+    return { kind: record.kind, profile: record.scope.profile };
+  }
+  throw new Error(`cannot reconstruct run_check request for ${record.kind}: unsupported scope`);
+}
+
+/**
  * `corrupted` (from `readValidationLedger`) always wins: a ledger that lost
  * even one line cannot be trusted to have kept every fail/infra_error record,
  * so it is never treated as evidence of VERIFIED. "Did the final checks.final
