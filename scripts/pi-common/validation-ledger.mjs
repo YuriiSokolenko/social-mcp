@@ -167,38 +167,54 @@ export function reconcile(records) {
 }
 
 /**
- * Returns the most recent run_check failure that still requires exact-scope
- * recovery. Only a later PASS for that exact kind+scope resolves the recovery
- * obligation. timeout/invalid/infra_error remain non-success evidence and do
- * not clear it; broader or different scopes are separate groups.
+ * Returns the single active exact-scope run_check recovery obligation.
  *
- * This is intentionally stricter than reconcile(): the general verification
- * projection remains last-write-wins, while recovery must never disappear
- * merely because a retry failed in a different way.
+ * A recoverable `fail` opens one obligation. While it is open, unrelated
+ * broader/different scopes never satisfy it and never create a queue of stale
+ * obligations behind it. Only another authoritative run_check for the exact
+ * same kind+scope can close that recovery episode:
+ * - pass: recovered successfully;
+ * - timeout/invalid/infra_error: stop forcing retries and leave the ledger's
+ *   normal fail-closed verification projection to report the blocked state;
+ * - fail: keep recovery open, with the newest exact failure as its evidence.
+ *
+ * This intentionally models recovery as one state machine rather than deriving
+ * a backlog from every historical failed scope in the append-only ledger.
  */
 export function latestUnresolvedRunCheckFailure(records) {
-  // Recovery is stricter than the general verification projection. Only a
-  // later PASS of the exact same kind+scope resolves a failed run_check.
-  // timeout/invalid/infra_error are not success and therefore cannot erase
-  // the obligation to rerun that failed scope.
-  const passedLater = new Set();
-  for (let index = records.length - 1; index >= 0; index -= 1) {
-    const record = records[index];
-    if (record.source === FINAL_PIPELINE_COMPLETE_SOURCE) continue;
-    const key = groupKey(record.kind, record.scope);
-    if (record.status === 'pass') {
-      passedLater.add(key);
+  let recovery = null;
+  let recoveryKey = null;
+
+  for (const record of records) {
+    if (record.source !== 'run_check') continue;
+
+    if (!recovery) {
+      if (record.status === 'fail') {
+        recovery = record;
+        recoveryKey = groupKey(record.kind, record.scope);
+      }
       continue;
     }
-    if (
-      record.source === 'run_check' &&
-      record.status === 'fail' &&
-      !passedLater.has(key)
-    ) {
-      return record;
+
+    if (groupKey(record.kind, record.scope) !== recoveryKey) {
+      // A broader/different scope cannot satisfy or replace the current exact
+      // recovery obligation.
+      continue;
     }
+
+    if (record.status === 'fail') {
+      recovery = record;
+      continue;
+    }
+
+    // Any exact non-fail outcome closes the forced-retry episode. pass means
+    // successful recovery; timeout/invalid/infra_error remain fail-closed in
+    // computeVerificationState via normal exact-group reconciliation.
+    recovery = null;
+    recoveryKey = null;
   }
-  return null;
+
+  return recovery;
 }
 
 /**
