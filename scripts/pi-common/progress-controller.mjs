@@ -571,8 +571,17 @@ export class ProgressController {
           this.evidenceUnlockUsedSinceProgress = true;
           this.productiveEvidenceRemaining = 1;
           this.productiveState = 'evidence_allowed';
-        } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool && this.verificationPermits > 0) {
-          acceptedVerificationCall = true;
+        } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
+          if (this.verificationPermits > 0) {
+            acceptedVerificationCall = true;
+          } else {
+            return {
+              block: true,
+              reason: this.verificationState === 'exhausted'
+                ? `BLOCKED: ${toolName} is exhausted for the current mutation state. A new successful mutation is required before another focused verification.`
+                : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
+            };
+          }
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
             block: true,
@@ -588,7 +597,18 @@ export class ProgressController {
             reason: 'BLOCKED: one evidence action is already permitted. Execute that evidence action before declaring another blocker.',
           };
         }
-        if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
+        if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
+          if (this.verificationPermits > 0) {
+            acceptedVerificationCall = true;
+          } else {
+            return {
+              block: true,
+              reason: this.verificationState === 'exhausted'
+                ? `BLOCKED: ${toolName} is exhausted for the current mutation state. A new successful mutation is required before another focused verification.`
+                : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
+            };
+          }
+        } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           const semanticFallback = this.semanticLookupAwaitingRead &&
             !this.semanticFallbackEvidenceUsed &&
             toolName !== 'read' &&
