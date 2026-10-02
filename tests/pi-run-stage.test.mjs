@@ -267,7 +267,7 @@ test('restored implementer env is present in the Pi child when the result-tool e
   assert.equal(invocation.pi.options.env.PI_RESUME_ACTIVE, 'true');
   assert.equal(invocation.pi.options.env.PI_RESUME_PATCH, resumePatch);
   assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR, undefined);
-  assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
+  assert.ok(invocation.pi.args.includes(join(workspace, 'scripts', 'pi-implementer-result-tool.mjs')));
 });
 
 test('validation-repair env is present in the Pi child when the result-tool extension is loaded', () => {
@@ -278,7 +278,7 @@ test('validation-repair env is present in the Pi child when the result-tool exte
   assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR, 'true');
   assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR_ATTEMPT, '1');
   assert.equal(invocation.pi.options.env.PI_CALL, 'repair');
-  assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
+  assert.ok(invocation.pi.args.includes(join(workspace, 'scripts', 'pi-implementer-result-tool.mjs')));
 });
 
 test('fresh implementer starts without restored or validation-repair mode env', () => {
@@ -288,7 +288,7 @@ test('fresh implementer starts without restored or validation-repair mode env', 
   assert.equal(invocation.pi.options.env.PI_RESUME_ACTIVE, undefined);
   assert.equal(invocation.pi.options.env.PI_RESUME_PATCH, undefined);
   assert.equal(invocation.pi.options.env.PI_VALIDATION_REPAIR, undefined);
-  assert.ok(invocation.pi.args.includes(`${workspace}/scripts/pi-implementer-result-tool.mjs`));
+  assert.ok(invocation.pi.args.includes(join(workspace, 'scripts', 'pi-implementer-result-tool.mjs')));
 });
 
 test('only stages offering the coding session persist a forkable session', () => {
