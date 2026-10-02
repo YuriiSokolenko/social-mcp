@@ -52,7 +52,7 @@ export default function (pi) {
     if (!sawRejectedTurn && message?.stopReason === 'error') {
       sawRejectedTurn = true;
       const errorMessage = String(message?.errorMessage ?? '');
-      const match = /^(\\d{3})(?=\\s|$)/.exec(errorMessage.trim());
+      const match = /^(\\d{3})(?=[:\\s]|$)/.exec(errorMessage.trim());
       console.error('PI_LIVE_COMPLETIONS_PROVIDER_ERROR ' + JSON.stringify({
         status: match ? Number(match[1]) : null,
         errorMessage,
@@ -85,7 +85,7 @@ export default function (pi) {
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
     assert.equal(result.error, undefined, result.error?.message);
     assert.equal(result.status, 0, output);
-    assert.match(output, /PI_LIVE_COMPLETIONS_PROVIDER_ERROR \{"status":400,"errorMessage":"400 /, output);
+    assert.match(output, /PI_LIVE_COMPLETIONS_PROVIDER_ERROR \{"status":400,"errorMessage":"400: /, output);
     assert.match(output, /PI_LIVE_COMPLETIONS_RECOVERED /, output);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
