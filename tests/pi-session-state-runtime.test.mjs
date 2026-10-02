@@ -16,6 +16,8 @@ test('runtime materializes completed transitions into context and tool surface',
     const context = path.join(dir, 'issue.json');
     const loader = path.join(dir, 'loader.mjs');
     const expectedFinalPipeline = projectConfig().checks.final.map(step => step.name).join(' -> ');
+    const expectedFinalGuidance =
+      `Authoritative final checks still run automatically after submit_result and before publication: ${expectedFinalPipeline}.`;
     fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
     fs.writeFileSync(path.join(dir, 'example.py'), 'value = 1\n');
     fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
@@ -84,15 +86,7 @@ test('runtime materializes completed transitions into context and tool surface',
       assert.ok(!active.includes('run_check'), 'run_check hidden immediately after its permit is consumed');
       const validationGuidance = messages.slice(validationMessageStart).join('\n');
       assert.match(validationGuidance, /run_check is exhausted for the current mutation state and is unavailable now/);
-      assert.match(
-        validationGuidance,
-        new RegExp('Authoritative final checks still run automatically after submit_result and before publication: ' +
-          "${expectedFinalPipeline}".replace(/[.*+?^$()|[\]\\]/g, '\\      assert.match(validationGuidance, /run_check is exhausted for the current mutation state and is unavailable now/);
-      assert.match(validationGuidance, /Authoritative final checks still run automatically after submit_result and before publication: ruff -> git diff --check -> pytest/);
-      assert.doesNotMatch(validationGuidance, /run_check is available once for the current mutation state/);
-
-      await call('subagents_enable', {}, { enables: 'subagent' });')),
-      );
+      assert.ok(validationGuidance.includes(${JSON.stringify(expectedFinalGuidance)}));
       assert.doesNotMatch(validationGuidance, /run_check is available once for the current mutation state/);
 
       await call('edit', { path: 'example.py' });
