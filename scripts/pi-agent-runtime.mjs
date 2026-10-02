@@ -1559,9 +1559,15 @@ export default function (pi) {
     // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
     // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
     // run_check for controller policy after visibility has been checked.
+    // retry_last_failed_check is a runtime-owned recovery pseudo-tool. Even while hidden,
+    // it must reach the recovery policy below so callers get the deterministic recovery-state
+    // reason (corrupt ledger / no pending failure / not available in this action state) rather
+    // than being misclassified as an ordinary unavailable-tool attempt.
+    const recoveryPolicyTool = event.toolName === RETRY_FAILED_CHECK_TOOL;
     const enforceActiveSurface =
       lastSurfaceSignature !== null &&
       !alreadySatisfiedTransition &&
+      !recoveryPolicyTool &&
       !activeToolNames.includes(event.toolName);
     if (enforceActiveSurface) {
       unavailableToolAttempts += 1;
