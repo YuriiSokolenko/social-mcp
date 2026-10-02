@@ -11,6 +11,7 @@
   },
   "labels": {
     "queued": "dispatcher:ready",
+    "triageReady": "triage:ready",
     "ready": "pi:ready",
     "running": "pi:running",
     "pr": "pi:mr-created",
