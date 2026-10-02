@@ -250,7 +250,6 @@ test('package-root guard ignores unrelated top-level directories and supports in
     );
 
     fs.writeFileSync(path.join(root, 'demo_pkg', '__init__.py'), '');
-    fs.writeFileSync(path.join(root, 'demo_pkg', '__init__.py'), '');
     assert.equal(
       duplicatePackageRootDiagnostics(root, { canonicalRoots: ['src'], allowDuplicatePackages: [] }).length,
       1,
