@@ -93,6 +93,50 @@ export function disableThinkingInPayload(payload) {
   };
 }
 
+// Both OpenAI-compatible Chat Completions and Responses requests accept tool_choice="required".
+// The active Pi tool surface has already been reduced to the valid action_required tools before
+// the request is built, so this forces a real tool call without choosing the tool on the model's
+// behalf. The runtime keeps this request constraint armed until the provider emits a tool call;
+// transport retries or ceiling-hit responses must not consume it. Pi surfaces rejected provider
+// requests as turn_end error messages, so a forced 400/422 gets one runtime continuation without
+// provider-level forcing. Other provider errors leave the requirement armed in case Pi itself retries.
+export function requireToolChoiceInPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
+    return payload;
+  }
+  return { ...payload, tool_choice: 'required' };
+}
+
+export function providerErrorStatus(message) {
+  if (message?.stopReason !== 'error') return null;
+
+  const structuredCandidates = [
+    message?.status,
+    message?.statusCode,
+    message?.error?.status,
+    message?.error?.statusCode,
+  ];
+  for (const candidate of structuredCandidates) {
+    const status = Number(candidate);
+    if (Number.isInteger(status) && status >= 100 && status <= 599) return status;
+  }
+
+  const text = String(message?.errorMessage ?? '').trim();
+  // openai-completions surfaces OpenAI SDK Error.message strings such as
+  // "400: <body>", "400 <json-body>", "400 status code (no body)", or
+  // "BadRequestError: 422 ...". Keep this intentionally narrow: arbitrary prose such as
+  // "Maximum context: 400 tokens" or "500 tokens exceeded" is not an HTTP status.
+  const sdkMatch =
+    /^(?:([45]\d{2})(?::(?:\s|$)|\s+(?=(?:status code\b|[\[{])))|[A-Za-z_$][\w.$]*Error:\s*([45]\d{2})(?=[:\s]|$))/.exec(text);
+  if (sdkMatch) return Number(sdkMatch[1] ?? sdkMatch[2]);
+
+  // openai-responses / azure-openai-responses / mistral use Pi's explicit API-error prefix.
+  const apiMatch = /\bAPI error \((\d{3})\):/.exec(text);
+  if (apiMatch) return Number(apiMatch[1]);
+
+  return null;
+}
+
 // Set (only) for the forked coding session: switches this runtime into coding-session mode.
 function codingSessionSpec(env = process.env) {
   try {
@@ -395,6 +439,8 @@ export default function (pi) {
   let actionTurnAttemptedTool = false;
   let actionRequiredProseOnlyTurns = 0;
   let ceilingWithoutToolTurns = 0;
+  let requireToolOnNextProviderRequest = false;
+  let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
@@ -485,6 +531,35 @@ export default function (pi) {
     );
   }
 
+  function recordRuntimeAbort(failureCode, reason, details = {}) {
+    const record = {
+      ...details,
+      schema_version: 1,
+      stage,
+      failure_class: 'model_execution_abort',
+      failure_code: failureCode,
+      reason,
+    };
+    // A coding-session fork is recoverable by its parent Implementer. Keep its abort in logs,
+    // but never let a nested fork leave job-level failure provenance behind.
+    if (codingSession) {
+      console.error(`PI_RUNTIME_FAILURE_NESTED ${JSON.stringify(record)}`);
+      return;
+    }
+    const failureFile = String(process.env.PI_RUNTIME_FAILURE_FILE ?? '').trim();
+    if (!failureFile) return;
+    try {
+      fs.mkdirSync(path.dirname(failureFile), { recursive: true });
+      const tempFile = `${failureFile}.${process.pid}.${randomUUID()}.tmp`;
+      fs.writeFileSync(tempFile, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      fs.renameSync(tempFile, failureFile);
+      console.error(`PI_RUNTIME_FAILURE ${JSON.stringify(record)}`);
+    } catch (error) {
+      // Failure classification is best-effort metadata; it must never suppress the watchdog abort.
+      console.error(`PI_RUNTIME_FAILURE_WRITE_ERROR ${JSON.stringify({ stage, failureCode, error: String(error?.message ?? error) })}`);
+    }
+  }
+
   async function handleLoopResult(loopResult, ctx) {
     if (!loopResult?.tripped) return;
     const metric = {
@@ -553,21 +628,41 @@ export default function (pi) {
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
 
-  // Coding session only: enforce thinking off on the wire and record how fast it acts.
+  // Provider-request patches are deliberately narrow:
+  // - coding sessions keep thinking disabled on every request;
+  // - after the first prose-only Implementer action_required violation, requests keep
+  //   tool_choice="required" until the model actually attempts one exposed tool. Pi has already
+  //   restricted payload.tools to the valid action surface, so the model still chooses direct
+  //   mutation vs coding session vs submit/escape hatch.
   let codingReadyAt = null;
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
-  if (codingSession) {
-    let patchedRequests = 0;
+  if (stage === 'implementer') {
+    let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
-      const patched = disableThinkingInPayload(event.payload);
-      if (patched !== event.payload && ++patchedRequests === 1) {
+      forcedProviderRequestInFlight = false;
+      let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
+      if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
         codingSessionLog('thinking_disabled', {
           side: 'fork',
           sessionId: codingSession.sessionId,
           enableThinking: patched.chat_template_kwargs.enable_thinking,
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
         });
+      }
+      if (requireToolOnNextProviderRequest) {
+        const productiveState = controller.productiveProgressState();
+        if (productiveState !== 'action_required') {
+          requireToolOnNextProviderRequest = false;
+          console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
+        } else {
+          const constrained = requireToolChoiceInPayload(patched);
+          if (constrained !== patched) {
+            forcedProviderRequestInFlight = true;
+            console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({ stage, mode: 'required', activeTools: pi.getActiveTools() })}`);
+            patched = constrained;
+          }
+        }
       }
       return patched;
     });
@@ -1062,9 +1157,16 @@ export default function (pi) {
     }
     const productiveState = controller.productiveProgressState();
     const blocked = controller.checkToolCall(event.toolName, event.input);
-    // A repeated already-completed transition is not a real tool attempt: it must not reset the
-    // prose-only / ceiling-without-tool watchdogs.
-    if (!blocked?.alreadySatisfied) actionTurnAttemptedTool = true;
+    // Any provider-emitted tool call satisfies the transport-level forcing requirement, even if
+    // the controller later classifies it as already completed. Progress accounting remains stricter:
+    // an already-satisfied transition still does not reset prose/ceiling watchdogs.
+    if (requireToolOnNextProviderRequest) {
+      requireToolOnNextProviderRequest = false;
+      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({ stage, tool: event.toolName, alreadySatisfied: blocked?.alreadySatisfied === true })}`);
+    }
+    if (!blocked?.alreadySatisfied) {
+      actionTurnAttemptedTool = true;
+    }
     if (blocked) {
       if (blocked.alreadySatisfied) {
         console.warn(`PI_ALREADY_SATISFIED ${JSON.stringify({ stage, ...controller.lastAlreadySatisfied, suppressed: true, productive: false })}`);
@@ -1268,6 +1370,39 @@ export default function (pi) {
   });
 
   pi.on('turn_end', async (event, ctx) => {
+    const status = providerErrorStatus(event.message);
+    const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
+    forcedProviderRequestInFlight = false;
+
+    // Pi 0.79.4 surfaces provider 4xx failures as assistant error turns; its
+    // after_provider_response hook is not emitted on this path. An error turn is transport
+    // failure, not model prose, so it must not consume the prose/ceiling watchdogs.
+    if (forcedRequestErrored && [400, 422].includes(status)) {
+      requireToolOnNextProviderRequest = false;
+      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({
+        stage,
+        reason: 'provider_request_rejected',
+        status,
+        source: 'turn_end',
+      })}`);
+      // Rarely, Pi may also classify the 400/422 body text as retryable; in that case this
+      // queued steer can be delivered in addition to Pi's own retry. The forcing flag is already
+      // cleared, so the overlap is bounded and cannot create a forced-request loop.
+      await pi.sendUserMessage(
+        'RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing and call one exposed action tool immediately.',
+        { deliverAs: 'steer' },
+      );
+      // Pi continues because sendUserMessage() queues a steer consumed by its post-agent-run loop;
+      // turn_end return values are not part of that continuation contract.
+      return undefined;
+    }
+    if (event.message?.stopReason === 'error') {
+      // Provider/transport error turns are not model attempts: do not consume prose/ceiling
+      // watchdogs or one-shot mutation budget. Any active grant remains available if Pi retries.
+      console.warn(`PI_PROVIDER_ERROR_TURN ${JSON.stringify({ stage, status, forced: forcedRequestErrored })}`);
+      return undefined;
+    }
+
     const outputTokens = Number(event.message?.usage?.output || 0);
     if (codingSession && !codingFirstResponseLogged) {
       codingFirstResponseLogged = true;
@@ -1332,9 +1467,29 @@ export default function (pi) {
     );
 
     if (actionRequiredProseOnlyTurns >= 2) {
+      recordRuntimeAbort(
+        'PI_ACTION_REQUIRED_ABORT',
+        'second consecutive prose-only action-required turn; aborting stage',
+        { actionRequiredProseOnlyTurns, ceilingWithoutToolTurns },
+      );
       console.error('PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn; aborting stage');
       ctx.abort();
       return;
+    }
+
+    // The first genuine prose-only violation in the productive Implementer state gets one
+    // provider-level retry constraint. Output-ceiling turns are handled by their independent
+    // watchdog and are intentionally not converted into prose strikes.
+    if (
+      stage === 'implementer' &&
+      productiveActionRequired &&
+      actionRequiredProseOnlyTurns === 1 &&
+      !responseHitOutputCeiling &&
+      !actionTurnAttemptedTool &&
+      !controller.turnMadeProgress
+    ) {
+      requireToolOnNextProviderRequest = true;
+      console.warn('PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED: next provider request requires one exposed tool call');
     }
 
     ceilingWithoutToolTurns = nextCeilingWithoutToolTurns(ceilingWithoutToolTurns, {
@@ -1344,7 +1499,13 @@ export default function (pi) {
       responseHitOutputCeiling,
     });
     if (ceilingWithoutToolTurns >= MAX_CEILING_WITHOUT_TOOL_TURNS) {
-      console.error(`PI_ACTION_REQUIRED_ABORT: ${ceilingWithoutToolTurns} consecutive action-required responses hit the output ceiling without a tool call; aborting stage`);
+      const reason = `${ceilingWithoutToolTurns} consecutive action-required responses hit the output ceiling without a tool call; aborting stage`;
+      recordRuntimeAbort(
+        'PI_ACTION_REQUIRED_ABORT',
+        reason,
+        { actionRequiredProseOnlyTurns, ceilingWithoutToolTurns },
+      );
+      console.error(`PI_ACTION_REQUIRED_ABORT: ${reason}`);
       ctx.abort();
       return;
     }

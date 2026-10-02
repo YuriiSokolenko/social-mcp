@@ -81,6 +81,8 @@ Pi agents have no control-plane create/edit/delete/rename/review/repair/auto-mer
 
 Trusted Pi work runs on N150 self-hosted runners. External/untrusted PR code must not execute there.
 
+`PI_RUNTIME_FAILURE_FILE` is diagnostic provenance, not an authorization boundary. It lives under `$RUNNER_TEMP`, which an Implementer shell/tool process may be able to write, so its contents must never authorize publication, review, or merge, bypass deterministic validation, or override GitHub state. Workflow consumers accept only the versioned `model_execution_abort` schema and known failure codes, and render fixed trusted text instead of publishing file-controlled strings into Actions commands or GitHub comments. Unknown, malformed, or future codes fail closed to `runtime_failure_metadata_invalid`. The file is used only to refine the human-facing classification of an already-established failed/no-terminal-result path.
+
 Workflows receive the minimum identifier they need and load titles, labels, branches, SHAs, and current status from GitHub. Reusable GitHub REST routes live in `scripts/pi-common/github-api.mjs`; workflow YAML must not duplicate them with inline `curl`. No-input workflow wakes use `scripts/pi-common/workflow-dispatch.mjs`.
 
 ```text

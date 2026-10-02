@@ -66,6 +66,7 @@ jobs:
       - name: Initialize implementation result
         run: |
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
+          echo "PI_RUNTIME_FAILURE_FILE=$RUNNER_TEMP/pi-runtime-failure-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_VALIDATION_LEDGER_FILE=$RUNNER_TEMP/pi-validation-ledger-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue
@@ -189,6 +190,9 @@ jobs:
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
             push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_PUBLISHED}" origin ":refs/heads/pi/issue-${ISSUE}-checkpoint"
 
+      # This also handles a failed implementation backend with no repository changes:
+      # checkpoint runs under always(), publishes changed=false, and routes the durable abort
+      # provenance here while the job itself remains failed.
       - name: Mark no-change result
         if: always() && !cancelled() && steps.checkpoint.outputs.changed == 'false'
         env:
@@ -208,6 +212,28 @@ jobs:
             node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human               "Implementation is blocked pending human clarification: $BLOCKED_REASON"
             exit 0
           fi
+          if [ -s "$PI_RUNTIME_FAILURE_FILE" ]; then
+            if jq -e '
+              type == "object" and
+              .schema_version == 1 and
+              (.failure_class | type == "string") and
+              (.failure_code | type == "string") and
+              (.reason | type == "string") and
+              .failure_class == "model_execution_abort" and
+              .failure_code == "PI_ACTION_REQUIRED_ABORT"
+            ' "$PI_RUNTIME_FAILURE_FILE" >/dev/null 2>&1; then
+              FAILURE_CLASS="model_execution_abort"
+              FAILURE_CODE="PI_ACTION_REQUIRED_ABORT"
+              FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"
+            else
+              FAILURE_CLASS="execution_failure"
+              FAILURE_CODE="runtime_failure_metadata_invalid"
+              FAILURE_REASON="Runtime failure metadata was invalid; inspect the Actions log and model trace"
+            fi
+            node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human               "Pi execution aborted before terminal submission [$FAILURE_CLASS/$FAILURE_CODE]: $FAILURE_REASON"
+            echo "::error::Implementation execution aborted [$FAILURE_CLASS/$FAILURE_CODE]: $FAILURE_REASON"
+            exit 1
+          fi
           node "$GITHUB_WORKSPACE/scripts/pi-transition.mjs" issue needs-human             "Pi completed the task but produced no repository changes. Human review is required."
           echo "::error::Implementation completed without repository changes."
           exit 1
@@ -225,7 +251,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          MESSAGE="Pi workflow failed. Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ -s "$PI_RUNTIME_FAILURE_FILE" ]; then
+            if jq -e '
+              type == "object" and
+              .schema_version == 1 and
+              (.failure_class | type == "string") and
+              (.failure_code | type == "string") and
+              (.reason | type == "string") and
+              .failure_class == "model_execution_abort" and
+              .failure_code == "PI_ACTION_REQUIRED_ABORT"
+            ' "$PI_RUNTIME_FAILURE_FILE" >/dev/null 2>&1; then
+              FAILURE_CLASS="model_execution_abort"
+              FAILURE_CODE="PI_ACTION_REQUIRED_ABORT"
+              FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"
+            else
+              FAILURE_CLASS="execution_failure"
+              FAILURE_CODE="runtime_failure_metadata_invalid"
+              FAILURE_REASON="Runtime failure metadata was invalid; inspect the Actions log and model trace"
+            fi
+            MESSAGE="Pi execution aborted before terminal submission [$FAILURE_CLASS/$FAILURE_CODE]: $FAILURE_REASON. Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          else
+            MESSAGE="Pi workflow failed. Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi
           if git ls-remote --exit-code origin "refs/heads/pi/issue-${ISSUE}-checkpoint" >/dev/null; then
             MESSAGE="$MESSAGE Saved work: https://github.com/${GITHUB_REPOSITORY}/tree/pi/issue-${ISSUE}-checkpoint"
           fi

@@ -41,6 +41,16 @@ export function createValidationRepairSpec(spec, error, attempt = 1) {
   });
 }
 
+function clearRuntimeFailure(spec) {
+  const failureFile = String(spec?.environment?.PI_RUNTIME_FAILURE_FILE ?? '').trim();
+  if (failureFile) fs.rmSync(failureFile, { force: true });
+}
+
+async function runBackendAttempt(spec, runBackend) {
+  clearRuntimeFailure(spec);
+  return runBackend(spec);
+}
+
 export async function runStageWithValidationRecovery(
   spec,
   runBackend,
@@ -52,7 +62,7 @@ export async function runStageWithValidationRecovery(
   if (typeof runBackend !== 'function') throw new Error('runBackend is required');
   if (typeof validate !== 'function') throw new Error('validate is required');
 
-  let result = await runBackend(spec);
+  let result = await runBackendAttempt(spec, runBackend);
   if (spec.stage !== 'implementer') return result;
   let durationMs = result.durationMs;
 
@@ -86,7 +96,7 @@ export async function runStageWithValidationRecovery(
 
       fs.rmSync(spec.artifacts.terminalResultPath, { force: true });
       const repairSpec = createValidationRepairSpec(spec, error, repairAttempt);
-      result = await runBackend(repairSpec);
+      result = await runBackendAttempt(repairSpec, runBackend);
       durationMs += result.durationMs;
     }
   }

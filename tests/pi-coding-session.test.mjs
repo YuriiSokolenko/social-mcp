@@ -137,6 +137,7 @@ function runtimeScenario(mode) {
     const scenario = path.join(dir, 'scenario.mjs');
     const work = path.join(dir, 'work');
     const terminal = path.join(dir, 'terminal.json');
+    const runtimeFailure = path.join(dir, 'runtime-failure.json');
     fs.mkdirSync(work);
     fs.writeFileSync(context, JSON.stringify({ title: 'Coding session smoke', body: 'Create generated.py and its test' }));
     fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
@@ -145,10 +146,23 @@ function runtimeScenario(mode) {
       import fs from 'node:fs';
       import { EventEmitter } from 'node:events';
       const runtimeUrl = ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
-      const { default: runtime } = await import(runtimeUrl);
+      const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'BadRequestError: 422 tool_choice unsupported' }), 422);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'InternalServerError: 500 upstream failure' }), 500);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'hp-laguna API error (422): unsupported' }), 422);
+      assert.equal(providerErrorStatus({ stopReason: 'error', status: 429, errorMessage: 'ignored' }), 429);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'Maximum context: 400 tokens' }), null);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: 'fetch failed: 422 something' }), null);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '500 tokens exceeded' }), null);
+      assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400abc' }), null);
+      assert.equal(providerErrorStatus({ stopReason: 'stop', errorMessage: '400 nope' }), null);
       const mode = ${JSON.stringify(mode)};
       const cwd = ${JSON.stringify(work)};
       const terminal = ${JSON.stringify(terminal)};
+      const runtimeFailure = ${JSON.stringify(runtimeFailure)};
       const controlScripts = ${JSON.stringify(path.dirname(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).pathname))};
       const sessionFile = ${JSON.stringify(path.join(dir, 'parent-session.jsonl'))};
       const bus = new EventEmitter();
@@ -166,7 +180,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (mode !== 'ceiling-draft') throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -231,6 +245,17 @@ function runtimeScenario(mode) {
         childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
         childTools.get('submit_result').execute = async () => { fs.writeFileSync(terminal, 'submitted\\n'); return { content: [{ type: 'text', text: 'submitted' }] }; }; // same marker terminalResult() writes
         let turn = 0;
+        if (mode === 'fork-prose-force') {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
+          const actionPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const forced = providerPatch({ payload: actionPayload }, childCtx);
+          assert.equal(forced.tool_choice, 'required', 'coding-session action_required uses the same forced-tool rule');
+        }
         const childCall = async (name, input) => {
           childHandlers.get('turn_start')({ turnIndex: turn });
           if (!definition.tools.includes(name)) { turn++; return { block: true, reason: name + ' is not in the agent tool allowlist' }; }
@@ -260,6 +285,14 @@ function runtimeScenario(mode) {
           assert.match((await childCall('write', { path: '.git/hooks/pre-commit', content: 'x' })).reason, /cannot target .git/);
         }
         await childCall('write', { path: 'generated.py', content: 'REQUIRED_CONSTANT = "' + constant + '"\\nHELP = "q: quit\\\\nr: restart"\\n' });
+        if (mode === 'fork-prose-force') {
+          const actionPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          assert.equal(providerPatch({ payload: actionPayload }, childCtx).tool_choice, undefined, 'child tool call clears forcing');
+        }
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
@@ -288,7 +321,10 @@ function runtimeScenario(mode) {
       // The parent also carries the real implementer result tool (and its submit nudge).
       const { default: parentResultTool } = await import(${JSON.stringify(new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href)});
       parentResultTool(pi);
-      assert.equal(handlers.has('before_provider_request'), false, 'the 2K parent keeps its normal provider requests');
+      assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the provider constraint hook');
+      assert.equal(handlers.has('turn_end'), true, 'the parent installs provider error recovery on the authoritative turn boundary');
+      const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
+      assert.equal(handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx), unarmedPayload, 'unarmed parent request is unchanged');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
       async function call(name, input = {}, { expectError = null } = {}) {
@@ -329,6 +365,112 @@ function runtimeScenario(mode) {
       if (mode === 'fallback' || mode === 'restored') await call('need_more_evidence', { missing: 'constant', reason: 'value' });
       await call('read', { path: 'config.py' });
       fs.rmSync(cwd + '/config.py');
+
+      if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) {
+        // First action_required response is prose only: the runtime arms provider-level
+        // required-tool forcing and keeps it armed until a real exposed tool is attempted.
+        handlers.get('turn_start')({ turnIndex: turn });
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        const exposedBeforeForce = [...active];
+        for (const name of ['write', 'begin_coding_session', 'submit_result', 'need_more_evidence']) {
+          assert.ok(exposedBeforeForce.includes(name), name + ' remains an available model choice');
+        }
+        const providerPayload = {
+          model: 'm',
+          messages: [],
+          tools: exposedBeforeForce.map(name => ({ type: 'function', function: { name } })),
+        };
+        const nonActionPayload = { model: 'm', messages: [] };
+        assert.equal(
+          handlers.get('before_provider_request')({ payload: nonActionPayload }, ctx),
+          nonActionPayload,
+          'non-action provider requests without tools are not forced',
+        );
+        if (mode === 'prose-force-provider-statuses') {
+          for (const [status, errorMessage] of [
+            [408, '408 status code (no body)'],
+            [429, '429 {"error":"rate limit"}'],
+          ]) {
+            handlers.get('turn_start')({ turnIndex: turn });
+            const retry = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+            assert.equal(retry.tool_choice, 'required', 'provider status ' + status + ' keeps tool forcing armed');
+            const boundary = await handlers.get('turn_end')({
+              turnIndex: turn++,
+              message: {
+                stopReason: 'error',
+                errorMessage,
+                usage: { output: 0 },
+              },
+            }, ctx);
+            assert.equal(boundary, undefined, 'provider error turn is ignored by model-progress accounting');
+          }
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const rejected = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(rejected.tool_choice, 'required');
+          const boundary = await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: {
+              stopReason: 'error',
+              errorMessage: '422: {"error":"tool_choice required is unsupported"}',
+              usage: { output: 0 },
+            },
+          }, ctx);
+          assert.equal(boundary, undefined, 'turn_end return value is not the continuation mechanism');
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(fallback.tool_choice, undefined, '422 clears provider-level forced-tool fallback');
+          assert.match(steers.at(-1), /provider rejected the provider-level required-tool request/);
+          process.exit(0);
+        }
+
+        const constrained = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+        assert.equal(constrained.tool_choice, 'required');
+        assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
+
+        if (mode === 'action-repeat-abort') {
+          handlers.get('turn_start')({ turnIndex: turn });
+          const repeated = await handlers.get('tool_call')({
+            toolName: 'prepare_implementation',
+            toolCallId: 'repeat-' + turn,
+            input: {},
+          }, ctx);
+          assert.ok(repeated?.alreadySatisfied || /already/i.test(String(repeated?.reason ?? '')), 'repeat is rejected as already completed');
+          const afterRepeat = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(afterRepeat.tool_choice, undefined, 'an emitted tool call consumes provider forcing even when it is a no-op');
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 1, 'already-satisfied repeat still counts as no productive action and trips the watchdog');
+          process.exit(0);
+        }
+
+        if (mode === 'prose-force-direct') {
+          // A forced response that still hits the output ceiling without a tool must not consume
+          // the requirement. The following provider request remains constrained.
+          handlers.get('turn_start')({ turnIndex: turn });
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 2048 } } }, ctx);
+          const afterCeiling = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(afterCeiling.tool_choice, 'required', 'ceiling-hit response does not consume tool forcing');
+
+          await call('write', { path: 'small.txt', content: 'small change\\n' });
+          assert.equal(fs.readFileSync(cwd + '/small.txt', 'utf8'), 'small change\\n');
+          const afterTool = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.equal(afterTool.tool_choice, undefined, 'a real tool attempt satisfies the provider constraint');
+          process.exit(0);
+        }
+
+        // Deliberately simulate a non-compliant provider/model that returned prose even though
+        // tool_choice was required. The existing second-strike watchdog must still terminate.
+        handlers.get('turn_start')({ turnIndex: turn });
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(aborts, 1);
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_class, 'model_execution_abort');
+        assert.equal(failure.failure_code, 'PI_ACTION_REQUIRED_ABORT');
+        assert.match(failure.reason, /second consecutive prose-only/);
+        console.log('RUNTIME_FAILURE_RECORD ' + JSON.stringify(failure));
+        process.exit(0);
+      }
 
       if (mode === 'ceiling-draft') {
         for (let i = 1; i <= 3; i++) {
@@ -393,7 +535,7 @@ function runtimeScenario(mode) {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context, PI_TERMINAL_RESULT_FILE: terminal,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
-        PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '' },
+        PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure },
     });
     assert.equal(result.status, 0, result.stderr + result.stdout);
     return result.stdout + result.stderr;
@@ -430,6 +572,41 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   const logs = runtimeScenario('no-submit');
   assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
+});
+
+test('first prose-only action-required retry stays forced through a ceiling turn until a real exposed tool', () => {
+  const logs = runtimeScenario('prose-force-direct');
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 2);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
+});
+
+test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover once from a forced 422', () => {
+  const logs = runtimeScenario('prose-force-provider-statuses');
+  assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 3);
+  assert.match(logs, /PI_PROVIDER_ERROR_TURN .*"status":408.*"forced":true/);
+  assert.match(logs, /PI_PROVIDER_ERROR_TURN .*"status":429.*"forced":true/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"reason":"provider_request_rejected".*"status":422.*"source":"turn_end"/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
+});
+
+test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
+  const logs = runtimeScenario('action-repeat-abort');
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"alreadySatisfied":true/);
+  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+});
+
+test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
+  const logs = runtimeScenario('fork-prose-force');
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
+});
+
+test('a deliberately non-compliant second prose-only turn still aborts with durable execution-failure metadata', () => {
+  const logs = runtimeScenario('action-prose-abort');
+  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+  assert.match(logs, /RUNTIME_FAILURE_RECORD .*"failure_class":"model_execution_abort".*"failure_code":"PI_ACTION_REQUIRED_ABORT"/);
 });
 
 test('cancellation, a missing session, and drafting loops fail closed', () => {

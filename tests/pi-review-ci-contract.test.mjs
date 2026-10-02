@@ -86,7 +86,7 @@ test('implementer integrates latest dev before shared post-backend validation an
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   assert.doesNotMatch(tool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
+  assert.match(validation, /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
   assert.match(runner, /return await runSelectedStage\(spec, \{ backend, workspace \}\)/);
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
@@ -703,7 +703,7 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.ok(guard >= 0);
   assert.ok(guard < tool.indexOf('integrateLatestDev({', guard));
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
-  assert.match(validation, /result = await runBackend\(spec\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
+  assert.match(validation, /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{ cwd: spec\.cwd, ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE, backend: result\.backend \}\)/);
   for (const field of ['title', 'summary', 'security_notes', 'limitations']) {
     assert.match(tool, new RegExp(field + ".*Required for fresh changed work"));
   }
@@ -938,6 +938,51 @@ test('text architecture map is maintained only for architecture-changing work', 
   assert.match(reviewer, /docs\/architecture\/PROJECT_MAP\.md/);
   assert.match(architect, /docs\/architecture\/PROJECT_MAP\.md/);
   assert.match(context, /docs\/architecture\/PROJECT_MAP\.md/);
+});
+
+test('implementer action-required aborts keep defensive execution-failure provenance through publication fallback', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  const overview = fs.readFileSync('docs/CI_PIPELINE_OVERVIEW.md', 'utf8');
+
+  assert.match(runtime, /tool_choice: 'required'/);
+  assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED/);
+  assert.match(runtime, /failure_class: 'model_execution_abort'/);
+  assert.match(runtime, /PI_RUNTIME_FAILURE_FILE/);
+
+  assert.match(workflow, /PI_RUNTIME_FAILURE_FILE=\$RUNNER_TEMP\/pi-runtime-failure-/);
+  assert.match(workflow, /Pi execution aborted before terminal submission \[\$FAILURE_CLASS\/\$FAILURE_CODE\]/);
+  assert.equal(
+    (workflow.match(/\.failure_code == "PI_ACTION_REQUIRED_ABORT"/g) ?? []).length,
+    2,
+    'both workflow consumers accept only the known runtime-abort code',
+  );
+  assert.equal(
+    (workflow.match(/\(\.reason \| type == "string"\)/g) ?? []).length,
+    2,
+    'both workflow consumers require a string reason before accepting the record',
+  );
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"/g) ?? []).length,
+    2,
+    'accepted records are rendered through fixed trusted text rather than file content',
+  );
+  assert.doesNotMatch(workflow, /FAILURE_REASON="\$\(jq/);
+  assert.doesNotMatch(workflow, /FAILURE_CODE="\$\(jq/);
+  assert.doesNotMatch(workflow, /FAILURE_CLASS="\$\(jq/);
+  assert.equal(
+    (workflow.match(/runtime_failure_metadata_invalid/g) ?? []).length,
+    2,
+    'both workflow failure consumers fail closed to an explicit invalid-metadata classification',
+  );
+  assert.match(overview, /PI_RUNTIME_FAILURE_FILE.*diagnostic provenance, not an authorization boundary/s);
+  assert.match(overview, /\$RUNNER_TEMP.*Implementer shell\/tool process may be able to write/s);
+  assert.match(overview, /must never authorize publication, review, or merge/s);
+
+  const abortIndex = workflow.indexOf('Pi execution aborted before terminal submission');
+  const genericNoChangeIndex = workflow.indexOf('Pi completed the task but produced no repository changes');
+  assert.ok(abortIndex >= 0 && genericNoChangeIndex > abortIndex, 'runtime abort is classified before generic no-change fallback');
 });
 
 test('blocked implementer outcome is a deliberate human gate', () => {
