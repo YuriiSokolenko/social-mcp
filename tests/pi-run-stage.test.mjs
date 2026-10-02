@@ -115,6 +115,10 @@ test('automatic runs use the versioned default and invalid or missing config fai
 });
 
 test('local stage runs receive a process-unique validation run id that repair specs inherit', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-local-validation-run-'));
+  const issueContext = join(dir, 'issue.json');
+  writeFileSync(issueContext, JSON.stringify({ title: 'Local task', body: 'Exercise local validation identity.' }));
+
   const { spec } = buildStageRunSpec({
     stage: 'implementer',
     cwd: '/work',
@@ -122,6 +126,8 @@ test('local stage runs receive a process-unique validation run id that repair sp
     RUNNER_TEMP: '/tmp/runner',
     GITHUB_WORKSPACE: process.cwd(),
     PI_MODEL: 'model-x',
+    ISSUE: '42',
+    PI_ISSUE_CONTEXT: issueContext,
   });
 
   assert.equal(spec.environment.PI_VALIDATION_RUN_ID, `local-${process.pid}-1`);
