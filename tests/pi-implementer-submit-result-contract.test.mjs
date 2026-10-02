@@ -6,6 +6,8 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { submitResultParameters } from '../scripts/pi-implementer-result-tool.mjs';
+
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const RESULT_TOOL_URL = new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href;
 
@@ -110,6 +112,8 @@ function runSuccessfulSubmit({ modeEnv, params }) {
       cwd: work,
       program,
       env: {
+        // The git fixture cwd is intentionally temporary, while repository
+        // configuration/contracts are loaded from the real control checkout.
         GITHUB_WORKSPACE: PROJECT_ROOT,
         PI_ISSUE: '361',
         PI_ISSUE_CONTEXT: context,
@@ -129,6 +133,17 @@ function runSuccessfulSubmit({ modeEnv, params }) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+
+test('real TypeBox submit_result transport schema stays flat while fresh changed requirements remain runtime-owned', () => {
+  const parameters = submitResultParameters();
+  assert.equal(parameters.type, 'object');
+  assert.equal(parameters.anyOf, undefined);
+  assert.equal(parameters.required, undefined);
+  assert.deepEqual(Object.keys(parameters.properties), [
+    'title', 'summary', 'changes', 'files', 'already_satisfied',
+    'blocked_reason', 'security_notes', 'limitations',
+  ]);
+});
 
 test('submit_result advertises a flat object schema and runtime returns structured missing-field errors', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-result-contract-'));
@@ -155,8 +170,6 @@ test('submit_result advertises a flat object schema and runtime returns structur
         'title', 'summary', 'changes', 'files', 'already_satisfied',
         'blocked_reason', 'security_notes', 'limitations',
       ]);
-      assert.deepEqual(tool.parameters.required, []);
-
       const complete = {
         title: 'Contract fix',
         summary: 'Strengthen submit_result publication metadata.',
