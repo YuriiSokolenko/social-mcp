@@ -354,7 +354,7 @@ function runtimeScenario(mode) {
       await call('read', { path: 'config.py' });
       fs.rmSync(cwd + '/config.py');
 
-      if (['prose-force-direct', 'prose-force-4xx', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) {
+      if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort'].includes(mode)) {
         // First action_required response is prose only: the runtime arms provider-level
         // required-tool forcing and keeps it armed until a real exposed tool is attempted.
         handlers.get('turn_start')({ turnIndex: turn });
@@ -378,10 +378,15 @@ function runtimeScenario(mode) {
         assert.equal(constrained.tool_choice, 'required');
         assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
 
-        if (mode === 'prose-force-4xx') {
-          handlers.get('after_provider_response')({ status: 400, headers: {} }, ctx);
+        if (mode === 'prose-force-provider-statuses') {
+          for (const status of [408, 429]) {
+            handlers.get('after_provider_response')({ status, headers: {} }, ctx);
+            const retry = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+            assert.equal(retry.tool_choice, 'required', 'retryable provider status ' + status + ' keeps tool forcing armed');
+          }
+          handlers.get('after_provider_response')({ status: 422, headers: {} }, ctx);
           const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-          assert.equal(fallback.tool_choice, undefined, 'provider 4xx clears forced-tool fallback');
+          assert.equal(fallback.tool_choice, undefined, 'non-retryable compatibility status clears forced-tool fallback');
           process.exit(0);
         }
 
@@ -538,9 +543,11 @@ test('first prose-only action-required retry stays forced through a ceiling turn
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
-test('a provider 4xx clears forced tool choice so compatibility retries are not trapped', () => {
-  const logs = runtimeScenario('prose-force-4xx');
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"reason":"provider_4xx".*"status":400/);
+test('retryable provider 408/429 keep forced tool choice while non-retryable 422 clears it', () => {
+  const logs = runtimeScenario('prose-force-provider-statuses');
+  assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 3);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"reason":"provider_incompatible_status".*"status":422/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"status":(?:408|429)/);
 });
 
 test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
