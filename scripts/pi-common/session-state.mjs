@@ -62,10 +62,30 @@ export class SessionTransitions {
     return lines;
   }
 
+  verificationGuidance({ verificationTool = null, verificationState = null } = {}) {
+    if (!verificationTool || !verificationState) return {
+      progressLine: '- run validation',
+      sentence: 'run validation',
+    };
+    if (verificationState === 'available') return {
+      progressLine: `- run validation with ${verificationTool} (available once for the current mutation state)`,
+      sentence: `run validation with ${verificationTool} while its current mutation permit is available`,
+    };
+    if (verificationState === 'exhausted') return {
+      progressLine: `- ${verificationTool} is exhausted for the current mutation state; a new successful mutation is required before another focused verification`,
+      sentence: `${verificationTool} is exhausted for the current mutation state; mutate successfully before validating again`,
+    };
+    return {
+      progressLine: `- ${verificationTool} is not yet available; it becomes available after a successful mutation`,
+      sentence: `${verificationTool} is not yet available; it becomes available after a successful mutation`,
+    };
+  }
+
   // Session-state block for the model; empty string when nothing has completed.
-  stateBlock() {
+  stateBlock(verification = {}) {
     const lines = this.lines();
     if (!lines.length) return '';
+    const validation = this.verificationGuidance(verification);
     return [
       'SESSION STATE (runtime-generated; not task completion)',
       '',
@@ -79,21 +99,22 @@ export class SessionTransitions {
       '- inspect/query repository',
       '- begin coding session when needed',
       '- mutate task files',
-      '- run validation',
+      validation.progressLine,
       '- submit terminal result',
     ].join('\n');
   }
 
-  transitionNotice(record) {
+  transitionNotice(record, verification = {}) {
     const subject = record.key === PREPARATION_KEY
       ? `preparation: ${record.fallback ? 'fallback-complete' : 'complete'}`
       : record.key === SUBAGENTS_ENABLE_TOOL
         ? 'subagents: enabled'
         : `${record.serverId} LSP: running`;
     const repeatTool = record.key === PREPARATION_KEY ? this.preparationTool : record.tool;
+    const validation = this.verificationGuidance(verification);
     const tail = record.key === SUBAGENTS_ENABLE_TOOL
-      ? 'If subagent evidence is needed, call need_more_evidence first; subagent(...) is then permitted for that evidence action.\nOtherwise continue implementation.'
-      : 'Continue with repository inspection, implementation, validation, or terminal result.';
+      ? `If subagent evidence is needed, call need_more_evidence first; subagent(...) is then permitted for that evidence action.\nOtherwise continue implementation; ${validation.sentence}.`
+      : `Continue with repository inspection or implementation; ${validation.sentence}; or submit the terminal result.`;
     return [
       'STATE TRANSITION COMPLETE (control transition only; the GitHub issue is not complete)',
       '',
@@ -105,11 +126,17 @@ export class SessionTransitions {
     ].join('\n');
   }
 
-  alreadySatisfiedReason(toolName, key, { actionRequired = false } = {}) {
+  alreadySatisfiedReason(toolName, key, {
+    actionRequired = false,
+    verificationTool = null,
+    verificationState = null,
+  } = {}) {
     const record = this.completed.get(key);
+    const verification = { verificationTool, verificationState };
+    const validation = this.verificationGuidance(verification);
     const next = actionRequired
-      ? 'Mutate a task file, call begin_coding_session, run validation, or submit_result now.'
-      : 'Inspect the repository, mutate task files, run validation, or submit_result.';
-    return `ALREADY_SATISFIED: ${toolName} is single-shot and already completed; it did not execute. ${this.transitionNotice(record).split('\n').slice(2, 4).join(' ')} This repeat is not progress. ${next}`;
+      ? `Mutate a task file, call begin_coding_session, or submit_result now; ${validation.sentence}.`
+      : `Inspect the repository or mutate task files; ${validation.sentence}; or submit_result.`;
+    return `ALREADY_SATISFIED: ${toolName} is single-shot and already completed; it did not execute. ${this.transitionNotice(record, verification).split('\n').slice(2, 4).join(' ')} This repeat is not progress. ${next}`;
   }
 }
