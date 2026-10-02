@@ -233,9 +233,16 @@ export function runCheckRequestForRecord(record) {
     throw new Error(`cannot reconstruct run_check request for ${record.kind}: ambiguous or unsupported scope`);
   }
 
-  if (hasPaths) return { kind: record.kind, paths: [...record.scope.paths] };
-  if (hasTargets) return { kind: record.kind, targets: [...record.scope.targets] };
-  return { kind: record.kind, profile: record.scope.profile };
+  if ((record.kind === 'python_compile' || record.kind === 'ruff') && hasPaths) {
+    return { kind: record.kind, paths: [...record.scope.paths] };
+  }
+  if (record.kind === 'pytest' && hasTargets) {
+    return { kind: record.kind, targets: [...record.scope.targets] };
+  }
+  if (record.kind === 'profile' && hasProfile) {
+    return { kind: record.kind, profile: record.scope.profile };
+  }
+  throw new Error(`cannot reconstruct run_check request for ${record.kind}: scope does not match check kind`);
 }
 
 /**
