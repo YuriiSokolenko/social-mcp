@@ -425,6 +425,35 @@ const implementer = () => new ProgressController({
   productiveProgress: { ...stageConfig('implementer').productiveProgress, startState: 'action_required' },
 }, {});
 
+test('verification lifecycle distinguishes pre-mutation, available, exhausted, and rearmed states', () => {
+  const c = implementer();
+  c.onTurnStart(0);
+  assert.equal(c.verificationLifecycleState(), 'not_yet_available');
+  assert.equal(c.verificationPermitted(), false);
+
+  assert.equal(c.checkToolCall('safe_edit', { path: 'a.py' }), undefined);
+  c.onToolExecutionEnd('safe_edit', false);
+  assert.equal(c.verificationLifecycleState(), 'available');
+  assert.equal(c.verificationPermitted(), true);
+
+  assert.equal(c.checkToolCall('run_check', { kind: 'ruff', paths: ['a.py'] }), undefined);
+  assert.equal(c.verificationLifecycleState(), 'exhausted', 'accepted check consumes the permit before execution');
+  assert.equal(c.verificationPermitted(), false);
+  c.onToolExecutionEnd('run_check', true);
+  assert.equal(c.verificationLifecycleState(), 'exhausted', 'execution errors do not restore a consumed permit');
+
+  assert.equal(c.checkToolCall('safe_edit', { path: 'a.py', n: 2 }), undefined);
+  c.onToolExecutionEnd('safe_edit', false);
+  assert.equal(c.verificationLifecycleState(), 'available', 'a new successful mutation rearms focused verification');
+  assert.equal(c.verificationPermitted(), true);
+});
+
+test('controller without a verification tool has no verification lifecycle', () => {
+  const c = new ProgressController({ maxTurns: 100, repeatThreshold: 3, requireComplexity: false }, {});
+  assert.equal(c.verificationLifecycleState(), null);
+  assert.equal(c.verificationPermitted(), false);
+});
+
 test('edit -> run_check(fail) -> edit -> run_check(pass) -> submit is a valid productive flow', () => {
   const c = implementer();
   c.onTurnStart(0);
