@@ -167,10 +167,14 @@ export function reconcile(records) {
 }
 
 /**
- * Returns the most recent run_check failure that is still authoritative for
- * its exact kind+scope. A later record for the same group replaces it by the
- * ledger's existing last-write-wins rule; broader or different scopes remain
- * separate groups and therefore cannot resolve this requirement.
+ * Returns the most recent run_check failure that still requires exact-scope
+ * recovery. Only a later PASS for that exact kind+scope resolves the recovery
+ * obligation. timeout/invalid/infra_error remain non-success evidence and do
+ * not clear it; broader or different scopes are separate groups.
+ *
+ * This is intentionally stricter than reconcile(): the general verification
+ * projection remains last-write-wins, while recovery must never disappear
+ * merely because a retry failed in a different way.
  */
 export function latestUnresolvedRunCheckFailure(records) {
   // Recovery is stricter than the general verification projection. Only a
