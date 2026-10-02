@@ -879,7 +879,12 @@ export default function (pi) {
       if (active.has('submit_result')) {
         hints.push('If the current issue, diff, and changed code are sufficient, call submit_result now with PASS or CHANGES_REQUESTED.');
       }
-      hints.push('Otherwise use exactly one currently exposed evidence tool for the unresolved review question, then decide.');
+      const reviewerEvidenceTools = activeToolNames.filter(name =>
+        !['submit_result', 'declare_task_complexity', 'set_response_budget'].includes(name)
+      );
+      if (reviewerEvidenceTools.length > 0) {
+        hints.push('Otherwise use exactly one currently exposed evidence tool for the unresolved review question, then decide.');
+      }
     }
 
     if (stage === 'implementer') {
