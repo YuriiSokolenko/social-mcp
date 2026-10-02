@@ -99,7 +99,7 @@ def parse_retry_after(value: "str | int | float", reference: datetime) -> float:
             raise ValueError(
                 f"Retry-After delta-seconds must not be negative: {value!r}"
             )
-        return float(value)
+        return float(value) + 0.0
 
     if not isinstance(value, str):
         raise ValueError(f"unsupported Retry-After value: {value!r}")
