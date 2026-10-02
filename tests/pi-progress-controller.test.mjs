@@ -559,7 +559,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /prompt-template:subagent:request/);
   assert.match(runtime, /prompt-template:subagent:response/);
   assert.match(runtime, /name: 'prepare_implementation'/);
-  assert.match(runtime, /IMPLEMENTATION_PREPARATION_SCHEMA/);
+  assert.match(runtime, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
   assert.match(runtime, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
   assert.match(runtime, /evidence_budget: \{ type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET \}/);
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
