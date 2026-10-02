@@ -54,6 +54,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
     timeout-minutes: 480
+    outputs:
+      independent_outcome: ${{ steps.independent.outcome }}
+      head_sha: ${{ steps.load.outputs.head_sha }}
+      model: ${{ inputs.model || 'default' }}
     env:
       PR: ${{ inputs.pr_number }}
       PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
@@ -76,6 +80,7 @@ jobs:
           echo "ISSUE=$(jq -r '.issue' "$CONTEXT")" >> "$GITHUB_ENV"
           echo "HEAD_REF=$(jq -r '.branch' "$CONTEXT")" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$(jq -r '.head' "$CONTEXT")" >> "$GITHUB_ENV"
+          echo "head_sha=$(jq -r '.head' "$CONTEXT")" >> "$GITHUB_OUTPUT"
           echo "REVIEW_CONTEXT=$CONTEXT" >> "$GITHUB_ENV"
 
       - name: Create review worktree
@@ -105,7 +110,9 @@ jobs:
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
 
       - name: Run independent review
+        id: independent
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
+        continue-on-error: true
         run: |
           cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
@@ -113,8 +120,17 @@ jobs:
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
           jq -r '.text' "$RUNNER_TEMP/review-result.json"
 
+      - name: Preserve reviewer trace
+        if: always() && steps.load.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-trace-pr-${{ inputs.pr_number }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-review-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Apply review result
-        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
+        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success' && steps.independent.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -145,3 +161,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" PASS
 
+  recover_failed_review:
+    needs: review
+    if: always() && contains(fromJSON('["failure","cancelled"]'), needs.review.outputs.independent_outcome)
+    runs-on: [self-hosted, linux, x64, n150, general]
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted dev
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: dev
+
+      - name: Persist failure and request bounded recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ needs.review.outputs.head_sha }}
+          REVIEW_OUTCOME: ${{ needs.review.outputs.independent_outcome }}
+          REVIEW_MODEL: ${{ needs.review.outputs.model }}
+          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" recover-failure "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
