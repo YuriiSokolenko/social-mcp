@@ -570,6 +570,7 @@ export default function (pi) {
 
     const failure = latestUnresolvedRunCheckFailure(records, {
       runId: validationRunId(),
+      stage,
     });
     if (!failure) return { failure: null, request: null, corrupted: false };
 
@@ -1146,7 +1147,7 @@ export default function (pi) {
       const result = await runCheck(ctx.cwd, params);
       const scope = normalizeScope(params, ctx.cwd);
       console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
-      appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+      const appendedRecord = appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
         kind: result.kind,
         scope,
         status: result.status,
@@ -1163,10 +1164,18 @@ export default function (pi) {
       if (retry) {
         console.info(`PI_RUN_CHECK_RETRY ${JSON.stringify({ stage, kind: result.kind, scope, status: result.status })}`);
       }
+      // Re-read recovery state after appending the result. Emit retry guidance
+      // only when this exact failed record became the active deterministic
+      // recovery obligation and its scope can actually be reconstructed.
+      const recoveryAfterAppend = failedCheckRecoveryState();
       const exactRetryAvailable = Boolean(
         result.status === 'fail' &&
         stage === 'implementer' &&
         config.productiveProgress?.verificationTool === 'run_check' &&
+        recoveryAfterAppend.request &&
+        recoveryAfterAppend.failure?.seq === appendedRecord.seq &&
+        recoveryAfterAppend.failure?.run_id === appendedRecord.run_id &&
+        recoveryAfterAppend.failure?.stage === appendedRecord.stage &&
         (
           pi.getActiveTools().includes('run_check') ||
           verificationToolHiddenByPermitGate
