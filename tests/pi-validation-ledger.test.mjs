@@ -251,6 +251,44 @@ test('a repeated exact fail refreshes the active recovery evidence without creat
   assert.equal(latestUnresolvedRunCheckFailure([first, second]), second);
 });
 
+test('failed-check recovery is scoped to the current run and validation attempt', () => {
+  const oldRun = focused({
+    kind: 'ruff',
+    scope: { paths: ['old.py'] },
+    status: 'fail',
+    run_id: 'run-0',
+    attempt_id: 'primary',
+  });
+  const primary = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_primary.py::test_case'] },
+    status: 'fail',
+    run_id: 'run-1',
+    attempt_id: 'primary',
+  });
+  const repair = focused({
+    kind: 'python_compile',
+    scope: { paths: ['repair.py'] },
+    status: 'fail',
+    run_id: 'run-1',
+    attempt_id: 'validation-repair:1',
+  });
+  const records = [oldRun, primary, repair];
+
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1', attemptId: 'primary' }),
+    primary,
+  );
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-1', attemptId: 'validation-repair:1' }),
+    repair,
+  );
+  assert.equal(
+    latestUnresolvedRunCheckFailure(records, { runId: 'run-2', attemptId: 'primary' }),
+    null,
+  );
+});
+
 test('a ledger with an unparseable line is treated as blocked, never as evidence of VERIFIED', () => {
   // All records that DID parse look fully green. Fail-closed means the
   // corrupted flag alone must still force BLOCKED_INFRA: the dropped line
