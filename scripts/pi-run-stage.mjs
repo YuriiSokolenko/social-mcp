@@ -211,7 +211,7 @@ export async function runSelectedStage(spec, { backend, workspace }, {
   const runBackend = backend === 'mini-swe'
     ? candidate => runMiniSwe(candidate)
     : candidate => runPi(candidate, { workspace });
-  const failureFile = String(spec.environment.PI_RUNTIME_FAILURE_FILE ?? '').trim();
+  const failureFile = String(spec?.environment?.PI_RUNTIME_FAILURE_FILE ?? '').trim();
   if (failureFile) fs.rmSync(failureFile, { force: true });
   const result = await runStageWithValidationRecovery(spec, runBackend, validate ? { validate } : {});
   // A successful overall stage supersedes any recoverable nested/earlier-attempt abort.
