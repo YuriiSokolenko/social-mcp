@@ -98,8 +98,7 @@ test('prepare re-checks only triage-owned pi:needs-human issues whose body chang
       // Manual needs-human has no Triage marker and must remain durable.
       6: {
         number: 6, title: 'Human decision required', body: 'changed text',
-        labels: [{ name: 'pi:needs-human' }],
-        comments: [{ body: `<!-- pi-triage:hash:${crypto.createHash('sha1').update('old ambiguous body').digest('hex').slice(0, 16)} -->` }],
+        labels: [{ name: 'pi:needs-human' }], comments: [],
       },
     },
   }));
@@ -123,7 +122,8 @@ test('apply marks ready issues dispatcher:ready and flags needs_human issues wit
       3: {
         number: 3, state: 'open', title: 'Clarified retry',
         body: '## Goal\nClear now.\n\n## Acceptance criteria\n- Deliver the requested behavior.\n- Keep the change scoped.\n- Add focused tests.',
-        labels: [{ name: 'pi:needs-human' }], comments: [],
+        labels: [{ name: 'pi:needs-human' }],
+        comments: [{ body: `<!-- pi-triage:hash:${crypto.createHash('sha1').update('old ambiguous body').digest('hex').slice(0, 16)} -->` }],
       },
     },
   }));
