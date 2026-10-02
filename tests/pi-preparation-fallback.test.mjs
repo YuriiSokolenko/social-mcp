@@ -100,6 +100,53 @@ test('automatic large mutation budget waits for evidence completion and remains 
   assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false, 'automatic grant is not reusable');
 });
 
+test('automatic large mutation intent is discarded by a direct mutation before activation', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(2);
+  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  assert.equal(state.checkToolCall('safe_edit', { path: 'src/example.py' }), undefined);
+  state.onToolExecutionEnd('safe_edit', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.automaticLargeMutationBudgetArmed, false);
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false, 'stale planner intent must not grant a later action');
+});
+
+test('zero-evidence automatic large mutation becomes pending immediately after preparation', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(0);
+  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true);
+  assert.equal(state.largeMutationBudgetPending(), true);
+});
+
+test('explicit large mutation request clears any planner-owned armed intent', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(1);
+  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  assert.equal(state.checkToolCall('read', { path: 'src/example.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'explicit fallback' }), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.automaticLargeMutationBudgetArmed, false);
+  assert.equal(state.largeMutationBudgetPending(), true);
+});
+
 test('fallback preserves one-shot mutation budget and post-window evidence escape hatch', () => {
   const state = fallbackController();
   for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
@@ -261,6 +308,11 @@ function runtimeScenario(mode) {
         else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
         else if (mode === 'invalid-complexity') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, complexity: 'medium' } } };
         else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', evidence_budget: 1, large_mutation: false } } };
+        else if (mode === 'missing-large-mutation') {
+          const { large_mutation, ...withoutLargeMutation } = good;
+          reply = { status: 'completed', result: { kind: 'structured', value: withoutLargeMutation } };
+        }
+        else if (mode === 'invalid-large-mutation') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, large_mutation: 'true' } } };
         else if (mode === 'success' || mode === 'layout-aware' || mode === 'non-additive-target' || mode === 'small-auto' || mode === 'retry-success' && attempts === 2) reply = { status: 'completed', result: { kind: 'structured', value: good } };
         else reply = { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' };
         if (attempts === 1) {
@@ -268,7 +320,7 @@ function runtimeScenario(mode) {
           assert.equal(steps, undefined);
           assert.equal(request.result.schema.properties.steps.items.maxLength, undefined);
           assert.equal(additionalProperties, true);
-          assert.deepEqual(required, ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason']);
+          assert.deepEqual(required, ['steps', 'complexity', 'evidence_budget', 'reason']);
           assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
           assert.match(request.task, /"value"/);
           assert.match(request.task, /large_mutation/);
@@ -313,11 +365,11 @@ function runtimeScenario(mode) {
         assert.equal(blocked.block, true);
       } else {
         const prepared = await call('prepare_implementation');
-        const oneAttempt = ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
+        const oneAttempt = ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'invalid-large-mutation', 'timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
         assert.equal(attempts, oneAttempt ? 1 : 2);
         const repeated = await handlers.get('tool_call')({ toolName: 'prepare_implementation', input: {} }, ctx);
         assert.match(repeated.reason, /single-shot/);
-        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'bad-output-schema', 'invalid-complexity', 'missing-reason'].includes(mode)) {
+        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'bad-output-schema', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)) {
           assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
           assert.equal(prepared.details.complexity, null);
           assert.equal(prepared.details.evidenceBudget, fallbackEvidenceBudget);
@@ -457,7 +509,7 @@ test('planner misses structured output twice, then runtime restores the complete
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-for (const mode of ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'retry-success', 'abort', 'restored', 'overlong', 'extra-fields', 'envelope-retry']) {
+for (const mode of ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'retry-success', 'abort', 'restored', 'overlong', 'extra-fields', 'envelope-retry']) {
   test('runtime preserves preparation behavior: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
@@ -479,6 +531,14 @@ test('genuinely small edit stays on the normal mutation budget', () => {
   assert.doesNotMatch(logs, /"phase":"granted","maxTokens":16384/);
 });
 
+test('missing large_mutation planner hint defaults safely to the normal budget', () => {
+  const logs = runtimeScenario('missing-large-mutation');
+  assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
+  assert.doesNotMatch(logs, /"phase":"auto_armed"/);
+  assert.doesNotMatch(logs, /"phase":"auto_pending"/);
+  assert.doesNotMatch(logs, /"phase":"granted","maxTokens":16384/);
+});
+
 test('fallback keeps the execution prose-only guard bounded', () => {
   assert.match(runtimeScenario('prose'), /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only/);
 });
@@ -491,7 +551,11 @@ test('envelope/schema failure is retried once with repair guidance, then falls b
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-for (const [mode, pattern] of [['invalid-complexity', /invalid complexity/], ['missing-reason', /unexpected structured fields/]]) {
+for (const [mode, pattern] of [
+  ['invalid-complexity', /invalid complexity/],
+  ['invalid-large-mutation', /invalid large_mutation/],
+  ['missing-reason', /unexpected structured fields/],
+]) {
   test('normalization fails closed without inventing fields: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.match(logs, /PI_PREPARATION_FALLBACK .*/);
