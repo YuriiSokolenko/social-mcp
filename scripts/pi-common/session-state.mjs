@@ -11,6 +11,16 @@ export function mergeNewlyActiveTools(baseline, current) {
   return [...baseline, ...current.filter(name => !known.has(name))];
 }
 
+export function activeToolGuidance(activeToolNames) {
+  const names = [...new Set(
+    (Array.isArray(activeToolNames) ? activeToolNames : [])
+      .filter(name => typeof name === 'string' && name.length > 0),
+  )];
+  return names.length > 0
+    ? `CURRENTLY EXPOSED TOOLS (authoritative): ${names.join(', ')}. Call only a tool from this list.`
+    : 'CURRENTLY EXPOSED TOOLS (authoritative): none. Do not invent a tool call.';
+}
+
 export class SessionTransitions {
   constructor({ preparationTool = null } = {}) {
     this.preparationTool = preparationTool;
@@ -86,6 +96,7 @@ export class SessionTransitions {
     const lines = this.lines();
     if (!lines.length) return '';
     const validation = this.verificationGuidance(verification);
+    const activeToolNames = verification?.activeToolNames ?? null;
     return [
       'SESSION STATE (runtime-generated; not task completion)',
       '',
@@ -94,13 +105,21 @@ export class SessionTransitions {
       '',
       'These control transitions are already applied to this session. Do not repeat them.',
       'The GitHub issue itself is NOT complete.',
-      '',
-      'Valid next progress:',
-      '- inspect/query repository',
-      '- begin coding session when needed',
-      '- mutate task files',
-      validation.progressLine,
-      '- submit terminal result',
+      ...(activeToolNames == null
+        ? [
+            '',
+            'Valid next progress:',
+            '- inspect/query repository',
+            '- begin coding session when needed',
+            '- mutate task files',
+            validation.progressLine,
+            '- submit terminal result',
+          ]
+        : [
+            '',
+            activeToolGuidance(activeToolNames),
+            `Verification status: ${validation.sentence}.`,
+          ]),
     ].join('\n');
   }
 
@@ -112,9 +131,12 @@ export class SessionTransitions {
         : `${record.serverId} LSP: running`;
     const repeatTool = record.key === PREPARATION_KEY ? this.preparationTool : record.tool;
     const validation = this.verificationGuidance(verification);
-    const tail = record.key === SUBAGENTS_ENABLE_TOOL
-      ? `If subagent evidence is needed, call need_more_evidence first; subagent(...) is then permitted for that evidence action.\nOtherwise continue implementation; ${validation.sentence}.`
-      : `Continue with repository inspection or implementation; ${validation.sentence}; or submit the terminal result.`;
+    const activeToolNames = verification?.activeToolNames ?? null;
+    const tail = activeToolNames == null
+      ? (record.key === SUBAGENTS_ENABLE_TOOL
+        ? `If subagent evidence is needed, call need_more_evidence first; subagent(...) is then permitted for that evidence action.\nOtherwise continue implementation; ${validation.sentence}.`
+        : `Continue with repository inspection or implementation; ${validation.sentence}; or submit the terminal result.`)
+      : `${activeToolGuidance(activeToolNames)} Verification status: ${validation.sentence}.`;
     return [
       'STATE TRANSITION COMPLETE (control transition only; the GitHub issue is not complete)',
       '',
