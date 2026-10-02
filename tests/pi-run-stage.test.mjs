@@ -126,6 +126,7 @@ test('local stage runs receive a process-unique validation run id that repair sp
     RUNNER_TEMP: '/tmp/runner',
     GITHUB_WORKSPACE: process.cwd(),
     PI_MODEL: 'model-x',
+    PI_VALIDATION_RUN_ID: '   ',
     ISSUE: '42',
     PI_ISSUE_CONTEXT: issueContext,
   });
