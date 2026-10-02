@@ -17,13 +17,14 @@ class LRUCache:
     """A bounded least-recently-used cache.
 
     Ordering is deterministic: the oldest inserted or accessed entry is the
-    least-recently-used one. ``get`` and membership checks promote an existing
-    key to most-recently-used; ``put`` inserts or updates and evicts exactly
-    one least-recently-used entry when the cache would exceed capacity.
+    least-recently-used one. ``get`` promotes an existing key to
+    most-recently-used, while membership checks do not affect recency; ``put``
+    inserts or updates and evicts exactly one least-recently-used entry when
+    the cache would exceed capacity.
     """
 
     def __init__(self, capacity: int) -> None:
-        if not isinstance(capacity, int):
+        if isinstance(capacity, bool) or not isinstance(capacity, int):
             raise ValueError("capacity must be an integer")
         if capacity <= 0:
             raise ValueError("capacity must be a positive integer")
