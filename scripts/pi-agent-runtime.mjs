@@ -545,18 +545,34 @@ export default function (pi) {
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   // True only when this runtime itself removed the verification tool from the model
-  // surface (permit exhaustion, exact-retry substitution, or fail-closed ledger corruption).
-  // A later valid permit may restore it only in that case; unrelated removals stay removed.
+  // surface (permit exhaustion or exact-retry substitution). A later valid
+  // permit may restore it only in that case; unrelated removals stay removed.
   let verificationToolHiddenByPermitGate = false;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
 
+  function validationRunId() {
+    return `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`;
+  }
+
+  function validationAttemptId() {
+    if (process.env.PI_VALIDATION_REPAIR === 'true') {
+      return `validation-repair:${process.env.PI_VALIDATION_REPAIR_ATTEMPT ?? '1'}`;
+    }
+    return 'primary';
+  }
+
   function failedCheckRecoveryState() {
     if (stage !== 'implementer') return { failure: null, corrupted: false };
     const { records, corrupted } = readValidationLedger(process.env.PI_VALIDATION_LEDGER_FILE);
     return {
-      failure: corrupted ? null : latestUnresolvedRunCheckFailure(records),
+      failure: corrupted
+        ? null
+        : latestUnresolvedRunCheckFailure(records, {
+            runId: validationRunId(),
+            attemptId: validationAttemptId(),
+          }),
       corrupted,
     };
   }
@@ -1128,7 +1144,8 @@ export default function (pi) {
         source: 'run_check',
         stage,
         backend: 'pi',
-        run_id: `${process.env.GITHUB_RUN_ID ?? 'local'}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`,
+        run_id: validationRunId(),
+        attempt_id: validationAttemptId(),
         diagnostics_count: result.diagnostics.length,
         summary: result.summary,
         infrastructure: result.infrastructure ?? null,
@@ -1136,7 +1153,16 @@ export default function (pi) {
       if (retry) {
         console.info(`PI_RUN_CHECK_RETRY ${JSON.stringify({ stage, kind: result.kind, scope, status: result.status })}`);
       }
-      const response = result.status === 'fail'
+      const exactRetryAvailable = Boolean(
+        result.status === 'fail' &&
+        stage === 'implementer' &&
+        config.productiveProgress?.verificationTool === 'run_check' &&
+        (
+          pi.getActiveTools().includes('run_check') ||
+          verificationToolHiddenByPermitGate
+        )
+      );
+      const response = exactRetryAvailable
         ? {
             ...result,
             recovery: {
