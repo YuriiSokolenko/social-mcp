@@ -190,6 +190,9 @@ jobs:
           git -c credential.helper='!f() { echo username=x-access-token; echo password="$GH_TOKEN"; }; f' \
             push --force-with-lease="refs/heads/pi/issue-${ISSUE}-checkpoint:${PI_CHECKPOINT_PUBLISHED}" origin ":refs/heads/pi/issue-${ISSUE}-checkpoint"
 
+      # This also handles a failed implementation backend with no repository changes:
+      # checkpoint runs under always(), publishes changed=false, and routes the durable abort
+      # provenance here while the job itself remains failed.
       - name: Mark no-change result
         if: always() && !cancelled() && steps.checkpoint.outputs.changed == 'false'
         env:
