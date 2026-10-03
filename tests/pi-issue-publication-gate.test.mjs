@@ -439,6 +439,37 @@ test('checkpoint persists accepted scope before submit_result and does not creat
   });
   assert.equal(second.changed, true, 'the existing implementation diff is still checkpoint content');
   assert.equal(git('rev-parse', 'HEAD').trim(), headBefore, 'no empty scope-only commit is added');
+
+  const resultFile = path.join(root, 'result.json');
+  fs.writeFileSync(path.join(work, 'second.py'), 'value = 2\n');
+  writeImplementerResult(resultFile, {
+    title: 'Feature follow-up',
+    summary: 'Add the second task-related file.',
+    changes: ['Add feature files'],
+    files: ['feature.py', 'second.py'],
+    security_notes: 'None.',
+    limitations: 'None.',
+    scope_enforcement: 'predeclared',
+    accepted_scope: {
+      schema_version: 1,
+      accepted: [
+        { path: 'feature.py', rationale: 'Issue requires the new feature implementation file.' },
+        { path: 'second.py', rationale: 'Issue requires the follow-up implementation file.' },
+      ],
+      temporary: [],
+      baseline: [],
+    },
+  });
+  const third = saveCheckpoint({
+    issue: 422,
+    cwd: work,
+    startCommit,
+    expectedSha: first.commit,
+    resultFile,
+    scopeFile,
+  });
+  assert.equal(third.changed, true);
+  assert.deepEqual(acceptedScopeStateFromRef(third.commit, work).accepted.map(entry => entry.path), ['feature.py', 'second.py']);
 });
 
 test('resume finds the newest valid scope receipt through a marker-less checkpoint tip', (t) => {
