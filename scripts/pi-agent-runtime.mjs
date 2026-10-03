@@ -567,6 +567,7 @@ export default function (pi) {
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
   let elevatedTurnAttemptedScopePrelude = false;
+  let elevatedScopePreludeUsed = false;
 
   function validationRunId() {
     return resolveValidationRunId(process.env);
@@ -1460,6 +1461,9 @@ export default function (pi) {
               childEnv: {
                 PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens }),
                 PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
+                ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
+                  ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
+                  : {}),
               },
             }, signal);
           } catch (error) {
@@ -1665,7 +1669,16 @@ export default function (pi) {
     );
     let recoveryBlocked = null;
     let canonicalInput = event.input ?? {};
-    if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
+    if (
+      event.toolName === ACCEPT_MUTATION_SCOPE_TOOL &&
+      controller.largeMutationBudgetActive() &&
+      elevatedScopePreludeUsed
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: this elevated mutation budget already used its one accept_mutation_scope prelude. Execute the accepted mutation now; a second scope-only turn is not allowed for the same grant.',
+      };
+    } else if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
       recoveryBlocked = {
         block: true,
         reason: 'BLOCKED: retry_last_failed_check cannot execute because the validation ledger is corrupted and the exact authoritative failed scope cannot be reconstructed safely.',
@@ -1733,7 +1746,10 @@ export default function (pi) {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
-    if (event.toolName === ACCEPT_MUTATION_SCOPE_TOOL) elevatedTurnAttemptedScopePrelude = true;
+    if (event.toolName === ACCEPT_MUTATION_SCOPE_TOOL) {
+      elevatedTurnAttemptedScopePrelude = true;
+      if (controller.largeMutationBudgetActive()) elevatedScopePreludeUsed = true;
+    }
 
     const cwd = ctx?.cwd || process.cwd();
 
@@ -1991,6 +2007,7 @@ export default function (pi) {
           outputTokens,
         })}`);
         controller.resetLargeMutationBudget();
+        elevatedScopePreludeUsed = false;
         syncActionToolSurface(productiveState);
       } else if (elevatedTurnAttemptedScopePrelude) {
         preserveElevatedAfterScopePrelude = true;
@@ -2010,6 +2027,7 @@ export default function (pi) {
         })}`);
         console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no accept_mutation_scope/structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
         controller.resetLargeMutationBudget();
+        elevatedScopePreludeUsed = false;
         syncActionToolSurface(productiveState);
       }
     }
@@ -2113,6 +2131,7 @@ export default function (pi) {
       targetActionCap = controller.largeMutationBudgetMaxTokens;
       budgetReason = 'large_mutation_elevated';
       controller.activateLargeMutationBudget();
+      elevatedScopePreludeUsed = false;
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({ stage, phase: 'granted', maxTokens: targetActionCap })}`);
     }
 
