@@ -492,7 +492,7 @@ function runtimeScenario(mode) {
           missing: 'one final implementation fact',
           reason: 'exercise bounded evidence unlock inside the elevated response',
         });
-        await sameTurnCall('write', { path: 'same-turn-large.py', content: 'VALUE = 1\n' });
+        await sameTurnCall('write', { path: 'same-turn-large.py', content: 'VALUE = 1\\n' });
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 1000 } } }, ctx);
 
         handlers.get('turn_start')({ turnIndex: turn });
