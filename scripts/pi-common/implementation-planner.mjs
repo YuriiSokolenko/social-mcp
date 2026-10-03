@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 
 import { recordDescendantMetric, runStructuredSubagent } from './structured-subagent.mjs';
 import { baseRef } from './project-config.mjs';
@@ -19,6 +20,7 @@ const MAX_PLANNER_STEP_LENGTH = 240;
 export const MAX_PLANNER_REPOSITORY_EVIDENCE = 6;
 export const DEFAULT_PLANNER_EVIDENCE_BUDGET = MAX_PLANNER_REPOSITORY_EVIDENCE;
 export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
+export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
 
 // Smallest equivalent read-only surface that pi-subagents children expose reliably. The
 // extension-backed repo_search/LSP tools live in the parent runtime and are not available in the
@@ -268,9 +270,10 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: 0,
-    maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
+    maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
   };
   const evidenceCap = plannerEvidenceBudget(config);
+  const evidenceStateFile = path.join(tmpdir(), `pi-planner-evidence-${randomUUID()}.json`);
   // Every attempt is a fresh child with a fresh gate, so the cap must be spent across the whole
   // planning lifecycle, not per attempt. The parent cannot see how much a failed child used, so
   // fail closed: only the first attempt may gather evidence; a retry gets 0 (structured_output
@@ -281,7 +284,10 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative cap is the child-side
     // gate (pi-planner-evidence.mjs); leave headroom for the result call and its schema retry.
     request.toolBudget = { hard: cap + 3 };
-    request.childEnv = { [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap) };
+    request.childEnv = {
+      [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap),
+      [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
+    };
   };
   const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
   // One hard deadline for the whole planning lifecycle: retries only get the remaining time.
