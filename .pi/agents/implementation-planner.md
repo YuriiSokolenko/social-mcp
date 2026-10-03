@@ -37,12 +37,12 @@ Classification:
 - `nontrivial` — everything else. Dispatcher already owns Architect routing.
 
 Evidence budget (`evidence_budget`, integer 0-6):
-- This is ONLY remaining uncertainty for the main Implementer after consuming this prepared handoff.
-- Do not budget reads/searches for facts you already resolved yourself.
-- `0` when the prepared handoff now contains everything needed to mutate safely.
-- `1-2` when one or two genuinely unresolved repository facts still need confirmation before mutation.
-- `3-6` only when several material unknowns remain.
-- Independent of complexity: nontrivial work can have `0` remaining evidence.
+- This is ONLY repository evidence the main Implementer still needs after consuming this prepared handoff.
+- Do not budget discovery/searches for paths, conventions, symbols, or behavior you already resolved and carried forward.
+- Planner-derived facts do NOT replace a current mutation anchor. If main must modify an existing file whose current text/AST it has not seen, reserve at least one evidence action for that file so main can acquire the exact edit anchor before mutation.
+- `0` is appropriate when all implementation targets are new files (or no existing-file mutation needs a fresh anchor) and the handoff contains the remaining facts needed to mutate safely.
+- Increase the budget for genuinely unresolved facts and for additional existing files that require current mutation anchors, up to the hard cap.
+- Independent of complexity: nontrivial additive work can still have `0` remaining evidence.
 
 Large mutation (`large_mutation`):
 - true only when the next implementation mutation clearly needs the large coding-session/write budget (for example a substantial new module plus tests).
