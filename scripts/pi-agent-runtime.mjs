@@ -102,7 +102,7 @@ const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing y
 
 The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
 
-Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime; never invent helper names such as read_for_input. In action-required state, normal read may be hidden: if one concrete missing fact prevents the next safe action, call need_more_evidence with that missing fact and reason, then use the single evidence action the runtime exposes. Otherwise mutate, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
 
 export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
   return {
@@ -750,6 +750,9 @@ export default function (pi) {
       const blockerTool = config.productiveProgress?.blockerTool;
       if (blockerTool && active.has(blockerTool)) {
         hints.push(`Call ${blockerTool} only when exactly one concrete missing fact prevents the next safe action.`);
+        if (codingSession && !active.has('read')) {
+          hints.push(`This coding session is action-required: read is not exposed now. Do not invent helper tools such as read_for_input; request the one missing fact through ${blockerTool}, or continue with an exposed mutation/terminal tool.`);
+        }
       }
       if (active.has(RETRY_FAILED_CHECK_TOOL)) {
         hints.push(`Use ${RETRY_FAILED_CHECK_TOOL} to rerun the exact unresolved failed verification scope after fixing it.`);
