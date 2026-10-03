@@ -178,6 +178,12 @@ test("rejects a run with a trusted-looking title but an unrelated workflow path"
   assert.match(result.stderr, /not a trusted Pi workflow/);
 });
 
+test("CSV model_seconds keeps provider-response semantics and excludes delegated lifecycle duration", () => {
+  const source = readFileSync("scripts/pi-usage-collect.mjs", "utf8");
+  assert.match(source, /model_seconds: ledger\.totals\.providerResponseMs \/ 1000/);
+  assert.doesNotMatch(source, /model_seconds: ledger\.totals\.delegatedLifecycleMs/);
+});
+
 test("#425 summary and CSV agree on known totals and incompleteness for the same records", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-usage-agree-"));
   const csvFile = join(dir, "usage.csv");
