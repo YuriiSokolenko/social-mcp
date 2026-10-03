@@ -214,8 +214,8 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
             `Add 503 retry inside ${target} in src/net/transport.py; preserve the observed single delivery entry point.`,
             'Extend tests/test_transport.py using the observed sibling pytest function layout for the retry path.',
           ],
-          complexity: 'nontrivial', evidence_budget: 0, large_mutation: false,
-          reason: 'Planner resolved the source/test targets and conventions; no additional pre-mutation discovery remains.',
+          complexity: 'nontrivial', evidence_budget: 1, large_mutation: false,
+          reason: 'Discovery is resolved, but main still needs the current src/net/transport.py text as its mutation anchor.',
         } },
       };
     },
@@ -224,7 +224,7 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
   assert.equal(prepared.status, 'prepared');
   assert.match(prepared.plan[0], /send_with_backoff in src\/net\/transport\.py/, 'plan reflects repository evidence, not issue prose');
   assert.match(prepared.plan[1], /observed sibling pytest function layout/, 'derived test convention crosses as a fact');
-  assert.equal(prepared.evidenceBudget, 0, 'main budget represents only uncertainty left after planner evidence');
+  assert.equal(prepared.evidenceBudget, 1, 'existing-file mutation keeps one current-anchor read even after planner discovery');
   assert.equal(prepared.plannerEvidenceUsed, 2);
   assert.equal(prepared.plannerEvidenceCap, 6);
   assert.equal(prepared.plannerProviderTurns, 1);
@@ -232,6 +232,14 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
   assert.equal(process.env[PLANNER_EVIDENCE_BUDGET_ENV], undefined, 'the cap does not leak past the planner request');
   assert.match(host.requests[0].task, /read-only repository evidence/);
   assert.doesNotMatch(host.requests[0].task, /Do not inspect the repository/);
+});
+
+test('planner observability preserves unknown evidenceUsed as null', () => {
+  const bootstrap = fs.readFileSync('scripts/pi-implementer-bootstrap.mjs', 'utf8');
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(bootstrap, /evidenceUsed: prepared\.plannerEvidenceUsed \?\? null/);
+  assert.match(runtime, /evidenceUsed: prepared\.plannerEvidenceUsed \?\? null/);
+  assert.doesNotMatch(`${bootstrap}\n${runtime}`, /evidenceUsed: prepared\.plannerEvidenceUsed \?\? 0/);
 });
 
 test('planner prompt prefers targeted evidence and carries resolved facts forward', () => {
@@ -246,12 +254,36 @@ test('planner prompt prefers targeted evidence and carries resolved facts forwar
     assert.match(task, /exact path\/directory\/symbol\/test/);
     assert.match(task, /avoid root listings and repo-wide discovery/);
     assert.match(task, /state the fact in steps\/reason instead of telling main to rediscover it/);
-    assert.match(task, /ONLY the additional repository evidence main still needs/);
+    assert.match(task, /ONLY the repository evidence main still needs/);
+    assert.match(task, /current mutation anchor/);
+    assert.match(task, /reserve at least one action for each existing file main must modify/);
+    assert.match(task, /New-file-only work may use 0/);
     assert.match(task, /2048-token ceiling/);
     assert.doesNotMatch(task, /typically 1-3|1–3 actions is typical/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('planner evidence sidecar distinguishes a real zero from unavailable state', async (t) => {
+  const { dir, env } = fixture(t, {});
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      const handlers = [];
+      plannerEvidenceExtension({ on: (_event, fn) => handlers.push(fn) });
+      assert.equal(await handlers[0]({ toolName: 'structured_output', input: {} }), undefined);
+      return {
+        status: 'completed', usage: { output: 5 },
+        result: { kind: 'structured', value: {
+          steps: ['Create the new standalone file'], complexity: 'nontrivial',
+          evidence_budget: 0, large_mutation: false, reason: 'No existing-file mutation anchor is needed.',
+        } },
+      };
+    },
+  });
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.plannerEvidenceUsed, 0, 'child startup writes an explicit zero before evidence');
 });
 
 test('only the normalized PreparedImplementation crosses into the main Implementer session', async (t) => {
@@ -265,6 +297,7 @@ test('only the normalized PreparedImplementation crosses into the main Implement
     }),
   });
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.plannerEvidenceUsed, null, 'missing child evidence sidecar is unknown, not a false zero');
   assert.deepEqual(Object.keys(prepared).sort(), [
     'baseRef', 'complexity', 'evidenceBudget', 'freshBaseCommit', 'largeMutation', 'layoutHint', 'plan',
     'plannerDurationMs', 'plannerEvidenceCap', 'plannerEvidenceUsed', 'plannerProviderTurns', 'plannerUsage',
@@ -283,8 +316,8 @@ test('a nontrivial structured result up to the 2048 ceiling completes without an
       status: 'completed',
       usage: { input: 12000, output: 1536, turns: 1, durationMs: 5000 },
       result: { kind: 'structured', value: {
-        steps: ['Apply the repository-informed implementation change', 'Update the focused regression coverage'],
-        complexity: 'nontrivial', evidence_budget: 0, large_mutation: true, reason: 'The target and conventions are already resolved.',
+        steps: ['Create new src/example_feature.py', 'Create new tests/test_example_feature.py'],
+        complexity: 'nontrivial', evidence_budget: 0, large_mutation: true, reason: 'Both mutation targets are new files, so no current-file anchor read is needed.',
       } },
     }),
   });
