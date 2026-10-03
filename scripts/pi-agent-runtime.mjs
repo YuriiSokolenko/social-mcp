@@ -2422,7 +2422,11 @@ export default function (pi) {
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
-    controller.onToolExecutionEnd(canonicalToolName, event.isError, { madeProgress: effectiveProgress });
+    const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
+    controller.onToolExecutionEnd(canonicalToolName, event.isError, {
+      madeProgress: effectiveProgress,
+      input: acceptedToolInput,
+    });
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
