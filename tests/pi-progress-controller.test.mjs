@@ -1158,6 +1158,26 @@ test('while the elevated mutation budget is active, only a finish tool or the bo
   assert.equal(state.checkToolCall('write', { path: 'arkanoid.py' }), undefined);
 });
 
+test('failed need_more_evidence does not yield an elevated grant or leave a phantom evidence window', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(0);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'large new file' }), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.activateLargeMutationBudget(), true);
+
+  assert.equal(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  state.onToolExecutionEnd('need_more_evidence', true);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.evidenceUnlockAvailable(), true, 'failed control transition does not consume the bounded escape');
+  assert.deepEqual(state.yieldLargeMutationBudgetForEvidence(), { yielded: false, rearmed: false });
+  assert.equal(state.largeMutationBudgetActive(), true, 'runtime must now take its ordinary consume/collapse branch');
+});
+
 test('a large mutation grant that ends without a finish-tool attempt still collapses to idle', () => {
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
