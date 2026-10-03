@@ -732,6 +732,16 @@ export class ProgressController {
   }
 
   onToolExecutionEnd(toolName, isError, { madeProgress = true } = {}) {
+    if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool && isError) {
+      // The blocker transition mutates state at accepted-call time so the following
+      // provider request can expose one evidence action. If the control tool itself
+      // failed, that transition never completed: return to action_required and make
+      // the bounded escape hatch retryable instead of leaking a phantom permit.
+      this.productiveEvidenceRemaining = 0;
+      this.productiveState = 'action_required';
+      this.evidenceUnlockUsedSinceProgress = false;
+      this.lastEvidenceRequestSignature = null;
+    }
     if (
       isError &&
       this.requireComplexity &&
