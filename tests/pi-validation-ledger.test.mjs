@@ -118,7 +118,7 @@ test('#424 mutation undo is preserved as audit provenance but never counts as ve
   assert.equal(records.length, 1);
   assert.equal(records[0].source, 'mutation_undo');
   assert.deepEqual(reconcile(records), []);
-  assert.equal(computeVerificationState(records), VERIFICATION_STATES.PENDING);
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.NOT_APPLICABLE);
 });
 
 test('readValidationLedger on a missing path returns an empty, uncorrupted result without throwing', () => {
