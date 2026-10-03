@@ -45,6 +45,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `prepare-environment.mjs` — runs a stage's fixed-argv toolchain steps from `.agent-harness.json` `environment`.
 - `run-check-docker-backend.mjs` — the Linux Docker sandbox backend used by `run-check.mjs`.
 - `mutation-target.mjs` / `mutation-snapshot.mjs` — worktree/`.git`/symlink containment for every agent mutation, plus before/after snapshots for rollback and no-op detection.
+- `worktree-recovery.mjs` — deterministic single-file untracked deletion or HEAD restore, containment checks, mutation ledger and immediate file-set validation. Recovery records are excluded from verification evidence.
 - `safe-edit.mjs` / `structural-edit.mjs` — the `safe_edit` (line/range) and `structural_edit` (single ast-grep match) mutation tools.
 - `semantic-loop-guard.mjs` — Implementer repeated-strategy/observation/no-op/state-revisit detection (`PI_LOOP_GUARD_*`).
 - `session-state.mjs` — runtime record of completed one-shot control transitions (LSP startup, subagent enablement, preparation).

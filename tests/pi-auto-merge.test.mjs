@@ -211,3 +211,38 @@ test('late merge conflict invalidates review, dispatches PR Fix, and blocks the 
   assert.match(gate, /return 'blocked'/);
   assert.match(gate, /if \(await processPR\(pr\)\) break/);
 });
+
+test('#401 missing rw snapshot and #402 setup failure stay infrastructure with one retry and no PR Fix', () => {
+  const run = { id: 37069737717, event: 'pull_request', head_sha: 'abc', status: 'completed', conclusion: 'failure', run_attempt: 2 };
+  const jobs = [{ name: 'test', conclusion: 'success', steps: [{ name: 'Pytest', conclusion: 'success' }] },
+    { name: 'docker', conclusion: 'failure', steps: [{ name: 'Set up BuildKit', conclusion: 'failure',
+      output: 'Error response from daemon: failed to retrieve container list: rw layer snapshot not found for container 37d2be901d24' }] }];
+  assert.equal(prCiVerdict([run], 'abc', jobs).state, 'infra_failure');
+  assert.equal(infraRetryEndpoint(run), 'rerun-failed-jobs');
+  assert.equal(prCiVerdict([{ ...run, id: 37069129733 }], 'abc', [{ name: 'docker', steps: [{ name: 'Set up job', conclusion: 'failure' }] }]).state, 'infra_failure');
+});
+
+test('optional Docker diagnostics fail without blocking the remaining CI setup', () => {
+  const step = parseWorkflow('.github/workflows/ci.yml').jobs.docker.steps.find(step => step.name === 'Set up BuildKit');
+  const diagnostics = step.run.split('\n').filter(line => /docker (system df|buildx du)/.test(line)).join('\n');
+  const result = spawnSync('bash', ['-e', '-c', 'docker() { return 1; };\n' + diagnostics + '\nprintf reached-build'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /warning/); assert.match(result.stdout, /reached-build/);
+});
+
+test('general worker checks daemon snapshots before registering, while Pi workers skip Docker access', () => {
+  const source = fs.readFileSync('infra/github-runner-autoscaler/worker-entrypoint.sh', 'utf8');
+  const start = source.indexOf('if [[ ",${RUNNER_LABELS},"');
+  assert.ok(start > 0);
+  const end = source.indexOf('\ncd "${RUNNER_HOME}/actions-runner"', start);
+  assert.ok(end > start);
+  const health = source.slice(start, end);
+  const script = 'timeout() { shift; "$@"; }; sleep() { :; }; docker() { if [[ "$*" == "system df" ]]; then echo "rw layer snapshot not found" >&2; return 1; fi; };\n' + health + '\necho registered';
+  const general = spawnSync('bash', ['-eu', '-c', script], { encoding: 'utf8', env: { ...process.env, RUNNER_LABELS: 'n150,general' } });
+  assert.equal(general.status, 1);
+  assert.match(general.stderr, /infra_error DOCKER_METADATA_CORRUPTION/);
+  assert.doesNotMatch(general.stdout, /registered/);
+  const pi = spawnSync('bash', ['-eu', '-c', script], { encoding: 'utf8', env: { ...process.env, RUNNER_LABELS: 'n150,pi-agent' } });
+  assert.equal(pi.status, 0, pi.stderr);
+  assert.match(pi.stdout, /registered/);
+});
