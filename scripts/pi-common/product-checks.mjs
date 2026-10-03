@@ -5,7 +5,7 @@ import { runProcess } from './process.mjs';
 import { assertNoDuplicatePackageRoots } from './package-root-check.mjs';
 import { baseRef, expandCommand, projectConfig } from './project-config.mjs';
 import { ruffArgs } from './ruff-spec.mjs';
-import { computeCandidateRevision } from './candidate-revision.mjs';
+import { computeCandidateRevision, resolveCandidateBase } from './candidate-revision.mjs';
 import {
   appendCheckRecord,
   FINAL_PIPELINE_COMPLETE_SOURCE,
@@ -166,7 +166,11 @@ export function runProductChecks({ cwd, ledgerPath, backend = 'pi', env = proces
       throw error;
     }
   }
-  const candidateRevision = computeCandidateRevision({ cwd: root, base: baseRef() });
+  const candidateBase = resolveCandidateBase({
+    cwd: root,
+    startCommit: env.PI_IMPLEMENTER_START_COMMIT,
+  });
+  const candidateRevision = computeCandidateRevision({ cwd: root, base: candidateBase });
   if (ledgerPath) {
     appendCheckRecord(ledgerPath, {
       kind: 'checks_final',

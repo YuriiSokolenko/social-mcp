@@ -2,11 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
-import { computeCandidateRevision, sameCandidateRevision } from './candidate-revision.mjs';
+import {
+  computeCandidateRevision,
+  resolveCandidateBase,
+  sameCandidateRevision,
+} from './candidate-revision.mjs';
 import { resolveValidationRunId } from './validation-ledger.mjs';
 
 export const TERMINAL_RECEIPT_KIND = 'pi_terminal_receipt';
 export const TERMINAL_RECEIPT_SCHEMA_VERSION = 1;
+
+// This receipt is a consistency binding, not a cryptographic authentication
+// token. Authorization still comes from trusted harness validation/publication
+// policy; the receipt only keeps run/result metadata/candidate bytes aligned.
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -49,9 +57,13 @@ export function createSuccessfulTerminalReceipt({
   env = process.env,
   base,
 } = {}) {
+  const candidateBase = base ?? resolveCandidateBase({
+    cwd,
+    startCommit: env.PI_IMPLEMENTER_START_COMMIT,
+  });
   const candidateRevision = computeCandidateRevision({
     cwd,
-    ...(base ? { base } : {}),
+    base: candidateBase,
   });
   return {
     kind: TERMINAL_RECEIPT_KIND,
@@ -153,9 +165,13 @@ export function assertSuccessfulTerminalReceipt({
     throw receiptError('terminal_receipt_result_metadata_mismatch');
   }
 
+  const candidateBase = base ?? resolveCandidateBase({
+    cwd,
+    startCommit: env.PI_IMPLEMENTER_START_COMMIT,
+  });
   const candidateRevision = computeCandidateRevision({
     cwd,
-    ...(base ? { base } : {}),
+    base: candidateBase,
   });
   if (!sameCandidateRevision(receipt.candidate_revision, candidateRevision)) {
     throw receiptError('terminal_receipt_candidate_mismatch', {

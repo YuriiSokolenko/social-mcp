@@ -62,6 +62,36 @@ function candidateEntry(root, relativePath) {
 }
 
 /**
+ * Resolve the candidate base once for every stage of the publication contract.
+ *
+ * A normal successful Pi submit integrates the configured base first, so the
+ * configured base is an ancestor of HEAD. Alternate/recovery paths may still
+ * be based on the run-start commit; in that case receipt, checks.final and
+ * publication must all use that same fallback instead of disagreeing later.
+ */
+export function resolveCandidateBase({
+  cwd = process.cwd(),
+  startCommit = process.env.PI_IMPLEMENTER_START_COMMIT,
+  configuredBase = baseRef(),
+} = {}) {
+  const root = fs.realpathSync(path.resolve(cwd));
+  const integrated = git(
+    ['merge-base', '--is-ancestor', configuredBase, 'HEAD'],
+    { cwd: root, allowFailure: true },
+  ).status === 0;
+  if (integrated) return configuredBase;
+
+  const fallback = String(startCommit ?? '').trim();
+  if (!fallback) {
+    throw new Error(
+      `candidate base cannot be resolved: ${configuredBase} is not an ancestor of HEAD and PI_IMPLEMENTER_START_COMMIT is missing`,
+    );
+  }
+  git(['rev-parse', '--verify', fallback], { cwd: root });
+  return fallback;
+}
+
+/**
  * Content identity for the publishable candidate, independent of whether the
  * same bytes are still dirty or have already been checkpoint-committed.
  */

@@ -10,6 +10,7 @@ import { PIPELINE_LABELS } from './state-machine.mjs';
 import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
 import { assertAcceptedMutationScope, readMutationScopeReceiptFile } from './accepted-mutation-scope.mjs';
 import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
+import { resolveCandidateBase } from './candidate-revision.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -72,8 +73,7 @@ export function pushWithMissingObjectRetry(args, {
  * checkpoint recovery.
  */
 export function publicationBase(cwd, startCommit) {
-  const integrated = git(['merge-base','--is-ancestor',baseRef(),'HEAD'], { cwd, allowFailure:true }).status === 0;
-  return integrated ? baseRef() : startCommit;
+  return resolveCandidateBase({ cwd, startCommit, configuredBase: baseRef() });
 }
 
 export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile, scopeFile }) {
@@ -244,8 +244,18 @@ export function nextLabelsForVerification(currentLabels, verificationState, unsa
   return [...names, PIPELINE_LABELS.needsHuman];
 }
 
-export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, backend, cwd, startCommit }) {
-  const { api, replaceLabels } = githubClient();
+export async function upsertPullRequest({
+  issue,
+  resultFile,
+  owner,
+  ledgerFile,
+  backend,
+  cwd,
+  startCommit,
+  env = process.env,
+  client = githubClient(),
+}) {
+  const { api, replaceLabels } = client;
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   const metadata = readImplementerResult(resultFile);
   if (!metadata) {
@@ -260,7 +270,7 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, 
   const { candidateRevision } = assertSuccessfulTerminalReceipt({
     cwd,
     resultFile,
-    env: process.env,
+    env,
     base,
     bindAttempt: false,
   });
