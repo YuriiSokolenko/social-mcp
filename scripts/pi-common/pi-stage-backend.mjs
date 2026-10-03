@@ -100,6 +100,7 @@ export function buildBootstrapInvocation(spec, workspace) {
 async function runBootstrap(spec, workspace) {
   const file = preparedImplementationPath(spec);
   fs.rmSync(file, { force: true });
+  const bootstrapStartedAt = Date.now();
   const invocation = buildBootstrapInvocation(spec, workspace);
   const child = spawn(invocation.command, invocation.args, invocation.options);
   // Forward only the runtime's PI_* marker lines (PI_BOOTSTRAP, PI_SUBAGENT_*) to the job log; the
@@ -123,7 +124,7 @@ async function runBootstrap(spec, workspace) {
   } catch (error) {
     const reason = String(error?.message ?? error);
     console.warn(`PI_BOOTSTRAP ${JSON.stringify({ phase: 'process_failed', error: reason })}`);
-    const fallback = bootstrapFailureFallback(spec.cwd, reason, spec.environment);
+    const fallback = bootstrapFailureFallback(spec.cwd, reason, spec.environment, Date.now() - bootstrapStartedAt);
     writePreparedImplementation(file, fallback);
     return fallback;
   }

@@ -209,14 +209,21 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     metricCall: 'planner',
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
-    timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 45000),
+    timeoutMs: 0,
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
     toolBudget: { hard: 3 },
   };
   const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
+  // One hard deadline for the whole planning lifecycle: retries only get the remaining time.
+  const deadlineMs = Number(config.implementationPlannerTimeoutMs ?? 45000);
+  const startedAt = Date.now();
   let response;
   for (let attempt = 0; ; attempt += 1) {
     try {
+      request.timeoutMs = deadlineMs - (Date.now() - startedAt);
+      if (request.timeoutMs <= 0) {
+        throw Object.assign(new Error(`${config.implementationPlannerAgent} planning deadline of ${deadlineMs} ms exhausted`), { delegationStatus: 'timed_out' });
+      }
       response = await runStructuredSubagent(pi, ctx, request, signal);
       break;
     } catch (error) {
@@ -291,7 +298,7 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
 
 // The bootstrap process itself failed (crash, no artifact): still infrastructure failure, so the
 // fresh Implementer starts with the same already-resolved fallback instead of being blocked.
-export function bootstrapFailureFallback(cwd, reason, env = process.env) {
+export function bootstrapFailureFallback(cwd, reason, env = process.env, elapsedMs = 0) {
   return {
     version: 1,
     status: 'fallback',
@@ -302,7 +309,7 @@ export function bootstrapFailureFallback(cwd, reason, env = process.env) {
     baseRef: baseRef(),
     layoutHint: null,
     plannerUsage: null,
-    plannerDurationMs: 0,
+    plannerDurationMs: elapsedMs,
   };
 }
 

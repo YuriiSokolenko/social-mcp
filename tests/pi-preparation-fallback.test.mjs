@@ -289,7 +289,8 @@ function runtimeScenario(mode) {
           assert.match(request.task, /Implement example.py/);
         }
         assert.equal(request.ownerRunId, 'bootstrap-session', 'planner is hosted by the bootstrap session, never the main one');
-        assert.equal(request.timeoutMs, 900000, '15 minute hard planner deadline');
+        if (attempts === 1) assert.ok(request.timeoutMs <= 900000 && request.timeoutMs > 890000, '15 minute hard planner deadline');
+        else assert.ok(request.timeoutMs <= 900000 && request.timeoutMs > 0, 'retry only gets the remaining deadline');
         assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
         if (mode === 'abort') { signal.abort(); return; }
         const good = mode === 'layout-aware'

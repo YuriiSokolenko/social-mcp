@@ -3,10 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { EventEmitter } from 'node:events';
 
 import {
   IMPLEMENTATION_PLANNER_DEADLINE_MS,
   bootstrapFailureFallback,
+  prepareImplementation,
   preparedImplementationBlock,
   readPreparedImplementation,
   validatePreparedImplementation,
@@ -82,4 +84,52 @@ test('the fallback block states preparation is already resolved and names the fa
   assert.match(block, /nothing to prepare or retry/);
   assert.match(block, /origin\/dev at deadbeef/);
   assert.doesNotMatch(block, /prepare_implementation/);
+});
+
+// One shared deadline across the structured-output retry: the retry only gets the time that is left.
+function plannerHost({ replyDelays }) {
+  const bus = new EventEmitter();
+  const requests = [];
+  const schemaError = 'Structured output validation failed: value: bad';
+  bus.on('prompt-template:subagent:request', request => {
+    const index = requests.push({ timeoutMs: request.timeoutMs }) - 1;
+    setTimeout(() => bus.emit('prompt-template:subagent:response', {
+      requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'failed', error: schemaError,
+    }), replyDelays[index] ?? 0);
+  });
+  const pi = { events: { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) } };
+  return { pi, requests, ctx: { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } } };
+}
+
+function plannerEnv(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-deadline-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const issue = path.join(dir, 'issue.json');
+  fs.writeFileSync(issue, JSON.stringify({ title: 't', body: 'b' }));
+  process.env.PI_ISSUE_CONTEXT = issue;
+  t.after(() => { delete process.env.PI_ISSUE_CONTEXT; });
+  return process.env;
+}
+
+test('the structured-output retry receives only the remaining planning deadline', async (t) => {
+  const host = plannerHost({ replyDelays: [300, 0] });
+  const config = { ...stageConfig('implementer'), implementationPlannerTimeoutMs: 1000 };
+  const prepared = await prepareImplementation(host.pi, host.ctx, config, undefined, { env: plannerEnv(t) });
+  assert.equal(host.requests.length, 2);
+  assert.ok(host.requests[0].timeoutMs <= 1000 && host.requests[0].timeoutMs > 900);
+  assert.ok(host.requests[1].timeoutMs <= 720, `retry budget ${host.requests[1].timeoutMs} must shrink by the first attempt's elapsed time`);
+  assert.equal(prepared.status, 'fallback');
+});
+
+test('an exhausted planning deadline skips the retry and falls back as planner_deadline_timeout', async (t) => {
+  const host = plannerHost({ replyDelays: [400, 0] });
+  const config = { ...stageConfig('implementer'), implementationPlannerTimeoutMs: 300 };
+  const prepared = await prepareImplementation(host.pi, host.ctx, config, undefined, { env: plannerEnv(t) });
+  assert.equal(host.requests.length, 1, 'no second full-length attempt after the deadline');
+  assert.equal(prepared.status, 'fallback');
+  assert.equal(prepared.failureClass, 'planner_deadline_timeout');
+});
+
+test('a failed bootstrap process keeps its real elapsed duration', () => {
+  assert.equal(bootstrapFailureFallback('/w', 'x', {}, 4321).plannerDurationMs, 4321);
 });
