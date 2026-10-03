@@ -549,6 +549,22 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
 });
 
 
+test('#424 journal comparison treats a locally missing expected checkpoint sha as no prior trailer', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-missing-checkpoint-ref-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+
+  assert.equal(
+    mutationJournalStateFromRef('0123456789abcdef0123456789abcdef01234567', dir),
+    null,
+  );
+});
+
 test('#424 cleanup-only resume seals an empty mutation journal into the checkpoint ref', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-mutation-checkpoint-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
