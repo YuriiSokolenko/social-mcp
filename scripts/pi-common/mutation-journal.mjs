@@ -118,6 +118,26 @@ function normalizeEntry(cwd, input) {
   };
 }
 
+function normalizeLocalOnlyBarrier(cwd, input) {
+  if (input == null) return null;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  if (typeof input.id !== 'string' || !/^local-only-[a-f0-9-]{36}$/.test(input.id)) return null;
+  const post = normalizeFingerprint(input.post);
+  if (!post) return null;
+  let relative;
+  try {
+    relative = canonicalPath(cwd, input.path);
+  } catch {
+    return null;
+  }
+  return {
+    id: input.id,
+    path: relative,
+    tool: typeof input.tool === 'string' ? input.tool.slice(0, 80) : 'unknown',
+    post,
+  };
+}
+
 function priorBytes(entry) {
   return entry.prior.existed ? Buffer.from(entry.prior.content_base64, 'base64').length : 0;
 }
@@ -138,7 +158,13 @@ export function normalizeMutationJournalState(cwd, input) {
     if (totalPriorBytes > MUTATION_JOURNAL_MAX_TOTAL_PRIOR_BYTES) return null;
     entries.push(entry);
   }
-  return { schema_version: JOURNAL_SCHEMA_VERSION, entries };
+  const localOnlyBarrier = normalizeLocalOnlyBarrier(cwd, input.local_only_barrier);
+  if (input.local_only_barrier != null && !localOnlyBarrier) return null;
+  return {
+    schema_version: JOURNAL_SCHEMA_VERSION,
+    entries,
+    ...(localOnlyBarrier ? { local_only_barrier: localOnlyBarrier } : {}),
+  };
 }
 
 function stateFromJson(cwd, raw) {
@@ -377,9 +403,58 @@ export function recordSuccessfulMutation({
   const nextState = {
     schema_version: JOURNAL_SCHEMA_VERSION,
     entries: [...state.entries, entry],
+    // A newly journaled mutation is now the shared latest mutation, so any older local-only
+    // barrier is superseded. Do not carry it forward.
   };
   persistState(cwd, nextState, env);
   return structuredClone(entry);
+}
+
+export function markMutationJournalLocalOnly({
+  cwd,
+  after,
+  tool,
+  env = process.env,
+}) {
+  if (!after) throw journalError('mutation_snapshot_invalid', 'post-mutation snapshot is required');
+  const state = stateFor(cwd, env);
+  const marker = {
+    id: `local-only-${randomUUID()}`,
+    path: canonicalPath(cwd, after.path),
+    tool: typeof tool === 'string' ? tool.slice(0, 80) : 'unknown',
+    post: snapshotFingerprint(after),
+  };
+  persistState(cwd, {
+    schema_version: JOURNAL_SCHEMA_VERSION,
+    entries: state.entries,
+    local_only_barrier: marker,
+  }, env);
+  return structuredClone(marker);
+}
+
+export function clearMutationJournalLocalOnly({
+  cwd,
+  markerId,
+  env = process.env,
+}) {
+  if (typeof markerId !== 'string' || !markerId) {
+    throw journalError('mutation_local_only_marker_required', 'local-only marker id is required');
+  }
+  const state = stateFor(cwd, env);
+  const marker = state.local_only_barrier ?? null;
+  if (!marker) return null;
+  if (marker.id !== markerId) {
+    throw journalError(
+      'mutation_local_only_marker_changed',
+      'the shared latest local-only mutation changed; refusing to clear a newer barrier',
+      { expected_marker_id: markerId, actual_marker_id: marker.id },
+    );
+  }
+  persistState(cwd, {
+    schema_version: JOURNAL_SCHEMA_VERSION,
+    entries: state.entries,
+  }, env);
+  return structuredClone(marker);
 }
 
 function entryById(cwd, mutationId, env) {
@@ -476,6 +551,7 @@ export function undoMutation({
   const nextState = {
     schema_version: JOURNAL_SCHEMA_VERSION,
     entries: state.entries.filter(item => item.id !== mutationId),
+    ...(state.local_only_barrier ? { local_only_barrier: state.local_only_barrier } : {}),
   };
   try {
     persistState(cwd, nextState, env);
