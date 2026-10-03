@@ -799,6 +799,7 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
     fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n');
     execFileSync('git', ['add', '.'], { cwd: repo });
     execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
 
     const result = runRuntimeScenario(`
       // Isolate handler wiring from the productive-progress gating rules.
@@ -833,6 +834,7 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
     `, {
       PI_LOOP_GUARD_WINDOW: '4',
       PI_LOOP_GUARD_THRESHOLD: '1',
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: "{\"schema_version\":1,\"accepted\":[{\"path\":\"a.txt\",\"rationale\":\"Loop-guard test mutates the known a.txt fixture.\"},{\"path\":\"b.txt\",\"rationale\":\"Loop-guard test mutates the known b.txt fixture.\"}],\"temporary\":[],\"baseline\":[]}",
     });
     assert.match(result.stdout, /INTERLEAVED_LOOP_INTEGRATION_OK/);
     assert.match(result.stdout, /PI_LOOP_GUARD .*"tool":"safe_edit".*"noOp":true/);
