@@ -90,14 +90,18 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   const metadata = resultFile ? readImplementerResult(resultFile) : null;
   const persistedScope = readMutationScopeReceiptFile(cwd, scopeFile);
   let message = `feat: implement issue #${issue}`;
-  if (metadata?.scope_enforcement === 'predeclared' && metadata.accepted_scope) {
-    const encodedScope = Buffer.from(JSON.stringify(metadata.accepted_scope), 'utf8').toString('base64url');
-    message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
-  } else if (persistedScope) {
-    const encodedScope = Buffer.from(JSON.stringify(persistedScope), 'utf8').toString('base64url');
-    message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
-  } else if (metadata?.scope_enforcement === 'unsandboxed-gated') {
+  // A completed unsandboxed backend must stay human-gated even if some stale
+  // Pi sidecar happens to exist. For Pi/predeclared work, the sidecar is the
+  // live monotonic runtime receipt and may contain scope amendments accepted
+  // after the last submit_result metadata was written.
+  const checkpointScope = metadata?.scope_enforcement === 'predeclared'
+    ? (persistedScope ?? metadata.accepted_scope)
+    : (!metadata ? persistedScope : null);
+  if (metadata?.scope_enforcement === 'unsandboxed-gated') {
     message += '\n\nPi-Scope-Enforcement: unsandboxed-gated';
+  } else if (checkpointScope) {
+    const encodedScope = Buffer.from(JSON.stringify(checkpointScope), 'utf8').toString('base64url');
+    message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
   }
   if (stagedChanged) {
     git(['commit','-m',message], { cwd });
