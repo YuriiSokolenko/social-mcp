@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { resolveMutationTarget } from '../scripts/pi-common/mutation-target.mjs';
 import {
   MAX_CEILING_WITHOUT_TOOL_TURNS,
@@ -144,6 +144,11 @@ function runtimeScenario(mode) {
     const terminal = path.join(dir, 'terminal.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
     fs.mkdirSync(work);
+    execFileSync('git', ['init', '-q', work]);
+    execFileSync('git', ['-C', work, 'config', 'user.name', 'Coding Session Test']);
+    execFileSync('git', ['-C', work, 'config', 'user.email', 'coding@example.invalid']);
+    execFileSync('git', ['-C', work, 'commit', '--allow-empty', '-qm', 'base']);
+    execFileSync('git', ['-C', work, 'update-ref', 'refs/remotes/origin/dev', 'HEAD']);
     fs.writeFileSync(context, JSON.stringify({ title: 'Coding session smoke', body: 'Create generated.py and its test' }));
     fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
     fs.writeFileSync(scenario, `
