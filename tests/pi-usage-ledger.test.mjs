@@ -23,7 +23,7 @@ test("#402: a null child aggregate cannot hide five completed child responses", 
   assert.equal(ledger.complete, true);
 });
 
-test("#463: logical records stay compatible while planner/coding roll-ups expose real provider turns and time", () => {
+test("#463: logical records expose provider turns while lifecycle duration stays separate from provider time", () => {
   const records = [
     { call: "planner", scope: "session", childSession: "p1", status: "completed",
       usage: u(30873, 1433, 32306, { turns: 4, durationMs: 92646 }) },
@@ -43,7 +43,8 @@ test("#463: logical records stay compatible while planner/coding roll-ups expose
   assert.equal(ledger.calls.get("planner").providerResponses, 4);
   assert.equal(ledger.calls.get("coding").responses, 3, "coding session roll-up does not duplicate its per-response records");
   assert.equal(ledger.calls.get("coding").providerResponses, 3);
-  assert.equal(ledger.totals.providerResponseMs, 92646 + 12749 + 26355 + 11000 + 325000);
+  assert.equal(ledger.totals.providerResponseMs, 12749 + 26355 + 11000, "lifecycle duration is not provider response time");
+  assert.equal(ledger.totals.delegatedLifecycleMs, 92646 + 325000, "planner/coding lifecycle time remains observable separately");
   assert.equal(ledger.complete, true);
 });
 
@@ -56,7 +57,8 @@ test("a session roll-up is the fallback when a failed child has no per-response 
   assert.equal(ledger.totals.total, 42);
   assert.equal(ledger.totals.responses, 1);
   assert.equal(ledger.totals.providerResponses, 2);
-  assert.equal(ledger.totals.providerResponseMs, 9000);
+  assert.equal(ledger.totals.providerResponseMs, 0, "a lifecycle-only roll-up cannot manufacture provider response time");
+  assert.equal(ledger.totals.delegatedLifecycleMs, 9000);
   assert.equal(ledger.complete, true);
 });
 
