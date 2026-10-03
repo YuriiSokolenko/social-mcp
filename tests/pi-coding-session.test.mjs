@@ -181,7 +181,7 @@ function runtimeScenario(mode) {
       const registrations = [];
       const registered = new Map();
       let aborts = 0;
-      let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'run_check', 'submit_result', 'need_more_evidence',
+      let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence',
         'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'prepare_implementation'];
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
@@ -290,6 +290,11 @@ function runtimeScenario(mode) {
           assert.match((await childCall('write', { path: 'link/escape.py', content: 'x' })).reason, /symbolic links/);
           assert.match((await childCall('write', { path: '.git/hooks/pre-commit', content: 'x' })).reason, /cannot target .git/);
         }
+        await childCall('accept_mutation_scope', {
+          paths: ['generated.py', 'test_generated.py'],
+          disposition: 'publishable',
+          rationale: 'Issue requires the implementation module and its focused regression test.',
+        });
         await childCall('write', { path: 'generated.py', content: 'REQUIRED_CONSTANT = "' + constant + '"\\nHELP = "q: quit\\\\nr: restart"\\n' });
         if (mode === 'fork-prose-force') {
           const actionPayload = {
@@ -487,6 +492,11 @@ function runtimeScenario(mode) {
           const afterCeiling = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
           assert.equal(afterCeiling.tool_choice, 'required', 'ceiling-hit response does not consume tool forcing');
 
+          await call('accept_mutation_scope', {
+            paths: ['small.txt'],
+            disposition: 'publishable',
+            rationale: 'Direct forced-tool test requires one small implementation file.',
+          });
           await call('write', { path: 'small.txt', content: 'small change\\n' });
           assert.equal(fs.readFileSync(cwd + '/small.txt', 'utf8'), 'small change\\n');
           const afterTool = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
@@ -586,7 +596,7 @@ test('2K parent -> begin_coding_session -> 16K same-context fork writes code + t
   assert.match(logs, /"phase":"started".*"context":"fork","agent":"implementer-coding-session"/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_disabled","side":"fork".*"enableThinking":false,"maxTokens":16384/);
-  assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"write"/);
+  assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"accept_mutation_scope"/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"first_response","side":"fork".*"attemptedTool":true/);
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"changed":true/g)?.length, 2, 'several files in one session');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
