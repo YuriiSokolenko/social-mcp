@@ -14,6 +14,8 @@ import {
 } from '../scripts/pi-common/accepted-mutation-scope.mjs';
 import { validateAcceptedScopeMetadata, validateFinalProductTree } from '../scripts/pi-common/finalize-product-tree.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
+import { runStageWithValidationRecovery } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { runRepairSubmission } from '../scripts/pi-repair-result-tool.mjs';
 
 function repo(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-accepted-scope-'));
@@ -106,6 +108,45 @@ test('temporary scratch can be registered after discovery but must be removed be
     assertAcceptedMutationScope({ cwd: root, receipt: mutationScopeReceipt(root, {}) }),
     [],
   );
+});
+
+test('temporary scope can be promoted only after cleanup and before a new mutation', t => {
+  const { root } = repo(t);
+  initializeMutationScope(root, {});
+  fs.writeFileSync(path.join(root, '.probe.txt'), 'probe\n');
+  registerMutationScope({
+    cwd: root,
+    paths: ['.probe.txt'],
+    disposition: 'temporary',
+    rationale: 'Temporary probe used during implementation.',
+    env: {},
+  });
+
+  assert.throws(
+    () => registerMutationScope({
+      cwd: root,
+      paths: ['.probe.txt'],
+      disposition: 'publishable',
+      rationale: 'The cleaned path is now required as final task output.',
+      env: {},
+    }),
+    error => JSON.parse(error.message).code === 'scope_temporary_promotion_rejected',
+  );
+
+  fs.rmSync(path.join(root, '.probe.txt'));
+  registerMutationScope({
+    cwd: root,
+    paths: ['.probe.txt'],
+    disposition: 'publishable',
+    rationale: 'The cleaned path is now required as final task output.',
+    env: {},
+  });
+  const receipt = mutationScopeReceipt(root, {});
+  assert.deepEqual(receipt.temporary, []);
+  assert.deepEqual(receipt.accepted.map(entry => entry.path), ['.probe.txt']);
+
+  fs.writeFileSync(path.join(root, '.probe.txt'), 'final output\n');
+  assert.deepEqual(assertAcceptedMutationScope({ cwd: root, receipt }), ['.probe.txt']);
 });
 
 test('restored baseline is tracked separately and cannot be promoted retroactively', t => {
@@ -251,6 +292,7 @@ test('final product validation fails closed when a changed tree has no implement
       ledgerPath: path.join(root, 'ledger.jsonl'),
       backend: 'pi',
       env: {},
+      enforceAcceptedScope: true,
     }),
     error => {
       const diagnostic = JSON.parse(error.message);
@@ -291,6 +333,7 @@ test('final product validation applies the accepted-scope gate before product ch
       ledgerPath: path.join(root, 'ledger.jsonl'),
       backend: 'pi',
       env: { PI_IMPLEMENTER_RESULT_FILE: resultFile },
+      enforceAcceptedScope: true,
     }),
     error => {
       const diagnostic = JSON.parse(error.message);
@@ -301,6 +344,64 @@ test('final product validation applies the accepted-scope gate before product ch
   );
 });
 
+
+test('implementer validation recovery explicitly enables the accepted-scope gate', async t => {
+  const { root } = repo(t);
+  const resultFile = path.join(root, '..', path.basename(root) + '-stage-result.json');
+  const terminalResultPath = path.join(root, '..', path.basename(root) + '-terminal.json');
+  const metricsPath = path.join(root, '..', path.basename(root) + '-metrics.json');
+  t.after(() => {
+    fs.rmSync(resultFile, { force: true });
+    fs.rmSync(terminalResultPath, { force: true });
+    fs.rmSync(metricsPath, { force: true });
+  });
+  writeImplementerResult(resultFile, {
+    title: 'Feature',
+    summary: 'Implement feature.',
+    changes: ['Add feature'],
+    files: ['feature.py'],
+    security_notes: 'None.',
+    limitations: 'None.',
+    scope_enforcement: 'predeclared',
+    accepted_scope: {
+      schema_version: 1,
+      accepted: [{ path: 'feature.py', rationale: 'Issue requires the feature file.' }],
+      temporary: [],
+      baseline: [],
+    },
+  });
+  const artifacts = { terminalResultPath, metricsPath, rawLogPath: null };
+  let validationOptions = null;
+  await runStageWithValidationRecovery(
+    {
+      stage: 'implementer',
+      cwd: root,
+      environment: {
+        PI_IMPLEMENTER_RESULT_FILE: resultFile,
+        PI_VALIDATION_LEDGER_FILE: path.join(root, 'ledger.jsonl'),
+      },
+      artifacts,
+    },
+    async () => ({ backend: 'pi', durationMs: 1, artifacts }),
+    { validate: options => { validationOptions = options; } },
+  );
+  assert.equal(validationOptions.enforceAcceptedScope, true);
+});
+
+test('PR Fix submission validates the repaired tree without requiring implementer scope metadata', async () => {
+  let integrated = false;
+  let validationOptions = null;
+  const result = await runRepairSubmission({
+    integrate: () => { integrated = true; return { conflicts: [] }; },
+    validate: options => {
+      validationOptions = options;
+      if (options.enforceAcceptedScope) throw new Error('repair must not require implementer accepted scope');
+    },
+  });
+  assert.equal(integrated, true);
+  assert.equal(validationOptions.enforceAcceptedScope, false);
+  assert.deepEqual(result, {});
+});
 
 test('final scope metadata gate permits the explicitly human-gated mini-swe path', t => {
   const { root } = repo(t);
