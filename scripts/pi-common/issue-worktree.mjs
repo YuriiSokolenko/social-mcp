@@ -22,10 +22,16 @@ import { resolveRunArtifactId } from './validation-ledger.mjs';
 export function acceptedScopeStateFromRef(ref, cwd = process.cwd()) {
   if (!ref) return null;
   // Checkpoint tips may be marker-less (for example when a later crash saved
-  // additional work before submit_result). Walk recent ancestry so the newest
-  // trusted scope receipt is not hidden by such a tip commit.
-  const records = git(['log', '-n', '50', '--format=%B%x1e', ref], { cwd }).out.split('\x1e');
-  for (const message of records) {
+  // additional work before submit_result). Search only saved-work commits that
+  // are not already part of current dev, so a trailer from an older merged
+  // issue can never be mistaken for this issue's scope.
+  const baseAvailable = git(['rev-parse', '--verify', baseRef()], { cwd, allowFailure: true }).status === 0;
+  const revArgs = baseAvailable
+    ? ['rev-list', ref, `^${baseRef()}`]
+    : ['rev-list', '-n', '50', ref];
+  const commits = git(revArgs, { cwd }).out.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  for (const commit of commits) {
+    const message = git(['show', '-s', '--format=%B', commit], { cwd }).out;
     const enforcement = /^Pi-Scope-Enforcement:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
     if (enforcement !== 'predeclared') continue;
     const encoded = /^Pi-Accepted-Mutation-Scope:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
