@@ -1382,7 +1382,7 @@ export default function (pi) {
       pi.registerTool({
         name: controller.largeMutationBudgetTool,
         label: 'Request large mutation budget',
-        description: `LEGACY: prefer begin_coding_session. Grant exactly the NEXT response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling, for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. That one elevated response must attempt structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result; the budget always collapses back to the normal small ceiling immediately afterward, whether or not it was used, and must be requested again for another large payload.`,
+        description: `LEGACY: prefer begin_coding_session. Grant the next mutation response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. If the target path still needs accepted scope, call accept_mutation_scope first; that declaration preserves the elevated budget for the following real mutation. The budget collapses after the actual mutation/rollback/submit action or after unrelated use.`,
         parameters: Type.Object({
           reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
         }),
@@ -1390,7 +1390,7 @@ export default function (pi) {
           return {
             content: [{
               type: 'text',
-              text: `Large mutation budget granted for exactly the next response (${controller.largeMutationBudgetMaxTokens} max output tokens). Use it now for one structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result call; do not spend it on narration or another request.`,
+              text: `Large mutation budget armed (${controller.largeMutationBudgetMaxTokens} max output tokens). If needed, call accept_mutation_scope first; the runtime preserves this budget across that scope-only response. Then use it for one structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result call.`,
             }],
             details: { reason: params.reason, maxTokens: controller.largeMutationBudgetMaxTokens },
           };
