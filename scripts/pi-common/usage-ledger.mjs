@@ -93,14 +93,20 @@ export function summarizeUsage(records) {
   }
   for (const [session, record] of sessions) {
     const status = String(record.status ?? "");
-    const hasUsage = answeredSessions.has(session)
+    if (!calls.has(record.call)) calls.set(record.call, emptyTotals());
+    const sessionUsage = normalizeUsage(record.usage);
+    const answered = answeredSessions.has(session)
       || [...aggregates.values()].some((aggregate) => sessionOf(aggregate) === session && normalizeUsage(aggregate.usage));
+    // The session's own roll-up is the fallback when no per-response records exist for it.
+    if (!answered && sessionUsage) {
+      add(calls.get(record.call), sessionUsage, record.responseMs);
+      add(totals, sessionUsage, record.responseMs);
+    }
     if (INCOMPLETE_STATUSES.has(status)) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: `${status}_request_usage_unavailable` });
-    } else if (!hasUsage && !record.usageKnownEmpty) {
+    } else if (!answered && !sessionUsage && !record.usageKnownEmpty) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: "session_usage_unavailable" });
     }
-    if (!calls.has(record.call)) calls.set(record.call, emptyTotals());
   }
   return { calls, totals, unknown, complete: unknown.length === 0 };
 }

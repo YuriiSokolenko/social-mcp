@@ -471,6 +471,9 @@ for await (const line of rl) {
       if (usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
         recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: fields, responseMs: elapsed });
+      } else {
+        // A completed response with no provider usage is an unknown, not an absent record.
+        recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: null, reason: "provider_usage_unavailable", responseMs: elapsed });
       }
       responseStarted = null;
       streamKind = null;

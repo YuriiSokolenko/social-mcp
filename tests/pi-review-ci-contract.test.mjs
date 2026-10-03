@@ -632,7 +632,7 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.match(runtime, /name: 'repo_search'/);
   assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
   assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
-  assert.match(runtime, /result: schema \? \{ kind: 'structured', schema \} : \{ kind: 'text' \}/);
+  assert.match(readScript('scripts/pi-common/structured-subagent.mjs', 'utf8'), /result: schema \? \{ kind: 'structured', schema \} : \{ kind: 'text' \}/);
 
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);
   assert.match(repoSearchSource, /\['grep', '-n', '-I', '-F'/);

@@ -72,6 +72,7 @@
     "scripts/pi-common/session-state.mjs",
     "scripts/pi-common/structural-edit.mjs",
     "scripts/pi-common/terminal-tool.mjs",
+    "scripts/pi-common/structured-subagent.mjs",
     "scripts/pi-common/usage-ledger.mjs",
     "scripts/pi-common/worktree-baseline.mjs",
     "scripts/pi-common/worktree-recovery.mjs",

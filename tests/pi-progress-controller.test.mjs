@@ -565,8 +565,9 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
-  assert.match(runtime, /prompt-template:subagent:request/);
-  assert.match(runtime, /prompt-template:subagent:response/);
+  const delegation = fs.readFileSync('scripts/pi-common/structured-subagent.mjs', 'utf8');
+  assert.match(delegation, /prompt-template:subagent:request/);
+  assert.match(delegation, /prompt-template:subagent:response/);
   assert.match(runtime, /name: 'prepare_implementation'/);
   assert.match(runtime, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
   assert.match(runtime, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);

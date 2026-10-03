@@ -8,17 +8,32 @@ const child = (childSession, response, usage, extra = {}) => ({ call: "coding", 
 
 test("#402: a null child aggregate cannot hide five completed child responses", () => {
   const records = [
-    main(1, u(50000, 1000, 55163 - 5000)), main(2, u(5000, 643, 5643)), main(3, u(0, 0, 0)),
-    // Planner usage and five child responses (64,573 in / 1,944 out / 66,517 total).
-    { call: "planner", response: 1, usage: u(2000, 293, 2293) },
-    child("s1", 1, u(10000, 300, 10300)), child("s1", 2, u(12000, 400, 12400)), child("s1", 3, u(13000, 400, 13400)),
-    child("s1", 4, u(14000, 400, 14400)), child("s1", 5, u(15573, 444, 16017)),
+    main(1, u(30000, 800)), main(2, u(20000, 600)), main(3, u(5163, 243)),
+    { call: "planner", scope: "session", childSession: "p1", status: "completed", usage: u(2000, 293) },
+    child("s1", 1, u(10000, 300)), child("s1", 2, u(12000, 400)), child("s1", 3, u(13000, 400)),
+    child("s1", 4, u(14000, 400)), child("s1", 5, u(15573, 444)),
     { call: "coding", scope: "session", childSession: "s1", status: "ended_without_submit", usage: null },
   ];
   const ledger = summarizeUsage(records);
+  assert.equal(ledger.calls.get("main").total, 56806);
   assert.equal(ledger.calls.get("coding").responses, 5);
   assert.equal(ledger.calls.get("coding").total, 66517);
+  assert.equal(ledger.calls.get("planner").total, 2293);
+  assert.equal(ledger.totals.total, 125616);
   assert.equal(ledger.complete, true);
+});
+
+test("a session roll-up is the fallback when a failed child has no per-response records", () => {
+  const ledger = summarizeUsage([{ call: "coding", scope: "session", childSession: "f", status: "error", usage: u(40, 2) }]);
+  assert.equal(ledger.totals.total, 42);
+  assert.equal(ledger.complete, true);
+});
+
+test("a main response without provider usage is an unknown obligation", () => {
+  const ledger = summarizeUsage([main(1, u(10, 1)), main(2, null)]);
+  assert.equal(ledger.complete, false);
+  assert.equal(ledger.unknown[0].response, 2);
+  assert.equal(ledger.totals.total, 11);
 });
 
 test("identical child-local response numbers in different sessions do not overwrite each other", () => {
@@ -68,15 +83,23 @@ test("a session that produced no usage at all is incomplete", () => {
   assert.equal(ledger.unknown[0].reason, "session_usage_unavailable");
 });
 
-test("#399: 1,502,881 known tokens while the timed-out planner stays flagged unknown", () => {
+test("#399: 1,502,881 known tokens, root and reported totals rendered separately, planner flagged unknown", () => {
   const records = [
-    main(1, u(1000000, 130945, 1130945)),
-    child("c1", 1, u(300000, 71936, 371936)),
+    main(1, u(1000000, 130945)),
+    { call: "subagent", aggregate: true, response: 1, usage: u(14000, 2234) },
+    child("c1", 1, u(300000, 55702)),
     { call: "planner", scope: "session", childSession: "p1", status: "timed_out", usage: null },
   ];
   const ledger = summarizeUsage(records);
-  assert.equal(ledger.totals.total, 1502881);
+  assert.equal(ledger.totals.total, 1130945 + 16234 + 355702);
   assert.equal(ledger.calls.get("main").total, 1130945);
+  // The historical report counted the root plus its successful shell delegate only.
+  assert.equal(ledger.calls.get("main").total + ledger.calls.get("subagent").total, 1147179);
   assert.equal(ledger.complete, false);
   assert.equal(ledger.unknown[0].call, "planner");
+});
+
+test("a timed-out session stays incomplete even when earlier responses were accounted", () => {
+  const ledger = summarizeUsage([child("a", 1, u(10, 1)), { call: "planner", scope: "session", childSession: "a", status: "timed_out", usage: u(10, 1) }]);
+  assert.equal(ledger.complete, false);
 });
