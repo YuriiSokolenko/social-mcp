@@ -346,17 +346,27 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     }
     const validated = validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
     status = 'completed';
-    return { ...validated, usage, layoutHint };
+    return {
+      ...validated,
+      usage,
+      layoutHint,
+      evidenceUsed: readPlannerEvidenceUsed(evidenceStateFile, evidenceCap),
+      evidenceCap,
+    };
   } catch (error) {
     if (error && typeof error === 'object') {
       error.delegationUsage = usage;
+      error.plannerEvidenceUsed = readPlannerEvidenceUsed(evidenceStateFile, evidenceCap);
+      error.plannerEvidenceCap = evidenceCap;
       status = error.delegationStatus ?? 'error';
     }
     throw error;
   } finally {
     recordDescendantMetric({
       call: 'planner', scope: 'session', childSession, parentSession: ctx.sessionManager.getSessionId(), status, usage,
+      ...(Number.isFinite(Number(usage?.durationMs)) ? { responseMs: Number(usage.durationMs) } : {}),
     });
+    fs.rmSync(evidenceStateFile, { force: true });
   }
 }
 
@@ -385,6 +395,9 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       reason: planned.reason,
       layoutHint,
       plannerUsage: planned.usage,
+      plannerEvidenceUsed: planned.evidenceUsed,
+      plannerEvidenceCap: planned.evidenceCap,
+      plannerProviderTurns: Number.isSafeInteger(planned.usage?.turns) ? planned.usage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
   } catch (error) {
@@ -396,6 +409,9 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       reason: String(error?.message ?? error),
       layoutHint,
       plannerUsage: error?.delegationUsage ?? null,
+      plannerEvidenceUsed: Number.isSafeInteger(error?.plannerEvidenceUsed) ? error.plannerEvidenceUsed : 0,
+      plannerEvidenceCap: Number.isSafeInteger(error?.plannerEvidenceCap) ? error.plannerEvidenceCap : plannerEvidenceBudget(config),
+      plannerProviderTurns: Number.isSafeInteger(error?.delegationUsage?.turns) ? error.delegationUsage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
   }
