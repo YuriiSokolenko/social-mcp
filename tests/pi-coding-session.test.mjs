@@ -206,6 +206,7 @@ function runtimeScenario(mode) {
         events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) },
         registerTool: tool => tools.set(tool.name, tool),
         on: (name, fn) => handlers.set(name, fn),
+        appendEntry: () => {},
         getActiveTools: () => [...active], setActiveTools: names => { active = names; },
         setModel: async model => { caps.push(model.maxTokens); ctx.model = model; return true; },
         sendUserMessage: async text => { steers.push(text); },
