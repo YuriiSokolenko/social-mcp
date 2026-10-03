@@ -222,6 +222,7 @@ export default function (pi) {
 
       data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, {
         ...data,
+        scope_enforcement: 'predeclared',
         accepted_scope: mutationScopeReceipt(process.cwd(), process.env),
       });
       return { data };
