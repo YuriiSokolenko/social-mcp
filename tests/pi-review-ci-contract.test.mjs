@@ -398,9 +398,11 @@ test('product agent workflows use one shared product-check contract and never ru
   const repairTool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
   const implementerTool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
   const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
-  assert.match(repairTool, /validateFinalProductTree\(\)/);
+  assert.match(repairTool, /validate = validateFinalProductTree/);
+  assert.match(repairTool, /validate\(\{ enforceAcceptedScope: false \}\)/);
   assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
+  assert.match(validation, /enforceAcceptedScope: true/);
   assert.match(readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd, ledgerPath, backend, env \}\)/);
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(ci, /node --test tests\/\*\.test\.mjs/);
@@ -429,7 +431,9 @@ test('all Pi agents are hard-blocked from CI control-plane changes', () => {
   const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
   assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(repairTool, /validateFinalProductTree\(\)/);
+  assert.match(validation, /enforceAcceptedScope: true/);
+  assert.match(repairTool, /validate = validateFinalProductTree/);
+  assert.match(repairTool, /validate\(\{ enforceAcceptedScope: false \}\)/);
   const finalizer = readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
   assert.match(finalizer, /forbiddenAgentPaths\(base, cwd\)/);
   const agentChanges = readScript('scripts/pi-common/agent-change-policy.mjs', 'utf8');
@@ -673,7 +677,7 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.doesNotMatch(triage, /blame_context|commit_story|file_history|search_commits|file_contributors/);
   assert.match(stageConfig, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
   assert.match(stageConfig, /controlTools: \['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'\]/);
-  assert.match(stageConfig, /actionTools: \\['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'submit_result'\\]/);
+  assert.match(stageConfig, /actionTools: \['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'submit_result'\]/);
   assert.match(progress, /const MUTATION_TOOLS = new Set\(\['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'recover_worktree'\]\)/);
   assert.match(resultTool, /structural_edit\/safe_edit\/edit\/write/);
 });
