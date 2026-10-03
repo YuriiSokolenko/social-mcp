@@ -14,6 +14,7 @@ import {
   decodeMutationJournalState,
   encodeMutationJournalState,
   mutationCleanupHints,
+  mutationJournalCapacityStatus,
   mutationJournalState,
   recordSuccessfulMutation,
   undoMutation,
@@ -281,4 +282,88 @@ test('#424 corrupt persisted provenance fails closed instead of resetting to an 
     () => mutationJournalState(f.root, f.env),
     error => error.code === 'mutation_journal_corrupt',
   );
+});
+
+
+function deterministicBytes(size, seed) {
+  const result = Buffer.alloc(size);
+  let value = seed >>> 0;
+  for (let index = 0; index < size; index += 1) {
+    value ^= value << 13;
+    value ^= value >>> 17;
+    value ^= value << 5;
+    result[index] = value & 0xff;
+  }
+  return result;
+}
+
+test('#424 repeated moderate-file edits degrade when checkpoint capacity is full instead of requiring a larger journal', t => {
+  const f = fixture(t);
+  const relative = 'moderate.bin';
+  const absolute = path.join(f.root, relative);
+  fs.writeFileSync(absolute, deterministicBytes(24 * 1024, 1));
+
+  let degraded = null;
+  for (let version = 1; version <= 10; version += 1) {
+    const before = captureMutationSnapshot(f.root, relative);
+    const capacity = mutationJournalCapacityStatus({ cwd: f.root, snapshot: before, env: f.env });
+    if (!capacity.journalable) {
+      degraded = { version, capacity, before };
+      break;
+    }
+    fs.writeFileSync(absolute, deterministicBytes(24 * 1024, version + 1));
+    const after = captureMutationSnapshot(f.root, relative);
+    recordSuccessfulMutation({
+      cwd: f.root,
+      before,
+      after,
+      tool: 'write',
+      disposition: 'publishable',
+      env: f.env,
+    });
+  }
+
+  assert.ok(degraded, 'repeated moderate-file edits should eventually reach the bounded checkpoint limit');
+  assert.equal(degraded.capacity.code, 'mutation_journal_full');
+  const entriesBeforeFallback = mutationJournalState(f.root, f.env).entries.length;
+
+  // Capacity exhaustion is a journal concern, not a repository-mutation veto. The runtime uses
+  // this status to keep the edit and retain only its process-local last-mutation snapshot.
+  const fallbackBytes = deterministicBytes(24 * 1024, 999);
+  fs.writeFileSync(absolute, fallbackBytes);
+  assert.deepEqual(fs.readFileSync(absolute), fallbackBytes);
+  assert.equal(mutationJournalState(f.root, f.env).entries.length, entriesBeforeFallback);
+});
+
+test('#424 undo retry recognizes an already-restored prior state after journal persistence fails', t => {
+  const f = fixture(t);
+  const target = path.join(f.root, 'retry.txt');
+  fs.writeFileSync(target, 'prior bytes\n');
+  const entry = mutate(f, 'retry.txt', 'post bytes\n', { disposition: 'publishable' });
+
+  const blocker = path.join(f.root, 'not-a-directory');
+  fs.writeFileSync(blocker, 'block journal mkdir\n');
+  const badEnv = { PI_MUTATION_JOURNAL_FILE: path.join(blocker, 'journal.json') };
+
+  assert.throws(
+    () => undoMutation({
+      cwd: f.root,
+      mutationId: entry.id,
+      reason: 'first undo restores bytes but cannot persist journal',
+      env: badEnv,
+    }),
+    error => error.code === 'mutation_undo_persist_failed',
+  );
+  assert.equal(fs.readFileSync(target, 'utf8'), 'prior bytes\n');
+  assert.ok(mutationJournalState(f.root, f.env).entries.some(item => item.id === entry.id));
+
+  const retried = undoMutation({
+    cwd: f.root,
+    mutationId: entry.id,
+    reason: 'retry only finishes journal cleanup',
+    env: f.env,
+  });
+  assert.equal(retried.already_restored, true);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'prior bytes\n');
+  assert.equal(mutationJournalState(f.root, f.env).entries.some(item => item.id === entry.id), false);
 });
