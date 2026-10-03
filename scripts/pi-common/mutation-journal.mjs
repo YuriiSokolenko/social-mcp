@@ -372,8 +372,11 @@ export function recordSuccessfulMutation({
       : { existed: false },
     post: snapshotFingerprint(after),
   };
-  state.entries.push(entry);
-  persistState(cwd, state, env);
+  const nextState = {
+    schema_version: JOURNAL_SCHEMA_VERSION,
+    entries: [...state.entries, entry],
+  };
+  persistState(cwd, nextState, env);
   return structuredClone(entry);
 }
 
@@ -468,10 +471,12 @@ export function undoMutation({
     });
   }
 
-  const index = state.entries.findIndex(item => item.id === mutationId);
-  state.entries.splice(index, 1);
+  const nextState = {
+    schema_version: JOURNAL_SCHEMA_VERSION,
+    entries: state.entries.filter(item => item.id !== mutationId),
+  };
   try {
-    persistState(cwd, state, env);
+    persistState(cwd, nextState, env);
   } catch (error) {
     throw journalError(
       'mutation_undo_persist_failed',
