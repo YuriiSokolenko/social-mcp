@@ -27,6 +27,14 @@ const TYPEBOX_STUB_LOADER = `export async function resolve(specifier, context, n
   return nextResolve(specifier, context);
 }`;
 
+test('coding-session guidance uses only exposed tools and routes missing evidence through need_more_evidence', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /never invent helper names such as read_for_input/);
+  assert.match(runtime, /if one concrete missing fact prevents the next safe action, call need_more_evidence/);
+  assert.match(runtime, /action-required: read is not exposed now/);
+  assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
+});
+
 test('every file mutation target must be physically inside the worktree', () => {
   const dir = tempDir();
   const outside = tempDir();
