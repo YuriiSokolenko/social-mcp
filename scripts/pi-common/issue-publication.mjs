@@ -9,6 +9,7 @@ import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projec
 import { PIPELINE_LABELS } from './state-machine.mjs';
 import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
 import { assertAcceptedMutationScope, readMutationScopeReceiptFile } from './accepted-mutation-scope.mjs';
+import { encodeMutationJournalState, readMutationJournalFile } from './mutation-journal.mjs';
 import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
 import { resolveCandidateBase } from './candidate-revision.mjs';
 
@@ -76,7 +77,7 @@ export function publicationBase(cwd, startCommit) {
   return resolveCandidateBase({ cwd, startCommit, configuredBase: baseRef() });
 }
 
-export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile, scopeFile }) {
+export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile, scopeFile, mutationJournalFile }) {
   const { cleanDirectories, cleanFiles } = projectConfig().workspace;
   for (const p of cleanDirectories) fs.rmSync(`${cwd}/${p}`, { recursive: true, force: true });
   for (const p of cleanFiles) fs.rmSync(`${cwd}/${p}`, { force: true });
@@ -90,6 +91,7 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   const stagedChanged = git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0;
   const metadata = resultFile ? readImplementerResult(resultFile) : null;
   const persistedScope = readMutationScopeReceiptFile(cwd, scopeFile);
+  const persistedMutationJournal = readMutationJournalFile(cwd, mutationJournalFile);
   let message = `feat: implement issue #${issue}`;
   // A completed unsandboxed backend must stay human-gated even if some stale
   // Pi sidecar happens to exist. For Pi/predeclared work, the sidecar is the
@@ -103,6 +105,12 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   } else if (checkpointScope) {
     const encodedScope = Buffer.from(JSON.stringify(checkpointScope), 'utf8').toString('base64url');
     message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
+  }
+  // Always seal the current journal state when the sidecar exists, including an empty journal.
+  // An explicit empty state prevents an older checkpoint trailer from resurrecting mutations
+  // that were already undone before a later checkpoint.
+  if (persistedMutationJournal) {
+    message += `\nPi-Mutation-Journal: ${encodeMutationJournalState(cwd, persistedMutationJournal)}`;
   }
   if (stagedChanged) {
     git(['commit','-m',message], { cwd });
@@ -316,7 +324,7 @@ export async function dispatchReviewer(prNumber) {
 
 async function main() {
   const [cmd, ...a] = process.argv.slice(2);
-  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],scopeFile:a[5],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
+  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],scopeFile:a[5],mutationJournalFile:a[6],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4],cwd:a[5],startCommit:a[6]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
