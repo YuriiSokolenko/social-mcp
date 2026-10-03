@@ -272,3 +272,13 @@ test('#424 checkpoint trailer reader restores the newest explicit journal state'
 
   assert.deepEqual(mutationJournalStateFromRef(latestRef, f.root).entries, []);
 });
+
+
+test('#424 corrupt persisted provenance fails closed instead of resetting to an empty journal', t => {
+  const f = fixture(t);
+  fs.writeFileSync(f.sidecar, '{"schema_version":1,"entries":[broken]}\n');
+  assert.throws(
+    () => mutationJournalState(f.root, f.env),
+    error => error.code === 'mutation_journal_corrupt',
+  );
+});
