@@ -320,7 +320,10 @@ function runtimeScenario(mode) {
         let reply;
         if (mode === 'envelope-retry') {
           if (attempts === 1) assert.doesNotMatch(request.task, /REPAIR/);
-          else assert.match(request.task, /REPAIR[\\s\\S]*\\{ "value": \\{ "steps"/);
+          else {
+            assert.match(request.task, /REPAIR: the previous structured_output envelope was rejected/);
+            assert.ok(request.task.includes('Output contract: call structured_output with exactly { "value": { "steps"'));
+          }
           reply = attempts === 2 ? { status: 'completed', result: { kind: 'structured', value: good } } : { status: 'failed', error: schemaError };
         } else if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
         else if (mode === 'timeout') reply = { status: 'failed', error: 'Subagent timed out after 120000ms.' };
