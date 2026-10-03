@@ -600,7 +600,7 @@ test('fresh implementer uses one planner/classifier result while restored and re
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   const backend = readScript('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
 
-  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*implementationPlannerTimeoutMs: 900000/);
+  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 2048[\s\S]*implementationPlannerTimeoutMs: 900000/);
   assert.doesNotMatch(config, /prepare_implementation/);
   assert.doesNotMatch(config, /complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(config, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
@@ -636,7 +636,7 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.match(runtime, /name: 'safe_edit'/);
   assert.match(runtime, /name: 'repo_search'/);
   assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
-  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 768[\s\S]*request\.toolBudget = \{ hard: cap \+ 3 \}/);
+  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 2048[\s\S]*request\.toolBudget = \{ hard: cap \+ 3 \}/);
   assert.match(readScript('scripts/pi-common/structured-subagent.mjs', 'utf8'), /result: schema \? \{ kind: 'structured', schema \} : \{ kind: 'text' \}/);
 
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);
