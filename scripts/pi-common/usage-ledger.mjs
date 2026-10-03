@@ -117,19 +117,16 @@ export function summarizeUsage(records) {
       add(totals, usage, 0);
       continue;
     }
-    if (usage.totalTokens === sum.total) continue;
-    // Per-response records and the roll-up disagree: never double count, never drop known tokens.
-    if (usage.totalTokens > sum.total) {
-      const delta = {
-        input: Math.max(0, (usage.input ?? 0) - sum.input), output: Math.max(0, (usage.output ?? 0) - sum.output),
-        cacheRead: Math.max(0, (usage.cacheRead ?? 0) - sum.cacheRead), cacheWrite: Math.max(0, (usage.cacheWrite ?? 0) - sum.cacheWrite),
-        totalTokens: usage.totalTokens - sum.total,
-      };
-      for (const target of [row, totals]) {
-        target.input += delta.input; target.output += delta.output;
-        target.cacheRead += delta.cacheRead; target.cacheWrite += delta.cacheWrite;
-        target.total += delta.totalTokens;
-      }
+    const sameVector = USAGE_KEYS.every((key) => (usage[key] ?? 0) === sum[key]) && usage.totalTokens === sum.total;
+    if (sameVector) continue;
+    // Per-response records and the roll-up disagree somewhere in the vector: never double count and
+    // never drop known tokens. Take the known lower bound per component; the total can be no
+    // smaller than either source's total or the reconciled components themselves.
+    const reconciled = Object.fromEntries(USAGE_KEYS.map((key) => [key, Math.max(sum[key], usage[key] ?? 0)]));
+    const reconciledTotal = Math.max(sum.total, usage.totalTokens, USAGE_KEYS.reduce((acc, key) => acc + reconciled[key], 0));
+    for (const target of [row, totals]) {
+      for (const key of USAGE_KEYS) target[key] += reconciled[key] - sum[key];
+      target.total += reconciledTotal - sum.total;
     }
     unknown.push({ call, childSession: session, response: null, reason: "session_response_usage_mismatch" });
   }

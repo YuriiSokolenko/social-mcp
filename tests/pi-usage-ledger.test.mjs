@@ -120,3 +120,26 @@ test("a smaller roll-up never lowers the per-response sum", () => {
   assert.equal(ledger.totals.total, 55);
   assert.equal(ledger.complete, false);
 });
+
+test("equal totals with a different input/output breakdown is still a mismatch, never components above total", () => {
+  const ledger = summarizeUsage([
+    child("a", 1, u(50, 5)),
+    { call: "coding", scope: "session", childSession: "a", status: "error", usage: u(40, 15) },
+  ]);
+  assert.equal(ledger.complete, false);
+  assert.equal(ledger.unknown[0].reason, "session_response_usage_mismatch");
+  const { input, output, cacheRead, cacheWrite, total } = ledger.totals;
+  assert.deepEqual([input, output], [50, 15]);
+  assert.ok(total >= input + output + cacheRead + cacheWrite);
+});
+
+test("a larger roll-up with redistributed components keeps total consistent with the components", () => {
+  const ledger = summarizeUsage([
+    child("a", 1, u(50, 5)),
+    { call: "coding", scope: "session", childSession: "a", status: "error", usage: u(45, 15) },
+  ]);
+  const { input, output, cacheRead, cacheWrite, total } = ledger.totals;
+  assert.deepEqual([input, output, total], [50, 15, 65]);
+  assert.ok(total >= input + output + cacheRead + cacheWrite);
+  assert.equal(ledger.complete, false);
+});
