@@ -248,7 +248,7 @@ export function plannerTask(env = process.env, { repair = false, layoutHint = nu
     : '';
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
-Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue already names an exact path/directory/symbol/test, inspect there directly; avoid root listings and repo-wide discovery. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue.
+Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue already names an exact path/directory/symbol/test, inspect there directly; avoid root listings and repo-wide discovery. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.
 
 Synthesize what you learn into the handoff. If you established a repository fact, state the fact in steps/reason instead of telling main to rediscover it. Keep the plan concise: 1-8 ordered steps, each <=240 characters. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
 
