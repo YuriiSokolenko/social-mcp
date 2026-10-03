@@ -43,6 +43,7 @@ export function emptyTotals() {
     total: 0,
     responseMs: 0,
     providerResponseMs: 0,
+    delegatedLifecycleMs: 0,
   };
 }
 
@@ -50,15 +51,14 @@ function providerTurns(usage) {
   return Number.isSafeInteger(usage?.turns) && usage.turns >= 0 ? usage.turns : 1;
 }
 
-function providerDurationMs(usage, fallback = 0) {
-  return Number.isFinite(usage?.durationMs) && usage.durationMs >= 0
-    ? usage.durationMs
-    : Number.isFinite(fallback) ? fallback : 0;
+function delegatedLifecycleDurationMs(usage) {
+  return Number.isFinite(usage?.durationMs) && usage.durationMs >= 0 ? usage.durationMs : 0;
 }
 
 function add(target, usage, responseMs, {
   providerResponses = 1,
   providerResponseMs = responseMs,
+  delegatedLifecycleMs = 0,
 } = {}) {
   target.input += usage.input ?? 0;
   target.output += usage.output ?? 0;
@@ -69,13 +69,15 @@ function add(target, usage, responseMs, {
   target.responses += 1;
   target.providerResponses += Number.isSafeInteger(providerResponses) && providerResponses >= 0 ? providerResponses : 1;
   target.providerResponseMs += Number.isFinite(providerResponseMs) && providerResponseMs >= 0 ? providerResponseMs : 0;
+  target.delegatedLifecycleMs += Number.isFinite(delegatedLifecycleMs) && delegatedLifecycleMs >= 0 ? delegatedLifecycleMs : 0;
 }
 
-function supplementProviderRollup(target, sum, usage, responseMs = 0) {
+function supplementProviderRollup(target, sum, usage) {
   const turns = Math.max(sum.providerResponses, providerTurns(usage));
-  const duration = Math.max(sum.providerResponseMs, providerDurationMs(usage, responseMs));
   target.providerResponses += turns - sum.providerResponses;
-  target.providerResponseMs += duration - sum.providerResponseMs;
+  // usage.durationMs is the delegated lifecycle duration, not a provider-only timer:
+  // it may include queueing, tool execution and runtime work. Keep it separate.
+  target.delegatedLifecycleMs += delegatedLifecycleDurationMs(usage);
 }
 
 /**
@@ -115,12 +117,14 @@ export function summarizeUsage(records) {
       return;
     }
     const rollup = Boolean(record.aggregate || record.scope === "session");
+    const responseMs = rollup ? 0 : (Number(record.responseMs) || 0);
     const provider = {
       providerResponses: rollup ? providerTurns(usage) : 1,
-      providerResponseMs: rollup ? providerDurationMs(usage, record.responseMs) : (Number(record.responseMs) || 0),
+      providerResponseMs: responseMs,
+      delegatedLifecycleMs: rollup ? delegatedLifecycleDurationMs(usage) : 0,
     };
-    add(row, usage, record.responseMs, provider);
-    add(totals, usage, record.responseMs, provider);
+    add(row, usage, responseMs, provider);
+    add(totals, usage, responseMs, provider);
   };
   const responseSums = new Map();
   for (const record of responses.values()) {
@@ -143,7 +147,7 @@ export function summarizeUsage(records) {
     if (!session || !usage) return;
     const existing = rollups.get(session);
     if (!existing || usage.totalTokens > existing.usage.totalTokens ||
-        (usage.totalTokens === existing.usage.totalTokens && providerDurationMs(usage, responseMs) > providerDurationMs(existing.usage, existing.responseMs))) {
+        (usage.totalTokens === existing.usage.totalTokens && delegatedLifecycleDurationMs(usage) > delegatedLifecycleDurationMs(existing.usage))) {
       rollups.set(session, { call, usage, responseMs });
     }
   };
@@ -161,15 +165,16 @@ export function summarizeUsage(records) {
     if (!sum) {
       const provider = {
         providerResponses: providerTurns(usage),
-        providerResponseMs: providerDurationMs(usage, responseMs),
+        providerResponseMs: 0,
+        delegatedLifecycleMs: delegatedLifecycleDurationMs(usage),
       };
       add(row, usage, 0, provider);
       add(totals, usage, 0, provider);
       continue;
     }
     const sameVector = USAGE_KEYS.every((key) => (usage[key] ?? 0) === sum[key]) && usage.totalTokens === sum.total;
-    supplementProviderRollup(row, sum, usage, responseMs);
-    supplementProviderRollup(totals, sum, usage, responseMs);
+    supplementProviderRollup(row, sum, usage);
+    supplementProviderRollup(totals, sum, usage);
     if (sameVector) continue;
     // Per-response records and the roll-up disagree somewhere in the vector: never double count and
     // never drop known tokens. Take the known lower bound per component; the total can be no
