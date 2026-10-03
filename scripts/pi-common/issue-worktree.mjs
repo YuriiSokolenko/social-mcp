@@ -49,6 +49,11 @@ export function acceptedScopeStateFromRef(ref, cwd = process.cwd()) {
 
 export function mutationJournalStateFromRef(ref, cwd = process.cwd()) {
   if (!ref) return null;
+  // This trailer is a consistency/recovery record, not authorization. It may originate from
+  // model-created checkpoint history. Every later undo still re-validates worktree containment,
+  // protected-path policy, target type, and the exact current post-state fingerprint before any
+  // bytes are restored or deleted.
+
   const baseAvailable = git(['rev-parse', '--verify', baseRef()], { cwd, allowFailure: true }).status === 0;
   const revArgs = baseAvailable
     ? ['rev-list', ref, `^${baseRef()}`]
