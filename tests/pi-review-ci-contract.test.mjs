@@ -361,10 +361,12 @@ test('issue publication safely replaces only the branch head observed at run sta
   assert.doesNotMatch(publication, /push --set-upstream origin/);
 });
 
-test('issue publication attributes only changes beyond integrated latest dev to the Implementer', () => {
+test('issue publication attributes changes against the shared resolved candidate base', () => {
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
-  assert.match(publication, /merge-base','--is-ancestor','origin\/dev','HEAD'/);
-  assert.match(publication, /return integrated \? 'origin\/dev' : startCommit/);
+  const candidate = readScript('scripts/pi-common/candidate-revision.mjs', 'utf8');
+  assert.match(publication, /resolveCandidateBase\(\{ cwd, startCommit, configuredBase: baseRef\(\) \}\)/);
+  assert.match(candidate, /merge-base', '--is-ancestor', configuredBase, 'HEAD'/);
+  assert.match(candidate, /return fallback/);
   assert.match(publication, /diff','--no-renames','--name-only','-z',base,'HEAD'/);
   assert.doesNotMatch(publication, /diff','--no-renames','--name-only','-z',startCommit,'HEAD'/);
 });
