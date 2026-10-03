@@ -6,10 +6,12 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readScript } from './helpers/resolved-source.mjs';
 
-import { assertPublicationFileSet, isUnsandboxedBackend, nextLabelsForVerification, publicationBase } from '../scripts/pi-common/issue-publication.mjs';
+import { assertPublicationFileSet, isUnsandboxedBackend, nextLabelsForVerification, publicationBase, saveCheckpoint } from '../scripts/pi-common/issue-publication.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { PIPELINE_LABELS } from '../scripts/pi-common/state-machine.mjs';
 import { VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
+import { acceptedScopeStateFromRef } from '../scripts/pi-common/issue-worktree.mjs';
+import { registerMutationScope } from '../scripts/pi-common/accepted-mutation-scope.mjs';
 
 const TYPEBOX_STUB_LOADER = `export async function resolve(specifier, context, nextResolve) {
   if (specifier === 'typebox') return {
@@ -107,7 +109,7 @@ test('label objects in GitHub API shape (not bare strings) are handled identical
 
 test('upsertPullRequest derives trust from the backend argument, not the ledger, and returns verification_state', () => {
   const source = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
-  assert.match(source, /export async function upsertPullRequest\(\{ issue, resultFile, owner, ledgerFile, backend \}\)/);
+  assert.match(source, /export async function upsertPullRequest\(\{ issue, resultFile, owner, ledgerFile, backend, cwd, startCommit \}\)/);
   assert.match(source, /const verificationState = computeVerificationState\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\);/);
   assert.match(source, /const unsandboxedBackend = isUnsandboxedBackend\(backend\);/);
   assert.match(source, /nextLabelsForVerification\(existing\[0\]\.labels, verificationState, unsandboxedBackend\)/);
@@ -115,7 +117,7 @@ test('upsertPullRequest derives trust from the backend argument, not the ledger,
   assert.match(source, /if \(nextLabels\) await replaceLabels\(pr\.number, nextLabels\);/);
   assert.match(source, /return \{ number:pr\.number, url:pr\.html_url, verification_state: verificationState \};/);
   // The CLI dispatch forwards the 5th positional arg as `backend`.
-  assert.match(source, /upsertPullRequest\(\{issue:Number\(a\[0\]\),resultFile:a\[1\],owner:a\[2\],ledgerFile:a\[3\],backend:a\[4\]\}\)/);
+  assert.match(source, /upsertPullRequest\(\{issue:Number\(a\[0\]\),resultFile:a\[1\],owner:a\[2\],ledgerFile:a\[3\],backend:a\[4\],cwd:a\[5\],startCommit:a\[6\]\}\)/);
 });
 
 test('the issue-agent workflow passes the workflow_dispatch backend input directly, never a shell-environment expansion', () => {
@@ -133,7 +135,8 @@ test('the issue-agent workflow passes the workflow_dispatch backend input direct
 
 test('publication rejects a stray probe file that submit_result did not declare (#334)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-file-set-'));
-  const resultFile = path.join(dir, 'implementer-result.json');
+  const resultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-result-'));
+  const resultFile = path.join(resultDir, 'implementer-result.json');
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
   try {
     git('init');
@@ -170,13 +173,29 @@ test('publication rejects a stray probe file that submit_result did not declare 
       files: ['helper.py', 'test_helper.py', '.probe.py"'],
       security_notes: 'No security impact.',
       limitations: 'None.',
+      scope_enforcement: 'predeclared',
+      accepted_scope: {
+        schema_version: 1,
+        accepted: [
+          { path: 'helper.py', rationale: 'Issue requires the helper implementation change.' },
+          { path: 'test_helper.py', rationale: 'Issue requires a focused regression test.' },
+        ],
+        temporary: [],
+        baseline: [],
+      },
     });
-    assert.deepEqual(
-      assertPublicationFileSet({ cwd: dir, base, resultFile }),
-      ['.probe.py"', 'helper.py', 'test_helper.py'],
+    assert.throws(
+      () => assertPublicationFileSet({ cwd: dir, base, resultFile }),
+      error => {
+        const diagnostic = JSON.parse(error.message);
+        assert.equal(diagnostic.code, 'accepted_scope_violation');
+        assert.deepEqual(diagnostic.unexpected_paths, ['.probe.py"']);
+        return true;
+      },
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(resultDir, { recursive: true, force: true });
   }
 });
 
@@ -191,7 +210,8 @@ test('issue-agent passes the trusted result file into issue-branch publication (
 
 test('publication detects both sides of a rename instead of folding it (#338 review)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-rename-'));
-  const resultFile = path.join(dir, 'implementer-result.json');
+  const resultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-result-'));
+  const resultFile = path.join(resultDir, 'implementer-result.json');
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
   try {
     git('init');
@@ -211,6 +231,16 @@ test('publication detects both sides of a rename instead of folding it (#338 rev
       files: ['old.py', 'new.py'],
       security_notes: 'No security impact.',
       limitations: 'None.',
+      scope_enforcement: 'predeclared',
+      accepted_scope: {
+        schema_version: 1,
+        accepted: [
+          { path: 'old.py', rationale: 'Issue requires renaming the existing helper.' },
+          { path: 'new.py', rationale: 'Issue requires the renamed helper target.' },
+        ],
+        temporary: [],
+        baseline: [],
+      },
     });
 
     assert.deepEqual(
@@ -219,6 +249,7 @@ test('publication detects both sides of a rename instead of folding it (#338 rev
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(resultDir, { recursive: true, force: true });
   }
 });
 
@@ -351,4 +382,210 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test('checkpoint persists accepted scope before submit_result and does not create empty scope-only commits', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-scope-checkpoint-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const remote = path.join(root, 'remote.git');
+  const work = path.join(root, 'work');
+  const scopeFile = path.join(root, 'accepted-scope.json');
+  const missingResult = path.join(root, 'missing-result.json');
+  execFileSync('git', ['init', '--bare', remote]);
+  fs.mkdirSync(work);
+  const git = (...args) => execFileSync('git', args, { cwd: work, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  git('remote', 'add', 'origin', remote);
+  fs.writeFileSync(path.join(work, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+  git('branch', '-M', 'dev');
+  git('push', '-u', 'origin', 'dev');
+  const startCommit = git('rev-parse', 'HEAD').trim();
+
+  registerMutationScope({
+    cwd: work,
+    paths: ['feature.py'],
+    disposition: 'publishable',
+    rationale: 'Issue requires the new feature implementation file.',
+    env: { PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile },
+  });
+  fs.writeFileSync(path.join(work, 'feature.py'), 'value = 1\n');
+
+  const first = saveCheckpoint({
+    issue: 422,
+    cwd: work,
+    startCommit,
+    expectedSha: '',
+    resultFile: missingResult,
+    scopeFile,
+  });
+  assert.equal(first.changed, true);
+  assert.deepEqual(acceptedScopeStateFromRef(first.commit, work).accepted, [{
+    path: 'feature.py',
+    rationale: 'Issue requires the new feature implementation file.',
+  }]);
+
+  const headBefore = git('rev-parse', 'HEAD').trim();
+  const second = saveCheckpoint({
+    issue: 422,
+    cwd: work,
+    startCommit,
+    expectedSha: first.commit,
+    resultFile: missingResult,
+    scopeFile,
+  });
+  assert.equal(second.changed, true, 'the existing implementation diff is still checkpoint content');
+  assert.equal(git('rev-parse', 'HEAD').trim(), headBefore, 'no empty scope-only commit is added');
+
+  const resultFile = path.join(root, 'result.json');
+  // The result metadata is intentionally stale: a later repair/coding step
+  // accepted another path after submit_result. Checkpoint must persist the
+  // live sidecar superset, not lose the later acceptance.
+  writeImplementerResult(resultFile, {
+    title: 'Feature follow-up',
+    summary: 'Add the feature implementation.',
+    changes: ['Add feature file'],
+    files: ['feature.py'],
+    security_notes: 'None.',
+    limitations: 'None.',
+    scope_enforcement: 'predeclared',
+    accepted_scope: {
+      schema_version: 1,
+      accepted: [
+        { path: 'feature.py', rationale: 'Issue requires the new feature implementation file.' },
+      ],
+      temporary: [],
+      baseline: [],
+    },
+  });
+  registerMutationScope({
+    cwd: work,
+    paths: ['second.py'],
+    disposition: 'publishable',
+    rationale: 'Repair attempt requires the follow-up implementation file.',
+    env: { PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile },
+  });
+  fs.writeFileSync(path.join(work, 'second.py'), 'value = 2\n');
+  const third = saveCheckpoint({
+    issue: 422,
+    cwd: work,
+    startCommit,
+    expectedSha: first.commit,
+    resultFile,
+    scopeFile,
+  });
+  assert.equal(third.changed, true);
+  assert.deepEqual(acceptedScopeStateFromRef(third.commit, work).accepted.map(entry => entry.path), ['feature.py', 'second.py']);
+});
+
+test('checkpoint never lets a Pi sidecar override unsandboxed-gated metadata', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-mini-checkpoint-scope-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const remote = path.join(root, 'remote.git');
+  const work = path.join(root, 'work');
+  const scopeFile = path.join(root, 'accepted-scope.json');
+  const resultFile = path.join(root, 'result.json');
+  execFileSync('git', ['init', '--bare', remote]);
+  fs.mkdirSync(work);
+  const git = (...args) => execFileSync('git', args, { cwd: work, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  git('remote', 'add', 'origin', remote);
+  fs.writeFileSync(path.join(work, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+  git('branch', '-M', 'dev');
+  git('push', '-u', 'origin', 'dev');
+  const startCommit = git('rev-parse', 'HEAD').trim();
+
+  registerMutationScope({
+    cwd: work,
+    paths: ['feature.py'],
+    disposition: 'publishable',
+    rationale: 'Stale Pi sidecar entry must not upgrade mini-swe trust.',
+    env: { PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile },
+  });
+  fs.writeFileSync(path.join(work, 'feature.py'), 'value = 1\n');
+  writeImplementerResult(resultFile, {
+    title: 'Mini change',
+    summary: 'Unsandboxed implementation.',
+    changes: ['Add feature'],
+    files: ['feature.py'],
+    security_notes: 'None.',
+    limitations: 'Human gate required.',
+    scope_enforcement: 'unsandboxed-gated',
+  });
+
+  const saved = saveCheckpoint({
+    issue: 422,
+    cwd: work,
+    startCommit,
+    expectedSha: '',
+    resultFile,
+    scopeFile,
+  });
+  assert.equal(saved.changed, true);
+  const message = git('log', '-1', '--format=%B');
+  assert.match(message, /Pi-Scope-Enforcement: unsandboxed-gated/);
+  assert.doesNotMatch(message, /Pi-Accepted-Mutation-Scope:/);
+});
+
+test('resume finds the newest valid scope receipt through a marker-less checkpoint tip', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-scope-history-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+
+  const receipt = {
+    schema_version: 1,
+    accepted: [{ path: 'feature.py', rationale: 'Issue requires the feature file.' }],
+    temporary: [],
+    baseline: [],
+  };
+  const encoded = Buffer.from(JSON.stringify(receipt), 'utf8').toString('base64url');
+  fs.writeFileSync(path.join(dir, 'feature.py'), 'one\n');
+  git('add', '-A');
+  git('commit', '-m', `checkpoint one\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encoded}`);
+
+  fs.writeFileSync(path.join(dir, 'later.txt'), 'later\n');
+  git('add', '-A');
+  git('commit', '-m', 'marker-less later checkpoint');
+
+  assert.deepEqual(acceptedScopeStateFromRef('HEAD', dir), receipt);
+});
+
+test('mini-swe unsandboxed-gated metadata still requires exact declared diff but not a Pi scope receipt', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-mini-swe-scope-'));
+  const resultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-mini-swe-result-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(resultDir, { recursive: true, force: true }));
+  const resultFile = path.join(resultDir, 'result.json');
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+  const base = git('rev-parse', 'HEAD').trim();
+  fs.writeFileSync(path.join(dir, 'feature.py'), 'value = 1\n');
+  git('add', '-A');
+  git('commit', '-m', 'candidate');
+
+  writeImplementerResult(resultFile, {
+    title: 'Feature',
+    summary: 'Implement feature.',
+    changes: ['Add feature'],
+    files: ['feature.py'],
+    security_notes: 'None.',
+    limitations: 'Unsandboxed backend remains needs-human gated.',
+    scope_enforcement: 'unsandboxed-gated',
+  });
+  assert.deepEqual(assertPublicationFileSet({ cwd: dir, base, resultFile }), ['feature.py']);
 });

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 
 import {
+  ELEVATED_MUTATION_TURN_TOOLS,
   FINISH_TOOLS,
   ProgressController,
   actionRequiredToolNames,
@@ -45,10 +46,16 @@ import {
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import { recoverWorktree } from './pi-common/worktree-recovery.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
+import {
+  assertMutationPathAuthorized,
+  mutationScopeReceipt,
+  registerMutationScope,
+} from './pi-common/accepted-mutation-scope.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
+const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 
 // Trust boundary: the coding session's agent definition, tool allowlist and extensions come
 // from THIS module's control checkout (the trusted harness), never from the issue worktree the
@@ -560,6 +567,8 @@ export default function (pi) {
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
+  let elevatedTurnAttemptedScopePrelude = false;
+  let elevatedScopePreludeUsed = false;
 
   function validationRunId() {
     return resolveValidationRunId(process.env);
@@ -718,7 +727,7 @@ export default function (pi) {
         : largeMutationBudgetActive
           // UX on top of the controller's own hard gate: while the elevated budget is active,
           // don't even show tools this turn is not allowed to call.
-          ? unrestrictedActiveTools.filter(name => FINISH_TOOLS.has(name))
+          ? unrestrictedActiveTools.filter(name => ELEVATED_MUTATION_TURN_TOOLS.has(name))
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
@@ -907,6 +916,9 @@ export default function (pi) {
       const codingSessionTool = config.productiveProgress?.codingSessionTool;
       if (ceilingHit && codingSessionTool && active.has(codingSessionTool)) {
         hints.push(`If the implementation is large, call ${codingSessionTool} now; it keeps the current context and provides the large coding ceiling instead of drafting code here.`);
+      }
+      if (active.has(ACCEPT_MUTATION_SCOPE_TOOL)) {
+        hints.push('Before mutating a new publishable path, call accept_mutation_scope with that path and a task-specific rationale. Register scratch/probe paths as temporary; temporary paths must be removed before submission.');
       }
       if (active.has('submit_result')) {
         hints.push('If explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now.');
@@ -1190,6 +1202,38 @@ export default function (pi) {
 
   if (stage === 'implementer') {
     pi.registerTool({
+      name: ACCEPT_MUTATION_SCOPE_TOOL,
+      label: 'Accept mutation scope',
+      description: 'Record task-related mutation intent in trusted runtime state before changing a new path. disposition=publishable authorizes the path for the final diff only when accepted before it becomes changed. disposition=temporary permits scratch/probe work but the path must be removed before final validation/publication. A path that is already changed cannot be retroactively made publishable.',
+      parameters: Type.Object({
+        paths: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 20 }),
+        disposition: Type.Union([
+          Type.Literal('publishable'),
+          Type.Literal('temporary'),
+        ]),
+        rationale: Type.String({ minLength: 8, maxLength: 500 }),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const result = registerMutationScope({
+          cwd: ctx.cwd,
+          paths: params.paths,
+          disposition: params.disposition,
+          rationale: params.rationale,
+          env: process.env,
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: params.disposition === 'publishable'
+              ? `Accepted publishable mutation scope: ${result.paths.join(', ')}. Mutate only the accepted task-related paths.`
+              : `Registered temporary mutation scope: ${result.paths.join(', ')}. These paths must be removed or restored before submit_result can publish.`,
+          }],
+          details: result,
+        };
+      },
+    });
+
+    pi.registerTool({
       name: 'structural_edit',
       label: 'Structural AST edit',
       description: 'Preferred source-code mutation when one exact syntax node can be described with an ast-grep pattern/rewrite. ast-grep infers the language from the target file, dry-runs the rewrite, requires exactly one AST match, verifies the matched byte range is still current, then writes that one replacement atomically. Use metavariables to preserve untouched code instead of reproducing neighboring statements. Use safe_edit for bounded text/config edits or when structural matching is not a good fit.',
@@ -1376,7 +1420,7 @@ export default function (pi) {
       pi.registerTool({
         name: controller.largeMutationBudgetTool,
         label: 'Request large mutation budget',
-        description: `LEGACY: prefer begin_coding_session. Grant exactly the NEXT response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling, for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. That one elevated response must attempt structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result; the budget always collapses back to the normal small ceiling immediately afterward, whether or not it was used, and must be requested again for another large payload.`,
+        description: `LEGACY: prefer begin_coding_session. Grant the next mutation response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. If the target path still needs accepted scope, call accept_mutation_scope first; that declaration preserves the elevated budget for the following real mutation. The budget collapses after the actual mutation/rollback/submit action or after unrelated use.`,
         parameters: Type.Object({
           reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
         }),
@@ -1384,7 +1428,7 @@ export default function (pi) {
           return {
             content: [{
               type: 'text',
-              text: `Large mutation budget granted for exactly the next response (${controller.largeMutationBudgetMaxTokens} max output tokens). Use it now for one structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result call; do not spend it on narration or another request.`,
+              text: `Large mutation budget armed (${controller.largeMutationBudgetMaxTokens} max output tokens). If needed, call accept_mutation_scope first; the runtime preserves this budget across that scope-only response. Then use it for one structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result call.`,
             }],
             details: { reason: params.reason, maxTokens: controller.largeMutationBudgetMaxTokens },
           };
@@ -1452,7 +1496,13 @@ export default function (pi) {
               toolBudget: null,
               thinking: 'off',
               context: 'fork',
-              childEnv: { PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile }) },
+              childEnv: {
+                PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile }),
+                PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
+                ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
+                  ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
+                  : {}),
+              },
             }, signal);
           } catch (error) {
             sessionError = error;
@@ -1580,6 +1630,7 @@ export default function (pi) {
   pi.on('turn_start', (event) => {
     actionTurnAttemptedTool = false;
     elevatedTurnAttemptedFinishTool = false;
+    elevatedTurnAttemptedScopePrelude = false;
     loopGuardSteeredThisTurn = false;
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
@@ -1670,7 +1721,16 @@ export default function (pi) {
     );
     let recoveryBlocked = null;
     let canonicalInput = event.input ?? {};
-    if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
+    if (
+      event.toolName === ACCEPT_MUTATION_SCOPE_TOOL &&
+      controller.largeMutationBudgetActive() &&
+      elevatedScopePreludeUsed
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: this elevated mutation budget already used its one accept_mutation_scope prelude. Execute the accepted mutation now; a second scope-only turn is not allowed for the same grant.',
+      };
+    } else if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
       recoveryBlocked = {
         block: true,
         reason: 'BLOCKED: retry_last_failed_check cannot execute because the validation ledger is corrupted and the exact authoritative failed scope cannot be reconstructed safely.',
@@ -1738,6 +1798,10 @@ export default function (pi) {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
+    if (event.toolName === ACCEPT_MUTATION_SCOPE_TOOL) {
+      elevatedTurnAttemptedScopePrelude = true;
+      if (controller.largeMutationBudgetActive()) elevatedScopePreludeUsed = true;
+    }
 
     const cwd = ctx?.cwd || process.cwd();
 
@@ -1768,13 +1832,19 @@ export default function (pi) {
       return noOpBlocked;
     }
 
-    // Trusted containment for every file mutation, direct or inside the coding session:
-    // the target must physically be inside the worktree (no escape, no .git, no symlinks).
+    // Trusted containment and accepted-scope authorization for every file mutation,
+    // direct or inside the coding session. A new publishable path must be accepted
+    // before its first mutation; an already-changed path cannot be laundered later.
     if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
       try {
         resolveMutationTarget(cwd, event.input?.path);
+        assertMutationPathAuthorized({
+          cwd,
+          requestedPath: event.input?.path,
+          env: process.env,
+        });
       } catch (error) {
-        if (!(error instanceof MutationTargetRejected)) throw error;
+        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
         return containmentBlocked;
@@ -1983,21 +2053,43 @@ export default function (pi) {
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
 
-    // The turn that just ended was the one-shot elevated mutation response (if any): consume
-    // it unconditionally so a second elevated response is never granted automatically, and
-    // flag it when it did not even attempt the mutation/terminal action it was granted for.
+    // Scope acceptance may be the necessary first call before a large new-file mutation.
+    // Preserve the one-shot elevated budget across that declaration-only turn; consume it only
+    // after a real mutation/rollback/terminal action, or collapse it on unrelated/no-action use.
+    let preserveElevatedAfterScopePrelude = false;
     if (stage === 'implementer' && controller.largeMutationBudgetActive()) {
-      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
-        stage,
-        phase: 'consumed',
-        attemptedFinishTool: elevatedTurnAttemptedFinishTool,
-        outputTokens,
-      })}`);
-      if (!elevatedTurnAttemptedFinishTool) {
-        console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
+      if (elevatedTurnAttemptedFinishTool) {
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'consumed',
+          attemptedFinishTool: true,
+          scopePrelude: elevatedTurnAttemptedScopePrelude,
+          outputTokens,
+        })}`);
+        controller.resetLargeMutationBudget();
+        elevatedScopePreludeUsed = false;
+        syncActionToolSurface(productiveState);
+      } else if (elevatedTurnAttemptedScopePrelude) {
+        preserveElevatedAfterScopePrelude = true;
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'scope_prelude',
+          preserved: true,
+          outputTokens,
+        })}`);
+      } else {
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'consumed',
+          attemptedFinishTool: false,
+          scopePrelude: false,
+          outputTokens,
+        })}`);
+        console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no accept_mutation_scope/structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
+        controller.resetLargeMutationBudget();
+        elevatedScopePreludeUsed = false;
+        syncActionToolSurface(productiveState);
       }
-      controller.resetLargeMutationBudget();
-      syncActionToolSurface(productiveState);
     }
 
     const preComplexityRequired =
@@ -2092,10 +2184,14 @@ export default function (pi) {
     // apply the elevated ceiling to exactly the upcoming response.
     const largeMutationBudgetGrantedThisTurn =
       stage === 'implementer' && controller.largeMutationBudgetPending();
-    if (largeMutationBudgetGrantedThisTurn) {
+    if (preserveElevatedAfterScopePrelude) {
+      targetActionCap = controller.largeMutationBudgetMaxTokens;
+      budgetReason = 'large_mutation_scope_prelude';
+    } else if (largeMutationBudgetGrantedThisTurn) {
       targetActionCap = controller.largeMutationBudgetMaxTokens;
       budgetReason = 'large_mutation_elevated';
       controller.activateLargeMutationBudget();
+      elevatedScopePreludeUsed = false;
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({ stage, phase: 'granted', maxTokens: targetActionCap })}`);
     }
 

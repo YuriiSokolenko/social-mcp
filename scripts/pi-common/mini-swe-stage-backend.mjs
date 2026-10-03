@@ -173,6 +173,7 @@ function writeImplementationResult(spec) {
     already_satisfied: false,
     security_notes: 'No dedicated security assessment was supplied by the experimental mini-swe-agent backend; independent review remains authoritative.',
     limitations: 'PR metadata is generated deterministically from the current diff rather than from Pi submit_result.',
+    scope_enforcement: 'unsandboxed-gated',
   };
   if (!metadata.title) throw new Error('Issue title is required for mini-swe publication');
 

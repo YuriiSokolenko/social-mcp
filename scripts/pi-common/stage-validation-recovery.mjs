@@ -25,7 +25,7 @@ Validation diagnostics:
 ${validationDiagnostics(error)}`;
 }
 
-export function createValidationRepairSpec(spec, error, attempt = 1) {
+export function createValidationRepairSpec(spec, error, attempt = 1, acceptedScope = null) {
   return createStageRunSpec({
     stage: spec.stage,
     cwd: spec.cwd,
@@ -36,6 +36,7 @@ export function createValidationRepairSpec(spec, error, attempt = 1) {
       PI_VALIDATION_REPAIR: 'true',
       PI_VALIDATION_REPAIR_ATTEMPT: String(attempt),
       PI_CALL: 'repair',
+      ...(acceptedScope ? { PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(acceptedScope) } : {}),
     },
     artifacts: spec.artifacts,
   });
@@ -85,6 +86,7 @@ export async function runStageWithValidationRecovery(
         ledgerPath: spec.environment.PI_VALIDATION_LEDGER_FILE,
         backend: result.backend,
         env: spec.environment,
+        enforceAcceptedScope: true,
       });
       return createStageRunResult({
         backend: result.backend,
@@ -100,7 +102,10 @@ export async function runStageWithValidationRecovery(
       );
 
       fs.rmSync(spec.artifacts.terminalResultPath, { force: true });
-      const repairSpec = createValidationRepairSpec(spec, error, repairAttempt);
+      const acceptedScope = implementerResult?.scope_enforcement === 'predeclared'
+        ? implementerResult.accepted_scope
+        : null;
+      const repairSpec = createValidationRepairSpec(spec, error, repairAttempt, acceptedScope);
       result = await runBackendAttempt(repairSpec, runBackend);
       durationMs += result.durationMs;
     }

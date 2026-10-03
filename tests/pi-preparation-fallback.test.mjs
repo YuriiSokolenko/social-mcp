@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController } from '../scripts/pi-common/progress-controller.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
@@ -214,6 +214,12 @@ function runtimeScenario(mode) {
         fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', '__init__.py'), 'def parse_widget(): return 1\n');
       }
     }
+    execFileSync('git', ['init', '-q', dir]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'Preparation Test']);
+    execFileSync('git', ['-C', dir, 'config', 'user.email', 'preparation@example.invalid']);
+    execFileSync('git', ['-C', dir, 'add', '.']);
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'base']);
+    execFileSync('git', ['-C', dir, 'update-ref', 'refs/remotes/origin/dev', 'HEAD']);
     fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
       if (specifier === 'typebox') return {
         url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
@@ -233,7 +239,7 @@ function runtimeScenario(mode) {
       const handlers = new Map();
       const messages = [];
       const caps = [];
-      let active = ['read', 'write', 'edit', 'safe_edit', 'run_check', 'submit_result', 'need_more_evidence', 'request_large_mutation_budget', 'prepare_implementation'];
+      let active = ['read', 'write', 'edit', 'safe_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence', 'request_large_mutation_budget', 'prepare_implementation'];
       let attempts = 0;
       let aborts = 0;
       const ctx = { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 32000 },
@@ -483,6 +489,7 @@ function runtimeScenario(mode) {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 15000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
+        PI_ACCEPTED_MUTATION_SCOPE_STATE: "{\"schema_version\":1,\"accepted\":[{\"path\":\"example.py\",\"rationale\":\"Runtime preparation fixture writes the simulated implementation target.\"},{\"path\":\"config.py\",\"rationale\":\"Small-edit preparation fixture mutates the known config target.\"}],\"temporary\":[],\"baseline\":[]}",
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
     });
     assert.equal(result.status, 0, result.stderr + result.stdout);

@@ -68,6 +68,7 @@ jobs:
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_RUNTIME_FAILURE_FILE=$RUNNER_TEMP/pi-runtime-failure-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_VALIDATION_LEDGER_FILE=$RUNNER_TEMP/pi-validation-ledger-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
+          echo "PI_ACCEPTED_MUTATION_SCOPE_FILE=$RUNNER_TEMP/pi-accepted-mutation-scope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue
         id: preflight
@@ -106,6 +107,10 @@ jobs:
           echo "PI_ISSUE_BRANCH_EXPECTED=$(jq -r '.issueBranchExpected' <<<"$CONTEXT")" >> "$GITHUB_ENV"
           echo "PI_RESUME_PATCH=$(jq -r '.patch' <<<"$CONTEXT")" >> "$GITHUB_ENV"
           echo "PI_RESUME_ACTIVE=$(jq -r '.resumed' <<<"$CONTEXT")" >> "$GITHUB_ENV"
+          ACCEPTED_SCOPE_STATE="$(jq -c '.acceptedScopeState // null' <<<"$CONTEXT")"
+          if [ "$ACCEPTED_SCOPE_STATE" != "null" ]; then
+            echo "PI_ACCEPTED_MUTATION_SCOPE_STATE=$ACCEPTED_SCOPE_STATE" >> "$GITHUB_ENV"
+          fi
 
       - name: Prepare Python environment
         if: steps.claim.outputs.terminal != 'true'
@@ -133,7 +138,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" checkpoint "$ISSUE" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT" "$PI_CHECKPOINT_EXPECTED")"
+          RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" checkpoint "$ISSUE" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT" "$PI_CHECKPOINT_EXPECTED" "$PI_IMPLEMENTER_RESULT_FILE" "$PI_ACCEPTED_MUTATION_SCOPE_FILE")"
           CHANGED="$(jq -r '.changed' <<<"$RESULT")"
           echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
           if [ "$CHANGED" = "true" ]; then
@@ -159,7 +164,7 @@ jobs:
           # is fixed by the Actions runner at dispatch time and is never routed
           # through $GITHUB_ENV, so nothing a running job does (including a
           # compromised mini-swe process writing to $GITHUB_ENV) can alter it.
-          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}" "$PI_VALIDATION_LEDGER_FILE" "${{ inputs.backend || 'pi' }}")"
+          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}" "$PI_VALIDATION_LEDGER_FILE" "${{ inputs.backend || 'pi' }}" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT")"
           echo "number=$(jq -r '.number' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "url=$(jq -r '.url' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "verification_state=$(jq -r '.verification_state' <<<"$PR")" >> "$GITHUB_OUTPUT"

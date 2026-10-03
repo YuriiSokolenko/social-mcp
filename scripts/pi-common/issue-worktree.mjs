@@ -19,6 +19,33 @@ import { resolveRunArtifactId } from './validation-ledger.mjs';
  * Implementer resolves them against current dev.
  */
 
+export function acceptedScopeStateFromRef(ref, cwd = process.cwd()) {
+  if (!ref) return null;
+  // Checkpoint tips may be marker-less (for example when a later crash saved
+  // additional work before submit_result). Search only saved-work commits that
+  // are not already part of current dev, so a trailer from an older merged
+  // issue can never be mistaken for this issue's scope.
+  const baseAvailable = git(['rev-parse', '--verify', baseRef()], { cwd, allowFailure: true }).status === 0;
+  const revArgs = baseAvailable
+    ? ['rev-list', ref, `^${baseRef()}`]
+    : ['rev-list', '-n', '50', ref];
+  const commits = git(revArgs, { cwd }).out.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  for (const commit of commits) {
+    const message = git(['show', '-s', '--format=%B', commit], { cwd }).out;
+    const enforcement = /^Pi-Scope-Enforcement:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+    if (enforcement !== 'predeclared') continue;
+    const encoded = /^Pi-Accepted-Mutation-Scope:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+    if (!encoded) continue;
+    try {
+      const value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+      if (value?.schema_version === 1) return value;
+    } catch {
+      // Keep searching older checkpoint ancestry for the latest valid receipt.
+    }
+  }
+  return null;
+}
+
 export function issueWorktreePatchPath(tempDir, env = process.env) {
   if (!tempDir) throw new Error('tempDir is required');
   return path.join(tempDir, `pi-resume-${resolveRunArtifactId(env)}.patch`);
@@ -45,6 +72,8 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }, env = process.e
     resumeRef = `refs/remotes/origin/${issueBranch}`;
   }
 
+  const acceptedScopeState = resumeRef ? acceptedScopeStateFromRef(resumeRef) : null;
+
   git(['worktree', 'prune']);
   git(['worktree', 'add', '-B', issueBranch, jobDir, baseRef()]);
   const patch = issueWorktreePatchPath(tempDir, env);
@@ -63,7 +92,7 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }, env = process.e
       }
     }
   }
-  return { start, checkpointExpected, issueBranchExpected, patch, resumed };
+  return { start, checkpointExpected, issueBranchExpected, patch, resumed, acceptedScopeState };
 }
 
 export function cleanIssueWorktree({ jobDir, patchFile }) {

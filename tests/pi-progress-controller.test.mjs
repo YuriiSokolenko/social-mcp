@@ -593,9 +593,10 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
 });
 
-test('runtime grants the large mutation budget for exactly one response and always collapses it back', () => {
+test('runtime preserves a large mutation budget through scope declaration, then consumes it on the real finish action', () => {
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  assert.match(runtime, /ELEVATED_MUTATION_TURN_TOOLS/);
   assert.match(runtime, /FINISH_TOOLS/);
   assert.match(runtime, /name: controller\.largeMutationBudgetTool/);
   assert.match(runtime, /controller\.largeMutationBudgetPending\(\)/);
@@ -605,10 +606,13 @@ test('runtime grants the large mutation budget for exactly one response and alwa
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET/);
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET_VIOLATION/);
   assert.match(runtime, /elevatedTurnAttemptedFinishTool/);
+  assert.match(runtime, /elevatedTurnAttemptedScopePrelude/);
+  assert.match(runtime, /phase: 'scope_prelude'/);
+  assert.match(runtime, /budgetReason = 'large_mutation_scope_prelude'/);
   // Tool-surface restriction during the elevated turn is UX on top of the controller's own
   // hard gate; the finish-tool attempt marker must only be set for a call the controller
   // actually let through, never for one it blocked.
-  assert.match(runtime, /largeMutationBudgetActive[\s\S]*unrestrictedActiveTools\.filter\(name => FINISH_TOOLS\.has\(name\)\)/);
+  assert.match(runtime, /largeMutationBudgetActive[\s\S]*unrestrictedActiveTools\.filter\(name => ELEVATED_MUTATION_TURN_TOOLS\.has\(name\)\)/);
   assert.match(runtime, /return blocked;\s*\}[\s\S]{0,200}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
   assert.match(planner, /evidence_budget/);
 });
@@ -856,7 +860,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetTool, 'request_large_mutation_budget');
   assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetMaxTokens, IMPLEMENTER_RESPONSE_MAX_TOKENS);
   assert.equal(stageConfig('implementer').fixedResponseMaxTokens, undefined);
-  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'submit_result']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'submit_result']);
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
@@ -1121,7 +1125,13 @@ test('while the elevated mutation budget is active, only a finish tool may execu
   assert.match(state.checkToolCall('lsp_start_server', {}).reason, blockedReason);
   assert.match(state.checkToolCall('run_check', { kind: 'ruff' }).reason, blockedReason);
 
-  // A finish tool (mutation, rollback, or terminal submit) is still allowed.
+  // Scope acceptance is a permitted prelude in the elevated turn, and actual
+  // mutation/rollback/terminal actions remain allowed.
+  assert.equal(state.checkToolCall('accept_mutation_scope', {
+    paths: ['arkanoid.py'],
+    disposition: 'publishable',
+    rationale: 'The issue requires the main implementation file.',
+  }), undefined);
   assert.equal(state.checkToolCall('write', { path: 'arkanoid.py' }), undefined);
 });
 
