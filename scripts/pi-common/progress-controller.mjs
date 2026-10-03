@@ -168,6 +168,13 @@ export function actionRequiredToolNames(
   return activeToolNames.filter(name => allowed.has(name));
 }
 
+export function elevatedMutationTurnToolNames(activeToolNames, { blockerTool = null } = {}) {
+  if (!Array.isArray(activeToolNames)) throw new Error('activeToolNames must be an array');
+  const allowed = new Set(ELEVATED_MUTATION_TURN_TOOLS);
+  if (blockerTool) allowed.add(blockerTool);
+  return activeToolNames.filter(name => allowed.has(name));
+}
+
 export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, madeProgress = true) {
   const ceiling = budgets[currentLevel];
   if (!ceiling) throw new Error(`Unknown response budget: ${currentLevel}`);
@@ -257,6 +264,7 @@ export class ProgressController {
     this.largeMutationBudgetTool = this.productiveProgress?.largeMutationBudgetTool ?? null;
     this.largeMutationBudgetMaxTokens = this.productiveProgress?.largeMutationBudgetMaxTokens ?? null;
     this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
     // Planner-owned intent is separate from the pending/active grant so evidence turns
     // stay on the normal budget until the action phase is actually reached.
     this.automaticLargeMutationBudgetArmed = false;
@@ -343,6 +351,7 @@ export class ProgressController {
     }
     this.automaticLargeMutationBudgetArmed = false;
     this.largeMutationBudgetState = 'pending';
+    this.largeMutationBudgetSource = 'automatic';
     return true;
   }
 
@@ -368,7 +377,19 @@ export class ProgressController {
   resetLargeMutationBudget() {
     const wasActive = this.largeMutationBudgetState === 'active';
     this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
     return wasActive;
+  }
+
+  yieldLargeMutationBudgetForEvidence() {
+    if (this.largeMutationBudgetState !== 'active' || this.productiveState !== 'evidence_allowed' || !this.evidenceUnlockUsedSinceProgress) {
+      return { yielded: false, rearmed: false };
+    }
+    const rearmed = this.largeMutationBudgetSource === 'automatic';
+    this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
+    if (rearmed) this.automaticLargeMutationBudgetArmed = true;
+    return { yielded: true, rearmed };
   }
 
   productiveProgressState() {
@@ -452,10 +473,12 @@ export class ProgressController {
     // spend it on nothing but an actual mutation, rollback, or terminal submission. This is
     // the real guarantee; the runtime's tool-surface restriction is UX on top of it, not a
     // substitute for it.
-    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !ELEVATED_MUTATION_TURN_TOOLS.has(toolName)) {
+    const elevatedEvidenceUnlock = Boolean(this.productiveBlockerTool && toolName === this.productiveBlockerTool);
+    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !ELEVATED_MUTATION_TURN_TOOLS.has(toolName) && !elevatedEvidenceUnlock) {
+      const blockerGuidance = this.productiveBlockerTool ? `, or ${this.productiveBlockerTool} for one concrete missing fact` : '';
       return {
         block: true,
-        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only accept_mutation_scope, structural_edit, safe_edit, edit, write, rollback_last_mutation, or a terminal submit action are allowed.`,
+        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only accept_mutation_scope, structural_edit, safe_edit, edit, write, rollback_last_mutation, a terminal submit action${blockerGuidance} are allowed.`,
       };
     }
 
@@ -756,6 +779,7 @@ export class ProgressController {
     if (!isError && this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool) {
       this.automaticLargeMutationBudgetArmed = false;
       this.largeMutationBudgetState = 'pending';
+      this.largeMutationBudgetSource = 'manual';
     }
     if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
       this.verificationPermits = 1;
