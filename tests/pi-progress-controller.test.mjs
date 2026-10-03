@@ -626,6 +626,7 @@ test('runtime preserves a large mutation budget through scope declaration, then 
   // actually let through, never for one it blocked.
   assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
   assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
+  assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput/);
   assert.match(runtime, /return blocked;\s*\}[\s\S]{0,200}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
   assert.match(planner, /evidence_budget/);
 });
@@ -1025,17 +1026,43 @@ test('productive progress allows only one extra evidence permit per productive e
   state.onToolExecutionEnd('prepare_implementation', false);
 
   assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
-  assert.equal(state.checkToolCall('need_more_evidence', {
+  const firstUnlockInput = {
     missing: 'exact helper path',
     reason: 'needed for a safe edit',
-  }), undefined);
-  assert.equal(state.checkToolCall('read', { path: 'src/b.py' }), undefined);
+  };
+  assert.equal(state.checkToolCall('need_more_evidence', firstUnlockInput), undefined);
+  state.onToolExecutionEnd('need_more_evidence', false, { input: firstUnlockInput });
 
-  const secondUnlock = state.checkToolCall('need_more_evidence', {
+  const whileEvidenceAllowedInput = {
+    missing: 'another detail before using the granted read',
+    reason: 'should remain blocked while the permit is already open',
+  };
+  assert.match(
+    state.checkToolCall('need_more_evidence', whileEvidenceAllowedInput).reason,
+    /one evidence action is already permitted/,
+  );
+  // Pi core emits tool_execution_end(isError=true) even for locally blocked calls.
+  // That error must not roll back the accepted first unlock.
+  state.onToolExecutionEnd('need_more_evidence', true, { input: whileEvidenceAllowedInput });
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.evidenceUnlockUsedSinceProgress, true);
+
+  assert.equal(state.checkToolCall('read', { path: 'src/b.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+
+  const secondUnlockInput = {
     missing: 'different helper detail',
     reason: 'would provide more context',
-  });
+  };
+  const secondUnlock = state.checkToolCall('need_more_evidence', secondUnlockInput);
   assert.match(secondUnlock.reason, /already used since the last successful structural_edit\/safe_edit\/edit\/write\/submit_result/);
+  state.onToolExecutionEnd('need_more_evidence', true, { input: secondUnlockInput });
+
+  const thirdUnlock = state.checkToolCall('need_more_evidence', {
+    missing: 'third helper detail',
+    reason: 'blocked execution-end must not reset the productive epoch',
+  });
+  assert.match(thirdUnlock.reason, /already used since the last successful structural_edit\/safe_edit\/edit\/write\/submit_result/);
 
   assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   state.onToolExecutionEnd('edit', true);
@@ -1169,9 +1196,10 @@ test('failed need_more_evidence does not yield an elevated grant or leave a phan
   state.onToolExecutionEnd('request_large_mutation_budget', false);
   assert.equal(state.activateLargeMutationBudget(), true);
 
-  assert.equal(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }), undefined);
+  const failedUnlockInput = { missing: 'x', reason: 'y' };
+  assert.equal(state.checkToolCall('need_more_evidence', failedUnlockInput), undefined);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
-  state.onToolExecutionEnd('need_more_evidence', true);
+  state.onToolExecutionEnd('need_more_evidence', true, { input: failedUnlockInput });
   assert.equal(state.productiveProgressState(), 'action_required');
   assert.equal(state.evidenceUnlockAvailable(), true, 'failed control transition does not consume the bounded escape');
   assert.deepEqual(state.yieldLargeMutationBudgetForEvidence(), { yielded: false, rearmed: false });
