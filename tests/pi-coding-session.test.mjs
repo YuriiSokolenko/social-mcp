@@ -628,7 +628,7 @@ test('first prose-only action-required retry stays forced through a ceiling turn
   const logs = runtimeScenario('prose-force-direct');
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
   assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 2);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"accept_mutation_scope"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
@@ -657,7 +657,7 @@ test('a hidden provider-emitted tool clears forcing but remains non-progress and
 test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
   const logs = runtimeScenario('fork-prose-force');
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"accept_mutation_scope"/);
 });
 
 test('a deliberately non-compliant second prose-only turn still aborts with durable execution-failure metadata', () => {
