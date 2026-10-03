@@ -395,6 +395,18 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   record_infra_evidence quarantined x >/dev/null 2>&1 || fail 'evidence failure must be non-fatal'
 )
 
+# #437: a fresh named volume is root-owned and not writable by the worker's UID.
+# Initialisation must open it before any event, without a quarantine to trigger it.
+(
+  INFRA_EVIDENCE_DIR="$(mktemp -d)"
+  trap 'chmod 755 "$INFRA_EVIDENCE_DIR"; rm -rf "$INFRA_EVIDENCE_DIR"' EXIT
+  chmod 0555 "$INFRA_EVIDENCE_DIR"
+  [[ ! -w "$INFRA_EVIDENCE_DIR" || "$(id -u)" == 0 ]] || fail 'precondition: dir should start non-writable'
+  init_infra_evidence_dir
+  [[ "$(ls -ld "$INFRA_EVIDENCE_DIR" | cut -c1-10)" == drwxrwxrwt ]] || fail 'evidence dir not world-writable after init'
+  [[ -w "$INFRA_EVIDENCE_DIR" ]] || fail 'evidence dir not writable after init'
+)
+
 # A single transient Docker health-check failure is retried after a short delay
 # before the manager quarantines the pool. Each check gets at most one retry.
 (

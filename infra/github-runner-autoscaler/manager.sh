@@ -313,6 +313,14 @@ verify_run_check_sandbox() {
   return 1
 }
 
+# A fresh named volume is root:root 0755, but workers run as `runner`. Open it up
+# before any worker starts, not lazily on the first event.
+init_infra_evidence_dir() {
+  [ -n "$INFRA_EVIDENCE_DIR" ] || return 0
+  { mkdir -p "$INFRA_EVIDENCE_DIR" && chmod 1777 "$INFRA_EVIDENCE_DIR"; } 2>/dev/null \
+    || log "warning: could not initialise infra evidence dir $INFRA_EVIDENCE_DIR"
+}
+
 record_infra_evidence() {
   local event="$1" detail="$2" file="${INFRA_EVIDENCE_DIR}/events.jsonl" containers=""
   [ -n "$INFRA_EVIDENCE_DIR" ] || return 0
@@ -320,9 +328,7 @@ record_infra_evidence() {
     containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' 2>&1 | head -n 40)" || true
   fi
   {
-    mkdir -p "$INFRA_EVIDENCE_DIR"
-    # Workers run as a different UID and append their own diagnostics here.
-    chmod 1777 "$INFRA_EVIDENCE_DIR"
+    init_infra_evidence_dir
     jq -nc --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --arg event "$event" --arg prefix "$RUNNER_PREFIX" \
       --arg detail "${detail:0:2000}" --arg containers "${containers:0:4000}" \
       '{ts: $ts, event: $event, pool: $prefix, detail: $detail, containers: $containers}' >> "$file"
@@ -434,6 +440,7 @@ spawn_runner() {
   if [ "$MOUNT_DOCKER_SOCKET" == true ]; then
     docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
     if [ -n "$INFRA_EVIDENCE_DIR" ] && [ -n "$INFRA_EVIDENCE_VOLUME" ]; then
+      init_infra_evidence_dir
       docker_args+=(-v "${INFRA_EVIDENCE_VOLUME}:/evidence" -e INFRA_EVIDENCE_DIR=/evidence)
     fi
   fi
@@ -448,6 +455,7 @@ spawn_runner() {
 
 main() {
   log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s workflows=${WORKFLOW_FILES} labels=${RUNNER_LABELS}"
+  init_infra_evidence_dir
   while true; do
     if ! general_daemon_health; then
       quarantine_general_runners || log "warning: unable to quarantine idle general registrations"
