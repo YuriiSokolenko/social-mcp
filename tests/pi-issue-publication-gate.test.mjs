@@ -170,10 +170,25 @@ test('publication rejects a stray probe file that submit_result did not declare 
       files: ['helper.py', 'test_helper.py', '.probe.py"'],
       security_notes: 'No security impact.',
       limitations: 'None.',
+      scope_enforcement: 'predeclared',
+      accepted_scope: {
+        schema_version: 1,
+        accepted: [
+          { path: 'helper.py', rationale: 'Issue requires the helper implementation change.' },
+          { path: 'test_helper.py', rationale: 'Issue requires a focused regression test.' },
+        ],
+        temporary: [],
+        baseline: [],
+      },
     });
-    assert.deepEqual(
-      assertPublicationFileSet({ cwd: dir, base, resultFile }),
-      ['.probe.py"', 'helper.py', 'test_helper.py'],
+    assert.throws(
+      () => assertPublicationFileSet({ cwd: dir, base, resultFile }),
+      error => {
+        const diagnostic = JSON.parse(error.message);
+        assert.equal(diagnostic.code, 'accepted_scope_violation');
+        assert.deepEqual(diagnostic.unexpected_paths, ['.probe.py"']);
+        return true;
+      },
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -211,6 +226,16 @@ test('publication detects both sides of a rename instead of folding it (#338 rev
       files: ['old.py', 'new.py'],
       security_notes: 'No security impact.',
       limitations: 'None.',
+      scope_enforcement: 'predeclared',
+      accepted_scope: {
+        schema_version: 1,
+        accepted: [
+          { path: 'old.py', rationale: 'Issue requires renaming the existing helper.' },
+          { path: 'new.py', rationale: 'Issue requires the renamed helper target.' },
+        ],
+        temporary: [],
+        baseline: [],
+      },
     });
 
     assert.deepEqual(
