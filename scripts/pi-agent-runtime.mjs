@@ -451,7 +451,11 @@ async function runStructuredSubagent(pi, ctx, {
     });
 
     if (response.status !== 'completed') {
-      throw new Error(`${agent} failed: ${response.error || response.status}`);
+      // Terminal failure still carries whatever usage the child accrued; keep it for attribution.
+      throw Object.assign(new Error(`${agent} failed: ${response.error || response.status}`), {
+        delegationStatus: response.status,
+        delegationUsage: response.usage ?? null,
+      });
     }
     if (schema && response.result?.kind !== 'structured') {
       throw new Error(`${agent} did not return a structured result`);
@@ -522,6 +526,17 @@ function resultText(result) {
   const content = Array.isArray(result) ? result : result?.content;
   if (Array.isArray(content)) return content.map(part => part?.text ?? '').join('\n');
   return typeof result?.message === 'string' ? result.message : '';
+}
+
+// Descendant usage is appended to the shared metrics file (inherited by child processes) and
+// replayed into the job log by the log filter; it never depends on the child finishing cleanly.
+function recordDescendantMetric(record, env = process.env) {
+  if (!env.PI_METRICS_FILE) return;
+  try {
+    fs.appendFileSync(env.PI_METRICS_FILE, `${JSON.stringify({ issue: Number(env.PI_ISSUE) || 0, phase: env.PI_PHASE ?? 'agent', descendant: true, ...record })}\n`);
+  } catch (error) {
+    console.warn(`PI_USAGE_RECORD_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);
+  }
 }
 
 function codingSessionLog(phase, fields) {
@@ -1041,6 +1056,7 @@ export default function (pi) {
   let codingReadyAt = null;
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
+  let codingResponseNumber = 0;
   if (stage === 'implementer') {
     let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
@@ -1949,6 +1965,10 @@ export default function (pi) {
             throw new Error(`PI_TOOL_CONTRACT_FAILURE: ${contractFailure.reason}`);
           }
           if (signal?.aborted) {
+            recordDescendantMetric({
+              call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
+              status: 'cancelled', usage: response?.usage ?? sessionError?.delegationUsage ?? null,
+            });
             codingSessionLog('cancelled', { ...base, durationMs: Date.now() - startedAt });
             throw sessionError ?? new Error('coding session was cancelled');
           }
@@ -1981,10 +2001,16 @@ export default function (pi) {
             recoveryEpoch: trustedRecoveryEpoch,
           });
           if (!submitted) lastIncapableCodingSession = incapable;
+          const delegationUsage = response?.usage ?? sessionError?.delegationUsage ?? null;
+          recordDescendantMetric({
+            call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
+            status: sessionError?.delegationStatus ?? (submitted ? 'completed' : sessionError ? 'error' : 'ended_without_submit'),
+            usage: delegationUsage,
+          });
           codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
             ...base,
             durationMs: Date.now() - startedAt,
-            usage: response?.usage ?? null,
+            usage: delegationUsage,
             ...outcome,
             ...(incapable ? { unreachableCapabilities: incapable.unreachable } : {}),
           });
@@ -2615,6 +2641,14 @@ export default function (pi) {
   });
 
   pi.on('turn_end', async (event, ctx) => {
+    if (codingSession) {
+      codingResponseNumber += 1;
+      recordDescendantMetric({
+        call: 'coding', childSession: codingSession.sessionId, response: codingResponseNumber,
+        usage: event.message?.usage ?? null,
+        ...(event.message?.usage ? {} : { reason: 'provider_usage_unavailable' }),
+      });
+    }
     const status = providerErrorStatus(event.message);
     const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
     forcedProviderRequestInFlight = false;

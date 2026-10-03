@@ -73,3 +73,12 @@ test("the CLI emits a warning annotation once a run is stuck", () => {
   const stdout = run(metrics);
   assert.match(stdout, /::warning::Pi usage: 61 responses exceeds the 60-response guard threshold/);
 });
+
+test("the CLI labels totals as a known lower bound when child usage is unavailable", () => {
+  const stdout = run([
+    { call: "main", response: 1, usage: { input: 10, output: 5, totalTokens: 15 }, responseMs: 1000 },
+    { call: "coding", scope: "session", childSession: "s1", status: "timed_out", usage: null },
+  ]);
+  assert.match(stdout, /Pi usage \(INCOMPLETE, known lower bound\): 1 responses/);
+  assert.match(stdout, /::warning::INCOMPLETE: usage unavailable.*coding\/s1/);
+});
