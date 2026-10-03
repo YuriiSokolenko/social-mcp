@@ -17,6 +17,7 @@
     "scripts/pi-common/issue-context.mjs",
     "scripts/pi-common/issue-publication.mjs",
     "scripts/pi-common/issue-worktree.mjs",
+    "scripts/pi-common/mutation-journal.mjs",
     "scripts/pi-common/pr-guard.mjs",
     "scripts/pi-common/pr-labels.mjs",
     "scripts/pi-common/prepare-environment.mjs",
