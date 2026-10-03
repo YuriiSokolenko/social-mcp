@@ -28,6 +28,8 @@ import {
 import { acceptedScopeStateFromRef, mutationJournalStateFromRef } from '../scripts/pi-common/issue-worktree.mjs';
 import { captureMutationSnapshot } from '../scripts/pi-common/mutation-snapshot.mjs';
 import {
+  encodeMutationJournalState,
+  markMutationJournalLocalOnly,
   mutationJournalState,
   recordSuccessfulMutation,
   undoMutation,
@@ -548,6 +550,87 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
   }
 });
 
+
+test('#424 journal seal on an already-changed committed tree remains a changed checkpoint', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-changed-journal-seal-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const remote = path.join(root, 'remote.git');
+  const work = path.join(root, 'work');
+  const journalFile = path.join(root, 'mutation-journal.json');
+  const missingResult = path.join(root, 'missing-result.json');
+  const missingScope = path.join(root, 'missing-scope.json');
+
+  execFileSync('git', ['init', '--bare', remote]);
+  fs.mkdirSync(work);
+  const git = (...args) => execFileSync('git', args, { cwd: work, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  git('remote', 'add', 'origin', remote);
+  fs.writeFileSync(path.join(work, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+  git('branch', '-M', 'dev');
+  git('push', '-u', 'origin', 'dev');
+  const startCommit = git('rev-parse', 'HEAD').trim();
+
+  const env = { PI_MUTATION_JOURNAL_FILE: journalFile };
+  mutationJournalState(work, env); // persist an explicit empty initial journal
+  fs.writeFileSync(path.join(work, 'feature.py'), 'value = 1\n');
+
+  const first = saveCheckpoint({
+    issue: 424,
+    cwd: work,
+    startCommit,
+    expectedSha: '',
+    resultFile: missingResult,
+    scopeFile: missingScope,
+    mutationJournalFile: journalFile,
+  });
+  assert.equal(first.changed, true);
+
+  // Change only journal metadata while HEAD already contains real implementation content.
+  const after = captureMutationSnapshot(work, 'feature.py');
+  markMutationJournalLocalOnly({ cwd: work, after, tool: 'write', env });
+
+  const second = saveCheckpoint({
+    issue: 424,
+    cwd: work,
+    startCommit,
+    expectedSha: first.commit,
+    resultFile: missingResult,
+    scopeFile: missingScope,
+    mutationJournalFile: journalFile,
+  });
+
+  assert.equal(second.changed, true, 'real implementation diff must not be mislabeled journal-sealed');
+  assert.equal(second.reason, undefined);
+  assert.notEqual(second.commit, first.commit, 'changed journal is still sealed in a new checkpoint commit');
+  assert.match(git('diff', '--name-only', startCommit, second.commit), /feature\.py/);
+});
+
+test('#424 malformed newest journal trailer does not wedge resume or resurrect older state', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-invalid-journal-trailer-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+
+  git('init');
+  configureTestGit(git);
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+  const base = git('rev-parse', 'HEAD').trim();
+  git('update-ref', 'refs/remotes/origin/dev', base);
+
+  const older = encodeMutationJournalState(dir, { schema_version: 1, entries: [] });
+  git('commit', '--allow-empty', '-m', `older valid\n\nPi-Mutation-Journal: ${older}`);
+  git('commit', '--allow-empty', '-m', 'newest invalid\n\nPi-Mutation-Journal: definitely-not-a-gzip-trailer');
+
+  assert.equal(
+    mutationJournalStateFromRef('HEAD', dir),
+    null,
+    'newest explicit invalid state is unusable and must not fall through to older provenance',
+  );
+});
 
 test('#424 journal comparison treats a locally missing expected checkpoint sha as no prior trailer', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-missing-checkpoint-ref-'));
