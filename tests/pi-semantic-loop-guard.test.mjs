@@ -730,12 +730,13 @@ function runRuntimeScenario(body, env = {}) {
       const CONTROLLER_URL = ${JSON.stringify(controllerUrl)};
       const handlers = new Map();
       const messages = [];
+      const registeredTools = new Map();
       // This mock exercises loop-guard behavior, not tool-surface policy. Mirror Pi's mutable
       // active surface so runtime setActiveTools() calls remain observable on later tool calls.
       let activeTools = ['read', 'write', 'safe_edit', 'rollback_last_mutation'];
       const pi = {
         on: (name, handler) => handlers.set(name, handler),
-        registerTool: () => {},
+        registerTool: tool => registeredTools.set(tool.name, tool),
         getActiveTools: () => [...activeTools],
         setActiveTools: names => { activeTools = [...names]; },
         sendUserMessage: async (...args) => messages.push(args),
@@ -841,6 +842,76 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
     assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('#424 full persistent journal degrades to local rollback instead of blocking the next edit', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-journal-degrade-runtime-'));
+  const journalFile = path.join(os.tmpdir(), `pi-full-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'target.txt'), 'before\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const entries = Array.from({ length: 256 }, (_, index) => ({
+      id: `mutation-00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
+      path: `historical-${index}.tmp`,
+      tool: 'write',
+      disposition: 'temporary',
+      prior: { existed: false },
+      post: { exists: false },
+    }));
+    fs.writeFileSync(journalFile, JSON.stringify({ schema_version: 1, entries }));
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+
+      const callResult = await handlers.get('tool_call')({
+        toolCallId: 'overflow-write',
+        toolName: 'write',
+        input: { path: 'target.txt', content: 'after\\n' },
+      }, ctx);
+      assert.equal(callResult, undefined, 'capacity exhaustion must not block the mutation');
+
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'after\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'overflow-write',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'after\\n');
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      assert.ok(rollback);
+      await rollback.execute('rollback-local', { reason: 'exercise local fallback' }, null, null, ctx);
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'before\\n');
+      console.log('JOURNAL_CAPACITY_DEGRADES_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [{ path: 'target.txt', rationale: 'Runtime overflow regression target.' }],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /JOURNAL_CAPACITY_DEGRADES_OK/);
+    assert.match(result.stderr, /PI_MUTATION_JOURNAL_DEGRADED/);
+    assert.match(result.stderr, /PI_MUTATION_JOURNAL_LOCAL_FALLBACK/);
+    assert.doesNotMatch(result.stderr, /PI_MUTATION_JOURNAL_REVERTED/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
   }
 });
 
