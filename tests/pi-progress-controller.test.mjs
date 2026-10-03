@@ -1140,10 +1140,10 @@ test('while the elevated mutation budget is active, only a finish tool or the bo
   state.onToolExecutionEnd('read', false);
   assert.equal(state.productiveProgressState(), 'action_required');
   assert.equal(state.evidenceUnlockAvailable(), false, 'the blocker remains unavailable until productive progress');
-  assert.match(state.checkToolCall('set_response_budget', { level: 'deep', reason: 'z' }).reason, /productive progress requires an action now|did not execute/);
   assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'second large new file' }), undefined);
   state.onToolExecutionEnd('request_large_mutation_budget', false);
   assert.equal(state.activateLargeMutationBudget(), true);
+  assert.match(state.checkToolCall('set_response_budget', { level: 'deep', reason: 'z' }).reason, blockedReason);
   assert.match(state.checkToolCall('subagents_enable', {}).reason, blockedReason);
   assert.match(state.checkToolCall('lsp_start_server', {}).reason, blockedReason);
   assert.match(state.checkToolCall('run_check', { kind: 'ruff' }).reason, blockedReason);
