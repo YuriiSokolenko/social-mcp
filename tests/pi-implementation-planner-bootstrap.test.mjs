@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
+import bootstrapExtension from '../scripts/pi-implementer-bootstrap.mjs';
 
 import {
   IMPLEMENTATION_PLANNER_DEADLINE_MS,
@@ -132,4 +133,49 @@ test('an exhausted planning deadline skips the retry and falls back as planner_d
 
 test('a failed bootstrap process keeps its real elapsed duration', () => {
   assert.equal(bootstrapFailureFallback('/w', 'x', {}, 4321).plannerDurationMs, 4321);
+});
+
+// #459: pi runs handlers sequentially in load order, and pi-subagents installs its delegation context
+// in its own session_start handler. The bootstrap loads before it, so it must not start the planner
+// from session_start (live: "No active extension context for delegated subagent execution").
+test('bootstrap launches the planner only after every session_start handler, so pi-subagents has its context', async (t) => {
+  const env = plannerEnv(t);
+  const artifact = path.join(path.dirname(env.PI_ISSUE_CONTEXT), 'prepared.json');
+  process.env.PI_PREPARED_IMPLEMENTATION_FILE = artifact;
+  process.env.PI_IMPLEMENTER_BOOTSTRAP = 'true';
+  t.after(() => { delete process.env.PI_PREPARED_IMPLEMENTATION_FILE; delete process.env.PI_IMPLEMENTER_BOOTSTRAP; });
+
+  const bus = new EventEmitter();
+  const handlers = new Map(); // event -> handlers in load order (bootstrap first, then pi-subagents)
+  const on = (event, fn) => { handlers.set(event, [...(handlers.get(event) ?? []), fn]); };
+  const events = { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) };
+  let shutdowns = 0;
+  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap-session' }, shutdown: () => { shutdowns++; } };
+
+  bootstrapExtension({ events, on });
+  assert.equal(handlers.has('session_start'), false, 'no planner launch from session_start');
+
+  // Simulated pi-subagents (loaded after the bootstrap): context exists only after its session_start.
+  let lastUiContext = null;
+  on('session_start', (_event, c) => { lastUiContext = c; });
+  bus.on('prompt-template:subagent:request', request => {
+    bus.emit('prompt-template:subagent:response', lastUiContext
+      ? { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'completed', usage: { output: 5 },
+          result: { kind: 'structured', value: { steps: ['Do it'], complexity: 'trivial', evidence_budget: 0, large_mutation: false, reason: 'tiny' } } }
+      : { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'unavailable_context',
+          error: 'No active extension context for delegated subagent execution.' });
+  });
+
+  // pi's runner: sequential awaited handlers per event, session_start before resources_discover.
+  for (const event of ['session_start', 'resources_discover']) {
+    for (const handler of handlers.get(event) ?? []) await handler({ type: event }, ctx);
+  }
+  const prepared = readPreparedImplementation(artifact);
+  assert.equal(prepared.status, 'prepared', 'real planner result, not an infrastructure fallback');
+  assert.deepEqual(prepared.plan, ['Do it']);
+  assert.equal(shutdowns, 1);
+
+  // A repeated resources_discover (reload) must not start a second planner.
+  await handlers.get('resources_discover')[0]({ type: 'resources_discover' }, ctx);
+  assert.equal(shutdowns, 1);
 });
