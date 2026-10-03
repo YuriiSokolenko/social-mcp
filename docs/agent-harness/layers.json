@@ -58,6 +58,7 @@
     "scripts/pi-architect-result-tool.mjs",
     "scripts/pi-bash-timeout.mjs",
     "scripts/pi-common/bash-timeout-policy.mjs",
+    "scripts/pi-common/coding-session-capability.mjs",
     "scripts/pi-common/coding-session-outcome.mjs",
     "scripts/pi-common/model-trace-proxy.mjs",
     "scripts/pi-common/mutation-snapshot.mjs",
