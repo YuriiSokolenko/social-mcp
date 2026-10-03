@@ -18,7 +18,14 @@ function recordEvidenceState(gate, admission, env = process.env) {
   const file = env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   if (!file) return;
   try {
-    fs.writeFileSync(file, `${JSON.stringify({ used: admission.used, cap: gate.cap })}\n`, { mode: 0o600 });
+    let previous = null;
+    try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first attempt / inaccessible prior state */ }
+    const previousUsed = Number.isSafeInteger(previous?.used) && previous.used >= 0 ? previous.used : 0;
+    const previousCap = Number.isSafeInteger(previous?.cap) && previous.cap >= 0 ? previous.cap : 0;
+    // The same sidecar spans structured-output retries. A retry receives cap=0 and must never
+    // erase evidence already spent by the first attempt.
+    const state = { used: Math.max(previousUsed, admission.used), cap: Math.max(previousCap, gate.cap) };
+    fs.writeFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   } catch (error) {
     console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);
   }
