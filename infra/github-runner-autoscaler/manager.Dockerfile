@@ -10,6 +10,7 @@ COPY scripts/pi-common/package-root-check.mjs /opt/social-mcp/scripts/pi-common/
 COPY scripts/pi-common/run-check-docker-backend.mjs /opt/social-mcp/scripts/pi-common/run-check-docker-backend.mjs
 COPY scripts/pi-common/project-config.mjs /opt/social-mcp/scripts/pi-common/project-config.mjs
 COPY scripts/pi-common/ruff-spec.mjs /opt/social-mcp/scripts/pi-common/ruff-spec.mjs
+RUN mkdir -p /opt/social-mcp/src
 RUN chmod +x /usr/local/bin/pi-runner-manager /usr/local/lib/run-check-executor.mjs
 
 ENTRYPOINT ["/usr/local/bin/pi-runner-manager"]
