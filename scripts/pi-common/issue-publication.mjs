@@ -86,14 +86,20 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   const staged = lines(git(['diff','--cached','--name-only'], { cwd }).out);
   const sensitive = staged.filter(p => /(^|\/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|\/))/.test(p) && !/(^|\/)\.env\.example$/.test(p));
   if (sensitive.length) throw new Error(`Refusing to checkpoint credential/runtime files: ${sensitive.join(', ')}`);
-  if (git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0) {
-    let message = `feat: implement issue #${issue}`;
-    const metadata = resultFile ? readImplementerResult(resultFile) : null;
-    if (metadata?.scope_enforcement === 'predeclared' && metadata.accepted_scope) {
-      const encodedScope = Buffer.from(JSON.stringify(metadata.accepted_scope), 'utf8').toString('base64url');
-      message += `\n\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
-    }
-    git(['commit','-m',message], { cwd });
+  const stagedChanged = git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0;
+  const metadata = resultFile ? readImplementerResult(resultFile) : null;
+  let message = `feat: implement issue #${issue}`;
+  let trustedScopeMarker = false;
+  if (metadata?.scope_enforcement === 'predeclared' && metadata.accepted_scope) {
+    const encodedScope = Buffer.from(JSON.stringify(metadata.accepted_scope), 'utf8').toString('base64url');
+    message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
+    trustedScopeMarker = true;
+  } else if (metadata?.scope_enforcement === 'unsandboxed-gated') {
+    message += '\n\nPi-Scope-Enforcement: unsandboxed-gated';
+    trustedScopeMarker = true;
+  }
+  if (stagedChanged || trustedScopeMarker) {
+    git(['commit', ...(stagedChanged ? [] : ['--allow-empty']), '-m', message], { cwd });
   }
   const base = publicationBase(cwd, startCommit);
   if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
