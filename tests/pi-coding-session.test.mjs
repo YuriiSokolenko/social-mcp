@@ -745,6 +745,16 @@ function runtimeScenario(mode) {
 
       handlers.get('turn_start')({ turnIndex: turn });
       assert.ok(active.includes('begin_coding_session'));
+      if (mode === 'fork-provider-unrepairable') {
+        await call('begin_coding_session', { reason: 'Implement generated.py and its test' }, { expectError: /PI_TOOL_CONTRACT_FAILURE/ });
+        assert.equal(aborts, 1, 'unrepresentable fork request aborts the parent as infrastructure');
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_class, 'infrastructure');
+        assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+        assert.equal(sessionRequests.length, 1, 'no further coding session is launched');
+        console.log('FORK_PROVIDER_UNREPAIRABLE_OK');
+        process.exit(0);
+      }
       if (mode === 'forbidden-capability') {
         await assert.rejects(
           () => tools.get('begin_coding_session').execute('forbidden-capability', {
@@ -756,22 +766,13 @@ function runtimeScenario(mode) {
         assert.equal(sessionRequests.length, 0, 'incapable fork is rejected before launch');
         process.exit(0);
       }
-      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'fork-provider-unrepairable': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
+      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', { reason: 'Implement generated.py and its test' }, { expectError });
       if (mode === 'malformed-contract') {
         assert.equal(aborts, 0);
         assert.equal(sessionRequests.length, 1);
         assert.equal(fs.existsSync(sessionRequests[0].spec.failureFile), false);
         assert.equal(fs.existsSync(runtimeFailure), false);
-        process.exit(0);
-      }
-      if (mode === 'fork-provider-unrepairable') {
-        assert.equal(aborts, 1, 'unrepresentable fork request aborts the parent as infrastructure');
-        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
-        assert.equal(failure.failure_class, 'infrastructure');
-        assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
-        assert.equal(sessionRequests.length, 1, 'no further coding session is launched');
-        console.log('FORK_PROVIDER_UNREPAIRABLE_OK');
         process.exit(0);
       }
       if (mode === 'tool-contract') {
