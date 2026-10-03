@@ -22,12 +22,12 @@ test("default thresholds sit above the loop guard's own turn/timeout budget", ()
 test("usageWarning flags a run stuck far past the response threshold", () => {
   // Real observed stuck Architect "keep" run: 217 responses, 4375.7s model time.
   const message = usageWarning(217, 4375.7, { maxResponses: 60, maxSeconds: 1800 });
-  assert.match(message, /217 responses exceeds the 60-response guard threshold/);
+  assert.match(message, /217 provider responses exceeds the 60-response guard threshold/);
 });
 
 test("usageWarning flags a run stuck past the model-time threshold alone", () => {
   const message = usageWarning(10, 2000, { maxResponses: 60, maxSeconds: 1800 });
-  assert.match(message, /2000\.0s of model time exceeds the 1800s guard threshold/);
+  assert.match(message, /2000\.0s of provider response time exceeds the 1800s guard threshold/);
 });
 
 function run(metricsLines) {
@@ -62,8 +62,26 @@ test("the CLI includes finalized subagent usage without treating subagent runs a
     })),
   ];
   const stdout = run(metrics);
-  assert.match(stdout, /Pi usage: 81 responses · fresh 8,010 in \/ 1,605 out · cache read 4,000 · total 14,015 · 82\.0 s model time/);
+  assert.match(stdout, /Pi usage: 81 logical usage records · 81 provider responses · fresh 8,010 in \/ 1,605 out · cache read 4,000 · total 14,015 · 82\.0 s provider response time/);
   assert.doesNotMatch(stdout, /::warning::/);
+});
+
+test("the CLI reports delegated provider turns/time separately from logical usage records", () => {
+  const stdout = run([
+    {
+      call: "planner", scope: "session", childSession: "p1", status: "completed",
+      usage: { input: 100, output: 20, totalTokens: 120, turns: 4, durationMs: 90000 },
+    },
+    { call: "main", response: 1, usage: { input: 10, output: 5, totalTokens: 15 }, responseMs: 2000 },
+    { call: "coding", childSession: "c1", response: 1, usage: { input: 20, output: 10, totalTokens: 30 } },
+    { call: "coding", childSession: "c1", response: 2, usage: { input: 30, output: 10, totalTokens: 40 } },
+    {
+      call: "coding", scope: "session", childSession: "c1", status: "completed",
+      usage: { input: 50, output: 20, totalTokens: 70, turns: 2, durationMs: 120000 },
+    },
+  ]);
+  assert.match(stdout, /Pi usage: 4 logical usage records · 7 provider responses/);
+  assert.match(stdout, /212\.0 s provider response time/);
 });
 
 test("the CLI emits a warning annotation once a run is stuck", () => {
@@ -71,7 +89,7 @@ test("the CLI emits a warning annotation once a run is stuck", () => {
     { call: "main", response: i + 1, usage: { input: 10, output: 5, totalTokens: 15 }, responseMs: 100 }
   ));
   const stdout = run(metrics);
-  assert.match(stdout, /::warning::Pi usage: 61 responses exceeds the 60-response guard threshold/);
+  assert.match(stdout, /::warning::Pi usage: 61 provider responses exceeds the 60-response guard threshold/);
 });
 
 test("the CLI labels totals as a known lower bound when child usage is unavailable", () => {
@@ -79,6 +97,6 @@ test("the CLI labels totals as a known lower bound when child usage is unavailab
     { call: "main", response: 1, usage: { input: 10, output: 5, totalTokens: 15 }, responseMs: 1000 },
     { call: "coding", scope: "session", childSession: "s1", status: "timed_out", usage: null },
   ]);
-  assert.match(stdout, /Pi usage \(INCOMPLETE, known lower bound\): 1 responses/);
+  assert.match(stdout, /Pi usage \(INCOMPLETE, known lower bound\): 1 logical usage records · 1 provider responses/);
   assert.match(stdout, /::warning::INCOMPLETE: usage unavailable.*coding\/s1/);
 });
