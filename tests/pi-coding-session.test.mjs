@@ -602,6 +602,12 @@ function runtimeScenario(mode) {
       if (mode === 'no-submit-parent-submit') {
         assert.notEqual(result.terminate, true);
         assert.match(result.content[0].text, /ended without submit_result/);
+        // Production launches pi-run-stage from the issue worktree. This scenario
+        // normally stays in the control checkout so it can exercise trusted
+        // runtime modules, but the real parent submit_result uses process.cwd()
+        // for integrateLatestDev()/git publication checks. Match production here.
+        process.chdir(cwd);
+        assert.equal(process.cwd(), cwd);
         await call('submit_result', {
           title: 'Parent submit',
           summary: 'Publish coding-session changes from the parent.',
