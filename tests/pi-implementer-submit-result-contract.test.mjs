@@ -247,10 +247,7 @@ test('a real failed submit_result call leaves ProgressController on the terminal
 
       const state = new ProgressController(stageConfig('implementer'), {});
       state.onTurnStart(0);
-      assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-      state.setComplexity('nontrivial');
-      state.setEvidenceBudget(0);
-      state.onToolExecutionEnd('prepare_implementation', false);
+      state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false, reason: 'test' });
       assert.equal(state.productiveProgressState(), 'action_required');
 
       const incomplete = { title: 'Missing publication metadata' };

@@ -1343,6 +1343,12 @@ test('runtime mock does not treat unknown repository state as a no-op', () => {
 });
 
 test('runtime mock classifies blocked tool calls without tool_execution_end', () => {
+  // Born prepared with zero evidence budget: the session starts action-required, so a read is blocked.
+  const prepared = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-prepared-')), 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1, status: 'prepared', plan: ['Write the file'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false,
+    reason: 'complete spec', workspaceRoot: '/work', freshBaseCommit: '', baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 1,
+  }));
   const result = runRuntimeScenario(`
     const { default: install } = await import(RUNTIME_URL);
     install(pi);
@@ -1356,7 +1362,9 @@ test('runtime mock classifies blocked tool calls without tool_execution_end', ()
   `, {
     PI_LOOP_GUARD_WINDOW: '2',
     PI_LOOP_GUARD_THRESHOLD: '1',
+    PI_PREPARED_IMPLEMENTATION_FILE: prepared,
   });
+  fs.rmSync(path.dirname(prepared), { recursive: true, force: true });
   assert.match(result.stdout, /BLOCKED_LOOP_INTEGRATION_OK/);
 });
 

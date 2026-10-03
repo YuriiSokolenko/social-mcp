@@ -53,22 +53,17 @@ test('every file mutation target must be physically inside the worktree', () => 
   }
 });
 
-test('the coding session starts only after preparation and once evidence is complete', () => {
+test('the coding session starts only once evidence is complete, never from an unprepared controller', () => {
   const unprepared = new ProgressController(stageConfig('implementer'), {});
   assert.equal(unprepared.checkToolCall('begin_coding_session', {}).block, true, 'preparation cannot be skipped');
 
   const exploring = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(exploring.checkToolCall('prepare_implementation', {}), undefined);
-  exploring.setComplexity('nontrivial');
-  exploring.setEvidenceBudget(2);
-  exploring.onToolExecutionEnd('prepare_implementation', false);
+  exploring.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 2, largeMutation: false, reason: 'test' });
   assert.equal(exploring.productiveProgressState(), 'evidence_allowed');
   assert.match(exploring.checkToolCall('begin_coding_session', {}).reason, /only once evidence is complete/, 'no 16K during exploration');
 
   const ready = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(ready.checkToolCall('prepare_implementation', {}), undefined);
-  ready.enterPreparationFallback();
-  ready.onToolExecutionEnd('prepare_implementation', false);
+  ready.applyPreparedImplementation({ status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' });
   assert.match(ready.checkToolCall('begin_coding_session', {}).reason, /only once evidence is complete/);
   for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
     assert.equal(ready.checkToolCall('read', { path: 'fallback-evidence-' + i }), undefined);
@@ -123,7 +118,7 @@ test('the coding session is the same Implementer runtime, defined only in truste
     assert.ok(progress.codingSessionTools.includes(tool), tool);
   }
   assert.ok(!progress.codingSessionTools.includes('bash'), 'raw shell is not a coding-session cleanup capability');
-  for (const tool of ['begin_coding_session', 'request_large_mutation_budget', 'subagent', 'subagents_enable', 'prepare_implementation', 'grep', 'find', 'ls']) {
+  for (const tool of ['begin_coding_session', 'request_large_mutation_budget', 'subagent', 'subagents_enable', 'grep', 'find', 'ls']) {
     assert.ok(!progress.codingSessionTools.includes(tool), tool);
   }
 });
@@ -145,6 +140,11 @@ function runtimeScenario(mode) {
     const scenario = path.join(dir, 'scenario.mjs');
     const work = path.join(dir, 'work');
     const terminal = path.join(dir, 'terminal.json');
+    const preparedFile = path.join(dir, 'prepared-implementation.json');
+    const preparedBase = { version: 1, workspaceRoot: dir, freshBaseCommit: '', baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 1 };
+    fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
+      ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
+      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: false, reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
@@ -202,7 +202,7 @@ function runtimeScenario(mode) {
       const registered = new Map();
       let aborts = 0;
       let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence',
-        'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'prepare_implementation'];
+        'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'subagents_enable'];
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
@@ -392,11 +392,7 @@ function runtimeScenario(mode) {
         respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
       }
       bus.on('prompt-template:subagent:request', async request => {
-        if (request.agent === 'implementation-planner') {
-          return respond(request, mode === 'fallback'
-            ? { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' }
-            : { status: 'completed', result: { kind: 'structured', value: { steps: ['Create generated.py'], complexity: 'nontrivial', evidence_budget: 1, reason: 'One lookup' } } });
-        }
+        assert.notEqual(request.agent, 'implementation-planner', 'planning runs in the bootstrap session, never in the main one');
         assert.equal(request.agent, 'implementer-coding-session');
         assert.equal(request.context, 'fork', 'same-context fork, not a fresh prompt');
         assert.deepEqual(request.result, { kind: 'text' });
@@ -524,7 +520,8 @@ function runtimeScenario(mode) {
       }
 
       if (mode !== 'restored') {
-        await call('prepare_implementation');
+        // Born prepared from the bootstrap artifact: no preparation tool call exists.
+        assert.equal(tools.has('prepare_implementation'), false);
         if (mode !== 'fallback') {
           const early = await handlers.get('tool_call')({ toolName: 'begin_coding_session', toolCallId: 'early', input: {} }, ctx);
           assert.match(early.reason, /only once evidence is complete/, 'no 16K during exploration');
@@ -682,9 +679,15 @@ function runtimeScenario(mode) {
         assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
 
         if (mode === 'action-repeat-abort') {
+          // One genuine completion of a one-shot control transition, in its own turn, so its repeat is a no-op.
+          handlers.get('turn_start')({ turnIndex: turn });
+          const firstEnable = { toolName: 'subagents_enable', toolCallId: 'first-' + turn, input: {} };
+          assert.equal(await handlers.get('tool_call')(firstEnable, ctx), undefined);
+          await handlers.get('tool_execution_end')({ ...firstEnable, isError: false, result: { content: [{ type: 'text', text: 'ok' }] } }, ctx);
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
           handlers.get('turn_start')({ turnIndex: turn });
           const repeated = await handlers.get('tool_call')({
-            toolName: 'prepare_implementation',
+            toolName: 'subagents_enable',
             toolCallId: 'repeat-' + turn,
             input: {},
           }, ctx);
@@ -693,7 +696,12 @@ function runtimeScenario(mode) {
           const afterRepeat = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
           assert.equal(afterRepeat.tool_choice, undefined, 'an emitted tool call consumes provider forcing even when it is a no-op');
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-          assert.equal(aborts, 1, 'already-satisfied repeat still counts as no productive action and trips the watchdog');
+          assert.equal(aborts, 0, 'one no-op repeat is a single strike');
+          handlers.get('turn_start')({ turnIndex: turn });
+          const again = await handlers.get('tool_call')({ toolName: 'subagents_enable', toolCallId: 'repeat-again-' + turn, input: {} }, ctx);
+          assert.equal(again.block, true);
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 1, 'repeated already-satisfied calls still count as no productive action and trip the watchdog');
           process.exit(0);
         }
 
@@ -890,6 +898,7 @@ function runtimeScenario(mode) {
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context, PI_TERMINAL_RESULT_FILE: terminal,
         PI_IMPLEMENTER_RESULT_FILE: resultFile, PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
+        PI_PREPARED_IMPLEMENTATION_FILE: preparedFile,
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure,
         PI_METRICS_FILE: path.join(dir, 'metrics.jsonl'), PI_ISSUE: '7', PI_PHASE: 'implementation' },
     });

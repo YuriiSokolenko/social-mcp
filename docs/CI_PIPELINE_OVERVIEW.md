@@ -123,8 +123,9 @@ Implementer loop protection logs `PI_LOOP_GUARD` for a repeated observation, fai
 The normative execution rules live in [CI_RULES.md](CI_RULES.md). The short Implementer shape is:
 
 ```text
-prepare_implementation
-  -> one planner result: steps + trivial|nontrivial + evidence_budget (0-6)
+runtime bootstrap (separate pi session, before the main session starts)
+  -> one planner result: steps + trivial|nontrivial + evidence_budget (0-6), or resolved PREPARATION_FALLBACK
+  -> main Implementer session starts already prepared (first request carries the plan)
   -> evidence_budget evidence actions (fallback: 2 if trivial, otherwise 6)
   -> structural_edit / safe_edit / edit / write / begin_coding_session / rollback_last_mutation / submit_result
      or one need_more_evidence escape -> one evidence action -> action

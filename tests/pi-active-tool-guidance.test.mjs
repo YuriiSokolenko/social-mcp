@@ -36,10 +36,7 @@ function surface(state) {
 function preparedController(evidenceBudget = 1) {
   const state = new ProgressController(stageConfig('implementer'), {});
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(evidenceBudget);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget, largeMutation: false, reason: 'test' });
   return state;
 }
 
@@ -139,7 +136,7 @@ test('runtime counts an attempted tool that is absent from the current surface',
       const { default: runtime } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
       const bus = new EventEmitter();
       const handlers = new Map();
-      let active = ['prepare_implementation', 'submit_result'];
+      let active = ['safe_edit', 'submit_result'];
       const pi = {
         events: { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) },
         registerTool: () => {},

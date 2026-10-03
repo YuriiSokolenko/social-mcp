@@ -6,12 +6,10 @@ import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 const LSP = { server_id: 'python', workspace_root: '/work/tree' };
 
+// Born prepared: bootstrap resolved preparation (here: planner fallback) before the session started.
 function fallbackController() {
   const state = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.enterPreparationFallback();
-  state.onToolExecutionEnd('prepare_implementation', false);
-  assert.ok(state.recordTransitionCompleted('prepare_implementation', {}, false));
+  state.applyPreparedImplementation({ status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' });
   return state;
 }
 
@@ -43,7 +41,7 @@ test('A: repeated lsp_start_server after fallback is already_satisfied and not p
 test('B: subagents_enable completes once, repeat steers without progress', () => {
   const state = fallbackController();
   assert.ok(complete(state, 'subagents_enable'));
-  assert.deepEqual([...state.transitions.satisfiedToolNames()], ['subagents_enable', 'prepare_implementation']);
+  assert.deepEqual([...state.transitions.satisfiedToolNames()], ['subagents_enable']);
   assert.match(state.transitions.stateBlock(), /subagents: enabled/);
   state.onTurnStart(1);
   const blocked = state.checkToolCall('subagents_enable', {});
@@ -54,45 +52,38 @@ test('B: subagents_enable completes once, repeat steers without progress', () =>
   assert.equal(state.turnUsedTool, false);
 });
 
-test('C: preparation success and fallback are materialized and prepare_implementation stays unavailable', () => {
+test('C: preparation is runtime bootstrap state, not a session transition or model-visible tool', () => {
   const fallback = fallbackController();
-  assert.match(fallback.transitions.stateBlock(), /preparation: fallback-complete/);
-  assert.equal(fallback.checkToolCall('prepare_implementation', {}).alreadySatisfied, true);
+  assert.equal(fallback.transitions.stateBlock(), '', 'no completed transition exists for preparation');
+  assert.equal(fallback.transitions.keyFor('prepare_implementation', {}), null);
+  assert.equal(fallback.recordTransitionCompleted('prepare_implementation', {}, false), null);
+  assert.equal(fallback.preparationState, 'PREPARATION_FALLBACK');
 
   const normal = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(normal.checkToolCall('prepare_implementation', {}), undefined);
-  normal.setComplexity('trivial');
-  normal.onToolExecutionEnd('prepare_implementation', false);
-  assert.ok(normal.recordTransitionCompleted('prepare_implementation', {}, false));
-  assert.match(normal.transitions.stateBlock(), /preparation: complete\b/);
-  assert.equal(normal.checkToolCall('prepare_implementation', {}).alreadySatisfied, true);
-  assert.ok(normal.transitions.satisfiedToolNames().has('prepare_implementation'));
-});
-
-test('failed transitions are not recorded and may be retried', () => {
-  const state = new ProgressController(stageConfig('implementer'), {});
-  state.checkToolCall('prepare_implementation', {});
-  assert.equal(state.recordTransitionCompleted('prepare_implementation', {}, true), null);
-  assert.equal(state.transitions.stateBlock(), '');
+  normal.applyPreparedImplementation({ status: 'prepared', plan: ['p'], complexity: 'trivial', evidenceBudget: 1, largeMutation: false, reason: 'r' });
+  assert.equal(normal.transitions.stateBlock(), '');
+  assert.equal(normal.preparationState, 'PREPARED');
+  assert.equal(normal.transitions.satisfiedToolNames().size, 0);
 });
 
 test('state block separates transition completion from issue completion', () => {
   const state = fallbackController();
+  const record = complete(state, 'subagents_enable');
   const block = state.transitions.stateBlock();
   assert.match(block, /GitHub issue itself is NOT complete/);
   assert.doesNotMatch(block, /task complete/i);
-  assert.match(state.transitions.transitionNotice(state.transitions.completed.get('preparation')), /STATE TRANSITION COMPLETE/);
+  assert.match(state.transitions.transitionNotice(record), /STATE TRANSITION COMPLETE/);
 });
 
 test('D: runtime state == model-visible state == tool surface for each transition', () => {
   const state = fallbackController();
   complete(state, 'subagents_enable');
   complete(state, 'lsp_start_server', LSP);
-  const all = ['read', 'prepare_implementation', 'subagents_enable', 'lsp_start_server', 'subagent', 'safe_edit', 'submit_result', 'begin_coding_session', 'need_more_evidence'];
+  const all = ['read', 'subagents_enable', 'lsp_start_server', 'subagent', 'safe_edit', 'submit_result', 'begin_coding_session', 'need_more_evidence'];
   const cfg = stageConfig('implementer').productiveProgress;
   const visibleDuringEvidence = all.filter(name => !state.transitions.satisfiedToolNames().has(name));
 
-  for (const tool of ['prepare_implementation', 'subagents_enable']) {
+  for (const tool of ['subagents_enable']) {
     assert.ok(!visibleDuringEvidence.includes(tool), `${tool} removed from surface`);
     assert.equal(state.checkToolCall(tool, {}).alreadySatisfied, true, `${tool} deterministic no-op`);
   }
@@ -123,6 +114,7 @@ test('D: runtime state == model-visible state == tool surface for each transitio
 test('session-state validation guidance follows the verification lifecycle', () => {
   const state = fallbackController();
   const verification = verificationState => ({ verificationTool: 'run_check', verificationState });
+  const subagents = complete(state, 'subagents_enable');
 
   const beforeMutation = state.transitions.stateBlock(verification('not_yet_available'));
   assert.match(beforeMutation, /run_check is not yet available; it becomes available after a successful mutation/);
@@ -136,12 +128,10 @@ test('session-state validation guidance follows the verification lifecycle', () 
   assert.match(exhausted, /run_check is exhausted for the current mutation state/);
   assert.doesNotMatch(exhausted, /run_check is not yet available/);
 
-  const record = state.transitions.completed.get('preparation');
   assert.match(
-    state.transitions.transitionNotice(record, verification('not_yet_available')),
+    state.transitions.transitionNotice(subagents, verification('not_yet_available')),
     /run_check is not yet available; it becomes available after a successful mutation/,
   );
-  const subagents = complete(state, 'subagents_enable');
   const surfaced = state.transitions.transitionNotice(subagents, {
     ...verification('not_yet_available'),
     activeToolNames: ['need_more_evidence', 'submit_result'],
@@ -150,7 +140,7 @@ test('session-state validation guidance follows the verification lifecycle', () 
   assert.match(surfaced, /call need_more_evidence first; the delegated-inspection tool will be exposed/);
   assert.doesNotMatch(surfaced, /subagent\(/);
   assert.match(
-    state.transitions.alreadySatisfiedReason('prepare_implementation', 'preparation', {
+    state.transitions.alreadySatisfiedReason('subagents_enable', 'subagents_enable', {
       actionRequired: true,
       ...verification('exhausted'),
     }),

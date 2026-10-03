@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { recordDescendantMetric, runStructuredSubagent } from './pi-common/structured-subagent.mjs';
+import { readPreparedImplementation, bootstrapFailureFallback } from './pi-common/implementation-planner.mjs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -195,254 +196,60 @@ function codingSessionSpec(env = process.env) {
 }
 
 
-// Evidence needs are reported independently of complexity: a nontrivial task can still need
-// zero repository evidence (a fresh standalone file from a complete spec), so complexity is
-// not a valid proxy for how many evidence actions the Implementer should be granted.
-const MAX_PLANNER_EVIDENCE_BUDGET = 6;
-
-const MAX_PLANNER_STEP_LENGTH = 240;
-
-// Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
-// reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
-// The strict canonical contract is enforced locally by validateImplementationPreparation().
-const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    steps: {
-      type: 'array',
-      minItems: 1,
-      maxItems: 8,
-      items: { type: 'string', minLength: 1 },
-    },
-    complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
-    evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
-    large_mutation: { type: 'boolean' },
-    reason: { type: 'string', minLength: 1, maxLength: 300 },
-  },
-  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
-  additionalProperties: true,
-});
-
-function implementerIssueContext(env = process.env) {
-  const contextFile = env.PI_ISSUE_CONTEXT;
-  if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for runtime implementation preparation');
-  const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
-  return {
-    title: String(context.title ?? ''),
-    body: String(context.body ?? ''),
-  };
-}
-
-function repoRelativePath(...parts) {
-  return path.join(...parts).split(path.sep).join('/');
-}
-
-function nearestPythonSibling(directory, preferredPrefix, excludeName = '') {
-  let entries;
-  try {
-    entries = fs.readdirSync(directory, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  const files = entries
-    .filter(entry => entry.isFile() && entry.name.endsWith('.py') && entry.name !== '__init__.py' && entry.name !== excludeName)
-    .map(entry => entry.name);
-  if (files.length === 0) return null;
-  files.sort((left, right) => {
-    const leftPreferred = preferredPrefix && left.startsWith(preferredPrefix) ? 0 : 1;
-    const rightPreferred = preferredPrefix && right.startsWith(preferredPrefix) ? 0 : 1;
-    return leftPreferred - rightPreferred || left.localeCompare(right);
-  });
-  return files[0];
-}
-
-// Bounded, model-free orientation for additive Python work. It recognizes a conventional src/
-// layout from a dotted target already present in the issue, then looks only at that package
-// directory and its nearest mirrored tests directory. Package names remain data from the issue
-// and worktree; the generic runtime never hard-codes product-specific paths.
-export function discoverAdditivePythonLayout(cwd, issue) {
-  const srcRoot = path.join(cwd, 'src');
-  const testsRoot = path.join(cwd, 'tests');
-  if (!fs.existsSync(srcRoot) || !fs.statSync(srcRoot).isDirectory() ||
-      !fs.existsSync(testsRoot) || !fs.statSync(testsRoot).isDirectory()) return null;
-
-  const issueText = `${String(issue?.title ?? '')}\n${String(issue?.body ?? '')}`;
-  const dottedTargets = [...issueText.matchAll(/`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,})`/g)]
-    .map(match => match[1]);
-
-  for (const dottedTarget of dottedTargets) {
-    const parts = dottedTarget.split('.');
-    let existingPackageParts = 0;
-    for (let length = 1; length < parts.length; length += 1) {
-      const candidate = path.join(srcRoot, ...parts.slice(0, length));
-      if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) break;
-      existingPackageParts = length;
-    }
-    // A safe additive hint needs an explicit new module *and* a symbol inside it. If only one
-    // dotted segment remains after the existing package, it could just as well be an existing
-    // function/class exported from that package, so leave discovery to normal evidence tools.
-    if (existingPackageParts === 0 || parts.length - existingPackageParts < 2) continue;
-
-    const moduleName = parts[existingPackageParts];
-    if (!/^[a-z_]\w*$/.test(moduleName)) continue;
-    const sourceDirectoryParts = parts.slice(0, existingPackageParts);
-    const sourceDirectory = path.join(srcRoot, ...sourceDirectoryParts);
-    const sourceTargetAbsolute = path.join(sourceDirectory, `${moduleName}.py`);
-    if (fs.existsSync(sourceTargetAbsolute)) continue;
-
-    const mirroredTestParts = sourceDirectoryParts.slice(1);
-    const testCandidates = [
-      path.join(testsRoot, ...mirroredTestParts),
-      path.join(testsRoot, ...sourceDirectoryParts),
-      testsRoot,
-    ];
-    const testDirectory = testCandidates.find(candidate =>
-      fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()
-    );
-    if (!testDirectory) continue;
-
-    const sharedPrefix = moduleName.includes('_') ? `${moduleName.split('_')[0]}_` : '';
-    const sourceSibling = nearestPythonSibling(sourceDirectory, sharedPrefix, `${moduleName}.py`);
-    const testPrefix = `test_${sharedPrefix}`;
-    const testSibling = nearestPythonSibling(testDirectory, testPrefix, `test_${moduleName}.py`);
-
-    return {
-      dottedTarget,
-      sourceRoot: 'src',
-      sourceDirectory: repoRelativePath(path.relative(cwd, sourceDirectory)),
-      sourceTarget: repoRelativePath(path.relative(cwd, sourceTargetAbsolute)),
-      sourceConvention: sourceSibling
-        ? repoRelativePath(path.relative(cwd, path.join(sourceDirectory, sourceSibling)))
-        : null,
-      testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
-      testConvention: testSibling
-        ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
-        : null,
-    };
-  }
-  return null;
-}
-
-// Safe repairs only: keep the five canonical fields, trim strings, truncate overlong steps.
-// large_mutation is an optional planner hint: omission safely defaults to false, while an
-// explicitly present non-boolean value is preserved so strict validation rejects it.
-function normalizeImplementationPreparation(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const trim = item => typeof item === 'string' ? item.trim() : item;
-  const normalized = {};
-  for (const key of ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
-    if (!(key in value)) continue;
-    normalized[key] = key === 'steps' && Array.isArray(value.steps)
-      ? value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step)
-      : trim(value[key]);
-  }
-  if (!('large_mutation' in normalized)) normalized.large_mutation = false;
-  return normalized;
-}
-
-function validateImplementationPreparation(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Implementation planner returned a non-object structured result');
-  }
-  const keys = Object.keys(value);
-  const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason'];
-  if (keys.length !== requiredKeys.length || !requiredKeys.every(key => keys.includes(key))) {
-    throw new Error('Implementation planner returned unexpected structured fields');
-  }
-  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 8) {
-    throw new Error('Implementation planner returned an invalid step list');
-  }
-  const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
-  if (steps.some(step => !step || step.length > MAX_PLANNER_STEP_LENGTH)) {
-    throw new Error('Implementation planner returned an invalid plan step');
-  }
-  if (!['trivial', 'nontrivial'].includes(value.complexity)) {
-    throw new Error(`Implementation planner returned invalid complexity: ${String(value.complexity)}`);
-  }
-  const evidenceBudget = Number(value.evidence_budget);
-  if (!Number.isSafeInteger(evidenceBudget) || evidenceBudget < 0 || evidenceBudget > MAX_PLANNER_EVIDENCE_BUDGET) {
-    throw new Error(`Implementation planner returned invalid evidence_budget: ${String(value.evidence_budget)}`);
-  }
-  if (typeof value.large_mutation !== 'boolean') {
-    throw new Error(`Implementation planner returned invalid large_mutation: ${String(value.large_mutation)}`);
-  }
-  const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
-  if (!reason || reason.length > 300) throw new Error('Implementation planner returned an invalid reason');
-  return { steps, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
-}
-
-function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
-  const issue = implementerIssueContext(env);
-  const layoutGuidance = layoutHint
-    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
-    : '';
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
-
-Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "large_mutation": true|false, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the five listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } } and nothing else.` : ''}
-
-Issue title:
-${issue.title}
-
-Issue body:
-${issue.body}`;
-}
-
-// pi-subagents reports a terminal schema/envelope rejection as `Structured output validation failed: <details>`
-// (readStructuredOutput). The structured_output tool's own per-call "Validation failed for tool" errors stay
-// inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
-const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
-
-async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null) {
-  const request = {
-    agent: config.implementationPlannerAgent,
-    nodeId: 'implementation-plan',
-    metricCall: 'planner',
-    task: plannerTask(process.env, { layoutHint }),
-    schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
-    timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 45000),
-    maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
-    toolBudget: { hard: 3 },
-  };
-  const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
-  let response;
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      response = await runStructuredSubagent(pi, ctx, request, signal);
-      break;
-    } catch (error) {
-      const message = String(error?.message ?? error);
-      const missing = message.includes('Missing structured_output call');
-      const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
-      const retryable = missing || schemaFailure;
-      const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
-      if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
-      console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
-        agent: config.implementationPlannerAgent,
-        reason,
-        attempt: attempt + 1,
-        retriesExhausted: retryable && attempt >= retries,
-        error: message,
-      })}`);
-      if (!retryable || attempt >= retries) throw error;
-      console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
-        agent: config.implementationPlannerAgent,
-        reason,
-        attempt: attempt + 1,
-      })}`);
-    }
-  }
-  return {
-    ...validateImplementationPreparation(normalizeImplementationPreparation(response.result.value)),
-    usage: response.usage ?? null,
-    layoutHint,
-  };
-}
-
 function resultText(result) {
   if (typeof result === 'string') return result;
   const content = Array.isArray(result) ? result : result?.content;
   if (Array.isArray(content)) return content.map(part => part?.text ?? '').join('\n');
   return typeof result?.message === 'string' ? result.message : '';
+}
+
+// A fresh Implementer without a bootstrap artifact (not launched through the runner) fails soft into
+// the same already-resolved fallback rather than being blocked; the runner always supplies one.
+function loadPreparedImplementation(env = process.env) {
+  const prepared = readPreparedImplementation(env.PI_PREPARED_IMPLEMENTATION_FILE);
+  return prepared ?? bootstrapFailureFallback(process.cwd(), 'PreparedImplementation artifact is missing', env);
+}
+
+function logPreparedImplementation(prepared, applied) {
+  const stage = 'implementer';
+  const usage = prepared.plannerUsage ?? null;
+  if (prepared.status === 'fallback') {
+    console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
+      stage,
+      preparationState: applied.preparationState,
+      evidenceBudget: applied.evidenceBudget,
+      source: 'implementation-planner',
+      failureClass: prepared.failureClass,
+      recovery: 'continue_without_planner_output',
+      reason: prepared.reason,
+      plannerDurationMs: prepared.plannerDurationMs,
+    })}`);
+  } else {
+    console.log(`PI_PLAN ${JSON.stringify({
+      stage,
+      steps: prepared.plan,
+      complexity: prepared.complexity,
+      evidenceBudget: prepared.evidenceBudget,
+      largeMutation: prepared.largeMutation,
+      largeMutationArmed: applied.largeMutationArmed,
+      reason: prepared.reason,
+      usage,
+      plannerDurationMs: prepared.plannerDurationMs,
+    })}`);
+    if (applied.largeMutationArmed) {
+      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({ stage, phase: 'auto_armed', source: 'implementation-planner' })}`);
+    }
+    console.log(`PI_COMPLEXITY ${JSON.stringify({
+      stage,
+      complexity: prepared.complexity,
+      evidenceBudget: prepared.evidenceBudget,
+      largeMutation: prepared.largeMutation,
+      reason: prepared.reason,
+      usage,
+      source: 'implementation-planner',
+    })}`);
+  }
+  console.log(`PI_BOOTSTRAP ${JSON.stringify({ phase: 'prepared_state_applied', status: prepared.status, beforeFirstProviderRequest: true })}`);
 }
 
 function codingSessionLog(phase, fields) {
@@ -482,9 +289,6 @@ export default function (pi) {
         fs.statSync(resumePatch).size > 0
       );
   const validationRepair = stage === 'implementer' && process.env.PI_VALIDATION_REPAIR === 'true';
-  const freshBaseCommit = stage === 'implementer'
-    ? String(process.env.PI_IMPLEMENTER_START_COMMIT ?? '').trim()
-    : '';
   // A coding session is already prepared: it starts directly in the action phase.
   const directActionImplementer = resumedImplementer || validationRepair || Boolean(codingSession);
   const controller = new ProgressController(
@@ -501,6 +305,15 @@ export default function (pi) {
   const loopGuard = stage === 'implementer'
     ? new SemanticLoopGuard(loopGuardLimits())
     : null;
+
+  // Fresh work only: planning already ran in the runner's bootstrap session, so this session is born
+  // prepared and its first provider request already carries the plan (see the stage prompt). Restored
+  // work, validation repair and coding sessions keep their direct-action paths and never re-plan.
+  if (stage === 'implementer' && !directActionImplementer) {
+    const preparedImplementation = loadPreparedImplementation();
+    const applied = controller.applyPreparedImplementation(preparedImplementation);
+    logPreparedImplementation(preparedImplementation, applied);
+  }
 
   let appliedActionCap = 0;
   let actionTurnAttemptedTool = false;
@@ -1121,115 +934,7 @@ export default function (pi) {
     }
   });
 
-  if (controller.requireComplexity && config.implementationPlannerAgent) {
-    pi.registerTool({
-      name: 'prepare_implementation',
-      label: 'Prepare implementation',
-      description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result, or PREPARATION_FALLBACK if planner infrastructure fails; do not write a competing plan in the main agent.',
-      parameters: Type.Object({}),
-      async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-        let layoutHint = null;
-        let prepared;
-        try {
-          const issue = implementerIssueContext();
-          layoutHint = discoverAdditivePythonLayout(ctx.cwd, issue);
-          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint);
-        } catch (error) {
-          // Cancellation is not a recovery request: never unlock execution on abort.
-          if (signal?.aborted) throw error;
-          const fallback = controller.enterPreparationFallback();
-          const reason = String(error?.message ?? error);
-          console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
-            stage,
-            ...fallback,
-            source: config.implementationPlannerAgent,
-            failureClass: 'preparation_infrastructure_failure',
-            recovery: 'continue_without_planner_output',
-            reason,
-          })}`);
-          syncActionToolSurface(syncProductiveState());
-          const fallbackActiveToolNames = pi.getActiveTools();
-          return {
-            content: [{ type: 'text', text:
-              `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
-              'Your preparation obligation is satisfied. No planner output or complexity was recorded. Do not repeat preparation. ' +
-              'If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. ' +
-              `You may use up to ${fallback.evidenceBudget} repository evidence attempts; every accepted non-control evidence action consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. ` +
-              'Direct mutation remains allowed during the window and closes it on success. The coding-session action becomes valid only after the evidence window is closed. ' +
-              'Focused verification becomes available only after a successful mutation. Final submission rules are unchanged. ' +
-              'After the fallback window closes, use only the blocker action exposed by the runtime when one concrete implementation fact is still missing.\n' +
-              `${activeToolGuidance(fallbackActiveToolNames)}\n` +
-              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.` +
-              (layoutHint
-                ? `\nRepository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}. This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.`
-                : ''),
-            }],
-            details: { ...fallback, failureClass: 'preparation_infrastructure_failure', reason,
-              lspWorkspaceRoot: ctx.cwd, freshBaseCommit, layoutHint },
-          };
-        }
-        const result = controller.setComplexity(prepared.complexity);
-        controller.setEvidenceBudget(prepared.evidenceBudget);
-        const automaticLargeMutationArmed =
-          controller.armAutomaticLargeMutationBudget(prepared.largeMutation);
-        console.log(`PI_PLAN ${JSON.stringify({
-          stage,
-          steps: prepared.steps,
-          complexity: prepared.complexity,
-          evidenceBudget: prepared.evidenceBudget,
-          largeMutation: prepared.largeMutation,
-          largeMutationArmed: automaticLargeMutationArmed,
-          reason: prepared.reason,
-          usage: prepared.usage,
-        })}`);
-        if (automaticLargeMutationArmed) {
-          console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
-            stage,
-            phase: 'auto_armed',
-            source: 'implementation-planner',
-          })}`);
-        }
-        console.log(`PI_COMPLEXITY ${JSON.stringify({
-          stage,
-          complexity: prepared.complexity,
-          evidenceBudget: prepared.evidenceBudget,
-          largeMutation: prepared.largeMutation,
-          reason: prepared.reason,
-          usage: prepared.usage,
-          source: 'implementation-planner',
-        })}`);
-        const numberedPlan = prepared.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
-        const provenance = stage === 'implementer' && !resumedImplementer
-          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful structural_edit/safe_edit/edit/write, direct reads of this worktree are authoritative latest-base evidence; do not use extra Git/evidence calls to re-prove that provenance.`
-          : '';
-        const lspWorkspace = stage === 'implementer' && !resumedImplementer
-          ? `\n\nLSP workspace root: ${ctx.cwd}. Use only inspection/control tools currently exposed by the runtime; runtime steering is authoritative for valid tool names.`
-          : '';
-        const layoutGuidance = prepared.layoutHint
-          ? `\n\nRepository layout hint: source root ${prepared.layoutHint.sourceRoot}; new module target ${prepared.layoutHint.sourceTarget}; source directory ${prepared.layoutHint.sourceDirectory}${prepared.layoutHint.sourceConvention ? `; nearest source convention ${prepared.layoutHint.sourceConvention}` : ''}; tests ${prepared.layoutHint.testDirectory}${prepared.layoutHint.testConvention ? `; nearest test convention ${prepared.layoutHint.testConvention}` : ''}. This bounded current-worktree lookup is authoritative layout evidence. Prefer one targeted convention read if needed; do not broad-search or re-prove the fresh-worktree provenance.`
-          : '';
-        return {
-          content: [{
-            type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nLarge mutation: ${automaticLargeMutationArmed ? 'auto-arm one-shot elevated mutation budget when evidence is complete' : 'normal mutation budget'}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
-          }],
-          details: {
-            ...result,
-            plan: prepared.steps,
-            evidenceBudget: prepared.evidenceBudget,
-            largeMutation: prepared.largeMutation,
-            largeMutationArmed: automaticLargeMutationArmed,
-            plannerUsage: prepared.usage,
-            reason: prepared.reason,
-            freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
-            freshWorktreeIsLatestDev: stage === 'implementer' && !resumedImplementer,
-            lspWorkspaceRoot: stage === 'implementer' && !resumedImplementer ? ctx.cwd : null,
-            layoutHint: prepared.layoutHint,
-          },
-        };
-      },
-    });
-  } else if (controller.requireComplexity) {
+  if (controller.requireComplexity && !config.implementationPlannerAgent) {
     pi.registerTool({
       name: 'declare_task_complexity',
       label: 'Declare task complexity',
