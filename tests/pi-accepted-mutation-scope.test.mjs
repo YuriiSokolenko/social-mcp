@@ -12,6 +12,7 @@ import {
   mutationScopeReceipt,
   registerMutationScope,
 } from '../scripts/pi-common/accepted-mutation-scope.mjs';
+import { validateFinalProductTree } from '../scripts/pi-common/finalize-product-tree.mjs';
 
 function repo(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-accepted-scope-'));
@@ -236,4 +237,25 @@ test('scope sidecar carries child-process amendments back into an already initia
     path: 'child.py',
     rationale: 'Child coding process owns this task-related implementation file.',
   }]);
+});
+
+
+test('final product validation fails closed when a changed tree has no implementer result metadata', t => {
+  const { root } = repo(t);
+  fs.writeFileSync(path.join(root, 'feature.py'), 'value = 1\n');
+
+  assert.throws(
+    () => validateFinalProductTree({
+      cwd: root,
+      ledgerPath: path.join(root, 'ledger.jsonl'),
+      backend: 'pi',
+      env: {},
+    }),
+    error => {
+      const diagnostic = JSON.parse(error.message);
+      assert.equal(diagnostic.code, 'accepted_scope_missing');
+      assert.deepEqual(diagnostic.unexpected_paths, ['feature.py']);
+      return true;
+    },
+  );
 });
