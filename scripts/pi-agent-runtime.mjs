@@ -37,7 +37,8 @@ import {
   mutationSnapshotChanged,
 } from './pi-common/mutation-snapshot.mjs';
 import {
-  assertMutationJournalCapacity,
+  isMutationJournalCapacityError,
+  mutationJournalCapacityStatus,
   mutationJournalState,
   recordSuccessfulMutation,
   undoMutation,
@@ -1216,6 +1217,7 @@ export default function (pi) {
   const pendingToolInputs = new Map();
   let lastSuccessfulMutationSnapshot = null;
   let lastSuccessfulMutationId = null;
+  let lastSuccessfulMutationLocalOnly = false;
 
   // Initialize the shared sidecar before the first mutation. Parent, coding forks and restored
   // attempts all read the same bounded journal rather than relying on process-local snapshots.
@@ -1454,8 +1456,10 @@ export default function (pi) {
             mutation: result,
           });
         }
-        lastSuccessfulMutationId = mutationJournalState(ctx.cwd, process.env).entries.at(-1)?.id ?? null;
-        lastSuccessfulMutationSnapshot = null;
+        if (!lastSuccessfulMutationLocalOnly && lastSuccessfulMutationId === result.mutation_id) {
+          lastSuccessfulMutationId = mutationJournalState(ctx.cwd, process.env).entries.at(-1)?.id ?? null;
+          lastSuccessfulMutationSnapshot = null;
+        }
         invalidateTerminalReceipt(process.env);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
       },
@@ -1470,6 +1474,29 @@ export default function (pi) {
       }),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const journal = mutationJournalState(ctx.cwd, process.env);
+
+        if (lastSuccessfulMutationLocalOnly && lastSuccessfulMutationSnapshot) {
+          const snapshot = lastSuccessfulMutationSnapshot;
+          if (snapshot.existed) {
+            fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
+            fs.writeFileSync(snapshot.absolutePath, snapshot.content);
+            if (snapshot.mode != null) fs.chmodSync(snapshot.absolutePath, snapshot.mode);
+          } else if (fs.existsSync(snapshot.absolutePath)) {
+            fs.rmSync(snapshot.absolutePath, { force: true });
+          }
+          lastSuccessfulMutationSnapshot = null;
+          lastSuccessfulMutationLocalOnly = false;
+          lastSuccessfulMutationId = journal.entries.at(-1)?.id ?? null;
+          invalidateTerminalReceipt(process.env);
+          return {
+            content: [{
+              type: 'text',
+              text: `Rolled back the most recent local-only mutation to ${snapshot.path}. Its selective journal entry was unavailable because bounded journal capacity had been exhausted.`,
+            }],
+            details: { path: snapshot.path, reason: params.reason, journaled: false },
+          };
+        }
+
         const mutationId = lastSuccessfulMutationId ?? journal.entries.at(-1)?.id ?? null;
         if (mutationId) {
           const result = undoMutation({
@@ -1495,6 +1522,7 @@ export default function (pi) {
           }
           lastSuccessfulMutationId = mutationJournalState(ctx.cwd, process.env).entries.at(-1)?.id ?? null;
           lastSuccessfulMutationSnapshot = null;
+          lastSuccessfulMutationLocalOnly = false;
           invalidateTerminalReceipt(process.env);
           return {
             content: [{
@@ -1505,8 +1533,9 @@ export default function (pi) {
           };
         }
 
-        // Compatibility fallback for local harnesses that intentionally run without a persisted
-        // journal. Workflow Implementers always initialize PI_MUTATION_JOURNAL_FILE.
+        // Compatibility fallback when no persistent journal entry is available. In normal workflow
+        // runs this is primarily the process-local last snapshot retained after bounded journal
+        // capacity degrades; local harnesses without a sidecar use the same path.
         const snapshot = lastSuccessfulMutationSnapshot;
         if (!snapshot) throw new Error('No successful structural_edit/safe_edit/edit/write is available to roll back');
         if (snapshot.existed) {
@@ -1517,6 +1546,8 @@ export default function (pi) {
           fs.rmSync(snapshot.absolutePath, { force: true });
         }
         lastSuccessfulMutationSnapshot = null;
+        lastSuccessfulMutationLocalOnly = false;
+        lastSuccessfulMutationId = journal.entries.at(-1)?.id ?? null;
         invalidateTerminalReceipt(process.env);
         return {
           content: [{
@@ -2012,11 +2043,24 @@ export default function (pi) {
     if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
       try {
         const snapshot = captureMutationSnapshot(cwd, event.input?.path);
-        assertMutationJournalCapacity({ cwd, snapshot, env: process.env });
+        const capacity = mutationJournalCapacityStatus({ cwd, snapshot, env: process.env });
         pendingMutationSnapshots.set(event.toolCallId, {
           snapshot,
           disposition: mutationAuthorization?.disposition ?? 'unknown',
+          journalable: capacity.journalable,
+          journalReason: capacity.reason,
         });
+        if (!capacity.journalable) {
+          // Selective undo is a recovery convenience, never a prerequisite for productive work.
+          // Once the bounded journal is full (or one prior snapshot is too large), continue the
+          // mutation and retain only the process-local last-mutation snapshot for fast rollback.
+          console.warn('PI_MUTATION_JOURNAL_DEGRADED ' + JSON.stringify({
+            tool: event.toolName,
+            path: snapshot.path,
+            code: capacity.code,
+            reason: capacity.reason,
+          }));
+        }
       } catch (error) {
         const reason = String(error?.message ?? error);
         console.warn('PI_MUTATION_JOURNAL_BLOCKED ' + JSON.stringify({
@@ -2025,7 +2069,7 @@ export default function (pi) {
         }));
         return {
           block: true,
-          reason: `BLOCKED: ${event.toolName} did not execute because the runtime cannot preserve bounded selective-undo provenance. ${reason}`,
+          reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
         };
       }
     }
@@ -2108,46 +2152,70 @@ export default function (pi) {
       })}`);
       if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot) {
         const mutationCwd = pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd();
-        try {
-          const journalEntry = recordSuccessfulMutation({
-            cwd: mutationCwd,
-            before: mutationSnapshot,
-            after: mutationAfterSnapshot,
-            tool: event.toolName,
-            disposition: pendingMutation?.disposition ?? 'unknown',
-            env: process.env,
-          });
+        const degradeToLocalSnapshot = reason => {
           lastSuccessfulMutationSnapshot = mutationSnapshot;
-          lastSuccessfulMutationId = journalEntry.id;
-          console.log(`PI_MUTATION_JOURNAL ${JSON.stringify({
-            stage,
-            mutationId: journalEntry.id,
-            tool: event.toolName,
-            path: journalEntry.path,
-            disposition: journalEntry.disposition,
-          })}`);
-        } catch (error) {
-          // A mutation without durable provenance would violate the selective-undo contract.
-          // Restore the exact pre-mutation snapshot before the agent can take another action.
-          if (mutationSnapshot.existed) {
-            fs.mkdirSync(path.dirname(mutationSnapshot.absolutePath), { recursive: true });
-            fs.writeFileSync(mutationSnapshot.absolutePath, mutationSnapshot.content);
-            if (mutationSnapshot.mode != null) fs.chmodSync(mutationSnapshot.absolutePath, mutationSnapshot.mode);
-          } else {
-            fs.rmSync(mutationSnapshot.absolutePath, { recursive: false, force: true });
-          }
-          mutationChanged = false;
-          repositoryStateAfter = repositoryStateFingerprint(mutationCwd);
-          const reason = String(error?.message ?? error);
-          console.error(`PI_MUTATION_JOURNAL_REVERTED ${JSON.stringify({
+          lastSuccessfulMutationId = null;
+          lastSuccessfulMutationLocalOnly = true;
+          console.warn(`PI_MUTATION_JOURNAL_LOCAL_FALLBACK ${JSON.stringify({
             stage,
             tool: event.toolName,
             path: mutationSnapshot.path,
             reason,
           })}`);
-          await pi.sendUserMessage(
-            `RUNTIME: your ${event.toolName} change to ${mutationSnapshot.path} was reverted because the trusted runtime could not persist its selective-undo provenance. Do not assume that edit is present. Retry only after addressing this runtime error: ${reason}`,
-          );
+        };
+
+        if (pendingMutation?.journalable === false) {
+          degradeToLocalSnapshot(pendingMutation.journalReason ?? 'bounded journal capacity unavailable');
+        } else {
+          try {
+            const journalEntry = recordSuccessfulMutation({
+              cwd: mutationCwd,
+              before: mutationSnapshot,
+              after: mutationAfterSnapshot,
+              tool: event.toolName,
+              disposition: pendingMutation?.disposition ?? 'unknown',
+              env: process.env,
+            });
+            lastSuccessfulMutationSnapshot = mutationSnapshot;
+            lastSuccessfulMutationId = journalEntry.id;
+            lastSuccessfulMutationLocalOnly = false;
+            console.log(`PI_MUTATION_JOURNAL ${JSON.stringify({
+              stage,
+              mutationId: journalEntry.id,
+              tool: event.toolName,
+              path: journalEntry.path,
+              disposition: journalEntry.disposition,
+            })}`);
+          } catch (error) {
+            if (isMutationJournalCapacityError(error)) {
+              // A concurrent parent/fork mutation may consume the remaining capacity after the
+              // preflight check. Capacity exhaustion still degrades instead of reverting work.
+              degradeToLocalSnapshot(String(error?.message ?? error));
+            } else {
+              // Non-capacity persistence failures are different: leaving changed bytes while the
+              // trusted sidecar claims they are journaled would break provenance consistency.
+              // Restore the exact pre-mutation snapshot before the agent can take another action.
+              if (mutationSnapshot.existed) {
+                fs.mkdirSync(path.dirname(mutationSnapshot.absolutePath), { recursive: true });
+                fs.writeFileSync(mutationSnapshot.absolutePath, mutationSnapshot.content);
+                if (mutationSnapshot.mode != null) fs.chmodSync(mutationSnapshot.absolutePath, mutationSnapshot.mode);
+              } else {
+                fs.rmSync(mutationSnapshot.absolutePath, { recursive: false, force: true });
+              }
+              mutationChanged = false;
+              repositoryStateAfter = repositoryStateFingerprint(mutationCwd);
+              const reason = String(error?.message ?? error);
+              console.error(`PI_MUTATION_JOURNAL_REVERTED ${JSON.stringify({
+                stage,
+                tool: event.toolName,
+                path: mutationSnapshot.path,
+                reason,
+              })}`);
+              await pi.sendUserMessage(
+                `RUNTIME: your ${event.toolName} change to ${mutationSnapshot.path} was reverted because the trusted runtime could not persist mutation provenance for a non-capacity reason. Do not assume that edit is present. Retry only after addressing this runtime error: ${reason}`,
+              );
+            }
+          }
         }
       }
       pendingMutationSnapshots.delete(event.toolCallId);
