@@ -146,11 +146,23 @@ function stateFromJson(cwd, raw) {
 
 export function readMutationJournalFile(cwd, target) {
   if (!target || !fs.existsSync(target) || !fs.statSync(target).size) return null;
-  return stateFromJson(cwd, fs.readFileSync(target, 'utf8'));
+  const state = stateFromJson(cwd, fs.readFileSync(target, 'utf8'));
+  if (!state) {
+    throw journalError('mutation_journal_corrupt', 'persisted mutation journal is invalid; refusing to discard undo provenance', {
+      journal_file: target,
+    });
+  }
+  return state;
 }
 
 function bootstrapState(cwd, env) {
-  return stateFromJson(cwd, String(env?.PI_MUTATION_JOURNAL_STATE ?? '').trim());
+  const raw = String(env?.PI_MUTATION_JOURNAL_STATE ?? '').trim();
+  if (!raw) return null;
+  const state = stateFromJson(cwd, raw);
+  if (!state) {
+    throw journalError('mutation_journal_corrupt', 'bootstrap mutation journal state is invalid; refusing to discard undo provenance');
+  }
+  return state;
 }
 
 function stateFor(cwd, env = process.env) {
