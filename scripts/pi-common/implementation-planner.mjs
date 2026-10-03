@@ -60,6 +60,18 @@ export function createPlannerEvidenceGate(budget) {
   };
 }
 
+function readPlannerEvidenceUsed(file, cap) {
+  if (!file) return 0;
+  try {
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const used = Number(state?.used);
+    if (!Number.isSafeInteger(used) || used < 0) return 0;
+    return Math.min(used, cap);
+  } catch {
+    return 0;
+  }
+}
+
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
 // reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
 // The strict canonical contract is enforced locally by validateImplementationPreparation().
