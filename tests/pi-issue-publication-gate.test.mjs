@@ -423,7 +423,7 @@ test('checkpoint persists accepted scope before submit_result and does not creat
     scopeFile,
   });
   assert.equal(first.changed, true);
-  assert.deepEqual(acceptedScopeStateFromRef(first.commit).accepted, [{
+  assert.deepEqual(acceptedScopeStateFromRef(first.commit, work).accepted, [{
     path: 'feature.py',
     rationale: 'Issue requires the new feature implementation file.',
   }]);
@@ -466,7 +466,7 @@ test('resume finds the newest valid scope receipt through a marker-less checkpoi
   git('add', '-A');
   git('commit', '-m', 'marker-less later checkpoint');
 
-  assert.deepEqual(acceptedScopeStateFromRef('HEAD'), receipt);
+  assert.deepEqual(acceptedScopeStateFromRef('HEAD', dir), receipt);
 });
 
 test('mini-swe unsandboxed-gated metadata still requires exact declared diff but not a Pi scope receipt', (t) => {
