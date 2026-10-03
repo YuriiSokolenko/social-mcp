@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
+import { ProgressController, actionRequiredToolNames, elevatedMutationTurnToolNames } from '../scripts/pi-common/progress-controller.mjs';
 import { activeToolGuidance } from '../scripts/pi-common/session-state.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
@@ -61,6 +61,35 @@ test('evidence exhaustion removes read, search, and unpermitted run_check from g
   assert.ok(!current.includes('repo_search'));
   assert.ok(!current.includes('run_check'));
   assert.doesNotMatch(activeToolGuidance(current), /\bread\b|\brepo_search\b|\brun_check\b/);
+});
+
+test('#398 large-mutation state keeps the bounded missing-fact escape executable', () => {
+  const state = preparedController(0);
+  const cfg = stageConfig('implementer').productiveProgress;
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true);
+  assert.equal(state.activateLargeMutationBudget(), true);
+
+  const elevated = elevatedMutationTurnToolNames(ACTIVE, { blockerTool: cfg.blockerTool });
+  assert.ok(elevated.includes('need_more_evidence'));
+  assert.ok(!elevated.includes('read'));
+  assert.ok(!elevated.includes('repo_search'));
+  assert.ok(!elevated.includes('run_check'));
+
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'exact sibling contract',
+    reason: 'the fact changes the implementation shape',
+  }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.deepEqual(state.yieldLargeMutationBudgetForEvidence(), { yielded: true, rearmed: true });
+  assert.equal(state.largeMutationBudgetState, 'idle');
+
+  assert.equal(state.checkToolCall('read', { path: 'src/sibling.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true, 'automatic large mutation is re-granted after the one evidence action');
+  assert.equal(state.largeMutationBudgetState, 'pending');
 });
 
 test('post-mutation restriction exposes one run_check permit but keeps exploration tools hidden', () => {
