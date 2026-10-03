@@ -204,7 +204,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -292,8 +292,20 @@ function runtimeScenario(mode) {
           fs.writeFileSync(spec.failureFile, '{"failure_code":');
           return respond(request, { status: 'failed', error: 'original delegation failure' });
         }
+        if (mode === 'fork-deferred-capability') {
+          // #441: submit_result became active after this fork payload was assembled.
+          const stale = childActive.filter(name => name !== 'submit_result');
+          const assembled = providerPatch({ payload: { model: 'm', messages: [], tools: stale.map(name => ({ type: 'function', function: { name } })) } }, childCtx);
+          assert.deepEqual(assembled.tools.map(tool => tool.function.name), stale, 'fork request does not advertise a late-active definition');
+          const call = { toolName: 'submit_result', toolCallId: 'fork-deferred', isError: true, content: [{ type: 'text', text: 'Tool submit_result not found' }] };
+          await childHandlers.get('tool_execution_end')({ ...call, result: { content: call.content } }, childCtx);
+          const rewritten = await childHandlers.get('tool_result')(call, childCtx);
+          assert.match(rewritten.content[0].text, /not executable in this response/);
+          console.log('FORK_DEFERRED_CAPABILITY_OK');
+        }
         if (mode === 'tool-contract') {
-          await childHandlers.get('tool_execution_end')({ toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'Tool read not found' }] } }, childCtx);
+          // write is in the authoritative first-request snapshot, so a missing executor is a real contract failure.
+          await childHandlers.get('tool_execution_end')({ toolName: 'write', isError: true, result: { content: [{ type: 'text', text: 'Tool write not found' }] } }, childCtx);
           return respond(request, { status: 'failed', error: 'nested executor unavailable' });
         }
         // Executors stubbed; the runtime's gates around them are real.
@@ -411,7 +423,8 @@ function runtimeScenario(mode) {
         assert.equal(sessionRequests.length, 0);
         process.exit(0);
       }
-      const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
+      // pi assembles the payload from the active surface; the runtime's own sync may only shrink it here.
+      const unarmedPayload = { model: 'm', messages: [], tools: active.filter(name => name !== 'run_check').map(name => ({ type: 'function', function: { name } })) };
       const firstParentRequest = handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx);
       if (mode === 'restored') {
         assert.equal(firstParentRequest.tool_choice, 'required', 'direct action_required startup constrains the first parent request');
@@ -420,6 +433,64 @@ function runtimeScenario(mode) {
       }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
       assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
+      if (mode === 'deferred-capability' || mode === 'deferred-then-removed') {
+        // #441: submit_result became active after pi assembled this payload.
+        handlers.get('turn_start')({ turnIndex: 0 });
+        const stale = active.filter(name => name !== 'submit_result');
+        const assembled = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: stale.map(name => ({ type: 'function', function: { name } })) } }, ctx);
+        assert.deepEqual(assembled.tools.map(tool => tool.function.name), stale, 'a late-active definition is not added to the assembled request');
+        assert.ok(active.includes('submit_result'), 'the live surface keeps the expansion for the next request');
+
+        // The model calls the deferred tool anyway; pi resolves calls against this turn's context.
+        const deferredCall = { toolName: 'submit_result', toolCallId: 'deferred-call', isError: true, content: [{ type: 'text', text: 'Tool submit_result not found' }] };
+        await handlers.get('tool_execution_end')({ ...deferredCall, result: { content: deferredCall.content } }, ctx);
+        const deferredResult = await handlers.get('tool_result')(deferredCall, ctx);
+        assert.equal(aborts, 0, 'a deferred tool call is a lifecycle mismatch, not an infrastructure failure');
+        assert.equal(fs.existsSync(runtimeFailure), false);
+        assert.match(deferredResult.content[0].text, /became active after provider request \\d+ was built.*Do not retry it in this response.*call it only if that request exposes it/s);
+        assert.doesNotMatch(deferredResult.content[0].text.split('CURRENTLY EXPOSED TOOLS')[1], /submit_result/, 'guidance names only this request surface');
+        const lifecycleSteers = steers.filter(text => /submit_result became active after provider request/.test(text));
+        assert.equal(lifecycleSteers.length, 1, 'one lifecycle steer reaches the next request even though pi skips tool_result');
+        assert.match(lifecycleSteers[0], /Do not retry it in this response.*call it only if that request exposes it/s, 'the steer is conditional on the next request snapshot');
+        assert.doesNotMatch(lifecycleSteers[0], /executable from|onward/, 'the steer does not promise the next request surface');
+
+        if (mode === 'deferred-then-removed') {
+          // Another tool in the same response changes state and removes the deferred tool again.
+          pi.setActiveTools(active.filter(name => name !== 'submit_result'));
+          handlers.get('turn_start')({ turnIndex: 1 });
+          const next = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) } }, ctx);
+          assert.ok(!next.tools.some(tool => tool.function.name === 'submit_result'), 'the next request does not expose the removed tool');
+          // The model follows the old deferral anyway: neither executable nor deferred now.
+          const stale = { toolName: 'submit_result', toolCallId: 'stale-deferred', isError: true, content: [{ type: 'text', text: 'Tool submit_result not found' }] };
+          const staleResult = await handlers.get('tool_result')(stale, ctx);
+          assert.equal(aborts, 0, 'a call that follows stale deferral is not an infrastructure failure');
+          assert.match(staleResult.content[0].text, /BLOCKED: submit_result is not exposed/);
+          assert.doesNotMatch(staleResult.content[0].text.split('CURRENTLY EXPOSED TOOLS')[1], /submit_result/);
+          assert.equal(steers.filter(text => /submit_result became active/.test(text)).length, 1, 'no new lifecycle promise for a tool that is no longer deferred');
+          console.log('DEFERRED_THEN_REMOVED_OK');
+          process.exit(0);
+        }
+
+        // Neither executable nor deferred: an ordinary unavailable-tool attempt.
+        const ghost = { toolName: 'ghost_tool', toolCallId: 'ghost', isError: true, content: [{ type: 'text', text: 'Tool ghost_tool not found' }] };
+        const ghostResult = await handlers.get('tool_result')(ghost, ctx);
+        assert.equal(aborts, 0);
+        assert.match(ghostResult.content[0].text, /BLOCKED: ghost_tool is not exposed/);
+
+        // Next request boundary: pi's rebuilt turn context carries the tool.
+        handlers.get('turn_start')({ turnIndex: 1 });
+        const next = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) } }, ctx);
+        assert.ok(next.tools.some(tool => tool.function.name === 'submit_result'), 'deferred tool is executable from the next request');
+
+        // An advertised tool that pi cannot execute remains a hard contract failure.
+        await handlers.get('tool_result')({ toolName: 'submit_result', toolCallId: 'advertised-missing', isError: true, content: [{ type: 'text', text: 'Tool submit_result not found' }] }, ctx);
+        assert.equal(aborts, 1, 'advertised-but-non-executable tool still aborts as infrastructure');
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+        assert.equal(failure.tool, 'submit_result');
+        console.log('DEFERRED_CAPABILITY_OK');
+        process.exit(0);
+      }
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
       async function call(name, input = {}, { expectError = null } = {}) {
@@ -740,7 +811,7 @@ function runtimeScenario(mode) {
         const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
         assert.equal(failure.failure_class, 'infrastructure');
         assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
-        assert.equal(failure.tool, 'read');
+        assert.equal(failure.tool, 'write');
         assert.equal(sessionRequests.length, 1, 'no additional coding session burned on an unavailable executor');
         assert.equal(fs.existsSync(terminal), false, 'a contract failure never submits');
         process.exit(0);
@@ -992,4 +1063,30 @@ test('malformed fork provenance preserves the original delegation error and remo
 test('both missing-executor event orders abort only once', () => {
   runtimeScenario('parent-contract');
   runtimeScenario('parent-contract-reverse');
+});
+
+test('#441 a tool activated after payload assembly is deferred, not advertised; contract failures still abort', () => {
+  const logs = runtimeScenario('deferred-capability');
+  assert.match(logs, /PI_PROVIDER_CAPABILITY_DEFERRED .*"request":\d+,"executableTools":\[[^\]]*\],"activeTools":\[[^\]]*"submit_result"[^\]]*\],"deferredTools":\["submit_result"\]/);
+  assert.match(logs, /PI_PROVIDER_CAPABILITY_SNAPSHOT .*"deferredTools":\["submit_result"\]/);
+  assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"kind":"deferred_tool_called","attemptedTool":"submit_result"/);
+  assert.equal((logs.match(/PI_CAPABILITY_LIFECYCLE_MISMATCH/g) ?? []).length, 1, 'both pi events for one call log once');
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"kind":"executor_not_found","attemptedTool":"ghost_tool"/);
+  assert.match(logs, /PI_RUNTIME_FAILURE .*"tool":"submit_result".*"failure_code":"PI_TOOL_CONTRACT_FAILURE"/);
+  assert.match(logs, /DEFERRED_CAPABILITY_OK/);
+});
+
+test('#441 a coding-session fork defers a late-active tool and recovers from calling it', () => {
+  const logs = runtimeScenario('fork-deferred-capability');
+  assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"submit_result"/);
+  assert.match(logs, /FORK_DEFERRED_CAPABILITY_OK/);
+  assert.match(logs, /"phase":"completed".*"submitted":true/);
+});
+
+test('#441 deferred guidance stays conditional when another tool removes the deferred tool before the next request', () => {
+  const logs = runtimeScenario('deferred-then-removed');
+  assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"submit_result"/);
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"kind":"executor_not_found","attemptedTool":"submit_result"/);
+  assert.doesNotMatch(logs, /PI_TOOL_CONTRACT_FAILURE/);
+  assert.match(logs, /DEFERRED_THEN_REMOVED_OK/);
 });

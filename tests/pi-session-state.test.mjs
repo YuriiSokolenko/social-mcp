@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames } from '../scripts/pi-common/session-state.mjs';
+import { capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from '../scripts/pi-common/session-state.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 const LSP = { server_id: 'python', workspace_root: '/work/tree' };
@@ -175,4 +175,12 @@ test('provider capability snapshot is derived from executable request definition
 
 test('mergeNewlyActiveTools keeps baseline order and adds newly enabled tools', () => {
   assert.deepEqual(mergeNewlyActiveTools(['a', 'b'], ['b', 'subagent']), ['a', 'b', 'subagent']);
+});
+
+test('classifyMissingExecutor separates contract failures, deferred tools and unavailable attempts', () => {
+  const snapshot = { request: 3, executableTools: ['write', 'submit_result'], deferredTools: ['run_check'] };
+  assert.equal(classifyMissingExecutor('write', snapshot), 'contract_failure');
+  assert.equal(classifyMissingExecutor('run_check', snapshot), 'deferred');
+  assert.equal(classifyMissingExecutor('bash', snapshot), 'unavailable');
+  assert.equal(classifyMissingExecutor('bash', null), 'contract_failure', 'without a snapshot nothing proves the tool was not advertised');
 });

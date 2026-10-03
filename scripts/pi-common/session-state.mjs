@@ -28,6 +28,21 @@ export function providerToolNames(payload) {
     .filter(name => typeof name === 'string' && name.length > 0))];
 }
 
+/**
+ * Classifies pi's `Tool X not found` result against the authoritative provider-request snapshot.
+ * pi resolves tool calls against the turn context captured with the request, so:
+ * - a tool the request advertised but pi cannot execute is a real tool-contract failure;
+ * - a tool activated after the payload was assembled (deferred) is a lifecycle mismatch: pi exposes
+ *   it from the next request;
+ * - any other tool was never offered to the model and is an ordinary unavailable-tool attempt.
+ * Without a snapshot nothing proves the tool was not advertised, so it stays a contract failure.
+ */
+export function classifyMissingExecutor(toolName, snapshot) {
+  if (!snapshot || snapshot.executableTools?.includes(toolName)) return 'contract_failure';
+  if (snapshot.deferredTools?.includes(toolName)) return 'deferred';
+  return 'unavailable';
+}
+
 export function capabilitySnapshotGuidance(activeToolNames) {
   return `${activeToolGuidance(activeToolNames)} This capability snapshot is authoritative for this provider request. Tool names mentioned in earlier history or static contracts but absent from this list are not directly callable now; use only an exposed runtime transition to make another capability available.`;
 }

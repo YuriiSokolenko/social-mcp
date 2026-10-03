@@ -18,7 +18,7 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
-import { activeToolGuidance, capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -853,6 +853,48 @@ export default function (pi) {
     await ctx.abort();
   }
 
+  // pi reports `Tool X not found` through tool_execution_end and/or tool_result for the same call.
+  // Only a tool the authoritative request snapshot advertised is a real contract failure; returns
+  // replacement guidance for the other (recoverable) classes.
+  const missingExecutorCalls = new Map();
+  async function handleMissingExecutor(event, ctx) {
+    const kind = classifyMissingExecutor(event.toolName, providerCapabilitySnapshot);
+    if (kind === 'contract_failure') {
+      await abortToolContract(event.toolName, ctx);
+      return null;
+    }
+    const snapshot = providerCapabilitySnapshot;
+    const guidance = kind === 'deferred'
+      ? `LIFECYCLE: ${event.toolName} became active after provider request ${snapshot.request} was built, so it is not executable in this response. Do not retry it in this response. On a later request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given). ${capabilitySnapshotGuidance(snapshot.executableTools)}`
+      : `BLOCKED: ${event.toolName} is not exposed by the runtime. ${capabilitySnapshotGuidance(snapshot.executableTools)}`;
+    const key = event.toolCallId ?? `${snapshot.request}:${event.toolName}`;
+    if (!missingExecutorCalls.has(key)) {
+      missingExecutorCalls.set(key, kind);
+      // pi returns its own immediate "not found" result without running tool_result, so the
+      // replacement text may never reach the model. A steer lands on the next provider request.
+      // It must not promise that request's surface: another tool in this response may still
+      // change state and remove the deferred tool again, so the guidance stays conditional on
+      // the authoritative snapshot of the request that carries it.
+      if (kind === 'deferred') {
+        await pi.sendUserMessage(
+          `RUNTIME: ${event.toolName} became active after provider request ${snapshot.request} was built, so that call could not execute. Do not retry it in this response. On the next request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given) and it is still needed; the surface may change again before then.`,
+          { deliverAs: 'steer' },
+        );
+      }
+      if (kind === 'unavailable') unavailableToolAttempts += 1;
+      console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
+        stage,
+        kind: kind === 'deferred' ? 'deferred_tool_called' : 'executor_not_found',
+        attemptedTool: event.toolName,
+        request: snapshot.request,
+        requestTools: snapshot.executableTools,
+        deferredTools: snapshot.deferredTools,
+        ...(kind === 'unavailable' ? { count: unavailableToolAttempts } : {}),
+      })}`);
+    }
+    return guidance;
+  }
+
   async function handleLoopResult(loopResult, ctx) {
     if (!loopResult?.tripped) return;
     const metric = {
@@ -1020,24 +1062,30 @@ export default function (pi) {
         const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
         if (tools.length !== patched.tools.length) patched = { ...patched, tools };
 
+        // pi resolves this turn's tool calls against the context captured with this payload, so
+        // the payload's definitions are the executable surface of this request. A tool activated
+        // after assembly (for example by the sync above) cannot execute in this turn even if its
+        // definition were added here; pi exposes it from the next request. Record it as deferred
+        // instead of advertising it.
         const executableTools = providerToolNames(patched);
-        const activeTools = pi.getActiveTools();
+        const liveActiveTools = pi.getActiveTools();
+        const deferredTools = liveActiveTools.filter(name => !executableTools.includes(name));
         providerCapabilitySnapshot = {
           request: ++providerRequestSequence,
           productiveState,
-          activeTools,
+          activeTools: executableTools,
           executableTools,
+          liveActiveTools,
+          deferredTools,
         };
         console.log(`PI_PROVIDER_CAPABILITY_SNAPSHOT ${JSON.stringify({ stage, ...providerCapabilitySnapshot })}`);
-
-        const missingDefinitions = activeTools.filter(name => !executableTools.includes(name));
-        if (missingDefinitions.length) {
-          console.warn(`PI_PROVIDER_CAPABILITY_DIVERGENCE ${JSON.stringify({
+        if (deferredTools.length) {
+          console.warn(`PI_PROVIDER_CAPABILITY_DEFERRED ${JSON.stringify({
             stage,
             request: providerCapabilitySnapshot.request,
-            activeTools,
             executableTools,
-            missingDefinitions,
+            activeTools: liveActiveTools,
+            deferredTools,
           })}`);
         }
 
@@ -2307,7 +2355,7 @@ export default function (pi) {
   });
   pi.on('tool_execution_end', async (event, ctx) => {
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
-      await abortToolContract(event.toolName, ctx);
+      await handleMissingExecutor(event, ctx);
       return;
     }
     if (!event.isError && TRUSTED_RECOVERY_TOOLS.has(event.toolName)) trustedRecoveryEpoch += 1;
@@ -2508,8 +2556,8 @@ export default function (pi) {
 
   pi.on('tool_result', async (event, ctx) => {
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
-      await abortToolContract(event.toolName, ctx);
-      return undefined;
+      const guidance = await handleMissingExecutor(event, ctx);
+      return guidance ? { content: [{ type: 'text', text: guidance }], isError: true } : undefined;
     }
     const text = resultText(event);
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
