@@ -36,6 +36,18 @@ import {
   detectNoOpWrite,
   mutationSnapshotChanged,
 } from './pi-common/mutation-snapshot.mjs';
+import {
+  clearMutationJournalLocalOnly,
+  currentMutationFingerprint,
+  isMutationJournalCapacityError,
+  markMutationJournalLocalOnly,
+  mutationJournalCapacityStatus,
+  mutationJournalState,
+  recordSuccessfulMutation,
+  snapshotFingerprint,
+  undoMutation,
+  writeMutationJournalFile,
+} from './pi-common/mutation-journal.mjs';
 import { baseRef, projectConfig } from './pi-common/project-config.mjs';
 import {
   SemanticLoopGuard,
@@ -44,7 +56,8 @@ import {
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
-import { recoverWorktree } from './pi-common/worktree-recovery.mjs';
+import { recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
+import { assertImplementerFileSet } from './pi-common/implementer-result.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
 import {
   assertMutationPathAuthorized,
@@ -1208,6 +1221,11 @@ export default function (pi) {
   const pendingLoopCalls = new Map();
   const pendingToolInputs = new Map();
   let lastSuccessfulMutationSnapshot = null;
+  let lastSuccessfulMutationLocalOnlyMarkerId = null;
+
+  // Initialize the shared sidecar before the first mutation. Parent, coding forks and restored
+  // attempts all read the same bounded journal rather than relying on process-local snapshots.
+  if (stage === 'implementer') mutationJournalState(process.cwd(), process.env);
 
   if (stage === 'implementer') {
     pi.registerTool({
@@ -1399,30 +1417,205 @@ export default function (pi) {
     });
 
     pi.registerTool({
+      name: 'undo_mutation',
+      label: 'Undo a recorded mutation',
+      description: 'Selectively undo one recorded structural_edit/safe_edit/edit/write by mutation_id. The runtime restores exact prior bytes/mode or deletes a file only when that mutation proved it created the file. It compares the current file with the recorded post-fingerprint first and refuses stale/conflicting, symlink, hard-link, out-of-worktree and protected control-plane targets. Pass the intended final file set so cleanup is validated immediately.',
+      parameters: Type.Object({
+        mutation_id: Type.String({ minLength: 1, maxLength: 80 }),
+        expected_files: Type.Array(Type.String(), { maxItems: 200 }),
+        reason: Type.String({ minLength: 1, maxLength: 500 }),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        let result;
+        try {
+          result = undoMutation({
+            cwd: ctx.cwd,
+            mutationId: params.mutation_id,
+            reason: params.reason,
+            ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE,
+            env: process.env,
+          });
+        } catch (error) {
+          // mutation_undo_persist_failed means the repository bytes were already restored even
+          // though the durable journal still needs the same-id retry. Invalidate immediately so
+          // no pre-undo terminal receipt can survive that partial success.
+          if (error?.code === 'mutation_undo_persist_failed') invalidateTerminalReceipt(process.env);
+          throw error;
+        }
+        // Repository bytes are already changed at this point. Invalidate before file-set/ledger
+        // bookkeeping so a diagnostics persistence failure cannot leave a pre-undo receipt alive.
+        invalidateTerminalReceipt(process.env);
+        let fileSet;
+        try {
+          const changed = worktreeChangedFiles(ctx.cwd, baseRef());
+          try {
+            assertImplementerFileSet(changed, params.expected_files);
+            fileSet = { status: 'pass', changed_files: changed };
+          } catch (error) {
+            fileSet = { status: 'invalid', changed_files: changed, summary: error.message };
+          }
+        } catch (error) {
+          fileSet = { status: 'infra_error', summary: error.message };
+        }
+        result.file_set = fileSet;
+        if (process.env.PI_VALIDATION_LEDGER_FILE) {
+          appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+            run_id: validationRunId(),
+            attempt_id: validationAttemptId(),
+            stage: 'implementer',
+            backend: 'pi',
+            source: 'mutation_undo',
+            kind: 'undo_mutation',
+            scope: { paths: [result.path], mutation_id: result.mutation_id },
+            status: 'pass',
+            summary: params.reason,
+            mutation: result,
+          });
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+      },
+    });
+
+    pi.registerTool({
       name: 'rollback_last_mutation',
       label: 'Rollback last mutation',
-      description: 'Restore exactly the file state captured immediately before the most recent successful structural_edit/safe_edit/edit/write. Use when that mutation caused a regression or was the wrong approach. This is a productive recovery action and does not reset unrelated earlier changes.',
+      description: 'Fast shortcut for undoing the shared latest structural_edit/safe_edit/edit/write. Persistent journal order is authoritative across parent/coding-session processes and uses compare-before-undo. After bounded-journal degradation, rollback is available only in the process that made the local-only mutation; other processes refuse instead of selecting an older mutation. After resume the barrier is intentionally stale because no process owns its prior-byte snapshot, so this shortcut continues to refuse until a new journaled mutation supersedes the barrier or explicit targeted recovery resolves the state. The local-only path also refuses if later bytes changed.',
       parameters: Type.Object({
         reason: Type.String({ minLength: 1, maxLength: 500 }),
       }),
-      async execute(_toolCallId, params) {
-        const snapshot = lastSuccessfulMutationSnapshot;
-        if (!snapshot) throw new Error('No successful structural_edit/safe_edit/edit/write is available to roll back');
-        if (snapshot.existed) {
-          fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
-          fs.writeFileSync(snapshot.absolutePath, snapshot.content);
-          if (snapshot.mode != null) fs.chmodSync(snapshot.absolutePath, snapshot.mode);
-        } else if (fs.existsSync(snapshot.absolutePath)) {
-          fs.rmSync(snapshot.absolutePath, { force: true });
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const journal = mutationJournalState(ctx.cwd, process.env);
+        const localOnlyBarrier = journal.local_only_barrier ?? null;
+
+        if (localOnlyBarrier) {
+          const snapshot = lastSuccessfulMutationSnapshot;
+          const ownsLatestLocalOnly = Boolean(
+            snapshot &&
+            lastSuccessfulMutationLocalOnlyMarkerId === localOnlyBarrier.id
+          );
+          if (!ownsLatestLocalOnly) {
+            const error = new Error(JSON.stringify({
+              code: 'mutation_rollback_latest_local_only_unavailable',
+              marker_id: localOnlyBarrier.id,
+              path: localOnlyBarrier.path,
+              recovery: 'The shared latest mutation was degraded to process-local rollback in another coding session/process. Refusing to roll back an older journal entry. Continue with an explicit targeted recovery/edit instead.',
+            }));
+            error.code = 'mutation_rollback_latest_local_only_unavailable';
+            throw error;
+          }
+
+          const current = currentMutationFingerprint(ctx.cwd, localOnlyBarrier.path);
+          const prior = snapshotFingerprint(snapshot);
+          const sameFingerprint = (left, right) => (
+            left?.exists === right?.exists &&
+            (!left?.exists || (
+              left.mode === right.mode &&
+              left.size === right.size &&
+              left.sha256 === right.sha256
+            ))
+          );
+
+          let alreadyRestored = false;
+          if (sameFingerprint(current, localOnlyBarrier.post)) {
+            if (snapshot.existed) {
+              fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
+              fs.writeFileSync(snapshot.absolutePath, snapshot.content);
+              if (snapshot.mode != null) fs.chmodSync(snapshot.absolutePath, snapshot.mode);
+            } else if (fs.existsSync(snapshot.absolutePath)) {
+              fs.rmSync(snapshot.absolutePath, { force: true });
+            }
+          } else if (sameFingerprint(current, prior)) {
+            alreadyRestored = true;
+          } else {
+            const error = new Error(JSON.stringify({
+              code: 'mutation_rollback_conflict',
+              marker_id: localOnlyBarrier.id,
+              path: localOnlyBarrier.path,
+              expected_post: localOnlyBarrier.post,
+              expected_prior: prior,
+              actual: current,
+              recovery: 'The local-only mutation target changed after degradation; refusing to overwrite later bytes.',
+            }));
+            error.code = 'mutation_rollback_conflict';
+            throw error;
+          }
+
+          try {
+            clearMutationJournalLocalOnly({
+              cwd: ctx.cwd,
+              markerId: localOnlyBarrier.id,
+              env: process.env,
+            });
+          } catch (error) {
+            // The file may already be restored while the marker remains durable. Keep local state
+            // so retry can recognize the prior fingerprint and finish clearing the same marker.
+            invalidateTerminalReceipt(process.env);
+            throw error;
+          }
+
+          lastSuccessfulMutationSnapshot = null;
+          lastSuccessfulMutationLocalOnlyMarkerId = null;
+          invalidateTerminalReceipt(process.env);
+          return {
+            content: [{
+              type: 'text',
+              text: `Rolled back the latest local-only mutation on ${localOnlyBarrier.path}. Continue from the restored repository state.`,
+            }],
+            details: {
+              path: localOnlyBarrier.path,
+              marker_id: localOnlyBarrier.id,
+              reason: params.reason,
+              journaled: false,
+              already_restored: alreadyRestored,
+            },
+          };
         }
+
+        // Persistent sidecar order is the only authority for journaled mutations. Never let stale
+        // process-local identity outrank mutations added later by a coding-session fork.
+        const mutationId = journal.entries.at(-1)?.id ?? null;
+        if (!mutationId) {
+          throw new Error('No successful structural_edit/safe_edit/edit/write is available to roll back');
+        }
+
+        let result;
+        try {
+          result = undoMutation({
+            cwd: ctx.cwd,
+            mutationId,
+            reason: params.reason,
+            ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE,
+            env: process.env,
+          });
+        } catch (error) {
+          if (error?.code === 'mutation_undo_persist_failed') invalidateTerminalReceipt(process.env);
+          throw error;
+        }
+        // The persistent undo already changed repository state. Clear stale local rollback state
+        // and invalidate the terminal receipt before ledger persistence, which may itself fail.
         lastSuccessfulMutationSnapshot = null;
+        lastSuccessfulMutationLocalOnlyMarkerId = null;
         invalidateTerminalReceipt(process.env);
+        if (process.env.PI_VALIDATION_LEDGER_FILE) {
+          appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+            run_id: validationRunId(),
+            attempt_id: validationAttemptId(),
+            stage: 'implementer',
+            backend: 'pi',
+            source: 'mutation_undo',
+            kind: 'rollback_last_mutation',
+            scope: { paths: [result.path], mutation_id: result.mutation_id },
+            status: 'pass',
+            summary: params.reason,
+            mutation: result,
+          });
+        }
         return {
           content: [{
             type: 'text',
-            text: `Rolled back the most recent successful mutation to ${snapshot.path}. Continue from the restored repository state; do not rebuild a workaround around the reverted change.`,
+            text: `Rolled back shared latest recorded mutation ${result.mutation_id} on ${result.path}. Continue from the restored repository state.`,
           }],
-          details: { path: snapshot.path, reason: params.reason },
+          details: result,
         };
       },
     });
@@ -1492,6 +1685,18 @@ export default function (pi) {
           sessionsStarted += 1;
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
+          const inheritedMutationJournalFile = String(process.env.PI_MUTATION_JOURNAL_FILE ?? '').trim();
+          const fallbackMutationJournalFile = inheritedMutationJournalFile
+            ? null
+            : `${contractFile}.mutation-journal.json`;
+          const codingMutationJournalFile = inheritedMutationJournalFile || fallbackMutationJournalFile;
+          if (fallbackMutationJournalFile) {
+            writeMutationJournalFile(
+              ctx.cwd,
+              fallbackMutationJournalFile,
+              mutationJournalState(ctx.cwd, process.env),
+            );
+          }
           const startedAt = Date.now();
           codingSessionLog('started', { ...base, context: 'fork', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens });
           let response = null;
@@ -1513,10 +1718,35 @@ export default function (pi) {
                 ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
                   ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
                   : {}),
+                PI_MUTATION_JOURNAL_FILE: codingMutationJournalFile,
               },
             }, signal);
           } catch (error) {
             sessionError = error;
+          } finally {
+            if (fallbackMutationJournalFile) {
+              try {
+                if (!fs.existsSync(fallbackMutationJournalFile)) {
+                  throw new Error('coding-session fallback mutation journal disappeared');
+                }
+                // Reload child journal mutations into the parent process cache before deleting
+                // the transport sidecar. Subsequent parent tools then see the fork's chronology.
+                mutationJournalState(ctx.cwd, {
+                  ...process.env,
+                  PI_MUTATION_JOURNAL_FILE: fallbackMutationJournalFile,
+                });
+              } catch (error) {
+                if (!sessionError) sessionError = error;
+                else {
+                  console.warn(`PI_CODING_MUTATION_JOURNAL_REFRESH_FAILED ${JSON.stringify({
+                    sessionId,
+                    error: String(error?.message ?? error),
+                  })}`);
+                }
+              } finally {
+                fs.rmSync(fallbackMutationJournalFile, { force: true });
+              }
+            }
           }
           let contractFailure = null;
           try {
@@ -1848,6 +2078,7 @@ export default function (pi) {
     }
 
     const cwd = ctx?.cwd || process.cwd();
+    let mutationAuthorization = null;
 
     // `write` always overwrites unconditionally, unlike `edit` (which already refuses a
     // same-content replacement before touching disk) and `safe_edit` (which compares bytes
@@ -1882,7 +2113,7 @@ export default function (pi) {
     if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
       try {
         resolveMutationTarget(cwd, event.input?.path);
-        assertMutationPathAuthorized({
+        mutationAuthorization = assertMutationPathAuthorized({
           cwd,
           requestedPath: event.input?.path,
           env: process.env,
@@ -1906,15 +2137,35 @@ export default function (pi) {
 
     if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
       try {
-        pendingMutationSnapshots.set(
-          event.toolCallId,
-          captureMutationSnapshot(cwd, event.input?.path),
-        );
+        const snapshot = captureMutationSnapshot(cwd, event.input?.path);
+        const capacity = mutationJournalCapacityStatus({ cwd, snapshot, env: process.env });
+        pendingMutationSnapshots.set(event.toolCallId, {
+          snapshot,
+          disposition: mutationAuthorization?.disposition ?? 'unknown',
+          journalable: capacity.journalable,
+          journalReason: capacity.reason,
+        });
+        if (!capacity.journalable) {
+          // Selective undo is a recovery convenience, never a prerequisite for productive work.
+          // Once the bounded journal is full (or one prior snapshot is too large), continue the
+          // mutation and retain only the process-local last-mutation snapshot for fast rollback.
+          console.warn('PI_MUTATION_JOURNAL_DEGRADED ' + JSON.stringify({
+            tool: event.toolName,
+            path: snapshot.path,
+            code: capacity.code,
+            reason: capacity.reason,
+          }));
+        }
       } catch (error) {
-        console.warn('PI_MUTATION_SNAPSHOT_UNAVAILABLE ' + JSON.stringify({
+        const reason = String(error?.message ?? error);
+        console.warn('PI_MUTATION_JOURNAL_BLOCKED ' + JSON.stringify({
           tool: event.toolName,
-          reason: String(error?.message ?? error),
+          reason,
         }));
+        return {
+          block: true,
+          reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
+        };
       }
     }
     pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
@@ -1948,18 +2199,20 @@ export default function (pi) {
     const contentMutation =
       stage === 'implementer' &&
       CONTENT_MUTATION_TOOLS.has(event.toolName);
-    const mutationSnapshot = contentMutation
+    const pendingMutation = contentMutation
       ? (pendingMutationSnapshots.get(event.toolCallId) ?? null)
       : null;
+    const mutationSnapshot = pendingMutation?.snapshot ?? null;
 
     let mutationChanged = null;
+    let mutationAfterSnapshot = null;
     if (contentMutation && pendingLoopCall && mutationSnapshot) {
       try {
-        const afterSnapshot = captureMutationSnapshot(
+        mutationAfterSnapshot = captureMutationSnapshot(
           pendingLoopCall.cwd,
           mutationSnapshot.path,
         );
-        mutationChanged = mutationSnapshotChanged(mutationSnapshot, afterSnapshot);
+        mutationChanged = mutationSnapshotChanged(mutationSnapshot, mutationAfterSnapshot);
       } catch (error) {
         console.warn('PI_MUTATION_SNAPSHOT_UNAVAILABLE ' + JSON.stringify({
           tool: event.toolName,
@@ -1992,8 +2245,98 @@ export default function (pi) {
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
-      if (!event.isError && mutationChanged === true && mutationSnapshot) {
-        lastSuccessfulMutationSnapshot = mutationSnapshot;
+      if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot) {
+        const mutationCwd = pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd();
+
+        const restorePreMutationSnapshot = () => {
+          if (mutationSnapshot.existed) {
+            fs.mkdirSync(path.dirname(mutationSnapshot.absolutePath), { recursive: true });
+            fs.writeFileSync(mutationSnapshot.absolutePath, mutationSnapshot.content);
+            if (mutationSnapshot.mode != null) fs.chmodSync(mutationSnapshot.absolutePath, mutationSnapshot.mode);
+          } else {
+            fs.rmSync(mutationSnapshot.absolutePath, { recursive: false, force: true });
+          }
+        };
+
+        const revertForProvenanceFailure = async error => {
+          restorePreMutationSnapshot();
+          mutationChanged = false;
+          repositoryStateAfter = repositoryStateFingerprint(mutationCwd);
+          const reason = String(error?.message ?? error);
+          console.error(`PI_MUTATION_JOURNAL_REVERTED ${JSON.stringify({
+            stage,
+            tool: event.toolName,
+            path: mutationSnapshot.path,
+            reason,
+          })}`);
+          await pi.sendUserMessage(
+            `RUNTIME: your ${event.toolName} change to ${mutationSnapshot.path} was reverted because the trusted runtime could not persist mutation provenance for a non-capacity reason. Do not assume that edit is present. Retry only after addressing this runtime error: ${reason}`,
+          );
+        };
+
+        const degradeToLocalSnapshot = reason => {
+          // The prior bytes remain process-local, but a tiny shared marker makes chronology
+          // durable across parent/fork processes. Other sessions must refuse rollback_last_mutation
+          // rather than falling through to an older journal entry.
+          const marker = markMutationJournalLocalOnly({
+            cwd: mutationCwd,
+            after: mutationAfterSnapshot,
+            tool: event.toolName,
+            env: process.env,
+          });
+          lastSuccessfulMutationSnapshot = mutationSnapshot;
+          lastSuccessfulMutationLocalOnlyMarkerId = marker.id;
+          console.warn(`PI_MUTATION_JOURNAL_LOCAL_FALLBACK ${JSON.stringify({
+            stage,
+            tool: event.toolName,
+            path: mutationSnapshot.path,
+            markerId: marker.id,
+            reason,
+          })}`);
+        };
+
+        if (pendingMutation?.journalable === false) {
+          try {
+            degradeToLocalSnapshot(pendingMutation.journalReason ?? 'bounded journal capacity unavailable');
+          } catch (error) {
+            await revertForProvenanceFailure(error);
+          }
+        } else {
+          try {
+            const journalEntry = recordSuccessfulMutation({
+              cwd: mutationCwd,
+              before: mutationSnapshot,
+              after: mutationAfterSnapshot,
+              tool: event.toolName,
+              disposition: pendingMutation?.disposition ?? 'unknown',
+              env: process.env,
+            });
+            // Persistent journal state is authoritative for normal mutations; keep no stale
+            // process-local mutation identity that could outrank a later coding-session edit.
+            lastSuccessfulMutationSnapshot = null;
+            lastSuccessfulMutationLocalOnlyMarkerId = null;
+            console.log(`PI_MUTATION_JOURNAL ${JSON.stringify({
+              stage,
+              mutationId: journalEntry.id,
+              tool: event.toolName,
+              path: journalEntry.path,
+              disposition: journalEntry.disposition,
+            })}`);
+          } catch (error) {
+            if (isMutationJournalCapacityError(error)) {
+              // A concurrent parent/fork mutation may consume the remaining capacity after the
+              // preflight check. Capacity exhaustion still degrades instead of reverting work,
+              // but the shared local-only marker must itself persist.
+              try {
+                degradeToLocalSnapshot(String(error?.message ?? error));
+              } catch (markerError) {
+                await revertForProvenanceFailure(markerError);
+              }
+            } else {
+              await revertForProvenanceFailure(error);
+            }
+          }
+        }
       }
       pendingMutationSnapshots.delete(event.toolCallId);
     }

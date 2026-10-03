@@ -122,6 +122,15 @@ test('action-required runtime steering uses a real user steer without importing 
   assert.doesNotMatch(runtime, /customType: 'pi-action-required'/);
 });
 
+test('#424 coding-session fallback transports mutation journal through a shared file, not one env value', () => {
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.doesNotMatch(runtime, /PI_MUTATION_JOURNAL_STATE:\s*JSON\.stringify/);
+  assert.match(runtime, /fallbackMutationJournalFile/);
+  assert.match(runtime, /writeMutationJournalFile\(/);
+  assert.match(runtime, /PI_MUTATION_JOURNAL_FILE:\s*codingMutationJournalFile/);
+  assert.match(runtime, /Reload child journal mutations into the parent process cache/);
+});
+
 test('action-required tool surface keeps only productive and control tools', () => {
   assert.deepEqual(
     actionRequiredToolNames(
@@ -570,8 +579,11 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /validationRepair[\s\S]*PI_VALIDATION_REPAIR/);
   assert.match(runtime, /responseHitOutputCeiling/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
+  assert.match(runtime, /name: 'undo_mutation'/);
+  assert.match(runtime, /Selectively undo one recorded structural_edit\/safe_edit\/edit\/write/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);
-  assert.match(runtime, /most recent successful structural_edit\/safe_edit\/edit\/write/);
+  assert.match(runtime, /shared latest structural_edit\/safe_edit\/edit\/write/);
+  assert.match(runtime, /other processes refuse instead of selecting an older mutation/);
   assert.match(runtime, /No successful structural_edit\/safe_edit\/edit\/write is available to roll back/);
   assert.match(runtime, /captureMutationSnapshot/);
   assert.match(runtime, /productiveProgressState\(\)/);
@@ -860,7 +872,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetTool, 'request_large_mutation_budget');
   assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetMaxTokens, IMPLEMENTER_RESPONSE_MAX_TOKENS);
   assert.equal(stageConfig('implementer').fixedResponseMaxTokens, undefined);
-  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'submit_result']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation', 'submit_result']);
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);

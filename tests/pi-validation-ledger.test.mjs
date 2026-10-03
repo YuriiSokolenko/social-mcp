@@ -101,6 +101,26 @@ test('appendCheckRecord/readValidationLedger round-trip preserves order and assi
   assert.equal(records[1].seq, 1);
 });
 
+test('#424 mutation undo is preserved as audit provenance but never counts as verification', () => {
+  const ledgerPath = tempLedger();
+  appendCheckRecord(ledgerPath, {
+    kind: 'undo_mutation',
+    scope: { paths: ['.probe.txt'], mutation_id: 'mutation-00000000-0000-4000-8000-000000000000' },
+    status: 'pass',
+    source: 'mutation_undo',
+    stage: 'implementer',
+    backend: 'pi',
+    run_id: 'local',
+    summary: 'Removed accidental scratch artifact',
+  });
+  const { records, corrupted } = readValidationLedger(ledgerPath);
+  assert.equal(corrupted, false);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].source, 'mutation_undo');
+  assert.deepEqual(reconcile(records), []);
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.NOT_APPLICABLE);
+});
+
 test('readValidationLedger on a missing path returns an empty, uncorrupted result without throwing', () => {
   const ledgerPath = tempLedger();
   assert.deepEqual(readValidationLedger(ledgerPath), { records: [], corrupted: false });

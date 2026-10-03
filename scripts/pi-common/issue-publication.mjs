@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
@@ -9,7 +11,9 @@ import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projec
 import { PIPELINE_LABELS } from './state-machine.mjs';
 import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
 import { assertAcceptedMutationScope, readMutationScopeReceiptFile } from './accepted-mutation-scope.mjs';
+import { encodeMutationJournalState, readMutationJournalFile } from './mutation-journal.mjs';
 import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
+import { mutationJournalStateFromRef } from './issue-worktree.mjs';
 import { resolveCandidateBase } from './candidate-revision.mjs';
 
 /**
@@ -39,6 +43,20 @@ const DEFAULT_PUSH_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000]);
 
 function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function commitWithMessageFile(cwd, message, { allowEmpty = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-checkpoint-message-'));
+  try {
+    const messageFile = path.join(dir, 'message.txt');
+    fs.writeFileSync(messageFile, message, 'utf8');
+    const args = ['commit'];
+    if (allowEmpty) args.push('--allow-empty');
+    args.push('-F', messageFile);
+    return git(args, { cwd });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export function pushWithMissingObjectRetry(args, {
@@ -76,7 +94,7 @@ export function publicationBase(cwd, startCommit) {
   return resolveCandidateBase({ cwd, startCommit, configuredBase: baseRef() });
 }
 
-export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile, scopeFile }) {
+export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile, scopeFile, mutationJournalFile }) {
   const { cleanDirectories, cleanFiles } = projectConfig().workspace;
   for (const p of cleanDirectories) fs.rmSync(`${cwd}/${p}`, { recursive: true, force: true });
   for (const p of cleanFiles) fs.rmSync(`${cwd}/${p}`, { force: true });
@@ -90,6 +108,7 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   const stagedChanged = git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0;
   const metadata = resultFile ? readImplementerResult(resultFile) : null;
   const persistedScope = readMutationScopeReceiptFile(cwd, scopeFile);
+  const persistedMutationJournal = readMutationJournalFile(cwd, mutationJournalFile);
   let message = `feat: implement issue #${issue}`;
   // A completed unsandboxed backend must stay human-gated even if some stale
   // Pi sidecar happens to exist. For Pi/predeclared work, the sidecar is the
@@ -104,18 +123,51 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
     const encodedScope = Buffer.from(JSON.stringify(checkpointScope), 'utf8').toString('base64url');
     message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
   }
-  if (stagedChanged) {
-    git(['commit','-m',message], { cwd });
+  // Always seal the current journal state when the sidecar exists, including an empty journal.
+  // An explicit empty state prevents an older checkpoint trailer from resurrecting mutations
+  // that were already undone before a later checkpoint. Skip metadata-only commits when the
+  // checkpoint already carries the same journal state.
+  const previousMutationJournal = expectedSha
+    ? mutationJournalStateFromRef(expectedSha, cwd)
+    : null;
+  const mutationJournalChanged = Boolean(
+    persistedMutationJournal &&
+    JSON.stringify(previousMutationJournal) !== JSON.stringify(persistedMutationJournal)
+  );
+  if (persistedMutationJournal) {
+    message += `\nPi-Mutation-Journal: ${encodeMutationJournalState(cwd, persistedMutationJournal)}`;
   }
   const base = publicationBase(cwd, startCommit);
-  if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
-  const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
+  const treeChangedBeforeSeal = git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status !== 0;
+  const journalSealCommitNeeded = Boolean(
+    !stagedChanged &&
+    expectedSha &&
+    persistedMutationJournal &&
+    mutationJournalChanged
+  );
+  // A journal seal can be appended to an already-changed committed tree, but that is not a
+  // metadata-only checkpoint: callers must still publish/update the real implementation diff.
+  const metadataOnlyJournalSeal = Boolean(journalSealCommitNeeded && !treeChangedBeforeSeal);
+  // Commit messages can contain both the accepted-scope and journal trailers. Use -F instead of
+  // a giant -m argv value so their combined size is not constrained by Linux's per-argument cap.
+  if (stagedChanged) {
+    commitWithMessageFile(cwd, message);
+  } else if (journalSealCommitNeeded) {
+    commitWithMessageFile(cwd, message, { allowEmpty: true });
+  }
+  const treeChanged = git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status !== 0;
+  if (!treeChanged && !journalSealCommitNeeded) return { changed:false, reason:'no-change' };
+  const changed = treeChanged
+    ? gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out)
+    : [];
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Implementer attempted to modify protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
   const ref = `refs/heads/${checkpointBranch(issue)}`;
   git(['push',`--force-with-lease=${ref}:${expectedSha ?? ''}`,'origin',`${commit}:${ref}`], { cwd, token });
-  return { changed:true, commit };
+  return metadataOnlyJournalSeal
+    ? { changed:false, reason:'journal-sealed', commit }
+    : { changed:true, commit };
 }
 
 export function assertPublicationFileSet({ cwd, base, resultFile }) {
@@ -316,7 +368,7 @@ export async function dispatchReviewer(prNumber) {
 
 async function main() {
   const [cmd, ...a] = process.argv.slice(2);
-  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],scopeFile:a[5],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
+  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],scopeFile:a[5],mutationJournalFile:a[6],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4],cwd:a[5],startCommit:a[6]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));

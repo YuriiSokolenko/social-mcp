@@ -11,7 +11,9 @@ import { readScript } from './helpers/resolved-source.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
-import { createValidationRepairSpec, runStageWithValidationRecovery, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { captureMutationSnapshot } from '../scripts/pi-common/mutation-snapshot.mjs';
+import { recordSuccessfulMutation } from '../scripts/pi-common/mutation-journal.mjs';
 import { issueWorktreePatchPath } from '../scripts/pi-common/issue-worktree.mjs';
 import {
   assertSuccessfulTerminalReceipt,
@@ -777,6 +779,52 @@ test('shared validation recovery stops after one failed repair attempt', async (
     /still failing/,
   );
   assert.equal(attempts, 2);
+});
+
+test('#424 accepted-scope validation exposes callable targeted cleanup to repair', (t) => {
+  const dir = temporaryDirectory(t, 'stage-mutation-cleanup-');
+  const sidecar = join(dir, 'journal.json');
+  const env = {
+    PI_STAGE: 'implementer',
+    PI_PHASE: 'implementation',
+    PI_MUTATION_JOURNAL_FILE: sidecar,
+  };
+  const before = captureMutationSnapshot(dir, '.probe.txt');
+  writeFileSync(join(dir, '.probe.txt'), 'scratch\n');
+  const after = captureMutationSnapshot(dir, '.probe.txt');
+  const entry = recordSuccessfulMutation({
+    cwd: dir,
+    before,
+    after,
+    tool: 'write',
+    disposition: 'temporary',
+    env,
+  });
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: env,
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+  const failure = new Error(JSON.stringify({
+    code: 'accepted_scope_violation',
+    unexpected_paths: [],
+    temporary_paths: ['.probe.txt'],
+  }));
+  const enriched = validationErrorWithMutationCleanup(failure, spec, {
+    files: ['feature.py', '.probe.txt'],
+  });
+
+  assert.match(enriched.message, new RegExp(entry.id));
+  assert.match(enriched.message, /undo_mutation/);
+  assert.match(enriched.message, /expected_files:\["feature.py"\]/);
+  assert.match(validationRepairPrompt(enriched), /Targeted mutation cleanup available/);
 });
 
 test('validation repair prompt keeps diagnostics bounded and focused', () => {
