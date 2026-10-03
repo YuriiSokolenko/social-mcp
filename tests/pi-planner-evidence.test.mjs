@@ -9,9 +9,11 @@ import plannerEvidenceExtension from '../scripts/pi-planner-evidence.mjs';
 import {
   MAX_PLANNER_REPOSITORY_EVIDENCE,
   PLANNER_EVIDENCE_BUDGET_ENV,
+  PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
   createPlannerEvidenceGate,
   plannerEvidenceBudget,
+  plannerTask,
   prepareImplementation,
   preparedImplementationBlock,
   validateImplementationPreparation,
@@ -63,6 +65,7 @@ test('the planner agent definition exposes exactly the read-only evidence tools'
 test('the planner hard evidence cap is at most 6, configured in trusted stage config', () => {
   assert.equal(MAX_PLANNER_REPOSITORY_EVIDENCE, 6);
   assert.equal(stageConfig('implementer').implementationPlannerEvidenceBudget, 6);
+  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 2048);
   assert.equal(plannerEvidenceBudget({}), 6);
   assert.equal(plannerEvidenceBudget({ implementationPlannerEvidenceBudget: 3 }), 3);
   assert.equal(plannerEvidenceBudget({ implementationPlannerEvidenceBudget: 99 }), 6, 'config can lower the cap but never raise it past 6');
@@ -93,6 +96,22 @@ test('accepted evidence markers report used/remaining without file contents', as
     'PI_PLANNER_EVIDENCE {"tool":"read","used":1,"remaining":5}',
     'PI_PLANNER_EVIDENCE {"tool":"grep","used":2,"remaining":4}',
   ]);
+});
+
+test('planner evidence state records only bounded counters, never repository contents', async (t) => {
+  const stateFile = path.join(os.tmpdir(), `pi-planner-evidence-state-${process.pid}-${Date.now()}.json`);
+  const previous = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = stateFile;
+  t.after(() => {
+    fs.rmSync(stateFile, { force: true });
+    if (previous === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+    else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previous;
+  });
+  const child = childExtension(t, 6);
+  await child.call('read');
+  await child.call('grep');
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')), { used: 2, cap: 6 });
+  assert.doesNotMatch(fs.readFileSync(stateFile, 'utf8'), /path|content|result|transcript/i);
 });
 
 test('the gate counts every accepted call, so failed or empty results still consume the cap', () => {
@@ -178,19 +197,25 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
       assert.equal(request.toolBudget.hard, 9);
       // runStructuredSubagent exposes the trusted cap to the child only while it runs.
       assert.equal(process.env[PLANNER_EVIDENCE_BUDGET_ENV], '6');
+      assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048');
       const handlers = [];
       plannerEvidenceExtension({ on: (_event, fn) => handlers.push(fn) });
       t.mock.method(console, 'log', () => {});
+      assert.equal(await handlers[0]({ toolName: 'read', input: {} }), undefined);
       assert.equal(await handlers[0]({ toolName: 'read', input: {} }), undefined);
       assert.equal((await handlers[0]({ toolName: 'write', input: {} })).block, true);
       assert.equal((await handlers[0]({ toolName: 'bash', input: {} })).block, true);
       const source = fs.readFileSync(path.join(dir, 'src/net/transport.py'), 'utf8');
       const target = source.match(/def (\w+)/)[1];
       return {
-        status: 'completed', usage: { output: 42 },
+        status: 'completed', usage: { input: 900, output: 1200, turns: 1, durationMs: 2500 },
         result: { kind: 'structured', value: {
-          steps: [`Add 503 retry inside ${target} in src/net/transport.py`, 'Extend tests/test_transport.py for the retry path'],
-          complexity: 'nontrivial', evidence_budget: 2, large_mutation: false, reason: 'Retry belongs in the single delivery function.',
+          steps: [
+            `Add 503 retry inside ${target} in src/net/transport.py; preserve the observed single delivery entry point.`,
+            'Extend tests/test_transport.py using the observed sibling pytest function layout for the retry path.',
+          ],
+          complexity: 'nontrivial', evidence_budget: 0, large_mutation: false,
+          reason: 'Planner resolved the source/test targets and conventions; no additional pre-mutation discovery remains.',
         } },
       };
     },
@@ -198,10 +223,35 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
   assert.equal(prepared.status, 'prepared');
   assert.match(prepared.plan[0], /send_with_backoff in src\/net\/transport\.py/, 'plan reflects repository evidence, not issue prose');
+  assert.match(prepared.plan[1], /observed sibling pytest function layout/, 'derived test convention crosses as a fact');
+  assert.equal(prepared.evidenceBudget, 0, 'main budget represents only uncertainty left after planner evidence');
+  assert.equal(prepared.plannerEvidenceUsed, 2);
+  assert.equal(prepared.plannerEvidenceCap, 6);
+  assert.equal(prepared.plannerProviderTurns, 1);
   assert.deepEqual(fs.readdirSync(dir, { recursive: true }).sort(), before, 'planner cannot modify the worktree');
   assert.equal(process.env[PLANNER_EVIDENCE_BUDGET_ENV], undefined, 'the cap does not leak past the planner request');
   assert.match(host.requests[0].task, /read-only repository evidence/);
   assert.doesNotMatch(host.requests[0].task, /Do not inspect the repository/);
+});
+
+test('planner prompt prefers targeted evidence and carries resolved facts forward', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-prompt-'));
+  try {
+    const issue = path.join(dir, 'issue.json');
+    fs.writeFileSync(issue, JSON.stringify({
+      title: 'Add smoke module',
+      body: 'Create src/social_mcp/diagnostics/smoke_connect_four.py and tests/test_smoke_connect_four.py.',
+    }));
+    const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
+    assert.match(task, /exact path\/directory\/symbol\/test/);
+    assert.match(task, /avoid root listings and repo-wide discovery/);
+    assert.match(task, /state the fact in steps\/reason instead of telling main to rediscover it/);
+    assert.match(task, /ONLY the additional repository evidence main still needs/);
+    assert.match(task, /2048-token ceiling/);
+    assert.doesNotMatch(task, /typically 1-3|1–3 actions is typical/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('only the normalized PreparedImplementation crosses into the main Implementer session', async (t) => {
@@ -217,11 +267,32 @@ test('only the normalized PreparedImplementation crosses into the main Implement
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
   assert.deepEqual(Object.keys(prepared).sort(), [
     'baseRef', 'complexity', 'evidenceBudget', 'freshBaseCommit', 'largeMutation', 'layoutHint', 'plan',
-    'plannerDurationMs', 'plannerUsage', 'reason', 'status', 'version', 'workspaceRoot',
+    'plannerDurationMs', 'plannerEvidenceCap', 'plannerEvidenceUsed', 'plannerProviderTurns', 'plannerUsage',
+    'reason', 'status', 'version', 'workspaceRoot',
   ]);
   const block = preparedImplementationBlock(prepared);
   assert.doesNotMatch(`${JSON.stringify(prepared)}${block}`, /PLANNER_READ_RESULT_MARKER|PI_PLANNER_EVIDENCE|tool history/);
   assert.doesNotMatch(block, /prepare_implementation/);
+});
+
+test('a nontrivial structured result up to the 2048 ceiling completes without an output-cap retry', async (t) => {
+  const { dir, env } = fixture(t, {});
+  const host = plannerHost({
+    cwd: dir,
+    driveChild: async () => ({
+      status: 'completed',
+      usage: { input: 12000, output: 1536, turns: 1, durationMs: 5000 },
+      result: { kind: 'structured', value: {
+        steps: ['Apply the repository-informed implementation change', 'Update the focused regression coverage'],
+        complexity: 'nontrivial', evidence_budget: 0, large_mutation: true, reason: 'The target and conventions are already resolved.',
+      } },
+    }),
+  });
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(host.requests.length, 1, '2048-token planner result should not require a retry merely for the old 768 ceiling');
+  assert.equal(prepared.status, 'prepared');
+  assert.equal(prepared.plannerProviderTurns, 1);
+  assert.equal(prepared.plannerUsage.output, 1536);
 });
 
 test('planner evidence shares the single lifecycle deadline and usage is attributed once', async (t) => {
