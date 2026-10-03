@@ -118,6 +118,38 @@ test('a passing focused check plus a completed final-checks pipeline yields VERI
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.VERIFIED);
 });
 
+test('VERIFIED is bound to the exact candidate revision recorded by checks.final', () => {
+  const candidateA = {
+    schema_version: 1,
+    base_commit: 'base-a',
+    digest: 'candidate-a',
+    files: ['app.py'],
+  };
+  const candidateB = {
+    schema_version: 1,
+    base_commit: 'base-a',
+    digest: 'candidate-b',
+    files: ['app.py'],
+  };
+  const records = [
+    focused({ status: 'pass' }),
+    finalCheck({ status: 'pass' }),
+    finalComplete({ candidate_revision: candidateA }),
+  ];
+  assert.equal(
+    computeVerificationState(records, { candidateRevision: candidateA }),
+    VERIFICATION_STATES.VERIFIED,
+  );
+  assert.equal(
+    computeVerificationState(records, { candidateRevision: candidateB }),
+    VERIFICATION_STATES.PENDING,
+  );
+  assert.match(
+    renderValidationSection(records, { candidateRevision: candidateB }),
+    /does not attest the current candidate revision/,
+  );
+});
+
 test('a passing focused check with no final-checks record yields PENDING, never VERIFIED', () => {
   // "Did checks.final run" must come from the ledger itself, never be assumed
   // true: a lone focused pass is not proof the authoritative pipeline ran.

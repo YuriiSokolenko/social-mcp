@@ -110,7 +110,9 @@ test('label objects in GitHub API shape (not bare strings) are handled identical
 test('upsertPullRequest derives trust from the backend argument, not the ledger, and returns verification_state', () => {
   const source = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.match(source, /export async function upsertPullRequest\(\{ issue, resultFile, owner, ledgerFile, backend, cwd, startCommit \}\)/);
-  assert.match(source, /const verificationState = computeVerificationState\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\);/);
+  assert.match(source, /const verificationState = computeVerificationState\(ledgerRecords, \{ corrupted: ledgerCorrupted, candidateRevision \}\);/);
+  assert.match(source, /assertSuccessfulTerminalReceipt\(\{/);
+  assert.match(source, /published_pr_head_mismatch/);
   assert.match(source, /const unsandboxedBackend = isUnsandboxedBackend\(backend\);/);
   assert.match(source, /nextLabelsForVerification\(existing\[0\]\.labels, verificationState, unsandboxedBackend\)/);
   assert.match(source, /nextLabelsForVerification\(\[\], verificationState, unsandboxedBackend\)/);
@@ -128,6 +130,7 @@ test('the issue-agent workflow passes the workflow_dispatch backend input direct
   // process could influence by writing to $GITHUB_ENV.
   assert.match(prStep, /issue-publication\.mjs" pr "\$ISSUE" "\$PI_IMPLEMENTER_RESULT_FILE" "\$\{\{ github\.repository_owner \}\}" "\$PI_VALIDATION_LEDGER_FILE" "\$\{\{ inputs\.backend \|\| 'pi' \}\}"/);
   assert.match(workflow, /verification_state=\$\(jq -r '\.verification_state' <<<"\$PR"\)/);
+  assert.match(workflow, /PI_TERMINAL_RESULT_FILE=\$RUNNER_TEMP\/pi-terminal-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}/);
   const reviewStep = workflow.slice(workflow.indexOf('Start independent PR review'));
   assert.match(reviewStep, /if: steps\.checkpoint\.outputs\.changed == 'true' && steps\.pr\.outputs\.number != '' && steps\.pr\.outputs\.verification_state == 'VERIFIED'/);
 });

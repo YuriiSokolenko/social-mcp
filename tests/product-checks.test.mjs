@@ -8,6 +8,7 @@ import test from 'node:test';
 import { runProductChecks, runRuffCheck } from '../scripts/pi-common/product-checks.mjs';
 import { duplicatePackageRootDiagnostics } from '../scripts/pi-common/package-root-check.mjs';
 import { readValidationLedger } from '../scripts/pi-common/validation-ledger.mjs';
+import { computeCandidateRevision } from '../scripts/pi-common/candidate-revision.mjs';
 
 function fixture(t, { semanticFailure = false } = {}) {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'product-checks-'));
@@ -174,6 +175,10 @@ test('a full passing run of checks.final records one pass entry per step in the 
   // Unspecified backend defaults to 'pi', the only backend that existed before
   // this parameter was added.
   assert.ok(records.every(r => r.backend === 'pi'));
+  assert.deepEqual(
+    records.at(-1).candidate_revision,
+    computeCandidateRevision({ cwd: root, base: 'origin/dev' }),
+  );
 });
 
 test('standalone product checks use the supplied validation environment for every ledger record', t => {
