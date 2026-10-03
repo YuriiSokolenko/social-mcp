@@ -50,7 +50,11 @@ unavailable historical log cannot establish the same root cause.
   path; otherwise the call is refused with a code (`recovery_preexisting_path`,
   `recovery_baseline_unavailable`, `recovery_use_undo_mutation`,
   `recovery_accepted_scope_path`, `recovery_protected_path`). `revert_tracked` also
-  refuses control-plane paths. A file-set mismatch lists each remaining path in
+  refuses control-plane, journaled and run-start-dirty paths, and additionally requires the
+  current bytes to equal the post-state the runtime observed right after a bounded `bash`
+  call (`<baseline>.observed.json`). A path that changed between observed actions is tainted
+  permanently (`recovery_externally_modified`); an unobserved change is
+  `recovery_unobserved_change`. A file-set mismatch lists each remaining path in
   `file_set.drift` as `journaled`, `unjournaled_restorable`, `unjournaled_cleanable`
   or `unknown`, with the exact action to call.
 - Known `.probe.txt`/`.probe2.txt` and `.pi-tmp-*` artifacts cannot enter fresh,

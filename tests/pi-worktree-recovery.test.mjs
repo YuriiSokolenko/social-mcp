@@ -9,7 +9,7 @@ import { assertImplementerFileSet, normalizeImplementerResult } from '../scripts
 import { readValidationLedger, computeVerificationState, VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
 import { ProgressController } from '../scripts/pi-common/progress-controller.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
-import { captureWorktreeBaseline, readWorktreeBaseline } from '../scripts/pi-common/worktree-baseline.mjs';
+import { captureWorktreeBaseline, observeWorktreeDrift, readWorktreeBaseline, readWorktreeObserved, worktreeFingerprint } from '../scripts/pi-common/worktree-baseline.mjs';
 
 const cleanBaseline = (untracked = [], trackedDirty = []) => ({ untracked: new Set(untracked), trackedDirty: new Set(trackedDirty) });
 
@@ -24,7 +24,8 @@ function fixture(t) {
   fs.writeFileSync(path.join(cwd, '.gitignore'), 'ignored.txt\n');
   git('add', '.'); git('commit', '-qm', 'initial');
   const ledgerPath = path.join(root, 'ledger.jsonl');
-  const recover = params => recoverWorktree({ cwd, ledgerPath, baseline: cleanBaseline(), reason: 'Remove accidental scratch', expected_files: ['product.py'], ...params });
+  const observeNow = () => ({ tainted: new Set(), fingerprints: new Map(worktreeChangedFiles(cwd, 'HEAD').map(file => [file, worktreeFingerprint(cwd, file)])) });
+  const recover = params => recoverWorktree({ cwd, ledgerPath, baseline: cleanBaseline(), observed: observeNow(), reason: 'Remove accidental scratch', expected_files: ['product.py'], ...params });
   return { root, cwd, git, recover, ledgerPath };
 }
 
@@ -140,7 +141,9 @@ test('#438 file-set diagnostics distinguish journaled, unjournaled and unknown p
   fs.writeFileSync(path.join(cwd, 'product.py'), 'edited\n');
   for (const file of ['journaled.txt', 'scratch.tmp', 'user-notes.txt']) fs.writeFileSync(path.join(cwd, file), 'x');
   const evidence = { baseline: cleanBaseline(['user-notes.txt']), acceptedPaths: new Set(), journalPaths: new Map([['journaled.txt', 'mutation-1']]) };
-  const drift = classifyWorktreeDrift({ cwd, changed: worktreeChangedFiles(cwd, 'HEAD'), expectedFiles: [], ...evidence });
+  const changed = worktreeChangedFiles(cwd, 'HEAD');
+  const observed = { tainted: new Set(), fingerprints: new Map([['product.py', worktreeFingerprint(cwd, 'product.py')]]) };
+  const drift = classifyWorktreeDrift({ cwd, changed, expectedFiles: [], observed, ...evidence });
   const byPath = Object.fromEntries(drift.map(item => [item.path, item]));
   assert.equal(byPath['journaled.txt'].class, 'journaled');
   assert.equal(byPath['journaled.txt'].action, 'undo_mutation');
@@ -166,4 +169,39 @@ test('#438 revert_tracked refuses journaled, pre-existing-dirty and baseline-les
   assert.deepEqual([...readWorktreeBaseline(env).trackedDirty], ['product.py']);
   fs.writeFileSync(env.PI_WORKTREE_BASELINE_FILE, JSON.stringify({ schema_version: 1, untracked: [] }));
   assert.equal(readWorktreeBaseline(env), null);
+});
+
+test('#438 revert_tracked refuses an external rewrite after the observed stage post-state', t => {
+  const { root, cwd, recover } = fixture(t);
+  const env = { PI_WORKTREE_BASELINE_FILE: path.join(root, 'b.json') };
+  captureWorktreeBaseline(cwd, env);
+  // Stage-owned unjournaled change (bounded bash), observed right after the call.
+  observeWorktreeDrift(cwd, env, 'before');
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'bash edit\n');
+  observeWorktreeDrift(cwd, env, 'after');
+  // External process rewrites the file afterwards.
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'external rewrite\n');
+  const evidence = { baseline: readWorktreeBaseline(env), observed: readWorktreeObserved(env) };
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'product.py', ...evidence }), /recovery_externally_modified/);
+  assert.equal(fs.readFileSync(path.join(cwd, 'product.py'), 'utf8'), 'external rewrite\n');
+  // The next bash call taints it permanently; a later observation cannot absorb the rewrite.
+  observeWorktreeDrift(cwd, env, 'before');
+  observeWorktreeDrift(cwd, env, 'after');
+  assert.ok(readWorktreeObserved(env).tainted.has('product.py'));
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'product.py', baseline: readWorktreeBaseline(env), observed: readWorktreeObserved(env) }), /recovery_externally_modified/);
+  assert.equal(fs.readFileSync(path.join(cwd, 'product.py'), 'utf8'), 'external rewrite\n');
+});
+
+test('#438 revert_tracked restores a stage-owned bash change and refuses unobserved or missing evidence', t => {
+  const { root, cwd, git, recover } = fixture(t);
+  const env = { PI_WORKTREE_BASELINE_FILE: path.join(root, 'b.json') };
+  captureWorktreeBaseline(cwd, env);
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'unobserved\n');
+  const baseline = readWorktreeBaseline(env);
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'product.py', baseline, observed: readWorktreeObserved(env) }), /recovery_unobserved_change/);
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'product.py', baseline, observed: null }), /recovery_baseline_unavailable/);
+  observeWorktreeDrift(cwd, env, 'after');
+  const result = recover({ action: 'revert_tracked', path: 'product.py', baseline, observed: readWorktreeObserved(env), expected_files: [] });
+  assert.equal(result.status, 'recovered');
+  assert.equal(git('diff', '--', 'product.py'), '');
 });

@@ -57,7 +57,7 @@ import {
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import { classifyWorktreeDrift, recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
-import { captureWorktreeBaseline, readWorktreeBaseline } from './pi-common/worktree-baseline.mjs';
+import { captureWorktreeBaseline, observeWorktreeDrift, readWorktreeBaseline, readWorktreeObserved } from './pi-common/worktree-baseline.mjs';
 import { assertImplementerFileSet } from './pi-common/implementer-result.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
 import {
@@ -1160,9 +1160,16 @@ export default function (pi) {
     const receipt = mutationScopeReceipt(cwd, process.env);
     return {
       baseline: readWorktreeBaseline(process.env),
+      observed: readWorktreeObserved(process.env),
       acceptedPaths: new Set((receipt.accepted ?? []).map(item => item.path)),
       journalPaths,
     };
+  }
+
+  function observeDriftSafely(cwd, phase) {
+    try { observeWorktreeDrift(cwd, process.env, phase); } catch (error) {
+      console.warn(`PI_WORKTREE_OBSERVE_FAILED ${JSON.stringify({ phase, message: String(error?.message ?? error) })}`);
+    }
   }
 
   pi.on('session_start', async (_event, ctx) => {
@@ -2333,6 +2340,7 @@ export default function (pi) {
     if (stage === 'implementer' && RECEIPT_INVALIDATING_TOOLS.has(event.toolName)) {
       invalidateTerminalReceipt(process.env);
     }
+    if (stage === 'implementer' && event.toolName === 'bash') observeDriftSafely(cwd, 'before');
 
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);
     const repositoryStateBefore = semanticMutation
@@ -2390,6 +2398,7 @@ export default function (pi) {
       return;
     }
     if (!event.isError && TRUSTED_RECOVERY_TOOLS.has(event.toolName)) trustedRecoveryEpoch += 1;
+    if (stage === 'implementer' && event.toolName === 'bash') observeDriftSafely(ctx.cwd, 'after');
     // pi rejects a call whose arguments were cut off at the output ceiling before execution and
     // may not route that rejection through tool_result; steer from here so the truncation
     // guidance (begin the coding session instead of regenerating) still reaches the model once.
