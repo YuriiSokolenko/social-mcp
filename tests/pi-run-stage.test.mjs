@@ -8,7 +8,8 @@ import { execFileSync } from 'node:child_process';
 import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
-import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
+import { buildBootstrapInvocation, buildPiInvocation, runPiStage } from '../scripts/pi-common/pi-stage-backend.mjs';
+import { PREPARED_IMPLEMENTATION_PLACEHOLDER, isFreshImplementerWork, withPreparedImplementation } from '../scripts/pi-common/stage-config.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
 import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
@@ -1001,4 +1002,128 @@ test('mini-swe trajectory usage maps into the shared PI_METRIC schema', () => {
   }, { PI_ISSUE: '77', PI_PHASE: 'implementation', PI_CALL: 'repair' });
   assert.equal(repairRecords[0].call, 'repair');
 
+});
+
+// ---- #456: planner bootstrap runs in its own pi process before the main Implementer session ----
+
+const PREPARED_ARTIFACT = {
+  version: 1, status: 'prepared', plan: ['Locate the target', 'Apply the bounded change'], complexity: 'nontrivial',
+  evidenceBudget: 2, largeMutation: false, reason: 'Needs one lookup', workspaceRoot: '/work', freshBaseCommit: 'abc123',
+  baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 1200,
+};
+
+// A fake `pi` on PATH: records every invocation (argv + selected env) in order; as the bootstrap
+// process it writes the PreparedImplementation artifact, as the main process the terminal result.
+function installFakePi(t, { bootstrapExit = 0 } = {}) {
+  const dir = temporaryDirectory(t, 'pi-fake-bin-');
+  const log = join(dir, 'invocations.jsonl');
+  const script = join(dir, 'pi');
+  writeFileSync(script, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const bootstrap = args.some(arg => arg.endsWith('pi-implementer-bootstrap.mjs'));
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, bootstrap, bootstrapEnv: process.env.PI_IMPLEMENTER_BOOTSTRAP ?? null, prepared: process.env.PI_PREPARED_IMPLEMENTATION_FILE ?? null }) + '\\n');
+if (bootstrap) {
+  if (${bootstrapExit} !== 0) process.exit(${bootstrapExit});
+  fs.writeFileSync(process.env.PI_PREPARED_IMPLEMENTATION_FILE, ${JSON.stringify(JSON.stringify(PREPARED_ARTIFACT))});
+  console.log('PI_BOOTSTRAP {"phase":"planner_completed"}');
+  console.log('{"type":"session"}');
+} else {
+  fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'ok');
+}
+`, { mode: 0o755 });
+  const invocations = () => readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+  return { dir, invocations };
+}
+
+function bootstrapSpec(t, fake, environment = {}) {
+  const dir = temporaryDirectory(t, 'pi-bootstrap-run-');
+  return createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: `Issue text\n${PREPARED_IMPLEMENTATION_PLACEHOLDER}`,
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PATH: `${fake.dir}:${process.env.PATH}`, PI_TERMINAL_RESULT_FILE: join(dir, 'terminal'), PI_STAGE: 'implementer', PI_PHASE: 'implementation', PI_IMPLEMENTER_START_COMMIT: 'abc123', ...environment },
+    artifacts: { terminalResultPath: join(dir, 'terminal'), metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: join(dir, 'raw.jsonl') },
+  });
+}
+
+test('only fresh Implementer work gets planner bootstrap; restored and repair work do not', () => {
+  assert.equal(isFreshImplementerWork({ PI_STAGE: 'implementer' }), true);
+  assert.equal(isFreshImplementerWork({ PI_STAGE: 'implementer', PI_RESUME_ACTIVE: 'false' }), true);
+  assert.equal(isFreshImplementerWork({ PI_STAGE: 'implementer', PI_RESUME_ACTIVE: 'true' }), false);
+  assert.equal(isFreshImplementerWork({ PI_STAGE: 'implementer', PI_VALIDATION_REPAIR: 'true' }), false);
+  for (const stage of ['dispatcher', 'reviewer', 'repair', 'architect', 'triage']) {
+    assert.equal(isFreshImplementerWork({ PI_STAGE: stage }), false, stage);
+  }
+});
+
+test('bootstrap pi invocation is a prompt-less, session-less planner host', () => {
+  const spec = createStageRunSpec({ ...specFor('implementer'), environment: { PI_STAGE: 'implementer' } });
+  const { command, args, options } = buildBootstrapInvocation(spec, '/control');
+  assert.equal(command, 'pi');
+  assert.deepEqual(args, [
+    '--extension', '/control/scripts/pi-implementer-bootstrap.mjs',
+    '--provider', 'provider-x', '--model', 'model-x', '--mode', 'json', '--no-session',
+  ]);
+  assert.ok(!args.includes('do the task'), 'no prompt: the bootstrap process makes no model request of its own');
+  assert.equal(options.env.PI_IMPLEMENTER_BOOTSTRAP, 'true');
+  assert.equal(options.env.PI_PREPARED_IMPLEMENTATION_FILE, '/tmp/terminal.prepared-implementation.json');
+});
+
+test('withPreparedImplementation fills the placeholder, or appends trusted context for a custom prompt', () => {
+  assert.equal(withPreparedImplementation(`a ${PREPARED_IMPLEMENTATION_PLACEHOLDER} b`, 'BLOCK'), 'a BLOCK b');
+  assert.equal(withPreparedImplementation('custom prompt', 'BLOCK'), 'custom prompt\n\n<trusted_context>\nBLOCK\n</trusted_context>');
+  assert.equal(withPreparedImplementation(`x ${PREPARED_IMPLEMENTATION_PLACEHOLDER}`, '$& $1'), 'x $& $1', 'replacement text is literal');
+});
+
+test('fresh Implementer: bootstrap pi completes first, then the main session starts with the prepared state in its first prompt', async (t) => {
+  const fake = installFakePi(t);
+  const spec = bootstrapSpec(t, fake);
+  await runPiStage(spec, { workspace: process.cwd() });
+
+  const [bootstrap, main, ...rest] = fake.invocations();
+  assert.equal(rest.length, 0);
+  assert.equal(bootstrap.bootstrap, true, 'planner bootstrap process runs first');
+  assert.equal(bootstrap.bootstrapEnv, 'true');
+  assert.ok(!bootstrap.args.some(arg => arg.includes('Issue text')), 'bootstrap receives no prompt');
+  assert.equal(main.bootstrap, false);
+  assert.equal(main.bootstrapEnv, null, 'main session is not a bootstrap session');
+  assert.equal(main.prepared, `${spec.artifacts.terminalResultPath}.prepared-implementation.json`);
+  const prompt = main.args.at(-1);
+  assert.match(prompt, /Issue text/);
+  assert.match(prompt, /Runtime-prepared implementation state/);
+  assert.match(prompt, /1\. Locate the target\n2\. Apply the bounded change/);
+  assert.match(prompt, /Evidence budget: 2/);
+  assert.doesNotMatch(prompt, /prepare_implementation|runtime_prepared_implementation_state/);
+  assert.ok(main.args.includes('--session-dir'), 'main Implementer keeps its forkable session');
+  assert.ok(!bootstrap.args.includes('--session-dir'));
+});
+
+test('a crashed bootstrap process resolves PREPARATION_FALLBACK before the main session starts', async (t) => {
+  const fake = installFakePi(t, { bootstrapExit: 3 });
+  const spec = bootstrapSpec(t, fake);
+  await runPiStage(spec, { workspace: process.cwd() });
+
+  const [bootstrap, main] = fake.invocations();
+  assert.equal(bootstrap.bootstrap, true);
+  assert.equal(main.bootstrap, false);
+  const prompt = main.args.at(-1);
+  assert.match(prompt, /PREPARATION_FALLBACK/);
+  assert.match(prompt, /bootstrap_process_failure/);
+  assert.match(prompt, /nothing to prepare or retry/);
+  assert.doesNotMatch(prompt, /prepare_implementation/);
+  assert.equal(JSON.parse(readFileSync(main.prepared, 'utf8')).status, 'fallback');
+});
+
+test('restored and validation-repair Implementer runs never launch the planner bootstrap', async (t) => {
+  for (const environment of [{ PI_RESUME_ACTIVE: 'true' }, { PI_VALIDATION_REPAIR: 'true' }]) {
+    const fake = installFakePi(t);
+    const spec = bootstrapSpec(t, fake, environment);
+    await runPiStage(spec, { workspace: process.cwd() });
+    const calls = fake.invocations();
+    assert.equal(calls.length, 1, JSON.stringify(environment));
+    assert.equal(calls[0].bootstrap, false);
+    assert.equal(calls[0].prepared, null);
+  }
 });

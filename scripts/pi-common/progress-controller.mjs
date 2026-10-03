@@ -215,14 +215,11 @@ export class ProgressController {
     this.boundedDirectBash = config.boundedDirectBash === true;
     this.singleUseTools = new Set(config.singleUseTools ?? []);
     this.usedSingleUseTools = new Set();
-    this.transitions = new SessionTransitions({
-      preparationTool: config.productiveProgress?.activationTool ?? null,
-    });
+    this.transitions = new SessionTransitions();
     this.lastAlreadySatisfied = null;
 
     this.productiveProgress = config.productiveProgress ?? null;
     this.productiveState = this.productiveProgress?.startState ?? 'inactive';
-    this.productiveActivationTool = this.productiveProgress?.activationTool ?? null;
     this.productiveActivationReadSuffix = this.productiveProgress?.activationReadSuffix ?? null;
     this.productiveBlockerTool = this.productiveProgress?.blockerTool ?? null;
     this.productiveActionTools = new Set(this.productiveProgress?.actionTools ?? []);
@@ -418,12 +415,8 @@ export class ProgressController {
     return this.complexityRecorded() || this.preparationState === 'PREPARATION_FALLBACK';
   }
 
-  enterPreparationFallback() {
-    if (!this.requiredFirstReadDone ||
-        !this.usedSingleUseTools.has(this.productiveActivationTool) ||
-        this.preparationSatisfied()) {
-      throw new Error('Preparation fallback requires an attempted, unresolved preparation action');
-    }
+  // Bootstrap resolved planner infrastructure failure before the first provider request.
+  installPreparationFallback() {
     this.preparationState = 'PREPARATION_FALLBACK';
     // No planner estimate is available, so grant a small deterministic orientation window
     // to establish the canonical source/test layout before mutation. The normal bounded
@@ -436,6 +429,30 @@ export class ProgressController {
       preparationState: this.preparationState,
       complexity: this.complexity,
       evidenceBudget: PREPARATION_FALLBACK_EVIDENCE_BUDGET,
+    };
+  }
+
+  // Installs a PreparedImplementation artifact resolved by the runtime bootstrap before the main
+  // session's first provider request. Produces the same state a successful prepare_implementation
+  // tool call used to produce: complexity, planner evidence budget, armed large-mutation intent and
+  // the initial productive-progress state.
+  applyPreparedImplementation(prepared) {
+    if (prepared.status === 'fallback') {
+      return { ...this.installPreparationFallback(), largeMutationArmed: false };
+    }
+    this.setComplexity(prepared.complexity);
+    this.setEvidenceBudget(prepared.evidenceBudget);
+    const largeMutationArmed = this.armAutomaticLargeMutationBudget(prepared.largeMutation);
+    const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
+    this.productiveEvidenceRemaining = evidenceBudget;
+    // Zero planner-reported evidence need goes straight to action_required.
+    this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
+    this.evidenceUnlockUsedSinceProgress = false;
+    return {
+      preparationState: this.preparationState,
+      complexity: this.complexity,
+      evidenceBudget,
+      largeMutationArmed,
     };
   }
 
@@ -744,7 +761,6 @@ export class ProgressController {
       tool: toolName,
       serverId: input?.server_id,
       workspaceRoot: input?.workspace_root,
-      fallback: key === 'preparation' && this.preparationState === 'PREPARATION_FALLBACK',
     });
   }
 
@@ -801,15 +817,6 @@ export class ProgressController {
       this.semanticFallbackEvidenceUsed = false;
       this.productiveEvidenceRemaining = 0;
       if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
-    }
-    if (!isError && this.productiveProgress && toolName === this.productiveActivationTool &&
-        this.preparationState !== 'PREPARATION_FALLBACK') {
-      const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
-      this.productiveEvidenceRemaining = evidenceBudget;
-      // A task whose planner-reported evidence need is zero has nothing to gather: go
-      // straight to action_required instead of granting one incidental evidence action.
-      this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
-      this.evidenceUnlockUsedSinceProgress = false;
     }
     if (!isError && this.automaticLargeMutationBudgetArmed &&
         (FINISH_TOOLS.has(toolName) || toolName === this.codingSessionTool)) {

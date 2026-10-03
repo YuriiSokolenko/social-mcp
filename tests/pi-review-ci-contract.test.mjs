@@ -598,40 +598,43 @@ test('fresh implementer uses one planner/classifier result while restored and re
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   const backend = readScript('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
 
-  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
+  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*implementationPlannerTimeoutMs: 900000/);
+  assert.doesNotMatch(config, /prepare_implementation/);
   assert.doesNotMatch(config, /complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(config, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
   assert.doesNotMatch(config, /directReadMaxLines|directReadCalls/);
   assert.match(config, /implementer:[\s\S]*boundedDirectBash: true/);
 
-  assert.match(agent, /### Restored work[\s\S]*Call `submit_result` with no arguments immediately[\s\S]*Do \*\*not\*\* call `prepare_implementation`/);
+  assert.match(agent, /### Restored work[\s\S]*Call `submit_result` with no arguments immediately[\s\S]*Do \*\*not\*\* inspect repository files/);
+  assert.doesNotMatch(agent, /prepare_implementation/);
   assert.match(agent, /role overlay follows the shared agent contract in the initial prompt/i);
   assert.match(config, /shared_agent_contract[\s\S]*role_contract[\s\S]*trusted_context/);
   assert.match(agent, /Do not pass `already_satisfied` for restored work/);
   assert.match(agent, /zero diff[\s\S]*records the issue as already satisfied automatically/);
-  assert.match(agent, /### Fresh work[\s\S]*Call `prepare_implementation` exactly once/);
+  assert.match(agent, /### Fresh work[\s\S]*runtime has already prepared the top-level implementation plan before this session started/);
   assert.match(agent, /Task classification alone never requires delegation/);
   assert.match(agent, /2 actions for trivial[\s\S]*6 for nontrivial/);
   assert.match(agent, /submit_result[\s\S]*records that the agent considers the implementation complete/);
   assert.match(agent, /shared stage harness runs the authoritative checks/);
   assert.doesNotMatch(agent, /trivial_repo_lookup|RepoMap|repo map orientation|complexity-classifier/);
 
-  assert.match(runtime, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
-  assert.match(runtime, /enum: \['trivial', 'nontrivial'\]/);
-  assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
+  const bootstrapPlanner = readScript('scripts/pi-common/implementation-planner.mjs', 'utf8');
+  assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
+  assert.match(bootstrapPlanner, /enum: \['trivial', 'nontrivial'\]/);
+  assert.match(runtime, /controller\.applyPreparedImplementation\(preparedImplementation\)/);
+  assert.doesNotMatch(runtime, /prepare_implementation/);
   assert.doesNotMatch(runtime, /trivial_repo_lookup|trivialRepoLookup|runStructuredComplexityClassifier|complexityClassifierAgent/);
   assert.match(runtime, /directActionImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /validationRepair[\s\S]*PI_VALIDATION_REPAIR/);
-  assert.match(runtime, /freshBaseCommit/);
-  assert.match(runtime, /freshWorktreeIsLatestDev/);
-  assert.match(runtime, /lspWorkspaceRoot/);
+  assert.match(bootstrapPlanner, /freshBaseCommit/);
+  assert.match(bootstrapPlanner, /LSP workspace root:/);
   assert.match(runtime, /name: 'structural_edit'/);
   assert.match(runtime, /structuralEdit\(ctx\.cwd, params\)/);
   assert.match(runtime, /name: 'safe_edit'/);
   assert.match(runtime, /name: 'repo_search'/);
   assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
   assert.match(readScript('scripts/pi-common/structured-subagent.mjs', 'utf8'), /result: schema \? \{ kind: 'structured', schema \} : \{ kind: 'text' \}/);
 
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);
@@ -661,7 +664,7 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_start_server'));
   assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_find_symbol'));
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_find_symbol'));
-  assert.match(implementer, /call `lsp_start_server` once[\s\S]*exact absolute workspace root supplied by `prepare_implementation`[\s\S]*then call `lsp_find_symbol`/i);
+  assert.match(implementer, /call `lsp_start_server` once[\s\S]*exact absolute workspace root supplied in the prepared state[\s\S]*then call `lsp_find_symbol`/i);
   assert.match(implementer, /Do not call `lsp_server_status` first/i);
   assert.match(implementer, /cold-start call is control-plane setup, not evidence/i);
   assert.match(implementer, /Do not use it before LSP merely to rediscover an already-named source symbol/i);

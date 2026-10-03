@@ -39,7 +39,6 @@ const NEUTRAL_TOOLS = new Set([
   'set_response_budget',
   'need_more_evidence',
   'subagents_enable',
-  'prepare_implementation',
   'declare_task_complexity',
 ]);
 

@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 
 import { projectConfig } from '../scripts/pi-common/project-config.mjs';
 
-// Real runtime with a stubbed pi host: after PREPARATION_FALLBACK, subagents_enable and
+// Real runtime with a stubbed pi host, born with a PREPARATION_FALLBACK artifact: subagents_enable and
 // lsp_start_server succeed once; the runtime must materialize state, update the tool surface,
 // and turn repeats into already_satisfied without executing them.
 test('runtime materializes completed transitions into context and tool surface', () => {
@@ -20,6 +20,11 @@ test('runtime materializes completed transitions into context and tool surface',
     const expectedFinalGuidance =
       `Authoritative final checks still run automatically after submit_result and before publication: ${expectedFinalPipeline}.`;
     fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
+    const preparedFile = path.join(dir, 'prepared-implementation.json');
+    fs.writeFileSync(preparedFile, JSON.stringify({
+      version: 1, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down',
+      workspaceRoot: dir, freshBaseCommit: '', baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 0,
+    }));
     fs.writeFileSync(path.join(dir, 'example.py'), 'value = 1\n');
     execFileSync('git', ['init', '-q', dir]);
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'Session State Test']);
@@ -47,7 +52,7 @@ test('runtime materializes completed transitions into context and tool surface',
       // Intentionally omit retry_last_failed_check: the runtime must activate
       // its own deterministic recovery tool when an exact retry becomes ready.
       let active = ['read', 'safe_edit', 'edit', 'run_check', 'submit_result', 'rollback_last_mutation', 'need_more_evidence', 'begin_coding_session',
-        'request_large_mutation_budget', 'prepare_implementation', 'subagents_enable', 'lsp_start_server'];
+        'request_large_mutation_budget', 'subagents_enable', 'lsp_start_server'];
       const ctx = { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 32000 },
         sessionManager: { getSessionId: () => 'parent' }, abort: () => { aborts++; } };
       let aborts = 0;
@@ -80,15 +85,10 @@ test('runtime materializes completed transitions into context and tool surface',
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
         return undefined;
       }
-      await call('prepare_implementation');
-      assert.ok(!active.includes('prepare_implementation'), 'prepare_implementation removed');
+      // Born prepared (bootstrap fallback artifact): the first action is already real work.
+      assert.equal(tools.has('prepare_implementation'), false);
+      await call('read', { path: 'example.py' });
       assert.ok(!active.includes('run_check'), 'run_check hidden before a mutation grants a permit');
-      assert.ok(messages.some(m => /preparation: fallback-complete/.test(m)), 'preparation state injected');
-      handlers.get('turn_start')({ turnIndex: turn });
-      await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-      const beforeMutationGuidance = messages.join('\\n');
-      assert.match(beforeMutationGuidance, /run_check is not yet available; it becomes available after a successful mutation/);
-      assert.doesNotMatch(beforeMutationGuidance, /run_check is exhausted for the current mutation state/);
 
       await call('edit', { path: 'example.py' });
       assert.ok(active.includes('run_check'), 'run_check exposed after a successful mutation grants a permit');
@@ -298,6 +298,7 @@ test('runtime materializes completed transitions into context and tool surface',
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context,
         GITHUB_RUN_ID: 'runtime-test', GITHUB_RUN_ATTEMPT: '1',
         PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false', PI_VALIDATION_LEDGER_FILE: ledger,
+        PI_PREPARED_IMPLEMENTATION_FILE: preparedFile,
         PI_ACCEPTED_MUTATION_SCOPE_STATE: "{\"schema_version\":1,\"accepted\":[{\"path\":\"example.py\",\"rationale\":\"Session-state runtime test mutates the known example file.\"}],\"temporary\":[],\"baseline\":[]}",
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
     });

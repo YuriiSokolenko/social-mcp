@@ -144,7 +144,7 @@ This document is the human- and agent-readable text map of the current Social MC
                                               +----------------+----------------+
                                               |                                 |
                                               v                                 v
-                                   prepare_implementation                 restored work
+                                   bootstrap planner session              restored work
                                               |                                 |
                                        planner                                  |
                                               |                                 |
@@ -185,7 +185,7 @@ This document is the human- and agent-readable text map of the current Social MC
 
 ## Implementer productive-progress / repository-access hierarchy
 
-    prepare_implementation (single-shot)
+    bootstrap planner session (runs before the main Implementer session starts)
        |
        +--> planner infrastructure failure after configured retry
        |      +--> PREPARATION_FALLBACK (no planner output or complexity)
