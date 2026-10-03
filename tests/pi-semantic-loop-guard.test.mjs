@@ -722,12 +722,16 @@ function runRuntimeScenario(body, env = {}) {
     `);
     const runtimeUrl = new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href;
     const controllerUrl = new URL('../scripts/pi-common/progress-controller.mjs', import.meta.url).href;
+    const journalUrl = new URL('../scripts/pi-common/mutation-journal.mjs', import.meta.url).href;
+    const snapshotUrl = new URL('../scripts/pi-common/mutation-snapshot.mjs', import.meta.url).href;
     const script = `
       import assert from 'node:assert/strict';
       import fs from 'node:fs';
       import path from 'node:path';
       const RUNTIME_URL = ${JSON.stringify(runtimeUrl)};
       const CONTROLLER_URL = ${JSON.stringify(controllerUrl)};
+      const JOURNAL_URL = ${JSON.stringify(journalUrl)};
+      const SNAPSHOT_URL = ${JSON.stringify(snapshotUrl)};
       const handlers = new Map();
       const messages = [];
       const registeredTools = new Map();
@@ -842,6 +846,167 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
     assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('#424 parent rollback follows shared fork journal order instead of stale process-local identity', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cross-process-rollback-'));
+  const journalFile = path.join(os.tmpdir(), `pi-cross-process-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    for (const name of ['parent.txt', 'fork-one.txt', 'fork-two.txt']) {
+      fs.writeFileSync(path.join(repo, name), name + ':base\n');
+    }
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+      const call = (id, toolName, input) =>
+        handlers.get('tool_call')({ toolCallId: id, toolName, input }, ctx);
+      const end = (id, toolName) =>
+        handlers.get('tool_execution_end')({ toolCallId: id, toolName, isError: false, result: { content: [] } }, ctx);
+
+      // Parent records P1 in its own process state.
+      assert.equal(await call('parent-p1', 'write', { path: 'parent.txt' }), undefined);
+      fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:P1\\n');
+      await end('parent-p1', 'write');
+
+      // Separate process models the coding-session fork and appends F1 then F2 to the same sidecar.
+      const { spawnSync } = await import('node:child_process');
+      const childProgram = [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "const journal = await import(" + JSON.stringify(JOURNAL_URL) + ");",
+        "const snapshots = await import(" + JSON.stringify(SNAPSHOT_URL) + ");",
+        "const root = process.argv[1];",
+        "const mutate = (relative, content) => {",
+        "  const before = snapshots.captureMutationSnapshot(root, relative);",
+        "  fs.writeFileSync(path.join(root, relative), content);",
+        "  const after = snapshots.captureMutationSnapshot(root, relative);",
+        "  journal.recordSuccessfulMutation({ cwd: root, before, after, tool: 'write', disposition: 'publishable', env: process.env });",
+        "};",
+        "mutate('fork-one.txt', 'fork-one:F1\\n');",
+        "mutate('fork-two.txt', 'fork-two:F2\\n');",
+      ].join('\\n');
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', childProgram, repo], {
+        encoding: 'utf8',
+        env: process.env,
+      });
+      assert.equal(child.status, 0, child.stderr);
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      const rolled = await rollback.execute('parent-rollback', { reason: 'undo shared latest mutation' }, null, null, ctx);
+      assert.match(rolled.content[0].text, /shared latest recorded mutation/);
+      assert.equal(fs.readFileSync(path.join(repo, 'parent.txt'), 'utf8'), 'parent:P1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork-one.txt'), 'utf8'), 'fork-one:F1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork-two.txt'), 'utf8'), 'fork-two.txt:base\\n');
+      console.log('CROSS_PROCESS_ROLLBACK_ORDER_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [
+          { path: 'parent.txt', rationale: 'Cross-process rollback regression parent path.' },
+          { path: 'fork-one.txt', rationale: 'Cross-process rollback regression fork path one.' },
+          { path: 'fork-two.txt', rationale: 'Cross-process rollback regression fork path two.' },
+        ],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /CROSS_PROCESS_ROLLBACK_ORDER_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+  }
+});
+
+test('#424 parent rollback refuses an older journal entry when fork latest is local-only', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cross-process-local-only-'));
+  const journalFile = path.join(os.tmpdir(), `pi-cross-process-local-only-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:base\n');
+    fs.writeFileSync(path.join(repo, 'fork.txt'), 'fork:base\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'parent-p1',
+        toolName: 'write',
+        input: { path: 'parent.txt' },
+      }, ctx), undefined);
+      fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:P1\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'parent-p1',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+
+      const { spawnSync } = await import('node:child_process');
+      const childProgram = [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "const journal = await import(" + JSON.stringify(JOURNAL_URL) + ");",
+        "const snapshots = await import(" + JSON.stringify(SNAPSHOT_URL) + ");",
+        "const root = process.argv[1];",
+        "const relative = 'fork.txt';",
+        "const before = snapshots.captureMutationSnapshot(root, relative);",
+        "fs.writeFileSync(path.join(root, relative), 'fork:LOCAL\\n');",
+        "const after = snapshots.captureMutationSnapshot(root, relative);",
+        "journal.markMutationJournalLocalOnly({ cwd: root, after, tool: 'write', env: process.env });",
+      ].join('\\n');
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', childProgram, repo], {
+        encoding: 'utf8',
+        env: process.env,
+      });
+      assert.equal(child.status, 0, child.stderr);
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      await assert.rejects(
+        rollback.execute('parent-rollback', { reason: 'must not hit stale P1' }, null, null, ctx),
+        error => error.code === 'mutation_rollback_latest_local_only_unavailable',
+      );
+      assert.equal(fs.readFileSync(path.join(repo, 'parent.txt'), 'utf8'), 'parent:P1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork.txt'), 'utf8'), 'fork:LOCAL\\n');
+      console.log('CROSS_PROCESS_LOCAL_ONLY_REFUSAL_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [
+          { path: 'parent.txt', rationale: 'Cross-process local-only regression parent path.' },
+          { path: 'fork.txt', rationale: 'Cross-process local-only regression fork path.' },
+        ],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /CROSS_PROCESS_LOCAL_ONLY_REFUSAL_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
   }
 });
 
