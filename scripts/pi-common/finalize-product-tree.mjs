@@ -44,9 +44,9 @@ export function integrateLatestDev({ conflictMessage, allowConflicts = false }) 
   return { conflicts: [] };
 }
 
-export function validateFinalProductTree({ cwd, ledgerPath, backend } = {}) {
+export function validateFinalProductTree({ cwd, ledgerPath, backend, env = process.env } = {}) {
   const base = git(['merge-base', baseRef(), 'HEAD'], { cwd }).out;
   const forbidden = forbiddenAgentPaths(base, cwd);
   if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
-  runProductChecks({ cwd, ledgerPath, backend });
+  runProductChecks({ cwd, ledgerPath, backend, env });
 }

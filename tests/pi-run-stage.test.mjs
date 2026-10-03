@@ -11,6 +11,7 @@ import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
 import { createValidationRepairSpec, runStageWithValidationRecovery, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { issueWorktreePatchPath } from '../scripts/pi-common/issue-worktree.mjs';
 
 function specFor(stage) {
   return createStageRunSpec({
@@ -166,6 +167,59 @@ test('local stage runs receive a process-unique validation run id that repair sp
 
   const repair = createValidationRepairSpec(spec, new Error('pytest failed'), 1);
   assert.equal(repair.environment.PI_VALIDATION_RUN_ID, spec.environment.PI_VALIDATION_RUN_ID);
+});
+
+test('explicit validation ids do not change GitHub-derived artifact filenames', () => {
+  const { spec } = buildStageRunSpec({
+    stage: 'dispatcher',
+    cwd: '/work',
+  }, {
+    RUNNER_TEMP: '/tmp/runner',
+    GITHUB_RUN_ID: '123',
+    GITHUB_RUN_ATTEMPT: '2',
+    GITHUB_WORKSPACE: process.cwd(),
+    PI_MODEL: 'model-x',
+    PI_VALIDATION_RUN_ID: 'custom-validation-id',
+  });
+
+  assert.equal(spec.environment.PI_VALIDATION_RUN_ID, 'custom-validation-id');
+  assert.equal(spec.artifacts.terminalResultPath, '/tmp/runner/pi-terminal-123-2');
+  assert.equal(spec.artifacts.metricsPath, '/tmp/runner/pi-usage-123-2.jsonl');
+  assert.equal(spec.environment.PI_MODEL_TRACE_FILE, '/tmp/runner/pi-model-trace-dispatcher-123-2.jsonl');
+});
+
+test('blank GitHub run identifiers use one normalized local identity for validation and stage artifacts', () => {
+  const { spec } = buildStageRunSpec({
+    stage: 'dispatcher',
+    cwd: '/work',
+  }, {
+    RUNNER_TEMP: '/tmp/runner',
+    GITHUB_RUN_ID: '   ',
+    GITHUB_RUN_ATTEMPT: '   ',
+    GITHUB_WORKSPACE: process.cwd(),
+    PI_MODEL: 'model-x',
+  });
+
+  const expected = `local-${process.pid}-1`;
+  assert.equal(spec.environment.PI_VALIDATION_RUN_ID, expected);
+  assert.equal(spec.artifacts.terminalResultPath, `/tmp/runner/pi-terminal-${expected}`);
+  assert.equal(spec.artifacts.metricsPath, `/tmp/runner/pi-usage-${expected}.jsonl`);
+  assert.equal(spec.environment.PI_MODEL_TRACE_FILE, `/tmp/runner/pi-model-trace-dispatcher-${expected}.jsonl`);
+});
+
+test('issue worktree patch names use normalized GitHub artifact identity semantics', () => {
+  assert.equal(
+    issueWorktreePatchPath('/tmp', {
+      PI_VALIDATION_RUN_ID: 'validation-only',
+      GITHUB_RUN_ID: ' 123 ',
+      GITHUB_RUN_ATTEMPT: ' 2 ',
+    }),
+    '/tmp/pi-resume-123-2.patch',
+  );
+  assert.equal(
+    issueWorktreePatchPath('/tmp', { GITHUB_RUN_ID: '   ', GITHUB_RUN_ATTEMPT: '   ' }),
+    `/tmp/pi-resume-local-${process.pid}-1.patch`,
+  );
 });
 
 test('model endpoint defaults to the shared Open Responses server on port 4001', () => {
@@ -401,10 +455,11 @@ test('shared validation recovery gives any implementer backend one focused repai
       });
     },
     {
-      validate: ({ cwd, ledgerPath, backend }) => {
+      validate: ({ cwd, ledgerPath, backend, env }) => {
         assert.equal(cwd, dir);
         assert.equal(ledgerPath, spec.environment.PI_VALIDATION_LEDGER_FILE);
         assert.equal(backend, 'fake');
+        assert.equal(env, spec.environment);
         validations += 1;
         if (validations === 1) throw new Error('ruff check . failed\nBLE001 blind exception');
       },

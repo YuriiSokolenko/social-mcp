@@ -176,6 +176,28 @@ test('a full passing run of checks.final records one pass entry per step in the 
   assert.ok(records.every(r => r.backend === 'pi'));
 });
 
+test('standalone product checks use the supplied validation environment for every ledger record', t => {
+  const { root, bin } = fixture(t);
+  const pytest = path.join(bin, 'pytest');
+  fs.writeFileSync(pytest, '#!/bin/sh\nprintf "561 passed, 3 skipped\\n"\n');
+  fs.chmodSync(pytest, 0o755);
+  const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-'));
+  t.after(() => fs.rmSync(ledgerDir, { recursive: true, force: true }));
+  const ledgerPath = path.join(ledgerDir, 'ledger.jsonl');
+  const env = {
+    ...process.env,
+    PI_VALIDATION_RUN_ID: 'standalone-validation-run',
+    GITHUB_RUN_ID: 'ambient-must-not-win',
+    GITHUB_RUN_ATTEMPT: '9',
+  };
+
+  runProductChecks({ cwd: root, ledgerPath, env });
+
+  const { records } = readValidationLedger(ledgerPath);
+  assert.ok(records.length > 0);
+  assert.ok(records.every(record => record.run_id === 'standalone-validation-run'));
+});
+
 test('checks.final records carry the actual backend, not a hardcoded one, so a mini-swe implementer run is not misattributed to Pi', t => {
   const { root, bin } = fixture(t);
   const pytest = path.join(bin, 'pytest');
