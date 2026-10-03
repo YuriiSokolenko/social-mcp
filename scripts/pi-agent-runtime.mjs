@@ -223,6 +223,9 @@ function logPreparedImplementation(prepared, applied) {
       recovery: 'continue_without_planner_output',
       reason: prepared.reason,
       plannerDurationMs: prepared.plannerDurationMs,
+      evidenceUsed: prepared.plannerEvidenceUsed ?? 0,
+      evidenceCap: prepared.plannerEvidenceCap ?? null,
+      providerTurns: prepared.plannerProviderTurns ?? null,
     })}`);
   } else {
     console.log(`PI_PLAN ${JSON.stringify({
@@ -235,6 +238,9 @@ function logPreparedImplementation(prepared, applied) {
       reason: prepared.reason,
       usage,
       plannerDurationMs: prepared.plannerDurationMs,
+      evidenceUsed: prepared.plannerEvidenceUsed ?? 0,
+      evidenceCap: prepared.plannerEvidenceCap ?? null,
+      providerTurns: prepared.plannerProviderTurns ?? null,
     })}`);
     if (applied.largeMutationArmed) {
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({ stage, phase: 'auto_armed', source: 'implementation-planner' })}`);
