@@ -43,6 +43,16 @@ unavailable historical log cannot establish the same root cause.
   ledger and immediately compares the changed-file set with `expected_files`.
   A mismatch returns the remaining changed files so another direct cleanup can
   finish. Recovery records never count as passing product checks.
+- #438 bounds `delete_untracked` by ownership evidence. The runtime records the
+  run-start untracked set once (`PI_WORKTREE_BASELINE_FILE`, exclusive create, shared by
+  parent and fork). A path is deletable only if it is absent from that baseline, not
+  journaled (use `undo_mutation`), not in the accepted scope and not a control-plane
+  path; otherwise the call is refused with a code (`recovery_preexisting_path`,
+  `recovery_baseline_unavailable`, `recovery_use_undo_mutation`,
+  `recovery_accepted_scope_path`, `recovery_protected_path`). `revert_tracked` also
+  refuses control-plane paths. A file-set mismatch lists each remaining path in
+  `file_set.drift` as `journaled`, `unjournaled_restorable`, `unjournaled_cleanable`
+  or `unknown`, with the exact action to call.
 - Known `.probe.txt`/`.probe2.txt` and `.pi-tmp-*` artifacts cannot enter fresh,
   restored or repair result metadata. Existing exact file-set checks continue to
   reject other undeclared files at submission and publication.
