@@ -230,6 +230,8 @@ export async function runStage(options, env = process.env) {
 
   writeGithubEnv(env, 'PI_METRICS_FILE', spec.artifacts.metricsPath);
   writeGithubEnv(env, 'PI_MODEL_TRACE_FILE', spec.environment.PI_MODEL_TRACE_FILE);
+  writeGithubEnv(env, 'PI_TERMINAL_RESULT_FILE', spec.artifacts.terminalResultPath);
+  writeGithubEnv(env, 'PI_VALIDATION_RUN_ID', spec.environment.PI_VALIDATION_RUN_ID);
   writeGithubEnv(env, 'PI_PHASE', spec.environment.PI_PHASE);
   if (spec.environment.PI_ISSUE) writeGithubEnv(env, 'PI_ISSUE', spec.environment.PI_ISSUE);
   fs.rmSync(spec.artifacts.terminalResultPath, { force: true });

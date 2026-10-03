@@ -51,6 +51,10 @@ import {
   mutationScopeReceipt,
   registerMutationScope,
 } from './pi-common/accepted-mutation-scope.mjs';
+import {
+  assertSuccessfulTerminalReceipt,
+  invalidateTerminalReceipt,
+} from './pi-common/terminal-receipt.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
@@ -1384,6 +1388,7 @@ export default function (pi) {
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         const result = recoverWorktree({ ...params, cwd: ctx.cwd, base: baseRef(), ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE });
+        invalidateTerminalReceipt(process.env);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
       },
     });
@@ -1406,6 +1411,7 @@ export default function (pi) {
           fs.rmSync(snapshot.absolutePath, { force: true });
         }
         lastSuccessfulMutationSnapshot = null;
+        invalidateTerminalReceipt(process.env);
         return {
           content: [{
             type: 'text',
@@ -1525,19 +1531,48 @@ export default function (pi) {
             codingSessionLog('cancelled', { ...base, durationMs: Date.now() - startedAt });
             throw sessionError ?? new Error('coding session was cancelled');
           }
-          const submitted = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
+          let receiptResult = null;
+          let receiptError = null;
+          const markerPresent = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
+          if (markerPresent) {
+            try {
+              receiptResult = assertSuccessfulTerminalReceipt({
+                cwd: ctx.cwd,
+                resultFile: process.env.PI_IMPLEMENTER_RESULT_FILE,
+                env: process.env,
+                expectedSessionId: sessionId,
+              });
+            } catch (error) {
+              receiptError = error;
+            }
+          }
+          const submitted = Boolean(receiptResult);
+          const recoveredErrors = submitted && sessionError
+            ? [String(sessionError?.message ?? sessionError)]
+            : [];
+          const unresolvedTerminalError = submitted
+            ? null
+            : String((sessionError ?? receiptError)?.message ?? sessionError ?? receiptError ?? '') || null;
           codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
             ...base,
             durationMs: Date.now() - startedAt,
             usage: response?.usage ?? null,
             submitted,
-            status: sessionError ? 'error' : 'ok',
-            ...(sessionError ? { error: String(sessionError?.message ?? sessionError) } : {}),
+            successful_final_submission: submitted,
+            status: submitted ? 'ok' : (unresolvedTerminalError ? 'error' : 'incomplete'),
+            recovered_errors: recoveredErrors,
+            unresolved_terminal_error: unresolvedTerminalError,
           });
           if (submitted) {
             return {
               content: [{ type: 'text', text: 'Coding session completed the implementation and submitted the result. The work is done: stop now.' }],
-              details: { ...base, submitted: true },
+              details: {
+                ...base,
+                submitted: true,
+                successful_final_submission: true,
+                recovered_errors: recoveredErrors,
+                unresolved_terminal_error: null,
+              },
               // The fork already called submit_result; end this session without another turn.
               terminate: true,
             };
@@ -1551,8 +1586,9 @@ export default function (pi) {
             remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
               ? `You may call ${codingSessionTool} once more (${remaining} left). `
               : '';
-          const message = `${terminalStatus}${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
-          if (sessionError) throw new Error(message);
+          const terminalFailure = sessionError ?? receiptError;
+          const message = `${terminalStatus}${terminalFailure ? ` (${String(terminalFailure?.message ?? terminalFailure)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          if (terminalFailure) throw new Error(message);
           return { content: [{ type: 'text', text: message }], details: { ...base, submitted: false } };
         },
       });
@@ -1849,6 +1885,10 @@ export default function (pi) {
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
         return containmentBlocked;
       }
+    }
+
+    if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
+      invalidateTerminalReceipt(process.env);
     }
 
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);

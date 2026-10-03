@@ -267,13 +267,29 @@ export function runCheckRequestForRecord(record) {
  * record. A single early step (e.g. Ruff) passing and then the process dying
  * before the rest of the pipeline runs must not look like "final checks ran."
  */
-export function computeVerificationState(records, { corrupted = false } = {}) {
+function finalCompletionMatchesCandidate(record, candidateRevision) {
+  if (!candidateRevision) return true;
+  const recorded = record?.candidate_revision;
+  return Boolean(
+    recorded &&
+    recorded.schema_version === 1 &&
+    candidateRevision.schema_version === 1 &&
+    recorded.base_commit === candidateRevision.base_commit &&
+    recorded.digest === candidateRevision.digest
+  );
+}
+
+export function computeVerificationState(records, { corrupted = false, candidateRevision = null } = {}) {
   if (corrupted) return VERIFICATION_STATES.BLOCKED_INFRA;
   const groups = reconcile(records);
   if (!groups.length) return VERIFICATION_STATES.NOT_APPLICABLE;
   if (groups.some(group => group.status === 'fail')) return VERIFICATION_STATES.FAILED;
   if (groups.some(group => BLOCKING_STATUSES.has(group.status))) return VERIFICATION_STATES.BLOCKED_INFRA;
-  const finalChecksRan = records.some(record => record.source === FINAL_PIPELINE_COMPLETE_SOURCE);
+  const finalChecksRan = records.some(
+    record =>
+      record.source === FINAL_PIPELINE_COMPLETE_SOURCE &&
+      finalCompletionMatchesCandidate(record, candidateRevision),
+  );
   if (!finalChecksRan) return VERIFICATION_STATES.PENDING;
   return VERIFICATION_STATES.VERIFIED;
 }
@@ -305,8 +321,8 @@ function describeGroup(group) {
  * only. Never accepts model metadata/prose: there is nothing here for a
  * model-authored claim to override.
  */
-export function renderValidationSection(records, { corrupted = false } = {}) {
-  const state = computeVerificationState(records, { corrupted });
+export function renderValidationSection(records, { corrupted = false, candidateRevision = null } = {}) {
+  const state = computeVerificationState(records, { corrupted, candidateRevision });
   if (corrupted) {
     return [
       '- The validation ledger could not be fully read (a record failed to parse).',
@@ -317,5 +333,11 @@ export function renderValidationSection(records, { corrupted = false } = {}) {
   if (!groups.length) {
     return ['- No authoritative checks were recorded for this change.', `- Overall verification state: ${state}`].join('\n');
   }
-  return [...groups.map(describeGroup), `- Overall verification state: ${state}`].join('\n');
+  const candidateMismatch =
+    candidateRevision &&
+    state === VERIFICATION_STATES.PENDING &&
+    records.some(record => record.source === FINAL_PIPELINE_COMPLETE_SOURCE)
+      ? ['- Final validation does not attest the current candidate revision.']
+      : [];
+  return [...groups.map(describeGroup), ...candidateMismatch, `- Overall verification state: ${state}`].join('\n');
 }
