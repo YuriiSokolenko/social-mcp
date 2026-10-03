@@ -82,6 +82,7 @@
     "scripts/pi-implementer-bootstrap.mjs",
     "scripts/pi-implementer-result-tool.mjs",
     "scripts/pi-log-filter.mjs",
+    "scripts/pi-planner-evidence.mjs",
     "scripts/pi-repair-result-tool.mjs",
     "scripts/pi-reviewer-result-tool.mjs",
     "scripts/pi-subagent-response-budget.mjs",

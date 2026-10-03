@@ -477,12 +477,14 @@ test('every model-driven Pi workflow delegates model execution to one stage runn
 
 test('selected subagents inherit the main response ceiling through a child-only extension', () => {
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
-  for (const name of ['scout', 'implementation-planner']) {
-    assert.deepEqual(
-      settings.subagents.agentOverrides[name].subagentOnlyExtensions,
-      ['./scripts/pi-subagent-response-budget.mjs'],
-    );
-  }
+  assert.deepEqual(
+    settings.subagents.agentOverrides.scout.subagentOnlyExtensions,
+    ['./scripts/pi-subagent-response-budget.mjs'],
+  );
+  assert.deepEqual(
+    settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions,
+    ['./scripts/pi-subagent-response-budget.mjs', './scripts/pi-planner-evidence.mjs'],
+  );
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const child = readScript('scripts/pi-subagent-response-budget.mjs', 'utf8');
   assert.match(runtime, /PI_SUBAGENT_RESPONSE_MAX_TOKENS/);
@@ -634,7 +636,7 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.match(runtime, /name: 'safe_edit'/);
   assert.match(runtime, /name: 'repo_search'/);
   assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
-  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: plannerEvidenceBudget\(config\) \+ 3 \}/);
   assert.match(readScript('scripts/pi-common/structured-subagent.mjs', 'utf8'), /result: schema \? \{ kind: 'structured', schema \} : \{ kind: 'text' \}/);
 
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);

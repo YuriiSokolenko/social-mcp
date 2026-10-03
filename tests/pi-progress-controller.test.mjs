@@ -555,7 +555,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
   assert.match(bootstrapPlanner, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
   assert.match(bootstrapPlanner, /evidence_budget: \{ type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET \}/);
-  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: plannerEvidenceBudget\(config\) \+ 3 \}/);
   assert.doesNotMatch(`${runtime}${bootstrapPlanner}`, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(runtime, /controller\.applyPreparedImplementation\(preparedImplementation\)/);
   assert.match(runtime, /directActionImplementer[\s\S]*requireComplexity: false/);
@@ -585,7 +585,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /trivial \| nontrivial/);
   assert.match(planner, /Dispatcher already owns Architect routing/);
-  assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
+  assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs', './scripts/pi-planner-evidence.mjs']);
 });
 
 test('runtime preserves a large mutation budget through scope declaration, then consumes it on the real finish action', () => {

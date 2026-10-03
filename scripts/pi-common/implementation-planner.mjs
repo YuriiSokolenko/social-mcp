@@ -12,6 +12,51 @@ export const MAX_PLANNER_EVIDENCE_BUDGET = 6;
 
 const MAX_PLANNER_STEP_LENGTH = 240;
 
+// Planner evidence budget: how many read-only repository actions the planner itself may spend
+// while preparing the plan. Deliberately separate from the output `evidence_budget` above (the
+// planner's estimate for the main Implementer); neither value is ever derived from the other.
+export const MAX_PLANNER_REPOSITORY_EVIDENCE = 6;
+export const DEFAULT_PLANNER_EVIDENCE_BUDGET = MAX_PLANNER_REPOSITORY_EVIDENCE;
+export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
+
+// Smallest equivalent read-only surface that pi-subagents children expose reliably. The
+// extension-backed repo_search/LSP tools live in the parent runtime and are not available in the
+// isolated planner child, so the documented fallback allowlist is used. The agent definition's
+// `tools:` frontmatter must match this list exactly (pinned by a test).
+export const PLANNER_EVIDENCE_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls']);
+// The structured-output call is the planner's result channel, never repository evidence.
+export const PLANNER_RESULT_TOOL = 'structured_output';
+
+export function plannerEvidenceBudget(config = {}) {
+  const configured = Number(config.implementationPlannerEvidenceBudget ?? DEFAULT_PLANNER_EVIDENCE_BUDGET);
+  if (!Number.isSafeInteger(configured) || configured < 0) {
+    throw new Error(`implementationPlannerEvidenceBudget must be a non-negative integer, got ${String(config.implementationPlannerEvidenceBudget)}`);
+  }
+  return Math.min(configured, MAX_PLANNER_REPOSITORY_EVIDENCE);
+}
+
+// Trusted, runtime-side admission for the planner's evidence actions. Every admitted evidence
+// call consumes one unit whether or not it later fails or returns nothing, there is no way to
+// extend the budget, and once exhausted no further repository exploration is admitted.
+export function createPlannerEvidenceGate(budget) {
+  const cap = Math.min(Math.max(Number.isSafeInteger(budget) ? budget : 0, 0), MAX_PLANNER_REPOSITORY_EVIDENCE);
+  let used = 0;
+  return {
+    cap,
+    admit(toolName) {
+      if (toolName === PLANNER_RESULT_TOOL) return { allowed: true, evidence: false, used, remaining: cap - used };
+      if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) {
+        return { allowed: false, evidence: false, used, remaining: cap - used, reason: `${toolName} is not available to the implementation planner (read-only evidence tools only)` };
+      }
+      if (used >= cap) {
+        return { allowed: false, evidence: true, used, remaining: 0, reason: `Planner evidence budget of ${cap} is exhausted; return the structured plan now without further repository exploration` };
+      }
+      used += 1;
+      return { allowed: true, evidence: true, used, remaining: cap - used };
+    },
+  };
+}
+
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
 // reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
 // The strict canonical contract is enforced locally by validateImplementationPreparation().
@@ -186,7 +231,7 @@ export function plannerTask(env = process.env, { repair = false, layoutHint = nu
   const layoutGuidance = layoutHint
     ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
     : '';
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
+  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. You may spend a small, hard-capped number of read-only repository evidence actions (at most ${MAX_PLANNER_REPOSITORY_EVIDENCE}; typically 1-3) to plan against the current worktree, then you must return the structured result. Do not implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
 
 Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "large_mutation": true|false, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the five listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } } and nothing else.` : ''}
 
@@ -211,7 +256,12 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: 0,
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
-    toolBudget: { hard: 3 },
+    // Backstop only: pi-subagents counts every child tool call (including structured_output
+    // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative planner evidence cap
+    // is the child-side gate (pi-planner-evidence.mjs), so leave headroom for the result call and
+    // its schema retry instead of letting this budget shave the evidence window.
+    toolBudget: { hard: plannerEvidenceBudget(config) + 3 },
+    childEnv: { [PLANNER_EVIDENCE_BUDGET_ENV]: String(plannerEvidenceBudget(config)) },
   };
   const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
   // One hard deadline for the whole planning lifecycle: retries only get the remaining time.
