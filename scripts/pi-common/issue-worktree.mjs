@@ -19,6 +19,21 @@ import { resolveRunArtifactId } from './validation-ledger.mjs';
  * Implementer resolves them against current dev.
  */
 
+export function acceptedScopeStateFromRef(ref) {
+  if (!ref) return null;
+  const message = git(['show', '-s', '--format=%B', ref]).out;
+  const enforcement = /^Pi-Scope-Enforcement:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+  if (enforcement !== 'predeclared') return null;
+  const encoded = /^Pi-Accepted-Mutation-Scope:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+  if (!encoded) return null;
+  try {
+    const value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    return value?.schema_version === 1 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export function issueWorktreePatchPath(tempDir, env = process.env) {
   if (!tempDir) throw new Error('tempDir is required');
   return path.join(tempDir, `pi-resume-${resolveRunArtifactId(env)}.patch`);
@@ -45,6 +60,8 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }, env = process.e
     resumeRef = `refs/remotes/origin/${issueBranch}`;
   }
 
+  const acceptedScopeState = resumeRef ? acceptedScopeStateFromRef(resumeRef) : null;
+
   git(['worktree', 'prune']);
   git(['worktree', 'add', '-B', issueBranch, jobDir, baseRef()]);
   const patch = issueWorktreePatchPath(tempDir, env);
@@ -63,7 +80,7 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }, env = process.e
       }
     }
   }
-  return { start, checkpointExpected, issueBranchExpected, patch, resumed };
+  return { start, checkpointExpected, issueBranchExpected, patch, resumed, acceptedScopeState };
 }
 
 export function cleanIssueWorktree({ jobDir, patchFile }) {
