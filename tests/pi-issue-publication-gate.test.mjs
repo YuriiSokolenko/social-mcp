@@ -133,7 +133,8 @@ test('the issue-agent workflow passes the workflow_dispatch backend input direct
 
 test('publication rejects a stray probe file that submit_result did not declare (#334)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-file-set-'));
-  const resultFile = path.join(dir, 'implementer-result.json');
+  const resultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-result-'));
+  const resultFile = path.join(resultDir, 'implementer-result.json');
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
   try {
     git('init');
@@ -192,6 +193,7 @@ test('publication rejects a stray probe file that submit_result did not declare 
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(resultDir, { recursive: true, force: true });
   }
 });
 
@@ -206,7 +208,8 @@ test('issue-agent passes the trusted result file into issue-branch publication (
 
 test('publication detects both sides of a rename instead of folding it (#338 review)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-rename-'));
-  const resultFile = path.join(dir, 'implementer-result.json');
+  const resultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-result-'));
+  const resultFile = path.join(resultDir, 'implementer-result.json');
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
   try {
     git('init');
@@ -244,6 +247,7 @@ test('publication detects both sides of a rename instead of folding it (#338 rev
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(resultDir, { recursive: true, force: true });
   }
 });
 
