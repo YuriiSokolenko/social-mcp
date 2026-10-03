@@ -5,13 +5,21 @@ import { prepareImplementation, writePreparedImplementation } from './pi-common/
 
 // Session A of a fresh Implementer run: a short-lived Pi process whose only job is to host the
 // implementation-planner child and write the validated PreparedImplementation artifact. It shuts
-// down from session_start, before any model request of its own, so nothing of the planner's
-// conversation can reach the main Implementer session (Session B), which starts afterwards.
+// down before any model request of its own, so nothing of the planner's conversation can reach the
+// main Implementer session (Session B), which starts afterwards.
+//
+// The planner is launched from `resources_discover`, not `session_start`: pi runs handlers
+// sequentially in load order, and pi-subagents only installs the extension context that delegated
+// execution needs from its own `session_start` handler. Every session_start handler has completed
+// before resources_discover (which pi also awaits, even in a prompt-less run), so the context is valid.
 export default function (pi) {
   const file = process.env.PI_PREPARED_IMPLEMENTATION_FILE;
   if (!file || process.env.PI_IMPLEMENTER_BOOTSTRAP !== 'true') return;
 
-  pi.on('session_start', async (_event, ctx) => {
+  let started = false;
+  pi.on('resources_discover', async (_event, ctx) => {
+    if (started) return;
+    started = true;
     const config = stageConfig('implementer');
     try {
       const prepared = await prepareImplementation(pi, ctx, config, undefined);
