@@ -28,6 +28,11 @@ export default function (pi) {
         phase: 'planner_completed',
         status: prepared.status,
         plannerDurationMs: prepared.plannerDurationMs,
+        evidenceUsed: prepared.plannerEvidenceUsed ?? 0,
+        evidenceCap: prepared.plannerEvidenceCap ?? config.implementationPlannerEvidenceBudget,
+        providerTurns: prepared.plannerProviderTurns ?? null,
+        inputTokens: prepared.plannerUsage?.input ?? null,
+        outputTokens: prepared.plannerUsage?.output ?? null,
         ...(prepared.status === 'fallback' ? { failureClass: prepared.failureClass } : {}),
       })}`);
     } catch (error) {
