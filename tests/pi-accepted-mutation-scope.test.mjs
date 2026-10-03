@@ -12,7 +12,7 @@ import {
   mutationScopeReceipt,
   registerMutationScope,
 } from '../scripts/pi-common/accepted-mutation-scope.mjs';
-import { validateFinalProductTree } from '../scripts/pi-common/finalize-product-tree.mjs';
+import { validateAcceptedScopeMetadata, validateFinalProductTree } from '../scripts/pi-common/finalize-product-tree.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 
 function repo(t) {
@@ -298,5 +298,32 @@ test('final product validation applies the accepted-scope gate before product ch
       assert.deepEqual(diagnostic.unexpected_paths, ['scratch.py']);
       return true;
     },
+  );
+});
+
+
+test('final scope metadata gate permits the explicitly human-gated mini-swe path', t => {
+  const { root } = repo(t);
+  const resultFile = path.join(root, '..', path.basename(root) + '-mini-result.json');
+  t.after(() => fs.rmSync(resultFile, { force: true }));
+  fs.writeFileSync(path.join(root, 'mini.py'), 'value = 1\n');
+
+  writeImplementerResult(resultFile, {
+    title: 'Mini change',
+    summary: 'Implement through mini-swe.',
+    changes: ['Add mini.py'],
+    files: ['mini.py'],
+    security_notes: 'None.',
+    limitations: 'Requires human gate.',
+    scope_enforcement: 'unsandboxed-gated',
+  });
+
+  assert.equal(
+    validateAcceptedScopeMetadata({
+      cwd: root,
+      base: 'origin/dev',
+      env: { PI_IMPLEMENTER_RESULT_FILE: resultFile },
+    }).scope_enforcement,
+    'unsandboxed-gated',
   );
 });
