@@ -122,6 +122,15 @@ test('action-required runtime steering uses a real user steer without importing 
   assert.doesNotMatch(runtime, /customType: 'pi-action-required'/);
 });
 
+test('#424 coding-session fallback transports mutation journal through a shared file, not one env value', () => {
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.doesNotMatch(runtime, /PI_MUTATION_JOURNAL_STATE:\s*JSON\.stringify/);
+  assert.match(runtime, /fallbackMutationJournalFile/);
+  assert.match(runtime, /writeMutationJournalFile\(/);
+  assert.match(runtime, /PI_MUTATION_JOURNAL_FILE:\s*codingMutationJournalFile/);
+  assert.match(runtime, /Reload child journal mutations into the parent process cache/);
+});
+
 test('action-required tool surface keeps only productive and control tools', () => {
   assert.deepEqual(
     actionRequiredToolNames(
