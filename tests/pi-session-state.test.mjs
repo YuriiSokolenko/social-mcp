@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames, repairProviderToolDefinitions } from '../scripts/pi-common/session-state.mjs';
+import { capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from '../scripts/pi-common/session-state.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 const LSP = { server_id: 'python', workspace_root: '/work/tree' };
@@ -177,47 +177,10 @@ test('mergeNewlyActiveTools keeps baseline order and adds newly enabled tools', 
   assert.deepEqual(mergeNewlyActiveTools(['a', 'b'], ['b', 'subagent']), ['a', 'b', 'subagent']);
 });
 
-test('repairProviderToolDefinitions adds missing definitions in the payload tool shape', () => {
-  const infos = [{ name: 'submit_result', description: 'Submit', parameters: { type: 'object', properties: { title: { type: 'string' } } } }];
-  const completions = repairProviderToolDefinitions(
-    { model: 'm', tools: [{ type: 'function', function: { name: 'write', description: 'w', parameters: {} } }] },
-    ['submit_result'],
-    infos,
-  );
-  assert.deepEqual(completions.added, ['submit_result']);
-  assert.deepEqual(completions.payload.tools[1], { type: 'function', function: { name: 'submit_result', description: 'Submit', parameters: infos[0].parameters } });
-
-  const responses = repairProviderToolDefinitions({ tools: [{ type: 'function', name: 'write', parameters: {} }] }, ['submit_result'], infos);
-  assert.deepEqual(responses.payload.tools[1], { type: 'function', name: 'submit_result', description: 'Submit', parameters: infos[0].parameters });
-
-  const anthropic = repairProviderToolDefinitions({ tools: [{ name: 'write', input_schema: {} }] }, ['submit_result'], infos);
-  assert.deepEqual(anthropic.payload.tools[1], { name: 'submit_result', description: 'Submit', input_schema: infos[0].parameters });
-});
-
-test('repairProviderToolDefinitions reports unrepairable names and leaves the payload unchanged', () => {
-  const payload = { tools: [{ name: 'write' }] };
-  const unknownShape = repairProviderToolDefinitions(payload, ['submit_result'], [{ name: 'submit_result', parameters: {} }]);
-  assert.equal(unknownShape.payload, payload);
-  assert.deepEqual(unknownShape.unrepairable, ['submit_result']);
-
-  const unregistered = repairProviderToolDefinitions(
-    { tools: [{ type: 'function', function: { name: 'write' } }] },
-    ['ghost'],
-    [],
-  );
-  assert.deepEqual(unregistered, { payload: unregistered.payload, added: [], unrepairable: ['ghost'] });
-  assert.equal(unregistered.payload.tools.length, 1);
-});
-
-test('repairProviderToolDefinitions uses the model API shape when the payload has no tool to copy', () => {
-  const infos = [{ name: 'write', description: 'Write', parameters: { type: 'object' } }];
-  assert.deepEqual(
-    repairProviderToolDefinitions({ tools: [] }, ['write'], infos, { api: 'openai-completions' }).payload.tools,
-    [{ type: 'function', function: { name: 'write', description: 'Write', parameters: { type: 'object' } } }],
-  );
-  assert.deepEqual(
-    repairProviderToolDefinitions({ tools: [] }, ['write'], infos, { api: 'anthropic-messages' }).payload.tools,
-    [{ name: 'write', description: 'Write', input_schema: { type: 'object' } }],
-  );
-  assert.deepEqual(repairProviderToolDefinitions({ tools: [] }, ['write'], infos, { api: 'unknown-api' }).unrepairable, ['write']);
+test('classifyMissingExecutor separates contract failures, deferred tools and unavailable attempts', () => {
+  const snapshot = { request: 3, executableTools: ['write', 'submit_result'], deferredTools: ['run_check'] };
+  assert.equal(classifyMissingExecutor('write', snapshot), 'contract_failure');
+  assert.equal(classifyMissingExecutor('run_check', snapshot), 'deferred');
+  assert.equal(classifyMissingExecutor('bash', snapshot), 'unavailable');
+  assert.equal(classifyMissingExecutor('bash', null), 'contract_failure', 'without a snapshot nothing proves the tool was not advertised');
 });

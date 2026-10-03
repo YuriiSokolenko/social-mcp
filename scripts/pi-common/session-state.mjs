@@ -28,56 +28,19 @@ export function providerToolNames(payload) {
     .filter(name => typeof name === 'string' && name.length > 0))];
 }
 
-// Tool shapes of pi-ai provider APIs, used when the payload has no tool entry to copy.
-const API_TOOL_TEMPLATES = {
-  'openai-completions': { type: 'function', function: {} },
-  'openai-responses': { type: 'function', name: '', parameters: {} },
-  'azure-openai-responses': { type: 'function', name: '', parameters: {} },
-  'openai-codex-responses': { type: 'function', name: '', parameters: {} },
-  'anthropic-messages': { name: '', input_schema: {} },
-};
-
-function providerToolDefinition(template, info) {
-  // JSON round-trip drops TypeBox symbol metadata, as the provider serializer does.
-  const parameters = JSON.parse(JSON.stringify(info.parameters ?? { type: 'object', properties: {} }));
-  const description = String(info.description ?? '');
-  if (template?.function && typeof template.function === 'object') {
-    return { type: template.type ?? 'function', function: { name: info.name, description, parameters } };
-  }
-  if (template && 'input_schema' in template) return { name: info.name, description, input_schema: parameters };
-  if (template && typeof template.name === 'string' && 'parameters' in template) {
-    return { type: template.type ?? 'function', name: info.name, description, parameters };
-  }
-  return null;
-}
-
 /**
- * Adds definitions for tools that became active after the provider payload was assembled.
- * The shape of an existing payload.tools entry is the template, so the added definition matches
- * the provider API pi already serialized for; without one, the known shape of the model's provider
- * API is used. Names without a registered definition, or without a recognizable shape, are
- * returned as unrepairable.
+ * Classifies pi's `Tool X not found` result against the authoritative provider-request snapshot.
+ * pi resolves tool calls against the turn context captured with the request, so:
+ * - a tool the request advertised but pi cannot execute is a real tool-contract failure;
+ * - a tool activated after the payload was assembled (deferred) is a lifecycle mismatch: pi exposes
+ *   it from the next request;
+ * - any other tool was never offered to the model and is an ordinary unavailable-tool attempt.
+ * Without a snapshot nothing proves the tool was not advertised, so it stays a contract failure.
  */
-export function repairProviderToolDefinitions(payload, missingNames, toolInfos = [], { api = null } = {}) {
-  const template = (Array.isArray(payload?.tools) ? payload.tools[0] : null) ?? API_TOOL_TEMPLATES[api] ?? null;
-  const infos = new Map(toolInfos.filter(info => info?.name).map(info => [info.name, info]));
-  const added = [];
-  const unrepairable = [];
-  const definitions = [];
-  for (const name of missingNames) {
-    const definition = infos.has(name) ? providerToolDefinition(template, infos.get(name)) : null;
-    if (definition) {
-      definitions.push(definition);
-      added.push(name);
-    } else {
-      unrepairable.push(name);
-    }
-  }
-  return {
-    payload: definitions.length ? { ...payload, tools: [...(payload.tools ?? []), ...definitions] } : payload,
-    added,
-    unrepairable,
-  };
+export function classifyMissingExecutor(toolName, snapshot) {
+  if (!snapshot || snapshot.executableTools?.includes(toolName)) return 'contract_failure';
+  if (snapshot.deferredTools?.includes(toolName)) return 'deferred';
+  return 'unavailable';
 }
 
 export function capabilitySnapshotGuidance(activeToolNames) {

@@ -18,7 +18,7 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
-import { activeToolGuidance, capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames, repairProviderToolDefinitions } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -844,24 +844,44 @@ export default function (pi) {
     await ctx.abort();
   }
 
-  // Called from before_provider_request. pi swallows hook errors and sends the payload anyway,
-  // so the run is aborted instead: the session's abort signal is set synchronously, before the
-  // provider creates the HTTP request. Not awaited: session abort waits for this very run to idle.
-  function abortUnrepresentableProviderRequest(request, toolNames, ctx) {
-    if (toolContractAborted) return;
-    toolContractAborted = true;
-    recordRuntimeAbort(
-      'PI_TOOL_CONTRACT_FAILURE',
-      `Provider request ${request} cannot carry definitions for active tools ${toolNames.join(', ')}; the request was not sent.`,
-      { failure_class: 'infrastructure', tool: toolNames.join(','), source: 'provider_request', request },
-    );
-    try {
-      Promise.resolve(ctx?.abort?.()).catch(error => {
-        console.error(`PI_PROVIDER_REQUEST_ABORT_ERROR ${JSON.stringify({ stage, error: String(error?.message ?? error) })}`);
-      });
-    } catch (error) {
-      console.error(`PI_PROVIDER_REQUEST_ABORT_ERROR ${JSON.stringify({ stage, error: String(error?.message ?? error) })}`);
+  // pi reports `Tool X not found` through tool_execution_end and/or tool_result for the same call.
+  // Only a tool the authoritative request snapshot advertised is a real contract failure; returns
+  // replacement guidance for the other (recoverable) classes.
+  const missingExecutorCalls = new Map();
+  async function handleMissingExecutor(event, ctx) {
+    const kind = classifyMissingExecutor(event.toolName, providerCapabilitySnapshot);
+    if (kind === 'contract_failure') {
+      await abortToolContract(event.toolName, ctx);
+      return null;
     }
+    const snapshot = providerCapabilitySnapshot;
+    const guidance = kind === 'deferred'
+      ? `LIFECYCLE: ${event.toolName} became active after provider request ${snapshot.request} was built, so it is not executable in this response. Do not retry it in this response; it is exposed from the next provider request. ${capabilitySnapshotGuidance(snapshot.executableTools)}`
+      : `BLOCKED: ${event.toolName} is not exposed by the runtime. ${capabilitySnapshotGuidance(snapshot.executableTools)}`;
+    const key = event.toolCallId ?? `${snapshot.request}:${event.toolName}`;
+    if (!missingExecutorCalls.has(key)) {
+      missingExecutorCalls.set(key, kind);
+      // pi returns its own immediate "not found" result without running tool_result, so the
+      // replacement text may never reach the model. A steer lands on the next provider request,
+      // which is exactly the boundary where pi exposes the deferred tool.
+      if (kind === 'deferred') {
+        await pi.sendUserMessage(
+          `RUNTIME: ${event.toolName} became active after provider request ${snapshot.request} was built, so that call could not execute. It is executable from provider request ${snapshot.request + 1} onward; call it again only if it is still needed.`,
+          { deliverAs: 'steer' },
+        );
+      }
+      if (kind === 'unavailable') unavailableToolAttempts += 1;
+      console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
+        stage,
+        kind: kind === 'deferred' ? 'deferred_tool_called' : 'executor_not_found',
+        attemptedTool: event.toolName,
+        request: snapshot.request,
+        requestTools: snapshot.executableTools,
+        deferredTools: snapshot.deferredTools,
+        ...(kind === 'unavailable' ? { count: unavailableToolAttempts } : {}),
+      })}`);
+    }
+    return guidance;
   }
 
   async function handleLoopResult(loopResult, ctx) {
@@ -1011,7 +1031,7 @@ export default function (pi) {
   let codingFirstResponseLogged = false;
   if (stage === 'implementer') {
     let patchedThinkingRequests = 0;
-    pi.on('before_provider_request', (event, ctx) => {
+    pi.on('before_provider_request', (event) => {
       forcedProviderRequestInFlight = false;
       const productiveState = syncProductiveState();
       syncActionToolSurface(productiveState);
@@ -1031,38 +1051,32 @@ export default function (pi) {
         const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
         if (tools.length !== patched.tools.length) patched = { ...patched, tools };
 
-        const request = ++providerRequestSequence;
-        // The surface may have expanded after pi assembled this payload (for example the sync
-        // above restored run_check). Filtering cannot add a definition, so repair the request
-        // from the registry. payload.messages are already serialized and may advertise the
-        // missing tool, so narrowing payload.tools alone cannot make this request consistent:
-        // an unrepairable definition fails closed and the request is not sent.
-        const presentBeforeRepair = providerToolNames(patched);
-        const missingDefinitions = pi.getActiveTools().filter(name => !presentBeforeRepair.includes(name));
-        if (missingDefinitions.length) {
-          const repair = repairProviderToolDefinitions(patched, missingDefinitions, pi.getAllTools?.() ?? [], { api: ctx?.model?.api });
-          patched = repair.payload;
-          console.warn(`PI_PROVIDER_CAPABILITY_DIVERGENCE ${JSON.stringify({
-            stage,
-            request,
-            activeTools: [...active],
-            executableTools: presentBeforeRepair,
-            missingDefinitions,
-            repaired: repair.added,
-            unrepairable: repair.unrepairable,
-          })}`);
-          if (repair.unrepairable.length) abortUnrepresentableProviderRequest(request, repair.unrepairable, ctx);
-        }
-
+        // pi resolves this turn's tool calls against the context captured with this payload, so
+        // the payload's definitions are the executable surface of this request. A tool activated
+        // after assembly (for example by the sync above) cannot execute in this turn even if its
+        // definition were added here; pi exposes it from the next request. Record it as deferred
+        // instead of advertising it.
         const executableTools = providerToolNames(patched);
-        const activeTools = pi.getActiveTools();
+        const liveActiveTools = pi.getActiveTools();
+        const deferredTools = liveActiveTools.filter(name => !executableTools.includes(name));
         providerCapabilitySnapshot = {
-          request,
+          request: ++providerRequestSequence,
           productiveState,
-          activeTools,
+          activeTools: executableTools,
           executableTools,
+          liveActiveTools,
+          deferredTools,
         };
         console.log(`PI_PROVIDER_CAPABILITY_SNAPSHOT ${JSON.stringify({ stage, ...providerCapabilitySnapshot })}`);
+        if (deferredTools.length) {
+          console.warn(`PI_PROVIDER_CAPABILITY_DEFERRED ${JSON.stringify({
+            stage,
+            request: providerCapabilitySnapshot.request,
+            executableTools,
+            activeTools: liveActiveTools,
+            deferredTools,
+          })}`);
+        }
 
         const enteringActionRequired =
           productiveState === 'action_required' &&
@@ -2293,7 +2307,7 @@ export default function (pi) {
   });
   pi.on('tool_execution_end', async (event, ctx) => {
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
-      await abortToolContract(event.toolName, ctx);
+      await handleMissingExecutor(event, ctx);
       return;
     }
     // pi rejects a call whose arguments were cut off at the output ceiling before execution and
@@ -2493,8 +2507,8 @@ export default function (pi) {
 
   pi.on('tool_result', async (event, ctx) => {
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
-      await abortToolContract(event.toolName, ctx);
-      return undefined;
+      const guidance = await handleMissingExecutor(event, ctx);
+      return guidance ? { content: [{ type: 'text', text: guidance }], isError: true } : undefined;
     }
     const text = resultText(event);
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
