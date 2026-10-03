@@ -98,7 +98,7 @@ for (const job of jobs) {
   const totals = {
     input: ledger.totals.input, output: ledger.totals.output,
     cache_read: ledger.totals.cacheRead, cache_write: ledger.totals.cacheWrite,
-    total_tokens: ledger.totals.total, model_seconds: ledger.totals.responseMs / 1000,
+    total_tokens: ledger.totals.total, model_seconds: ledger.totals.providerResponseMs / 1000,
   };
   const runnerSeconds = job.started_at && job.completed_at
     ? Math.max(0, Math.round((Date.parse(job.completed_at) - Date.parse(job.started_at)) / 1000)) : 0;
