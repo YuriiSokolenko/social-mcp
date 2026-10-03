@@ -650,7 +650,7 @@ function runtimeScenario(mode) {
         // runtime modules, but the real parent submit_result uses process.cwd()
         // for integrateLatestDev()/git publication checks. Match production here.
         process.chdir(cwd);
-        assert.equal(process.cwd(), cwd);
+        assert.equal(fs.realpathSync(process.cwd()), fs.realpathSync(cwd));
         await call('submit_result', {
           title: 'Parent submit',
           summary: 'Publish coding-session changes from the parent.',
