@@ -441,12 +441,14 @@ test('checkpoint persists accepted scope before submit_result and does not creat
   assert.equal(git('rev-parse', 'HEAD').trim(), headBefore, 'no empty scope-only commit is added');
 
   const resultFile = path.join(root, 'result.json');
-  fs.writeFileSync(path.join(work, 'second.py'), 'value = 2\n');
+  // The result metadata is intentionally stale: a later repair/coding step
+  // accepted another path after submit_result. Checkpoint must persist the
+  // live sidecar superset, not lose the later acceptance.
   writeImplementerResult(resultFile, {
     title: 'Feature follow-up',
-    summary: 'Add the second task-related file.',
-    changes: ['Add feature files'],
-    files: ['feature.py', 'second.py'],
+    summary: 'Add the feature implementation.',
+    changes: ['Add feature file'],
+    files: ['feature.py'],
     security_notes: 'None.',
     limitations: 'None.',
     scope_enforcement: 'predeclared',
@@ -454,12 +456,19 @@ test('checkpoint persists accepted scope before submit_result and does not creat
       schema_version: 1,
       accepted: [
         { path: 'feature.py', rationale: 'Issue requires the new feature implementation file.' },
-        { path: 'second.py', rationale: 'Issue requires the follow-up implementation file.' },
       ],
       temporary: [],
       baseline: [],
     },
   });
+  registerMutationScope({
+    cwd: work,
+    paths: ['second.py'],
+    disposition: 'publishable',
+    rationale: 'Repair attempt requires the follow-up implementation file.',
+    env: { PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile },
+  });
+  fs.writeFileSync(path.join(work, 'second.py'), 'value = 2\n');
   const third = saveCheckpoint({
     issue: 422,
     cwd: work,
@@ -470,6 +479,58 @@ test('checkpoint persists accepted scope before submit_result and does not creat
   });
   assert.equal(third.changed, true);
   assert.deepEqual(acceptedScopeStateFromRef(third.commit, work).accepted.map(entry => entry.path), ['feature.py', 'second.py']);
+});
+
+test('checkpoint never lets a Pi sidecar override unsandboxed-gated metadata', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-mini-checkpoint-scope-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const remote = path.join(root, 'remote.git');
+  const work = path.join(root, 'work');
+  const scopeFile = path.join(root, 'accepted-scope.json');
+  const resultFile = path.join(root, 'result.json');
+  execFileSync('git', ['init', '--bare', remote]);
+  fs.mkdirSync(work);
+  const git = (...args) => execFileSync('git', args, { cwd: work, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  git('remote', 'add', 'origin', remote);
+  fs.writeFileSync(path.join(work, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+  git('branch', '-M', 'dev');
+  git('push', '-u', 'origin', 'dev');
+  const startCommit = git('rev-parse', 'HEAD').trim();
+
+  registerMutationScope({
+    cwd: work,
+    paths: ['feature.py'],
+    disposition: 'publishable',
+    rationale: 'Stale Pi sidecar entry must not upgrade mini-swe trust.',
+    env: { PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile },
+  });
+  fs.writeFileSync(path.join(work, 'feature.py'), 'value = 1\n');
+  writeImplementerResult(resultFile, {
+    title: 'Mini change',
+    summary: 'Unsandboxed implementation.',
+    changes: ['Add feature'],
+    files: ['feature.py'],
+    security_notes: 'None.',
+    limitations: 'Human gate required.',
+    scope_enforcement: 'unsandboxed-gated',
+  });
+
+  const saved = saveCheckpoint({
+    issue: 422,
+    cwd: work,
+    startCommit,
+    expectedSha: '',
+    resultFile,
+    scopeFile,
+  });
+  assert.equal(saved.changed, true);
+  const message = git('log', '-1', '--format=%B');
+  assert.match(message, /Pi-Scope-Enforcement: unsandboxed-gated/);
+  assert.doesNotMatch(message, /Pi-Accepted-Mutation-Scope:/);
 });
 
 test('resume finds the newest valid scope receipt through a marker-less checkpoint tip', (t) => {
