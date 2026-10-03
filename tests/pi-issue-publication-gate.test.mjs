@@ -6,10 +6,12 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readScript } from './helpers/resolved-source.mjs';
 
-import { assertPublicationFileSet, isUnsandboxedBackend, nextLabelsForVerification, publicationBase } from '../scripts/pi-common/issue-publication.mjs';
+import { assertPublicationFileSet, isUnsandboxedBackend, nextLabelsForVerification, publicationBase, saveCheckpoint } from '../scripts/pi-common/issue-publication.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { PIPELINE_LABELS } from '../scripts/pi-common/state-machine.mjs';
 import { VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
+import { acceptedScopeStateFromRef } from '../scripts/pi-common/issue-worktree.mjs';
+import { registerMutationScope } from '../scripts/pi-common/accepted-mutation-scope.mjs';
 
 const TYPEBOX_STUB_LOADER = `export async function resolve(specifier, context, nextResolve) {
   if (specifier === 'typebox') return {
@@ -380,4 +382,118 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test('checkpoint persists accepted scope before submit_result and does not create empty scope-only commits', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-scope-checkpoint-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const remote = path.join(root, 'remote.git');
+  const work = path.join(root, 'work');
+  const scopeFile = path.join(root, 'accepted-scope.json');
+  const missingResult = path.join(root, 'missing-result.json');
+  execFileSync('git', ['init', '--bare', remote]);
+  fs.mkdirSync(work);
+  const git = (...args) => execFileSync('git', args, { cwd: work, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  git('remote', 'add', 'origin', remote);
+  fs.writeFileSync(path.join(work, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+  git('branch', '-M', 'dev');
+  git('push', '-u', 'origin', 'dev');
+  const startCommit = git('rev-parse', 'HEAD').trim();
+
+  registerMutationScope({
+    cwd: work,
+    paths: ['feature.py'],
+    disposition: 'publishable',
+    rationale: 'Issue requires the new feature implementation file.',
+    env: { PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile },
+  });
+  fs.writeFileSync(path.join(work, 'feature.py'), 'value = 1\n');
+
+  const first = saveCheckpoint({
+    issue: 422,
+    cwd: work,
+    startCommit,
+    expectedSha: '',
+    resultFile: missingResult,
+    scopeFile,
+  });
+  assert.equal(first.changed, true);
+  assert.deepEqual(acceptedScopeStateFromRef(first.commit).accepted, [{
+    path: 'feature.py',
+    rationale: 'Issue requires the new feature implementation file.',
+  }]);
+
+  const headBefore = git('rev-parse', 'HEAD').trim();
+  const second = saveCheckpoint({
+    issue: 422,
+    cwd: work,
+    startCommit,
+    expectedSha: first.commit,
+    resultFile: missingResult,
+    scopeFile,
+  });
+  assert.equal(second.changed, true, 'the existing implementation diff is still checkpoint content');
+  assert.equal(git('rev-parse', 'HEAD').trim(), headBefore, 'no empty scope-only commit is added');
+});
+
+test('resume finds the newest valid scope receipt through a marker-less checkpoint tip', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-scope-history-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+
+  const receipt = {
+    schema_version: 1,
+    accepted: [{ path: 'feature.py', rationale: 'Issue requires the feature file.' }],
+    temporary: [],
+    baseline: [],
+  };
+  const encoded = Buffer.from(JSON.stringify(receipt), 'utf8').toString('base64url');
+  fs.writeFileSync(path.join(dir, 'feature.py'), 'one\n');
+  git('add', '-A');
+  git('commit', '-m', `checkpoint one\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encoded}`);
+
+  fs.writeFileSync(path.join(dir, 'later.txt'), 'later\n');
+  git('add', '-A');
+  git('commit', '-m', 'marker-less later checkpoint');
+
+  assert.deepEqual(acceptedScopeStateFromRef('HEAD'), receipt);
+});
+
+test('mini-swe unsandboxed-gated metadata still requires exact declared diff but not a Pi scope receipt', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-mini-swe-scope-'));
+  const resultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-mini-swe-result-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(resultDir, { recursive: true, force: true }));
+  const resultFile = path.join(resultDir, 'result.json');
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  git('init');
+  configureTestGit(git);
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-m', 'base');
+  const base = git('rev-parse', 'HEAD').trim();
+  fs.writeFileSync(path.join(dir, 'feature.py'), 'value = 1\n');
+  git('add', '-A');
+  git('commit', '-m', 'candidate');
+
+  writeImplementerResult(resultFile, {
+    title: 'Feature',
+    summary: 'Implement feature.',
+    changes: ['Add feature'],
+    files: ['feature.py'],
+    security_notes: 'None.',
+    limitations: 'Unsandboxed backend remains needs-human gated.',
+    scope_enforcement: 'unsandboxed-gated',
+  });
+  assert.deepEqual(assertPublicationFileSet({ cwd: dir, base, resultFile }), ['feature.py']);
 });
