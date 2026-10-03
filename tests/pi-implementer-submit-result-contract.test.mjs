@@ -148,6 +148,7 @@ test('submit_result advertises a flat object schema and runtime returns structur
       const pi = {
         registerTool(value) { if (value.name === 'submit_result') tool = value; },
         appendEntry() {},
+        getActiveTools() { return ['submit_result']; },
         on(event, fn) { if (event === 'agent_before_settle') settle = fn; },
       };
       registerResultTool(pi);
@@ -207,6 +208,8 @@ test('submit_result advertises a flat object schema and runtime returns structur
       const nudge = settle();
       assert.match(nudge.entries[0].content, /missing publication fields/);
       assert.match(nudge.entries[0].content, /retry submit_result immediately/);
+      assert.match(nudge.entries[0].content, /CURRENTLY EXPOSED TOOLS.*submit_result/);
+      assert.doesNotMatch(nudge.entries[0].content, /need_more_evidence/, 'hidden blocker is not advertised by the terminal nudge');
       assert.match(tool.description, /runtime validates that complete publication contract/);
     `;
     const child = runProgram({

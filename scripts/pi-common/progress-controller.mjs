@@ -168,6 +168,13 @@ export function actionRequiredToolNames(
   return activeToolNames.filter(name => allowed.has(name));
 }
 
+export function elevatedMutationTurnToolNames(activeToolNames, { blockerTool = null } = {}) {
+  if (!Array.isArray(activeToolNames)) throw new Error('activeToolNames must be an array');
+  const allowed = new Set(ELEVATED_MUTATION_TURN_TOOLS);
+  if (blockerTool) allowed.add(blockerTool);
+  return activeToolNames.filter(name => allowed.has(name));
+}
+
 export function nextResponseBudgetLevel(currentLevel, outputTokens, budgets = RESPONSE_BUDGETS, madeProgress = true) {
   const ceiling = budgets[currentLevel];
   if (!ceiling) throw new Error(`Unknown response budget: ${currentLevel}`);
@@ -246,6 +253,10 @@ export class ProgressController {
     this.productiveEvidenceBudgetOverride = null;
     this.lastEvidenceRequestSignature = null;
     this.evidenceUnlockUsedSinceProgress = false;
+    // Snapshot only an accepted need_more_evidence transition. Blocked attempts may still
+    // produce tool_execution_end(isError=true) in Pi core, so execution-end rollback must
+    // never infer ownership from tool name alone.
+    this.pendingEvidenceUnlock = null;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
     this.requireLspStartBeforeFindSymbol = config.requireLspStartBeforeFindSymbol === true;
@@ -257,6 +268,7 @@ export class ProgressController {
     this.largeMutationBudgetTool = this.productiveProgress?.largeMutationBudgetTool ?? null;
     this.largeMutationBudgetMaxTokens = this.productiveProgress?.largeMutationBudgetMaxTokens ?? null;
     this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
     // Planner-owned intent is separate from the pending/active grant so evidence turns
     // stay on the normal budget until the action phase is actually reached.
     this.automaticLargeMutationBudgetArmed = false;
@@ -343,6 +355,7 @@ export class ProgressController {
     }
     this.automaticLargeMutationBudgetArmed = false;
     this.largeMutationBudgetState = 'pending';
+    this.largeMutationBudgetSource = 'automatic';
     return true;
   }
 
@@ -368,11 +381,31 @@ export class ProgressController {
   resetLargeMutationBudget() {
     const wasActive = this.largeMutationBudgetState === 'active';
     this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
     return wasActive;
+  }
+
+  yieldLargeMutationBudgetForEvidence() {
+    if (this.largeMutationBudgetState !== 'active' || this.productiveState !== 'evidence_allowed' || !this.evidenceUnlockUsedSinceProgress) {
+      return { yielded: false, rearmed: false };
+    }
+    const rearmed = this.largeMutationBudgetSource === 'automatic';
+    this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
+    if (rearmed) this.automaticLargeMutationBudgetArmed = true;
+    return { yielded: true, rearmed };
   }
 
   productiveProgressState() {
     return this.productiveState;
+  }
+
+  evidenceUnlockAvailable() {
+    return Boolean(
+      this.productiveBlockerTool &&
+      this.productiveState === 'action_required' &&
+      !this.evidenceUnlockUsedSinceProgress
+    );
   }
 
   complexityRecorded() {
@@ -452,10 +485,12 @@ export class ProgressController {
     // spend it on nothing but an actual mutation, rollback, or terminal submission. This is
     // the real guarantee; the runtime's tool-surface restriction is UX on top of it, not a
     // substitute for it.
-    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !ELEVATED_MUTATION_TURN_TOOLS.has(toolName)) {
+    const elevatedEvidenceUnlock = Boolean(this.productiveBlockerTool && toolName === this.productiveBlockerTool);
+    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !ELEVATED_MUTATION_TURN_TOOLS.has(toolName) && !elevatedEvidenceUnlock) {
+      const blockerGuidance = this.productiveBlockerTool ? `, or ${this.productiveBlockerTool} for one concrete missing fact` : '';
       return {
         block: true,
-        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only accept_mutation_scope, structural_edit, safe_edit, edit, write, rollback_last_mutation, or a terminal submit action are allowed.`,
+        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only accept_mutation_scope, structural_edit, safe_edit, edit, write, rollback_last_mutation, a terminal submit action${blockerGuidance} are allowed.`,
       };
     }
 
@@ -476,6 +511,7 @@ export class ProgressController {
       };
     }
 
+    let acceptedEvidenceUnlock = null;
     const pendingComplexityTransition =
       this.requireComplexity &&
       !this.preparationSatisfied() &&
@@ -597,10 +633,15 @@ export class ProgressController {
               reason: 'BLOCKED: an extra evidence permit was already used since the last successful structural_edit/safe_edit/edit/write/submit_result. Act on the evidence already gathered before requesting more.',
             };
           }
-          this.lastEvidenceRequestSignature = blockerSignature;
-          this.evidenceUnlockUsedSinceProgress = true;
-          this.productiveEvidenceRemaining = 1;
-          this.productiveState = 'evidence_allowed';
+          acceptedEvidenceUnlock = {
+            signature: blockerSignature,
+            previous: {
+              lastEvidenceRequestSignature: this.lastEvidenceRequestSignature,
+              evidenceUnlockUsedSinceProgress: this.evidenceUnlockUsedSinceProgress,
+              productiveEvidenceRemaining: this.productiveEvidenceRemaining,
+              productiveState: this.productiveState,
+            },
+          };
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
           if (this.verificationPermits > 0) {
             acceptedVerificationCall = true;
@@ -683,6 +724,13 @@ export class ProgressController {
       this.verificationPermits -= 1;
       if (this.verificationPermits === 0) this.verificationState = 'exhausted';
     }
+    if (acceptedEvidenceUnlock) {
+      this.pendingEvidenceUnlock = acceptedEvidenceUnlock;
+      this.lastEvidenceRequestSignature = acceptedEvidenceUnlock.signature;
+      this.evidenceUnlockUsedSinceProgress = true;
+      this.productiveEvidenceRemaining = 1;
+      this.productiveState = 'evidence_allowed';
+    }
     this.turnUsedTool = true;
     return undefined;
   }
@@ -700,7 +748,23 @@ export class ProgressController {
     });
   }
 
-  onToolExecutionEnd(toolName, isError, { madeProgress = true } = {}) {
+  onToolExecutionEnd(toolName, isError, { madeProgress = true, input = null } = {}) {
+    if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+      const pending = this.pendingEvidenceUnlock;
+      const executionSignature = input == null ? null : toolCallSignature(toolName, input);
+      if (pending && executionSignature === pending.signature) {
+        // Only the exact blocker call that opened this evidence window owns its rollback.
+        // Pi core also emits tool_execution_end for locally blocked attempts; those calls
+        // have no accepted-input record and therefore cannot reset the per-epoch limit.
+        this.pendingEvidenceUnlock = null;
+        if (isError) {
+          this.lastEvidenceRequestSignature = pending.previous.lastEvidenceRequestSignature;
+          this.evidenceUnlockUsedSinceProgress = pending.previous.evidenceUnlockUsedSinceProgress;
+          this.productiveEvidenceRemaining = pending.previous.productiveEvidenceRemaining;
+          this.productiveState = pending.previous.productiveState;
+        }
+      }
+    }
     if (
       isError &&
       this.requireComplexity &&
@@ -756,6 +820,7 @@ export class ProgressController {
     if (!isError && this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool) {
       this.automaticLargeMutationBudgetArmed = false;
       this.largeMutationBudgetState = 'pending';
+      this.largeMutationBudgetSource = 'manual';
     }
     if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
       this.verificationPermits = 1;

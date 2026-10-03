@@ -681,7 +681,9 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.match(stageConfig, /controlTools: \['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'\]/);
   assert.match(stageConfig, /actionTools: \['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation', 'submit_result'\]/);
   assert.match(progress, /const MUTATION_TOOLS = new Set\(\['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'recover_worktree', 'undo_mutation'\]\)/);
-  assert.match(resultTool, /structural_edit\/safe_edit\/edit\/write/);
+  assert.match(resultTool, /IMPLEMENTER_MUTATION_TOOLS = Object\.freeze\(\['structural_edit', 'safe_edit', 'edit', 'write'\]\)/);
+  assert.match(resultTool, /IMPLEMENTER_MUTATION_TOOLS\.filter\(name => active\.has\(name\)\)/);
+  assert.match(resultTool, /capabilitySnapshotGuidance\(names\)/);
 });
 
 test('implementer has an explicit already-satisfied terminal path without duplicate edits', () => {
