@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
-import { runStructuredSubagent } from './structured-subagent.mjs';
+import { recordDescendantMetric, runStructuredSubagent } from './structured-subagent.mjs';
 import { baseRef } from './project-config.mjs';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs';
 
@@ -247,62 +248,98 @@ ${issue.body}`;
 // inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
 const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
 
+// Sums numeric usage fields (recursively) across planner attempts; null when nothing was reported.
+export function addUsage(total, next) {
+  if (!next || typeof next !== 'object') return total ?? null;
+  if (!total) return structuredClone(next);
+  const sum = { ...total };
+  for (const [key, value] of Object.entries(next)) {
+    if (typeof value === 'number') sum[key] = (typeof sum[key] === 'number' ? sum[key] : 0) + value;
+    else if (value && typeof value === 'object' && !Array.isArray(value)) sum[key] = addUsage(sum[key] && typeof sum[key] === 'object' ? sum[key] : null, value);
+    else if (!(key in sum)) sum[key] = value;
+  }
+  return sum;
+}
+
 export async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null) {
   const request = {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
-    metricCall: 'planner',
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: 0,
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
+  };
+  const evidenceCap = plannerEvidenceBudget(config);
+  // Every attempt is a fresh child with a fresh gate, so the cap must be spent across the whole
+  // planning lifecycle, not per attempt. The parent cannot see how much a failed child used, so
+  // fail closed: only the first attempt may gather evidence; a retry gets 0 (structured_output
+  // stays available) and can never push the lifecycle past the hard cap.
+  const applyEvidenceCap = attempt => {
+    const cap = attempt === 0 ? evidenceCap : 0;
     // Backstop only: pi-subagents counts every child tool call (including structured_output
-    // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative planner evidence cap
-    // is the child-side gate (pi-planner-evidence.mjs), so leave headroom for the result call and
-    // its schema retry instead of letting this budget shave the evidence window.
-    toolBudget: { hard: plannerEvidenceBudget(config) + 3 },
-    childEnv: { [PLANNER_EVIDENCE_BUDGET_ENV]: String(plannerEvidenceBudget(config)) },
+    // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative cap is the child-side
+    // gate (pi-planner-evidence.mjs); leave headroom for the result call and its schema retry.
+    request.toolBudget = { hard: cap + 3 };
+    request.childEnv = { [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap) };
   };
   const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
   // One hard deadline for the whole planning lifecycle: retries only get the remaining time.
   const deadlineMs = Number(config.implementationPlannerTimeoutMs ?? 45000);
   const startedAt = Date.now();
   let response;
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      request.timeoutMs = deadlineMs - (Date.now() - startedAt);
-      if (request.timeoutMs <= 0) {
-        throw Object.assign(new Error(`${config.implementationPlannerAgent} planning deadline of ${deadlineMs} ms exhausted`), { delegationStatus: 'timed_out' });
+  // Planner usage is one lifecycle-level record: attempts are summed and recorded exactly once.
+  let usage = null;
+  let status = 'error';
+  const childSession = randomUUID();
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        applyEvidenceCap(attempt);
+        request.timeoutMs = deadlineMs - (Date.now() - startedAt);
+        if (request.timeoutMs <= 0) {
+          throw Object.assign(new Error(`${config.implementationPlannerAgent} planning deadline of ${deadlineMs} ms exhausted`), { delegationStatus: 'timed_out' });
+        }
+        response = await runStructuredSubagent(pi, ctx, request, signal);
+        usage = addUsage(usage, response.usage);
+        break;
+      } catch (error) {
+        usage = addUsage(usage, error?.delegationUsage);
+        const message = String(error?.message ?? error);
+        const missing = message.includes('Missing structured_output call');
+        const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
+        const retryable = missing || schemaFailure;
+        const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
+        if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
+        console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
+          agent: config.implementationPlannerAgent,
+          reason,
+          attempt: attempt + 1,
+          retriesExhausted: retryable && attempt >= retries,
+          error: message,
+        })}`);
+        if (!retryable || attempt >= retries) throw error;
+        console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
+          agent: config.implementationPlannerAgent,
+          reason,
+          attempt: attempt + 1,
+        })}`);
       }
-      response = await runStructuredSubagent(pi, ctx, request, signal);
-      break;
-    } catch (error) {
-      const message = String(error?.message ?? error);
-      const missing = message.includes('Missing structured_output call');
-      const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
-      const retryable = missing || schemaFailure;
-      const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
-      if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
-      console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
-        agent: config.implementationPlannerAgent,
-        reason,
-        attempt: attempt + 1,
-        retriesExhausted: retryable && attempt >= retries,
-        error: message,
-      })}`);
-      if (!retryable || attempt >= retries) throw error;
-      console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
-        agent: config.implementationPlannerAgent,
-        reason,
-        attempt: attempt + 1,
-      })}`);
     }
+    const validated = validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
+    status = 'completed';
+    return { ...validated, usage, layoutHint };
+  } catch (error) {
+    if (error && typeof error === 'object') {
+      error.delegationUsage = usage;
+      status = error.delegationStatus ?? 'error';
+    }
+    throw error;
+  } finally {
+    recordDescendantMetric({
+      call: 'planner', scope: 'session', childSession, parentSession: ctx.sessionManager.getSessionId(), status, usage,
+    });
   }
-  return {
-    ...validateImplementationPreparation(normalizeImplementationPreparation(response.result.value)),
-    usage: response.usage ?? null,
-    layoutHint,
-  };
 }
 
 // Hard maximum for the bootstrap planner (not an expected duration). A healthy-but-slow planner

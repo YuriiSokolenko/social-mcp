@@ -247,3 +247,66 @@ test('planner evidence shares the single lifecycle deadline and usage is attribu
   assert.equal(records.filter(record => record.call === 'planner').length, 1, 'planner usage recorded exactly once');
   assert.equal(records.filter(record => record.call && record.call !== 'planner').length, 0, 'no fake main Implementer request');
 });
+
+// Review of #462: each retry is a fresh child with a fresh gate, so the cap (and usage record) must
+// be lifecycle-wide rather than per attempt.
+test('a structured-output retry cannot reset the evidence cap and usage is still recorded once', async (t) => {
+  const { dir, env } = fixture(t, {});
+  const metrics = path.join(dir, 'metrics.jsonl');
+  const previousMetrics = process.env.PI_METRICS_FILE;
+  process.env.PI_METRICS_FILE = metrics;
+  t.after(() => { if (previousMetrics === undefined) delete process.env.PI_METRICS_FILE; else process.env.PI_METRICS_FILE = previousMetrics; });
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+
+  const attempts = [];
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      const handlers = [];
+      plannerEvidenceExtension({ on: (_event, fn) => handlers.push(fn) });
+      const verdicts = [];
+      for (let index = 0; index < 7; index += 1) verdicts.push(await handlers[0]({ toolName: 'read', input: {} }));
+      const structured = await handlers[0]({ toolName: 'structured_output', input: {} });
+      attempts.push({ accepted: verdicts.filter(verdict => verdict === undefined).length, structured });
+      if (attempts.length === 1) {
+        return { status: 'failed', error: 'Structured output validation failed: value: bad', usage: { input: 100, output: 10 } };
+      }
+      return {
+        status: 'completed', usage: { input: 50, output: 5 },
+        result: { kind: 'structured', value: { steps: ['Do it'], complexity: 'trivial', evidence_budget: 1, large_mutation: false, reason: 'ok' } },
+      };
+    },
+  });
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+
+  assert.equal(host.requests.length, 2);
+  assert.deepEqual(attempts.map(attempt => attempt.accepted), [6, 0], 'first attempt spends the full 6; the retry gets none');
+  assert.equal(attempts[1].structured, undefined, 'structured_output stays available on the retry');
+  assert.equal(prepared.status, 'prepared');
+  assert.deepEqual(prepared.plannerUsage, { input: 150, output: 15 }, 'all attempts are aggregated');
+  const records = fs.readFileSync(metrics, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(records.length, 1, 'exactly one metric record for the planner lifecycle');
+  assert.equal(records[0].call, 'planner');
+  assert.equal(records[0].status, 'completed');
+  assert.deepEqual(records[0].usage, { input: 150, output: 15 });
+});
+
+test('a failed planner lifecycle still records one aggregated planner metric and keeps its usage for the fallback', async (t) => {
+  const { dir, env } = fixture(t, {});
+  const metrics = path.join(dir, 'metrics.jsonl');
+  const previousMetrics = process.env.PI_METRICS_FILE;
+  process.env.PI_METRICS_FILE = metrics;
+  t.after(() => { if (previousMetrics === undefined) delete process.env.PI_METRICS_FILE; else process.env.PI_METRICS_FILE = previousMetrics; });
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  const host = plannerHost({
+    cwd: dir,
+    driveChild: async () => ({ status: 'failed', error: 'Structured output validation failed: value: bad', usage: { output: 4 } }),
+  });
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'fallback');
+  assert.deepEqual(prepared.plannerUsage, { output: 8 });
+  const records = fs.readFileSync(metrics, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(records.map(record => [record.call, record.status]), [['planner', 'failed']]);
+});
