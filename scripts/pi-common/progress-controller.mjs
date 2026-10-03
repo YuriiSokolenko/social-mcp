@@ -55,12 +55,13 @@ export function isBoundedDirectBash(command) {
 }
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
 const ROLLBACK_TOOL = 'rollback_last_mutation';
+const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 // `begin_coding_session` hands the rest of the work to a 16k fork of this session that mutates
 // the worktree through the normal tools, so it earns the same progress/verification accounting.
 const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
 // The set of tools a one-shot elevated mutation response is allowed to spend
 // its turn on: an actual mutation, a rollback, or a terminal submission.
-export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
+export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ACCEPT_MUTATION_SCOPE_TOOL, ...TERMINAL_TOOLS]);
 const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
 
 function positiveInteger(value, name) {
@@ -452,7 +453,7 @@ export class ProgressController {
     if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !FINISH_TOOLS.has(toolName)) {
       return {
         block: true,
-        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only structural_edit, safe_edit, edit, write, rollback_last_mutation, or a terminal submit action are allowed.`,
+        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only accept_mutation_scope, structural_edit, safe_edit, edit, write, rollback_last_mutation, or a terminal submit action are allowed.`,
       };
     }
 
