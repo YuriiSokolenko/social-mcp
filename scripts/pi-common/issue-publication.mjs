@@ -8,7 +8,7 @@ import { runGit as git } from './git.mjs';
 import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projectConfig, workflowFile } from './project-config.mjs';
 import { PIPELINE_LABELS } from './state-machine.mjs';
 import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
-import { assertAcceptedMutationScope } from './accepted-mutation-scope.mjs';
+import { assertAcceptedMutationScope, readMutationScopeReceiptFile } from './accepted-mutation-scope.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -75,7 +75,7 @@ export function publicationBase(cwd, startCommit) {
   return integrated ? baseRef() : startCommit;
 }
 
-export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile }) {
+export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile, scopeFile }) {
   const { cleanDirectories, cleanFiles } = projectConfig().workspace;
   for (const p of cleanDirectories) fs.rmSync(`${cwd}/${p}`, { recursive: true, force: true });
   for (const p of cleanFiles) fs.rmSync(`${cwd}/${p}`, { force: true });
@@ -88,18 +88,19 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   if (sensitive.length) throw new Error(`Refusing to checkpoint credential/runtime files: ${sensitive.join(', ')}`);
   const stagedChanged = git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0;
   const metadata = resultFile ? readImplementerResult(resultFile) : null;
+  const persistedScope = readMutationScopeReceiptFile(cwd, scopeFile);
   let message = `feat: implement issue #${issue}`;
-  let trustedScopeMarker = false;
   if (metadata?.scope_enforcement === 'predeclared' && metadata.accepted_scope) {
     const encodedScope = Buffer.from(JSON.stringify(metadata.accepted_scope), 'utf8').toString('base64url');
     message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
-    trustedScopeMarker = true;
+  } else if (persistedScope) {
+    const encodedScope = Buffer.from(JSON.stringify(persistedScope), 'utf8').toString('base64url');
+    message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
   } else if (metadata?.scope_enforcement === 'unsandboxed-gated') {
     message += '\n\nPi-Scope-Enforcement: unsandboxed-gated';
-    trustedScopeMarker = true;
   }
-  if (stagedChanged || trustedScopeMarker) {
-    git(['commit', ...(stagedChanged ? [] : ['--allow-empty']), '-m', message], { cwd });
+  if (stagedChanged) {
+    git(['commit','-m',message], { cwd });
   }
   const base = publicationBase(cwd, startCommit);
   if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
@@ -238,7 +239,7 @@ export async function dispatchReviewer(prNumber) {
 
 async function main() {
   const [cmd, ...a] = process.argv.slice(2);
-  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
+  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],scopeFile:a[5],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4],cwd:a[5],startCommit:a[6]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
