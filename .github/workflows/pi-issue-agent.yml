@@ -68,6 +68,8 @@ jobs:
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_RUNTIME_FAILURE_FILE=$RUNNER_TEMP/pi-runtime-failure-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_VALIDATION_LEDGER_FILE=$RUNNER_TEMP/pi-validation-ledger-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
+          echo "PI_VALIDATION_RUN_ID=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          echo "PI_TERMINAL_RESULT_FILE=$RUNNER_TEMP/pi-terminal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
           echo "PI_ACCEPTED_MUTATION_SCOPE_FILE=$RUNNER_TEMP/pi-accepted-mutation-scope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue

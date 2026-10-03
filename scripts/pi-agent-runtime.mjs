@@ -55,6 +55,7 @@ import {
   assertSuccessfulTerminalReceipt,
   invalidateTerminalReceipt,
 } from './pi-common/terminal-receipt.mjs';
+import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
@@ -1546,22 +1547,17 @@ export default function (pi) {
               receiptError = error;
             }
           }
-          const submitted = Boolean(receiptResult);
-          const recoveredErrors = submitted && sessionError
-            ? [String(sessionError?.message ?? sessionError)]
-            : [];
-          const unresolvedTerminalError = submitted
-            ? null
-            : String((sessionError ?? receiptError)?.message ?? sessionError ?? receiptError ?? '') || null;
+          const outcome = normalizeCodingSessionOutcome({
+            submitted: Boolean(receiptResult),
+            sessionError,
+            receiptError,
+          });
+          const submitted = outcome.successful_final_submission;
           codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
             ...base,
             durationMs: Date.now() - startedAt,
             usage: response?.usage ?? null,
-            submitted,
-            successful_final_submission: submitted,
-            status: submitted ? 'ok' : (unresolvedTerminalError ? 'error' : 'incomplete'),
-            recovered_errors: recoveredErrors,
-            unresolved_terminal_error: unresolvedTerminalError,
+            ...outcome,
           });
           if (submitted) {
             return {
@@ -1570,8 +1566,8 @@ export default function (pi) {
                 ...base,
                 submitted: true,
                 successful_final_submission: true,
-                recovered_errors: recoveredErrors,
-                unresolved_terminal_error: null,
+                recovered_errors: outcome.recovered_errors,
+                unresolved_terminal_error: outcome.unresolved_terminal_error,
               },
               // The fork already called submit_result; end this session without another turn.
               terminate: true,
