@@ -197,7 +197,7 @@ test("#425 summary and CSV agree on known totals and incompleteness for the same
     encoding: "utf8", env: { ...process.env, PI_METRICS_FILE: metricsFile, PI_ISSUE: "51", PI_PHASE: "implementation" },
   });
   assert.equal(summary.status, 0, summary.stderr);
-  assert.match(summary.stdout, /INCOMPLETE, known lower bound\): 3 responses .* total 67 /);
+  assert.match(summary.stdout, /INCOMPLETE, known lower bound\): 3 logical usage records · 3 provider responses .* total 67 /);
 
   writeFileSync(csvFile, readFileSync("reports/pi-usage.csv", "utf8").split("\n")[0] + "\n");
   writeFileSync(eventFile, JSON.stringify({ workflow_run: {
