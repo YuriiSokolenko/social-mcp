@@ -6,6 +6,9 @@ import { baseRef } from './pi-common/project-config.mjs';
 import { runGit as git } from './pi-common/git.mjs';
 import { assertImplementerFileSet, writeImplementerResult } from './pi-common/implementer-result.mjs';
 import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
+import { mutationScopeReceipt } from './pi-common/accepted-mutation-scope.mjs';
+import { mutationCleanupHints } from './pi-common/mutation-journal.mjs';
+import { capabilitySnapshotGuidance } from './pi-common/session-state.mjs';
 
 const lines = (text) => text.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
 const gitPaths = (text) => text.split('\0').filter(Boolean);
@@ -15,6 +18,21 @@ function changedPathsAgainstBase() {
   return [...new Set([...tracked, ...untracked])].sort();
 }
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
+
+function assertFileSetWithMutationRecovery(actualFiles, declaredFiles) {
+  try {
+    return assertImplementerFileSet(actualFiles, declaredFiles);
+  } catch (error) {
+    const declared = new Set(Array.isArray(declaredFiles) ? declaredFiles : []);
+    const unexpected = actualFiles.filter(file => !declared.has(file));
+    const hints = mutationCleanupHints(process.cwd(), unexpected, process.env);
+    if (!hints.length) throw error;
+    const calls = hints.map(hint =>
+      `undo_mutation({mutation_id:"${hint.mutation_id}",expected_files:${JSON.stringify([...declared])},reason:"Remove accidental mutation from final candidate"})`
+    );
+    throw new Error(`${error.message} Targeted cleanup available: ${calls.join(' or ')}`);
+  }
+}
 
 export const CHANGED_PUBLICATION_FIELDS = Object.freeze([
   'title',
@@ -99,6 +117,37 @@ function issueContext() {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+const IMPLEMENTER_MUTATION_TOOLS = Object.freeze(['structural_edit', 'safe_edit', 'edit', 'write']);
+
+export function implementerActionNudge(activeToolNames, { restored = false, validationRepair = false } = {}) {
+  const names = [...new Set(Array.isArray(activeToolNames) ? activeToolNames : [])];
+  const active = new Set(names);
+  const parts = [
+    'ACTION REQUIRED. The next response must call one currently exposed productive tool; do not answer with prose-only reasoning.',
+  ];
+
+  if (active.has('undo_mutation')) {
+    parts.push('If submit_result reports a targeted cleanup mutation_id, call undo_mutation with that id and the intended final files, then retry submit_result.');
+  }
+  if (active.has('submit_result')) {
+    parts.push('If submit_result just reported missing publication fields, retry submit_result immediately with exactly those fields; do not call evidence or exploration tools.');
+    if (restored || validationRepair) {
+      parts.push('For restored or harness validation-repair work call submit_result({}) now.');
+    } else {
+      parts.push('For fresh already-satisfied work call submit_result({already_satisfied:true, changes:[]}); if authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible, call submit_result({blocked_reason:"..."}) from a clean worktree.');
+    }
+  }
+  const mutationTools = IMPLEMENTER_MUTATION_TOOLS.filter(name => active.has(name));
+  if (mutationTools.length) {
+    parts.push(`When a change is required, mutate now with one of the currently exposed mutation tools: ${mutationTools.join(', ')}.`);
+  }
+  if (active.has('need_more_evidence')) {
+    parts.push('If exactly one concrete missing fact blocks safe action, call need_more_evidence once; after the single unlocked evidence action, act.');
+  }
+  parts.push(capabilitySnapshotGuidance(names));
+  return parts.join(' ');
+}
+
 export default function (pi) {
   // Snapshot run mode once so the advertised contract and execute path cannot
   // diverge if process.env or the resume patch changes later in the process.
@@ -111,7 +160,7 @@ export default function (pi) {
     description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored or harness validation-repair work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]}. If authoritative current-code evidence proves explicit issue requirements or constraints are mutually incompatible so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, files, security_notes, and limitations on the first call. The runtime validates that complete publication contract before integrating latest dev and returns code=missing_publication_fields with every missing field. `changes` is human-readable; `files` is the exact repository-relative changed-file set.',
     parameters: submitResultParameters(),
     customType: 'implementer-result',
-    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. If submit_result just reported missing publication fields, retry submit_result immediately with exactly those fields; do not call evidence or exploration tools. For restored or harness validation-repair work call submit_result({}) now. For fresh work call structural_edit/safe_edit/edit/write now when a change is required, submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state, or submit_result({blocked_reason:"..."}) when authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible. If exactly one concrete missing fact blocks safe action before submission, call need_more_evidence once, gather exactly one fact, then act.',
+    nudgeText: () => implementerActionNudge(pi.getActiveTools?.() ?? [], { restored, validationRepair }),
     nudgeRepeatWhile: () => process.env.PI_PRODUCTIVE_STATE === 'action_required',
     nudgeMaxCount: 3,
     successText: 'SUCCESS. Latest dev is integrated and the implementation candidate is recorded. The harness will run authoritative final checks. Stop now.',
@@ -216,10 +265,14 @@ export default function (pi) {
       if (!data.already_satisfied && !data.changes.length) throw new Error('at least one concrete change is required');
       if (!data.already_satisfied && !data.files.length) throw new Error('at least one declared file is required');
       if (!runtimeOwnedMetadata && !data.already_satisfied) {
-        assertImplementerFileSet(changedPaths, data.files);
+        assertFileSetWithMutationRecovery(changedPaths, data.files);
       }
 
-      data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, data);
+      data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, {
+        ...data,
+        scope_enforcement: 'predeclared',
+        accepted_scope: mutationScopeReceipt(process.cwd(), process.env),
+      });
       return { data };
     },
   });

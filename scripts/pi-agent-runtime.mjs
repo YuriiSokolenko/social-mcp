@@ -9,6 +9,7 @@ import {
   FINISH_TOOLS,
   ProgressController,
   actionRequiredToolNames,
+  elevatedMutationTurnToolNames,
   classifyTruncatedToolCall,
   MAX_CEILING_WITHOUT_TOOL_TURNS,
   nextActionRequiredProseOnlyTurns,
@@ -17,7 +18,7 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
-import { activeToolGuidance, mergeNewlyActiveTools } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -35,6 +36,18 @@ import {
   detectNoOpWrite,
   mutationSnapshotChanged,
 } from './pi-common/mutation-snapshot.mjs';
+import {
+  clearMutationJournalLocalOnly,
+  currentMutationFingerprint,
+  isMutationJournalCapacityError,
+  markMutationJournalLocalOnly,
+  mutationJournalCapacityStatus,
+  mutationJournalState,
+  recordSuccessfulMutation,
+  snapshotFingerprint,
+  undoMutation,
+  writeMutationJournalFile,
+} from './pi-common/mutation-journal.mjs';
 import { baseRef, projectConfig } from './pi-common/project-config.mjs';
 import {
   SemanticLoopGuard,
@@ -43,12 +56,28 @@ import {
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
-import { recoverWorktree } from './pi-common/worktree-recovery.mjs';
+import { recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
+import { assertImplementerFileSet } from './pi-common/implementer-result.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
+import {
+  assertMutationPathAuthorized,
+  mutationScopeReceipt,
+  registerMutationScope,
+} from './pi-common/accepted-mutation-scope.mjs';
+import {
+  assertSuccessfulTerminalReceipt,
+  invalidateTerminalReceipt,
+} from './pi-common/terminal-receipt.mjs';
+import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+// Bash is not part of accepted-scope mutation accounting, but it can still
+// change repository bytes. Conservatively invalidate an existing candidate
+// receipt before any Implementer bash call; a later submit_result can rebind it.
+const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
+const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 
 // Trust boundary: the coding session's agent definition, tool allowlist and extensions come
 // from THIS module's control checkout (the trusted harness), never from the issue worktree the
@@ -553,6 +582,9 @@ export default function (pi) {
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   let unavailableToolAttempts = 0;
+  let providerRequestSequence = 0;
+  let providerCapabilitySnapshot = null;
+  let lastProviderProductiveState = null;
   // True only when this runtime itself removed the verification tool from the model
   // surface (permit exhaustion or exact-retry substitution). A later valid
   // permit may restore it only in that case; unrelated removals stay removed.
@@ -560,6 +592,9 @@ export default function (pi) {
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
+  let elevatedTurnAttemptedScopePrelude = false;
+  let elevatedTurnAttemptedEvidenceUnlock = false;
+  let elevatedScopePreludeUsed = false;
 
   function validationRunId() {
     return resolveValidationRunId(process.env);
@@ -718,11 +753,17 @@ export default function (pi) {
         : largeMutationBudgetActive
           // UX on top of the controller's own hard gate: while the elevated budget is active,
           // don't even show tools this turn is not allowed to call.
-          ? unrestrictedActiveTools.filter(name => FINISH_TOOLS.has(name))
+          ? elevatedMutationTurnToolNames(unrestrictedActiveTools, {
+              blockerTool: controller.evidenceUnlockAvailable()
+                ? config.productiveProgress.blockerTool
+                : null,
+            })
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
-            blockerTool: config.productiveProgress.blockerTool,
+            blockerTool: controller.evidenceUnlockAvailable()
+              ? config.productiveProgress.blockerTool
+              : null,
             verificationTools: recoveryRetryReady
               ? [RETRY_FAILED_CHECK_TOOL]
               : verificationPermitted
@@ -908,6 +949,9 @@ export default function (pi) {
       if (ceilingHit && codingSessionTool && active.has(codingSessionTool)) {
         hints.push(`If the implementation is large, call ${codingSessionTool} now; it keeps the current context and provides the large coding ceiling instead of drafting code here.`);
       }
+      if (active.has(ACCEPT_MUTATION_SCOPE_TOOL)) {
+        hints.push('Before mutating a new publishable path, call accept_mutation_scope with that path and a task-specific rationale. Register scratch/probe paths as temporary; temporary paths must be removed before submission.');
+      }
       if (active.has('submit_result')) {
         hints.push('If explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now.');
       }
@@ -937,12 +981,11 @@ export default function (pi) {
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
 
-  // Provider-request patches are deliberately narrow:
-  // - coding sessions keep thinking disabled on every request;
-  // - after the first prose-only Implementer action_required violation, requests keep
-  //   tool_choice="required" until the model actually attempts one exposed tool. Pi has already
-  //   restricted payload.tools to the valid action surface, so the model still chooses direct
-  //   mutation vs coding session vs submit/escape hatch.
+  // The request boundary is the capability authority. Re-synchronize the surface immediately
+  // before every Implementer provider request, filter payload.tools to that surface, snapshot the
+  // executable definitions, and constrain the first request that enters action_required. This
+  // includes the first coding-session request, so inherited parent history cannot spend a turn
+  // attempting a read/cleanup tool that the fork does not expose yet.
   let codingReadyAt = null;
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
@@ -950,6 +993,9 @@ export default function (pi) {
     let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
       forcedProviderRequestInFlight = false;
+      const productiveState = syncProductiveState();
+      syncActionToolSurface(productiveState);
+
       let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
       if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
         codingSessionLog('thinking_disabled', {
@@ -959,13 +1005,51 @@ export default function (pi) {
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
         });
       }
+
       if (Array.isArray(patched?.tools)) {
         const active = new Set(pi.getActiveTools());
         const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
         if (tools.length !== patched.tools.length) patched = { ...patched, tools };
+
+        const executableTools = providerToolNames(patched);
+        const activeTools = pi.getActiveTools();
+        providerCapabilitySnapshot = {
+          request: ++providerRequestSequence,
+          productiveState,
+          activeTools,
+          executableTools,
+        };
+        console.log(`PI_PROVIDER_CAPABILITY_SNAPSHOT ${JSON.stringify({ stage, ...providerCapabilitySnapshot })}`);
+
+        const missingDefinitions = activeTools.filter(name => !executableTools.includes(name));
+        if (missingDefinitions.length) {
+          console.warn(`PI_PROVIDER_CAPABILITY_DIVERGENCE ${JSON.stringify({
+            stage,
+            request: providerCapabilitySnapshot.request,
+            activeTools,
+            executableTools,
+            missingDefinitions,
+          })}`);
+        }
+
+        const enteringActionRequired =
+          productiveState === 'action_required' &&
+          lastProviderProductiveState !== 'action_required' &&
+          executableTools.length > 0;
+        if (enteringActionRequired) {
+          requireToolOnNextProviderRequest = true;
+          console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED ${JSON.stringify({
+            stage,
+            reason: codingSession && lastProviderProductiveState == null
+              ? 'coding_session_first_request'
+              : 'action_required_entry',
+            activeTools: executableTools,
+          })}`);
+        }
+        lastProviderProductiveState = productiveState;
       }
+
       if (requireToolOnNextProviderRequest) {
-        const productiveState = controller.productiveProgressState();
         if (productiveState !== 'action_required') {
           requireToolOnNextProviderRequest = false;
           console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
@@ -973,7 +1057,12 @@ export default function (pi) {
           const constrained = requireToolChoiceInPayload(patched);
           if (constrained !== patched) {
             forcedProviderRequestInFlight = true;
-            console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({ stage, mode: 'required', activeTools: pi.getActiveTools() })}`);
+            console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({
+              stage,
+              mode: 'required',
+              request: providerCapabilitySnapshot?.request ?? null,
+              activeTools: providerCapabilitySnapshot?.executableTools ?? pi.getActiveTools(),
+            })}`);
             patched = constrained;
           }
         }
@@ -993,7 +1082,9 @@ export default function (pi) {
     const request = { version: 1, name: config.productiveProgress.codingSessionAgent, definition };
     pi.events?.emit?.(RUNTIME_AGENT_REGISTER_EVENT, request);
     codingSessionAgent = request.result
-      ? (request.result.ok ? { ok: true } : { ok: false, error: String(request.result.error?.message ?? request.result.error) })
+      ? (request.result.ok
+        ? { ok: true, tools: [...definition.tools] }
+        : { ok: false, error: String(request.result.error?.message ?? request.result.error) })
       : { ok: false, error: 'pi-subagents did not handle runtime agent registration' };
     codingSessionLog(codingSessionAgent.ok ? 'agent_registered' : 'agent_unavailable', {
       agent: request.name, source: 'runtime', thinking: definition.thinking, tools: definition.tools, extensions: definition.extensions,
@@ -1187,8 +1278,45 @@ export default function (pi) {
   const pendingLoopCalls = new Map();
   const pendingToolInputs = new Map();
   let lastSuccessfulMutationSnapshot = null;
+  let lastSuccessfulMutationLocalOnlyMarkerId = null;
+
+  // Initialize the shared sidecar before the first mutation. Parent, coding forks and restored
+  // attempts all read the same bounded journal rather than relying on process-local snapshots.
+  if (stage === 'implementer') mutationJournalState(process.cwd(), process.env);
 
   if (stage === 'implementer') {
+    pi.registerTool({
+      name: ACCEPT_MUTATION_SCOPE_TOOL,
+      label: 'Accept mutation scope',
+      description: 'Record task-related mutation intent in trusted runtime state before changing a new path. disposition=publishable authorizes the path for the final diff only when accepted before it becomes changed. disposition=temporary permits scratch/probe work but the path must be removed before final validation/publication. A path that is already changed cannot be retroactively made publishable.',
+      parameters: Type.Object({
+        paths: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 20 }),
+        disposition: Type.Union([
+          Type.Literal('publishable'),
+          Type.Literal('temporary'),
+        ]),
+        rationale: Type.String({ minLength: 8, maxLength: 500 }),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const result = registerMutationScope({
+          cwd: ctx.cwd,
+          paths: params.paths,
+          disposition: params.disposition,
+          rationale: params.rationale,
+          env: process.env,
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: params.disposition === 'publishable'
+              ? `Accepted publishable mutation scope: ${result.paths.join(', ')}. Mutate only the accepted task-related paths.`
+              : `Registered temporary mutation scope: ${result.paths.join(', ')}. These paths must be removed or restored before submit_result can publish.`,
+          }],
+          details: result,
+        };
+      },
+    });
+
     pi.registerTool({
       name: 'structural_edit',
       label: 'Structural AST edit',
@@ -1340,6 +1468,67 @@ export default function (pi) {
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         const result = recoverWorktree({ ...params, cwd: ctx.cwd, base: baseRef(), ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE });
+        invalidateTerminalReceipt(process.env);
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+      },
+    });
+
+    pi.registerTool({
+      name: 'undo_mutation',
+      label: 'Undo a recorded mutation',
+      description: 'Selectively undo one recorded structural_edit/safe_edit/edit/write by mutation_id. The runtime restores exact prior bytes/mode or deletes a file only when that mutation proved it created the file. It compares the current file with the recorded post-fingerprint first and refuses stale/conflicting, symlink, hard-link, out-of-worktree and protected control-plane targets. Pass the intended final file set so cleanup is validated immediately.',
+      parameters: Type.Object({
+        mutation_id: Type.String({ minLength: 1, maxLength: 80 }),
+        expected_files: Type.Array(Type.String(), { maxItems: 200 }),
+        reason: Type.String({ minLength: 1, maxLength: 500 }),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        let result;
+        try {
+          result = undoMutation({
+            cwd: ctx.cwd,
+            mutationId: params.mutation_id,
+            reason: params.reason,
+            ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE,
+            env: process.env,
+          });
+        } catch (error) {
+          // mutation_undo_persist_failed means the repository bytes were already restored even
+          // though the durable journal still needs the same-id retry. Invalidate immediately so
+          // no pre-undo terminal receipt can survive that partial success.
+          if (error?.code === 'mutation_undo_persist_failed') invalidateTerminalReceipt(process.env);
+          throw error;
+        }
+        // Repository bytes are already changed at this point. Invalidate before file-set/ledger
+        // bookkeeping so a diagnostics persistence failure cannot leave a pre-undo receipt alive.
+        invalidateTerminalReceipt(process.env);
+        let fileSet;
+        try {
+          const changed = worktreeChangedFiles(ctx.cwd, baseRef());
+          try {
+            assertImplementerFileSet(changed, params.expected_files);
+            fileSet = { status: 'pass', changed_files: changed };
+          } catch (error) {
+            fileSet = { status: 'invalid', changed_files: changed, summary: error.message };
+          }
+        } catch (error) {
+          fileSet = { status: 'infra_error', summary: error.message };
+        }
+        result.file_set = fileSet;
+        if (process.env.PI_VALIDATION_LEDGER_FILE) {
+          appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+            run_id: validationRunId(),
+            attempt_id: validationAttemptId(),
+            stage: 'implementer',
+            backend: 'pi',
+            source: 'mutation_undo',
+            kind: 'undo_mutation',
+            scope: { paths: [result.path], mutation_id: result.mutation_id },
+            status: 'pass',
+            summary: params.reason,
+            mutation: result,
+          });
+        }
         return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
       },
     });
@@ -1347,27 +1536,143 @@ export default function (pi) {
     pi.registerTool({
       name: 'rollback_last_mutation',
       label: 'Rollback last mutation',
-      description: 'Restore exactly the file state captured immediately before the most recent successful structural_edit/safe_edit/edit/write. Use when that mutation caused a regression or was the wrong approach. This is a productive recovery action and does not reset unrelated earlier changes.',
+      description: 'Fast shortcut for undoing the shared latest structural_edit/safe_edit/edit/write. Persistent journal order is authoritative across parent/coding-session processes and uses compare-before-undo. After bounded-journal degradation, rollback is available only in the process that made the local-only mutation; other processes refuse instead of selecting an older mutation. After resume the barrier is intentionally stale because no process owns its prior-byte snapshot, so this shortcut continues to refuse until a new journaled mutation supersedes the barrier or explicit targeted recovery resolves the state. The local-only path also refuses if later bytes changed.',
       parameters: Type.Object({
         reason: Type.String({ minLength: 1, maxLength: 500 }),
       }),
-      async execute(_toolCallId, params) {
-        const snapshot = lastSuccessfulMutationSnapshot;
-        if (!snapshot) throw new Error('No successful structural_edit/safe_edit/edit/write is available to roll back');
-        if (snapshot.existed) {
-          fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
-          fs.writeFileSync(snapshot.absolutePath, snapshot.content);
-          if (snapshot.mode != null) fs.chmodSync(snapshot.absolutePath, snapshot.mode);
-        } else if (fs.existsSync(snapshot.absolutePath)) {
-          fs.rmSync(snapshot.absolutePath, { force: true });
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const journal = mutationJournalState(ctx.cwd, process.env);
+        const localOnlyBarrier = journal.local_only_barrier ?? null;
+
+        if (localOnlyBarrier) {
+          const snapshot = lastSuccessfulMutationSnapshot;
+          const ownsLatestLocalOnly = Boolean(
+            snapshot &&
+            lastSuccessfulMutationLocalOnlyMarkerId === localOnlyBarrier.id
+          );
+          if (!ownsLatestLocalOnly) {
+            const error = new Error(JSON.stringify({
+              code: 'mutation_rollback_latest_local_only_unavailable',
+              marker_id: localOnlyBarrier.id,
+              path: localOnlyBarrier.path,
+              recovery: 'The shared latest mutation was degraded to process-local rollback in another coding session/process. Refusing to roll back an older journal entry. Continue with an explicit targeted recovery/edit instead.',
+            }));
+            error.code = 'mutation_rollback_latest_local_only_unavailable';
+            throw error;
+          }
+
+          const current = currentMutationFingerprint(ctx.cwd, localOnlyBarrier.path);
+          const prior = snapshotFingerprint(snapshot);
+          const sameFingerprint = (left, right) => (
+            left?.exists === right?.exists &&
+            (!left?.exists || (
+              left.mode === right.mode &&
+              left.size === right.size &&
+              left.sha256 === right.sha256
+            ))
+          );
+
+          let alreadyRestored = false;
+          if (sameFingerprint(current, localOnlyBarrier.post)) {
+            if (snapshot.existed) {
+              fs.mkdirSync(path.dirname(snapshot.absolutePath), { recursive: true });
+              fs.writeFileSync(snapshot.absolutePath, snapshot.content);
+              if (snapshot.mode != null) fs.chmodSync(snapshot.absolutePath, snapshot.mode);
+            } else if (fs.existsSync(snapshot.absolutePath)) {
+              fs.rmSync(snapshot.absolutePath, { force: true });
+            }
+          } else if (sameFingerprint(current, prior)) {
+            alreadyRestored = true;
+          } else {
+            const error = new Error(JSON.stringify({
+              code: 'mutation_rollback_conflict',
+              marker_id: localOnlyBarrier.id,
+              path: localOnlyBarrier.path,
+              expected_post: localOnlyBarrier.post,
+              expected_prior: prior,
+              actual: current,
+              recovery: 'The local-only mutation target changed after degradation; refusing to overwrite later bytes.',
+            }));
+            error.code = 'mutation_rollback_conflict';
+            throw error;
+          }
+
+          try {
+            clearMutationJournalLocalOnly({
+              cwd: ctx.cwd,
+              markerId: localOnlyBarrier.id,
+              env: process.env,
+            });
+          } catch (error) {
+            // The file may already be restored while the marker remains durable. Keep local state
+            // so retry can recognize the prior fingerprint and finish clearing the same marker.
+            invalidateTerminalReceipt(process.env);
+            throw error;
+          }
+
+          lastSuccessfulMutationSnapshot = null;
+          lastSuccessfulMutationLocalOnlyMarkerId = null;
+          invalidateTerminalReceipt(process.env);
+          return {
+            content: [{
+              type: 'text',
+              text: `Rolled back the latest local-only mutation on ${localOnlyBarrier.path}. Continue from the restored repository state.`,
+            }],
+            details: {
+              path: localOnlyBarrier.path,
+              marker_id: localOnlyBarrier.id,
+              reason: params.reason,
+              journaled: false,
+              already_restored: alreadyRestored,
+            },
+          };
         }
+
+        // Persistent sidecar order is the only authority for journaled mutations. Never let stale
+        // process-local identity outrank mutations added later by a coding-session fork.
+        const mutationId = journal.entries.at(-1)?.id ?? null;
+        if (!mutationId) {
+          throw new Error('No successful structural_edit/safe_edit/edit/write is available to roll back');
+        }
+
+        let result;
+        try {
+          result = undoMutation({
+            cwd: ctx.cwd,
+            mutationId,
+            reason: params.reason,
+            ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE,
+            env: process.env,
+          });
+        } catch (error) {
+          if (error?.code === 'mutation_undo_persist_failed') invalidateTerminalReceipt(process.env);
+          throw error;
+        }
+        // The persistent undo already changed repository state. Clear stale local rollback state
+        // and invalidate the terminal receipt before ledger persistence, which may itself fail.
         lastSuccessfulMutationSnapshot = null;
+        lastSuccessfulMutationLocalOnlyMarkerId = null;
+        invalidateTerminalReceipt(process.env);
+        if (process.env.PI_VALIDATION_LEDGER_FILE) {
+          appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+            run_id: validationRunId(),
+            attempt_id: validationAttemptId(),
+            stage: 'implementer',
+            backend: 'pi',
+            source: 'mutation_undo',
+            kind: 'rollback_last_mutation',
+            scope: { paths: [result.path], mutation_id: result.mutation_id },
+            status: 'pass',
+            summary: params.reason,
+            mutation: result,
+          });
+        }
         return {
           content: [{
             type: 'text',
-            text: `Rolled back the most recent successful mutation to ${snapshot.path}. Continue from the restored repository state; do not rebuild a workaround around the reverted change.`,
+            text: `Rolled back shared latest recorded mutation ${result.mutation_id} on ${result.path}. Continue from the restored repository state.`,
           }],
-          details: { path: snapshot.path, reason: params.reason },
+          details: result,
         };
       },
     });
@@ -1376,7 +1681,7 @@ export default function (pi) {
       pi.registerTool({
         name: controller.largeMutationBudgetTool,
         label: 'Request large mutation budget',
-        description: `LEGACY: prefer begin_coding_session. Grant exactly the NEXT response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling, for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. That one elevated response must attempt structural_edit, safe_edit, edit, write, rollback_last_mutation, or submit_result; the budget always collapses back to the normal small ceiling immediately afterward, whether or not it was used, and must be requested again for another large payload.`,
+        description: `LEGACY: prefer begin_coding_session. Grant the next mutation response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. If the target path still needs accepted scope, call accept_mutation_scope first; that declaration preserves the elevated budget for the following real mutation. The budget collapses after the actual mutation/rollback/submit action or after unrelated use.`,
         parameters: Type.Object({
           reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
         }),
@@ -1384,7 +1689,7 @@ export default function (pi) {
           return {
             content: [{
               type: 'text',
-              text: `Large mutation budget granted for exactly the next response (${controller.largeMutationBudgetMaxTokens} max output tokens). Use it now for one structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result call; do not spend it on narration or another request.`,
+              text: `Large mutation budget armed (${controller.largeMutationBudgetMaxTokens} max output tokens). If needed, call accept_mutation_scope first; the runtime preserves this budget across that scope-only response. Then use it for one structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result call.`,
             }],
             details: { reason: params.reason, maxTokens: controller.largeMutationBudgetMaxTokens },
           };
@@ -1403,6 +1708,10 @@ export default function (pi) {
         description: `Call once exploration is done and you know what to implement, in particular when the code will not fit your normal ${sessionConfig.actionResponseMaxTokens}-token response. The runtime continues THIS session (same conversation, evidence and decisions) as a coding session with a ${sessionConfig.codingSessionMaxTokens}-token response ceiling under the same runtime rules. Inside the fork, use only the tool surface exposed there. Call it as soon as you are ready; do NOT draft the code here first. Small changes can stay direct.`,
         parameters: Type.Object({
           reason: Type.Optional(Type.String({ maxLength: 300, description: 'Optional one-line note for logs' })),
+          required_capability: Type.Optional(Type.String({
+            maxLength: 100,
+            description: 'Set only when the purpose of the fork is to obtain one named capability hidden in the parent. Runtime rejects the launch if the coding session can never expose it.',
+          })),
         }),
         async execute(toolCallId, params, signal, _onUpdate, ctx) {
           const sessionId = randomUUID();
@@ -1434,9 +1743,29 @@ export default function (pi) {
           if (!agentReady.ok) {
             refuse('agent_unavailable', `The trusted coding-session agent is not registered (${agentReady.error}). Implement with direct edits.`);
           }
+
+          const requiredCapability = String(params?.required_capability ?? '').trim();
+          if (requiredCapability && !agentReady.tools.includes(requiredCapability)) {
+            refuse(
+              'required_capability_unavailable',
+              `The coding session cannot expose required capability "${requiredCapability}", so it was not launched. ${capabilitySnapshotGuidance(agentReady.tools)} Use a currently exposed trusted recovery/action instead.`,
+            );
+          }
           sessionsStarted += 1;
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
+          const inheritedMutationJournalFile = String(process.env.PI_MUTATION_JOURNAL_FILE ?? '').trim();
+          const fallbackMutationJournalFile = inheritedMutationJournalFile
+            ? null
+            : `${contractFile}.mutation-journal.json`;
+          const codingMutationJournalFile = inheritedMutationJournalFile || fallbackMutationJournalFile;
+          if (fallbackMutationJournalFile) {
+            writeMutationJournalFile(
+              ctx.cwd,
+              fallbackMutationJournalFile,
+              mutationJournalState(ctx.cwd, process.env),
+            );
+          }
           const startedAt = Date.now();
           codingSessionLog('started', { ...base, context: 'fork', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens });
           let response = null;
@@ -1445,17 +1774,48 @@ export default function (pi) {
             response = await runStructuredSubagent(pi, ctx, {
               agent: sessionConfig.codingSessionAgent,
               nodeId: `coding-session-${toolCallId}`,
-              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code and tests where needed using only tools currently exposed by the fork runtime. Verify when verification is exposed, fix failures, and finish through the exposed terminal action. Write code directly in tool arguments.',
+              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code and tests where needed using only tools exposed on each fork request. Inherited parent tool names are historical context, not current capability authority. Verify when verification is exposed, fix failures, and finish through the exposed terminal action. Write code directly in tool arguments.',
               timeoutMs: Number(sessionConfig.codingSessionTimeoutMs ?? 5400000),
               maxTokens: sessionConfig.codingSessionMaxTokens,
               // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
               toolBudget: null,
               thinking: 'off',
               context: 'fork',
-              childEnv: { PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile }) },
+              childEnv: {
+                PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile }),
+                PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
+                ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
+                  ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
+                  : {}),
+                PI_MUTATION_JOURNAL_FILE: codingMutationJournalFile,
+              },
             }, signal);
           } catch (error) {
             sessionError = error;
+          } finally {
+            if (fallbackMutationJournalFile) {
+              try {
+                if (!fs.existsSync(fallbackMutationJournalFile)) {
+                  throw new Error('coding-session fallback mutation journal disappeared');
+                }
+                // Reload child journal mutations into the parent process cache before deleting
+                // the transport sidecar. Subsequent parent tools then see the fork's chronology.
+                mutationJournalState(ctx.cwd, {
+                  ...process.env,
+                  PI_MUTATION_JOURNAL_FILE: fallbackMutationJournalFile,
+                });
+              } catch (error) {
+                if (!sessionError) sessionError = error;
+                else {
+                  console.warn(`PI_CODING_MUTATION_JOURNAL_REFRESH_FAILED ${JSON.stringify({
+                    sessionId,
+                    error: String(error?.message ?? error),
+                  })}`);
+                }
+              } finally {
+                fs.rmSync(fallbackMutationJournalFile, { force: true });
+              }
+            }
           }
           let contractFailure = null;
           try {
@@ -1475,19 +1835,44 @@ export default function (pi) {
             codingSessionLog('cancelled', { ...base, durationMs: Date.now() - startedAt });
             throw sessionError ?? new Error('coding session was cancelled');
           }
-          const submitted = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
+          let receiptResult = null;
+          let receiptError = null;
+          const markerPresent = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
+          if (markerPresent) {
+            try {
+              receiptResult = assertSuccessfulTerminalReceipt({
+                cwd: ctx.cwd,
+                resultFile: process.env.PI_IMPLEMENTER_RESULT_FILE,
+                env: process.env,
+                expectedSessionId: sessionId,
+              });
+            } catch (error) {
+              receiptError = error;
+            }
+          }
+          if (receiptError) invalidateTerminalReceipt(process.env);
+          const outcome = normalizeCodingSessionOutcome({
+            submitted: Boolean(receiptResult),
+            sessionError,
+            receiptError,
+          });
+          const submitted = outcome.successful_final_submission;
           codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
             ...base,
             durationMs: Date.now() - startedAt,
             usage: response?.usage ?? null,
-            submitted,
-            status: sessionError ? 'error' : 'ok',
-            ...(sessionError ? { error: String(sessionError?.message ?? sessionError) } : {}),
+            ...outcome,
           });
           if (submitted) {
             return {
               content: [{ type: 'text', text: 'Coding session completed the implementation and submitted the result. The work is done: stop now.' }],
-              details: { ...base, submitted: true },
+              details: {
+                ...base,
+                submitted: true,
+                successful_final_submission: true,
+                recovered_errors: outcome.recovered_errors,
+                unresolved_terminal_error: outcome.unresolved_terminal_error,
+              },
               // The fork already called submit_result; end this session without another turn.
               terminate: true,
             };
@@ -1501,9 +1886,17 @@ export default function (pi) {
             remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
               ? `You may call ${codingSessionTool} once more (${remaining} left). `
               : '';
-          const message = `${terminalStatus}${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          const terminalDiagnostic = sessionError ?? receiptError;
+          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          // A real session/delegation error is still terminal for this tool call.
+          // A stale/invalid receipt is recoverable: return control so the parent
+          // can submit the current tree again instead of converting consistency
+          // drift into an execution failure.
           if (sessionError) throw new Error(message);
-          return { content: [{ type: 'text', text: message }], details: { ...base, submitted: false } };
+          return {
+            content: [{ type: 'text', text: message }],
+            details: { ...base, ...outcome, submitted: false },
+          };
         },
       });
     }
@@ -1580,6 +1973,8 @@ export default function (pi) {
   pi.on('turn_start', (event) => {
     actionTurnAttemptedTool = false;
     elevatedTurnAttemptedFinishTool = false;
+    elevatedTurnAttemptedScopePrelude = false;
+    elevatedTurnAttemptedEvidenceUnlock = false;
     loopGuardSteeredThisTurn = false;
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
@@ -1602,6 +1997,7 @@ export default function (pi) {
     }
     const productiveState = controller.productiveProgressState();
     const activeToolNames = pi.getActiveTools();
+    const largeMutationActiveAtCall = controller.largeMutationBudgetActive();
     const transitionKey = controller.transitions.keyFor(event.toolName, event.input);
     const alreadySatisfiedTransition = controller.transitions.has(transitionKey);
 
@@ -1626,15 +2022,20 @@ export default function (pi) {
       !activeToolNames.includes(event.toolName);
     if (enforceActiveSurface) {
       unavailableToolAttempts += 1;
+      const presentAtRequestStart = providerCapabilitySnapshot?.executableTools?.includes(event.toolName) === true;
       const unavailable = {
         block: true,
-        reason: `BLOCKED: that tool is not currently exposed by the runtime. ${activeToolGuidance(activeToolNames)}`,
+        reason: presentAtRequestStart
+          ? `BLOCKED: capability lifecycle changed after provider request ${providerCapabilitySnapshot.request}: ${event.toolName} was executable at request start but an earlier tool/state transition in this response removed it. Do not retry the stale call. ${capabilitySnapshotGuidance(activeToolNames)}`
+          : `BLOCKED: that tool is not currently exposed by the runtime. ${capabilitySnapshotGuidance(activeToolNames)}`,
       };
-      console.warn(`PI_UNAVAILABLE_TOOL_ATTEMPT ${JSON.stringify({
+      console.warn(`${presentAtRequestStart ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
         count: unavailableToolAttempts,
         productiveState,
         attemptedTool: event.toolName,
+        request: providerCapabilitySnapshot?.request ?? null,
+        requestTools: providerCapabilitySnapshot?.executableTools ?? null,
         activeTools: activeToolNames,
       })}`);
       if (satisfiedProviderForcing) {
@@ -1670,7 +2071,16 @@ export default function (pi) {
     );
     let recoveryBlocked = null;
     let canonicalInput = event.input ?? {};
-    if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
+    if (
+      event.toolName === ACCEPT_MUTATION_SCOPE_TOOL &&
+      controller.largeMutationBudgetActive() &&
+      elevatedScopePreludeUsed
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: this elevated mutation budget already used its one accept_mutation_scope prelude. Execute the accepted mutation now; a second scope-only turn is not allowed for the same grant.',
+      };
+    } else if (event.toolName === RETRY_FAILED_CHECK_TOOL && recoveryState.corrupted) {
       recoveryBlocked = {
         block: true,
         reason: 'BLOCKED: retry_last_failed_check cannot execute because the validation ledger is corrupted and the exact authoritative failed scope cannot be reconstructed safely.',
@@ -1738,8 +2148,16 @@ export default function (pi) {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
+    if (largeMutationActiveAtCall && event.toolName === config.productiveProgress?.blockerTool) {
+      elevatedTurnAttemptedEvidenceUnlock = true;
+    }
+    if (event.toolName === ACCEPT_MUTATION_SCOPE_TOOL) {
+      elevatedTurnAttemptedScopePrelude = true;
+      if (controller.largeMutationBudgetActive()) elevatedScopePreludeUsed = true;
+    }
 
     const cwd = ctx?.cwd || process.cwd();
+    let mutationAuthorization = null;
 
     // `write` always overwrites unconditionally, unlike `edit` (which already refuses a
     // same-content replacement before touching disk) and `safe_edit` (which compares bytes
@@ -1768,17 +2186,27 @@ export default function (pi) {
       return noOpBlocked;
     }
 
-    // Trusted containment for every file mutation, direct or inside the coding session:
-    // the target must physically be inside the worktree (no escape, no .git, no symlinks).
+    // Trusted containment and accepted-scope authorization for every file mutation,
+    // direct or inside the coding session. A new publishable path must be accepted
+    // before its first mutation; an already-changed path cannot be laundered later.
     if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
       try {
         resolveMutationTarget(cwd, event.input?.path);
+        mutationAuthorization = assertMutationPathAuthorized({
+          cwd,
+          requestedPath: event.input?.path,
+          env: process.env,
+        });
       } catch (error) {
-        if (!(error instanceof MutationTargetRejected)) throw error;
+        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
         return containmentBlocked;
       }
+    }
+
+    if (stage === 'implementer' && RECEIPT_INVALIDATING_TOOLS.has(event.toolName)) {
+      invalidateTerminalReceipt(process.env);
     }
 
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);
@@ -1788,15 +2216,35 @@ export default function (pi) {
 
     if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
       try {
-        pendingMutationSnapshots.set(
-          event.toolCallId,
-          captureMutationSnapshot(cwd, event.input?.path),
-        );
+        const snapshot = captureMutationSnapshot(cwd, event.input?.path);
+        const capacity = mutationJournalCapacityStatus({ cwd, snapshot, env: process.env });
+        pendingMutationSnapshots.set(event.toolCallId, {
+          snapshot,
+          disposition: mutationAuthorization?.disposition ?? 'unknown',
+          journalable: capacity.journalable,
+          journalReason: capacity.reason,
+        });
+        if (!capacity.journalable) {
+          // Selective undo is a recovery convenience, never a prerequisite for productive work.
+          // Once the bounded journal is full (or one prior snapshot is too large), continue the
+          // mutation and retain only the process-local last-mutation snapshot for fast rollback.
+          console.warn('PI_MUTATION_JOURNAL_DEGRADED ' + JSON.stringify({
+            tool: event.toolName,
+            path: snapshot.path,
+            code: capacity.code,
+            reason: capacity.reason,
+          }));
+        }
       } catch (error) {
-        console.warn('PI_MUTATION_SNAPSHOT_UNAVAILABLE ' + JSON.stringify({
+        const reason = String(error?.message ?? error);
+        console.warn('PI_MUTATION_JOURNAL_BLOCKED ' + JSON.stringify({
           tool: event.toolName,
-          reason: String(error?.message ?? error),
+          reason,
         }));
+        return {
+          block: true,
+          reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
+        };
       }
     }
     pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
@@ -1830,18 +2278,20 @@ export default function (pi) {
     const contentMutation =
       stage === 'implementer' &&
       CONTENT_MUTATION_TOOLS.has(event.toolName);
-    const mutationSnapshot = contentMutation
+    const pendingMutation = contentMutation
       ? (pendingMutationSnapshots.get(event.toolCallId) ?? null)
       : null;
+    const mutationSnapshot = pendingMutation?.snapshot ?? null;
 
     let mutationChanged = null;
+    let mutationAfterSnapshot = null;
     if (contentMutation && pendingLoopCall && mutationSnapshot) {
       try {
-        const afterSnapshot = captureMutationSnapshot(
+        mutationAfterSnapshot = captureMutationSnapshot(
           pendingLoopCall.cwd,
           mutationSnapshot.path,
         );
-        mutationChanged = mutationSnapshotChanged(mutationSnapshot, afterSnapshot);
+        mutationChanged = mutationSnapshotChanged(mutationSnapshot, mutationAfterSnapshot);
       } catch (error) {
         console.warn('PI_MUTATION_SNAPSHOT_UNAVAILABLE ' + JSON.stringify({
           tool: event.toolName,
@@ -1874,15 +2324,109 @@ export default function (pi) {
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
-      if (!event.isError && mutationChanged === true && mutationSnapshot) {
-        lastSuccessfulMutationSnapshot = mutationSnapshot;
+      if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot) {
+        const mutationCwd = pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd();
+
+        const restorePreMutationSnapshot = () => {
+          if (mutationSnapshot.existed) {
+            fs.mkdirSync(path.dirname(mutationSnapshot.absolutePath), { recursive: true });
+            fs.writeFileSync(mutationSnapshot.absolutePath, mutationSnapshot.content);
+            if (mutationSnapshot.mode != null) fs.chmodSync(mutationSnapshot.absolutePath, mutationSnapshot.mode);
+          } else {
+            fs.rmSync(mutationSnapshot.absolutePath, { recursive: false, force: true });
+          }
+        };
+
+        const revertForProvenanceFailure = async error => {
+          restorePreMutationSnapshot();
+          mutationChanged = false;
+          repositoryStateAfter = repositoryStateFingerprint(mutationCwd);
+          const reason = String(error?.message ?? error);
+          console.error(`PI_MUTATION_JOURNAL_REVERTED ${JSON.stringify({
+            stage,
+            tool: event.toolName,
+            path: mutationSnapshot.path,
+            reason,
+          })}`);
+          await pi.sendUserMessage(
+            `RUNTIME: your ${event.toolName} change to ${mutationSnapshot.path} was reverted because the trusted runtime could not persist mutation provenance for a non-capacity reason. Do not assume that edit is present. Retry only after addressing this runtime error: ${reason}`,
+          );
+        };
+
+        const degradeToLocalSnapshot = reason => {
+          // The prior bytes remain process-local, but a tiny shared marker makes chronology
+          // durable across parent/fork processes. Other sessions must refuse rollback_last_mutation
+          // rather than falling through to an older journal entry.
+          const marker = markMutationJournalLocalOnly({
+            cwd: mutationCwd,
+            after: mutationAfterSnapshot,
+            tool: event.toolName,
+            env: process.env,
+          });
+          lastSuccessfulMutationSnapshot = mutationSnapshot;
+          lastSuccessfulMutationLocalOnlyMarkerId = marker.id;
+          console.warn(`PI_MUTATION_JOURNAL_LOCAL_FALLBACK ${JSON.stringify({
+            stage,
+            tool: event.toolName,
+            path: mutationSnapshot.path,
+            markerId: marker.id,
+            reason,
+          })}`);
+        };
+
+        if (pendingMutation?.journalable === false) {
+          try {
+            degradeToLocalSnapshot(pendingMutation.journalReason ?? 'bounded journal capacity unavailable');
+          } catch (error) {
+            await revertForProvenanceFailure(error);
+          }
+        } else {
+          try {
+            const journalEntry = recordSuccessfulMutation({
+              cwd: mutationCwd,
+              before: mutationSnapshot,
+              after: mutationAfterSnapshot,
+              tool: event.toolName,
+              disposition: pendingMutation?.disposition ?? 'unknown',
+              env: process.env,
+            });
+            // Persistent journal state is authoritative for normal mutations; keep no stale
+            // process-local mutation identity that could outrank a later coding-session edit.
+            lastSuccessfulMutationSnapshot = null;
+            lastSuccessfulMutationLocalOnlyMarkerId = null;
+            console.log(`PI_MUTATION_JOURNAL ${JSON.stringify({
+              stage,
+              mutationId: journalEntry.id,
+              tool: event.toolName,
+              path: journalEntry.path,
+              disposition: journalEntry.disposition,
+            })}`);
+          } catch (error) {
+            if (isMutationJournalCapacityError(error)) {
+              // A concurrent parent/fork mutation may consume the remaining capacity after the
+              // preflight check. Capacity exhaustion still degrades instead of reverting work,
+              // but the shared local-only marker must itself persist.
+              try {
+                degradeToLocalSnapshot(String(error?.message ?? error));
+              } catch (markerError) {
+                await revertForProvenanceFailure(markerError);
+              }
+            } else {
+              await revertForProvenanceFailure(error);
+            }
+          }
+        }
       }
       pendingMutationSnapshots.delete(event.toolCallId);
     }
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
-    controller.onToolExecutionEnd(canonicalToolName, event.isError, { madeProgress: effectiveProgress });
+    const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
+    controller.onToolExecutionEnd(canonicalToolName, event.isError, {
+      madeProgress: effectiveProgress,
+      input: acceptedToolInput,
+    });
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
@@ -1983,21 +2527,55 @@ export default function (pi) {
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
 
-    // The turn that just ended was the one-shot elevated mutation response (if any): consume
-    // it unconditionally so a second elevated response is never granted automatically, and
-    // flag it when it did not even attempt the mutation/terminal action it was granted for.
+    // Scope acceptance may be the necessary first call before a large new-file mutation.
+    // Preserve the one-shot elevated budget across that declaration-only turn; consume it only
+    // after a real mutation/rollback/terminal action, or collapse it on unrelated/no-action use.
+    let preserveElevatedAfterScopePrelude = false;
     if (stage === 'implementer' && controller.largeMutationBudgetActive()) {
-      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
-        stage,
-        phase: 'consumed',
-        attemptedFinishTool: elevatedTurnAttemptedFinishTool,
-        outputTokens,
-      })}`);
-      if (!elevatedTurnAttemptedFinishTool) {
-        console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
+      const evidenceYield = elevatedTurnAttemptedEvidenceUnlock
+        ? controller.yieldLargeMutationBudgetForEvidence()
+        : { yielded: false, rearmed: false };
+      if (evidenceYield.yielded) {
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'yielded_for_evidence',
+          ...evidenceYield,
+          outputTokens,
+        })}`);
+        elevatedScopePreludeUsed = false;
+        syncActionToolSurface(productiveState);
+      } else if (elevatedTurnAttemptedFinishTool) {
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'consumed',
+          attemptedFinishTool: true,
+          scopePrelude: elevatedTurnAttemptedScopePrelude,
+          outputTokens,
+        })}`);
+        controller.resetLargeMutationBudget();
+        elevatedScopePreludeUsed = false;
+        syncActionToolSurface(productiveState);
+      } else if (elevatedTurnAttemptedScopePrelude) {
+        preserveElevatedAfterScopePrelude = true;
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'scope_prelude',
+          preserved: true,
+          outputTokens,
+        })}`);
+      } else {
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'consumed',
+          attemptedFinishTool: false,
+          scopePrelude: false,
+          outputTokens,
+        })}`);
+        console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no accept_mutation_scope/structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
+        controller.resetLargeMutationBudget();
+        elevatedScopePreludeUsed = false;
+        syncActionToolSurface(productiveState);
       }
-      controller.resetLargeMutationBudget();
-      syncActionToolSurface(productiveState);
     }
 
     const preComplexityRequired =
@@ -2092,10 +2670,14 @@ export default function (pi) {
     // apply the elevated ceiling to exactly the upcoming response.
     const largeMutationBudgetGrantedThisTurn =
       stage === 'implementer' && controller.largeMutationBudgetPending();
-    if (largeMutationBudgetGrantedThisTurn) {
+    if (preserveElevatedAfterScopePrelude) {
+      targetActionCap = controller.largeMutationBudgetMaxTokens;
+      budgetReason = 'large_mutation_scope_prelude';
+    } else if (largeMutationBudgetGrantedThisTurn) {
       targetActionCap = controller.largeMutationBudgetMaxTokens;
       budgetReason = 'large_mutation_elevated';
       controller.activateLargeMutationBudget();
+      elevatedScopePreludeUsed = false;
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({ stage, phase: 'granted', maxTokens: targetActionCap })}`);
     }
 

@@ -88,7 +88,7 @@ test('implementer integrates latest dev before shared post-backend validation an
   assert.match(validation, /validateFinalProductTree/);
   assert.match(
     validation,
-    /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
+    /result = await runBackendAttempt\(currentSpec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
   );
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
   assert.match(runner, /return await runSelectedStage\(spec, \{ backend, workspace \}\)/);
@@ -361,10 +361,12 @@ test('issue publication safely replaces only the branch head observed at run sta
   assert.doesNotMatch(publication, /push --set-upstream origin/);
 });
 
-test('issue publication attributes only changes beyond integrated latest dev to the Implementer', () => {
+test('issue publication attributes changes against the shared resolved candidate base', () => {
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
-  assert.match(publication, /merge-base','--is-ancestor','origin\/dev','HEAD'/);
-  assert.match(publication, /return integrated \? 'origin\/dev' : startCommit/);
+  const candidate = readScript('scripts/pi-common/candidate-revision.mjs', 'utf8');
+  assert.match(publication, /publicationBase[\s\S]*return resolveCandidateBase/);
+  assert.match(candidate, /merge-base', '--is-ancestor', configuredBase, 'HEAD'/);
+  assert.match(candidate, /return fallback/);
   assert.match(publication, /diff','--no-renames','--name-only','-z',base,'HEAD'/);
   assert.doesNotMatch(publication, /diff','--no-renames','--name-only','-z',startCommit,'HEAD'/);
 });
@@ -373,7 +375,7 @@ test('the PR body Validation section is rendered from the validation ledger, nev
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.doesNotMatch(publication, /validationLines/);
-  assert.match(publication, /renderValidationSection\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\)/);
+  assert.match(publication, /renderValidationSection\(ledgerRecords, \{ corrupted: ledgerCorrupted, candidateRevision \}\)/);
   assert.match(workflow, /PI_VALIDATION_LEDGER_FILE/);
   assert.match(workflow, /issue-publication\.mjs" pr "\$ISSUE" "\$PI_IMPLEMENTER_RESULT_FILE" "\$\{\{ github\.repository_owner \}\}" "\$PI_VALIDATION_LEDGER_FILE"/);
 });
@@ -398,9 +400,11 @@ test('product agent workflows use one shared product-check contract and never ru
   const repairTool = readScript('scripts/pi-repair-result-tool.mjs', 'utf8');
   const implementerTool = readScript('scripts/pi-implementer-result-tool.mjs', 'utf8');
   const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
-  assert.match(repairTool, /validateFinalProductTree\(\)/);
+  assert.match(repairTool, /validate = validateFinalProductTree/);
+  assert.match(repairTool, /validate\(\{ enforceAcceptedScope: false \}\)/);
   assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
+  assert.match(validation, /enforceAcceptedScope: true/);
   assert.match(readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8'), /runProductChecks\(\{ cwd, ledgerPath, backend, env \}\)/);
   const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(ci, /node --test tests\/\*\.test\.mjs/);
@@ -429,7 +433,9 @@ test('all Pi agents are hard-blocked from CI control-plane changes', () => {
   const validation = readScript('scripts/pi-common/stage-validation-recovery.mjs', 'utf8');
   assert.doesNotMatch(implementerTool, /validateFinalProductTree/);
   assert.match(validation, /validateFinalProductTree/);
-  assert.match(repairTool, /validateFinalProductTree\(\)/);
+  assert.match(validation, /enforceAcceptedScope: true/);
+  assert.match(repairTool, /validate = validateFinalProductTree/);
+  assert.match(repairTool, /validate\(\{ enforceAcceptedScope: false \}\)/);
   const finalizer = readScript('scripts/pi-common/finalize-product-tree.mjs', 'utf8');
   assert.match(finalizer, /forbiddenAgentPaths\(base, cwd\)/);
   const agentChanges = readScript('scripts/pi-common/agent-change-policy.mjs', 'utf8');
@@ -673,9 +679,11 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.doesNotMatch(triage, /blame_context|commit_story|file_history|search_commits|file_contributors/);
   assert.match(stageConfig, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
   assert.match(stageConfig, /controlTools: \['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'\]/);
-  assert.match(stageConfig, /actionTools: \['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'submit_result'\]/);
-  assert.match(progress, /const MUTATION_TOOLS = new Set\(\['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'recover_worktree'\]\)/);
-  assert.match(resultTool, /structural_edit\/safe_edit\/edit\/write/);
+  assert.match(stageConfig, /actionTools: \['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation', 'submit_result'\]/);
+  assert.match(progress, /const MUTATION_TOOLS = new Set\(\['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'recover_worktree', 'undo_mutation'\]\)/);
+  assert.match(resultTool, /IMPLEMENTER_MUTATION_TOOLS = Object\.freeze\(\['structural_edit', 'safe_edit', 'edit', 'write'\]\)/);
+  assert.match(resultTool, /IMPLEMENTER_MUTATION_TOOLS\.filter\(name => active\.has\(name\)\)/);
+  assert.match(resultTool, /capabilitySnapshotGuidance\(names\)/);
 });
 
 test('implementer has an explicit already-satisfied terminal path without duplicate edits', () => {
@@ -709,7 +717,7 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
   assert.match(
     validation,
-    /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
+    /result = await runBackendAttempt\(currentSpec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
   );
 });
 

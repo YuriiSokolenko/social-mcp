@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import { projectConfig } from '../scripts/pi-common/project-config.mjs';
 
@@ -21,6 +21,12 @@ test('runtime materializes completed transitions into context and tool surface',
       `Authoritative final checks still run automatically after submit_result and before publication: ${expectedFinalPipeline}.`;
     fs.writeFileSync(context, JSON.stringify({ title: 'Example task', body: 'Implement example.py' }));
     fs.writeFileSync(path.join(dir, 'example.py'), 'value = 1\n');
+    execFileSync('git', ['init', '-q', dir]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'Session State Test']);
+    execFileSync('git', ['-C', dir, 'config', 'user.email', 'session@example.invalid']);
+    execFileSync('git', ['-C', dir, 'add', 'example.py']);
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'base']);
+    execFileSync('git', ['-C', dir, 'update-ref', 'refs/remotes/origin/dev', 'HEAD']);
     fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
       if (specifier === 'typebox') return {
         url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, {get: () => (...args) => ({})});'),
@@ -292,6 +298,7 @@ test('runtime materializes completed transitions into context and tool surface',
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context,
         GITHUB_RUN_ID: 'runtime-test', GITHUB_RUN_ATTEMPT: '1',
         PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false', PI_VALIDATION_LEDGER_FILE: ledger,
+        PI_ACCEPTED_MUTATION_SCOPE_STATE: "{\"schema_version\":1,\"accepted\":[{\"path\":\"example.py\",\"rationale\":\"Session-state runtime test mutates the known example file.\"}],\"temporary\":[],\"baseline\":[]}",
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
     });
     assert.equal(result.status, 0, result.stderr + result.stdout);

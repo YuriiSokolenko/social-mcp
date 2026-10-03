@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { mergeNewlyActiveTools } from '../scripts/pi-common/session-state.mjs';
+import { capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames } from '../scripts/pi-common/session-state.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 const LSP = { server_id: 'python', workspace_root: '/work/tree' };
@@ -156,6 +156,21 @@ test('session-state validation guidance follows the verification lifecycle', () 
     }),
     /run_check is exhausted for the current mutation state/,
   );
+});
+
+test('provider capability snapshot is derived from executable request definitions', () => {
+  const payload = {
+    tools: [
+      { type: 'function', function: { name: 'write' } },
+      { name: 'submit_result' },
+      { type: 'function', function: { name: 'write' } },
+    ],
+  };
+  assert.deepEqual(providerToolNames(payload), ['write', 'submit_result']);
+  const guidance = capabilitySnapshotGuidance(providerToolNames(payload));
+  assert.match(guidance, /write, submit_result/);
+  assert.match(guidance, /authoritative for this provider request/);
+  assert.doesNotMatch(guidance, /need_more_evidence|\bread\b/);
 });
 
 test('mergeNewlyActiveTools keeps baseline order and adds newly enabled tools', () => {

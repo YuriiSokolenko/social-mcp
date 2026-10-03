@@ -722,20 +722,25 @@ function runRuntimeScenario(body, env = {}) {
     `);
     const runtimeUrl = new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href;
     const controllerUrl = new URL('../scripts/pi-common/progress-controller.mjs', import.meta.url).href;
+    const journalUrl = new URL('../scripts/pi-common/mutation-journal.mjs', import.meta.url).href;
+    const snapshotUrl = new URL('../scripts/pi-common/mutation-snapshot.mjs', import.meta.url).href;
     const script = `
       import assert from 'node:assert/strict';
       import fs from 'node:fs';
       import path from 'node:path';
       const RUNTIME_URL = ${JSON.stringify(runtimeUrl)};
       const CONTROLLER_URL = ${JSON.stringify(controllerUrl)};
+      const JOURNAL_URL = ${JSON.stringify(journalUrl)};
+      const SNAPSHOT_URL = ${JSON.stringify(snapshotUrl)};
       const handlers = new Map();
       const messages = [];
+      const registeredTools = new Map();
       // This mock exercises loop-guard behavior, not tool-surface policy. Mirror Pi's mutable
       // active surface so runtime setActiveTools() calls remain observable on later tool calls.
       let activeTools = ['read', 'write', 'safe_edit', 'rollback_last_mutation'];
       const pi = {
         on: (name, handler) => handlers.set(name, handler),
-        registerTool: () => {},
+        registerTool: tool => registeredTools.set(tool.name, tool),
         getActiveTools: () => [...activeTools],
         setActiveTools: names => { activeTools = [...names]; },
         sendUserMessage: async (...args) => messages.push(args),
@@ -799,6 +804,7 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
     fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n');
     execFileSync('git', ['add', '.'], { cwd: repo });
     execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
 
     const result = runRuntimeScenario(`
       // Isolate handler wiring from the productive-progress gating rules.
@@ -833,12 +839,368 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
     `, {
       PI_LOOP_GUARD_WINDOW: '4',
       PI_LOOP_GUARD_THRESHOLD: '1',
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: "{\"schema_version\":1,\"accepted\":[{\"path\":\"a.txt\",\"rationale\":\"Loop-guard test mutates the known a.txt fixture.\"},{\"path\":\"b.txt\",\"rationale\":\"Loop-guard test mutates the known b.txt fixture.\"}],\"temporary\":[],\"baseline\":[]}",
     });
     assert.match(result.stdout, /INTERLEAVED_LOOP_INTEGRATION_OK/);
     assert.match(result.stdout, /PI_LOOP_GUARD .*"tool":"safe_edit".*"noOp":true/);
     assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('#424 undo and persistent rollback invalidate terminal receipt before ledger append can fail', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-undo-ledger-failure-'));
+  const journalFile = path.join(os.tmpdir(), `pi-undo-ledger-journal-${process.pid}-${Date.now()}.json`);
+  const receiptFile = path.join(os.tmpdir(), `pi-undo-ledger-receipt-${process.pid}-${Date.now()}.json`);
+  const ledgerFile = path.join(os.tmpdir(), `pi-undo-ledger-ledger-${process.pid}-${Date.now()}.jsonl`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'target.txt'), 'base\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+    fs.writeFileSync(ledgerFile, '');
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      const journal = await import(JOURNAL_URL);
+      const snapshots = await import(SNAPSHOT_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+      const target = path.join(repo, 'target.txt');
+
+      const directMutation = content => {
+        const before = snapshots.captureMutationSnapshot(repo, 'target.txt');
+        fs.writeFileSync(target, content);
+        const after = snapshots.captureMutationSnapshot(repo, 'target.txt');
+        return journal.recordSuccessfulMutation({
+          cwd: repo,
+          before,
+          after,
+          tool: 'write',
+          disposition: 'publishable',
+          env: process.env,
+        });
+      };
+
+      const forceLedgerFailure = async action => {
+        const originalAppend = fs.appendFileSync;
+        fs.appendFileSync = () => { throw new Error('forced ledger append failure'); };
+        try {
+          await assert.rejects(action(), /forced ledger append failure/);
+        } finally {
+          fs.appendFileSync = originalAppend;
+        }
+        assert.equal(fs.existsSync(process.env.PI_TERMINAL_RESULT_FILE), false);
+      };
+
+      const entry = directMutation('undo-target\\n');
+      fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'pre-undo receipt');
+      await forceLedgerFailure(() => registeredTools.get('undo_mutation').execute(
+        'undo-ledger-failure',
+        {
+          mutation_id: entry.id,
+          expected_files: [],
+          reason: 'verify receipt invalidation before failed ledger append',
+        },
+        null,
+        null,
+        ctx,
+      ));
+      assert.equal(fs.readFileSync(target, 'utf8'), 'base\\n');
+
+      // Record the next mutation through runtime events so this is the normal persistent
+      // rollback_last_mutation path rather than a direct journal-only fixture.
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'runtime-write',
+        toolName: 'write',
+        input: { path: 'target.txt' },
+      }, ctx), undefined);
+      fs.writeFileSync(target, 'rollback-target\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'runtime-write',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+
+      fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'pre-rollback receipt');
+      await forceLedgerFailure(() => registeredTools.get('rollback_last_mutation').execute(
+        'rollback-ledger-failure',
+        { reason: 'verify rollback invalidates before failed ledger append' },
+        null,
+        null,
+        ctx,
+      ));
+      assert.equal(fs.readFileSync(target, 'utf8'), 'base\\n');
+      assert.equal(journal.mutationJournalState(repo, process.env).entries.length, 0);
+      console.log('UNDO_LEDGER_FAILURE_RECEIPT_INVALIDATED_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_TERMINAL_RESULT_FILE: receiptFile,
+      PI_VALIDATION_LEDGER_FILE: ledgerFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [{ path: 'target.txt', rationale: 'Ledger failure receipt invalidation regression target.' }],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+
+    assert.match(result.stdout, /UNDO_LEDGER_FAILURE_RECEIPT_INVALIDATED_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+    fs.rmSync(receiptFile, { force: true });
+    fs.rmSync(ledgerFile, { force: true });
+  }
+});
+
+test('#424 parent rollback follows shared fork journal order instead of stale process-local identity', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cross-process-rollback-'));
+  const journalFile = path.join(os.tmpdir(), `pi-cross-process-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    for (const name of ['parent.txt', 'fork-one.txt', 'fork-two.txt']) {
+      fs.writeFileSync(path.join(repo, name), name + ':base\n');
+    }
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+      const call = (id, toolName, input) =>
+        handlers.get('tool_call')({ toolCallId: id, toolName, input }, ctx);
+      const end = (id, toolName) =>
+        handlers.get('tool_execution_end')({ toolCallId: id, toolName, isError: false, result: { content: [] } }, ctx);
+
+      // Parent records P1 in its own process state.
+      assert.equal(await call('parent-p1', 'write', { path: 'parent.txt' }), undefined);
+      fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:P1\\n');
+      await end('parent-p1', 'write');
+
+      // Separate process models the coding-session fork and appends F1 then F2 to the same sidecar.
+      const { spawnSync } = await import('node:child_process');
+      const childProgram = [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "const journal = await import(" + JSON.stringify(JOURNAL_URL) + ");",
+        "const snapshots = await import(" + JSON.stringify(SNAPSHOT_URL) + ");",
+        "const root = process.argv[1];",
+        "const mutate = (relative, content) => {",
+        "  const before = snapshots.captureMutationSnapshot(root, relative);",
+        "  fs.writeFileSync(path.join(root, relative), content);",
+        "  const after = snapshots.captureMutationSnapshot(root, relative);",
+        "  journal.recordSuccessfulMutation({ cwd: root, before, after, tool: 'write', disposition: 'publishable', env: process.env });",
+        "};",
+        "mutate('fork-one.txt', 'fork-one:F1\\\\n');",
+        "mutate('fork-two.txt', 'fork-two:F2\\\\n');",
+      ].join('\\n');
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', childProgram, repo], {
+        encoding: 'utf8',
+        env: process.env,
+      });
+      assert.equal(child.status, 0, child.stderr);
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      const rolled = await rollback.execute('parent-rollback', { reason: 'undo shared latest mutation' }, null, null, ctx);
+      assert.match(rolled.content[0].text, /shared latest recorded mutation/);
+      assert.equal(fs.readFileSync(path.join(repo, 'parent.txt'), 'utf8'), 'parent:P1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork-one.txt'), 'utf8'), 'fork-one:F1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork-two.txt'), 'utf8'), 'fork-two.txt:base\\n');
+      console.log('CROSS_PROCESS_ROLLBACK_ORDER_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [
+          { path: 'parent.txt', rationale: 'Cross-process rollback regression parent path.' },
+          { path: 'fork-one.txt', rationale: 'Cross-process rollback regression fork path one.' },
+          { path: 'fork-two.txt', rationale: 'Cross-process rollback regression fork path two.' },
+        ],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /CROSS_PROCESS_ROLLBACK_ORDER_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+  }
+});
+
+test('#424 parent rollback refuses an older journal entry when fork latest is local-only', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cross-process-local-only-'));
+  const journalFile = path.join(os.tmpdir(), `pi-cross-process-local-only-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:base\n');
+    fs.writeFileSync(path.join(repo, 'fork.txt'), 'fork:base\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'parent-p1',
+        toolName: 'write',
+        input: { path: 'parent.txt' },
+      }, ctx), undefined);
+      fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:P1\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'parent-p1',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+
+      const { spawnSync } = await import('node:child_process');
+      const childProgram = [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "const journal = await import(" + JSON.stringify(JOURNAL_URL) + ");",
+        "const snapshots = await import(" + JSON.stringify(SNAPSHOT_URL) + ");",
+        "const root = process.argv[1];",
+        "const relative = 'fork.txt';",
+        "const before = snapshots.captureMutationSnapshot(root, relative);",
+        "fs.writeFileSync(path.join(root, relative), 'fork:LOCAL\\\\n');",
+        "const after = snapshots.captureMutationSnapshot(root, relative);",
+        "journal.markMutationJournalLocalOnly({ cwd: root, after, tool: 'write', env: process.env });",
+      ].join('\\n');
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', childProgram, repo], {
+        encoding: 'utf8',
+        env: process.env,
+      });
+      assert.equal(child.status, 0, child.stderr);
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      await assert.rejects(
+        rollback.execute('parent-rollback', { reason: 'must not hit stale P1' }, null, null, ctx),
+        error => error.code === 'mutation_rollback_latest_local_only_unavailable',
+      );
+      assert.equal(fs.readFileSync(path.join(repo, 'parent.txt'), 'utf8'), 'parent:P1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork.txt'), 'utf8'), 'fork:LOCAL\\n');
+      console.log('CROSS_PROCESS_LOCAL_ONLY_REFUSAL_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [
+          { path: 'parent.txt', rationale: 'Cross-process local-only regression parent path.' },
+          { path: 'fork.txt', rationale: 'Cross-process local-only regression fork path.' },
+        ],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /CROSS_PROCESS_LOCAL_ONLY_REFUSAL_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+  }
+});
+
+test('#424 full persistent journal degrades to local rollback instead of blocking the next edit', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-journal-degrade-runtime-'));
+  const journalFile = path.join(os.tmpdir(), `pi-full-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'target.txt'), 'before\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const entries = Array.from({ length: 256 }, (_, index) => ({
+      id: `mutation-00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
+      path: `historical-${index}.tmp`,
+      tool: 'write',
+      disposition: 'temporary',
+      prior: { existed: false },
+      post: { exists: false },
+    }));
+    fs.writeFileSync(journalFile, JSON.stringify({ schema_version: 1, entries }));
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+
+      const callResult = await handlers.get('tool_call')({
+        toolCallId: 'overflow-write',
+        toolName: 'write',
+        input: { path: 'target.txt', content: 'after\\n' },
+      }, ctx);
+      assert.equal(callResult, undefined, 'capacity exhaustion must not block the mutation');
+
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'after\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'overflow-write',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'after\\n');
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      assert.ok(rollback);
+
+      // A later bash-like write is unjournaled. Local-only rollback must not overwrite it.
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'intervening bash bytes\\n');
+      await assert.rejects(
+        rollback.execute('rollback-conflict', { reason: 'must not overwrite later bytes' }, null, null, ctx),
+        error => error.code === 'mutation_rollback_conflict',
+      );
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'intervening bash bytes\\n');
+
+      // Once the exact local-only post-state is restored, the owning process can safely roll back.
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'after\\n');
+      await rollback.execute('rollback-local', { reason: 'exercise local fallback' }, null, null, ctx);
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'before\\n');
+      console.log('JOURNAL_CAPACITY_DEGRADES_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [{ path: 'target.txt', rationale: 'Runtime overflow regression target.' }],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /JOURNAL_CAPACITY_DEGRADES_OK/);
+    assert.match(result.stderr, /PI_MUTATION_JOURNAL_DEGRADED/);
+    assert.match(result.stderr, /PI_MUTATION_JOURNAL_LOCAL_FALLBACK/);
+    assert.doesNotMatch(result.stderr, /PI_MUTATION_JOURNAL_REVERTED/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
   }
 });
 

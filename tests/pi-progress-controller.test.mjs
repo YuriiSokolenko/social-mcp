@@ -122,6 +122,15 @@ test('action-required runtime steering uses a real user steer without importing 
   assert.doesNotMatch(runtime, /customType: 'pi-action-required'/);
 });
 
+test('#424 coding-session fallback transports mutation journal through a shared file, not one env value', () => {
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.doesNotMatch(runtime, /PI_MUTATION_JOURNAL_STATE:\s*JSON\.stringify/);
+  assert.match(runtime, /fallbackMutationJournalFile/);
+  assert.match(runtime, /writeMutationJournalFile\(/);
+  assert.match(runtime, /PI_MUTATION_JOURNAL_FILE:\s*codingMutationJournalFile/);
+  assert.match(runtime, /Reload child journal mutations into the parent process cache/);
+});
+
 test('action-required tool surface keeps only productive and control tools', () => {
   assert.deepEqual(
     actionRequiredToolNames(
@@ -570,8 +579,11 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /validationRepair[\s\S]*PI_VALIDATION_REPAIR/);
   assert.match(runtime, /responseHitOutputCeiling/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
+  assert.match(runtime, /name: 'undo_mutation'/);
+  assert.match(runtime, /Selectively undo one recorded structural_edit\/safe_edit\/edit\/write/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);
-  assert.match(runtime, /most recent successful structural_edit\/safe_edit\/edit\/write/);
+  assert.match(runtime, /shared latest structural_edit\/safe_edit\/edit\/write/);
+  assert.match(runtime, /other processes refuse instead of selecting an older mutation/);
   assert.match(runtime, /No successful structural_edit\/safe_edit\/edit\/write is available to roll back/);
   assert.match(runtime, /captureMutationSnapshot/);
   assert.match(runtime, /productiveProgressState\(\)/);
@@ -593,9 +605,10 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
 });
 
-test('runtime grants the large mutation budget for exactly one response and always collapses it back', () => {
+test('runtime preserves a large mutation budget through scope declaration, then consumes it on the real finish action', () => {
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  assert.match(runtime, /elevatedMutationTurnToolNames/);
   assert.match(runtime, /FINISH_TOOLS/);
   assert.match(runtime, /name: controller\.largeMutationBudgetTool/);
   assert.match(runtime, /controller\.largeMutationBudgetPending\(\)/);
@@ -605,10 +618,15 @@ test('runtime grants the large mutation budget for exactly one response and alwa
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET/);
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET_VIOLATION/);
   assert.match(runtime, /elevatedTurnAttemptedFinishTool/);
+  assert.match(runtime, /elevatedTurnAttemptedScopePrelude/);
+  assert.match(runtime, /phase: 'scope_prelude'/);
+  assert.match(runtime, /budgetReason = 'large_mutation_scope_prelude'/);
   // Tool-surface restriction during the elevated turn is UX on top of the controller's own
   // hard gate; the finish-tool attempt marker must only be set for a call the controller
   // actually let through, never for one it blocked.
-  assert.match(runtime, /largeMutationBudgetActive[\s\S]*unrestrictedActiveTools\.filter\(name => FINISH_TOOLS\.has\(name\)\)/);
+  assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
+  assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
+  assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput/);
   assert.match(runtime, /return blocked;\s*\}[\s\S]{0,200}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
   assert.match(planner, /evidence_budget/);
 });
@@ -856,7 +874,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetTool, 'request_large_mutation_budget');
   assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetMaxTokens, IMPLEMENTER_RESPONSE_MAX_TOKENS);
   assert.equal(stageConfig('implementer').fixedResponseMaxTokens, undefined);
-  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'submit_result']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation', 'submit_result']);
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
@@ -1008,17 +1026,43 @@ test('productive progress allows only one extra evidence permit per productive e
   state.onToolExecutionEnd('prepare_implementation', false);
 
   assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
-  assert.equal(state.checkToolCall('need_more_evidence', {
+  const firstUnlockInput = {
     missing: 'exact helper path',
     reason: 'needed for a safe edit',
-  }), undefined);
-  assert.equal(state.checkToolCall('read', { path: 'src/b.py' }), undefined);
+  };
+  assert.equal(state.checkToolCall('need_more_evidence', firstUnlockInput), undefined);
+  state.onToolExecutionEnd('need_more_evidence', false, { input: firstUnlockInput });
 
-  const secondUnlock = state.checkToolCall('need_more_evidence', {
+  const whileEvidenceAllowedInput = {
+    missing: 'another detail before using the granted read',
+    reason: 'should remain blocked while the permit is already open',
+  };
+  assert.match(
+    state.checkToolCall('need_more_evidence', whileEvidenceAllowedInput).reason,
+    /one evidence action is already permitted/,
+  );
+  // Pi core emits tool_execution_end(isError=true) even for locally blocked calls.
+  // That error must not roll back the accepted first unlock.
+  state.onToolExecutionEnd('need_more_evidence', true, { input: whileEvidenceAllowedInput });
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.evidenceUnlockUsedSinceProgress, true);
+
+  assert.equal(state.checkToolCall('read', { path: 'src/b.py' }), undefined);
+  state.onToolExecutionEnd('read', false);
+
+  const secondUnlockInput = {
     missing: 'different helper detail',
     reason: 'would provide more context',
-  });
+  };
+  const secondUnlock = state.checkToolCall('need_more_evidence', secondUnlockInput);
   assert.match(secondUnlock.reason, /already used since the last successful structural_edit\/safe_edit\/edit\/write\/submit_result/);
+  state.onToolExecutionEnd('need_more_evidence', true, { input: secondUnlockInput });
+
+  const thirdUnlock = state.checkToolCall('need_more_evidence', {
+    missing: 'third helper detail',
+    reason: 'blocked execution-end must not reset the productive epoch',
+  });
+  assert.match(thirdUnlock.reason, /already used since the last successful structural_edit\/safe_edit\/edit\/write\/submit_result/);
 
   assert.equal(state.checkToolCall('edit', { path: 'src/a.py' }), undefined);
   state.onToolExecutionEnd('edit', true);
@@ -1100,7 +1144,7 @@ test('request_large_mutation_budget is refused before evidence is exhausted (evi
   assert.equal(state.largeMutationBudgetState, 'idle');
 });
 
-test('while the elevated mutation budget is active, only a finish tool may execute', () => {
+test('while the elevated mutation budget is active, only a finish tool or the bounded evidence transition may execute', () => {
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
   state.onTurnStart(0);
@@ -1115,14 +1159,51 @@ test('while the elevated mutation budget is active, only a finish tool may execu
 
   const blockedReason = /elevated mutation budget is active this turn/;
   assert.match(state.checkToolCall('read', { path: 'src/known.py' }).reason, blockedReason);
-  assert.match(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }).reason, blockedReason);
+  assert.equal(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.deepEqual(state.yieldLargeMutationBudgetForEvidence(), { yielded: true, rearmed: false });
+  assert.equal(state.largeMutationBudgetActive(), false);
+  assert.equal(state.checkToolCall('read', { path: 'src/known.py' }), undefined, 'one evidence action becomes executable after yielding the elevated response');
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.evidenceUnlockAvailable(), false, 'the blocker remains unavailable until productive progress');
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'second large new file' }), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.activateLargeMutationBudget(), true);
   assert.match(state.checkToolCall('set_response_budget', { level: 'deep', reason: 'z' }).reason, blockedReason);
   assert.match(state.checkToolCall('subagents_enable', {}).reason, blockedReason);
   assert.match(state.checkToolCall('lsp_start_server', {}).reason, blockedReason);
   assert.match(state.checkToolCall('run_check', { kind: 'ruff' }).reason, blockedReason);
 
-  // A finish tool (mutation, rollback, or terminal submit) is still allowed.
+  // Scope acceptance is a permitted prelude in the elevated turn, and actual
+  // mutation/rollback/terminal actions remain allowed.
+  assert.equal(state.checkToolCall('accept_mutation_scope', {
+    paths: ['arkanoid.py'],
+    disposition: 'publishable',
+    rationale: 'The issue requires the main implementation file.',
+  }), undefined);
   assert.equal(state.checkToolCall('write', { path: 'arkanoid.py' }), undefined);
+});
+
+test('failed need_more_evidence does not yield an elevated grant or leave a phantom evidence window', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  state.onTurnStart(0);
+  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
+  state.setComplexity('nontrivial');
+  state.setEvidenceBudget(0);
+  state.onToolExecutionEnd('prepare_implementation', false);
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'large new file' }), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.activateLargeMutationBudget(), true);
+
+  const failedUnlockInput = { missing: 'x', reason: 'y' };
+  assert.equal(state.checkToolCall('need_more_evidence', failedUnlockInput), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  state.onToolExecutionEnd('need_more_evidence', true, { input: failedUnlockInput });
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.evidenceUnlockAvailable(), true, 'failed control transition does not consume the bounded escape');
+  assert.deepEqual(state.yieldLargeMutationBudgetForEvidence(), { yielded: false, rearmed: false });
+  assert.equal(state.largeMutationBudgetActive(), true, 'runtime must now take its ordinary consume/collapse branch');
 });
 
 test('a large mutation grant that ends without a finish-tool attempt still collapses to idle', () => {

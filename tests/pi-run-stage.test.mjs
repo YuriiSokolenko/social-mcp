@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { execFileSync } from 'node:child_process';
 
 import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
@@ -10,8 +11,15 @@ import { readScript } from './helpers/resolved-source.mjs';
 import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
-import { createValidationRepairSpec, runStageWithValidationRecovery, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { captureMutationSnapshot } from '../scripts/pi-common/mutation-snapshot.mjs';
+import { recordSuccessfulMutation } from '../scripts/pi-common/mutation-journal.mjs';
 import { issueWorktreePatchPath } from '../scripts/pi-common/issue-worktree.mjs';
+import {
+  assertSuccessfulTerminalReceipt,
+  createSuccessfulTerminalReceipt,
+  writeTerminalReceiptFile,
+} from '../scripts/pi-common/terminal-receipt.mjs';
 
 function specFor(stage) {
   return createStageRunSpec({
@@ -477,6 +485,98 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.equal(result.durationMs, 3);
 });
 
+test('trusted safe-fix drift routes into validation repair and resubmit', async (t) => {
+  const root = temporaryDirectory(t, 'stage-safe-fix-resubmit-');
+  const dir = join(root, 'repo');
+  mkdirSync(dir);
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  git('init', '-q');
+  git('config', 'user.name', 'Safe Fix Test');
+  git('config', 'user.email', 'safe-fix@example.invalid');
+  writeFileSync(join(dir, 'app.py'), 'value = 1\n');
+  git('add', '-A');
+  git('commit', '-qm', 'base');
+  const startCommit = git('rev-parse', 'HEAD');
+  git('update-ref', 'refs/remotes/origin/dev', startCommit);
+  writeFileSync(join(dir, 'app.py'), 'value = 2\n');
+
+  // Match production topology: trusted runtime artifacts live in RUNNER_TEMP,
+  // outside the issue worktree, so they never affect candidate identity.
+  const resultFile = join(root, 'implementer-result.json');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: {
+      PI_STAGE: 'implementer',
+      PI_PHASE: 'implementation',
+      PI_IMPLEMENTER_RESULT_FILE: resultFile,
+      PI_VALIDATION_LEDGER_FILE: join(root, 'ledger.jsonl'),
+      PI_VALIDATION_RUN_ID: 'safe-fix-run',
+      PI_IMPLEMENTER_START_COMMIT: startCommit,
+    },
+    artifacts: {
+      terminalResultPath: join(root, 'terminal.json'),
+      metricsPath: join(root, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+
+  const attempts = [];
+  let validations = 0;
+  const result = await runStageWithValidationRecovery(
+    spec,
+    async candidate => {
+      attempts.push(candidate);
+      writeImplementerResult(resultFile, {
+        title: 'Safe fix candidate',
+        summary: 'Exercise trusted validation mutation recovery.',
+        changes: ['Update app value'],
+        files: ['app.py'],
+        security_notes: 'No security impact.',
+        limitations: 'None.',
+      });
+      const env = {
+        ...candidate.environment,
+        PI_TERMINAL_RESULT_FILE: candidate.artifacts.terminalResultPath,
+      };
+      writeTerminalReceiptFile(
+        candidate.artifacts.terminalResultPath,
+        createSuccessfulTerminalReceipt({ cwd: dir, resultFile, env }),
+      );
+      return createStageRunResult({
+        backend: 'fake',
+        durationMs: 1,
+        artifacts: candidate.artifacts,
+      });
+    },
+    {
+      validate: () => {
+        validations += 1;
+        if (validations === 1) {
+          // Simulates Ruff's trusted safe-fix changing bytes after submit.
+          writeFileSync(join(dir, 'app.py'), 'value = 3\n');
+        }
+      },
+    },
+  );
+
+  assert.equal(attempts.length, 2);
+  assert.equal(validations, 2);
+  assert.equal(attempts[1].environment.PI_VALIDATION_REPAIR, 'true');
+  assert.equal(readFileSync(join(dir, 'app.py'), 'utf8'), 'value = 3\n');
+  assert.doesNotThrow(() => assertSuccessfulTerminalReceipt({
+    cwd: dir,
+    resultFile,
+    env: {
+      ...attempts[1].environment,
+      PI_TERMINAL_RESULT_FILE: spec.artifacts.terminalResultPath,
+    },
+  }));
+  assert.equal(result.backend, 'fake');
+});
+
 test('runtime failure metadata is cleared before every backend attempt', async (t) => {
   const dir = temporaryDirectory(t, 'stage-runtime-failure-reset-');
   const failureFile = join(dir, 'runtime-failure.json');
@@ -679,6 +779,52 @@ test('shared validation recovery stops after one failed repair attempt', async (
     /still failing/,
   );
   assert.equal(attempts, 2);
+});
+
+test('#424 accepted-scope validation exposes callable targeted cleanup to repair', (t) => {
+  const dir = temporaryDirectory(t, 'stage-mutation-cleanup-');
+  const sidecar = join(dir, 'journal.json');
+  const env = {
+    PI_STAGE: 'implementer',
+    PI_PHASE: 'implementation',
+    PI_MUTATION_JOURNAL_FILE: sidecar,
+  };
+  const before = captureMutationSnapshot(dir, '.probe.txt');
+  writeFileSync(join(dir, '.probe.txt'), 'scratch\n');
+  const after = captureMutationSnapshot(dir, '.probe.txt');
+  const entry = recordSuccessfulMutation({
+    cwd: dir,
+    before,
+    after,
+    tool: 'write',
+    disposition: 'temporary',
+    env,
+  });
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: env,
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+  const failure = new Error(JSON.stringify({
+    code: 'accepted_scope_violation',
+    unexpected_paths: [],
+    temporary_paths: ['.probe.txt'],
+  }));
+  const enriched = validationErrorWithMutationCleanup(failure, spec, {
+    files: ['feature.py', '.probe.txt'],
+  });
+
+  assert.match(enriched.message, new RegExp(entry.id));
+  assert.match(enriched.message, /undo_mutation/);
+  assert.match(enriched.message, /expected_files:\["feature.py"\]/);
+  assert.match(validationRepairPrompt(enriched), /Targeted mutation cleanup available/);
 });
 
 test('validation repair prompt keeps diagnostics bounded and focused', () => {

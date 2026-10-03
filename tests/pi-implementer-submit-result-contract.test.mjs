@@ -148,6 +148,7 @@ test('submit_result advertises a flat object schema and runtime returns structur
       const pi = {
         registerTool(value) { if (value.name === 'submit_result') tool = value; },
         appendEntry() {},
+        getActiveTools() { return ['submit_result']; },
         on(event, fn) { if (event === 'agent_before_settle') settle = fn; },
       };
       registerResultTool(pi);
@@ -207,6 +208,8 @@ test('submit_result advertises a flat object schema and runtime returns structur
       const nudge = settle();
       assert.match(nudge.entries[0].content, /missing publication fields/);
       assert.match(nudge.entries[0].content, /retry submit_result immediately/);
+      assert.match(nudge.entries[0].content, /CURRENTLY EXPOSED TOOLS.*submit_result/);
+      assert.doesNotMatch(nudge.entries[0].content, /need_more_evidence/, 'hidden blocker is not advertised by the terminal nudge');
       assert.match(tool.description, /runtime validates that complete publication contract/);
     `;
     const child = runProgram({
@@ -357,4 +360,87 @@ test('fresh already_satisfied and blocked result shapes still execute successful
   });
   assert.equal(blocked.metadata.outcome, 'blocked');
   assert.equal(blocked.metadata.blocked_reason, 'Requirement A contradicts requirement B.');
+});
+
+
+test('#424 fresh submit_result exposes targeted mutation cleanup for accidental scratch', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-mutation-cleanup-'));
+  const work = cleanGitWorktree(root);
+  const context = path.join(root, 'issue.json');
+  const resultFile = path.join(root, 'result.json');
+  const journalFile = path.join(root, 'mutation-journal.json');
+  fs.writeFileSync(context, JSON.stringify({
+    number: 424,
+    title: 'Persist targeted mutation undo',
+    body: 'Test context',
+  }));
+
+  try {
+    const journalUrl = new URL('../scripts/pi-common/mutation-journal.mjs', import.meta.url).href;
+    const snapshotUrl = new URL('../scripts/pi-common/mutation-snapshot.mjs', import.meta.url).href;
+    const program = `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      const journal = await import(${JSON.stringify(journalUrl)});
+      const snapshots = await import(${JSON.stringify(snapshotUrl)});
+
+      let tool;
+      const pi = {
+        registerTool(value) { if (value.name === 'submit_result') tool = value; },
+        appendEntry() {},
+        on() {},
+      };
+      registerResultTool(pi);
+
+      fs.writeFileSync(path.join(process.cwd(), 'feature.py'), 'value = 1\\n');
+      const before = snapshots.captureMutationSnapshot(process.cwd(), '.probe.txt');
+      fs.writeFileSync(path.join(process.cwd(), '.probe.txt'), 'scratch\\n');
+      const after = snapshots.captureMutationSnapshot(process.cwd(), '.probe.txt');
+      const entry = journal.recordSuccessfulMutation({
+        cwd: process.cwd(),
+        before,
+        after,
+        tool: 'write',
+        disposition: 'temporary',
+        env: process.env,
+      });
+
+      await assert.rejects(
+        tool.execute('submit', {
+          title: 'Feature',
+          summary: 'Implement feature.',
+          changes: ['Add feature'],
+          files: ['feature.py'],
+          security_notes: 'No security impact.',
+          limitations: 'None.',
+        }),
+        error => {
+          assert.match(error.message, /Targeted cleanup available/);
+          assert.match(error.message, new RegExp(entry.id));
+          assert.match(error.message, /undo_mutation/);
+          assert.match(error.message, /expected_files:\\["feature.py"\\]/);
+          return true;
+        },
+      );
+    `;
+    const child = runProgram({
+      dir: root,
+      cwd: work,
+      program,
+      env: {
+        GITHUB_WORKSPACE: PROJECT_ROOT,
+        PI_ISSUE: '424',
+        PI_ISSUE_CONTEXT: context,
+        PI_IMPLEMENTER_RESULT_FILE: resultFile,
+        PI_MUTATION_JOURNAL_FILE: journalFile,
+        PI_RESUME_ACTIVE: 'false',
+        PI_VALIDATION_REPAIR: 'false',
+      },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -21,6 +21,17 @@ export function activeToolGuidance(activeToolNames) {
     : 'CURRENTLY EXPOSED TOOLS (authoritative): none. Do not invent a tool call.';
 }
 
+export function providerToolNames(payload) {
+  if (!Array.isArray(payload?.tools)) return [];
+  return [...new Set(payload.tools
+    .map(tool => tool?.function?.name ?? tool?.name)
+    .filter(name => typeof name === 'string' && name.length > 0))];
+}
+
+export function capabilitySnapshotGuidance(activeToolNames) {
+  return `${activeToolGuidance(activeToolNames)} This capability snapshot is authoritative for this provider request. Tool names mentioned in earlier history or static contracts but absent from this list are not directly callable now; use only an exposed runtime transition to make another capability available.`;
+}
+
 export class SessionTransitions {
   constructor({ preparationTool = null } = {}) {
     this.preparationTool = preparationTool;

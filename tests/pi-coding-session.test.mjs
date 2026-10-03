@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { resolveMutationTarget } from '../scripts/pi-common/mutation-target.mjs';
 import {
   MAX_CEILING_WITHOUT_TOOL_TURNS,
@@ -118,9 +118,10 @@ test('the coding session is the same Implementer runtime, defined only in truste
   assert.equal(progress.codingSessionMaxTokens, 16384);
   assert.equal(progress.actionResponseMaxTokens, 2048);
   assert.ok(progress.actionTools.includes('begin_coding_session'));
-  for (const tool of ['write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'rollback_last_mutation', 'need_more_evidence', 'submit_result', 'read']) {
+  for (const tool of ['write', 'edit', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'rollback_last_mutation', 'need_more_evidence', 'submit_result', 'read']) {
     assert.ok(progress.codingSessionTools.includes(tool), tool);
   }
+  assert.ok(!progress.codingSessionTools.includes('bash'), 'raw shell is not a coding-session cleanup capability');
   for (const tool of ['begin_coding_session', 'request_large_mutation_budget', 'subagent', 'subagents_enable', 'prepare_implementation', 'grep', 'find', 'ls']) {
     assert.ok(!progress.codingSessionTools.includes(tool), tool);
   }
@@ -142,8 +143,19 @@ function runtimeScenario(mode) {
     const scenario = path.join(dir, 'scenario.mjs');
     const work = path.join(dir, 'work');
     const terminal = path.join(dir, 'terminal.json');
+    const resultFile = path.join(dir, 'implementer-result.json');
+    const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
+    const remote = path.join(dir, 'remote.git');
+    execFileSync('git', ['init', '--bare', '-q', remote]);
     fs.mkdirSync(work);
+    execFileSync('git', ['init', '-q', work]);
+    execFileSync('git', ['-C', work, 'config', 'user.name', 'Coding Session Test']);
+    execFileSync('git', ['-C', work, 'config', 'user.email', 'coding@example.invalid']);
+    execFileSync('git', ['-C', work, 'commit', '--allow-empty', '-qm', 'base']);
+    execFileSync('git', ['-C', work, 'remote', 'add', 'origin', remote]);
+    execFileSync('git', ['-C', work, 'push', '-q', 'origin', 'HEAD:refs/heads/dev']);
+    execFileSync('git', ['-C', work, 'update-ref', 'refs/remotes/origin/dev', 'HEAD']);
     fs.writeFileSync(context, JSON.stringify({ title: 'Coding session smoke', body: 'Create generated.py and its test' }));
     fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
     fs.writeFileSync(scenario, `
@@ -151,7 +163,11 @@ function runtimeScenario(mode) {
       import fs from 'node:fs';
       import { EventEmitter } from 'node:events';
       const runtimeUrl = ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
+      const terminalReceiptUrl = ${JSON.stringify(new URL('../scripts/pi-common/terminal-receipt.mjs', import.meta.url).href)};
+      const implementerResultUrl = ${JSON.stringify(new URL('../scripts/pi-common/implementer-result.mjs', import.meta.url).href)};
       const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
+      const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile } = await import(terminalReceiptUrl);
+      const { writeImplementerResult } = await import(implementerResultUrl);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
@@ -168,6 +184,8 @@ function runtimeScenario(mode) {
       const fallbackEvidenceBudget = ${PREPARATION_FALLBACK_EVIDENCE_BUDGET};
       const cwd = ${JSON.stringify(work)};
       const terminal = ${JSON.stringify(terminal)};
+      const resultFile = ${JSON.stringify(resultFile)};
+      const scopeFile = ${JSON.stringify(scopeFile)};
       const runtimeFailure = ${JSON.stringify(runtimeFailure)};
       const controlScripts = ${JSON.stringify(path.dirname(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).pathname))};
       const sessionFile = ${JSON.stringify(path.join(dir, 'parent-session.jsonl'))};
@@ -181,7 +199,7 @@ function runtimeScenario(mode) {
       const registrations = [];
       const registered = new Map();
       let aborts = 0;
-      let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'run_check', 'submit_result', 'need_more_evidence',
+      let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence',
         'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'prepare_implementation'];
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
@@ -193,6 +211,7 @@ function runtimeScenario(mode) {
         events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) },
         registerTool: tool => tools.set(tool.name, tool),
         on: (name, fn) => handlers.set(name, fn),
+        appendEntry: () => {},
         getAllTools: () => [...new Set([...tools.keys(), 'read', 'write', 'edit', 'bash'])].filter(name => mode !== 'narrow-registry' || name !== 'bash').map(name => ({ name })),
         getActiveTools: () => [...active], setActiveTools: names => { active = names; },
         setModel: async model => { caps.push(model.maxTokens); ctx.model = model; return true; },
@@ -249,6 +268,17 @@ function runtimeScenario(mode) {
         assert.equal(patched.max_completion_tokens, 16384, 'the 16K ceiling is untouched');
         const other = { input: 'not a chat payload' };
         assert.equal(providerPatch({ payload: other }, childCtx), other, 'non-chat payloads are left alone');
+        const firstActionPayload = {
+          model: 'm',
+          messages: [],
+          tools: childActive.map(name => ({ type: 'function', function: { name } })),
+        };
+        const firstActionRequest = providerPatch({ payload: firstActionPayload }, childCtx);
+        assert.equal(firstActionRequest.tool_choice, 'required', 'the first coding-session provider request is constrained immediately');
+        const firstRequestTools = firstActionRequest.tools.map(tool => tool.function?.name ?? tool.name);
+        assert.ok(firstRequestTools.includes('need_more_evidence'), 'bounded evidence transition remains reachable');
+        assert.ok(!firstRequestTools.includes('read'), 'inherited parent read intent is not advertised on the first request');
+        assert.ok(!firstRequestTools.includes('bash'), 'forbidden cleanup shell is not advertised on the first request');
         if (mode === 'malformed-contract') {
           const spec = JSON.parse(process.env.PI_CODING_SESSION);
           fs.writeFileSync(spec.failureFile, '{"failure_code":');
@@ -260,9 +290,25 @@ function runtimeScenario(mode) {
         }
         // Executors stubbed; the runtime's gates around them are real.
         childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
-        childTools.get('submit_result').execute = async () => { fs.writeFileSync(terminal, 'submitted\\n'); return { content: [{ type: 'text', text: 'submitted' }] }; }; // same marker terminalResult() writes
+        childTools.get('submit_result').execute = async () => {
+          writeImplementerResult(resultFile, {
+            title: 't',
+            summary: 's',
+            changes: ['c'],
+            files: ['generated.py', 'test_generated.py'],
+            security_notes: 'n',
+            limitations: 'n',
+          });
+          const receiptEnv = { ...process.env, PI_TERMINAL_RESULT_FILE: terminal };
+          writeTerminalReceiptFile(
+            terminal,
+            createSuccessfulTerminalReceipt({ cwd, resultFile, env: receiptEnv }),
+          );
+          return { content: [{ type: 'text', text: 'submitted' }] };
+        };
         let turn = 0;
         if (mode === 'fork-prose-force') {
+          // Simulate the provider ignoring the first request's required tool choice.
           childHandlers.get('turn_start')({ turnIndex: turn });
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
           const actionPayload = {
@@ -301,6 +347,11 @@ function runtimeScenario(mode) {
           assert.match((await childCall('write', { path: 'link/escape.py', content: 'x' })).reason, /symbolic links/);
           assert.match((await childCall('write', { path: '.git/hooks/pre-commit', content: 'x' })).reason, /cannot target .git/);
         }
+        await childCall('accept_mutation_scope', {
+          paths: ['generated.py', 'test_generated.py'],
+          disposition: 'publishable',
+          rationale: 'Issue requires the implementation module and its focused regression test.',
+        });
         await childCall('write', { path: 'generated.py', content: 'REQUIRED_CONSTANT = "' + constant + '"\\nHELP = "q: quit\\\\nr: restart"\\n' });
         if (mode === 'fork-prose-force') {
           const actionPayload = {
@@ -313,7 +364,7 @@ function runtimeScenario(mode) {
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
-        if (mode !== 'no-submit') await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
+        if (!['no-submit', 'no-submit-parent-submit'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
         respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
       }
       bus.on('prompt-template:subagent:request', async request => {
@@ -353,7 +404,12 @@ function runtimeScenario(mode) {
         process.exit(0);
       }
       const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
-      assert.equal(handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx), unarmedPayload, 'unarmed parent request is unchanged');
+      const firstParentRequest = handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx);
+      if (mode === 'restored') {
+        assert.equal(firstParentRequest.tool_choice, 'required', 'direct action_required startup constrains the first parent request');
+      } else {
+        assert.equal(firstParentRequest, unarmedPayload, 'preparation-phase parent request is unchanged');
+      }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
       assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
@@ -405,6 +461,77 @@ function runtimeScenario(mode) {
       }
       fs.rmSync(cwd + '/config.py');
       for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
+
+      if (mode === 'elevated-evidence-write') {
+        await call('accept_mutation_scope', {
+          paths: ['same-turn-large.py'],
+          disposition: 'publishable',
+          rationale: 'Regression fixture for elevated evidence followed by a real mutation in one response.',
+        });
+        await call('request_large_mutation_budget', { reason: 'exercise same-turn evidence plus mutation' });
+        assert.equal(caps.at(-1), 16384, 'manual elevated grant applies to the next response');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const sameTurnCall = async (name, input) => {
+          const event = { toolName: name, toolCallId: 'same-turn-' + name + '-' + turn, input };
+          assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name + ' was blocked in elevated response');
+          let result;
+          if (tools.has(name)) {
+            result = await tools.get(name).execute(event.toolCallId, input, signal.signal, null, ctx);
+          } else if (name === 'write') {
+            fs.writeFileSync(cwd + '/' + input.path, input.content);
+            result = { content: [{ type: 'text', text: 'ok' }] };
+          } else {
+            result = { content: [{ type: 'text', text: 'ok' }] };
+          }
+          await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
+          return result;
+        };
+
+        await sameTurnCall('need_more_evidence', {
+          missing: 'one final implementation fact',
+          reason: 'exercise bounded evidence unlock inside the elevated response',
+        });
+        await sameTurnCall('write', { path: 'same-turn-large.py', content: 'VALUE = 1\\n' });
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 1000 } } }, ctx);
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const regrant = await handlers.get('tool_call')({
+          toolName: 'request_large_mutation_budget',
+          toolCallId: 'regrant-' + turn,
+          input: { reason: 'prove the prior one-shot grant was consumed' },
+        }, ctx);
+        assert.equal(regrant, undefined, 'same-turn evidence + mutation consumes the prior elevated grant instead of leaking it');
+        console.log('ELEVATED_EVIDENCE_WRITE_CONSUMED_OK');
+        process.exit(0);
+      }
+
+      if (mode === 'scope-prelude-cap') {
+        await call('request_large_mutation_budget', { reason: 'large generated module' });
+        assert.equal(caps.at(-1), 16384, 'large mutation grant raises the next response cap');
+        await call('accept_mutation_scope', {
+          paths: ['first-large.py'],
+          disposition: 'publishable',
+          rationale: 'Issue requires the large generated implementation file.',
+        });
+        assert.equal(caps.at(-1), 16384, 'one scope prelude preserves the elevated cap');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const secondPrelude = await handlers.get('tool_call')({
+          toolName: 'accept_mutation_scope',
+          toolCallId: 'scope-repeat-' + turn,
+          input: {
+            paths: ['second-large.py'],
+            disposition: 'publishable',
+            rationale: 'Attempt a second declaration under the same elevated grant.',
+          },
+        }, ctx);
+        assert.equal(secondPrelude.block, true);
+        assert.match(secondPrelude.reason, /already used its one accept_mutation_scope prelude/);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        console.log('SCOPE_PRELUDE_CAP_OK');
+        process.exit(0);
+      }
 
       if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort'].includes(mode)) {
         // First action_required response is prose only: the runtime arms provider-level
@@ -512,6 +639,11 @@ function runtimeScenario(mode) {
           const afterCeiling = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
           assert.equal(afterCeiling.tool_choice, 'required', 'ceiling-hit response does not consume tool forcing');
 
+          await call('accept_mutation_scope', {
+            paths: ['small.txt'],
+            disposition: 'publishable',
+            rationale: 'Direct forced-tool test requires one small implementation file.',
+          });
           await call('write', { path: 'small.txt', content: 'small change\\n' });
           assert.equal(fs.readFileSync(cwd + '/small.txt', 'utf8'), 'small change\\n');
           const afterTool = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
@@ -549,6 +681,17 @@ function runtimeScenario(mode) {
 
       handlers.get('turn_start')({ turnIndex: turn });
       assert.ok(active.includes('begin_coding_session'));
+      if (mode === 'forbidden-capability') {
+        await assert.rejects(
+          () => tools.get('begin_coding_session').execute('forbidden-capability', {
+            reason: 'Need shell cleanup',
+            required_capability: 'bash',
+          }, signal.signal, null, ctx),
+          /cannot expose required capability "bash"/,
+        );
+        assert.equal(sessionRequests.length, 0, 'incapable fork is rejected before launch');
+        process.exit(0);
+      }
       const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', { reason: 'Implement generated.py and its test' }, { expectError });
       if (mode === 'malformed-contract') {
@@ -578,7 +721,7 @@ function runtimeScenario(mode) {
         assert.equal(sessionRequests[0].spec.maxTokens, 16384);
         assert.doesNotMatch(sessionRequests[0].task, /abc123/, 'the constant is NOT handed over in the request');
       }
-      if (['flow', 'fallback', 'restored', 'tampered', 'containment', 'no-submit'].includes(mode)) {
+      if (['flow', 'fallback', 'restored', 'tampered', 'containment', 'no-submit', 'no-submit-parent-submit'].includes(mode)) {
         assert.ok(childCaps.length > 0 && childCaps.every(cap => cap === 16384), 'every coding-session response is 16384: ' + childCaps);
         assert.match(fs.readFileSync(cwd + '/generated.py', 'utf8'), /REQUIRED_CONSTANT = "abc123"/, 'the fork used context the request never carried');
         assert.equal(fs.readFileSync(cwd + '/generated.py', 'utf8').split('\\n')[1], 'HELP = "q: quit\\\\nr: restart"');
@@ -590,6 +733,28 @@ function runtimeScenario(mode) {
         // Smoke #285: the parent's own submit flag is false (the fork submitted), so the nudge
         // must honor the run-wide terminal marker instead of restarting the parent.
         assert.equal(handlers.get('agent_before_settle')(), undefined, 'no submit nudge after the fork submitted');
+      }
+      if (mode === 'no-submit-parent-submit') {
+        assert.notEqual(result.terminate, true);
+        assert.match(result.content[0].text, /ended without submit_result/);
+        // Production launches pi-run-stage from the issue worktree. This scenario
+        // normally stays in the control checkout so it can exercise trusted
+        // runtime modules, but the real parent submit_result uses process.cwd()
+        // for integrateLatestDev()/git publication checks. Match production here.
+        process.chdir(cwd);
+        assert.equal(fs.realpathSync(process.cwd()), fs.realpathSync(cwd));
+        await call('submit_result', {
+          title: 'Parent submit',
+          summary: 'Publish coding-session changes from the parent.',
+          changes: ['Add generated implementation and test'],
+          files: ['generated.py', 'test_generated.py'],
+          security_notes: 'No security impact.',
+          limitations: 'None.',
+        });
+        const metadata = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+        assert.equal(metadata.scope_enforcement, 'predeclared');
+        assert.deepEqual(metadata.accepted_scope.accepted.map(entry => entry.path), ['generated.py', 'test_generated.py']);
+        console.log('PARENT_SUBMIT_AFTER_FORK_OK');
       }
       if (mode === 'no-submit') {
         assert.notEqual(result.terminate, true);
@@ -611,6 +776,7 @@ function runtimeScenario(mode) {
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, scenario], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context, PI_TERMINAL_RESULT_FILE: terminal,
+        PI_IMPLEMENTER_RESULT_FILE: resultFile, PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure },
     });
@@ -628,7 +794,7 @@ test('2K parent -> begin_coding_session -> 16K same-context fork writes code + t
   assert.match(logs, /"phase":"started".*"context":"fork","agent":"implementer-coding-session"/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_disabled","side":"fork".*"enableThinking":false,"maxTokens":16384/);
-  assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"write"/);
+  assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"accept_mutation_scope"/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"first_response","side":"fork".*"attemptedTool":true/);
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"changed":true/g)?.length, 2, 'several files in one session');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
@@ -651,11 +817,29 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
 });
 
+test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
+  const logs = runtimeScenario('no-submit-parent-submit');
+  assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
+  assert.match(logs, /PARENT_SUBMIT_AFTER_FORK_OK/);
+});
+
+test('same elevated response may request bounded evidence then mutate without leaking the one-shot budget', () => {
+  const logs = runtimeScenario('elevated-evidence-write');
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"consumed".*"attemptedFinishTool":true/);
+  assert.match(logs, /ELEVATED_EVIDENCE_WRITE_CONSUMED_OK/);
+});
+
+test('one elevated mutation grant permits at most one scope-only prelude', () => {
+  const logs = runtimeScenario('scope-prelude-cap');
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"scope_prelude".*"preserved":true/);
+  assert.match(logs, /SCOPE_PRELUDE_CAP_OK/);
+});
+
 test('first prose-only action-required retry stays forced through a ceiling turn until a real exposed tool', () => {
   const logs = runtimeScenario('prose-force-direct');
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
   assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 2);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"accept_mutation_scope"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
@@ -684,7 +868,12 @@ test('a hidden provider-emitted tool clears forcing but remains non-progress and
 test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
   const logs = runtimeScenario('fork-prose-force');
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"write"/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"accept_mutation_scope"/);
+});
+
+test('coding session rejects an unavailable required capability before launching the fork', () => {
+  const logs = runtimeScenario('forbidden-capability');
+  assert.match(logs, /"phase":"rejected".*"reason":"required_capability_unavailable"/);
 });
 
 test('a deliberately non-compliant second prose-only turn still aborts with durable execution-failure metadata', () => {
