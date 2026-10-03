@@ -2,6 +2,8 @@ import { runGit as git } from './git.mjs';
 
 import { forbiddenAgentPaths } from './agent-change-policy.mjs';
 import { runProductChecks } from './product-checks.mjs';
+import { assertAcceptedMutationScope } from './accepted-mutation-scope.mjs';
+import { IMPLEMENTER_OUTCOMES, readImplementerResult } from './implementer-result.mjs';
 import { baseBranch, baseRef, gitIdentity } from './project-config.mjs';
 
 
@@ -48,5 +50,19 @@ export function validateFinalProductTree({ cwd, ledgerPath, backend, env = proce
   const base = git(['merge-base', baseRef(), 'HEAD'], { cwd }).out;
   const forbidden = forbiddenAgentPaths(base, cwd);
   if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
+
+  const resultFile = env.PI_IMPLEMENTER_RESULT_FILE;
+  const metadata = resultFile ? readImplementerResult(resultFile) : null;
+  if (metadata?.outcome === IMPLEMENTER_OUTCOMES.changed) {
+    if (metadata.scope_enforcement === 'predeclared') {
+      assertAcceptedMutationScope({ cwd, receipt: metadata.accepted_scope, base: baseRef() });
+    } else if (metadata.scope_enforcement !== 'unsandboxed-gated') {
+      throw new Error(JSON.stringify({
+        code: 'accepted_scope_missing',
+        recovery: 'Changed Pi work must carry a trusted predeclared accepted-scope receipt before final validation.',
+      }));
+    }
+  }
+
   runProductChecks({ cwd, ledgerPath, backend, env });
 }
