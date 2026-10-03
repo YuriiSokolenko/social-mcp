@@ -10,6 +10,7 @@ import {
   FINISH_TOOLS,
   ProgressController,
   actionRequiredToolNames,
+  elevatedMutationTurnToolNames,
   classifyTruncatedToolCall,
   MAX_CEILING_WITHOUT_TOOL_TURNS,
   nextActionRequiredProseOnlyTurns,
@@ -18,7 +19,7 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
-import { activeToolGuidance, mergeNewlyActiveTools } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -582,6 +583,9 @@ export default function (pi) {
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   let unavailableToolAttempts = 0;
+  let providerRequestSequence = 0;
+  let providerCapabilitySnapshot = null;
+  let lastProviderProductiveState = null;
   // True only when this runtime itself removed the verification tool from the model
   // surface (permit exhaustion or exact-retry substitution). A later valid
   // permit may restore it only in that case; unrelated removals stay removed.
@@ -590,6 +594,7 @@ export default function (pi) {
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
   let elevatedTurnAttemptedScopePrelude = false;
+  let elevatedTurnAttemptedEvidenceUnlock = false;
   let elevatedScopePreludeUsed = false;
 
   function validationRunId() {
@@ -749,7 +754,9 @@ export default function (pi) {
         : largeMutationBudgetActive
           // UX on top of the controller's own hard gate: while the elevated budget is active,
           // don't even show tools this turn is not allowed to call.
-          ? unrestrictedActiveTools.filter(name => ELEVATED_MUTATION_TURN_TOOLS.has(name))
+          ? elevatedMutationTurnToolNames(unrestrictedActiveTools, {
+              blockerTool: config.productiveProgress.blockerTool,
+            })
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
@@ -971,12 +978,11 @@ export default function (pi) {
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
 
-  // Provider-request patches are deliberately narrow:
-  // - coding sessions keep thinking disabled on every request;
-  // - after the first prose-only Implementer action_required violation, requests keep
-  //   tool_choice="required" until the model actually attempts one exposed tool. Pi has already
-  //   restricted payload.tools to the valid action surface, so the model still chooses direct
-  //   mutation vs coding session vs submit/escape hatch.
+  // The request boundary is the capability authority. Re-synchronize the surface immediately
+  // before every Implementer provider request, filter payload.tools to that surface, snapshot the
+  // executable definitions, and constrain the first request that enters action_required. This
+  // includes the first coding-session request, so inherited parent history cannot spend a turn
+  // attempting a read/cleanup tool that the fork does not expose yet.
   let codingReadyAt = null;
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
@@ -984,6 +990,9 @@ export default function (pi) {
     let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
       forcedProviderRequestInFlight = false;
+      const productiveState = syncProductiveState();
+      syncActionToolSurface(productiveState);
+
       let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
       if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
         codingSessionLog('thinking_disabled', {
@@ -993,13 +1002,51 @@ export default function (pi) {
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
         });
       }
+
       if (Array.isArray(patched?.tools)) {
         const active = new Set(pi.getActiveTools());
         const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
         if (tools.length !== patched.tools.length) patched = { ...patched, tools };
+
+        const executableTools = providerToolNames(patched);
+        const activeTools = pi.getActiveTools();
+        providerCapabilitySnapshot = {
+          request: ++providerRequestSequence,
+          productiveState,
+          activeTools,
+          executableTools,
+        };
+        console.log(`PI_PROVIDER_CAPABILITY_SNAPSHOT ${JSON.stringify({ stage, ...providerCapabilitySnapshot })}`);
+
+        const missingDefinitions = activeTools.filter(name => !executableTools.includes(name));
+        if (missingDefinitions.length) {
+          console.warn(`PI_PROVIDER_CAPABILITY_DIVERGENCE ${JSON.stringify({
+            stage,
+            request: providerCapabilitySnapshot.request,
+            activeTools,
+            executableTools,
+            missingDefinitions,
+          })}`);
+        }
+
+        const enteringActionRequired =
+          productiveState === 'action_required' &&
+          lastProviderProductiveState !== 'action_required' &&
+          executableTools.length > 0;
+        if (enteringActionRequired) {
+          requireToolOnNextProviderRequest = true;
+          console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED ${JSON.stringify({
+            stage,
+            reason: codingSession && lastProviderProductiveState == null
+              ? 'coding_session_first_request'
+              : 'action_required_entry',
+            activeTools: executableTools,
+          })}`);
+        }
+        lastProviderProductiveState = productiveState;
       }
+
       if (requireToolOnNextProviderRequest) {
-        const productiveState = controller.productiveProgressState();
         if (productiveState !== 'action_required') {
           requireToolOnNextProviderRequest = false;
           console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
@@ -1007,7 +1054,12 @@ export default function (pi) {
           const constrained = requireToolChoiceInPayload(patched);
           if (constrained !== patched) {
             forcedProviderRequestInFlight = true;
-            console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({ stage, mode: 'required', activeTools: pi.getActiveTools() })}`);
+            console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({
+              stage,
+              mode: 'required',
+              request: providerCapabilitySnapshot?.request ?? null,
+              activeTools: providerCapabilitySnapshot?.executableTools ?? pi.getActiveTools(),
+            })}`);
             patched = constrained;
           }
         }
@@ -1027,7 +1079,9 @@ export default function (pi) {
     const request = { version: 1, name: config.productiveProgress.codingSessionAgent, definition };
     pi.events?.emit?.(RUNTIME_AGENT_REGISTER_EVENT, request);
     codingSessionAgent = request.result
-      ? (request.result.ok ? { ok: true } : { ok: false, error: String(request.result.error?.message ?? request.result.error) })
+      ? (request.result.ok
+        ? { ok: true, tools: [...definition.tools] }
+        : { ok: false, error: String(request.result.error?.message ?? request.result.error) })
       : { ok: false, error: 'pi-subagents did not handle runtime agent registration' };
     codingSessionLog(codingSessionAgent.ok ? 'agent_registered' : 'agent_unavailable', {
       agent: request.name, source: 'runtime', thinking: definition.thinking, tools: definition.tools, extensions: definition.extensions,
@@ -1651,6 +1705,10 @@ export default function (pi) {
         description: `Call once exploration is done and you know what to implement, in particular when the code will not fit your normal ${sessionConfig.actionResponseMaxTokens}-token response. The runtime continues THIS session (same conversation, evidence and decisions) as a coding session with a ${sessionConfig.codingSessionMaxTokens}-token response ceiling under the same runtime rules. Inside the fork, use only the tool surface exposed there. Call it as soon as you are ready; do NOT draft the code here first. Small changes can stay direct.`,
         parameters: Type.Object({
           reason: Type.Optional(Type.String({ maxLength: 300, description: 'Optional one-line note for logs' })),
+          required_capability: Type.Optional(Type.String({
+            maxLength: 100,
+            description: 'Set only when the purpose of the fork is to obtain one named capability hidden in the parent. Runtime rejects the launch if the coding session can never expose it.',
+          })),
         }),
         async execute(toolCallId, params, signal, _onUpdate, ctx) {
           const sessionId = randomUUID();
@@ -1682,6 +1740,27 @@ export default function (pi) {
           if (!agentReady.ok) {
             refuse('agent_unavailable', `The trusted coding-session agent is not registered (${agentReady.error}). Implement with direct edits.`);
           }
+
+          const requiredCapability = String(params?.required_capability ?? '').trim();
+          if (requiredCapability && !agentReady.tools.includes(requiredCapability)) {
+            refuse(
+              'required_capability_unavailable',
+              `The coding session cannot expose required capability "${requiredCapability}", so it was not launched. ${capabilitySnapshotGuidance(agentReady.tools)} Use a currently exposed trusted recovery/action instead.`,
+            );
+          }
+          const firstRequestTools = actionRequiredToolNames(agentReady.tools, {
+            actionTools: sessionConfig.actionTools,
+            controlTools: sessionConfig.controlTools,
+            blockerTool: sessionConfig.blockerTool,
+            verificationTools: [],
+          });
+          const requiredCapabilityGuidance = requiredCapability && !firstRequestTools.includes(requiredCapability)
+            ? requiredCapability === sessionConfig.verificationTool
+              ? ` Required capability "${requiredCapability}" is not callable on the first request; a successful mutation must grant its focused verification permit first.`
+              : ['read', 'repo_search', 'indexed_repo_search'].includes(requiredCapability) && firstRequestTools.includes(sessionConfig.blockerTool)
+                ? ` Required capability "${requiredCapability}" is not callable on the first request; call ${sessionConfig.blockerTool} with one concrete missing fact to unlock one evidence action before using it.`
+                : ` Required capability "${requiredCapability}" is not callable on the first request; follow only runtime-exposed transitions until it appears.`
+            : '';
           sessionsStarted += 1;
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
@@ -1705,7 +1784,7 @@ export default function (pi) {
             response = await runStructuredSubagent(pi, ctx, {
               agent: sessionConfig.codingSessionAgent,
               nodeId: `coding-session-${toolCallId}`,
-              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code and tests where needed using only tools currently exposed by the fork runtime. Verify when verification is exposed, fix failures, and finish through the exposed terminal action. Write code directly in tool arguments.',
+              task: `Coding phase: continue this Implementer session and finish the issue. Implement the code and tests where needed using only tools currently exposed by the fork runtime. Verify when verification is exposed, fix failures, and finish through the exposed terminal action. Write code directly in tool arguments. ${capabilitySnapshotGuidance(firstRequestTools)}${requiredCapabilityGuidance}`,
               timeoutMs: Number(sessionConfig.codingSessionTimeoutMs ?? 5400000),
               maxTokens: sessionConfig.codingSessionMaxTokens,
               // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
@@ -1905,6 +1984,7 @@ export default function (pi) {
     actionTurnAttemptedTool = false;
     elevatedTurnAttemptedFinishTool = false;
     elevatedTurnAttemptedScopePrelude = false;
+    elevatedTurnAttemptedEvidenceUnlock = false;
     loopGuardSteeredThisTurn = false;
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
@@ -1927,6 +2007,7 @@ export default function (pi) {
     }
     const productiveState = controller.productiveProgressState();
     const activeToolNames = pi.getActiveTools();
+    const largeMutationActiveAtCall = controller.largeMutationBudgetActive();
     const transitionKey = controller.transitions.keyFor(event.toolName, event.input);
     const alreadySatisfiedTransition = controller.transitions.has(transitionKey);
 
@@ -1951,15 +2032,20 @@ export default function (pi) {
       !activeToolNames.includes(event.toolName);
     if (enforceActiveSurface) {
       unavailableToolAttempts += 1;
+      const presentAtRequestStart = providerCapabilitySnapshot?.executableTools?.includes(event.toolName) === true;
       const unavailable = {
         block: true,
-        reason: `BLOCKED: that tool is not currently exposed by the runtime. ${activeToolGuidance(activeToolNames)}`,
+        reason: presentAtRequestStart
+          ? `BLOCKED: capability lifecycle changed after provider request ${providerCapabilitySnapshot.request}: ${event.toolName} was executable at request start but an earlier tool/state transition in this response removed it. Do not retry the stale call. ${capabilitySnapshotGuidance(activeToolNames)}`
+          : `BLOCKED: that tool is not currently exposed by the runtime. ${capabilitySnapshotGuidance(activeToolNames)}`,
       };
-      console.warn(`PI_UNAVAILABLE_TOOL_ATTEMPT ${JSON.stringify({
+      console.warn(`${presentAtRequestStart ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
         count: unavailableToolAttempts,
         productiveState,
         attemptedTool: event.toolName,
+        request: providerCapabilitySnapshot?.request ?? null,
+        requestTools: providerCapabilitySnapshot?.executableTools ?? null,
         activeTools: activeToolNames,
       })}`);
       if (satisfiedProviderForcing) {
@@ -2072,6 +2158,9 @@ export default function (pi) {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
+    if (largeMutationActiveAtCall && event.toolName === config.productiveProgress?.blockerTool) {
+      elevatedTurnAttemptedEvidenceUnlock = true;
+    }
     if (event.toolName === ACCEPT_MUTATION_SCOPE_TOOL) {
       elevatedTurnAttemptedScopePrelude = true;
       if (controller.largeMutationBudgetActive()) elevatedScopePreludeUsed = true;
@@ -2449,7 +2538,17 @@ export default function (pi) {
     // after a real mutation/rollback/terminal action, or collapse it on unrelated/no-action use.
     let preserveElevatedAfterScopePrelude = false;
     if (stage === 'implementer' && controller.largeMutationBudgetActive()) {
-      if (elevatedTurnAttemptedFinishTool) {
+      if (elevatedTurnAttemptedEvidenceUnlock) {
+        const yielded = controller.yieldLargeMutationBudgetForEvidence();
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'yielded_for_evidence',
+          ...yielded,
+          outputTokens,
+        })}`);
+        elevatedScopePreludeUsed = false;
+        syncActionToolSurface(productiveState);
+      } else if (elevatedTurnAttemptedFinishTool) {
         console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
           stage,
           phase: 'consumed',
