@@ -112,18 +112,26 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   if (persistedMutationJournal) {
     message += `\nPi-Mutation-Journal: ${encodeMutationJournalState(cwd, persistedMutationJournal)}`;
   }
+  const metadataOnlyJournalSeal = Boolean(!stagedChanged && expectedSha && persistedMutationJournal);
   if (stagedChanged) {
     git(['commit','-m',message], { cwd });
+  } else if (metadataOnlyJournalSeal) {
+    git(['commit','--allow-empty','-m',message], { cwd });
   }
   const base = publicationBase(cwd, startCommit);
-  if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
-  const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
+  const treeChanged = git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status !== 0;
+  if (!treeChanged && !metadataOnlyJournalSeal) return { changed:false, reason:'no-change' };
+  const changed = treeChanged
+    ? gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out)
+    : [];
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Implementer attempted to modify protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
   const ref = `refs/heads/${checkpointBranch(issue)}`;
   git(['push',`--force-with-lease=${ref}:${expectedSha ?? ''}`,'origin',`${commit}:${ref}`], { cwd, token });
-  return { changed:true, commit };
+  return metadataOnlyJournalSeal
+    ? { changed:false, reason:'journal-sealed', commit }
+    : { changed:true, commit };
 }
 
 export function assertPublicationFileSet({ cwd, base, resultFile }) {
