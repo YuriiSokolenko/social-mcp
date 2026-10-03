@@ -404,7 +404,12 @@ function runtimeScenario(mode) {
         process.exit(0);
       }
       const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
-      assert.equal(handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx), unarmedPayload, 'unarmed parent request is unchanged');
+      const firstParentRequest = handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx);
+      if (mode === 'restored') {
+        assert.equal(firstParentRequest.tool_choice, 'required', 'direct action_required startup constrains the first parent request');
+      } else {
+        assert.equal(firstParentRequest, unarmedPayload, 'preparation-phase parent request is unchanged');
+      }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
       assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
@@ -456,6 +461,50 @@ function runtimeScenario(mode) {
       }
       fs.rmSync(cwd + '/config.py');
       for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
+
+      if (mode === 'elevated-evidence-write') {
+        await call('accept_mutation_scope', {
+          paths: ['same-turn-large.py'],
+          disposition: 'publishable',
+          rationale: 'Regression fixture for elevated evidence followed by a real mutation in one response.',
+        });
+        await call('request_large_mutation_budget', { reason: 'exercise same-turn evidence plus mutation' });
+        assert.equal(caps.at(-1), 16384, 'manual elevated grant applies to the next response');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const sameTurnCall = async (name, input) => {
+          const event = { toolName: name, toolCallId: 'same-turn-' + name + '-' + turn, input };
+          assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name + ' was blocked in elevated response');
+          let result;
+          if (tools.has(name)) {
+            result = await tools.get(name).execute(event.toolCallId, input, signal.signal, null, ctx);
+          } else if (name === 'write') {
+            fs.writeFileSync(cwd + '/' + input.path, input.content);
+            result = { content: [{ type: 'text', text: 'ok' }] };
+          } else {
+            result = { content: [{ type: 'text', text: 'ok' }] };
+          }
+          await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
+          return result;
+        };
+
+        await sameTurnCall('need_more_evidence', {
+          missing: 'one final implementation fact',
+          reason: 'exercise bounded evidence unlock inside the elevated response',
+        });
+        await sameTurnCall('write', { path: 'same-turn-large.py', content: 'VALUE = 1\n' });
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 1000 } } }, ctx);
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const regrant = await handlers.get('tool_call')({
+          toolName: 'request_large_mutation_budget',
+          toolCallId: 'regrant-' + turn,
+          input: { reason: 'prove the prior one-shot grant was consumed' },
+        }, ctx);
+        assert.equal(regrant, undefined, 'same-turn evidence + mutation consumes the prior elevated grant instead of leaking it');
+        console.log('ELEVATED_EVIDENCE_WRITE_CONSUMED_OK');
+        process.exit(0);
+      }
 
       if (mode === 'scope-prelude-cap') {
         await call('request_large_mutation_budget', { reason: 'large generated module' });
@@ -772,6 +821,12 @@ test('parent submit inherits accepted scope from a coding-session fork that ende
   const logs = runtimeScenario('no-submit-parent-submit');
   assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
   assert.match(logs, /PARENT_SUBMIT_AFTER_FORK_OK/);
+});
+
+test('same elevated response may request bounded evidence then mutate without leaking the one-shot budget', () => {
+  const logs = runtimeScenario('elevated-evidence-write');
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"consumed".*"attemptedFinishTool":true/);
+  assert.match(logs, /ELEVATED_EVIDENCE_WRITE_CONSUMED_OK/);
 });
 
 test('one elevated mutation grant permits at most one scope-only prelude', () => {
