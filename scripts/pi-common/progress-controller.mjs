@@ -253,6 +253,10 @@ export class ProgressController {
     this.productiveEvidenceBudgetOverride = null;
     this.lastEvidenceRequestSignature = null;
     this.evidenceUnlockUsedSinceProgress = false;
+    // Snapshot only an accepted need_more_evidence transition. Blocked attempts may still
+    // produce tool_execution_end(isError=true) in Pi core, so execution-end rollback must
+    // never infer ownership from tool name alone.
+    this.pendingEvidenceUnlock = null;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
     this.requireLspStartBeforeFindSymbol = config.requireLspStartBeforeFindSymbol === true;
@@ -507,6 +511,7 @@ export class ProgressController {
       };
     }
 
+    let acceptedEvidenceUnlock = null;
     const pendingComplexityTransition =
       this.requireComplexity &&
       !this.preparationSatisfied() &&
@@ -628,10 +633,15 @@ export class ProgressController {
               reason: 'BLOCKED: an extra evidence permit was already used since the last successful structural_edit/safe_edit/edit/write/submit_result. Act on the evidence already gathered before requesting more.',
             };
           }
-          this.lastEvidenceRequestSignature = blockerSignature;
-          this.evidenceUnlockUsedSinceProgress = true;
-          this.productiveEvidenceRemaining = 1;
-          this.productiveState = 'evidence_allowed';
+          acceptedEvidenceUnlock = {
+            signature: blockerSignature,
+            previous: {
+              lastEvidenceRequestSignature: this.lastEvidenceRequestSignature,
+              evidenceUnlockUsedSinceProgress: this.evidenceUnlockUsedSinceProgress,
+              productiveEvidenceRemaining: this.productiveEvidenceRemaining,
+              productiveState: this.productiveState,
+            },
+          };
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
           if (this.verificationPermits > 0) {
             acceptedVerificationCall = true;
@@ -714,6 +724,13 @@ export class ProgressController {
       this.verificationPermits -= 1;
       if (this.verificationPermits === 0) this.verificationState = 'exhausted';
     }
+    if (acceptedEvidenceUnlock) {
+      this.pendingEvidenceUnlock = acceptedEvidenceUnlock;
+      this.lastEvidenceRequestSignature = acceptedEvidenceUnlock.signature;
+      this.evidenceUnlockUsedSinceProgress = true;
+      this.productiveEvidenceRemaining = 1;
+      this.productiveState = 'evidence_allowed';
+    }
     this.turnUsedTool = true;
     return undefined;
   }
@@ -731,16 +748,22 @@ export class ProgressController {
     });
   }
 
-  onToolExecutionEnd(toolName, isError, { madeProgress = true } = {}) {
-    if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool && isError) {
-      // The blocker transition mutates state at accepted-call time so the following
-      // provider request can expose one evidence action. If the control tool itself
-      // failed, that transition never completed: return to action_required and make
-      // the bounded escape hatch retryable instead of leaking a phantom permit.
-      this.productiveEvidenceRemaining = 0;
-      this.productiveState = 'action_required';
-      this.evidenceUnlockUsedSinceProgress = false;
-      this.lastEvidenceRequestSignature = null;
+  onToolExecutionEnd(toolName, isError, { madeProgress = true, input = null } = {}) {
+    if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+      const pending = this.pendingEvidenceUnlock;
+      const executionSignature = input == null ? null : toolCallSignature(toolName, input);
+      if (pending && executionSignature === pending.signature) {
+        // Only the exact blocker call that opened this evidence window owns its rollback.
+        // Pi core also emits tool_execution_end for locally blocked attempts; those calls
+        // have no accepted-input record and therefore cannot reset the per-epoch limit.
+        this.pendingEvidenceUnlock = null;
+        if (isError) {
+          this.lastEvidenceRequestSignature = pending.previous.lastEvidenceRequestSignature;
+          this.evidenceUnlockUsedSinceProgress = pending.previous.evidenceUnlockUsedSinceProgress;
+          this.productiveEvidenceRemaining = pending.previous.productiveEvidenceRemaining;
+          this.productiveState = pending.previous.productiveState;
+        }
+      }
     }
     if (
       isError &&
