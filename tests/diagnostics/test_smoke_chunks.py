@@ -41,8 +41,8 @@ def test_chunked_consumes_iterator_exactly_once() -> None:
 
 def test_chunked_empty_input_returns_empty_list() -> None:
     assert chunked([], 3) == []
-    assert chunked(iter(())   , 1) == []
-    assert chunked(()         , 1) == []
+    assert chunked(iter(()), 1) == []
+    assert chunked((), 1) == []
 
 
 def test_chunked_size_larger_than_input_yields_single_chunk() -> None:

@@ -30,9 +30,7 @@ def chunked(iterable: Iterable[_T], size: int) -> list[list[_T]]:
         ValueError: If ``size`` is not an integer or is not positive.
     """
     if isinstance(size, bool) or not isinstance(size, int):
-        raise ValueError(
-            f"size must be an integer, got {type(size).__name__}"
-        )
+        raise ValueError(f"size must be an integer, got {type(size).__name__}")
     if size < 1:
         raise ValueError(f"size must be positive, got {size}")
 
