@@ -137,22 +137,26 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   if (persistedMutationJournal) {
     message += `\nPi-Mutation-Journal: ${encodeMutationJournalState(cwd, persistedMutationJournal)}`;
   }
-  const metadataOnlyJournalSeal = Boolean(
+  const base = publicationBase(cwd, startCommit);
+  const treeChangedBeforeSeal = git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status !== 0;
+  const journalSealCommitNeeded = Boolean(
     !stagedChanged &&
     expectedSha &&
     persistedMutationJournal &&
     mutationJournalChanged
   );
+  // A journal seal can be appended to an already-changed committed tree, but that is not a
+  // metadata-only checkpoint: callers must still publish/update the real implementation diff.
+  const metadataOnlyJournalSeal = Boolean(journalSealCommitNeeded && !treeChangedBeforeSeal);
   // Commit messages can contain both the accepted-scope and journal trailers. Use -F instead of
   // a giant -m argv value so their combined size is not constrained by Linux's per-argument cap.
   if (stagedChanged) {
     commitWithMessageFile(cwd, message);
-  } else if (metadataOnlyJournalSeal) {
+  } else if (journalSealCommitNeeded) {
     commitWithMessageFile(cwd, message, { allowEmpty: true });
   }
-  const base = publicationBase(cwd, startCommit);
   const treeChanged = git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status !== 0;
-  if (!treeChanged && !metadataOnlyJournalSeal) return { changed:false, reason:'no-change' };
+  if (!treeChanged && !journalSealCommitNeeded) return { changed:false, reason:'no-change' };
   const changed = treeChanged
     ? gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out)
     : [];
