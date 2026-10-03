@@ -573,7 +573,8 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /name: 'undo_mutation'/);
   assert.match(runtime, /Selectively undo one recorded structural_edit\/safe_edit\/edit\/write/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);
-  assert.match(runtime, /most recent recorded successful structural_edit\/safe_edit\/edit\/write/);
+  assert.match(runtime, /shared latest structural_edit\/safe_edit\/edit\/write/);
+  assert.match(runtime, /other processes refuse instead of selecting an older mutation/);
   assert.match(runtime, /No successful structural_edit\/safe_edit\/edit\/write is available to roll back/);
   assert.match(runtime, /captureMutationSnapshot/);
   assert.match(runtime, /productiveProgressState\(\)/);
