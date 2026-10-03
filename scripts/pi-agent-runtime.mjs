@@ -44,10 +44,17 @@ import {
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
+import {
+  assertMutationPathAuthorized,
+  initializeMutationScope,
+  mutationScopeReceipt,
+  registerMutationScope,
+} from './pi-common/accepted-mutation-scope.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
+const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 
 // Trust boundary: the coding session's agent definition, tool allowlist and extensions come
 // from THIS module's control checkout (the trusted harness), never from the issue worktree the
@@ -895,6 +902,9 @@ export default function (pi) {
       if (ceilingHit && codingSessionTool && active.has(codingSessionTool)) {
         hints.push(`If the implementation is large, call ${codingSessionTool} now; it keeps the current context and provides the large coding ceiling instead of drafting code here.`);
       }
+      if (active.has(ACCEPT_MUTATION_SCOPE_TOOL)) {
+        hints.push('Before mutating a new publishable path, call accept_mutation_scope with that path and a task-specific rationale. Register scratch/probe paths as temporary; temporary paths must be removed before submission.');
+      }
       if (active.has('submit_result')) {
         hints.push('If explicit written requirements or constraints are mutually incompatible and no compliant mutation exists, call submit_result with blocked_reason now.');
       }
@@ -982,6 +992,7 @@ export default function (pi) {
   }
 
   pi.on('session_start', async (_event, ctx) => {
+    if (stage === 'implementer') initializeMutationScope(ctx.cwd, process.env);
     // The sandbox preflight is the first hard gate: nothing else starts if it fails.
     if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
     if (stage === 'implementer' && config.productiveProgress?.codingSessionTool) ensureCodingSessionAgent();
@@ -1168,6 +1179,38 @@ export default function (pi) {
   let lastSuccessfulMutationSnapshot = null;
 
   if (stage === 'implementer') {
+    pi.registerTool({
+      name: ACCEPT_MUTATION_SCOPE_TOOL,
+      label: 'Accept mutation scope',
+      description: 'Record task-related mutation intent in trusted runtime state before changing a new path. disposition=publishable authorizes the path for the final diff only when accepted before it becomes changed. disposition=temporary permits scratch/probe work but the path must be removed before final validation/publication. A path that is already changed cannot be retroactively made publishable.',
+      parameters: Type.Object({
+        paths: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 20 }),
+        disposition: Type.Union([
+          Type.Literal('publishable'),
+          Type.Literal('temporary'),
+        ]),
+        rationale: Type.String({ minLength: 8, maxLength: 500 }),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const result = registerMutationScope({
+          cwd: ctx.cwd,
+          paths: params.paths,
+          disposition: params.disposition,
+          rationale: params.rationale,
+          env: process.env,
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: params.disposition === 'publishable'
+              ? `Accepted publishable mutation scope: ${result.paths.join(', ')}. Mutate only the accepted task-related paths.`
+              : `Registered temporary mutation scope: ${result.paths.join(', ')}. These paths must be removed or restored before submit_result can publish.`,
+          }],
+          details: result,
+        };
+      },
+    });
+
     pi.registerTool({
       name: 'structural_edit',
       label: 'Structural AST edit',
@@ -1414,7 +1457,10 @@ export default function (pi) {
               toolBudget: null,
               thinking: 'off',
               context: 'fork',
-              childEnv: { PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens }) },
+              childEnv: {
+                PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens }),
+                PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
+              },
             }, signal);
           } catch (error) {
             sessionError = error;
@@ -1716,13 +1762,19 @@ export default function (pi) {
       return noOpBlocked;
     }
 
-    // Trusted containment for every file mutation, direct or inside the coding session:
-    // the target must physically be inside the worktree (no escape, no .git, no symlinks).
+    // Trusted containment and accepted-scope authorization for every file mutation,
+    // direct or inside the coding session. A new publishable path must be accepted
+    // before its first mutation; an already-changed path cannot be laundered later.
     if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
       try {
         resolveMutationTarget(cwd, event.input?.path);
+        assertMutationPathAuthorized({
+          cwd,
+          requestedPath: event.input?.path,
+          env: process.env,
+        });
       } catch (error) {
-        if (!(error instanceof MutationTargetRejected)) throw error;
+        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
         return containmentBlocked;
