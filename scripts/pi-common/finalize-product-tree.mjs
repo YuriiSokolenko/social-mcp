@@ -1,6 +1,6 @@
 import { runGit as git } from './git.mjs';
 
-import { forbiddenAgentPaths } from './agent-change-policy.mjs';
+import { changedAgentPaths, forbiddenAgentPaths } from './agent-change-policy.mjs';
 import { runProductChecks } from './product-checks.mjs';
 import { assertAcceptedMutationScope } from './accepted-mutation-scope.mjs';
 import { IMPLEMENTER_OUTCOMES, readImplementerResult } from './implementer-result.mjs';
@@ -53,6 +53,14 @@ export function validateFinalProductTree({ cwd, ledgerPath, backend, env = proce
 
   const resultFile = env.PI_IMPLEMENTER_RESULT_FILE;
   const metadata = resultFile ? readImplementerResult(resultFile) : null;
+  const changed = changedAgentPaths(base, cwd);
+  if (changed.length && !metadata) {
+    throw new Error(JSON.stringify({
+      code: 'accepted_scope_missing',
+      unexpected_paths: changed.sort(),
+      recovery: 'Changed implementation work requires terminal metadata with an accepted mutation scope before final validation.',
+    }));
+  }
   if (metadata?.outcome === IMPLEMENTER_OUTCOMES.changed) {
     if (metadata.scope_enforcement === 'predeclared') {
       assertAcceptedMutationScope({ cwd, receipt: metadata.accepted_scope, base: baseRef() });
