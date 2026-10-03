@@ -234,8 +234,10 @@ test('general worker checks daemon snapshots before registering, while Pi worker
   const source = fs.readFileSync('infra/github-runner-autoscaler/worker-entrypoint.sh', 'utf8');
   const start = source.indexOf('if [[ ",${RUNNER_LABELS},"');
   assert.ok(start > 0);
-  const health = source.slice(start, source.indexOf('\ncd /home/runner/actions-runner', start));
-  const script = 'timeout() { shift; "$@"; }; docker() { if [[ "$*" == "system df" ]]; then echo "rw layer snapshot not found" >&2; return 1; fi; };\n' + health + '\necho registered';
+  const end = source.indexOf('\ncd "${RUNNER_HOME}/actions-runner"', start);
+  assert.ok(end > start);
+  const health = source.slice(start, end);
+  const script = 'timeout() { shift; "$@"; }; sleep() { :; }; docker() { if [[ "$*" == "system df" ]]; then echo "rw layer snapshot not found" >&2; return 1; fi; };\n' + health + '\necho registered';
   const general = spawnSync('bash', ['-eu', '-c', script], { encoding: 'utf8', env: { ...process.env, RUNNER_LABELS: 'n150,general' } });
   assert.equal(general.status, 1);
   assert.match(general.stderr, /infra_error DOCKER_METADATA_CORRUPTION/);

@@ -97,9 +97,11 @@ jobs:
         shell: bash
         run: |
           image="${COMPOSE_PROJECT_NAME}-manager-import-check:latest"
-          trap 'docker image rm "$image" >/dev/null 2>&1 || true' EXIT
+          worker_image="${COMPOSE_PROJECT_NAME}-general-worker-check:latest"
+          trap 'docker image rm "$image" "$worker_image" >/dev/null 2>&1 || true' EXIT
           docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t "$image" .
           docker run --rm --entrypoint node "$image" -e "import('/opt/social-mcp/scripts/pi-common/run-check.mjs').then(() => console.log('run-check import ok'))"
+          docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t "$worker_image" .
 
       - name: Generate ephemeral test encryption key
         shell: bash
