@@ -54,6 +54,7 @@
     "scripts/pi-architect-result-tool.mjs",
     "scripts/pi-bash-timeout.mjs",
     "scripts/pi-common/bash-timeout-policy.mjs",
+    "scripts/pi-common/accepted-mutation-scope.mjs",
     "scripts/pi-common/mutation-snapshot.mjs",
     "scripts/pi-common/mutation-target.mjs",
     "scripts/pi-common/package-root-check.mjs",
