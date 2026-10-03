@@ -201,10 +201,12 @@ function runtimeScenario(mode) {
       let aborts = 0;
       let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence',
         'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'prepare_implementation'];
+      // pi ignores unregistered names in setActiveTools, so the active surface is a registry subset.
+      if (mode === 'narrow-registry') active = active.filter(name => name !== 'bash');
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { api: 'openai-completions', maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'provider-unrepairable', 'fork-provider-unrepairable'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -246,7 +248,8 @@ function runtimeScenario(mode) {
         assert.deepEqual(definition.extensions, [controlScripts + '/pi-bash-timeout.mjs', controlScripts + '/pi-agent-runtime.mjs', controlScripts + '/pi-implementer-result-tool.mjs']);
         const inherited = fs.readFileSync(sessionFile, 'utf8').trim().split('\\n').map(line => JSON.parse(line));
         const childTools = new Map(); const childHandlers = new Map();
-        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (mode !== 'tool-contract') throw new Error('fork aborted'); },
+        let childAborts = 0;
+        const childCtx = { cwd, model: { api: 'openai-completions', maxTokens: 32000 }, abort: () => { if (!['tool-contract', 'fork-provider-unrepairable'].includes(mode)) throw new Error('fork aborted'); childAborts++; },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
@@ -292,6 +295,19 @@ function runtimeScenario(mode) {
           assert.deepEqual(repaired.tools.map(tool => tool.function.name).sort(), [...childActive].sort(), 'fork request carries every active definition');
           assert.deepEqual(repaired.tools.find(tool => tool.function.name === 'submit_result').function.parameters, { type: 'object', properties: {} });
           console.log('FORK_PROVIDER_EXPANSION_OK');
+        }
+        if (mode === 'fork-provider-unrepairable') {
+          // #441: the fork's serialized history advertises submit_result, but its definition
+          // cannot be represented in this payload. The request must not be sent.
+          const stale = childActive.filter(name => name !== 'submit_result');
+          const advertising = { role: 'user', content: 'RUNTIME: CURRENTLY EXPOSED TOOLS (authoritative): ' + childActive.join(', ') + '. Call only a tool from this list.' };
+          providerPatch({ payload: { model: 'm', messages: [advertising], tools: stale.map(name => ({ name })) } }, childCtx);
+          assert.equal(childAborts, 1, 'fork run is aborted before the provider request is created');
+          const spec = JSON.parse(process.env.PI_CODING_SESSION);
+          const failure = JSON.parse(fs.readFileSync(spec.failureFile, 'utf8'));
+          assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+          assert.equal(failure.source, 'provider_request');
+          return respond(request, { status: 'failed', error: 'aborted' });
         }
         if (mode === 'tool-contract') {
           await childHandlers.get('tool_execution_end')({ toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'Tool read not found' }] } }, childCtx);
@@ -421,7 +437,11 @@ function runtimeScenario(mode) {
         assert.deepEqual(firstParentRequest.tools.map(tool => tool.function.name), [...active], 'preparation-phase request carries exactly the active surface');
       }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
-      assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
+      assert.deepEqual(
+        filteredPayload.tools.map(tool => tool.function.name),
+        [...active],
+        'provider never advertises a non-active tool, and an empty tool list is repaired in the model API shape',
+      );
       if (mode === 'provider-expansion') {
         // #441: the active surface expanded after pi assembled the payload (submit_result missing).
         handlers.get('turn_start')({ turnIndex: 0 });
@@ -433,17 +453,27 @@ function runtimeScenario(mode) {
         assert.equal(typeof added.function.description, 'string');
         assert.ok(active.includes('submit_result'), 'a repaired capability stays active');
 
-        // An unrecognized provider tool shape cannot be repaired: narrow instead of advertising it.
-        const unrecognized = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: stale.map(name => ({ name })) } }, ctx);
-        assert.ok(!active.includes('submit_result'), 'unrepairable capability is removed for this request');
-        assert.deepEqual(unrecognized.tools.map(tool => tool.name).sort(), [...active].sort(), 'surface equals the actual request');
-        const blocked = await handlers.get('tool_call')({ toolName: 'submit_result', toolCallId: 'narrowed', input: {} }, ctx);
-        assert.equal(blocked.block, true);
-        assert.doesNotMatch(blocked.reason.split('CURRENTLY EXPOSED TOOLS')[1], /submit_result/, 'guidance names only request capabilities');
-
-        handlers.get('turn_start')({ turnIndex: 1 });
-        assert.ok(active.includes('submit_result'), 'narrowing lasts one request; the next boundary may repair it');
         console.log('PROVIDER_EXPANSION_OK');
+        process.exit(0);
+      }
+      if (mode === 'provider-unrepairable') {
+        // #441: messages were serialized while submit_result was advertised, but this payload
+        // cannot carry its definition (unrecognized tool shape). Narrowing payload.tools would
+        // leave the messages advertising it, so the request must fail closed instead.
+        handlers.get('turn_start')({ turnIndex: 0 });
+        const stale = active.filter(name => name !== 'submit_result');
+        const advertising = { role: 'user', content: 'RUNTIME: CURRENTLY EXPOSED TOOLS (authoritative): ' + active.join(', ') + '. Call only a tool from this list.' };
+        handlers.get('before_provider_request')({ payload: { model: 'm', messages: [advertising], tools: stale.map(name => ({ name })) } }, ctx);
+        assert.equal(aborts, 1, 'run is aborted synchronously, before the provider creates the HTTP request');
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_class, 'infrastructure');
+        assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+        assert.equal(failure.source, 'provider_request');
+        assert.equal(failure.tool, 'submit_result');
+        assert.ok(active.includes('submit_result'), 'the live surface is not silently narrowed');
+        handlers.get('before_provider_request')({ payload: { model: 'm', messages: [advertising], tools: stale.map(name => ({ name })) } }, ctx);
+        assert.equal(aborts, 1, 'fail-closed abort happens once');
+        console.log('PROVIDER_UNREPAIRABLE_OK');
         process.exit(0);
       }
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
@@ -726,13 +756,22 @@ function runtimeScenario(mode) {
         assert.equal(sessionRequests.length, 0, 'incapable fork is rejected before launch');
         process.exit(0);
       }
-      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
+      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'fork-provider-unrepairable': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', { reason: 'Implement generated.py and its test' }, { expectError });
       if (mode === 'malformed-contract') {
         assert.equal(aborts, 0);
         assert.equal(sessionRequests.length, 1);
         assert.equal(fs.existsSync(sessionRequests[0].spec.failureFile), false);
         assert.equal(fs.existsSync(runtimeFailure), false);
+        process.exit(0);
+      }
+      if (mode === 'fork-provider-unrepairable') {
+        assert.equal(aborts, 1, 'unrepresentable fork request aborts the parent as infrastructure');
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_class, 'infrastructure');
+        assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+        assert.equal(sessionRequests.length, 1, 'no further coding session is launched');
+        console.log('FORK_PROVIDER_UNREPAIRABLE_OK');
         process.exit(0);
       }
       if (mode === 'tool-contract') {
@@ -980,12 +1019,23 @@ test('both missing-executor event orders abort only once', () => {
   runtimeScenario('parent-contract-reverse');
 });
 
-test('#441 parent provider request is repaired after surface expansion, or narrowed when it cannot be', () => {
+test('#441 parent provider request is repaired after surface expansion', () => {
   const logs = runtimeScenario('provider-expansion');
-  assert.match(logs, /PI_PROVIDER_CAPABILITY_DIVERGENCE .*"missingDefinitions":\["submit_result"\].*"repaired":\["submit_result"\],"narrowed":\[\]/);
-  assert.match(logs, /PI_PROVIDER_CAPABILITY_DIVERGENCE .*"repaired":\[\],"narrowed":\["submit_result"\]/);
-  assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"provider_narrowed"/);
+  assert.match(logs, /PI_PROVIDER_CAPABILITY_DIVERGENCE .*"missingDefinitions":\["submit_result"\].*"repaired":\["submit_result"\],"unrepairable":\[\]/);
   assert.match(logs, /PROVIDER_EXPANSION_OK/);
+});
+
+test('#441 parent request that cannot carry an advertised definition fails closed and is not sent', () => {
+  const logs = runtimeScenario('provider-unrepairable');
+  assert.match(logs, /PI_PROVIDER_CAPABILITY_DIVERGENCE .*"repaired":\[\],"unrepairable":\["submit_result"\]/);
+  assert.match(logs, /PI_RUNTIME_FAILURE .*"source":"provider_request"/);
+  assert.match(logs, /PROVIDER_UNREPAIRABLE_OK/);
+});
+
+test('#441 coding-session request that cannot carry an advertised definition aborts the parent as infrastructure', () => {
+  const logs = runtimeScenario('fork-provider-unrepairable');
+  assert.match(logs, /PI_RUNTIME_FAILURE_NESTED .*"source":"provider_request"/);
+  assert.match(logs, /FORK_PROVIDER_UNREPAIRABLE_OK/);
 });
 
 test('#441 coding-session provider request is repaired after surface expansion', () => {

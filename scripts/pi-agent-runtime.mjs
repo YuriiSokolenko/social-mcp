@@ -584,9 +584,6 @@ export default function (pi) {
   let unavailableToolAttempts = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
-  // Tools hidden only because one provider request could not carry their definitions. They are
-  // restored at the next surface sync so the next request boundary can repair them again.
-  let providerNarrowedTools = [];
   let lastProviderProductiveState = null;
   // True only when this runtime itself removed the verification tool from the model
   // surface (permit exhaustion or exact-retry substitution). A later valid
@@ -682,10 +679,6 @@ export default function (pi) {
     // Completed one-shot control tools disappear. Enabled tools such as `subagent` are shown only
     // where the controller gate lets them execute (evidence_allowed), never in action_required.
     const satisfied = controller.transitions.satisfiedToolNames();
-    if (providerNarrowedTools.length) {
-      pi.setActiveTools(mergeNewlyActiveTools(pi.getActiveTools(), providerNarrowedTools));
-      providerNarrowedTools = [];
-    }
     const current = pi.getActiveTools();
     const verificationTool = config.productiveProgress?.verificationTool ?? null;
     // Ledger corruption affects the final verification verdict, not whether
@@ -851,6 +844,26 @@ export default function (pi) {
     await ctx.abort();
   }
 
+  // Called from before_provider_request. pi swallows hook errors and sends the payload anyway,
+  // so the run is aborted instead: the session's abort signal is set synchronously, before the
+  // provider creates the HTTP request. Not awaited: session abort waits for this very run to idle.
+  function abortUnrepresentableProviderRequest(request, toolNames, ctx) {
+    if (toolContractAborted) return;
+    toolContractAborted = true;
+    recordRuntimeAbort(
+      'PI_TOOL_CONTRACT_FAILURE',
+      `Provider request ${request} cannot carry definitions for active tools ${toolNames.join(', ')}; the request was not sent.`,
+      { failure_class: 'infrastructure', tool: toolNames.join(','), source: 'provider_request', request },
+    );
+    try {
+      Promise.resolve(ctx?.abort?.()).catch(error => {
+        console.error(`PI_PROVIDER_REQUEST_ABORT_ERROR ${JSON.stringify({ stage, error: String(error?.message ?? error) })}`);
+      });
+    } catch (error) {
+      console.error(`PI_PROVIDER_REQUEST_ABORT_ERROR ${JSON.stringify({ stage, error: String(error?.message ?? error) })}`);
+    }
+  }
+
   async function handleLoopResult(loopResult, ctx) {
     if (!loopResult?.tripped) return;
     const metric = {
@@ -998,7 +1011,7 @@ export default function (pi) {
   let codingFirstResponseLogged = false;
   if (stage === 'implementer') {
     let patchedThinkingRequests = 0;
-    pi.on('before_provider_request', (event) => {
+    pi.on('before_provider_request', (event, ctx) => {
       forcedProviderRequestInFlight = false;
       const productiveState = syncProductiveState();
       syncActionToolSurface(productiveState);
@@ -1021,18 +1034,14 @@ export default function (pi) {
         const request = ++providerRequestSequence;
         // The surface may have expanded after pi assembled this payload (for example the sync
         // above restored run_check). Filtering cannot add a definition, so repair the request
-        // from the registry; whatever cannot be repaired is removed from the active surface for
-        // this request, so guidance and the tool_call gate match what the provider actually sees.
+        // from the registry. payload.messages are already serialized and may advertise the
+        // missing tool, so narrowing payload.tools alone cannot make this request consistent:
+        // an unrepairable definition fails closed and the request is not sent.
         const presentBeforeRepair = providerToolNames(patched);
         const missingDefinitions = pi.getActiveTools().filter(name => !presentBeforeRepair.includes(name));
         if (missingDefinitions.length) {
-          const repair = repairProviderToolDefinitions(patched, missingDefinitions, pi.getAllTools?.() ?? []);
+          const repair = repairProviderToolDefinitions(patched, missingDefinitions, pi.getAllTools?.() ?? [], { api: ctx?.model?.api });
           patched = repair.payload;
-          if (repair.unrepairable.length) {
-            providerNarrowedTools = mergeNewlyActiveTools(providerNarrowedTools, repair.unrepairable);
-            const unrepairable = new Set(repair.unrepairable);
-            setSurface(pi.getActiveTools().filter(name => !unrepairable.has(name)), 'provider_narrowed');
-          }
           console.warn(`PI_PROVIDER_CAPABILITY_DIVERGENCE ${JSON.stringify({
             stage,
             request,
@@ -1040,8 +1049,9 @@ export default function (pi) {
             executableTools: presentBeforeRepair,
             missingDefinitions,
             repaired: repair.added,
-            narrowed: repair.unrepairable,
+            unrepairable: repair.unrepairable,
           })}`);
+          if (repair.unrepairable.length) abortUnrepresentableProviderRequest(request, repair.unrepairable, ctx);
         }
 
         const executableTools = providerToolNames(patched);

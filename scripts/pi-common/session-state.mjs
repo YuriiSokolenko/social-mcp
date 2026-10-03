@@ -28,6 +28,15 @@ export function providerToolNames(payload) {
     .filter(name => typeof name === 'string' && name.length > 0))];
 }
 
+// Tool shapes of pi-ai provider APIs, used when the payload has no tool entry to copy.
+const API_TOOL_TEMPLATES = {
+  'openai-completions': { type: 'function', function: {} },
+  'openai-responses': { type: 'function', name: '', parameters: {} },
+  'azure-openai-responses': { type: 'function', name: '', parameters: {} },
+  'openai-codex-responses': { type: 'function', name: '', parameters: {} },
+  'anthropic-messages': { name: '', input_schema: {} },
+};
+
 function providerToolDefinition(template, info) {
   // JSON round-trip drops TypeBox symbol metadata, as the provider serializer does.
   const parameters = JSON.parse(JSON.stringify(info.parameters ?? { type: 'object', properties: {} }));
@@ -45,11 +54,12 @@ function providerToolDefinition(template, info) {
 /**
  * Adds definitions for tools that became active after the provider payload was assembled.
  * The shape of an existing payload.tools entry is the template, so the added definition matches
- * the provider API pi already serialized for. Names without a registered definition, or a payload
- * without a recognizable template, are returned as unrepairable.
+ * the provider API pi already serialized for; without one, the known shape of the model's provider
+ * API is used. Names without a registered definition, or without a recognizable shape, are
+ * returned as unrepairable.
  */
-export function repairProviderToolDefinitions(payload, missingNames, toolInfos = []) {
-  const template = Array.isArray(payload?.tools) ? payload.tools[0] : null;
+export function repairProviderToolDefinitions(payload, missingNames, toolInfos = [], { api = null } = {}) {
+  const template = (Array.isArray(payload?.tools) ? payload.tools[0] : null) ?? API_TOOL_TEMPLATES[api] ?? null;
   const infos = new Map(toolInfos.filter(info => info?.name).map(info => [info.name, info]));
   const added = [];
   const unrepairable = [];
@@ -64,7 +74,7 @@ export function repairProviderToolDefinitions(payload, missingNames, toolInfos =
     }
   }
   return {
-    payload: definitions.length ? { ...payload, tools: [...payload.tools, ...definitions] } : payload,
+    payload: definitions.length ? { ...payload, tools: [...(payload.tools ?? []), ...definitions] } : payload,
     added,
     unrepairable,
   };

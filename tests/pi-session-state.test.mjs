@@ -208,3 +208,16 @@ test('repairProviderToolDefinitions reports unrepairable names and leaves the pa
   assert.deepEqual(unregistered, { payload: unregistered.payload, added: [], unrepairable: ['ghost'] });
   assert.equal(unregistered.payload.tools.length, 1);
 });
+
+test('repairProviderToolDefinitions uses the model API shape when the payload has no tool to copy', () => {
+  const infos = [{ name: 'write', description: 'Write', parameters: { type: 'object' } }];
+  assert.deepEqual(
+    repairProviderToolDefinitions({ tools: [] }, ['write'], infos, { api: 'openai-completions' }).payload.tools,
+    [{ type: 'function', function: { name: 'write', description: 'Write', parameters: { type: 'object' } } }],
+  );
+  assert.deepEqual(
+    repairProviderToolDefinitions({ tools: [] }, ['write'], infos, { api: 'anthropic-messages' }).payload.tools,
+    [{ name: 'write', description: 'Write', input_schema: { type: 'object' } }],
+  );
+  assert.deepEqual(repairProviderToolDefinitions({ tools: [] }, ['write'], infos, { api: 'unknown-api' }).unrepairable, ['write']);
+});
