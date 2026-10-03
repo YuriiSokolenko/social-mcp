@@ -204,7 +204,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -433,7 +433,7 @@ function runtimeScenario(mode) {
       }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
       assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
-      if (mode === 'deferred-capability') {
+      if (mode === 'deferred-capability' || mode === 'deferred-then-removed') {
         // #441: submit_result became active after pi assembled this payload.
         handlers.get('turn_start')({ turnIndex: 0 });
         const stale = active.filter(name => name !== 'submit_result');
@@ -447,9 +447,29 @@ function runtimeScenario(mode) {
         const deferredResult = await handlers.get('tool_result')(deferredCall, ctx);
         assert.equal(aborts, 0, 'a deferred tool call is a lifecycle mismatch, not an infrastructure failure');
         assert.equal(fs.existsSync(runtimeFailure), false);
-        assert.match(deferredResult.content[0].text, /became active after provider request \\d+ was built.*Do not retry it in this response.*next provider request/s);
+        assert.match(deferredResult.content[0].text, /became active after provider request \\d+ was built.*Do not retry it in this response.*call it only if that request exposes it/s);
         assert.doesNotMatch(deferredResult.content[0].text.split('CURRENTLY EXPOSED TOOLS')[1], /submit_result/, 'guidance names only this request surface');
-        assert.equal(steers.filter(text => /submit_result became active after provider request/.test(text)).length, 1, 'one lifecycle steer reaches the next request even though pi skips tool_result');
+        const lifecycleSteers = steers.filter(text => /submit_result became active after provider request/.test(text));
+        assert.equal(lifecycleSteers.length, 1, 'one lifecycle steer reaches the next request even though pi skips tool_result');
+        assert.match(lifecycleSteers[0], /Do not retry it in this response.*call it only if that request exposes it/s, 'the steer is conditional on the next request snapshot');
+        assert.doesNotMatch(lifecycleSteers[0], /executable from|onward/, 'the steer does not promise the next request surface');
+
+        if (mode === 'deferred-then-removed') {
+          // Another tool in the same response changes state and removes the deferred tool again.
+          pi.setActiveTools(active.filter(name => name !== 'submit_result'));
+          handlers.get('turn_start')({ turnIndex: 1 });
+          const next = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) } }, ctx);
+          assert.ok(!next.tools.some(tool => tool.function.name === 'submit_result'), 'the next request does not expose the removed tool');
+          // The model follows the old deferral anyway: neither executable nor deferred now.
+          const stale = { toolName: 'submit_result', toolCallId: 'stale-deferred', isError: true, content: [{ type: 'text', text: 'Tool submit_result not found' }] };
+          const staleResult = await handlers.get('tool_result')(stale, ctx);
+          assert.equal(aborts, 0, 'a call that follows stale deferral is not an infrastructure failure');
+          assert.match(staleResult.content[0].text, /BLOCKED: submit_result is not exposed/);
+          assert.doesNotMatch(staleResult.content[0].text.split('CURRENTLY EXPOSED TOOLS')[1], /submit_result/);
+          assert.equal(steers.filter(text => /submit_result became active/.test(text)).length, 1, 'no new lifecycle promise for a tool that is no longer deferred');
+          console.log('DEFERRED_THEN_REMOVED_OK');
+          process.exit(0);
+        }
 
         // Neither executable nor deferred: an ordinary unavailable-tool attempt.
         const ghost = { toolName: 'ghost_tool', toolCallId: 'ghost', isError: true, content: [{ type: 'text', text: 'Tool ghost_tool not found' }] };
@@ -1061,4 +1081,12 @@ test('#441 a coding-session fork defers a late-active tool and recovers from cal
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"submit_result"/);
   assert.match(logs, /FORK_DEFERRED_CAPABILITY_OK/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
+});
+
+test('#441 deferred guidance stays conditional when another tool removes the deferred tool before the next request', () => {
+  const logs = runtimeScenario('deferred-then-removed');
+  assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"submit_result"/);
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"kind":"executor_not_found","attemptedTool":"submit_result"/);
+  assert.doesNotMatch(logs, /PI_TOOL_CONTRACT_FAILURE/);
+  assert.match(logs, /DEFERRED_THEN_REMOVED_OK/);
 });

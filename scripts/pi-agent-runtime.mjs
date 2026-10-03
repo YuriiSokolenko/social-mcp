@@ -865,17 +865,19 @@ export default function (pi) {
     }
     const snapshot = providerCapabilitySnapshot;
     const guidance = kind === 'deferred'
-      ? `LIFECYCLE: ${event.toolName} became active after provider request ${snapshot.request} was built, so it is not executable in this response. Do not retry it in this response; it is exposed from the next provider request. ${capabilitySnapshotGuidance(snapshot.executableTools)}`
+      ? `LIFECYCLE: ${event.toolName} became active after provider request ${snapshot.request} was built, so it is not executable in this response. Do not retry it in this response. On a later request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given). ${capabilitySnapshotGuidance(snapshot.executableTools)}`
       : `BLOCKED: ${event.toolName} is not exposed by the runtime. ${capabilitySnapshotGuidance(snapshot.executableTools)}`;
     const key = event.toolCallId ?? `${snapshot.request}:${event.toolName}`;
     if (!missingExecutorCalls.has(key)) {
       missingExecutorCalls.set(key, kind);
       // pi returns its own immediate "not found" result without running tool_result, so the
-      // replacement text may never reach the model. A steer lands on the next provider request,
-      // which is exactly the boundary where pi exposes the deferred tool.
+      // replacement text may never reach the model. A steer lands on the next provider request.
+      // It must not promise that request's surface: another tool in this response may still
+      // change state and remove the deferred tool again, so the guidance stays conditional on
+      // the authoritative snapshot of the request that carries it.
       if (kind === 'deferred') {
         await pi.sendUserMessage(
-          `RUNTIME: ${event.toolName} became active after provider request ${snapshot.request} was built, so that call could not execute. It is executable from provider request ${snapshot.request + 1} onward; call it again only if it is still needed.`,
+          `RUNTIME: ${event.toolName} became active after provider request ${snapshot.request} was built, so that call could not execute. Do not retry it in this response. On the next request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given) and it is still needed; the surface may change again before then.`,
           { deliverAs: 'steer' },
         );
       }
