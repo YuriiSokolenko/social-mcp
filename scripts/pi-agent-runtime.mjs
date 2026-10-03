@@ -46,7 +46,6 @@ import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
 import {
   assertMutationPathAuthorized,
-  initializeMutationScope,
   mutationScopeReceipt,
   registerMutationScope,
 } from './pi-common/accepted-mutation-scope.mjs';
@@ -992,7 +991,6 @@ export default function (pi) {
   }
 
   pi.on('session_start', async (_event, ctx) => {
-    if (stage === 'implementer') initializeMutationScope(ctx.cwd, process.env);
     // The sandbox preflight is the first hard gate: nothing else starts if it fails.
     if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
     if (stage === 'implementer' && config.productiveProgress?.codingSessionTool) ensureCodingSessionAgent();
