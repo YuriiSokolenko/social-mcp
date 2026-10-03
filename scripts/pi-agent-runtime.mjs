@@ -223,7 +223,7 @@ function logPreparedImplementation(prepared, applied) {
       recovery: 'continue_without_planner_output',
       reason: prepared.reason,
       plannerDurationMs: prepared.plannerDurationMs,
-      evidenceUsed: prepared.plannerEvidenceUsed ?? 0,
+      evidenceUsed: prepared.plannerEvidenceUsed ?? null,
       evidenceCap: prepared.plannerEvidenceCap ?? null,
       providerTurns: prepared.plannerProviderTurns ?? null,
     })}`);
@@ -238,7 +238,7 @@ function logPreparedImplementation(prepared, applied) {
       reason: prepared.reason,
       usage,
       plannerDurationMs: prepared.plannerDurationMs,
-      evidenceUsed: prepared.plannerEvidenceUsed ?? 0,
+      evidenceUsed: prepared.plannerEvidenceUsed ?? null,
       evidenceCap: prepared.plannerEvidenceCap ?? null,
       providerTurns: prepared.plannerProviderTurns ?? null,
     })}`);
