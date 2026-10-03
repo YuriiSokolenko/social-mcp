@@ -75,8 +75,11 @@ export function validateFinalProductTree({
   ledgerPath,
   backend,
   env = process.env,
-  enforceAcceptedScope = false,
+  enforceAcceptedScope,
 } = {}) {
+  if (typeof enforceAcceptedScope !== 'boolean') {
+    throw new Error('validateFinalProductTree requires explicit enforceAcceptedScope=true|false');
+  }
   const base = git(['merge-base', baseRef(), 'HEAD'], { cwd }).out;
   const forbidden = forbiddenAgentPaths(base, cwd);
   if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
