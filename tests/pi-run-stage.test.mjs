@@ -484,7 +484,9 @@ test('shared validation recovery gives any implementer backend one focused repai
 });
 
 test('trusted safe-fix drift routes into validation repair and resubmit', async (t) => {
-  const dir = temporaryDirectory(t, 'stage-safe-fix-resubmit-');
+  const root = temporaryDirectory(t, 'stage-safe-fix-resubmit-');
+  const dir = join(root, 'repo');
+  mkdirSync(dir);
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
   git('init', '-q');
   git('config', 'user.name', 'Safe Fix Test');
@@ -496,7 +498,9 @@ test('trusted safe-fix drift routes into validation repair and resubmit', async 
   git('update-ref', 'refs/remotes/origin/dev', startCommit);
   writeFileSync(join(dir, 'app.py'), 'value = 2\n');
 
-  const resultFile = join(dir, 'implementer-result.json');
+  // Match production topology: trusted runtime artifacts live in RUNNER_TEMP,
+  // outside the issue worktree, so they never affect candidate identity.
+  const resultFile = join(root, 'implementer-result.json');
   const spec = createStageRunSpec({
     stage: 'implementer',
     cwd: dir,
@@ -506,13 +510,13 @@ test('trusted safe-fix drift routes into validation repair and resubmit', async 
       PI_STAGE: 'implementer',
       PI_PHASE: 'implementation',
       PI_IMPLEMENTER_RESULT_FILE: resultFile,
-      PI_VALIDATION_LEDGER_FILE: join(dir, 'ledger.jsonl'),
+      PI_VALIDATION_LEDGER_FILE: join(root, 'ledger.jsonl'),
       PI_VALIDATION_RUN_ID: 'safe-fix-run',
       PI_IMPLEMENTER_START_COMMIT: startCommit,
     },
     artifacts: {
-      terminalResultPath: join(dir, 'terminal.json'),
-      metricsPath: join(dir, 'metrics.jsonl'),
+      terminalResultPath: join(root, 'terminal.json'),
+      metricsPath: join(root, 'metrics.jsonl'),
       rawLogPath: null,
     },
   });

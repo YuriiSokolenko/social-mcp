@@ -364,7 +364,7 @@ test('issue publication safely replaces only the branch head observed at run sta
 test('issue publication attributes changes against the shared resolved candidate base', () => {
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   const candidate = readScript('scripts/pi-common/candidate-revision.mjs', 'utf8');
-  assert.match(publication, /resolveCandidateBase\(\{ cwd, startCommit, configuredBase: baseRef\(\) \}\)/);
+  assert.match(publication, /resolveCandidateBase\(\{\s*cwd,\s*startCommit,\s*configuredBase: baseRef\(\),?\s*\}\)/);
   assert.match(candidate, /merge-base', '--is-ancestor', configuredBase, 'HEAD'/);
   assert.match(candidate, /return fallback/);
   assert.match(publication, /diff','--no-renames','--name-only','-z',base,'HEAD'/);
