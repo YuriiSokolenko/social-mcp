@@ -44,6 +44,7 @@ import {
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
+import { recoverWorktree } from './pi-common/worktree-recovery.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
 import {
   assertMutationPathAuthorized,
@@ -157,7 +158,7 @@ function codingSessionSpec(env = process.env) {
   try {
     const spec = JSON.parse(env.PI_CODING_SESSION ?? '');
     const maxTokens = Number(spec?.maxTokens);
-    if (spec?.sessionId && Number.isSafeInteger(maxTokens) && maxTokens > 0) return { sessionId: String(spec.sessionId), maxTokens };
+    if (spec?.sessionId && Number.isSafeInteger(maxTokens) && maxTokens > 0) return { sessionId: String(spec.sessionId), maxTokens, failureFile: spec.failureFile };
   } catch { /* parent session */ }
   return null;
 }
@@ -447,7 +448,7 @@ async function runStructuredImplementationPlanner(pi, ctx, config, signal, layou
     nodeId: 'implementation-plan',
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
-    timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 120000),
+    timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 45000),
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
     toolBudget: { hard: 3 },
   };
@@ -618,9 +619,10 @@ export default function (pi) {
   let lastSurfaceSignature = null;
   function setSurface(names, reason) {
     pi.setActiveTools(names);
-    const signature = names.join(',');
+    const actual = pi.getActiveTools();
+    const signature = actual.join(',');
     if (signature !== lastSurfaceSignature) {
-      console.log(`PI_TOOL_SURFACE_UPDATE ${JSON.stringify({ stage, reason, active: names })}`);
+      console.log(`PI_TOOL_SURFACE_UPDATE ${JSON.stringify({ stage, reason, active: actual })}`);
       lastSurfaceSignature = signature;
     }
   }
@@ -779,13 +781,14 @@ export default function (pi) {
       failure_code: failureCode,
       reason,
     };
+    if (details.failure_class === 'infrastructure') record.failure_class = 'infrastructure';
     // A coding-session fork is recoverable by its parent Implementer. Keep its abort in logs,
     // but never let a nested fork leave job-level failure provenance behind.
     if (codingSession) {
       console.error(`PI_RUNTIME_FAILURE_NESTED ${JSON.stringify(record)}`);
-      return;
+      if (failureCode !== 'PI_TOOL_CONTRACT_FAILURE' || !codingSession.failureFile) return;
     }
-    const failureFile = String(process.env.PI_RUNTIME_FAILURE_FILE ?? '').trim();
+    const failureFile = String(codingSession?.failureFile ?? process.env.PI_RUNTIME_FAILURE_FILE ?? '').trim();
     if (!failureFile) return;
     try {
       fs.mkdirSync(path.dirname(failureFile), { recursive: true });
@@ -797,6 +800,16 @@ export default function (pi) {
       // Failure classification is best-effort metadata; it must never suppress the watchdog abort.
       console.error(`PI_RUNTIME_FAILURE_WRITE_ERROR ${JSON.stringify({ stage, failureCode, error: String(error?.message ?? error) })}`);
     }
+  }
+
+  // Missing-executor errors are terminal for this runtime, regardless of which
+  // event arrives first or whether both hooks report the same tool call.
+  let toolContractAborted = false;
+  async function abortToolContract(toolName, ctx, reason = `Advertised tool ${toolName} cannot execute; runtime repair required.`) {
+    if (toolContractAborted) return;
+    toolContractAborted = true;
+    recordRuntimeAbort('PI_TOOL_CONTRACT_FAILURE', reason, { failure_class: 'infrastructure', tool: toolName });
+    await ctx.abort();
   }
 
   async function handleLoopResult(loopResult, ctx) {
@@ -958,6 +971,11 @@ export default function (pi) {
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
         });
       }
+      if (Array.isArray(patched?.tools)) {
+        const active = new Set(pi.getActiveTools());
+        const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
+        if (tools.length !== patched.tools.length) patched = { ...patched, tools };
+      }
       if (requireToolOnNextProviderRequest) {
         const productiveState = controller.productiveProgressState();
         if (productiveState !== 'action_required') {
@@ -980,7 +998,10 @@ export default function (pi) {
   let codingSessionAgent = null;
   function ensureCodingSessionAgent() {
     if (codingSessionAgent?.ok) return codingSessionAgent;
-    const definition = codingSessionAgentDefinition(config.productiveProgress.codingSessionTools ?? []);
+    // Registry inventory includes hidden tools; the current action surface does not.
+    const executable = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name }))).map(tool => tool.name);
+    const allowed = config.productiveProgress.codingSessionTools ?? [];
+    const definition = codingSessionAgentDefinition(allowed.filter(name => executable.includes(name)));
     const request = { version: 1, name: config.productiveProgress.codingSessionAgent, definition };
     pi.events?.emit?.(RUNTIME_AGENT_REGISTER_EVENT, request);
     codingSessionAgent = request.result
@@ -1352,6 +1373,22 @@ export default function (pi) {
     });
 
     pi.registerTool({
+      name: 'recover_worktree',
+      label: 'Recover accidental worktree changes',
+      description: 'Delete one untracked file or restore one tracked file to HEAD without a shell or coding session. Refuses escapes, symlinks, ignored files, .git and .gitignore. Returns the current changed files and validates them against expected_files immediately; pass the intended final file set. A mismatch is recoverable: clean remaining accidental files, then submit_result.',
+      parameters: Type.Object({
+        action: Type.Union([Type.Literal('delete_untracked'), Type.Literal('revert_tracked')]),
+        path: Type.String({ minLength: 1, maxLength: 1000 }),
+        expected_files: Type.Array(Type.String(), { maxItems: 200 }),
+        reason: Type.String({ minLength: 1, maxLength: 500 }),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        const result = recoverWorktree({ ...params, cwd: ctx.cwd, base: baseRef(), ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+      },
+    });
+
+    pi.registerTool({
       name: 'rollback_last_mutation',
       label: 'Rollback last mutation',
       description: 'Restore exactly the file state captured immediately before the most recent successful structural_edit/safe_edit/edit/write. Use when that mutation caused a regression or was the wrong approach. This is a productive recovery action and does not reset unrelated earlier changes.',
@@ -1443,6 +1480,7 @@ export default function (pi) {
           }
           sessionsStarted += 1;
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
+          const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
           const startedAt = Date.now();
           codingSessionLog('started', { ...base, context: 'fork', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens });
           let response = null;
@@ -1459,7 +1497,7 @@ export default function (pi) {
               thinking: 'off',
               context: 'fork',
               childEnv: {
-                PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens }),
+                PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile }),
                 PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
                 ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
                   ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
@@ -1468,6 +1506,20 @@ export default function (pi) {
             }, signal);
           } catch (error) {
             sessionError = error;
+          }
+          let contractFailure = null;
+          try {
+            if (fs.existsSync(contractFile)) contractFailure = JSON.parse(fs.readFileSync(contractFile, 'utf8'));
+          } catch (error) {
+            // Advisory provenance must not replace the original delegation error.
+            contractFailure = null;
+            console.warn(`PI_CODING_CONTRACT_METADATA_INVALID ${JSON.stringify({ sessionId, error: String(error?.message ?? error) })}`);
+          } finally {
+            fs.rmSync(contractFile, { force: true });
+          }
+          if (contractFailure?.failure_code === 'PI_TOOL_CONTRACT_FAILURE') {
+            await abortToolContract(contractFailure.tool, ctx, contractFailure.reason);
+            throw new Error(`PI_TOOL_CONTRACT_FAILURE: ${contractFailure.reason}`);
           }
           if (signal?.aborted) {
             codingSessionLog('cancelled', { ...base, durationMs: Date.now() - startedAt });
@@ -1830,6 +1882,10 @@ export default function (pi) {
     return undefined;
   });
   pi.on('tool_execution_end', async (event, ctx) => {
+    if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
+      await abortToolContract(event.toolName, ctx);
+      return;
+    }
     // pi rejects a call whose arguments were cut off at the output ceiling before execution and
     // may not route that rejection through tool_result; steer from here so the truncation
     // guidance (begin the coding session instead of regenerating) still reaches the model once.
@@ -1929,7 +1985,11 @@ export default function (pi) {
     }
   });
 
-  pi.on('tool_result', (event) => {
+  pi.on('tool_result', async (event, ctx) => {
+    if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
+      await abortToolContract(event.toolName, ctx);
+      return undefined;
+    }
     const text = resultText(event);
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
     if (!truncated) return undefined;

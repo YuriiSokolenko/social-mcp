@@ -224,12 +224,17 @@ jobs:
               (.failure_class | type == "string") and
               (.failure_code | type == "string") and
               (.reason | type == "string") and
-              .failure_class == "model_execution_abort" and
-              .failure_code == "PI_ACTION_REQUIRED_ABORT"
+              ((.failure_class == "model_execution_abort" and .failure_code == "PI_ACTION_REQUIRED_ABORT") or
+               (.failure_class == "infrastructure" and .failure_code == "PI_TOOL_CONTRACT_FAILURE"))
             ' "$PI_RUNTIME_FAILURE_FILE" >/dev/null 2>&1; then
               FAILURE_CLASS="model_execution_abort"
               FAILURE_CODE="PI_ACTION_REQUIRED_ABORT"
               FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"
+              if jq -e '.failure_code == "PI_TOOL_CONTRACT_FAILURE"' "$PI_RUNTIME_FAILURE_FILE" >/dev/null; then
+                FAILURE_CLASS="infrastructure"
+                FAILURE_CODE="PI_TOOL_CONTRACT_FAILURE"
+                FAILURE_REASON="An advertised runtime tool could not execute; repair the Pi tool registry before retrying"
+              fi
             else
               FAILURE_CLASS="execution_failure"
               FAILURE_CODE="runtime_failure_metadata_invalid"
@@ -263,12 +268,17 @@ jobs:
               (.failure_class | type == "string") and
               (.failure_code | type == "string") and
               (.reason | type == "string") and
-              .failure_class == "model_execution_abort" and
-              .failure_code == "PI_ACTION_REQUIRED_ABORT"
+              ((.failure_class == "model_execution_abort" and .failure_code == "PI_ACTION_REQUIRED_ABORT") or
+               (.failure_class == "infrastructure" and .failure_code == "PI_TOOL_CONTRACT_FAILURE"))
             ' "$PI_RUNTIME_FAILURE_FILE" >/dev/null 2>&1; then
               FAILURE_CLASS="model_execution_abort"
               FAILURE_CODE="PI_ACTION_REQUIRED_ABORT"
               FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"
+              if jq -e '.failure_code == "PI_TOOL_CONTRACT_FAILURE"' "$PI_RUNTIME_FAILURE_FILE" >/dev/null; then
+                FAILURE_CLASS="infrastructure"
+                FAILURE_CODE="PI_TOOL_CONTRACT_FAILURE"
+                FAILURE_REASON="An advertised runtime tool could not execute; repair the Pi tool registry before retrying"
+              fi
             else
               FAILURE_CLASS="execution_failure"
               FAILURE_CODE="runtime_failure_metadata_invalid"

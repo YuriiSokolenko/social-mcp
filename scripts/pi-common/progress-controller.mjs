@@ -58,7 +58,7 @@ const ROLLBACK_TOOL = 'rollback_last_mutation';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 // `begin_coding_session` hands the rest of the work to a 16k fork of this session that mutates
 // the worktree through the normal tools, so it earns the same progress/verification accounting.
-const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
+const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'recover_worktree']);
 // Actual finish actions that consume a one-shot elevated mutation response.
 export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
 // Scope declaration is a trusted prelude, not the mutation payload itself. It is allowed while

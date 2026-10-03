@@ -276,6 +276,7 @@ function runtimeScenario(mode) {
           assert.match(request.task, /Example task/);
           assert.match(request.task, /Implement example.py/);
         }
+        assert.equal(request.timeoutMs, 45000, '#397/#399/#401 bounded planner deadline');
         assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
         if (mode === 'abort') { signal.abort(); return; }
         const good = mode === 'layout-aware'

@@ -89,9 +89,19 @@ jobs:
           fi
           docker buildx version
           docker buildx inspect
-          docker system df
-          docker buildx du
+          docker system df || echo "::warning::Optional Docker disk diagnostics failed; inspect host metadata"
+          docker buildx du || echo "::warning::Optional BuildKit cache diagnostics failed"
           id runner
+
+      - name: Build runner manager and smoke-test run-check imports
+        shell: bash
+        run: |
+          image="${COMPOSE_PROJECT_NAME}-manager-import-check:latest"
+          worker_image="${COMPOSE_PROJECT_NAME}-general-worker-check:latest"
+          trap 'docker image rm "$image" "$worker_image" >/dev/null 2>&1 || true' EXIT
+          docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t "$image" .
+          docker run --rm --entrypoint node "$image" -e "import('/opt/social-mcp/scripts/pi-common/run-check.mjs').then(() => console.log('run-check import ok'))"
+          docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t "$worker_image" .
 
       - name: Generate ephemeral test encryption key
         shell: bash

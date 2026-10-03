@@ -199,7 +199,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -207,6 +207,7 @@ function runtimeScenario(mode) {
         registerTool: tool => tools.set(tool.name, tool),
         on: (name, fn) => handlers.set(name, fn),
         appendEntry: () => {},
+        getAllTools: () => [...new Set([...tools.keys(), 'read', 'write', 'edit', 'bash'])].filter(name => mode !== 'narrow-registry' || name !== 'bash').map(name => ({ name })),
         getActiveTools: () => [...active], setActiveTools: names => { active = names; },
         setModel: async model => { caps.push(model.maxTokens); ctx.model = model; return true; },
         sendUserMessage: async text => { steers.push(text); },
@@ -232,6 +233,7 @@ function runtimeScenario(mode) {
       // ---- simulated pi-subagents host for the forked coding session ----
       async function runFork(request) {
         const definition = registered.get(request.agent);
+        if (mode === 'narrow-registry') assert.ok(!definition.tools.includes('bash'), 'fork allowlist excludes unavailable registry tools');
         if (!definition) return respond(request, { status: 'failed', error: 'Unknown agent: ' + request.agent });
         if (fs.existsSync(cwd + '/.pi/agents/' + request.agent + '.md')) {
           return respond(request, { status: 'failed', error: "Runtime agent '" + request.agent + "' collides with configured agent '" + request.agent + "'." });
@@ -239,7 +241,7 @@ function runtimeScenario(mode) {
         assert.deepEqual(definition.extensions, [controlScripts + '/pi-bash-timeout.mjs', controlScripts + '/pi-agent-runtime.mjs', controlScripts + '/pi-implementer-result-tool.mjs']);
         const inherited = fs.readFileSync(sessionFile, 'utf8').trim().split('\\n').map(line => JSON.parse(line));
         const childTools = new Map(); const childHandlers = new Map();
-        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => { throw new Error('fork aborted'); },
+        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (mode !== 'tool-contract') throw new Error('fork aborted'); },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
@@ -261,6 +263,15 @@ function runtimeScenario(mode) {
         assert.equal(patched.max_completion_tokens, 16384, 'the 16K ceiling is untouched');
         const other = { input: 'not a chat payload' };
         assert.equal(providerPatch({ payload: other }, childCtx), other, 'non-chat payloads are left alone');
+        if (mode === 'malformed-contract') {
+          const spec = JSON.parse(process.env.PI_CODING_SESSION);
+          fs.writeFileSync(spec.failureFile, '{"failure_code":');
+          return respond(request, { status: 'failed', error: 'original delegation failure' });
+        }
+        if (mode === 'tool-contract') {
+          await childHandlers.get('tool_execution_end')({ toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'Tool read not found' }] } }, childCtx);
+          return respond(request, { status: 'failed', error: 'nested executor unavailable' });
+        }
         // Executors stubbed; the runtime's gates around them are real.
         childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
         childTools.get('submit_result').execute = async () => { fs.writeFileSync(terminal, 'submitted\\n'); return { content: [{ type: 'text', text: 'submitted' }] }; }; // same marker terminalResult() writes
@@ -348,8 +359,22 @@ function runtimeScenario(mode) {
       parentResultTool(pi);
       assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the provider constraint hook');
       assert.equal(handlers.has('turn_end'), true, 'the parent installs provider error recovery on the authoritative turn boundary');
+      if (mode === 'parent-contract' || mode === 'parent-contract-reverse') {
+        const resultEvent = { toolCallId: 'missing-bash', toolName: 'bash', isError: true, content: [{ type: 'text', text: 'Tool bash not found' }] };
+        const executionEvent = { ...resultEvent, result: { content: resultEvent.content } };
+        const hooks = mode === 'parent-contract' ? ['tool_result', 'tool_execution_end'] : ['tool_execution_end', 'tool_result'];
+        for (const hook of hooks) await handlers.get(hook)(hook === 'tool_result' ? resultEvent : executionEvent, ctx);
+        assert.equal(aborts, 1);
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_class, 'infrastructure');
+        assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+        assert.equal(sessionRequests.length, 0);
+        process.exit(0);
+      }
       const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
       assert.equal(handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx), unarmedPayload, 'unarmed parent request is unchanged');
+      const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
+      assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
       async function call(name, input = {}, { expectError = null } = {}) {
@@ -575,8 +600,25 @@ function runtimeScenario(mode) {
 
       handlers.get('turn_start')({ turnIndex: turn });
       assert.ok(active.includes('begin_coding_session'));
-      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/ }[mode] ?? null;
+      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', { reason: 'Implement generated.py and its test' }, { expectError });
+      if (mode === 'malformed-contract') {
+        assert.equal(aborts, 0);
+        assert.equal(sessionRequests.length, 1);
+        assert.equal(fs.existsSync(sessionRequests[0].spec.failureFile), false);
+        assert.equal(fs.existsSync(runtimeFailure), false);
+        process.exit(0);
+      }
+      if (mode === 'tool-contract') {
+        assert.equal(aborts, 1, 'nested contract failure aborts the parent immediately');
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_class, 'infrastructure');
+        assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+        assert.equal(failure.tool, 'read');
+        assert.equal(sessionRequests.length, 1, 'no additional coding session burned on an unavailable executor');
+        assert.equal(fs.existsSync(terminal), false, 'a contract failure never submits');
+        process.exit(0);
+      }
       assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048', 'parent child-budget mirror restored');
       assert.ok(!process.env.PI_CODING_SESSION, 'coding-session mode is scoped to the fork');
       assert.ok(caps.filter(cap => cap !== 32000).every(cap => cap === 2048), 'parent stays at 2048: ' + caps);
@@ -776,4 +818,27 @@ test('run_check scope normalization from current dev accepts relative and worktr
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('#397–#402 nested unavailable tools abort as runtime infrastructure without another coding session', () => {
+  const logs = runtimeScenario('tool-contract');
+  assert.match(logs, /PI_RUNTIME_FAILURE_NESTED/);
+  assert.match(logs, /PI_TOOL_CONTRACT_FAILURE/);
+});
+
+test('coding-session allowlist is derived from the executable registry, including hidden tools', () => {
+  runtimeScenario('narrow-registry');
+});
+
+test('#399 executor-unavailable bash tool result aborts the parent as infrastructure immediately', () => {
+  runtimeScenario('parent-contract');
+});
+
+test('malformed fork provenance preserves the original delegation error and removes the artifact', () => {
+  assert.match(runtimeScenario('malformed-contract'), /PI_CODING_CONTRACT_METADATA_INVALID/);
+});
+
+test('both missing-executor event orders abort only once', () => {
+  runtimeScenario('parent-contract');
+  runtimeScenario('parent-contract-reverse');
 });
