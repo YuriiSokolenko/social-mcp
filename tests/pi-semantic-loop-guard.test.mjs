@@ -894,8 +894,8 @@ test('#424 parent rollback follows shared fork journal order instead of stale pr
         "  const after = snapshots.captureMutationSnapshot(root, relative);",
         "  journal.recordSuccessfulMutation({ cwd: root, before, after, tool: 'write', disposition: 'publishable', env: process.env });",
         "};",
-        "mutate('fork-one.txt', 'fork-one:F1\\n');",
-        "mutate('fork-two.txt', 'fork-two:F2\\n');",
+        "mutate('fork-one.txt', 'fork-one:F1\\\\n');",
+        "mutate('fork-two.txt', 'fork-two:F2\\\\n');",
       ].join('\\n');
       const child = spawnSync(process.execPath, ['--input-type=module', '-e', childProgram, repo], {
         encoding: 'utf8',
@@ -973,7 +973,7 @@ test('#424 parent rollback refuses an older journal entry when fork latest is lo
         "const root = process.argv[1];",
         "const relative = 'fork.txt';",
         "const before = snapshots.captureMutationSnapshot(root, relative);",
-        "fs.writeFileSync(path.join(root, relative), 'fork:LOCAL\\n');",
+        "fs.writeFileSync(path.join(root, relative), 'fork:LOCAL\\\\n');",
         "const after = snapshots.captureMutationSnapshot(root, relative);",
         "journal.markMutationJournalLocalOnly({ cwd: root, after, tool: 'write', env: process.env });",
       ].join('\\n');
