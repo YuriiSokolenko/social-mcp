@@ -593,9 +593,10 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
 });
 
-test('runtime grants the large mutation budget for exactly one response and always collapses it back', () => {
+test('runtime preserves a large mutation budget through scope declaration, then consumes it on the real finish action', () => {
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  assert.match(runtime, /ELEVATED_MUTATION_TURN_TOOLS/);
   assert.match(runtime, /FINISH_TOOLS/);
   assert.match(runtime, /name: controller\.largeMutationBudgetTool/);
   assert.match(runtime, /controller\.largeMutationBudgetPending\(\)/);
@@ -605,10 +606,13 @@ test('runtime grants the large mutation budget for exactly one response and alwa
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET/);
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET_VIOLATION/);
   assert.match(runtime, /elevatedTurnAttemptedFinishTool/);
+  assert.match(runtime, /elevatedTurnAttemptedScopePrelude/);
+  assert.match(runtime, /phase: 'scope_prelude'/);
+  assert.match(runtime, /budgetReason = 'large_mutation_scope_prelude'/);
   // Tool-surface restriction during the elevated turn is UX on top of the controller's own
   // hard gate; the finish-tool attempt marker must only be set for a call the controller
   // actually let through, never for one it blocked.
-  assert.match(runtime, /largeMutationBudgetActive[\s\S]*unrestrictedActiveTools\.filter\(name => FINISH_TOOLS\.has\(name\)\)/);
+  assert.match(runtime, /largeMutationBudgetActive[\s\S]*unrestrictedActiveTools\.filter\(name => ELEVATED_MUTATION_TURN_TOOLS\.has\(name\)\)/);
   assert.match(runtime, /return blocked;\s*\}[\s\S]{0,200}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
   assert.match(planner, /evidence_budget/);
 });
