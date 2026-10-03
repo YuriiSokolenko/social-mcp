@@ -72,6 +72,15 @@ fs.writeFileSync(adapterConfigFile, `${JSON.stringify(adapterConfig, null, 2)}\n
 NODE
 fi
 
+# Best-effort durable evidence (#437): this container is --rm, so keep a bounded
+# trail on the shared volume when the manager provides one.
+EVIDENCE_DIR="${INFRA_EVIDENCE_DIR:-}"
+if [ -z "$EVIDENCE_DIR" ] || [ ! -d "$EVIDENCE_DIR" ] || [ ! -w "$EVIDENCE_DIR" ]; then EVIDENCE_DIR=""; fi
+worker_evidence() {
+  [ -n "$EVIDENCE_DIR" ] || return 0
+  printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUNNER_NAME" "$(printf '%s' "${1:0:2000}" | tr '\n' ' ')" >> "$EVIDENCE_DIR/worker-events.log" 2>/dev/null || true
+}
+
 if [[ ",${RUNNER_LABELS}," == *,general,* ]]; then
   for check in info metadata; do
     attempts=0
@@ -89,8 +98,10 @@ if [[ ",${RUNNER_LABELS}," == *,general,* ]]; then
       fi
       if [ "$check" == info ]; then
         echo "infra_error DOCKER_DAEMON_UNHEALTHY: $output" >&2
+        worker_evidence "infra_error DOCKER_DAEMON_UNHEALTHY: $output"
       else
         echo "infra_error DOCKER_METADATA_CORRUPTION: $output; general runner will not register" >&2
+        worker_evidence "infra_error DOCKER_METADATA_CORRUPTION: $output"
       fi
       exit 1
     done
@@ -109,4 +120,28 @@ cd "${RUNNER_HOME}/actions-runner"
   --unattended \
   --disableupdate
 
-exec ./run.sh
+if [ -z "$EVIDENCE_DIR" ]; then
+  exec ./run.sh
+fi
+
+# Keep the tail of the runner's own diagnostics so a `Set up job` failure stays
+# explainable after the container and the GitHub job log are gone. Forward stop
+# signals because this shell is PID 1 and no longer exec'd into the runner.
+./run.sh &
+runner_pid=$!
+trap 'kill -TERM "$runner_pid" 2>/dev/null || true' TERM INT
+status=0
+while kill -0 "$runner_pid" 2>/dev/null; do
+  wait "$runner_pid" || status=$?
+done
+{
+  latest="$(ls -t _diag/Worker_*.log 2>/dev/null | head -n 1)"
+  [ -z "$latest" ] || tail -n 200 "$latest" > "$EVIDENCE_DIR/${RUNNER_NAME}-worker-diag.log"
+  worker_evidence "runner exited status=$status"
+  ls -t "$EVIDENCE_DIR"/*-worker-diag.log 2>/dev/null | tail -n +51 | xargs -r rm -f
+  if [ "$(wc -l < "$EVIDENCE_DIR/worker-events.log")" -gt 500 ]; then
+    tail -n 500 "$EVIDENCE_DIR/worker-events.log" > "$EVIDENCE_DIR/worker-events.log.tmp" \
+      && mv "$EVIDENCE_DIR/worker-events.log.tmp" "$EVIDENCE_DIR/worker-events.log"
+  fi
+} 2>/dev/null || true
+exit "$status"

@@ -363,6 +363,50 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   [[ "$DOCKER_QUARANTINED" == false ]] || fail 'quarantine not released after repair'
 )
 
+# #437: quarantine and recovery leave durable evidence, once per transition.
+(
+  MOUNT_DOCKER_SOCKET=true
+  DOCKER_QUARANTINED=false
+  DOCKER_HEALTHY_POLLS=0
+  HEALTH_FAIL=true
+  INFRA_EVIDENCE_DIR="$(mktemp -d)"
+  trap 'rm -rf "$INFRA_EVIDENCE_DIR"' EXIT
+  sleep() { :; }
+  run_with_timeout() {
+    shift
+    if [[ "$*" == 'docker system df' && "$HEALTH_FAIL" == true ]]; then
+      echo 'Error response from daemon: rw layer snapshot not found for container 37d2be901d24' >&2
+      return 1
+    fi
+    if [[ "$*" == docker\ ps* ]]; then echo '37d2be901d24 n150-gen-eph-1 Exited (0)'; fi
+    return 0
+  }
+  general_daemon_health >/dev/null 2>&1 || true
+  general_daemon_health >/dev/null 2>&1 || true
+  [[ "$(grep -c "" "$INFRA_EVIDENCE_DIR/events.jsonl")" == 1 ]] || fail 'quarantine evidence must be recorded once per transition'
+  jq -e '.event == "quarantined" and (.detail | contains("DOCKER_METADATA_CORRUPTION")) and (.containers | contains("n150-gen-eph-1"))' \
+    "$INFRA_EVIDENCE_DIR/events.jsonl" >/dev/null || fail 'quarantine evidence lacks code or container snapshot'
+  HEALTH_FAIL=false
+  general_daemon_health >/dev/null 2>&1 || true
+  general_daemon_health >/dev/null 2>&1 || fail 'daemon did not recover'
+  [[ "$(jq -r .event "$INFRA_EVIDENCE_DIR/events.jsonl" | tail -n 1)" == recovered ]] || fail 'recovery evidence missing'
+  # An unwritable evidence location must never change health results.
+  INFRA_EVIDENCE_DIR=/proc/nonexistent/evidence
+  record_infra_evidence quarantined x >/dev/null 2>&1 || fail 'evidence failure must be non-fatal'
+)
+
+# #437: a fresh named volume is root-owned and not writable by the worker's UID.
+# Initialisation must open it before any event, without a quarantine to trigger it.
+(
+  INFRA_EVIDENCE_DIR="$(mktemp -d)"
+  trap 'chmod 755 "$INFRA_EVIDENCE_DIR"; rm -rf "$INFRA_EVIDENCE_DIR"' EXIT
+  chmod 0555 "$INFRA_EVIDENCE_DIR"
+  [[ ! -w "$INFRA_EVIDENCE_DIR" || "$(id -u)" == 0 ]] || fail 'precondition: dir should start non-writable'
+  init_infra_evidence_dir
+  [[ "$(ls -ld "$INFRA_EVIDENCE_DIR" | cut -c1-10)" == drwxrwxrwt ]] || fail 'evidence dir not world-writable after init'
+  [[ -w "$INFRA_EVIDENCE_DIR" ]] || fail 'evidence dir not writable after init'
+)
+
 # A single transient Docker health-check failure is retried after a short delay
 # before the manager quarantines the pool. Each check gets at most one retry.
 (
@@ -493,5 +537,19 @@ RUN
   [[ "$(grep -c -Fx 'system df' "$DOCKER_LOG")" == 2 ]] || fail 'worker did not retry persistent metadata failure exactly once'
   grep -q 'infra_error DOCKER_METADATA_CORRUPTION' "$worker_root/fail.stderr" || fail 'persistent metadata failure was not classified'
   [[ ! -e "$REGISTER_LOG" ]] || fail 'worker registered on an unhealthy daemon'
+
+  # #437: with an evidence volume, health failures and runner diagnostics outlive the container.
+  export INFRA_EVIDENCE_DIR="$worker_root/evidence"
+  mkdir -p "$INFRA_EVIDENCE_DIR" "$runner_home/actions-runner/_diag"
+  if DOCKER_FAIL_METADATA=true bash "$worker_script" >/dev/null 2>&1; then fail 'worker registered despite metadata failure'; fi
+  grep -q 'DOCKER_METADATA_CORRUPTION' "$INFRA_EVIDENCE_DIR/worker-events.log" || fail 'worker health failure left no evidence'
+  printf 'Set up job failed\n' > "$runner_home/actions-runner/_diag/Worker_1.log"
+  printf '#!/usr/bin/env bash\ntouch "$RUN_LOG"\nexit 3\n' > "$runner_home/actions-runner/run.sh"
+  status=0
+  bash "$worker_script" >/dev/null 2>&1 || status=$?
+  [[ "$status" == 3 ]] || fail "worker must propagate the runner exit status, got $status"
+  grep -q 'Set up job failed' "$INFRA_EVIDENCE_DIR/n150-gen-eph-test-worker-diag.log" || fail 'runner diagnostics were not preserved'
+  grep -q 'runner exited status=3' "$INFRA_EVIDENCE_DIR/worker-events.log" || fail 'runner exit status was not recorded'
+  unset INFRA_EVIDENCE_DIR
 )
 printf 'runner autoscaler checks passed\n'

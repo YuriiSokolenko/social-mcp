@@ -232,7 +232,7 @@ test('optional Docker diagnostics fail without blocking the remaining CI setup',
 
 test('general worker checks daemon snapshots before registering, while Pi workers skip Docker access', () => {
   const source = fs.readFileSync('infra/github-runner-autoscaler/worker-entrypoint.sh', 'utf8');
-  const start = source.indexOf('if [[ ",${RUNNER_LABELS},"');
+  const start = source.indexOf('# Best-effort durable evidence');
   assert.ok(start > 0);
   const end = source.indexOf('\ncd "${RUNNER_HOME}/actions-runner"', start);
   assert.ok(end > start);
