@@ -1611,13 +1611,12 @@ export default function (pi) {
               childEnv: {
                 PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile }),
                 PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
-                PI_MUTATION_JOURNAL_STATE: JSON.stringify(mutationJournalState(ctx.cwd, process.env)),
                 ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
                   ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
                   : {}),
                 ...(process.env.PI_MUTATION_JOURNAL_FILE
                   ? { PI_MUTATION_JOURNAL_FILE: process.env.PI_MUTATION_JOURNAL_FILE }
-                  : {}),
+                  : { PI_MUTATION_JOURNAL_STATE: JSON.stringify(mutationJournalState(ctx.cwd, process.env)) }),
               },
             }, signal);
           } catch (error) {
@@ -2108,23 +2107,48 @@ export default function (pi) {
         changed: mutationChanged,
       })}`);
       if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot) {
-        const journalEntry = recordSuccessfulMutation({
-          cwd: pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd(),
-          before: mutationSnapshot,
-          after: mutationAfterSnapshot,
-          tool: event.toolName,
-          disposition: pendingMutation?.disposition ?? 'unknown',
-          env: process.env,
-        });
-        lastSuccessfulMutationSnapshot = mutationSnapshot;
-        lastSuccessfulMutationId = journalEntry.id;
-        console.log(`PI_MUTATION_JOURNAL ${JSON.stringify({
-          stage,
-          mutationId: journalEntry.id,
-          tool: event.toolName,
-          path: journalEntry.path,
-          disposition: journalEntry.disposition,
-        })}`);
+        const mutationCwd = pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd();
+        try {
+          const journalEntry = recordSuccessfulMutation({
+            cwd: mutationCwd,
+            before: mutationSnapshot,
+            after: mutationAfterSnapshot,
+            tool: event.toolName,
+            disposition: pendingMutation?.disposition ?? 'unknown',
+            env: process.env,
+          });
+          lastSuccessfulMutationSnapshot = mutationSnapshot;
+          lastSuccessfulMutationId = journalEntry.id;
+          console.log(`PI_MUTATION_JOURNAL ${JSON.stringify({
+            stage,
+            mutationId: journalEntry.id,
+            tool: event.toolName,
+            path: journalEntry.path,
+            disposition: journalEntry.disposition,
+          })}`);
+        } catch (error) {
+          // A mutation without durable provenance would violate the selective-undo contract.
+          // Restore the exact pre-mutation snapshot before the agent can take another action.
+          if (mutationSnapshot.existed) {
+            fs.mkdirSync(path.dirname(mutationSnapshot.absolutePath), { recursive: true });
+            fs.writeFileSync(mutationSnapshot.absolutePath, mutationSnapshot.content);
+            if (mutationSnapshot.mode != null) fs.chmodSync(mutationSnapshot.absolutePath, mutationSnapshot.mode);
+          } else {
+            fs.rmSync(mutationSnapshot.absolutePath, { recursive: false, force: true });
+          }
+          mutationChanged = false;
+          repositoryStateAfter = repositoryStateFingerprint(mutationCwd);
+          const reason = String(error?.message ?? error);
+          console.error(`PI_MUTATION_JOURNAL_REVERTED ${JSON.stringify({
+            stage,
+            tool: event.toolName,
+            path: mutationSnapshot.path,
+            reason,
+          })}`);
+          await pi.sendUserMessage(
+            `RUNTIME: your ${event.toolName} change to ${mutationSnapshot.path} was reverted because the trusted runtime could not persist its selective-undo provenance. Do not assume that edit is present. Retry only after addressing this runtime error: ${reason}`,
+          );
+        }
       }
       pendingMutationSnapshots.delete(event.toolCallId);
     }
