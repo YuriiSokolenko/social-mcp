@@ -61,14 +61,14 @@ export function createPlannerEvidenceGate(budget) {
 }
 
 function readPlannerEvidenceUsed(file, cap) {
-  if (!file) return 0;
+  if (!file) return null;
   try {
     const state = JSON.parse(fs.readFileSync(file, 'utf8'));
     const used = Number(state?.used);
-    if (!Number.isSafeInteger(used) || used < 0) return 0;
+    if (!Number.isSafeInteger(used) || used < 0) return null;
     return Math.min(used, cap);
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -252,7 +252,7 @@ Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence act
 
 Synthesize what you learn into the handoff. If you established a repository fact, state the fact in steps/reason instead of telling main to rediscover it. Keep the plan concise: 1-8 ordered steps, each <=240 characters. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
 
-Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the additional repository evidence main still needs after consuming your handoff. Facts you already resolved cost main 0. Complexity is independent of evidence needs.
+Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository evidence main still needs after consuming your handoff. Resolved discovery/convention facts cost main 0, but they do not replace a current mutation anchor: reserve at least one action for each existing file main must modify and has not itself seen, so it can read the current text/AST before editing. New-file-only work may use 0. Complexity is independent of evidence needs.
 
 Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget (for example a substantial new module plus tests), not merely because complexity is nontrivial. Do not implement the task.
 
@@ -374,7 +374,6 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
   } finally {
     recordDescendantMetric({
       call: 'planner', scope: 'session', childSession, parentSession: ctx.sessionManager.getSessionId(), status, usage,
-      ...(Number.isFinite(Number(usage?.durationMs)) ? { responseMs: Number(usage.durationMs) } : {}),
     });
     fs.rmSync(evidenceStateFile, { force: true });
   }
@@ -419,7 +418,7 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       reason: String(error?.message ?? error),
       layoutHint,
       plannerUsage: error?.delegationUsage ?? null,
-      plannerEvidenceUsed: Number.isSafeInteger(error?.plannerEvidenceUsed) ? error.plannerEvidenceUsed : 0,
+      plannerEvidenceUsed: Number.isSafeInteger(error?.plannerEvidenceUsed) ? error.plannerEvidenceUsed : null,
       plannerEvidenceCap: Number.isSafeInteger(error?.plannerEvidenceCap) ? error.plannerEvidenceCap : plannerEvidenceBudget(config),
       plannerProviderTurns: Number.isSafeInteger(error?.delegationUsage?.turns) ? error.delegationUsage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
