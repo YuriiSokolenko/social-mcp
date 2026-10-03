@@ -10,6 +10,7 @@ const JOURNAL_SCHEMA_VERSION = 1;
 export const MUTATION_JOURNAL_MAX_ENTRIES = 256;
 export const MUTATION_JOURNAL_MAX_PRIOR_BYTES = 2 * 1024 * 1024;
 export const MUTATION_JOURNAL_MAX_TOTAL_PRIOR_BYTES = 16 * 1024 * 1024;
+export const MUTATION_JOURNAL_MAX_CHECKPOINT_BYTES = 80 * 1024;
 
 const states = new Map();
 
@@ -283,6 +284,33 @@ export function assertMutationJournalCapacity({ cwd, snapshot, env = process.env
       'mutation_journal_full',
       'bounded mutation journal byte limit reached',
       { max_bytes: MUTATION_JOURNAL_MAX_TOTAL_PRIOR_BYTES },
+    );
+  }
+
+  // Check the persisted representation before the mutation executes. The checkpoint stores this
+  // state in one git commit-message argument, so bounding only raw prior bytes could still exceed
+  // the platform argv limit for incompressible content.
+  const projected = {
+    schema_version: JOURNAL_SCHEMA_VERSION,
+    entries: [...state.entries, {
+      id: 'mutation-00000000-0000-4000-8000-000000000000',
+      path: canonicalPath(cwd, snapshot.path),
+      tool: 'x'.repeat(80),
+      disposition: 'baseline-recovery',
+      prior: snapshot.existed
+        ? { existed: true, mode: snapshot.mode, content_base64: snapshot.content.toString('base64') }
+        : { existed: false },
+      post: snapshot.existed
+        ? { exists: true, mode: snapshot.mode, size: snapshot.content.length, sha256: '0'.repeat(64) }
+        : { exists: true, mode: 0o644, size: 0, sha256: '0'.repeat(64) },
+    }],
+  };
+  const encodedBytes = Buffer.byteLength(encodeMutationJournalState(cwd, projected), 'utf8');
+  if (encodedBytes > MUTATION_JOURNAL_MAX_CHECKPOINT_BYTES) {
+    throw journalError(
+      'mutation_journal_full',
+      'bounded mutation journal checkpoint representation limit reached',
+      { max_checkpoint_bytes: MUTATION_JOURNAL_MAX_CHECKPOINT_BYTES, projected_checkpoint_bytes: encodedBytes },
     );
   }
   return true;
