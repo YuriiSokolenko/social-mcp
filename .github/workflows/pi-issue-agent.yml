@@ -68,6 +68,7 @@ jobs:
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_RUNTIME_FAILURE_FILE=$RUNNER_TEMP/pi-runtime-failure-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_VALIDATION_LEDGER_FILE=$RUNNER_TEMP/pi-validation-ledger-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
+          echo "PI_ACCEPTED_MUTATION_SCOPE_FILE=$RUNNER_TEMP/pi-accepted-mutation-scope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue
         id: preflight
@@ -137,7 +138,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" checkpoint "$ISSUE" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT" "$PI_CHECKPOINT_EXPECTED" "$PI_IMPLEMENTER_RESULT_FILE")"
+          RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" checkpoint "$ISSUE" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT" "$PI_CHECKPOINT_EXPECTED" "$PI_IMPLEMENTER_RESULT_FILE" "$PI_ACCEPTED_MUTATION_SCOPE_FILE")"
           CHANGED="$(jq -r '.changed' <<<"$RESULT")"
           echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
           if [ "$CHANGED" = "true" ]; then
