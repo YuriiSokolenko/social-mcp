@@ -788,6 +788,28 @@ test('#426 undo_mutation clears the obligation via its result path', () => {
   assert.equal(failedSubmit(guard, hint).tripped, false);
 });
 
+test('#426 undo returning to an already-seen state restarts the failure count', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/b.js';
+  scratchWrite(guard, 'src/a.js', 'A', 'A2');
+  scratchWrite(guard, 'scratch/b.js', 'A2', 'B');
+  failedSubmit(guard, hint);
+  failedSubmit(guard, hint);
+  const undo = observation(guard, {
+    tool: 'undo_mutation',
+    input: { mutation_id: 'm1', expected_files: ['src/a.js'] },
+    result: { content: [{ type: 'text', text: JSON.stringify({ status: 'undone', path: 'scratch/b.js' }) }], details: { path: 'scratch/b.js' } },
+    repositoryStateBefore: 'B',
+    repositoryStateAfter: 'A2',
+    mutationChanged: true,
+  });
+  assert.equal(undo.classification, 'returned_to_seen_state');
+  assert.equal(undo.tripped, false);
+  assert.equal(failedSubmit(guard, hint).tripped, false);
+  assert.equal(failedSubmit(guard, hint).tripped, false);
+  assert.equal(failedSubmit(guard, hint).tripped, true);
+});
+
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
 // Runs the real runtime extension against a mock `pi` in a child process.

@@ -480,11 +480,18 @@ export class SemanticLoopGuard {
         : 0;
 
       const resolvesObligation = this._mutationTouchesObligation(mutationTargetPath(input, result));
-      if (changed && seenBefore === 0) {
-        if (!this.terminalObligation || resolvesObligation) {
-          this.terminalObligation = null;
+      if (changed && this.terminalObligation && resolvesObligation) {
+        // A relevant fix resolves the blocker even when it restores an already-seen state
+        // (undo of an accidental B back to A). Repository revisit tracking stays intact.
+        this.terminalObligation = null;
+        if (seenBefore === 0) {
           this._markNovelRepositoryState();
+        } else {
+          this.steerOutstanding = false;
+          this.failureWindow = [];
         }
+      } else if (changed && seenBefore === 0 && !this.terminalObligation) {
+        this._markNovelRepositoryState();
       }
       if (repositoryStateAfter) {
         this._push(this.repositoryWindow, repositoryStateAfter, this.windowSize + 1);
