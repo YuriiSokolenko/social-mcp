@@ -38,6 +38,11 @@ CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
 DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
 DOCKER_HEALTH_RETRY_SECONDS=5
+# Optional durable infra evidence (#437). Workers run with --rm and GitHub job
+# logs can expire, so quarantine events and worker diagnostics go to a volume.
+INFRA_EVIDENCE_DIR="${INFRA_EVIDENCE_DIR:-}"
+INFRA_EVIDENCE_VOLUME="${INFRA_EVIDENCE_VOLUME:-}"
+INFRA_EVIDENCE_MAX_EVENTS=500
 CURL_TIMEOUT_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS")
 
 if [ -n "$PIP_CACHE_HOST_DIR" ]; then
@@ -308,6 +313,25 @@ verify_run_check_sandbox() {
   return 1
 }
 
+record_infra_evidence() {
+  local event="$1" detail="$2" file="${INFRA_EVIDENCE_DIR}/events.jsonl" containers=""
+  [ -n "$INFRA_EVIDENCE_DIR" ] || return 0
+  if [ "$event" == quarantined ]; then
+    containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' 2>&1 | head -n 40)" || true
+  fi
+  {
+    mkdir -p "$INFRA_EVIDENCE_DIR"
+    # Workers run as a different UID and append their own diagnostics here.
+    chmod 1777 "$INFRA_EVIDENCE_DIR"
+    jq -nc --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --arg event "$event" --arg prefix "$RUNNER_PREFIX" \
+      --arg detail "${detail:0:2000}" --arg containers "${containers:0:4000}" \
+      '{ts: $ts, event: $event, pool: $prefix, detail: $detail, containers: $containers}' >> "$file"
+    if [ "$(wc -l < "$file")" -gt "$INFRA_EVIDENCE_MAX_EVENTS" ]; then
+      tail -n "$INFRA_EVIDENCE_MAX_EVENTS" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+    fi
+  } 2>/dev/null || log "warning: could not record infra evidence for $event"
+}
+
 # Quarantine is pool-wide: no registration tokens or containers while unhealthy.
 # Never prune/restart a shared daemon automatically; that could kill busy jobs.
 DOCKER_QUARANTINED=false
@@ -332,8 +356,11 @@ general_daemon_health() {
       fi
       code=DOCKER_DAEMON_UNHEALTHY
       [[ "$output" != *'rw layer snapshot not found'* ]] || code=DOCKER_METADATA_CORRUPTION
-      DOCKER_QUARANTINED=true
       DOCKER_HEALTHY_POLLS=0
+      if [ "$DOCKER_QUARANTINED" != true ]; then
+        DOCKER_QUARANTINED=true
+        record_infra_evidence quarantined "code=$code check=$command diagnostic=$output"
+      fi
       log "infra_error code=$code general pool quarantined check=$command diagnostic=$output; inspect Docker/containerd journals and stale container IDs; repair host before retrying (no automatic prune/restart)"
       return 1
     done
@@ -344,6 +371,7 @@ general_daemon_health() {
     DOCKER_QUARANTINED=false
     DOCKER_HEALTHY_POLLS=0
     log "general pool recovered after two healthy daemon polls"
+    record_infra_evidence recovered "two healthy daemon polls"
   fi
 }
 
@@ -405,6 +433,9 @@ spawn_runner() {
   fi
   if [ "$MOUNT_DOCKER_SOCKET" == true ]; then
     docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
+    if [ -n "$INFRA_EVIDENCE_DIR" ] && [ -n "$INFRA_EVIDENCE_VOLUME" ]; then
+      docker_args+=(-v "${INFRA_EVIDENCE_VOLUME}:/evidence" -e INFRA_EVIDENCE_DIR=/evidence)
+    fi
   fi
   if [ -n "$PIP_CACHE_HOST_DIR" ]; then
     docker_args+=(--mount "type=bind,source=${PIP_CACHE_HOST_DIR},target=/home/runner/.cache/pip")
