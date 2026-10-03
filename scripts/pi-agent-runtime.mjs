@@ -1575,13 +1575,19 @@ export default function (pi) {
           throw new Error('No successful structural_edit/safe_edit/edit/write is available to roll back');
         }
 
-        const result = undoMutation({
-          cwd: ctx.cwd,
-          mutationId,
-          reason: params.reason,
-          ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE,
-          env: process.env,
-        });
+        let result;
+        try {
+          result = undoMutation({
+            cwd: ctx.cwd,
+            mutationId,
+            reason: params.reason,
+            ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE,
+            env: process.env,
+          });
+        } catch (error) {
+          if (error?.code === 'mutation_undo_persist_failed') invalidateTerminalReceipt(process.env);
+          throw error;
+        }
         if (process.env.PI_VALIDATION_LEDGER_FILE) {
           appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
             run_id: validationRunId(),
