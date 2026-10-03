@@ -1440,18 +1440,20 @@ export default function (pi) {
           fileSet = { status: 'infra_error', summary: error.message };
         }
         result.file_set = fileSet;
-        appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
-          run_id: validationRunId(),
-          attempt_id: validationAttemptId(),
-          stage: 'implementer',
-          backend: 'pi',
-          source: 'mutation_undo',
-          kind: 'undo_mutation',
-          scope: { paths: [result.path], mutation_id: result.mutation_id },
-          status: 'pass',
-          summary: params.reason,
-          mutation: result,
-        });
+        if (process.env.PI_VALIDATION_LEDGER_FILE) {
+          appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+            run_id: validationRunId(),
+            attempt_id: validationAttemptId(),
+            stage: 'implementer',
+            backend: 'pi',
+            source: 'mutation_undo',
+            kind: 'undo_mutation',
+            scope: { paths: [result.path], mutation_id: result.mutation_id },
+            status: 'pass',
+            summary: params.reason,
+            mutation: result,
+          });
+        }
         lastSuccessfulMutationId = mutationJournalState(ctx.cwd, process.env).entries.at(-1)?.id ?? null;
         lastSuccessfulMutationSnapshot = null;
         invalidateTerminalReceipt(process.env);
@@ -1477,18 +1479,20 @@ export default function (pi) {
             ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE,
             env: process.env,
           });
-          appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
-            run_id: validationRunId(),
-            attempt_id: validationAttemptId(),
-            stage: 'implementer',
-            backend: 'pi',
-            source: 'mutation_undo',
-            kind: 'rollback_last_mutation',
-            scope: { paths: [result.path], mutation_id: result.mutation_id },
-            status: 'pass',
-            summary: params.reason,
-            mutation: result,
-          });
+          if (process.env.PI_VALIDATION_LEDGER_FILE) {
+            appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
+              run_id: validationRunId(),
+              attempt_id: validationAttemptId(),
+              stage: 'implementer',
+              backend: 'pi',
+              source: 'mutation_undo',
+              kind: 'rollback_last_mutation',
+              scope: { paths: [result.path], mutation_id: result.mutation_id },
+              status: 'pass',
+              summary: params.reason,
+              mutation: result,
+            });
+          }
           lastSuccessfulMutationId = mutationJournalState(ctx.cwd, process.env).entries.at(-1)?.id ?? null;
           lastSuccessfulMutationSnapshot = null;
           invalidateTerminalReceipt(process.env);
