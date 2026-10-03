@@ -399,6 +399,33 @@ function runtimeScenario(mode) {
       fs.rmSync(cwd + '/config.py');
       for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
 
+      if (mode === 'scope-prelude-cap') {
+        await call('request_large_mutation_budget', { reason: 'large generated module' });
+        assert.equal(caps.at(-1), 16384, 'large mutation grant raises the next response cap');
+        await call('accept_mutation_scope', {
+          paths: ['first-large.py'],
+          disposition: 'publishable',
+          rationale: 'Issue requires the large generated implementation file.',
+        });
+        assert.equal(caps.at(-1), 16384, 'one scope prelude preserves the elevated cap');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const secondPrelude = await handlers.get('tool_call')({
+          toolName: 'accept_mutation_scope',
+          toolCallId: 'scope-repeat-' + turn,
+          input: {
+            paths: ['second-large.py'],
+            disposition: 'publishable',
+            rationale: 'Attempt a second declaration under the same elevated grant.',
+          },
+        }, ctx);
+        assert.equal(secondPrelude.block, true);
+        assert.match(secondPrelude.reason, /already used its one accept_mutation_scope prelude/);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        console.log('SCOPE_PRELUDE_CAP_OK');
+        process.exit(0);
+      }
+
       if (['prose-force-direct', 'prose-force-provider-statuses', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort'].includes(mode)) {
         // First action_required response is prose only: the runtime arms provider-level
         // required-tool forcing and keeps it armed until a real exposed tool is attempted.
@@ -653,6 +680,12 @@ test('parent submit inherits accepted scope from a coding-session fork that ende
   const logs = runtimeScenario('no-submit-parent-submit');
   assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
   assert.match(logs, /PARENT_SUBMIT_AFTER_FORK_OK/);
+});
+
+test('one elevated mutation grant permits at most one scope-only prelude', () => {
+  const logs = runtimeScenario('scope-prelude-cap');
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"scope_prelude".*"preserved":true/);
+  assert.match(logs, /SCOPE_PRELUDE_CAP_OK/);
 });
 
 test('first prose-only action-required retry stays forced through a ceiling turn until a real exposed tool', () => {
