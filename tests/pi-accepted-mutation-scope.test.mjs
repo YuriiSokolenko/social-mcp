@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import {
   assertAcceptedMutationScope,
@@ -203,4 +203,37 @@ test('accepted deletion and rename paths remain publishable', t => {
     assertAcceptedMutationScope({ cwd: root, receipt: mutationScopeReceipt(root, {}) }),
     ['base.txt', 'new.py', 'old.py'],
   );
+});
+
+
+test('scope sidecar carries child-process amendments back into an already initialized parent state', t => {
+  const { root } = repo(t);
+  const sidecar = path.join(root, '..', path.basename(root) + '-scope.json');
+  t.after(() => fs.rmSync(sidecar, { force: true }));
+  const env = { PI_ACCEPTED_MUTATION_SCOPE_FILE: sidecar };
+
+  initializeMutationScope(root, env);
+  assert.deepEqual(mutationScopeReceipt(root, env).accepted, []);
+
+  const moduleUrl = new URL('../scripts/pi-common/accepted-mutation-scope.mjs', import.meta.url).href;
+  const program = `
+    const { registerMutationScope } = await import(${JSON.stringify(moduleUrl)});
+    registerMutationScope({
+      cwd: process.argv[1],
+      paths: ['child.py'],
+      disposition: 'publishable',
+      rationale: 'Child coding process owns this task-related implementation file.',
+      env: process.env,
+    });
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', program, root], {
+    encoding: 'utf8',
+    env: { ...process.env, PI_ACCEPTED_MUTATION_SCOPE_FILE: sidecar },
+  });
+  assert.equal(child.status, 0, child.stderr || child.stdout);
+
+  assert.deepEqual(mutationScopeReceipt(root, env).accepted, [{
+    path: 'child.py',
+    rationale: 'Child coding process owns this task-related implementation file.',
+  }]);
 });
