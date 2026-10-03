@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 
 import {
-  ELEVATED_MUTATION_TURN_TOOLS,
   FINISH_TOOLS,
   ProgressController,
   actionRequiredToolNames,
