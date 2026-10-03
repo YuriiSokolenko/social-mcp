@@ -30,6 +30,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `issue-context.mjs` — performs the Implementer's one fresh issue read and validates `open + pi:ready` before model work.
 - `issue-worktree.mjs` — creates/resumes/cleans the Implementer's latest-`dev` worktree without treating saved work as a base branch.
 - `issue-publication.mjs` — safely checkpoints and publishes verified issue work, upserts its PR, and hands the PR to Reviewer.
+- `accepted-mutation-scope.mjs` — Implementer-only intent/provenance guard. Publishable paths must be accepted before their first mutation; temporary scratch paths must be removed/restored before publication and may be re-accepted only after that cleanup. A restored baseline path with no trusted receipt is intentionally cleanup-only (delete it or restore it to `dev`); it cannot be retroactively authorized on resume. PR Fix does not use this Implementer receipt gate and continues to validate the repaired PR through the normal final product checks.
 - `pr-labels.mjs` — canonical pure helpers for clearing/applying the small `review:*` verdict family.
 - `review-state.mjs` — owns stale/human/HEAD rechecks, review verdict publication, comments, and Reviewer handoff dispatches.
 - `repair-publication.mjs` — owns safe PR Fix publication and the single handoff back to a fresh Reviewer.
