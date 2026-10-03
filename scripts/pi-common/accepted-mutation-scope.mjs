@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { runGit as git } from './git.mjs';
@@ -59,8 +60,7 @@ export function normalizeMutationScopeReceipt(cwd, input) {
   };
 }
 
-function bootstrapReceipt(cwd, env) {
-  const raw = String(env?.PI_ACCEPTED_MUTATION_SCOPE_STATE ?? '').trim();
+function receiptFromJson(cwd, raw) {
   if (!raw) return null;
   try {
     return normalizeMutationScopeReceipt(cwd, JSON.parse(raw));
@@ -69,19 +69,33 @@ function bootstrapReceipt(cwd, env) {
   }
 }
 
-export function initializeMutationScope(cwd, env = process.env) {
-  const root = path.resolve(cwd);
-  const existing = states.get(root);
-  if (existing) return existing;
+function bootstrapReceipt(cwd, env) {
+  return receiptFromJson(cwd, String(env?.PI_ACCEPTED_MUTATION_SCOPE_STATE ?? '').trim());
+}
 
-  const restored = bootstrapReceipt(root, env);
-  const state = {
-    root,
-    accepted: new Map((restored?.accepted ?? []).map(entry => [entry.path, entry.rationale])),
-    temporary: new Map((restored?.temporary ?? []).map(entry => [entry.path, entry.rationale])),
-    baseline: new Set(changedPaths(root)),
-  };
-  states.set(root, state);
+function sidecarPath(env) {
+  const value = String(env?.PI_ACCEPTED_MUTATION_SCOPE_FILE ?? '').trim();
+  return value || null;
+}
+
+export function readMutationScopeReceiptFile(cwd, target) {
+  if (!target || !fs.existsSync(target) || !fs.statSync(target).size) return null;
+  try {
+    return normalizeMutationScopeReceipt(cwd, JSON.parse(fs.readFileSync(target, 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+function persistedReceipt(cwd, env) {
+  return readMutationScopeReceiptFile(cwd, sidecarPath(env));
+}
+
+function mergeReceiptIntoState(state, receipt) {
+  if (!receipt) return state;
+  for (const entry of receipt.accepted ?? []) state.accepted.set(entry.path, entry.rationale);
+  for (const entry of receipt.temporary ?? []) state.temporary.set(entry.path, entry.rationale);
+  for (const item of receipt.baseline ?? []) state.baseline.add(item);
   return state;
 }
 
@@ -95,6 +109,38 @@ function receiptFromState(state) {
     temporary: entries(state.temporary),
     baseline: [...state.baseline].sort(),
   };
+}
+
+function persistState(state, env) {
+  const target = sidecarPath(env);
+  if (!target) return;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temp = `${target}.tmp-${process.pid}`;
+  fs.writeFileSync(temp, JSON.stringify(receiptFromState(state), null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temp, target);
+}
+
+function refreshPersistedState(state, env) {
+  mergeReceiptIntoState(state, persistedReceipt(state.root, env));
+  return state;
+}
+
+export function initializeMutationScope(cwd, env = process.env) {
+  const root = path.resolve(cwd);
+  const existing = states.get(root);
+  if (existing) return refreshPersistedState(existing, env);
+
+  const state = {
+    root,
+    accepted: new Map(),
+    temporary: new Map(),
+    baseline: new Set(changedPaths(root)),
+  };
+  mergeReceiptIntoState(state, bootstrapReceipt(root, env));
+  mergeReceiptIntoState(state, persistedReceipt(root, env));
+  states.set(root, state);
+  persistState(state, env);
+  return state;
 }
 
 export function mutationScopeReceipt(cwd, env = process.env) {
@@ -149,6 +195,7 @@ export function registerMutationScope({
     destination.set(pathName, reason);
   }
 
+  persistState(state, env);
   return {
     disposition,
     paths: normalized,
