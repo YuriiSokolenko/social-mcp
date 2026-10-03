@@ -71,6 +71,16 @@ fs.writeFileSync(adapterConfigFile, `${JSON.stringify(adapterConfig, null, 2)}\n
 NODE
 fi
 
+if [[ ",${RUNNER_LABELS}," == *,general,* ]]; then
+  for check in info metadata; do
+    if [ "$check" == info ]; then
+      output="$(timeout 30 docker info 2>&1)" || { echo "infra_error DOCKER_DAEMON_UNHEALTHY: $output" >&2; exit 1; }
+    else
+      output="$(timeout 30 docker system df 2>&1)" || { echo "infra_error DOCKER_METADATA_CORRUPTION: $output; general runner will not register" >&2; exit 1; }
+    fi
+  done
+fi
+
 cd /home/runner/actions-runner
 
 ./config.sh \

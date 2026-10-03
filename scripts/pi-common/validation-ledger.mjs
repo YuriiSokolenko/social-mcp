@@ -84,7 +84,7 @@ export function groupKey(kind, scope) {
  */
 export const FINAL_PIPELINE_COMPLETE_SOURCE = 'checks_final_complete';
 
-const RECORD_SOURCES = Object.freeze(['run_check', 'checks_final', FINAL_PIPELINE_COMPLETE_SOURCE]);
+const RECORD_SOURCES = Object.freeze(['run_check', 'checks_final', 'worktree_recovery', FINAL_PIPELINE_COMPLETE_SOURCE]);
 
 /**
  * Fail-closed ingestion: a record missing the fields that identify what was
@@ -172,7 +172,7 @@ export function reconcile(records) {
   for (const record of records) {
     // The pipeline-completion marker is not an individual check: it never
     // appears as its own "Validation" bullet.
-    if (record.source === FINAL_PIPELINE_COMPLETE_SOURCE) continue;
+    if (record.source === FINAL_PIPELINE_COMPLETE_SOURCE || record.source === 'worktree_recovery') continue;
     groups.set(groupKey(record.kind, record.scope), record);
   }
   return [...groups.values()];

@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.2}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.3}
     container_name: pi-runner-manager
     restart: unless-stopped
     environment:
@@ -46,7 +46,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.2}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.3}
     container_name: general-runner-manager
     restart: unless-stopped
     environment:
@@ -54,7 +54,7 @@ services:
       GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}
       MAX_RUNNERS: ${GENERAL_MAX_RUNNERS:-3}
       POLL_SECONDS: ${GENERAL_POLL_SECONDS:-6}
-      RUNNER_IMAGE: ${GENERAL_RUNNER_IMAGE:-n150/github-general-runner-ephemeral:0.87.3}
+      RUNNER_IMAGE: ${GENERAL_RUNNER_IMAGE:-n150/github-general-runner-ephemeral:0.87.4}
       RUNNER_PREFIX: ${GENERAL_RUNNER_PREFIX:-n150-gen-eph}
       RUNNER_LABELS: ${GENERAL_RUNNER_LABELS:-n150,general}
       WORKFLOW_FILES: ${GENERAL_WORKFLOW_FILES:-ci.yml,pi-auto-merge.yml,pi-automation-control.yml,pi-pr-review.yml,pi-reconcile.yml,pi-usage.yml}

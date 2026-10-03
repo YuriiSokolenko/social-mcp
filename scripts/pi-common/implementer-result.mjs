@@ -16,7 +16,13 @@ function normalizeFiles(value) {
   return [...new Set(files)].sort();
 }
 
+export function assertNoScratchArtifacts(files) {
+  const scratch = files.filter(file => /(^|\/)(?:\.probe(?:\d+)?\.txt|\.pi-tmp-[^/]+)$/.test(file));
+  if (scratch.length) throw new Error(`Runtime scratch artifacts cannot be submitted: ${scratch.join(', ')}. Use recover_worktree to remove or revert them.`);
+}
+
 export function assertImplementerFileSet(actualFiles, declaredFiles) {
+  assertNoScratchArtifacts(actualFiles);
   const actual = normalizeFiles(actualFiles);
   const declared = normalizeFiles(declaredFiles);
   const actualSet = new Set(actual);
@@ -47,6 +53,7 @@ export function normalizeImplementerResult(input) {
     ? input.changes.map(clean).filter(Boolean)
     : [];
   const files = normalizeFiles(input.files);
+  assertNoScratchArtifacts(files);
   const blockedReason = clean(input.blocked_reason);
   const inferredOutcome = input.blocked === true
     ? IMPLEMENTER_OUTCOMES.blocked

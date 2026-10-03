@@ -335,4 +335,50 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   if spawn_runner >/dev/null 2>&1; then fail 'manager must refuse Pi runner startup when sandbox image is missing'; fi
 )
 
+
+# #401: daemon metadata corruption quarantines the entire general pool before
+# requesting a token; repeated scheduling remains stopped until two healthy polls.
+(
+  MOUNT_DOCKER_SOCKET=true
+  MOUNT_PI_CONFIG=false
+  DOCKER_QUARANTINED=false
+  DOCKER_HEALTHY_POLLS=0
+  HEALTH_FAIL=true
+  run_with_timeout() {
+    shift
+    if [[ "$*" == 'docker system df' && "$HEALTH_FAIL" == true ]]; then
+      echo 'Error response from daemon: rw layer snapshot not found for container 37d2be901d24' >&2
+      return 1
+    fi
+  }
+  registration_token() { fail 'requested runner token on quarantined host'; }
+  if spawn_runner > "$STATUS_LOG" 2>&1; then fail 'corrupt daemon accepted work'; fi
+  [[ "$DOCKER_QUARANTINED" == true ]] || fail 'host must be quarantined'
+  grep -q 'infra_error code=DOCKER_METADATA_CORRUPTION' "$STATUS_LOG" || fail 'corruption lacks actionable infrastructure classification'
+  if general_daemon_health >/dev/null; then fail 'unrepaired daemon accepted work'; fi
+  HEALTH_FAIL=false
+  if general_daemon_health >/dev/null; then fail 'one healthy poll released quarantine too early'; fi
+  general_daemon_health >/dev/null || fail 'healthy daemon did not recover'
+  [[ "$DOCKER_QUARANTINED" == false ]] || fail 'quarantine not released after repair'
+)
+
+# The main scheduler must fail closed even when containers/runner state is unavailable.
+(
+  MOUNT_DOCKER_SOCKET=true
+  run_with_timeout() { echo 'rw layer snapshot not found' >&2; return 1; }
+  cleanup_stale_registrations() { fail 'unhealthy poll attempted cleanup'; }
+  spawn_runner() { fail 'unhealthy main loop scheduled a job'; }
+  sleep() { exit 0; }
+  main >/dev/null
+)
+
+# Quarantine removes only this pool's idle registrations; busy and unrelated
+# registrations are preserved even when Docker metadata inspection is broken.
+(
+  RUNNER_PREFIX=n150-gen-eph
+  api_get() { printf '%s' '{"runners":[{"id":10,"name":"n150-gen-eph-idle","busy":false},{"id":11,"name":"n150-gen-eph-busy","busy":true},{"id":12,"name":"n150-pi-eph-idle","busy":false}]}'; }
+  : > "$DELETED_IDS"
+  quarantine_general_runners >/dev/null
+  [[ "$(cat "$DELETED_IDS")" == "${API}/actions/runners/10" ]] || fail 'quarantine touched a busy runner or another pool'
+)
 printf 'runner autoscaler checks passed\n'

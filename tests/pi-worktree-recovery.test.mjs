@@ -1,0 +1,93 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { recoverWorktree, worktreeChangedFiles } from '../scripts/pi-common/worktree-recovery.mjs';
+import { assertImplementerFileSet, normalizeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
+import { readValidationLedger, computeVerificationState, VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
+import { ProgressController } from '../scripts/pi-common/progress-controller.mjs';
+import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+
+function fixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'recovery-430-'));
+  const cwd = path.join(root, 'work');
+  fs.mkdirSync(cwd);
+  t.after(() => fs.rmSync(root, { force: true, recursive: true }));
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' });
+  git('init', '-q'); git('config', 'user.name', 'test'); git('config', 'user.email', 'test@example.com');
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'original\n');
+  fs.writeFileSync(path.join(cwd, '.gitignore'), 'ignored.txt\n');
+  git('add', '.'); git('commit', '-qm', 'initial');
+  const ledgerPath = path.join(root, 'ledger.jsonl');
+  const recover = params => recoverWorktree({ cwd, ledgerPath, reason: 'Remove accidental scratch', expected_files: ['product.py'], ...params });
+  return { root, cwd, git, recover, ledgerPath };
+}
+
+test('#399 removes two root scratch files with direct recovery and validates after each action', t => {
+  const { cwd, recover, ledgerPath, git } = fixture(t);
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'intended change\n');
+  for (const file of ['.probe.txt', '.probe2.txt']) fs.writeFileSync(path.join(cwd, file), 'scratch\n');
+  assert.throws(() => assertImplementerFileSet(worktreeChangedFiles(cwd, 'HEAD'), ['product.py']), /scratch artifacts/);
+  const first = recover({ action: 'delete_untracked', path: '.probe.txt' });
+  assert.equal(first.status, 'recovered'); assert.equal(first.file_set.status, 'invalid');
+  const second = recover({ action: 'delete_untracked', path: '.probe2.txt' });
+  assert.equal(second.file_set.status, 'pass');
+  assert.equal(git('diff', '--', '.gitignore'), '');
+  const { records, corrupted } = readValidationLedger(ledgerPath);
+  assert.equal(corrupted, false); assert.equal(records.length, 2);
+  assert.equal(records[0].source, 'worktree_recovery');
+  assert.equal(records[1].mutation.file_set.status, 'pass');
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.NOT_APPLICABLE, 'cleanup is not validation evidence');
+  const config = stageConfig('implementer');
+  const controller = new ProgressController({ ...config, requireComplexity: false, productiveProgress: { ...config.productiveProgress, startState: 'action_required' } });
+  assert.equal(controller.checkToolCall('recover_worktree', {}), undefined);
+  controller.onToolExecutionEnd('recover_worktree', false);
+  assert.equal(controller.turnMadeProgress, true);
+  assert.equal(controller.verificationPermitted(), true);
+  assert.ok(config.productiveProgress.codingSessionTools.includes('recover_worktree'));
+});
+
+test('recovery restores staged, unstaged and deleted tracked files to HEAD', t => {
+  const { cwd, git, recover } = fixture(t);
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'staged\n'); git('add', 'product.py');
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'unstaged\n');
+  assert.equal(recover({ action: 'revert_tracked', path: 'product.py', expected_files: [] }).file_set.status, 'pass');
+  assert.equal(fs.readFileSync(path.join(cwd, 'product.py'), 'utf8'), 'original\n');
+  assert.equal(git('status', '--porcelain'), '');
+  git('rm', '-q', 'product.py');
+  recover({ action: 'revert_tracked', path: 'product.py', expected_files: [] });
+  assert.equal(git('status', '--porcelain'), '');
+});
+
+test('recovery refuses metadata, escapes, links, ignored files, directories and staged additions', t => {
+  const { root, cwd, git, recover } = fixture(t);
+  fs.writeFileSync(path.join(root, 'outside'), 'outside');
+  fs.symlinkSync(root, path.join(cwd, 'link'));
+  fs.writeFileSync(path.join(cwd, 'ignored.txt'), 'ignored');
+  fs.mkdirSync(path.join(cwd, 'folder'));
+  fs.writeFileSync(path.join(cwd, 'added.txt'), 'added'); git('add', 'added.txt');
+  fs.linkSync(path.join(root, 'outside'), path.join(cwd, 'hardlink'));
+  for (const file of ['.git/config', '.gitignore', '../outside', path.join(root, 'outside'), 'link/outside', 'ignored.txt', 'folder', 'product.py', 'added.txt', 'hardlink']) {
+    assert.throws(() => recover({ action: 'delete_untracked', path: file }), undefined, file);
+  }
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'added.txt' }), /tracked in HEAD/);
+  assert.throws(() => recover({ action: 'delete_untracked', path: 'added.txt', ledgerPath: null }), /ledger/);
+  assert.equal(fs.readFileSync(path.join(root, 'outside'), 'utf8'), 'outside');
+  assert.equal(fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8'), 'ignored.txt\n');
+});
+
+test('#396 scratch artifacts cannot be declared into successful fresh, restored or repair results', () => {
+  for (const file of ['.pi-tmp-placeholder.py', '.probe.txt', '.probe2.txt']) {
+    assert.throws(() => assertImplementerFileSet(['product.py', file], ['product.py']), /scratch artifacts/);
+    assert.throws(() => normalizeImplementerResult({ title: 'Restored', summary: 'Candidate', changes: ['Recovered work'], files: ['product.py', file] }), /scratch artifacts/);
+  }
+});
+
+test('an unavailable audit destination cannot leave a cleanup without a ledger record', t => {
+  const { cwd, recover } = fixture(t);
+  fs.writeFileSync(path.join(cwd, '.probe.txt'), 'scratch');
+  assert.throws(() => recover({ action: 'delete_untracked', path: '.probe.txt', ledgerPath: cwd }));
+  assert.equal(fs.readFileSync(path.join(cwd, '.probe.txt'), 'utf8'), 'scratch');
+});
