@@ -19,12 +19,12 @@ import { resolveRunArtifactId } from './validation-ledger.mjs';
  * Implementer resolves them against current dev.
  */
 
-export function acceptedScopeStateFromRef(ref) {
+export function acceptedScopeStateFromRef(ref, cwd = process.cwd()) {
   if (!ref) return null;
   // Checkpoint tips may be marker-less (for example when a later crash saved
   // additional work before submit_result). Walk recent ancestry so the newest
   // trusted scope receipt is not hidden by such a tip commit.
-  const records = git(['log', '-n', '50', '--format=%B%x1e', ref]).out.split('\x1e');
+  const records = git(['log', '-n', '50', '--format=%B%x1e', ref], { cwd }).out.split('\x1e');
   for (const message of records) {
     const enforcement = /^Pi-Scope-Enforcement:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
     if (enforcement !== 'predeclared') continue;
