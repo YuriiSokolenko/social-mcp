@@ -275,7 +275,7 @@ function runtimeScenario(mode) {
           assert.ok(request.task.includes('nearest_source_convention=src/demo_pkg/diagnostics/smoke_chunks.py'));
           assert.ok(request.task.includes('test_directory=tests/diagnostics'));
           assert.ok(request.task.includes('nearest_test_convention=tests/diagnostics/test_smoke_chunks.py'));
-          assert.match(request.task, /inspect only the nearest relevant sibling source\/test/);
+          assert.ok(request.task.includes('inspect only the nearest relevant sibling source/test'));
           assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/);
         } else if (mode === 'non-additive-target') {
           assert.match(request.task, /Adjust existing parser/);
