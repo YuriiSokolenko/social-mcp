@@ -723,16 +723,16 @@ function scratchWrite(guard, file, before, after) {
 
 test('#426 failed submit_result is a failed strategy, not terminal success', () => {
   const guard = new SemanticLoopGuard();
-  const first = failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js');
+  const first = failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
   assert.equal(first.classification, 'error');
   assert.equal(first.tripped, false);
 });
 
 test('#426 reworded equivalent file-set failures trip as one strategy', () => {
   const guard = new SemanticLoopGuard();
-  failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js was changed');
-  failedSubmit(guard, 'Rejected (submission_file_set_mismatch): scratch/a.js is unexpected');
-  const third = failedSubmit(guard, 'submission_file_set_mismatch -> unexpected path scratch/a.js');
+  failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
+  failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js. Reworded retry guidance.');
+  const third = failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js. Targeted cleanup available: undo_mutation({mutation_id:"m9",expected_files:["src/a.js"]})');
   assert.equal(third.tripped, true);
   assert.equal(third.reason, 'repeated_failed_strategy');
   assert.equal(third.repeatedFailure, true);
@@ -740,18 +740,18 @@ test('#426 reworded equivalent file-set failures trip as one strategy', () => {
 
 test('#426 scratch-only mutation does not clear the submission obligation', () => {
   const guard = new SemanticLoopGuard();
-  failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js');
+  failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
   scratchWrite(guard, 'scratch/other.js', 'h0', 'h1');
-  failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js');
+  failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
   scratchWrite(guard, 'scratch/more.js', 'h1', 'h2');
-  const third = failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js');
+  const third = failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
   assert.equal(third.tripped, true);
 });
 
 test('#426 fail, repair, fail, repair, exact pass completes without a trip', () => {
   const guard = new SemanticLoopGuard();
   for (const [index, file] of ['scratch/a.js', 'scratch/b.js'].entries()) {
-    const failed = failedSubmit(guard, 'submission_file_set_mismatch: unexpected ' + file);
+    const failed = failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: ' + file);
     assert.equal(failed.tripped, false);
     const repair = scratchWrite(guard, file, 'r' + index, 'r' + (index + 1));
     assert.equal(repair.tripped, false);
@@ -759,6 +759,33 @@ test('#426 fail, repair, fail, repair, exact pass completes without a trip', () 
   const pass = observation(guard, { tool: 'submit_result', input: { summary: 'done' }, result: { ok: true } });
   assert.equal(pass.classification, 'terminal');
   assert.equal(pass.tripped, false);
+});
+
+test('#426 editing an expected file echoed in the cleanup hint does not clear the obligation', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/a.js. Targeted cleanup available: undo_mutation({mutation_id:"m1",expected_files:["src/a.js"],reason:"x"})';
+  failedSubmit(guard, hint);
+  scratchWrite(guard, 'src/a.js', 'h0', 'h1');
+  failedSubmit(guard, hint);
+  scratchWrite(guard, 'src/a.js', 'h1', 'h2');
+  assert.equal(failedSubmit(guard, hint).tripped, true);
+});
+
+test('#426 undo_mutation clears the obligation via its result path', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/a.js';
+  failedSubmit(guard, hint);
+  failedSubmit(guard, hint);
+  const undo = observation(guard, {
+    tool: 'undo_mutation',
+    input: { mutation_id: 'm1', expected_files: ['src/a.js'] },
+    result: { content: [{ type: 'text', text: JSON.stringify({ status: 'undone', path: 'scratch/a.js' }) }], details: { path: 'scratch/a.js' } },
+    repositoryStateBefore: 'h0',
+    repositoryStateAfter: 'h1',
+    mutationChanged: true,
+  });
+  assert.equal(undo.tripped, false);
+  assert.equal(failedSubmit(guard, hint).tripped, false);
 });
 
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');

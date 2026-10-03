@@ -270,17 +270,51 @@ function targetFamily(input) {
   return typeof value === 'string' ? value.slice(0, 1000) : '';
 }
 
-// A failed terminal submission is identified by its obligation (error code plus the
-// paths it names), not its prose, so reworded diagnostics stay one failed strategy.
-const PATH_TOKEN = /(?:[\w.@-]+\/)+[\w.@-]+|\b[\w-]+\.(?:m?[jt]sx?|json|md|ya?ml|py|sh)\b/g;
-const ERROR_CODE_TOKEN = /\b[a-z]+(?:_[a-z0-9]+)+\b|\b[A-Z]+(?:_[A-Z0-9]+)+\b/g;
+// A failed terminal submission is identified by its obligation (failure kind plus the exact
+// unexpected/missing/scratch paths it reports), not by its prose. Only those named lists are
+// parsed: the cleanup hint also echoes undo_mutation arguments and the intended expected_files,
+// which are not part of the blocker.
+const OBLIGATION_LISTS = Object.freeze([
+  ['unexpected', /unexpected files: ([^;]*?)(?=;|\. |$)/],
+  ['missing', /missing files: ([^;]*?)(?=;|\. |$)/],
+  ['scratch', /Runtime scratch artifacts cannot be submitted: (.*?)\. /],
+]);
+
+function parsePathList(text) {
+  return text.split(',').map(item => item.trim()).filter(Boolean);
+}
 
 export function submissionObligation(result) {
   const text = boundedResultText(result);
-  const paths = [...new Set(text.match(PATH_TOKEN) ?? [])].sort();
-  const codes = [...new Set((text.match(ERROR_CODE_TOKEN) ?? []).map(code => code.toLowerCase()))].sort();
-  if (paths.length === 0 && codes.length === 0) return null;
-  return { paths, key: boundedStableHash({ codes, paths }) };
+  const lists = {};
+  for (const [name, pattern] of OBLIGATION_LISTS) {
+    const match = pattern.exec(text);
+    if (match) lists[name] = [...new Set(parsePathList(match[1]))].sort();
+  }
+  const paths = [...new Set(Object.values(lists).flat())].sort();
+  if (paths.length > 0) return { paths, key: boundedStableHash(lists) };
+  try {
+    const code = JSON.parse(text)?.code;
+    if (typeof code === 'string' && code) return { paths: [], key: boundedStableHash({ code }) };
+  } catch {
+    // Not a structured error; the caller falls back to generic error normalization.
+  }
+  return null;
+}
+
+// The file a mutation acted on. Targeted recovery tools (undo_mutation, rollback_last_mutation,
+// recover_worktree) take no path argument, so the path comes from the runtime's result.
+function mutationTargetPath(input, result) {
+  const direct = targetFamily(input);
+  if (direct) return direct;
+  const fromDetails = result?.details?.path;
+  if (typeof fromDetails === 'string') return fromDetails;
+  try {
+    const parsed = JSON.parse(explicitResultText(result) ?? '');
+    return typeof parsed?.path === 'string' ? parsed.path : '';
+  } catch {
+    return '';
+  }
 }
 
 function strategyFamily(tool, input, productiveState, errorClass) {
@@ -330,9 +364,8 @@ export class SemanticLoopGuard {
     if (recoveringFromSteer) this.observationWindow = [];
   }
 
-  _mutationTouchesObligation(input) {
+  _mutationTouchesObligation(target) {
     const paths = this.terminalObligation?.paths ?? [];
-    const target = targetFamily(input);
     return Boolean(target) && paths.some(item => target === item || target.endsWith('/' + item) || item.endsWith('/' + target));
   }
 
@@ -446,7 +479,7 @@ export class SemanticLoopGuard {
         ? this._count(this.repositoryWindow, repositoryStateAfter)
         : 0;
 
-      const resolvesObligation = this._mutationTouchesObligation(input);
+      const resolvesObligation = this._mutationTouchesObligation(mutationTargetPath(input, result));
       if (changed && seenBefore === 0) {
         if (!this.terminalObligation || resolvesObligation) {
           this.terminalObligation = null;
