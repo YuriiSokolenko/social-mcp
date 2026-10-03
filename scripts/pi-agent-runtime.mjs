@@ -793,6 +793,16 @@ export default function (pi) {
     }
   }
 
+  // Missing-executor errors are terminal for this runtime, regardless of which
+  // event arrives first or whether both hooks report the same tool call.
+  let toolContractAborted = false;
+  async function abortToolContract(toolName, ctx, reason = `Advertised tool ${toolName} cannot execute; runtime repair required.`) {
+    if (toolContractAborted) return;
+    toolContractAborted = true;
+    recordRuntimeAbort('PI_TOOL_CONTRACT_FAILURE', reason, { failure_class: 'infrastructure', tool: toolName });
+    await ctx.abort();
+  }
+
   async function handleLoopResult(loopResult, ctx) {
     if (!loopResult?.tripped) return;
     const metric = {
@@ -1450,12 +1460,15 @@ export default function (pi) {
           let contractFailure = null;
           try {
             if (fs.existsSync(contractFile)) contractFailure = JSON.parse(fs.readFileSync(contractFile, 'utf8'));
+          } catch (error) {
+            // Advisory provenance must not replace the original delegation error.
+            contractFailure = null;
+            console.warn(`PI_CODING_CONTRACT_METADATA_INVALID ${JSON.stringify({ sessionId, error: String(error?.message ?? error) })}`);
           } finally {
             fs.rmSync(contractFile, { force: true });
           }
           if (contractFailure?.failure_code === 'PI_TOOL_CONTRACT_FAILURE') {
-            recordRuntimeAbort('PI_TOOL_CONTRACT_FAILURE', contractFailure.reason, { failure_class: 'infrastructure', tool: contractFailure.tool });
-            await ctx.abort();
+            await abortToolContract(contractFailure.tool, ctx, contractFailure.reason);
             throw new Error(`PI_TOOL_CONTRACT_FAILURE: ${contractFailure.reason}`);
           }
           if (signal?.aborted) {
@@ -1800,8 +1813,7 @@ export default function (pi) {
   });
   pi.on('tool_execution_end', async (event, ctx) => {
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
-      recordRuntimeAbort('PI_TOOL_CONTRACT_FAILURE', `Advertised tool ${event.toolName} cannot execute; runtime repair required.`, { failure_class: 'infrastructure', tool: event.toolName });
-      await ctx.abort();
+      await abortToolContract(event.toolName, ctx);
       return;
     }
     // pi rejects a call whose arguments were cut off at the output ceiling before execution and
@@ -1905,9 +1917,7 @@ export default function (pi) {
 
   pi.on('tool_result', async (event, ctx) => {
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
-      const reason = `Runtime tool contract failed: ${event.toolName} was unavailable to the executor. Stop this attempt; repair the runtime tool registry before retrying.`;
-      recordRuntimeAbort('PI_TOOL_CONTRACT_FAILURE', reason, { failure_class: 'infrastructure', tool: event.toolName });
-      await ctx.abort();
+      await abortToolContract(event.toolName, ctx);
       return undefined;
     }
     const text = resultText(event);

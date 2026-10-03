@@ -33,6 +33,9 @@ unavailable historical log cannot establish the same root cause.
 - Planner timeout is 45 seconds rather than 120 seconds (with the existing 5-second
   transport grace). Timeout still falls back without retrying the planner. This
   bounds the observed delay; it does not assert an unobserved model-server cause.
+  After deployment, compare `PI_PREPARATION_FALLBACK` timeout frequency and planner
+  latency with the previous baseline; slow-model deployments may need a longer
+  deadline. Keep the fallback and its bounded evidence budget intact.
 - `recover_worktree` deletes one untracked regular file or restores a regular file
   from HEAD, including staged changes/deletion. It refuses symlinks, hard links,
   ignored files, directories, embedded repositories, escapes and Git/ignore-policy

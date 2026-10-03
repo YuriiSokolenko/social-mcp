@@ -320,7 +320,7 @@ Workers repeat these checks before registering with GitHub, closing the gap
 between manager health and runner startup. Pi workers still have no Docker socket.
 
 A failed check stops the spawn batch and quarantines the general pool. The manager
-removes only idle registrations belonging to its own prefix; GitHub refuses deletion
+removes only idle registrations with the `general` label belonging to its own prefix; GitHub refuses deletion
 of busy runners. It leaves busy jobs and other pools alone, checks again on the next
 bounded poll, and releases quarantine only after two healthy polls. A log containing
 `infra_error code=DOCKER_METADATA_CORRUPTION` means the daemon reported the specific

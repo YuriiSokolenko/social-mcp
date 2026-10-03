@@ -343,13 +343,17 @@ quarantine_general_runners() {
   # unrelated jobs even if Docker cannot enumerate/stop their containers.
   names="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" '
     .runners | if type != "array" then error("missing runners") else
-      map(select((.name | startswith($prefix)) and .busy == false)) |
+      map(select((.name | startswith($prefix)) and .busy == false
+        and any(.labels[]?; (.name | ascii_downcase) == "general"))) |
       map([.id, .name] | @tsv) | join("\n") end')" || return 1
   [ -n "$names" ] || return 0
   while IFS=$'\t' read -r id name; do
     [[ "$id" =~ ^[0-9]+$ && "$name" == "${RUNNER_PREFIX}-"* ]] || continue
     log "quarantine: removing idle general runner registration id=$id"
-    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || return 1
+    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || {
+      log "warning: quarantine deletion refused for runner id=$id (possibly newly busy); continuing with remaining idle runners"
+      continue
+    }
   done <<< "$names"
 }
 

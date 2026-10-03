@@ -376,9 +376,21 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
 # registrations are preserved even when Docker metadata inspection is broken.
 (
   RUNNER_PREFIX=n150-gen-eph
-  api_get() { printf '%s' '{"runners":[{"id":10,"name":"n150-gen-eph-idle","busy":false},{"id":11,"name":"n150-gen-eph-busy","busy":true},{"id":12,"name":"n150-pi-eph-idle","busy":false}]}'; }
+  api_get() { printf '%s' '{"runners":[{"id":10,"name":"n150-gen-eph-idle","busy":false,"labels":[{"name":"general"}]},{"id":11,"name":"n150-gen-eph-busy","busy":true,"labels":[{"name":"general"}]},{"id":12,"name":"n150-pi-eph-idle","busy":false,"labels":[{"name":"pi-agent"}]},{"id":13,"name":"n150-gen-eph-model","busy":false,"labels":[{"name":"pi-agent"}]}]}'; }
   : > "$DELETED_IDS"
   quarantine_general_runners >/dev/null
   [[ "$(cat "$DELETED_IDS")" == "${API}/actions/runners/10" ]] || fail 'quarantine touched a busy runner or another pool'
+)
+# A runner becoming busy between list and DELETE must not stop quarantine.
+(
+  RUNNER_PREFIX=n150-gen-eph
+  api_get() { printf '%s' '{"runners":[{"id":20,"name":"n150-gen-eph-race","busy":false,"labels":[{"name":"general"}]},{"id":21,"name":"n150-gen-eph-idle","busy":false,"labels":[{"name":"general"}]}]}'; }
+  curl() {
+    if [[ "${*: -1}" == */20 ]]; then return 22; fi
+    printf '%s\n' "${*: -1}" >> "$DELETED_IDS"
+  }
+  : > "$DELETED_IDS"
+  quarantine_general_runners >/dev/null
+  [[ "$(cat "$DELETED_IDS")" == "${API}/actions/runners/21" ]] || fail 'busy race stopped the quarantine loop'
 )
 printf 'runner autoscaler checks passed\n'

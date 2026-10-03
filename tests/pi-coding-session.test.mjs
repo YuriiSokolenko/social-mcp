@@ -186,7 +186,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -249,6 +249,11 @@ function runtimeScenario(mode) {
         assert.equal(patched.max_completion_tokens, 16384, 'the 16K ceiling is untouched');
         const other = { input: 'not a chat payload' };
         assert.equal(providerPatch({ payload: other }, childCtx), other, 'non-chat payloads are left alone');
+        if (mode === 'malformed-contract') {
+          const spec = JSON.parse(process.env.PI_CODING_SESSION);
+          fs.writeFileSync(spec.failureFile, '{"failure_code":');
+          return respond(request, { status: 'failed', error: 'original delegation failure' });
+        }
         if (mode === 'tool-contract') {
           await childHandlers.get('tool_execution_end')({ toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'Tool read not found' }] } }, childCtx);
           return respond(request, { status: 'failed', error: 'nested executor unavailable' });
@@ -335,8 +340,11 @@ function runtimeScenario(mode) {
       parentResultTool(pi);
       assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the provider constraint hook');
       assert.equal(handlers.has('turn_end'), true, 'the parent installs provider error recovery on the authoritative turn boundary');
-      if (mode === 'parent-contract') {
-        await handlers.get('tool_result')({ toolName: 'bash', isError: true, content: [{ type: 'text', text: 'Tool bash not found' }] }, ctx);
+      if (mode === 'parent-contract' || mode === 'parent-contract-reverse') {
+        const resultEvent = { toolCallId: 'missing-bash', toolName: 'bash', isError: true, content: [{ type: 'text', text: 'Tool bash not found' }] };
+        const executionEvent = { ...resultEvent, result: { content: resultEvent.content } };
+        const hooks = mode === 'parent-contract' ? ['tool_result', 'tool_execution_end'] : ['tool_execution_end', 'tool_result'];
+        for (const hook of hooks) await handlers.get(hook)(hook === 'tool_result' ? resultEvent : executionEvent, ctx);
         assert.equal(aborts, 1);
         const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
         assert.equal(failure.failure_class, 'infrastructure');
@@ -541,8 +549,15 @@ function runtimeScenario(mode) {
 
       handlers.get('turn_start')({ turnIndex: turn });
       assert.ok(active.includes('begin_coding_session'));
-      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/ }[mode] ?? null;
+      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', { reason: 'Implement generated.py and its test' }, { expectError });
+      if (mode === 'malformed-contract') {
+        assert.equal(aborts, 0);
+        assert.equal(sessionRequests.length, 1);
+        assert.equal(fs.existsSync(sessionRequests[0].spec.failureFile), false);
+        assert.equal(fs.existsSync(runtimeFailure), false);
+        process.exit(0);
+      }
       if (mode === 'tool-contract') {
         assert.equal(aborts, 1, 'nested contract failure aborts the parent immediately');
         const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
@@ -731,4 +746,13 @@ test('coding-session allowlist is derived from the executable registry, includin
 
 test('#399 executor-unavailable bash tool result aborts the parent as infrastructure immediately', () => {
   runtimeScenario('parent-contract');
+});
+
+test('malformed fork provenance preserves the original delegation error and removes the artifact', () => {
+  assert.match(runtimeScenario('malformed-contract'), /PI_CODING_CONTRACT_METADATA_INVALID/);
+});
+
+test('both missing-executor event orders abort only once', () => {
+  runtimeScenario('parent-contract');
+  runtimeScenario('parent-contract-reverse');
 });
