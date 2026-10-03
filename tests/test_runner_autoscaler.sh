@@ -344,6 +344,7 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   DOCKER_QUARANTINED=false
   DOCKER_HEALTHY_POLLS=0
   HEALTH_FAIL=true
+  sleep() { [[ "$1" == "$DOCKER_HEALTH_RETRY_SECONDS" ]] || fail "unexpected health retry delay: $1"; }
   run_with_timeout() {
     shift
     if [[ "$*" == 'docker system df' && "$HEALTH_FAIL" == true ]]; then
@@ -362,13 +363,38 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   [[ "$DOCKER_QUARANTINED" == false ]] || fail 'quarantine not released after repair'
 )
 
+# A single transient Docker health-check failure is retried after a short delay
+# before the manager quarantines the pool. Each check gets at most one retry.
+(
+  MOUNT_DOCKER_SOCKET=true
+  DOCKER_QUARANTINED=false
+  DOCKER_HEALTHY_POLLS=0
+  CHECK_LOG="$(mktemp)"
+  trap 'rm -f "$CHECK_LOG"' EXIT
+  sleep() { [[ "$1" == "$DOCKER_HEALTH_RETRY_SECONDS" ]] || fail "unexpected health retry delay: $1"; }
+  run_with_timeout() {
+    shift
+    printf '%s\n' "$*" >> "$CHECK_LOG"
+    local calls
+    calls="$(grep -c -Fx "$*" "$CHECK_LOG")"
+    if [ "$calls" -eq 1 ]; then
+      echo 'transient daemon response' >&2
+      return 1
+    fi
+  }
+  general_daemon_health || fail 'transient Docker health error quarantined a healthy pool'
+  [[ "$(grep -c -Fx 'docker info' "$CHECK_LOG")" == 2 ]] || fail 'docker info did not get exactly one retry'
+  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == 2 ]] || fail 'docker system df did not get exactly one retry'
+  [[ "$DOCKER_QUARANTINED" == false ]] || fail 'successful health retries left pool quarantined'
+)
+
 # The main scheduler must fail closed even when containers/runner state is unavailable.
 (
   MOUNT_DOCKER_SOCKET=true
   run_with_timeout() { echo 'rw layer snapshot not found' >&2; return 1; }
   cleanup_stale_registrations() { fail 'unhealthy poll attempted cleanup'; }
   spawn_runner() { fail 'unhealthy main loop scheduled a job'; }
-  sleep() { exit 0; }
+  sleep() { [[ "$1" == "$DOCKER_HEALTH_RETRY_SECONDS" ]] && return 0; exit 0; }
   main >/dev/null
 )
 
@@ -392,5 +418,80 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   : > "$DELETED_IDS"
   quarantine_general_runners >/dev/null
   [[ "$(cat "$DELETED_IDS")" == "${API}/actions/runners/21" ]] || fail 'busy race stopped the quarantine loop'
+)
+
+# The worker retries a transient daemon metadata check once before registration,
+# and still refuses to register when the retry also fails.
+(
+  worker_root="$(mktemp -d)"
+  trap 'rm -rf "$worker_root"' EXIT
+  worker_bin="$worker_root/bin"
+  runner_home="$worker_root/runner"
+  mkdir -p "$worker_bin" "$runner_home/actions-runner"
+  cat > "$worker_bin/docker" <<'DOCKER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+case "$*" in
+  info) check=info ;;
+  'system df') check=metadata ;;
+  *) exit 88 ;;
+esac
+if [[ "${DOCKER_FAIL_METADATA:-false}" == true && "$check" == metadata ]]; then
+  echo 'transient snapshot race' >&2
+  exit 1
+fi
+if [[ "${DOCKER_FAIL_FIRST:-false}" == true ]]; then
+  count="$(grep -c -Fx "$*" "$DOCKER_LOG")"
+  if [[ "$count" == 1 ]]; then
+    echo 'transient snapshot race' >&2
+    exit 1
+  fi
+fi
+DOCKER
+  cat > "$worker_bin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$SLEEP_LOG"
+SLEEP
+  cat > "$worker_bin/timeout" <<'TIMEOUT'
+#!/usr/bin/env bash
+shift
+exec "$@"
+TIMEOUT
+  cat > "$runner_home/actions-runner/config.sh" <<'CONFIG'
+#!/usr/bin/env bash
+touch "$REGISTER_LOG"
+CONFIG
+  cat > "$runner_home/actions-runner/run.sh" <<'RUN'
+#!/usr/bin/env bash
+touch "$RUN_LOG"
+RUN
+  chmod +x "$worker_bin/docker" "$worker_bin/sleep" "$worker_bin/timeout" "$runner_home/actions-runner/config.sh" "$runner_home/actions-runner/run.sh"
+  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+  worker_script="$repo_root/infra/github-runner-autoscaler/worker-entrypoint.sh"
+  export PATH="$worker_bin:$PATH" RUNNER_HOME="$runner_home" RUNNER_TOKEN=test-token GITHUB_REPOSITORY=example/repo
+  export RUNNER_NAME=n150-gen-eph-test RUNNER_LABELS=n150,general
+  export DOCKER_LOG="$worker_root/docker.log" SLEEP_LOG="$worker_root/sleep.log"
+  export REGISTER_LOG="$worker_root/registered" RUN_LOG="$worker_root/ran"
+
+  if ! DOCKER_FAIL_FIRST=true bash "$worker_script" >"$worker_root/pass.stdout" 2>"$worker_root/pass.stderr"; then
+    cat "$worker_root/pass.stderr" >&2
+    cat "$DOCKER_LOG" >&2
+    fail 'worker rejected a transient Docker health failure'
+  fi
+  [[ "$(grep -c -Fx info "$DOCKER_LOG")" == 2 ]] || fail 'worker did not retry docker info exactly once'
+  [[ "$(grep -c -Fx 'system df' "$DOCKER_LOG")" == 2 ]] || fail 'worker did not retry docker system df exactly once'
+  [[ "$(wc -l < "$SLEEP_LOG")" -eq 2 ]] || fail 'worker did not delay before each health retry'
+  [[ -f "$REGISTER_LOG" && -f "$RUN_LOG" ]] || fail 'worker did not register after healthy retries'
+
+  : > "$DOCKER_LOG"
+  : > "$SLEEP_LOG"
+  rm -f "$REGISTER_LOG" "$RUN_LOG"
+  if DOCKER_FAIL_METADATA=true bash "$worker_script" >"$worker_root/fail.stdout" 2>"$worker_root/fail.stderr"; then
+    fail 'worker registered despite persistent metadata failure'
+  fi
+  [[ "$(grep -c -Fx 'system df' "$DOCKER_LOG")" == 2 ]] || fail 'worker did not retry persistent metadata failure exactly once'
+  grep -q 'infra_error DOCKER_METADATA_CORRUPTION' "$worker_root/fail.stderr" || fail 'persistent metadata failure was not classified'
+  [[ ! -e "$REGISTER_LOG" ]] || fail 'worker registered on an unhealthy daemon'
 )
 printf 'runner autoscaler checks passed\n'

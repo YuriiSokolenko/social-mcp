@@ -37,6 +37,7 @@ MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
 DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
+DOCKER_HEALTH_RETRY_SECONDS=5
 CURL_TIMEOUT_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS")
 
 if [ -n "$PIP_CACHE_HOST_DIR" ]; then
@@ -313,20 +314,29 @@ DOCKER_QUARANTINED=false
 DOCKER_HEALTHY_POLLS=0
 general_daemon_health() {
   [ "$MOUNT_DOCKER_SOCKET" == true ] || return 0
-  local output command code
+  local output command code attempts
   for command in info metadata; do
-    if [ "$command" == info ]; then
-      if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker info 2>&1)"; then continue; fi
-    else
-      # Unlike `ps`, system df traverses rw snapshots and detects the #401 corruption.
-      if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker system df 2>&1)"; then continue; fi
-    fi
-    code=DOCKER_DAEMON_UNHEALTHY
-    [[ "$output" != *'rw layer snapshot not found'* ]] || code=DOCKER_METADATA_CORRUPTION
-    DOCKER_QUARANTINED=true
-    DOCKER_HEALTHY_POLLS=0
-    log "infra_error code=$code general pool quarantined check=$command diagnostic=$output; inspect Docker/containerd journals and stale container IDs; repair host before retrying (no automatic prune/restart)"
-    return 1
+    attempts=0
+    while true; do
+      if [ "$command" == info ]; then
+        if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker info 2>&1)"; then break; fi
+      else
+        # Unlike `ps`, system df traverses rw snapshots and detects the #401 corruption.
+        if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker system df 2>&1)"; then break; fi
+      fi
+      if [ "$attempts" -eq 0 ]; then
+        attempts=1
+        log "warning: Docker $command health check failed; retrying once in ${DOCKER_HEALTH_RETRY_SECONDS}s: $output"
+        sleep "$DOCKER_HEALTH_RETRY_SECONDS"
+        continue
+      fi
+      code=DOCKER_DAEMON_UNHEALTHY
+      [[ "$output" != *'rw layer snapshot not found'* ]] || code=DOCKER_METADATA_CORRUPTION
+      DOCKER_QUARANTINED=true
+      DOCKER_HEALTHY_POLLS=0
+      log "infra_error code=$code general pool quarantined check=$command diagnostic=$output; inspect Docker/containerd journals and stale container IDs; repair host before retrying (no automatic prune/restart)"
+      return 1
+    done
   done
   if [ "$DOCKER_QUARANTINED" == true ]; then
     DOCKER_HEALTHY_POLLS=$((DOCKER_HEALTHY_POLLS + 1))

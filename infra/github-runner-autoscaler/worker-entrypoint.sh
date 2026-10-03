@@ -5,6 +5,7 @@ set -euo pipefail
 : "${RUNNER_TOKEN:?RUNNER_TOKEN is required}"
 : "${RUNNER_NAME:?RUNNER_NAME is required}"
 : "${RUNNER_LABELS:=n150,pi-agent}"
+RUNNER_HOME="${RUNNER_HOME:-/home/runner}"
 
 # Pi needs writable state for lock files and refreshed auth/model metadata.
 # Seed a private copy from the host-mounted read-only configuration.
@@ -73,15 +74,30 @@ fi
 
 if [[ ",${RUNNER_LABELS}," == *,general,* ]]; then
   for check in info metadata; do
-    if [ "$check" == info ]; then
-      output="$(timeout 30 docker info 2>&1)" || { echo "infra_error DOCKER_DAEMON_UNHEALTHY: $output" >&2; exit 1; }
-    else
-      output="$(timeout 30 docker system df 2>&1)" || { echo "infra_error DOCKER_METADATA_CORRUPTION: $output; general runner will not register" >&2; exit 1; }
-    fi
+    attempts=0
+    while true; do
+      if [ "$check" == info ]; then
+        if output="$(timeout 30 docker info 2>&1)"; then break; fi
+      else
+        if output="$(timeout 30 docker system df 2>&1)"; then break; fi
+      fi
+      if [ "$attempts" -eq 0 ]; then
+        attempts=1
+        echo "warning: Docker $check health check failed; retrying once in 5s: $output" >&2
+        sleep 5
+        continue
+      fi
+      if [ "$check" == info ]; then
+        echo "infra_error DOCKER_DAEMON_UNHEALTHY: $output" >&2
+      else
+        echo "infra_error DOCKER_METADATA_CORRUPTION: $output; general runner will not register" >&2
+      fi
+      exit 1
+    done
   done
 fi
 
-cd /home/runner/actions-runner
+cd "${RUNNER_HOME}/actions-runner"
 
 ./config.sh \
   --url "https://github.com/${GITHUB_REPOSITORY}" \
