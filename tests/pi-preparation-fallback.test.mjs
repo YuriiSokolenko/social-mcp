@@ -366,7 +366,7 @@ function runtimeScenario(mode) {
         const bootstrapHandlers = new Map();
         process.env.PI_IMPLEMENTER_BOOTSTRAP = 'true';
         bootstrap({ ...pi, on: (name, fn) => bootstrapHandlers.set(name, fn) });
-        await bootstrapHandlers.get('session_start')({}, bootstrapCtx);
+        await bootstrapHandlers.get('resources_discover')({}, bootstrapCtx);
         delete process.env.PI_IMPLEMENTER_BOOTSTRAP;
         assert.equal(shutdowns, 1, 'bootstrap session shuts itself down');
         artifact = planner.readPreparedImplementation(artifactFile);
