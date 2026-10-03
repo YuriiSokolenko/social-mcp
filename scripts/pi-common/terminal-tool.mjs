@@ -1,8 +1,18 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-export function terminalResult(text, details) {
-  const marker = process.env.PI_TERMINAL_RESULT_FILE;
-  if (marker) writeFileSync(marker, 'submitted\n', { encoding: 'utf8', mode: 0o600 });
+import {
+  createSuccessfulTerminalReceipt,
+  invalidateTerminalReceipt,
+  readTerminalReceiptFile,
+  writeTerminalReceiptFile,
+} from './terminal-receipt.mjs';
+
+export function terminalResult(text, details, receipt = null, env = process.env) {
+  const marker = env.PI_TERMINAL_RESULT_FILE;
+  if (marker) {
+    if (receipt) writeTerminalReceiptFile(marker, receipt);
+    else writeFileSync(marker, 'submitted\n', { encoding: 'utf8', mode: 0o600 });
+  }
   return { content: [{ type: 'text', text }], details, terminate: true };
 }
 
@@ -11,7 +21,9 @@ export function terminalResult(text, details) {
 export function terminalMarkerSubmitted(env = process.env) {
   const marker = env.PI_TERMINAL_RESULT_FILE;
   try {
-    return Boolean(marker && existsSync(marker) && readFileSync(marker, 'utf8').trim() === 'submitted');
+    if (!marker || !existsSync(marker)) return false;
+    if (readTerminalReceiptFile(marker)) return true;
+    return readFileSync(marker, 'utf8').trim() === 'submitted';
   } catch {
     return false;
   }
@@ -60,10 +72,19 @@ export function registerTerminalTool(pi, {
     parameters,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       try {
+        if (process.env.PI_STAGE === 'implementer') invalidateTerminalReceipt(process.env);
         const outcome = await execute(params, { toolCallId, signal, onUpdate, ctx });
         if (customType && outcome?.data !== undefined) pi.appendEntry(customType, outcome.data);
+        const receipt = process.env.PI_STAGE === 'implementer' && process.env.PI_IMPLEMENTER_RESULT_FILE
+          ? createSuccessfulTerminalReceipt({
+              cwd: ctx?.cwd ?? process.cwd(),
+              resultFile: process.env.PI_IMPLEMENTER_RESULT_FILE,
+              env: process.env,
+            })
+          : null;
+        const result = terminalResult(outcome?.text ?? successText, outcome?.details, receipt);
         submitted = true;
-        return terminalResult(outcome?.text ?? successText, outcome?.details);
+        return result;
       } catch (error) {
         terminalFailed = true;
         throw error;
