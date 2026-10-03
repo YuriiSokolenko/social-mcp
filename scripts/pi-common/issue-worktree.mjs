@@ -68,7 +68,13 @@ export function mutationJournalStateFromRef(ref, cwd = process.cwd()) {
     const encoded = /^Pi-Mutation-Journal:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
     if (!encoded) continue;
     const state = decodeMutationJournalState(cwd, encoded);
-    if (!state) throw new Error(`Invalid Pi-Mutation-Journal checkpoint trailer at ${commit}`);
+    if (!state) {
+      // A malformed consistency trailer must not permanently wedge resume/checkpoint recovery.
+      // Treat the newest explicit-but-invalid journal record as unusable state rather than
+      // falling through to an older trailer, which could resurrect mutations already cleaned up.
+      console.warn(`PI_MUTATION_JOURNAL_TRAILER_INVALID ${JSON.stringify({ commit })}`);
+      return null;
+    }
     return state;
   }
   return null;
