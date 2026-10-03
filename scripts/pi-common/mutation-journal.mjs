@@ -349,22 +349,31 @@ export function assertMutationJournalCapacity({ cwd, snapshot, env = process.env
     );
   }
 
-  // Check the persisted representation before the mutation executes. The checkpoint stores this
-  // state in one git commit-message argument, so bounding only raw prior bytes could still exceed
-  // the platform argv limit for incompressible content.
+  // Keep the checkpoint representation bounded as a recovery-metadata policy even though commit
+  // messages are now supplied through -F rather than argv. Use deterministic high-entropy
+  // placeholder id/hash values: repeated zeros compress unrealistically well and can understate
+  // the encoded size near the soft checkpoint limit.
+  const relative = canonicalPath(cwd, snapshot.path);
+  const projectionSeed = digest(Buffer.from(
+    `${relative}\0${state.entries.length}\0${bytes}\0${snapshot.existed ? digest(snapshot.content) : 'missing'}`,
+    'utf8',
+  ));
+  const projectedId =
+    `mutation-${projectionSeed.slice(0, 8)}-${projectionSeed.slice(8, 12)}-${projectionSeed.slice(12, 16)}-${projectionSeed.slice(16, 20)}-${projectionSeed.slice(20, 32)}`;
+  const projectedPostSha = digest(Buffer.from(`post:${projectionSeed}`, 'utf8'));
   const projected = {
     schema_version: JOURNAL_SCHEMA_VERSION,
     entries: [...state.entries, {
-      id: 'mutation-00000000-0000-4000-8000-000000000000',
-      path: canonicalPath(cwd, snapshot.path),
-      tool: 'x'.repeat(80),
+      id: projectedId,
+      path: relative,
+      tool: 'structural_edit',
       disposition: 'baseline-recovery',
       prior: snapshot.existed
         ? { existed: true, mode: snapshot.mode, content_base64: snapshot.content.toString('base64') }
         : { existed: false },
       post: snapshot.existed
-        ? { exists: true, mode: snapshot.mode, size: snapshot.content.length, sha256: '0'.repeat(64) }
-        : { exists: true, mode: 0o644, size: 0, sha256: '0'.repeat(64) },
+        ? { exists: true, mode: snapshot.mode, size: snapshot.content.length, sha256: projectedPostSha }
+        : { exists: true, mode: 0o644, size: 0, sha256: projectedPostSha },
     }],
   };
   const encodedBytes = Buffer.byteLength(encodeMutationJournalState(cwd, projected), 'utf8');
