@@ -69,6 +69,12 @@ import {
   invalidateTerminalReceipt,
 } from './pi-common/terminal-receipt.mjs';
 import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
+import {
+  consumeUnavailableCapabilityAttempts,
+  equivalentIncapableCodingSession,
+  incapableCodingSessionRecord,
+  recordUnavailableCapabilityAttempt,
+} from './pi-common/coding-session-capability.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
@@ -180,7 +186,7 @@ function codingSessionSpec(env = process.env) {
   try {
     const spec = JSON.parse(env.PI_CODING_SESSION ?? '');
     const maxTokens = Number(spec?.maxTokens);
-    if (spec?.sessionId && Number.isSafeInteger(maxTokens) && maxTokens > 0) return { sessionId: String(spec.sessionId), maxTokens, failureFile: spec.failureFile };
+    if (spec?.sessionId && Number.isSafeInteger(maxTokens) && maxTokens > 0) return { sessionId: String(spec.sessionId), maxTokens, failureFile: spec.failureFile, capabilityFile: spec.capabilityFile };
   } catch { /* parent session */ }
   return null;
 }
@@ -1702,6 +1708,9 @@ export default function (pi) {
       const sessionConfig = config.productiveProgress;
       const maxSessions = Number(sessionConfig.codingSessionMaxSessions ?? 2);
       let sessionsStarted = 0;
+      // Runtime-owned: set when a fork ended without submission after attempting capabilities
+      // outside the coding-session contract. Independent of model-declared required_capability.
+      let lastIncapableCodingSession = null;
       pi.registerTool({
         name: codingSessionTool,
         label: 'Begin coding session',
@@ -1724,8 +1733,8 @@ export default function (pi) {
             preparationState: controller.preparationState,
             reason: params?.reason ?? null,
           });
-          const refuse = (reason, message) => {
-            codingSessionLog('rejected', { ...base, reason });
+          const refuse = (reason, message, details = {}) => {
+            codingSessionLog('rejected', { ...base, reason, ...details });
             const error = new Error(message);
             error.code = reason;
             throw error;
@@ -1751,9 +1760,21 @@ export default function (pi) {
               `The coding session cannot expose required capability "${requiredCapability}", so it was not launched. ${capabilitySnapshotGuidance(agentReady.tools)} Use a currently exposed trusted recovery/action instead.`,
             );
           }
+          const equivalentIncapable = equivalentIncapableCodingSession(lastIncapableCodingSession, {
+            contractTools: agentReady.tools,
+            repositoryState: lastIncapableCodingSession ? repositoryStateFingerprint(ctx.cwd) : null,
+          });
+          if (equivalentIncapable) {
+            refuse(
+              'repeated_incapable_session',
+              `The previous coding session ended without a result after attempting ${equivalentIncapable.unreachable.join(', ')}, which the coding session can never expose, and nothing has changed since. An equivalent session was not launched. ${capabilitySnapshotGuidance(pi.getActiveTools())} Use a currently exposed trusted recovery/action instead.`,
+              { unreachable: equivalentIncapable.unreachable, contractTools: equivalentIncapable.contractTools },
+            );
+          }
           sessionsStarted += 1;
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
+          const capabilityFile = `${contractFile}.capabilities.json`;
           const inheritedMutationJournalFile = String(process.env.PI_MUTATION_JOURNAL_FILE ?? '').trim();
           const fallbackMutationJournalFile = inheritedMutationJournalFile
             ? null
@@ -1782,7 +1803,7 @@ export default function (pi) {
               thinking: 'off',
               context: 'fork',
               childEnv: {
-                PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile }),
+                PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile, capabilityFile }),
                 PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
                 ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
                   ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
@@ -1827,6 +1848,13 @@ export default function (pi) {
           } finally {
             fs.rmSync(contractFile, { force: true });
           }
+          // Read before any early exit so the sidecar never outlives this tool call.
+          let attemptedTools = [];
+          try {
+            attemptedTools = consumeUnavailableCapabilityAttempts(capabilityFile);
+          } catch (error) {
+            console.warn(`PI_CODING_CAPABILITY_RECORD_INVALID ${JSON.stringify({ sessionId, error: String(error?.message ?? error) })}`);
+          }
           if (contractFailure?.failure_code === 'PI_TOOL_CONTRACT_FAILURE') {
             await abortToolContract(contractFailure.tool, ctx, contractFailure.reason);
             throw new Error(`PI_TOOL_CONTRACT_FAILURE: ${contractFailure.reason}`);
@@ -1857,11 +1885,19 @@ export default function (pi) {
             receiptError,
           });
           const submitted = outcome.successful_final_submission;
+          const incapable = incapableCodingSessionRecord({
+            submitted,
+            attemptedTools,
+            contractTools: agentReady.tools,
+            repositoryState: submitted ? null : repositoryStateFingerprint(ctx.cwd),
+          });
+          if (!submitted) lastIncapableCodingSession = incapable;
           codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
             ...base,
             durationMs: Date.now() - startedAt,
             usage: response?.usage ?? null,
             ...outcome,
+            ...(incapable ? { unreachableCapabilities: incapable.unreachable } : {}),
           });
           if (submitted) {
             return {
@@ -2038,6 +2074,13 @@ export default function (pi) {
         requestTools: providerCapabilitySnapshot?.executableTools ?? null,
         activeTools: activeToolNames,
       })}`);
+      if (codingSession?.capabilityFile) {
+        try {
+          recordUnavailableCapabilityAttempt(codingSession.capabilityFile, event.toolName);
+        } catch (error) {
+          console.warn(`PI_CODING_CAPABILITY_RECORD_FAILED ${JSON.stringify({ sessionId: codingSession.sessionId, error: String(error?.message ?? error) })}`);
+        }
+      }
       if (satisfiedProviderForcing) {
         console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED ${JSON.stringify({
           stage,

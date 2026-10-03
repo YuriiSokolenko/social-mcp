@@ -279,6 +279,14 @@ function runtimeScenario(mode) {
         assert.ok(firstRequestTools.includes('need_more_evidence'), 'bounded evidence transition remains reachable');
         assert.ok(!firstRequestTools.includes('read'), 'inherited parent read intent is not advertised on the first request');
         assert.ok(!firstRequestTools.includes('bash'), 'forbidden cleanup shell is not advertised on the first request');
+        if (mode === 'incapable-repeat' || mode === 'incapable-transition') {
+          // #396/#399: the fork was launched for cleanup that needs raw bash. The model omits
+          // required_capability; the trusted surface still blocks bash inside the fork.
+          childHandlers.get('turn_start')({ turnIndex: 0 });
+          const blocked = await childHandlers.get('tool_call')({ toolName: 'bash', toolCallId: 'cleanup-bash', input: { command: 'rm -f stray.txt' } }, childCtx);
+          assert.equal(blocked?.block, true, 'raw bash stays unavailable inside the coding session');
+          return respond(request, { status: 'completed', result: { kind: 'text', value: 'cleanup needs bash' }, usage: { output: 100 } });
+        }
         if (mode === 'malformed-contract') {
           const spec = JSON.parse(process.env.PI_CODING_SESSION);
           fs.writeFileSync(spec.failureFile, '{"failure_code":');
@@ -692,6 +700,27 @@ function runtimeScenario(mode) {
         assert.equal(sessionRequests.length, 0, 'incapable fork is rejected before launch');
         process.exit(0);
       }
+      if (mode === 'incapable-repeat' || mode === 'incapable-transition') {
+        const first = await call('begin_coding_session', { reason: 'Clean up the stray file' });
+        assert.match(first.content[0].text, /ended without submit_result/);
+        assert.equal(fs.existsSync(sessionRequests[0].spec.capabilityFile), false, 'capability sidecar is consumed');
+        if (mode === 'incapable-transition') {
+          // A material repository-state transition (e.g. trusted recovery) makes a new fork legitimate.
+          fs.writeFileSync(cwd + '/transition.txt', 'restored\\n');
+          await tools.get('begin_coding_session').execute('after-transition', { reason: 'Retry after recovery' }, signal.signal, null, ctx);
+          assert.equal(sessionRequests.length, 2, 'fork launches again after a material transition');
+          console.log('INCAPABLE_FORK_TRANSITION_OK');
+          process.exit(0);
+        }
+        await assert.rejects(
+          () => tools.get('begin_coding_session').execute('repeat', { reason: 'Try the cleanup again' }, signal.signal, null, ctx),
+          /attempting bash, which the coding session can never expose.*An equivalent session was not launched/s,
+        );
+        assert.equal(sessionRequests.length, 1, 'equivalent incapable fork is rejected before launch');
+        assert.ok(!registered.get('implementer-coding-session').tools.includes('bash'), 'no unrestricted shell is added to the fork');
+        console.log('INCAPABLE_FORK_REPEAT_REJECTED_OK');
+        process.exit(0);
+      }
       const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', { reason: 'Implement generated.py and its test' }, { expectError });
       if (mode === 'malformed-contract') {
@@ -874,6 +903,20 @@ test('coding-session fork shares action_required forcing semantics and clears th
 test('coding session rejects an unavailable required capability before launching the fork', () => {
   const logs = runtimeScenario('forbidden-capability');
   assert.match(logs, /"phase":"rejected".*"reason":"required_capability_unavailable"/);
+});
+
+test('#440 an equivalent capability-incompatible fork is rejected without model-declared required_capability', () => {
+  const logs = runtimeScenario('incapable-repeat');
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"bash"/);
+  assert.match(logs, /"phase":"ended_without_submit".*"unreachableCapabilities":\["bash"\]/);
+  assert.match(logs, /"phase":"rejected".*"reason":"repeated_incapable_session".*"unreachable":\["bash"\]/);
+  assert.match(logs, /INCAPABLE_FORK_REPEAT_REJECTED_OK/);
+});
+
+test('#440 a material state transition after an incapable fork permits another coding session', () => {
+  const logs = runtimeScenario('incapable-transition');
+  assert.doesNotMatch(logs, /repeated_incapable_session/);
+  assert.match(logs, /INCAPABLE_FORK_TRANSITION_OK/);
 });
 
 test('a deliberately non-compliant second prose-only turn still aborts with durable execution-failure metadata', () => {
