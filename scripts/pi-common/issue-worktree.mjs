@@ -49,6 +49,10 @@ export function acceptedScopeStateFromRef(ref, cwd = process.cwd()) {
 
 export function mutationJournalStateFromRef(ref, cwd = process.cwd()) {
   if (!ref) return null;
+  // expectedSha can legitimately be known by the control-plane before its object is present in
+  // this local clone. Missing local history means "no comparable prior trailer", not a checkpoint
+  // failure; the later force-with-lease still protects the remote ref update.
+  if (git(['rev-parse', '--verify', ref], { cwd, allowFailure: true }).status !== 0) return null;
   // This trailer is a consistency/recovery record, not authorization. It may originate from
   // model-created checkpoint history. Every later undo still re-validates worktree containment,
   // protected-path policy, target type, and the exact current post-state fingerprint before any
