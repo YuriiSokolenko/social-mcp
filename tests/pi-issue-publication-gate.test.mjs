@@ -107,7 +107,7 @@ test('label objects in GitHub API shape (not bare strings) are handled identical
 
 test('upsertPullRequest derives trust from the backend argument, not the ledger, and returns verification_state', () => {
   const source = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
-  assert.match(source, /export async function upsertPullRequest\(\{ issue, resultFile, owner, ledgerFile, backend \}\)/);
+  assert.match(source, /export async function upsertPullRequest\(\{ issue, resultFile, owner, ledgerFile, backend, cwd, startCommit \}\)/);
   assert.match(source, /const verificationState = computeVerificationState\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\);/);
   assert.match(source, /const unsandboxedBackend = isUnsandboxedBackend\(backend\);/);
   assert.match(source, /nextLabelsForVerification\(existing\[0\]\.labels, verificationState, unsandboxedBackend\)/);
@@ -115,7 +115,7 @@ test('upsertPullRequest derives trust from the backend argument, not the ledger,
   assert.match(source, /if \(nextLabels\) await replaceLabels\(pr\.number, nextLabels\);/);
   assert.match(source, /return \{ number:pr\.number, url:pr\.html_url, verification_state: verificationState \};/);
   // The CLI dispatch forwards the 5th positional arg as `backend`.
-  assert.match(source, /upsertPullRequest\(\{issue:Number\(a\[0\]\),resultFile:a\[1\],owner:a\[2\],ledgerFile:a\[3\],backend:a\[4\]\}\)/);
+  assert.match(source, /upsertPullRequest\(\{issue:Number\(a\[0\]\),resultFile:a\[1\],owner:a\[2\],ledgerFile:a\[3\],backend:a\[4\],cwd:a\[5\],startCommit:a\[6\]\}\)/);
 });
 
 test('the issue-agent workflow passes the workflow_dispatch backend input directly, never a shell-environment expansion', () => {
