@@ -93,6 +93,14 @@ jobs:
           docker buildx du || echo "::warning::Optional BuildKit cache diagnostics failed"
           id runner
 
+      - name: Build runner manager and smoke-test run-check imports
+        shell: bash
+        run: |
+          image="${COMPOSE_PROJECT_NAME}-manager-import-check:latest"
+          trap 'docker image rm "$image" >/dev/null 2>&1 || true' EXIT
+          docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t "$image" .
+          docker run --rm --entrypoint node "$image" -e "import('/opt/social-mcp/scripts/pi-common/run-check.mjs').then(() => console.log('run-check import ok'))"
+
       - name: Generate ephemeral test encryption key
         shell: bash
         run: |
