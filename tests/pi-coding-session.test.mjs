@@ -783,7 +783,7 @@ function runtimeScenario(mode) {
           process.env.PI_VALIDATION_LEDGER_FILE = sessionFile + '.ledger.jsonl';
           // Run-start baseline (#438): stray.txt appeared after it, so ownership is provable.
           process.env.PI_WORKTREE_BASELINE_FILE = sessionFile + '.baseline.json';
-          fs.writeFileSync(process.env.PI_WORKTREE_BASELINE_FILE, JSON.stringify({ schema_version: 1, untracked: [] }));
+          fs.writeFileSync(process.env.PI_WORKTREE_BASELINE_FILE, JSON.stringify({ schema_version: 2, untracked: [], tracked_dirty: [] }));
           await call('recover_worktree', { action: 'delete_untracked', path: 'stray.txt', expected_files: [], reason: 'Remove the accidental file without a shell' });
           assert.equal(fs.existsSync(cwd + '/stray.txt'), false);
           await tools.get('begin_coding_session').execute('after-transition', { reason: 'Retry after recovery' }, signal.signal, null, ctx);

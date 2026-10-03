@@ -11,6 +11,8 @@ import { ProgressController } from '../scripts/pi-common/progress-controller.mjs
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { captureWorktreeBaseline, readWorktreeBaseline } from '../scripts/pi-common/worktree-baseline.mjs';
 
+const cleanBaseline = (untracked = [], trackedDirty = []) => ({ untracked: new Set(untracked), trackedDirty: new Set(trackedDirty) });
+
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'recovery-430-'));
   const cwd = path.join(root, 'work');
@@ -22,7 +24,7 @@ function fixture(t) {
   fs.writeFileSync(path.join(cwd, '.gitignore'), 'ignored.txt\n');
   git('add', '.'); git('commit', '-qm', 'initial');
   const ledgerPath = path.join(root, 'ledger.jsonl');
-  const recover = params => recoverWorktree({ cwd, ledgerPath, baseline: new Set(), reason: 'Remove accidental scratch', expected_files: ['product.py'], ...params });
+  const recover = params => recoverWorktree({ cwd, ledgerPath, baseline: cleanBaseline(), reason: 'Remove accidental scratch', expected_files: ['product.py'], ...params });
   return { root, cwd, git, recover, ledgerPath };
 }
 
@@ -98,7 +100,7 @@ test('#438 refuses to delete pre-existing untracked user files and unprovable ow
   fs.writeFileSync(path.join(cwd, 'user-notes.txt'), 'mine\n');
   fs.writeFileSync(path.join(cwd, 'accepted.py'), 'scope\n');
   fs.writeFileSync(path.join(cwd, 'journaled.txt'), 'j\n');
-  const evidence = { baseline: new Set(['user-notes.txt']), acceptedPaths: new Set(['accepted.py']), journalPaths: new Map([['journaled.txt', 'mutation-x']]) };
+  const evidence = { baseline: cleanBaseline(['user-notes.txt']), acceptedPaths: new Set(['accepted.py']), journalPaths: new Map([['journaled.txt', 'mutation-x']]) };
   assert.throws(() => recover({ action: 'delete_untracked', path: 'user-notes.txt', ...evidence }), /recovery_preexisting_path/);
   assert.throws(() => recover({ action: 'delete_untracked', path: 'accepted.py', ...evidence }), /recovery_accepted_scope_path/);
   assert.throws(() => recover({ action: 'delete_untracked', path: 'journaled.txt', ...evidence }), /recovery_use_undo_mutation/);
@@ -114,7 +116,8 @@ test('#438 deletes a bash-created scratch file proven absent from the run-start 
   fs.writeFileSync(path.join(cwd, 'scratch.tmp'), 'made by bounded bash\n');
   assert.equal(captureWorktreeBaseline(cwd, env), false, 'baseline is write-once so a fork cannot absorb scratch');
   const baseline = readWorktreeBaseline(env);
-  assert.deepEqual([...baseline], ['user-notes.txt']);
+  assert.deepEqual([...baseline.untracked], ['user-notes.txt']);
+  assert.deepEqual([...baseline.trackedDirty], []);
   const result = recover({ action: 'delete_untracked', path: 'scratch.tmp', baseline, expected_files: [] });
   assert.equal(result.status, 'recovered');
   assert.ok(!fs.existsSync(path.join(cwd, 'scratch.tmp')));
@@ -136,7 +139,7 @@ test('#438 file-set diagnostics distinguish journaled, unjournaled and unknown p
   const { cwd, recover } = fixture(t);
   fs.writeFileSync(path.join(cwd, 'product.py'), 'edited\n');
   for (const file of ['journaled.txt', 'scratch.tmp', 'user-notes.txt']) fs.writeFileSync(path.join(cwd, file), 'x');
-  const evidence = { baseline: new Set(['user-notes.txt']), acceptedPaths: new Set(), journalPaths: new Map([['journaled.txt', 'mutation-1']]) };
+  const evidence = { baseline: cleanBaseline(['user-notes.txt']), acceptedPaths: new Set(), journalPaths: new Map([['journaled.txt', 'mutation-1']]) };
   const drift = classifyWorktreeDrift({ cwd, changed: worktreeChangedFiles(cwd, 'HEAD'), expectedFiles: [], ...evidence });
   const byPath = Object.fromEntries(drift.map(item => [item.path, item]));
   assert.equal(byPath['journaled.txt'].class, 'journaled');
@@ -148,4 +151,19 @@ test('#438 file-set diagnostics distinguish journaled, unjournaled and unknown p
   const result = recover({ action: 'delete_untracked', path: 'scratch.tmp', expected_files: ['product.py'], ...evidence });
   assert.equal(result.file_set.status, 'invalid');
   assert.deepEqual(result.file_set.drift.map(item => item.path).sort(), ['journaled.txt', 'user-notes.txt']);
+});
+
+test('#438 revert_tracked refuses journaled, pre-existing-dirty and baseline-less restores', t => {
+  const { root, cwd, recover } = fixture(t);
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'edited\n');
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'product.py', journalPaths: new Map([['product.py', 'mutation-9']]) }), /recovery_use_undo_mutation.*mutation-9/s);
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'product.py', baseline: cleanBaseline([], ['product.py']) }), /recovery_preexisting_path/);
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'product.py', baseline: null }), /recovery_baseline_unavailable/);
+  assert.equal(fs.readFileSync(path.join(cwd, 'product.py'), 'utf8'), 'edited\n');
+  // Baseline captured with a dirty tracked file records it; a v1 sidecar fails closed.
+  const env = { PI_WORKTREE_BASELINE_FILE: path.join(root, 'b.json') };
+  captureWorktreeBaseline(cwd, env);
+  assert.deepEqual([...readWorktreeBaseline(env).trackedDirty], ['product.py']);
+  fs.writeFileSync(env.PI_WORKTREE_BASELINE_FILE, JSON.stringify({ schema_version: 1, untracked: [] }));
+  assert.equal(readWorktreeBaseline(env), null);
 });

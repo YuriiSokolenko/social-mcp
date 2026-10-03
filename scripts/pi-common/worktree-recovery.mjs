@@ -35,8 +35,20 @@ function untrackedOwnership(relative, { baseline, acceptedPaths, journalPaths })
     return { owned: false, code: 'recovery_use_undo_mutation', reason: 'path is journaled; use undo_mutation', mutation_id: journalPaths.get(relative) };
   }
   if (!baseline) return { owned: false, code: 'recovery_baseline_unavailable', reason: 'run-start baseline is unavailable, so ownership cannot be proven' };
-  if (baseline.has(relative)) return { owned: false, code: 'recovery_preexisting_path', reason: 'path existed before this stage started' };
+  if (baseline.untracked.has(relative)) return { owned: false, code: 'recovery_preexisting_path', reason: 'path existed before this stage started' };
   if (acceptedPaths?.has(relative)) return { owned: false, code: 'recovery_accepted_scope_path', reason: 'path is part of the accepted task scope' };
+  return { owned: true };
+}
+
+// A tracked restore discards the current bytes, so require proof they are this stage's own: the
+// path is not journaled (undo_mutation owns that), and it was clean against HEAD at run start.
+function trackedRestoreOwnership(relative, { baseline, journalPaths }) {
+  if (isControlPlanePath(relative)) return { owned: false, code: 'recovery_protected_path', reason: 'protected control-plane path' };
+  if (journalPaths?.has(relative)) {
+    return { owned: false, code: 'recovery_use_undo_mutation', reason: 'path is journaled; use undo_mutation', mutation_id: journalPaths.get(relative) };
+  }
+  if (!baseline) return { owned: false, code: 'recovery_baseline_unavailable', reason: 'run-start baseline is unavailable, so the current bytes cannot be proven safe to discard' };
+  if (baseline.trackedDirty.has(relative)) return { owned: false, code: 'recovery_preexisting_path', reason: 'tracked path already differed from HEAD before this stage started' };
   return { owned: true };
 }
 
@@ -57,7 +69,10 @@ export function classifyWorktreeDrift({ cwd, changed, expectedFiles = [], baseli
     }
     const inHead = paths(git(cwd, ['ls-tree', '-z', 'HEAD', '--', file])).length > 0;
     if (inHead) {
-      result.push({ path: file, class: 'unjournaled_restorable', action: 'recover_worktree', recover_action: 'revert_tracked' });
+      const ownership = trackedRestoreOwnership(file, { baseline, journalPaths });
+      result.push(ownership.owned
+        ? { path: file, class: 'unjournaled_restorable', action: 'recover_worktree', recover_action: 'revert_tracked' }
+        : { path: file, class: 'unknown', reason: ownership.reason });
       continue;
     }
     const tracked = paths(git(cwd, ['ls-files', '-z', '--', file])).length > 0;
@@ -108,6 +123,11 @@ export function recoverWorktree({ cwd, action, path: requestedPath, expected_fil
     }
     fs.unlinkSync(target.absolutePath);
   } else {
+    const ownership = trackedRestoreOwnership(target.relative, { baseline, journalPaths });
+    if (!ownership.owned) {
+      const { owned: _owned, ...detail } = ownership;
+      throw recoveryRefusal(ownership.code, `Refusing to restore ${target.relative}: ${ownership.reason}`, { path: target.relative, ...detail });
+    }
     const entries = paths(git(cwd, ['ls-tree', '-z', 'HEAD', '--', target.relative]));
     const entry = entries.find(item => item.split('\t')[1] === target.relative);
     if (!entry || !/^100(?:644|755) blob /.test(entry)) throw new Error('revert_tracked requires a regular file tracked in HEAD');
