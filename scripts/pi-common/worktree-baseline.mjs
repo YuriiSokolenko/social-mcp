@@ -120,6 +120,11 @@ export function observeWorktreeDrift(cwd, env = process.env, phase) {
     for (const [file, fingerprint] of observed.fingerprints) {
       if (worktreeFingerprint(cwd, file) !== fingerprint) observed.tainted.add(file);
     }
+    // Dirty now but never observed after a stage action: it appeared outside one, so it must not
+    // be recorded as stage-owned by a later 'after' pass. Run-start dirt is already refused.
+    for (const file of trackedDirtyPaths(cwd)) {
+      if (!baseline.trackedDirty.has(file) && !observed.fingerprints.has(file)) observed.tainted.add(file);
+    }
   } else {
     for (const file of trackedDirtyPaths(cwd)) {
       if (baseline.trackedDirty.has(file) || observed.tainted.has(file)) continue;

@@ -205,3 +205,15 @@ test('#438 revert_tracked restores a stage-owned bash change and refuses unobser
   assert.equal(result.status, 'recovered');
   assert.equal(git('diff', '--', 'product.py'), '');
 });
+
+test('#438 an external rewrite before an unrelated bash call is never recorded as stage-owned', t => {
+  const { root, cwd, recover } = fixture(t);
+  const env = { PI_WORKTREE_BASELINE_FILE: path.join(root, 'b.json') };
+  captureWorktreeBaseline(cwd, env);
+  fs.writeFileSync(path.join(cwd, 'product.py'), 'external rewrite\n');
+  observeWorktreeDrift(cwd, env, 'before');
+  observeWorktreeDrift(cwd, env, 'after'); // unrelated bash changed nothing
+  assert.ok(readWorktreeObserved(env).tainted.has('product.py'));
+  assert.throws(() => recover({ action: 'revert_tracked', path: 'product.py', baseline: readWorktreeBaseline(env), observed: readWorktreeObserved(env) }), /recovery_externally_modified/);
+  assert.equal(fs.readFileSync(path.join(cwd, 'product.py'), 'utf8'), 'external rewrite\n');
+});
