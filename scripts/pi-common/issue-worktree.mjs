@@ -21,17 +21,23 @@ import { resolveRunArtifactId } from './validation-ledger.mjs';
 
 export function acceptedScopeStateFromRef(ref) {
   if (!ref) return null;
-  const message = git(['show', '-s', '--format=%B', ref]).out;
-  const enforcement = /^Pi-Scope-Enforcement:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
-  if (enforcement !== 'predeclared') return null;
-  const encoded = /^Pi-Accepted-Mutation-Scope:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
-  if (!encoded) return null;
-  try {
-    const value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
-    return value?.schema_version === 1 ? value : null;
-  } catch {
-    return null;
+  // Checkpoint tips may be marker-less (for example when a later crash saved
+  // additional work before submit_result). Walk recent ancestry so the newest
+  // trusted scope receipt is not hidden by such a tip commit.
+  const records = git(['log', '-n', '50', '--format=%B%x1e', ref]).out.split('\x1e');
+  for (const message of records) {
+    const enforcement = /^Pi-Scope-Enforcement:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+    if (enforcement !== 'predeclared') continue;
+    const encoded = /^Pi-Accepted-Mutation-Scope:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+    if (!encoded) continue;
+    try {
+      const value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+      if (value?.schema_version === 1) return value;
+    } catch {
+      // Keep searching older checkpoint ancestry for the latest valid receipt.
+    }
   }
+  return null;
 }
 
 export function issueWorktreePatchPath(tempDir, env = process.env) {
