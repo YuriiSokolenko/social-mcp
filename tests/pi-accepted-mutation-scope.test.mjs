@@ -32,6 +32,20 @@ function repo(t) {
   return { root, git };
 }
 
+test('invalid scope paths return a coded scope error', t => {
+  const { root } = repo(t);
+  assert.throws(
+    () => registerMutationScope({
+      cwd: root,
+      paths: ['../escape.py'],
+      disposition: 'publishable',
+      rationale: 'This invalid path must be rejected by the scope guard.',
+      env: {},
+    }),
+    error => error.code === 'scope_invalid_path',
+  );
+});
+
 test('publishable scope must be accepted before the path becomes changed', t => {
   const { root } = repo(t);
   initializeMutationScope(root, {});
