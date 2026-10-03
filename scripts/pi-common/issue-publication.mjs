@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
@@ -11,6 +13,7 @@ import { computeVerificationState, readValidationLedger, renderValidationSection
 import { assertAcceptedMutationScope, readMutationScopeReceiptFile } from './accepted-mutation-scope.mjs';
 import { encodeMutationJournalState, readMutationJournalFile } from './mutation-journal.mjs';
 import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
+import { mutationJournalStateFromRef } from './issue-worktree.mjs';
 import { resolveCandidateBase } from './candidate-revision.mjs';
 
 /**
@@ -40,6 +43,20 @@ const DEFAULT_PUSH_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000]);
 
 function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function commitWithMessageFile(cwd, message, { allowEmpty = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-checkpoint-message-'));
+  try {
+    const messageFile = path.join(dir, 'message.txt');
+    fs.writeFileSync(messageFile, message, 'utf8');
+    const args = ['commit'];
+    if (allowEmpty) args.push('--allow-empty');
+    args.push('-F', messageFile);
+    return git(args, { cwd });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export function pushWithMissingObjectRetry(args, {
@@ -108,15 +125,30 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, re
   }
   // Always seal the current journal state when the sidecar exists, including an empty journal.
   // An explicit empty state prevents an older checkpoint trailer from resurrecting mutations
-  // that were already undone before a later checkpoint.
+  // that were already undone before a later checkpoint. Skip metadata-only commits when the
+  // checkpoint already carries the same journal state.
+  const previousMutationJournal = expectedSha
+    ? mutationJournalStateFromRef(expectedSha, cwd)
+    : null;
+  const mutationJournalChanged = Boolean(
+    persistedMutationJournal &&
+    JSON.stringify(previousMutationJournal) !== JSON.stringify(persistedMutationJournal)
+  );
   if (persistedMutationJournal) {
     message += `\nPi-Mutation-Journal: ${encodeMutationJournalState(cwd, persistedMutationJournal)}`;
   }
-  const metadataOnlyJournalSeal = Boolean(!stagedChanged && expectedSha && persistedMutationJournal);
+  const metadataOnlyJournalSeal = Boolean(
+    !stagedChanged &&
+    expectedSha &&
+    persistedMutationJournal &&
+    mutationJournalChanged
+  );
+  // Commit messages can contain both the accepted-scope and journal trailers. Use -F instead of
+  // a giant -m argv value so their combined size is not constrained by Linux's per-argument cap.
   if (stagedChanged) {
-    git(['commit','-m',message], { cwd });
+    commitWithMessageFile(cwd, message);
   } else if (metadataOnlyJournalSeal) {
-    git(['commit','--allow-empty','-m',message], { cwd });
+    commitWithMessageFile(cwd, message, { allowEmpty: true });
   }
   const base = publicationBase(cwd, startCommit);
   const treeChanged = git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status !== 0;
