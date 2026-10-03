@@ -608,7 +608,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
 test('runtime preserves a large mutation budget through scope declaration, then consumes it on the real finish action', () => {
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
-  assert.match(runtime, /ELEVATED_MUTATION_TURN_TOOLS/);
+  assert.match(runtime, /elevatedMutationTurnToolNames/);
   assert.match(runtime, /FINISH_TOOLS/);
   assert.match(runtime, /name: controller\.largeMutationBudgetTool/);
   assert.match(runtime, /controller\.largeMutationBudgetPending\(\)/);
@@ -624,7 +624,8 @@ test('runtime preserves a large mutation budget through scope declaration, then 
   // Tool-surface restriction during the elevated turn is UX on top of the controller's own
   // hard gate; the finish-tool attempt marker must only be set for a call the controller
   // actually let through, never for one it blocked.
-  assert.match(runtime, /largeMutationBudgetActive[\s\S]*unrestrictedActiveTools\.filter\(name => ELEVATED_MUTATION_TURN_TOOLS\.has\(name\)\)/);
+  assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
+  assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
   assert.match(runtime, /return blocked;\s*\}[\s\S]{0,200}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
   assert.match(planner, /evidence_budget/);
 });
@@ -1116,7 +1117,7 @@ test('request_large_mutation_budget is refused before evidence is exhausted (evi
   assert.equal(state.largeMutationBudgetState, 'idle');
 });
 
-test('while the elevated mutation budget is active, only a finish tool may execute', () => {
+test('while the elevated mutation budget is active, only a finish tool or the bounded evidence transition may execute', () => {
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
   state.onTurnStart(0);
@@ -1131,8 +1132,18 @@ test('while the elevated mutation budget is active, only a finish tool may execu
 
   const blockedReason = /elevated mutation budget is active this turn/;
   assert.match(state.checkToolCall('read', { path: 'src/known.py' }).reason, blockedReason);
-  assert.match(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }).reason, blockedReason);
-  assert.match(state.checkToolCall('set_response_budget', { level: 'deep', reason: 'z' }).reason, blockedReason);
+  assert.equal(state.checkToolCall('need_more_evidence', { missing: 'x', reason: 'y' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.deepEqual(state.yieldLargeMutationBudgetForEvidence(), { yielded: true, rearmed: false });
+  assert.equal(state.largeMutationBudgetActive(), false);
+  assert.equal(state.checkToolCall('read', { path: 'src/known.py' }), undefined, 'one evidence action becomes executable after yielding the elevated response');
+  state.onToolExecutionEnd('read', false);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.evidenceUnlockAvailable(), false, 'the blocker remains unavailable until productive progress');
+  assert.match(state.checkToolCall('set_response_budget', { level: 'deep', reason: 'z' }).reason, /productive progress requires an action now|did not execute/);
+  assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'second large new file' }), undefined);
+  state.onToolExecutionEnd('request_large_mutation_budget', false);
+  assert.equal(state.activateLargeMutationBudget(), true);
   assert.match(state.checkToolCall('subagents_enable', {}).reason, blockedReason);
   assert.match(state.checkToolCall('lsp_start_server', {}).reason, blockedReason);
   assert.match(state.checkToolCall('run_check', { kind: 'ruff' }).reason, blockedReason);
