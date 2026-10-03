@@ -17,7 +17,12 @@ def canonicalize_url(url: str) -> str:
     as supplied so they are never re-encoded.
     """
     scheme, netloc, path, query, fragment = urlsplit(url)
-    return urlunsplit((scheme, netloc, path, _canonical_query(query), fragment))
+    rebuilt = urlunsplit(("", netloc, path, _canonical_query(query), fragment))
+    if not scheme:
+        return rebuilt
+    # ``urlsplit`` lowercases the scheme; restore the caller's spelling.
+    start = url.lower().index(f"{scheme}:")
+    return f"{url[start : start + len(scheme)]}:{rebuilt}"
 
 
 def _canonical_query(query: str) -> str:

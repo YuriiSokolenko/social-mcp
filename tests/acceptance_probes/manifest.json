@@ -1,0 +1,46 @@
+{
+  "description": "Trusted acceptance-boundary probes (#427). Control-plane protected: implementers cannot edit or delete them. Each probe is tied to a criterion and records whether the behaviour is an acceptance requirement or a documented policy choice.",
+  "args_encoding": "JSON values, plus {\"$float\": \"nan|inf|-inf|1.5\"} and {\"$datetime\": \"<ISO-8601>\"} tags, plus {\"$int\": \"1eN\"} for 10**N.",
+  "criteria": {
+    "retry-after-delta-grammar": {
+      "source": "RFC 9110 section 10.2.3 delay-seconds = 1*DIGIT; issues #345/#400",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_retry_after:parse_retry_after"
+    },
+    "retry-after-integer-only": {
+      "source": "task #345: integer delta-seconds; programmatic bool/float/non-finite are not integers",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_retry_after:parse_retry_after"
+    },
+    "url-literal-preservation": {
+      "source": "task #344 and module docstring: scheme, host, path, fragment preserved verbatim. POLICY: literal, not semantic, scheme preservation",
+      "status": "policy-literal",
+      "target": "social_mcp.diagnostics.smoke_url:canonicalize_url"
+    },
+    "bucket-numeric-domain": {
+      "source": "bool is not a number; non-finite values are not valid bucket state. POLICY: int/float only; Decimal/Fraction are rejected",
+      "status": "policy-int-float-only",
+      "target": "social_mcp.diagnostics.smoke_token_bucket:token_bucket_transition"
+    }
+  },
+  "probes": [
+    {"id": "ra-underscore", "criterion": "retry-after-delta-grammar", "args": ["1_0", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-plus-sign", "criterion": "retry-after-delta-grammar", "args": ["+5", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-arabic-indic-digits", "criterion": "retry-after-delta-grammar", "args": ["١٢", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-fullwidth-digits", "criterion": "retry-after-delta-grammar", "args": ["１２", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-negative-string", "criterion": "retry-after-delta-grammar", "args": ["-1", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-digits-ok", "criterion": "retry-after-delta-grammar", "args": ["120", {"$datetime": "1994-11-06T08:49:00+00:00"}], "returns": 120},
+    {"id": "ra-bool", "criterion": "retry-after-integer-only", "args": [true, {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-fraction-float", "criterion": "retry-after-integer-only", "args": [{"$float": "1.5"}, {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-nan", "criterion": "retry-after-integer-only", "args": [{"$float": "nan"}, {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-inf", "criterion": "retry-after-integer-only", "args": [{"$float": "inf"}, {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "url-upper-scheme", "criterion": "url-literal-preservation", "args": ["HTTP://EXAMPLE.test/P?z=1&a=2#F"], "returns": "HTTP://EXAMPLE.test/P?a=2&z=1#F"},
+    {"id": "url-encoded-kept", "criterion": "url-literal-preservation", "args": ["http://h/p?b=%2f&a=%2F"], "returns": "http://h/p?a=%2F&b=%2f"},
+    {"id": "url-duplicate-keys-kept", "criterion": "url-literal-preservation", "args": ["http://h/p?a=2&a=1&a=2"], "returns": "http://h/p?a=1&a=2&a=2"},
+    {"id": "url-empty-query-no-marker", "criterion": "url-literal-preservation", "args": ["http://h/p?"], "returns": "http://h/p"},
+    {"id": "bucket-bool-capacity", "criterion": "bucket-numeric-domain", "args": [0, true, 1, 1, 1], "raises": "ValueError"},
+    {"id": "bucket-nan-tokens", "criterion": "bucket-numeric-domain", "args": [{"$float": "nan"}, 5, 1, 1, 1], "raises": "ValueError"},
+    {"id": "bucket-huge-int-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$int": "1e400"}, 1, 1, 1], "returns": [0, true]},
+    {"id": "bucket-inf-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$float": "inf"}, 1, 1, 1], "raises": "ValueError"}
+  ]
+}

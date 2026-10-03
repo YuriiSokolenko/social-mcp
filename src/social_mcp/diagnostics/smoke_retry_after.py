@@ -11,17 +11,22 @@ datetime, which keeps smoke checks reproducible.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 __all__ = ["parse_retry_after"]
+
+# RFC 9110 section 10.2.3: delay-seconds = 1*DIGIT (ASCII digits only; no
+# sign, underscores or non-ASCII digits, which ``int()`` would accept).
+_DELAY_SECONDS = re.compile(r"[0-9]+")
 
 
 def parse_retry_after(value: object, reference: datetime) -> int:
     """Return the non-negative ``Retry-After`` delay in whole seconds.
 
     Args:
-        value: A delta-seconds integer or an HTTP-date string as found in a
+        value: A delta-seconds integer (ASCII digits only) or an HTTP-date string as found in a
             ``Retry-After`` header.
         reference: The caller supplied reference datetime that date based
             values are measured against. Naive datetimes are interpreted as
@@ -57,15 +62,8 @@ def parse_retry_after(value: object, reference: datetime) -> int:
     if not text:
         raise ValueError("empty Retry-After value")
 
-    try:
-        delta_seconds = int(text, 10)
-    except ValueError:
-        delta_seconds = None
-
-    if delta_seconds is not None:
-        if delta_seconds < 0:
-            raise ValueError(f"negative Retry-After delta-seconds: {text}")
-        return delta_seconds
+    if _DELAY_SECONDS.fullmatch(text):
+        return int(text, 10)
 
     return _seconds_until_http_date(text, reference)
 
