@@ -12,6 +12,11 @@ export const MUTATION_JOURNAL_MAX_PRIOR_BYTES = 2 * 1024 * 1024;
 export const MUTATION_JOURNAL_MAX_TOTAL_PRIOR_BYTES = 16 * 1024 * 1024;
 export const MUTATION_JOURNAL_MAX_CHECKPOINT_BYTES = 80 * 1024;
 
+const CAPACITY_ERROR_CODES = new Set([
+  'mutation_journal_full',
+  'mutation_journal_snapshot_too_large',
+]);
+
 const states = new Map();
 
 function digest(value) {
@@ -264,6 +269,35 @@ function fingerprintsEqual(left, right) {
   return left.mode === right.mode && left.size === right.size && left.sha256 === right.sha256;
 }
 
+function priorFingerprint(prior) {
+  if (!prior?.existed) return { exists: false };
+  const content = Buffer.from(prior.content_base64, 'base64');
+  return {
+    exists: true,
+    mode: prior.mode,
+    size: content.length,
+    sha256: digest(content),
+  };
+}
+
+export function isMutationJournalCapacityError(error) {
+  return CAPACITY_ERROR_CODES.has(String(error?.code ?? ''));
+}
+
+export function mutationJournalCapacityStatus(args) {
+  try {
+    assertMutationJournalCapacity(args);
+    return { journalable: true, code: null, reason: null };
+  } catch (error) {
+    if (!isMutationJournalCapacityError(error)) throw error;
+    return {
+      journalable: false,
+      code: error.code,
+      reason: String(error?.message ?? error),
+    };
+  }
+}
+
 export function assertMutationJournalCapacity({ cwd, snapshot, env = process.env }) {
   if (!snapshot) throw journalError('mutation_snapshot_invalid', 'mutation snapshot is required');
   const state = stateFor(cwd, env);
@@ -414,22 +448,46 @@ export function undoMutation({
   if (ledgerPath) fs.closeSync(fs.openSync(ledgerPath, 'a', 0o600));
 
   const current = currentMutationFingerprint(cwd, entry.path);
-  if (!fingerprintsEqual(current, entry.post)) {
-    throw journalError('mutation_undo_conflict', 'current file state no longer matches this mutation post-state; refusing to overwrite intervening work', {
+  const expectedPrior = priorFingerprint(entry.prior);
+  let action;
+  let alreadyRestored = false;
+  if (fingerprintsEqual(current, entry.post)) {
+    action = restorePrior(target, entry.prior);
+  } else if (fingerprintsEqual(current, expectedPrior)) {
+    // A previous undo may have restored the file successfully and then failed while persisting
+    // the journal update. Treat that prior-state as an idempotent retry, not a stale conflict.
+    action = entry.prior.existed ? 'restore' : 'delete';
+    alreadyRestored = true;
+  } else {
+    throw journalError('mutation_undo_conflict', 'current file state matches neither this mutation post-state nor its exact prior-state; refusing to overwrite intervening work', {
       mutation_id: mutationId,
       path: entry.path,
       expected_post: entry.post,
+      expected_prior: expectedPrior,
       actual: current,
     });
   }
 
-  const action = restorePrior(target, entry.prior);
   const index = state.entries.findIndex(item => item.id === mutationId);
   state.entries.splice(index, 1);
-  persistState(cwd, state, env);
+  try {
+    persistState(cwd, state, env);
+  } catch (error) {
+    throw journalError(
+      'mutation_undo_persist_failed',
+      'file state is already restored but the journal update could not be persisted; retry the same mutation_id to finish idempotently',
+      {
+        mutation_id: mutationId,
+        path: entry.path,
+        already_restored: true,
+        cause: String(error?.message ?? error),
+      },
+    );
+  }
   return {
     status: 'recovered',
     action,
+    already_restored: alreadyRestored,
     mutation_id: mutationId,
     path: entry.path,
     disposition: entry.disposition,
