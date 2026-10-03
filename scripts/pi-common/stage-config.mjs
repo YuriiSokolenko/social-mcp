@@ -234,6 +234,9 @@ export const STAGES = Object.freeze({
     // Hard maximum, not an expected duration: a healthy planner queued behind other model load must
     // not be cancelled early. Only a true 15-minute timeout enters PREPARATION_FALLBACK.
     implementationPlannerTimeoutMs: 900000,
+    // Planner's own read-only evidence cap (hard max 6). Independent of the planner's output
+    // `evidence_budget`, which sizes the main Implementer's window.
+    implementationPlannerEvidenceBudget: 6,
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     boundedDirectBash: true,

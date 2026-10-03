@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
-import { runStructuredSubagent } from './structured-subagent.mjs';
+import { recordDescendantMetric, runStructuredSubagent } from './structured-subagent.mjs';
 import { baseRef } from './project-config.mjs';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs';
 
@@ -11,6 +12,51 @@ import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs'
 export const MAX_PLANNER_EVIDENCE_BUDGET = 6;
 
 const MAX_PLANNER_STEP_LENGTH = 240;
+
+// Planner evidence budget: how many read-only repository actions the planner itself may spend
+// while preparing the plan. Deliberately separate from the output `evidence_budget` above (the
+// planner's estimate for the main Implementer); neither value is ever derived from the other.
+export const MAX_PLANNER_REPOSITORY_EVIDENCE = 6;
+export const DEFAULT_PLANNER_EVIDENCE_BUDGET = MAX_PLANNER_REPOSITORY_EVIDENCE;
+export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
+
+// Smallest equivalent read-only surface that pi-subagents children expose reliably. The
+// extension-backed repo_search/LSP tools live in the parent runtime and are not available in the
+// isolated planner child, so the documented fallback allowlist is used. The agent definition's
+// `tools:` frontmatter must match this list exactly (pinned by a test).
+export const PLANNER_EVIDENCE_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls']);
+// The structured-output call is the planner's result channel, never repository evidence.
+export const PLANNER_RESULT_TOOL = 'structured_output';
+
+export function plannerEvidenceBudget(config = {}) {
+  const configured = Number(config.implementationPlannerEvidenceBudget ?? DEFAULT_PLANNER_EVIDENCE_BUDGET);
+  if (!Number.isSafeInteger(configured) || configured < 0) {
+    throw new Error(`implementationPlannerEvidenceBudget must be a non-negative integer, got ${String(config.implementationPlannerEvidenceBudget)}`);
+  }
+  return Math.min(configured, MAX_PLANNER_REPOSITORY_EVIDENCE);
+}
+
+// Trusted, runtime-side admission for the planner's evidence actions. Every admitted evidence
+// call consumes one unit whether or not it later fails or returns nothing, there is no way to
+// extend the budget, and once exhausted no further repository exploration is admitted.
+export function createPlannerEvidenceGate(budget) {
+  const cap = Math.min(Math.max(Number.isSafeInteger(budget) ? budget : 0, 0), MAX_PLANNER_REPOSITORY_EVIDENCE);
+  let used = 0;
+  return {
+    cap,
+    admit(toolName) {
+      if (toolName === PLANNER_RESULT_TOOL) return { allowed: true, evidence: false, used, remaining: cap - used };
+      if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) {
+        return { allowed: false, evidence: false, used, remaining: cap - used, reason: `${toolName} is not available to the implementation planner (read-only evidence tools only)` };
+      }
+      if (used >= cap) {
+        return { allowed: false, evidence: true, used, remaining: 0, reason: `Planner evidence budget of ${cap} is exhausted; return the structured plan now without further repository exploration` };
+      }
+      used += 1;
+      return { allowed: true, evidence: true, used, remaining: cap - used };
+    },
+  };
+}
 
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
 // reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
@@ -186,7 +232,7 @@ export function plannerTask(env = process.env, { repair = false, layoutHint = nu
   const layoutGuidance = layoutHint
     ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
     : '';
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
+  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. You may spend a small, hard-capped number of read-only repository evidence actions (at most ${MAX_PLANNER_REPOSITORY_EVIDENCE}; typically 1-3) to plan against the current worktree, then you must return the structured result. Do not implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
 
 Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "large_mutation": true|false, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the five listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } } and nothing else.` : ''}
 
@@ -202,57 +248,98 @@ ${issue.body}`;
 // inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
 const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
 
+// Sums numeric usage fields (recursively) across planner attempts; null when nothing was reported.
+export function addUsage(total, next) {
+  if (!next || typeof next !== 'object') return total ?? null;
+  if (!total) return structuredClone(next);
+  const sum = { ...total };
+  for (const [key, value] of Object.entries(next)) {
+    if (typeof value === 'number') sum[key] = (typeof sum[key] === 'number' ? sum[key] : 0) + value;
+    else if (value && typeof value === 'object' && !Array.isArray(value)) sum[key] = addUsage(sum[key] && typeof sum[key] === 'object' ? sum[key] : null, value);
+    else if (!(key in sum)) sum[key] = value;
+  }
+  return sum;
+}
+
 export async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null) {
   const request = {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
-    metricCall: 'planner',
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: 0,
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
-    toolBudget: { hard: 3 },
+  };
+  const evidenceCap = plannerEvidenceBudget(config);
+  // Every attempt is a fresh child with a fresh gate, so the cap must be spent across the whole
+  // planning lifecycle, not per attempt. The parent cannot see how much a failed child used, so
+  // fail closed: only the first attempt may gather evidence; a retry gets 0 (structured_output
+  // stays available) and can never push the lifecycle past the hard cap.
+  const applyEvidenceCap = attempt => {
+    const cap = attempt === 0 ? evidenceCap : 0;
+    // Backstop only: pi-subagents counts every child tool call (including structured_output
+    // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative cap is the child-side
+    // gate (pi-planner-evidence.mjs); leave headroom for the result call and its schema retry.
+    request.toolBudget = { hard: cap + 3 };
+    request.childEnv = { [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap) };
   };
   const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
   // One hard deadline for the whole planning lifecycle: retries only get the remaining time.
   const deadlineMs = Number(config.implementationPlannerTimeoutMs ?? 45000);
   const startedAt = Date.now();
   let response;
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      request.timeoutMs = deadlineMs - (Date.now() - startedAt);
-      if (request.timeoutMs <= 0) {
-        throw Object.assign(new Error(`${config.implementationPlannerAgent} planning deadline of ${deadlineMs} ms exhausted`), { delegationStatus: 'timed_out' });
+  // Planner usage is one lifecycle-level record: attempts are summed and recorded exactly once.
+  let usage = null;
+  let status = 'error';
+  const childSession = randomUUID();
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        applyEvidenceCap(attempt);
+        request.timeoutMs = deadlineMs - (Date.now() - startedAt);
+        if (request.timeoutMs <= 0) {
+          throw Object.assign(new Error(`${config.implementationPlannerAgent} planning deadline of ${deadlineMs} ms exhausted`), { delegationStatus: 'timed_out' });
+        }
+        response = await runStructuredSubagent(pi, ctx, request, signal);
+        usage = addUsage(usage, response.usage);
+        break;
+      } catch (error) {
+        usage = addUsage(usage, error?.delegationUsage);
+        const message = String(error?.message ?? error);
+        const missing = message.includes('Missing structured_output call');
+        const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
+        const retryable = missing || schemaFailure;
+        const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
+        if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
+        console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
+          agent: config.implementationPlannerAgent,
+          reason,
+          attempt: attempt + 1,
+          retriesExhausted: retryable && attempt >= retries,
+          error: message,
+        })}`);
+        if (!retryable || attempt >= retries) throw error;
+        console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
+          agent: config.implementationPlannerAgent,
+          reason,
+          attempt: attempt + 1,
+        })}`);
       }
-      response = await runStructuredSubagent(pi, ctx, request, signal);
-      break;
-    } catch (error) {
-      const message = String(error?.message ?? error);
-      const missing = message.includes('Missing structured_output call');
-      const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
-      const retryable = missing || schemaFailure;
-      const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
-      if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
-      console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
-        agent: config.implementationPlannerAgent,
-        reason,
-        attempt: attempt + 1,
-        retriesExhausted: retryable && attempt >= retries,
-        error: message,
-      })}`);
-      if (!retryable || attempt >= retries) throw error;
-      console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
-        agent: config.implementationPlannerAgent,
-        reason,
-        attempt: attempt + 1,
-      })}`);
     }
+    const validated = validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
+    status = 'completed';
+    return { ...validated, usage, layoutHint };
+  } catch (error) {
+    if (error && typeof error === 'object') {
+      error.delegationUsage = usage;
+      status = error.delegationStatus ?? 'error';
+    }
+    throw error;
+  } finally {
+    recordDescendantMetric({
+      call: 'planner', scope: 'session', childSession, parentSession: ctx.sessionManager.getSessionId(), status, usage,
+    });
   }
-  return {
-    ...validateImplementationPreparation(normalizeImplementationPreparation(response.result.value)),
-    usage: response.usage ?? null,
-    layoutHint,
-  };
 }
 
 // Hard maximum for the bootstrap planner (not an expected duration). A healthy-but-slow planner
