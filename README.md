@@ -1,239 +1,148 @@
-# Social MCP
+# Lode Runner-Style Terminal Game
 
-Open-source MCP server connecting AI agents directly to official social-network APIs without paid analytics middleware.
+A playable, ten-level Lode Runner-style arcade game for a normal Linux/macOS
+terminal, implemented with the Python standard library only.
 
-## Goal
+## Running
 
-```text
-ChatGPT / Pi / Codex
-        |
-       MCP
-        |
-    Social MCP
-        |
-   Application Core
-    /          \
-Threads API   TikTok API
+From the repository root:
 
-Web Admin ─────┘
+```bash
+python -m lode_runner
 ```
 
-The first version targets **Threads** and **TikTok**. Instagram can be added later.
+Other invocations:
 
-## Principles
+```bash
+python -m lode_runner --check    # validate all ten level maps and print a summary
+python -m lode_runner --legend   # print the symbol legend
+```
 
-- Use official platform APIs.
-- Keep the service self-hostable.
-- Never store OAuth secrets or access tokens in Git.
-- Separate read/analytics tools from write/publishing tools.
-- Require explicit user intent before publishing, replying, deleting, reposting, or otherwise changing external state.
-- Keep platform adapters independent.
-- Manage social-account connections through the Web Admin rather than manual token copying.
+The game needs an interactive terminal of at least **60 columns by 22 rows**.
+If the window is smaller, the game exits with a message instead of drawing a
+scrambled screen. The terminal is always restored to its original mode on
+normal exit, on Ctrl-C, and on unhandled errors.
 
-## Development and releases
+## Controls
 
-`dev` is the GitHub default branch and the integration branch for daily work. Start task branches from `dev`, open implementation pull requests into `dev`, and merge them only after CI and an independent review. Pull requests with `Closes #<issue-number>` close their linked issues when merged into the default branch.
+| Key                | Action                          |
+| ------------------ | ------------------------------- |
+| Arrow keys / `WASD` | Move, climb ladders, hang on ropes |
+| `Z`                | Dig the brick diagonally down-left |
+| `X`                | Dig the brick diagonally down-right |
+| `R`                | Restart the current level      |
+| `P`                | Pause / resume                 |
+| `H`                | Toggle the help overlay        |
+| `C`                | Toggle the ASCII/Unicode glyph set |
+| `Q`                | Quit                           |
 
-`main` is reserved for future releases. Do not merge Pi task branches into `main` or copy routine development changes there. When releases begin, promote a verified `dev` state through a separate human-reviewed `dev` → `main` pull request, using a merge commit to preserve branch ancestry. Tag the release on `main` after its checks pass. Protect both branches from force pushes and deletion; require the applicable checks and review for merges.
+Input is read one byte at a time in raw mode, so holding or rapidly pressing a
+movement key just queues more actions; it never leaves the terminal in an
+unexpected state.
 
-Workflow details and branch protection requirements: [CI and agent workflow rules](docs/CI_RULES.md).
+## Symbol legend
 
-## Confirmed API scope (September 2026)
+| Symbol | Meaning       | Notes                                                   |
+| ------ ------------- | ---------------- | --------------------------------------------------------- |
+| ` `     | empty            | entities fall through                                   |
+| `#`     | solid block      | indestructible, supports entities, never diggable       |
+| `B`      | brick              | diggable; a dug hole regenerates after 60 ticks          |
+| `L`      | ladder             | climb up/down; a ladder cell holds an entity up           |
+| `=`      | rope               | hang from it and walk along it; dropping off the end falls |
+| `o`      | gold               | collect it; all gold must be resolved to open the exit  |
+| `X`      | exit               | completing the level once the exit is open                |
+| `@`      | player start       | exactly one per level                                   |
+| `G`      | guard              | chases the player                                        |
 
-### Threads
+The renderer's default `ascii` glyph set uses the symbols above. The `unicode`
+set (`C` key) draws nicer block glyphs; `.` marks an open dug hole.
 
-Target the official Threads API and Meta OAuth.
+## Rules
 
-Planned capabilities include connected profile, posts/replies, account/content insights, permitted search and mentions, publishing, replies, quote/repost operations, reply management and deletion.
+* Walk left/right, climb ladders, and hang from ropes. Anything not standing on
+  brick/rock, not on a ladder and not hanging from a rope falls one cell per
+  tick.
+* Gold chests sit on the floor; walking onto one collects it.
+* The exit stays sealed until **every** gold piece is resolved, i.e. either
+  collected by the player or resting back on the board. Guards may pick gold up
+  and carry it for 30 ticks, then always return it to its original cell, so a
+  guard can never permanently hide required gold. If a guard holding gold dies,
+  the gold returns immediately.
+* While standing, dig diagonally down-left (`Z`) or down-right (`X`) into brick.
+  You cannot dig rock, ladders, ropes, empty space, dug holes, or a cell that an
+  entity occupies.
+* A dug hole stays open for `HOLE_LIFETIME` (60) ticks and then regenerates. An
+  entity inside the regenerating brick is killed: a guard respawns at its start
+  after 20 ticks and scores 50 points; the player only survives if they can
+  climb out, otherwise the level restarts.
+* Guards fall into holes, are trapped for `TRAP_DURATION` (20) ticks, then climb
+  out and resume the chase.
+* Any contact with an active guard costs a life and restores the level to its
+  initial deterministic state.
 
-Exact scopes must be requested only as needed and verified against current Meta requirements during implementation.
+## Scoring and lives
 
-### TikTok
+* Gold: **+25**. A trapped/entombed guard: **+50**. Completing a level: **+500**.
+* New games start with **3 lives** (`Engine(lives=...)`).
+* Dying restarts the current level and restores the score the player had when
+  the level started, so a restart can never be used to farm points. Losing the
+  last life ends the game; clearing level 10 shows the victory screen and allows
+  a clean exit or a new game.
 
-Use TikTok Login Kit/API for OAuth and the official Display and Content Posting APIs.
+## Terminal assumptions and rendering
 
-Read-side targets include profile/statistics and accessible video metadata/metrics. Publishing targets include draft upload and Direct Post when the application/account is eligible.
-
-Public Direct Post must **not** be assumed. TikTok review/audit and the required publishing scope may be necessary. The adapter exposes only capabilities actually granted to the connected application.
+* Plain ANSI terminal (no GUI, no curses dependency).
+* Frames are painted in place: the loop moves the cursor home and repaints the
+  whole screen each tick instead of scrolling, so nothing flickers or scrolls
+  away.
+* The cursor is hidden during play and shown again afterwards; the alternate
+  screen buffer is used and released.
+* Simulation ticks are driven by a fixed 1/15 s cadence but the game logic never
+  reads the clock, so it is fully deterministic and testable headlessly.
 
 ## Architecture
 
-```text
-                         ChatGPT / Pi / Codex
-                                  |
-                                 MCP
-                                  |
-                         +------------------+
-                         |    Social MCP    |
-                         |     Python       |
-                         +--------+---------+
-                                  |
-                         +--------v---------+
-                         | Application Core |
-                         +---+-----------+--+
-                             |           |
-                      Threads adapter  TikTok adapter
-                             |           |
-                        Threads API    TikTok API
-
-Browser
-   |
-   v
-+-------------------+
-|     Web Admin     |
-+---------+---------+
-          |
-       FastAPI
-          |
-  +-------+--------+
-  | OAuth / Admin  |
-  | Token storage  |
-  | Status / Logs  |
-  +-------+--------+
-          |
-        SQLite
+```
+lode_runner/
+  levels.py          symbol legend, level parsing, validation, reachability proofs
+  builtin_levels.py  the ten handcrafted level maps and their constraints
+  game.py            one level: entities, gravity, digging, guard AI, events
+  engine.py          progression, lives, score, pause, restart
+  render.py          game state -> text lines (charset glyphs, status, help)
+  terminal.py        raw mode, key decoding, size check, ANSI painters
+  std_interface.py   the stdin/stdout terminal session object
+  app.py             the interactive game loop
+  cli.py             argument parsing and the --check/--legend validation hooks
 ```
 
-Initial Python layout:
+Game logic is completely decoupled from the terminal: `Game.step(action)` takes
+an explicit action and advances exactly one tick, and `Renderer` turns that state
+into plain strings, so the whole game runs headlessly in tests.
 
-```text
-src/social_mcp/
-  server/
-  admin/
-  auth/
-  platforms/
-    threads/
-    tiktok/
-  tools/
-    read/
-    write/
-  storage/
-  models/
-```
+## Level authoring
 
-The MCP layer and Web Admin use the same application core. Platform adapters own platform-specific API behavior. OAuth/token persistence belongs to the auth/storage layers rather than MCP tools.
+Levels are rectangular text maps (see the legend above). `builtin_levels.py`
+renders them from declarative descriptions (ground row, floors, ladders, ropes,
+gold chests one row above the floor they rest on, guards, player, exit).
 
-## Web Admin
+Every map must be rectangular, contain exactly one `@`, one `X`, at least one
+`G`, the declared minimum of gold, and fit the 60x22 minimum terminal. The
+loader also proves a completion route exists: either walking (including falling
+and ladders) or, for the levels designed around digging, by opening at most two
+brick holes. Run `python -m lode_runner --check` to validate all ten.
 
-The initial admin UI should provide:
+The ten levels are: First Run, First Dig, Rope Walk, Trap Lesson, Split Tower,
+False Floors, Guard Traffic, The Vault, Vertical Maze, Final Gauntlet.
 
-- Dashboard with service and platform connection status;
-- Accounts with **Connect/Reconnect Threads** and later **Connect/Reconnect TikTok**;
-- granted permissions/capabilities;
-- token expiry/refresh status without exposing token values;
-- MCP status;
-- operational logs suitable for troubleshooting.
-
-OAuth starts from the Web Admin and returns to a server-side callback. Users should not normally copy access tokens manually.
-
-The first version may serve a small admin UI from the same application/container. A separate frontend service is not required initially.
-
-## HTTP layer
-
-Use **FastAPI** for the Web Admin HTTP surface, OAuth callbacks and admin API.
-
-The MCP protocol remains a separate interface over the same application core. FastAPI is not the business-logic layer.
-
-## Storage
-
-Use **SQLite** initially for local persistent state such as connected accounts, OAuth metadata and token lifecycle information.
-
-OAuth access/refresh tokens must be protected at rest; the database must not contain plaintext tokens merely because it is local. Encryption keys/secrets remain outside the database and outside Git.
-
-PostgreSQL is intentionally deferred until multi-user or operational requirements justify it.
-
-## Authentication and secrets
-
-Runtime configuration will include values such as:
-
-```text
-META_APP_ID
-META_APP_SECRET
-TIKTOK_CLIENT_KEY
-TIKTOK_CLIENT_SECRET
-TOKEN_ENCRYPTION_KEY
-```
-
-Real credentials, encryption keys and OAuth tokens must never be committed. `.env.example` contains names and empty placeholders only; deployment secrets come from environment variables or an appropriate secrets mechanism. See [OAuth and token strategy](docs/oauth.md) for the end-to-end Threads/Meta OAuth flow, required scopes, token lifecycle, and safe local storage.
-
-The Web Admin itself must be authenticated before the service is exposed beyond a trusted local network.
-
-## Deployment target
-
-Initial deployment is a **single Docker workload on the N150 Linux host** containing the Python application, MCP endpoint, FastAPI HTTP layer and Web Admin assets, with persistent SQLite storage mounted outside the disposable container filesystem.
-
-Splitting components into separate services can be done later if needed.
-
-
-## CI and local checks
-
-`ci.yml` runs on pull requests targeting `dev`, on pushes to `dev`, and on manual dispatch, using fresh GitHub-hosted runners. It runs Ruff, pytest, Node CI/control-plane contract tests, and runner-autoscaler checks. A separate Docker job builds the image, starts Compose with a unique project name and a temporary encryption key, tests the running HTTP service, and removes its volume and containers even when a check fails. A completed PR CI run wakes Merge Gate through `ci-terminal-wake.yml`, and Merge Gate merges only a PR whose current HEAD has green PR CI. A green `dev` CI run wakes Merge Gate for the next eligible reviewed PR; a red run stops that merge sequence. Pi product agents run their own pre-publication product checks on trusted self-hosted N150 runners, but CI on the actual merged `dev` commit is the integration truth. No Meta or TikTok credentials are needed.
-
-To run the same checks locally with Python 3.12, Node.js and Docker Compose:
+## Running the tests
 
 ```bash
-python3.12 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
-ruff check .
-pytest
-node --test tests/*.test.mjs
-bash tests/test_runner_autoscaler.sh
-
-export TOKEN_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
-docker compose up --build --wait
-port="$(docker compose port app 8000 | awk -F: '{print $NF}')"
-CI_BASE_URL="http://127.0.0.1:${port}" python tests/test_ci_container.py
-docker compose down --volumes --remove-orphans
+pytest tests/test_lode_runner.py
 ```
 
-See [Docker deployment on N150](docs/deploy.md) for production deployment, the persistent token storage strategy, and how secrets are kept out of the image and repository.
-
-
-## Development phases
-
-1. Define MCP runtime/language and stable Threads tool contract. **Done.**
-2. Establish Python/FastAPI application skeleton, SQLite storage and minimal Web Admin shell.
-3. Implement Threads OAuth initiated from Web Admin, callback handling, encrypted token persistence and token lifecycle.
-4. Implement Threads read-only profile/content tools.
-5. Implement Threads insights/search/replies tools.
-6. Implement Threads publishing and reply-management tools.
-7. Implement TikTok OAuth through Web Admin.
-8. Implement TikTok profile/video read tools.
-9. Implement TikTok draft upload.
-10. Implement TikTok Direct Post after required API access/audit is available.
-11. Docker deployment and end-to-end ChatGPT/Pi/Codex tests.
-12. Add Instagram adapter if useful.
-
-## Safety model
-
-Read operations can run directly.
-
-External writes—publishing, replying, reposting, deleting content or changing account state—must require explicit user intent before execution.
-
-The Web Admin manages credentials/connections; it does not weaken the confirmation boundary for MCP write tools.
-
-## Phase 1
-
-The first functional milestone is **Threads through the Web Admin**:
-
-```text
-Admin login
-   -> Connect Threads
-   -> OAuth callback
-   -> encrypted token storage
-   -> connection/capability status
-   -> MCP profile/posts
-   -> insights/replies/search
-   -> publishing
-```
-
-## Decisions
-
-Architecture decisions are recorded under `docs/adr/`.
-
-- ADR 0001: Python for the MCP server.
-
-## Status
-
-Architecture and Threads MCP tool contract are defined. No application credentials or platform secrets are stored in this repository.
+No test needs a TTY. The suite covers level parsing and validation, the ten
+bundled maps, movement (walk, ladder, rope, gravity, collisions), gold and exit
+progression, valid/invalid digging, hole lifetime and regeneration, guards
+falling in and escaping holes, entombment, contact death, deterministic guard
+movement and tie-breaks, guard gold carry/drop, restart, pause, progression,
+victory, score/lives, and a module/CLI smoke test.
