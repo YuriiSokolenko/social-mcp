@@ -56,7 +56,8 @@ import {
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
-import { recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
+import { classifyWorktreeDrift, recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
+import { captureWorktreeBaseline, observeWorktreeDrift, readWorktreeBaseline, readWorktreeObserved } from './pi-common/worktree-baseline.mjs';
 import { assertImplementerFileSet } from './pi-common/implementer-result.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
 import {
@@ -1150,7 +1151,33 @@ export default function (pi) {
     return codingSessionAgent;
   }
 
+  // Trusted ownership evidence for unjournaled cleanup (#438): record the run-start untracked set
+  // before the model can act. Exclusive create, so forks and later hooks never overwrite it.
+  function driftEvidence(cwd) {
+    const journal = mutationJournalState(cwd, process.env);
+    const journalPaths = new Map();
+    for (const entry of journal.entries) journalPaths.set(entry.path, entry.id);
+    const receipt = mutationScopeReceipt(cwd, process.env);
+    return {
+      baseline: readWorktreeBaseline(process.env),
+      observed: readWorktreeObserved(process.env),
+      acceptedPaths: new Set((receipt.accepted ?? []).map(item => item.path)),
+      journalPaths,
+    };
+  }
+
+  function observeDriftSafely(cwd, phase) {
+    try { observeWorktreeDrift(cwd, process.env, phase); } catch (error) {
+      console.warn(`PI_WORKTREE_OBSERVE_FAILED ${JSON.stringify({ phase, message: String(error?.message ?? error) })}`);
+    }
+  }
+
   pi.on('session_start', async (_event, ctx) => {
+    if (stage === 'implementer') {
+      try { captureWorktreeBaseline(ctx.cwd, process.env); } catch (error) {
+        console.warn(`PI_WORKTREE_BASELINE_CAPTURE_FAILED ${JSON.stringify({ message: String(error?.message ?? error) })}`);
+      }
+    }
     // The sandbox preflight is the first hard gate: nothing else starts if it fails.
     if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
     if (stage === 'implementer' && config.productiveProgress?.codingSessionTool) ensureCodingSessionAgent();
@@ -1516,7 +1543,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'recover_worktree',
       label: 'Recover accidental worktree changes',
-      description: 'Delete one untracked file or restore one tracked file to HEAD without a shell or coding session. Refuses escapes, symlinks, ignored files, .git and .gitignore. Returns the current changed files and validates them against expected_files immediately; pass the intended final file set. A mismatch is recoverable: clean remaining accidental files, then submit_result.',
+      description: 'Delete one untracked file or restore one tracked file to HEAD without a shell or coding session. delete_untracked and revert_tracked work only on paths the runtime can prove changed during this stage (clean/absent in the run-start baseline, not journaled, delete also not in accepted scope); pre-existing, journaled (use undo_mutation) and protected paths are refused with a precise code. Refuses escapes, symlinks, ignored files, .git and .gitignore. A file-set mismatch lists each remaining path under file_set.drift with its exact recovery action. Returns the current changed files and validates them against expected_files immediately; pass the intended final file set. A mismatch is recoverable: clean remaining accidental files, then submit_result.',
       parameters: Type.Object({
         action: Type.Union([Type.Literal('delete_untracked'), Type.Literal('revert_tracked')]),
         path: Type.String({ minLength: 1, maxLength: 1000 }),
@@ -1524,7 +1551,13 @@ export default function (pi) {
         reason: Type.String({ minLength: 1, maxLength: 500 }),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        const result = recoverWorktree({ ...params, cwd: ctx.cwd, base: baseRef(), ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE });
+        const result = recoverWorktree({
+          ...params,
+          cwd: ctx.cwd,
+          base: baseRef(),
+          ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE,
+          ...driftEvidence(ctx.cwd),
+        });
         invalidateTerminalReceipt(process.env);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
       },
@@ -1566,7 +1599,12 @@ export default function (pi) {
             assertImplementerFileSet(changed, params.expected_files);
             fileSet = { status: 'pass', changed_files: changed };
           } catch (error) {
-            fileSet = { status: 'invalid', changed_files: changed, summary: error.message };
+            fileSet = {
+              status: 'invalid',
+              changed_files: changed,
+              summary: error.message,
+              drift: classifyWorktreeDrift({ cwd: ctx.cwd, changed, expectedFiles: params.expected_files, ...driftEvidence(ctx.cwd) }),
+            };
           }
         } catch (error) {
           fileSet = { status: 'infra_error', summary: error.message };
@@ -2302,6 +2340,7 @@ export default function (pi) {
     if (stage === 'implementer' && RECEIPT_INVALIDATING_TOOLS.has(event.toolName)) {
       invalidateTerminalReceipt(process.env);
     }
+    if (stage === 'implementer' && event.toolName === 'bash') observeDriftSafely(cwd, 'before');
 
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);
     const repositoryStateBefore = semanticMutation
@@ -2359,6 +2398,7 @@ export default function (pi) {
       return;
     }
     if (!event.isError && TRUSTED_RECOVERY_TOOLS.has(event.toolName)) trustedRecoveryEpoch += 1;
+    if (stage === 'implementer' && event.toolName === 'bash') observeDriftSafely(ctx.cwd, 'after');
     // pi rejects a call whose arguments were cut off at the output ceiling before execution and
     // may not route that rejection through tool_result; steer from here so the truncation
     // guidance (begin the coding session instead of regenerating) still reaches the model once.

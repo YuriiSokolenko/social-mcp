@@ -70,6 +70,7 @@ jobs:
           echo "PI_VALIDATION_LEDGER_FILE=$RUNNER_TEMP/pi-validation-ledger-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
           echo "PI_ACCEPTED_MUTATION_SCOPE_FILE=$RUNNER_TEMP/pi-accepted-mutation-scope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_MUTATION_JOURNAL_FILE=$RUNNER_TEMP/pi-mutation-journal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
+          echo "PI_WORKTREE_BASELINE_FILE=$RUNNER_TEMP/pi-worktree-baseline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue
         id: preflight
