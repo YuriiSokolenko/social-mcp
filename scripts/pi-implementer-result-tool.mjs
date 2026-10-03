@@ -6,6 +6,7 @@ import { baseRef } from './pi-common/project-config.mjs';
 import { runGit as git } from './pi-common/git.mjs';
 import { assertImplementerFileSet, writeImplementerResult } from './pi-common/implementer-result.mjs';
 import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
+import { mutationScopeReceipt } from './pi-common/accepted-mutation-scope.mjs';
 
 const lines = (text) => text.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
 const gitPaths = (text) => text.split('\0').filter(Boolean);
@@ -219,7 +220,10 @@ export default function (pi) {
         assertImplementerFileSet(changedPaths, data.files);
       }
 
-      data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, data);
+      data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, {
+        ...data,
+        accepted_scope: mutationScopeReceipt(process.cwd(), process.env),
+      });
       return { data };
     },
   });
