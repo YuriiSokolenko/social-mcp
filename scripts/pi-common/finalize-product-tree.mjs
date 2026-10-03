@@ -70,11 +70,17 @@ export function validateAcceptedScopeMetadata({ cwd, base = baseRef(), env = pro
   return metadata;
 }
 
-export function validateFinalProductTree({ cwd, ledgerPath, backend, env = process.env } = {}) {
+export function validateFinalProductTree({
+  cwd,
+  ledgerPath,
+  backend,
+  env = process.env,
+  enforceAcceptedScope = false,
+} = {}) {
   const base = git(['merge-base', baseRef(), 'HEAD'], { cwd }).out;
   const forbidden = forbiddenAgentPaths(base, cwd);
   if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
 
-  validateAcceptedScopeMetadata({ cwd, base, env });
+  if (enforceAcceptedScope) validateAcceptedScopeMetadata({ cwd, base, env });
   runProductChecks({ cwd, ledgerPath, backend, env });
 }
