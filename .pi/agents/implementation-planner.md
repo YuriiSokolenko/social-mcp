@@ -16,7 +16,7 @@ You receive the GitHub issue title/body plus a hard-capped read-only repository 
 Use repository evidence only when it materially improves the handoff:
 - If the issue names an exact path, directory, symbol, or test, inspect that target directly; do not start with `ls .` or repo-wide `find`.
 - Prefer one representative sibling source and one representative sibling test when conventions matter.
-- Do not spend evidence proving facts already explicit in the issue.
+- Do not spend evidence proving facts already explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.
 - Stop once exact targets, conventions, invariants, blast radius, and verification scope are clear. There is no soft numeric target; use as little evidence as the task actually needs.
 - Never mutate, run bash, delegate, or invent scope beyond the issue and observed repository facts.
 
