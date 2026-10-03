@@ -396,6 +396,14 @@ export class ProgressController {
     return this.productiveState;
   }
 
+  evidenceUnlockAvailable() {
+    return Boolean(
+      this.productiveBlockerTool &&
+      this.productiveState === 'action_required' &&
+      !this.evidenceUnlockUsedSinceProgress
+    );
+  }
+
   complexityRecorded() {
     return !this.requireComplexity || Boolean(this.complexity);
   }
