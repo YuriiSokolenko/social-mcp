@@ -9,18 +9,24 @@ const states = new Map();
 
 const gitPaths = text => text.split('\0').filter(Boolean);
 
+function scopePathError(message) {
+  const error = new Error(message);
+  error.code = 'scope_invalid_path';
+  return error;
+}
+
 function canonicalPath(cwd, requestedPath) {
   if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
-    throw new Error('mutation scope paths must be non-empty strings');
+    throw scopePathError('mutation scope paths must be non-empty strings');
   }
   const root = path.resolve(cwd);
   const absolute = path.resolve(root, requestedPath);
   if (absolute === root || !absolute.startsWith(`${root}${path.sep}`)) {
-    throw new Error(`mutation scope path escapes the current worktree: ${requestedPath}`);
+    throw scopePathError(`mutation scope path escapes the current worktree: ${requestedPath}`);
   }
   const relative = path.relative(root, absolute).split(path.sep).join('/');
   if (relative === '.git' || relative.startsWith('.git/')) {
-    throw new Error('mutation scope cannot target .git');
+    throw scopePathError('mutation scope cannot target .git');
   }
   return relative;
 }
@@ -174,7 +180,7 @@ export function registerMutationScope({
       const error = new Error(JSON.stringify({
         code: 'scope_retroactive_publishable_rejected',
         paths: retroactive,
-        recovery: 'Remove or restore these paths first. A publishable scope amendment must be accepted before the path becomes changed.',
+        recovery: 'Remove or restore these paths first. A publishable scope amendment must be accepted before the path becomes changed. Restored baseline paths without a trusted receipt cannot be retroactively authorized; delete or restore them to dev.',
       }));
       error.code = 'scope_retroactive_publishable_rejected';
       throw error;
@@ -184,13 +190,20 @@ export function registerMutationScope({
   const destination = disposition === 'publishable' ? state.accepted : state.temporary;
   for (const pathName of normalized) {
     if (disposition === 'publishable' && state.temporary.has(pathName)) {
-      const error = new Error(JSON.stringify({
-        code: 'scope_temporary_promotion_rejected',
-        paths: [pathName],
-        recovery: 'Temporary paths cannot be promoted after use. Remove the temporary artifact, then accept the path before a new publishable mutation.',
-      }));
-      error.code = 'scope_temporary_promotion_rejected';
-      throw error;
+      if (!changed.has(pathName)) {
+        // A temporary path becomes eligible again only after it is fully absent/restored.
+        // Removing the old temporary receipt makes the documented cleanup route real:
+        // accept it again *before* a new publishable mutation.
+        state.temporary.delete(pathName);
+      } else {
+        const error = new Error(JSON.stringify({
+          code: 'scope_temporary_promotion_rejected',
+          paths: [pathName],
+          recovery: 'Temporary paths cannot be promoted while they are changed. Remove or restore the temporary artifact, then accept the clean path before a new publishable mutation.',
+        }));
+        error.code = 'scope_temporary_promotion_rejected';
+        throw error;
+      }
     }
     destination.set(pathName, reason);
   }
@@ -244,7 +257,7 @@ export function assertAcceptedMutationScope({ cwd, receipt, base = baseRef() }) 
       unexpected_paths: unexpectedPaths,
       temporary_paths: temporaryPaths,
       baseline_unaccepted_paths: baselinePaths,
-      recovery: 'Remove or restore every unexpected/temporary path. Publishable scope cannot be granted retroactively after a path is already changed.',
+      recovery: 'Remove or restore every unexpected/temporary path. Publishable scope cannot be granted retroactively after a path is already changed. Baseline paths restored without a trusted receipt are cleanup-only: delete them or restore them to dev.',
     }));
   }
   return changed;
