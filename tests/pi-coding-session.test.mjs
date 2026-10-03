@@ -812,9 +812,13 @@ test('a hidden provider-emitted tool clears forcing but remains non-progress and
 
 test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
   const logs = runtimeScenario('fork-prose-force');
-runtimeScenario('forbidden-capability');
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"accept_mutation_scope"/);
+});
+
+test('coding session rejects an unavailable required capability before launching the fork', () => {
+  const logs = runtimeScenario('forbidden-capability');
+  assert.match(logs, /"phase":"rejected".*"reason":"required_capability_unavailable"/);
 });
 
 test('a deliberately non-compliant second prose-only turn still aborts with durable execution-failure metadata', () => {
