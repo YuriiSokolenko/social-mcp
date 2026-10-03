@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import { captureMutationSnapshot } from '../scripts/pi-common/mutation-snapshot.mjs';
+import { mutationJournalStateFromRef } from '../scripts/pi-common/issue-worktree.mjs';
 import {
   MUTATION_JOURNAL_MAX_PRIOR_BYTES,
   actionableMutationEntries,
@@ -236,4 +237,38 @@ test('#424 bounded journal rejects an existing-file snapshot that cannot be pers
     () => assertMutationJournalCapacity({ cwd: f.root, snapshot, env: f.env }),
     error => error.code === 'mutation_journal_snapshot_too_large',
   );
+});
+
+
+test('#424 checkpoint trailer reader restores the newest explicit journal state', t => {
+  const f = fixture(t);
+  const git = (...args) => execFileSync('git', args, { cwd: f.root, encoding: 'utf8' });
+  git('init', '-q');
+  git('config', 'user.name', 'test');
+  git('config', 'user.email', 'test@example.invalid');
+  fs.writeFileSync(path.join(f.root, 'base.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-qm', 'base');
+
+  const entry = mutate(f, 'checkpoint.tmp', 'checkpoint scratch\n');
+  const encodedActive = encodeMutationJournalState(f.root, mutationJournalState(f.root, f.env));
+  fs.writeFileSync(path.join(f.root, 'checkpoint.tmp'), 'checkpoint scratch\n');
+  git('add', '-A');
+  git('commit', '-qm', `saved work\n\nPi-Mutation-Journal: ${encodedActive}`);
+  const activeRef = git('rev-parse', 'HEAD').trim();
+  assert.equal(mutationJournalStateFromRef(activeRef, f.root).entries.at(-1).id, entry.id);
+
+  undoMutation({
+    cwd: f.root,
+    mutationId: entry.id,
+    reason: 'clear scratch before later checkpoint',
+    env: f.env,
+  });
+  const encodedEmpty = encodeMutationJournalState(f.root, mutationJournalState(f.root, f.env));
+  fs.writeFileSync(path.join(f.root, 'marker.txt'), 'later checkpoint\n');
+  git('add', '-A');
+  git('commit', '-qm', `later saved work\n\nPi-Mutation-Journal: ${encodedEmpty}`);
+  const latestRef = git('rev-parse', 'HEAD').trim();
+
+  assert.deepEqual(mutationJournalStateFromRef(latestRef, f.root).entries, []);
 });
