@@ -8,6 +8,7 @@ import { runGit as git } from './git.mjs';
 import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projectConfig, workflowFile } from './project-config.mjs';
 import { PIPELINE_LABELS } from './state-machine.mjs';
 import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
+import { assertAcceptedMutationScope } from './accepted-mutation-scope.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -74,7 +75,7 @@ export function publicationBase(cwd, startCommit) {
   return integrated ? baseRef() : startCommit;
 }
 
-export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) {
+export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile }) {
   const { cleanDirectories, cleanFiles } = projectConfig().workspace;
   for (const p of cleanDirectories) fs.rmSync(`${cwd}/${p}`, { recursive: true, force: true });
   for (const p of cleanFiles) fs.rmSync(`${cwd}/${p}`, { force: true });
@@ -85,7 +86,15 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   const staged = lines(git(['diff','--cached','--name-only'], { cwd }).out);
   const sensitive = staged.filter(p => /(^|\/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|\/))/.test(p) && !/(^|\/)\.env\.example$/.test(p));
   if (sensitive.length) throw new Error(`Refusing to checkpoint credential/runtime files: ${sensitive.join(', ')}`);
-  if (git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0) git(['commit','-m',`feat: implement issue #${issue}`], { cwd });
+  if (git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0) {
+    let message = `feat: implement issue #${issue}`;
+    const metadata = resultFile ? readImplementerResult(resultFile) : null;
+    if (metadata?.scope_enforcement === 'predeclared' && metadata.accepted_scope) {
+      const encodedScope = Buffer.from(JSON.stringify(metadata.accepted_scope), 'utf8').toString('base64url');
+      message += `\n\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
+    }
+    git(['commit','-m',message], { cwd });
+  }
   const base = publicationBase(cwd, startCommit);
   if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
   const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
@@ -104,6 +113,15 @@ export function assertPublicationFileSet({ cwd, base, resultFile }) {
   }
   const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
   assertImplementerFileSet(changed, metadata.files);
+  if (metadata.scope_enforcement === 'predeclared') {
+    assertAcceptedMutationScope({ cwd, receipt: metadata.accepted_scope, base });
+  } else if (metadata.scope_enforcement !== 'unsandboxed-gated') {
+    throw new Error(JSON.stringify({
+      code: 'accepted_scope_missing',
+      unexpected_paths: changed,
+      recovery: 'Changed Pi work must carry a trusted predeclared accepted-scope receipt before publication.',
+    }));
+  }
   return changed;
 }
 
@@ -174,7 +192,7 @@ export function nextLabelsForVerification(currentLabels, verificationState, unsa
   return [...names, PIPELINE_LABELS.needsHuman];
 }
 
-export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, backend }) {
+export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, backend, cwd, startCommit }) {
   const { api, replaceLabels } = githubClient();
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   const metadata = readImplementerResult(resultFile);
@@ -193,6 +211,8 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, 
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
   ].join('\n');
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
+  if (!cwd || !startCommit) throw new Error('cwd and startCommit are required before PR publication');
+  assertPublicationFileSet({ cwd, base: publicationBase(cwd, startCommit), resultFile });
   if (existing[0]) {
     const pr = await api(`/pulls/${existing[0].number}`,'PATCH',{title:metadata.title,body});
     const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState, unsandboxedBackend);
@@ -212,9 +232,9 @@ export async function dispatchReviewer(prNumber) {
 
 async function main() {
   const [cmd, ...a] = process.argv.slice(2);
-  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
+  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
-  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4]})));
+  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4],cwd:a[5],startCommit:a[6]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
   throw new Error('unknown publication command');
 }
