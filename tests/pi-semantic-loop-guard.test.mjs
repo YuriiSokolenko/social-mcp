@@ -849,6 +849,119 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
   }
 });
 
+test('#424 undo and persistent rollback invalidate terminal receipt before ledger append can fail', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-undo-ledger-failure-'));
+  const journalFile = path.join(os.tmpdir(), `pi-undo-ledger-journal-${process.pid}-${Date.now()}.json`);
+  const receiptFile = path.join(os.tmpdir(), `pi-undo-ledger-receipt-${process.pid}-${Date.now()}.json`);
+  const ledgerFile = path.join(os.tmpdir(), `pi-undo-ledger-ledger-${process.pid}-${Date.now()}.jsonl`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'target.txt'), 'base\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+    fs.writeFileSync(ledgerFile, '');
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      const journal = await import(JOURNAL_URL);
+      const snapshots = await import(SNAPSHOT_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+      const target = path.join(repo, 'target.txt');
+
+      const directMutation = content => {
+        const before = snapshots.captureMutationSnapshot(repo, 'target.txt');
+        fs.writeFileSync(target, content);
+        const after = snapshots.captureMutationSnapshot(repo, 'target.txt');
+        return journal.recordSuccessfulMutation({
+          cwd: repo,
+          before,
+          after,
+          tool: 'write',
+          disposition: 'publishable',
+          env: process.env,
+        });
+      };
+
+      const forceLedgerFailure = async action => {
+        const originalAppend = fs.appendFileSync;
+        fs.appendFileSync = () => { throw new Error('forced ledger append failure'); };
+        try {
+          await assert.rejects(action(), /forced ledger append failure/);
+        } finally {
+          fs.appendFileSync = originalAppend;
+        }
+        assert.equal(fs.existsSync(process.env.PI_TERMINAL_RESULT_FILE), false);
+      };
+
+      const entry = directMutation('undo-target\\n');
+      fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'pre-undo receipt');
+      await forceLedgerFailure(() => registeredTools.get('undo_mutation').execute(
+        'undo-ledger-failure',
+        {
+          mutation_id: entry.id,
+          expected_files: [],
+          reason: 'verify receipt invalidation before failed ledger append',
+        },
+        null,
+        null,
+        ctx,
+      ));
+      assert.equal(fs.readFileSync(target, 'utf8'), 'base\\n');
+
+      // Record the next mutation through runtime events so this is the normal persistent
+      // rollback_last_mutation path rather than a direct journal-only fixture.
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'runtime-write',
+        toolName: 'write',
+        input: { path: 'target.txt' },
+      }, ctx), undefined);
+      fs.writeFileSync(target, 'rollback-target\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'runtime-write',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+
+      fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'pre-rollback receipt');
+      await forceLedgerFailure(() => registeredTools.get('rollback_last_mutation').execute(
+        'rollback-ledger-failure',
+        { reason: 'verify rollback invalidates before failed ledger append' },
+        null,
+        null,
+        ctx,
+      ));
+      assert.equal(fs.readFileSync(target, 'utf8'), 'base\\n');
+      assert.equal(journal.mutationJournalState(repo, process.env).entries.length, 0);
+      console.log('UNDO_LEDGER_FAILURE_RECEIPT_INVALIDATED_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_TERMINAL_RESULT_FILE: receiptFile,
+      PI_VALIDATION_LEDGER_FILE: ledgerFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [{ path: 'target.txt', rationale: 'Ledger failure receipt invalidation regression target.' }],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+
+    assert.match(result.stdout, /UNDO_LEDGER_FAILURE_RECEIPT_INVALIDATED_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+    fs.rmSync(receiptFile, { force: true });
+    fs.rmSync(ledgerFile, { force: true });
+  }
+});
+
 test('#424 parent rollback follows shared fork journal order instead of stale process-local identity', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cross-process-rollback-'));
   const journalFile = path.join(os.tmpdir(), `pi-cross-process-journal-${process.pid}-${Date.now()}.json`);
