@@ -57,7 +57,7 @@ const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
 const ROLLBACK_TOOL = 'rollback_last_mutation';
 // `begin_coding_session` hands the rest of the work to a 16k fork of this session that mutates
 // the worktree through the normal tools, so it earns the same progress/verification accounting.
-const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
+const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'recover_worktree']);
 // The set of tools a one-shot elevated mutation response is allowed to spend
 // its turn on: an actual mutation, a rollback, or a terminal submission.
 export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);

@@ -78,13 +78,13 @@ Build the Pi worker, the general worker, and the separate check sandbox first:
 
 ```bash
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
-docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.3 .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.4 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
 The Pi worker tag `0.89.1-mini-swe` pins `mini-swe-agent==2.4.6`, `pi-mcp-adapter@3.2.0`,
 `lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`, BasedPyright `1.40.1`, and the official JetBrains
-Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The Pi and general worker tags are `0.89.1-mini-swe` and `0.87.3`; the general image now includes Buildx. `run_check` tooling lives in the separate `0.1.0` sandbox image. System-package changes must use a new image tag rather than silently reusing an already-built local tag. The sandbox image independently contains Python 3.12, the repository's pinned Ruff and pytest tooling, Node for the configured `node_tests` profile, and Git for repository tests; it contains no runner registration, GitHub CLI, SSH client, or agent runtime. To roll the Pi pool back, set
+Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The Pi and general worker tags are `0.89.1-mini-swe` and `0.87.4`; the general image now includes Buildx. `run_check` tooling lives in the separate `0.1.0` sandbox image. System-package changes must use a new image tag rather than silently reusing an already-built local tag. The sandbox image independently contains Python 3.12, the repository's pinned Ruff and pytest tooling, Node for the configured `node_tests` profile, and Git for repository tests; it contains no runner registration, GitHub CLI, SSH client, or agent runtime. To roll the Pi pool back, set
 `RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
 untracked `.env` and recreate only `pi-runner-manager`:
 
@@ -92,12 +92,12 @@ untracked `.env` and recreate only `pi-runner-manager`:
 docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
 ```
 
-To deploy the general worker update, build the exact `0.87.3` tag, set
-`GENERAL_RUNNER_IMAGE=n150/github-general-runner-ephemeral:0.87.3` in the host
+To deploy the general worker update, build the exact `0.87.4` tag, set
+`GENERAL_RUNNER_IMAGE=n150/github-general-runner-ephemeral:0.87.4` in the host
 `.env`, then recreate only the general manager:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.3 .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.4 .
 docker compose --env-file .env up -d --force-recreate --no-deps general-runner-manager
 ```
 
@@ -310,3 +310,38 @@ Architect additionally loads the pinned `pi-repomap` extension from `scripts/pi-
 Project configuration lives in `.pi/repomap.json` with `refreshStrategy: "auto"` and a fixed **1536-token** map budget. RepoMap is an Architect-only navigation hint for unclear repository areas, not authoritative source text. The repository skill `.agents/skills/repomap-navigation/SKILL.md` records that bounded Architect policy.
 
 RepoMap writes its incremental cache under `.pi/cache/`; that path is gitignored so ephemeral Architect navigation state is never committed.
+
+## General-pool daemon quarantine (#430)
+
+The general manager checks bounded `docker info` and `docker system df` before
+polling/starting workers. The second check traverses container rw snapshots;
+`docker ps` alone did not expose the corruption seen in the #401 smoke run.
+Workers repeat these checks before registering with GitHub, closing the gap
+between manager health and runner startup. Pi workers still have no Docker socket.
+
+A failed check stops the spawn batch and quarantines the general pool. The manager
+removes only idle registrations with the `general` label belonging to its own prefix; GitHub refuses deletion
+of busy runners. It leaves busy jobs and other pools alone, checks again on the next
+bounded poll, and releases quarantine only after two healthy polls. A log containing
+`infra_error code=DOCKER_METADATA_CORRUPTION` means the daemon reported the specific
+`rw layer snapshot not found` error. Other health failures use
+`DOCKER_DAEMON_UNHEALTHY`. No host-wide prune, storage deletion, or daemon restart is
+automatic: a shared host may still be serving busy jobs.
+
+Inspect the named container with `docker inspect <container-id>`, and collect
+`journalctl -u docker -u containerd` around the failure before host repair. Check
+exited ephemeral workers and Docker/containerd shutdown or cleanup events. Remove
+an identified disposable stale container through the Docker API only after verifying
+it is not busy; if that cannot succeed, drain the host and restart/recreate its daemon
+under operator control. Never delete snapshot directories or metadata files manually.
+The quarantine health checks must pass before the host resumes accepting CI work.
+
+Deploy these changes by building the new manager tag
+`n150/pi-runner-manager:run-check-docker-0.1.3` and general worker tag
+`n150/github-general-runner-ephemeral:0.87.4` from this checkout, then updating the
+host `.env` and recreating the managers. Existing cached tags do not acquire the
+new gates. Do not restart busy worker containers during deployment.
+
+The CI BuildKit step retains required Buildx initialization; `docker system df`
+and `docker buildx du` inside the job are warning-only diagnostics. Merge Gate
+still retries infrastructure once and never dispatches PR Fix for those failures.

@@ -89,8 +89,8 @@ jobs:
           fi
           docker buildx version
           docker buildx inspect
-          docker system df
-          docker buildx du
+          docker system df || echo "::warning::Optional Docker disk diagnostics failed; inspect host metadata"
+          docker buildx du || echo "::warning::Optional BuildKit cache diagnostics failed"
           id runner
 
       - name: Generate ephemeral test encryption key

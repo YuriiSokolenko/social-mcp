@@ -307,8 +307,59 @@ verify_run_check_sandbox() {
   return 1
 }
 
+# Quarantine is pool-wide: no registration tokens or containers while unhealthy.
+# Never prune/restart a shared daemon automatically; that could kill busy jobs.
+DOCKER_QUARANTINED=false
+DOCKER_HEALTHY_POLLS=0
+general_daemon_health() {
+  [ "$MOUNT_DOCKER_SOCKET" == true ] || return 0
+  local output command code
+  for command in info metadata; do
+    if [ "$command" == info ]; then
+      if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker info 2>&1)"; then continue; fi
+    else
+      # Unlike `ps`, system df traverses rw snapshots and detects the #401 corruption.
+      if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker system df 2>&1)"; then continue; fi
+    fi
+    code=DOCKER_DAEMON_UNHEALTHY
+    [[ "$output" != *'rw layer snapshot not found'* ]] || code=DOCKER_METADATA_CORRUPTION
+    DOCKER_QUARANTINED=true
+    DOCKER_HEALTHY_POLLS=0
+    log "infra_error code=$code general pool quarantined check=$command diagnostic=$output; inspect Docker/containerd journals and stale container IDs; repair host before retrying (no automatic prune/restart)"
+    return 1
+  done
+  if [ "$DOCKER_QUARANTINED" == true ]; then
+    DOCKER_HEALTHY_POLLS=$((DOCKER_HEALTHY_POLLS + 1))
+    [ "$DOCKER_HEALTHY_POLLS" -ge 2 ] || return 1
+    DOCKER_QUARANTINED=false
+    DOCKER_HEALTHY_POLLS=0
+    log "general pool recovered after two healthy daemon polls"
+  fi
+}
+
+quarantine_general_runners() {
+  local names name id
+  # GitHub refuses deletion of busy runners. Stop idle registrations accepting
+  # unrelated jobs even if Docker cannot enumerate/stop their containers.
+  names="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" '
+    .runners | if type != "array" then error("missing runners") else
+      map(select((.name | startswith($prefix)) and .busy == false
+        and any(.labels[]?; (.name | ascii_downcase) == "general"))) |
+      map([.id, .name] | @tsv) | join("\n") end')" || return 1
+  [ -n "$names" ] || return 0
+  while IFS=$'\t' read -r id name; do
+    [[ "$id" =~ ^[0-9]+$ && "$name" == "${RUNNER_PREFIX}-"* ]] || continue
+    log "quarantine: removing idle general runner registration id=$id"
+    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || {
+      log "warning: quarantine deletion refused for runner id=$id (possibly newly busy); continuing with remaining idle runners"
+      continue
+    }
+  done <<< "$names"
+}
+
 spawn_runner() {
   local token name docker_args run_check_token
+  general_daemon_health || return 1
   if [ "$MOUNT_PI_CONFIG" == true ]; then
     verify_run_check_sandbox || return 1
   fi
@@ -357,6 +408,11 @@ spawn_runner() {
 main() {
   log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s workflows=${WORKFLOW_FILES} labels=${RUNNER_LABELS}"
   while true; do
+    if ! general_daemon_health; then
+      quarantine_general_runners || log "warning: unable to quarantine idle general registrations"
+      sleep "$POLL_SECONDS"
+      continue
+    fi
     cleanup_stale_registrations || log "warning: stale-runner cleanup failed"
 
     if ! queued="$(queued_jobs)" || ! busy="$(busy_ephemeral_runners)" || ! active="$(active_containers)"; then
@@ -398,7 +454,7 @@ main() {
     log "queued=$queued busy=$busy active=$active desired=$desired model_slots_total=$model_total model_slots_busy=$model_busy model_capacity=$available spawning=$to_start"
     if [ "$to_start" -gt 0 ]; then
       for _ in $(seq 1 "$to_start"); do
-        spawn_runner || log "warning: failed to start runner"
+        spawn_runner || { log "warning: failed to start runner; stopping spawn batch"; break; }
       done
     fi
 

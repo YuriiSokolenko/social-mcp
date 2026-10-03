@@ -31,6 +31,7 @@ const MUTATION_TOOLS = new Set([
   'write',
   'begin_coding_session',
   'rollback_last_mutation',
+  'recover_worktree',
 ]);
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
 const NEUTRAL_TOOLS = new Set([
