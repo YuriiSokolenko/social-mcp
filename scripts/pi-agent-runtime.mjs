@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 
 import {
+  ELEVATED_MUTATION_TURN_TOOLS,
   FINISH_TOOLS,
   ProgressController,
   actionRequiredToolNames,
@@ -565,6 +566,7 @@ export default function (pi) {
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
+  let elevatedTurnAttemptedScopePrelude = false;
 
   function validationRunId() {
     return resolveValidationRunId(process.env);
@@ -722,7 +724,7 @@ export default function (pi) {
         : largeMutationBudgetActive
           // UX on top of the controller's own hard gate: while the elevated budget is active,
           // don't even show tools this turn is not allowed to call.
-          ? unrestrictedActiveTools.filter(name => FINISH_TOOLS.has(name))
+          ? unrestrictedActiveTools.filter(name => ELEVATED_MUTATION_TURN_TOOLS.has(name))
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
@@ -1572,6 +1574,7 @@ export default function (pi) {
   pi.on('turn_start', (event) => {
     actionTurnAttemptedTool = false;
     elevatedTurnAttemptedFinishTool = false;
+    elevatedTurnAttemptedScopePrelude = false;
     loopGuardSteeredThisTurn = false;
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
@@ -1730,6 +1733,7 @@ export default function (pi) {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
+    if (event.toolName === ACCEPT_MUTATION_SCOPE_TOOL) elevatedTurnAttemptedScopePrelude = true;
 
     const cwd = ctx?.cwd || process.cwd();
 
@@ -1973,21 +1977,41 @@ export default function (pi) {
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
 
-    // The turn that just ended was the one-shot elevated mutation response (if any): consume
-    // it unconditionally so a second elevated response is never granted automatically, and
-    // flag it when it did not even attempt the mutation/terminal action it was granted for.
+    // Scope acceptance may be the necessary first call before a large new-file mutation.
+    // Preserve the one-shot elevated budget across that declaration-only turn; consume it only
+    // after a real mutation/rollback/terminal action, or collapse it on unrelated/no-action use.
+    let preserveElevatedAfterScopePrelude = false;
     if (stage === 'implementer' && controller.largeMutationBudgetActive()) {
-      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
-        stage,
-        phase: 'consumed',
-        attemptedFinishTool: elevatedTurnAttemptedFinishTool,
-        outputTokens,
-      })}`);
-      if (!elevatedTurnAttemptedFinishTool) {
-        console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
+      if (elevatedTurnAttemptedFinishTool) {
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'consumed',
+          attemptedFinishTool: true,
+          scopePrelude: elevatedTurnAttemptedScopePrelude,
+          outputTokens,
+        })}`);
+        controller.resetLargeMutationBudget();
+        syncActionToolSurface(productiveState);
+      } else if (elevatedTurnAttemptedScopePrelude) {
+        preserveElevatedAfterScopePrelude = true;
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'scope_prelude',
+          preserved: true,
+          outputTokens,
+        })}`);
+      } else {
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'consumed',
+          attemptedFinishTool: false,
+          scopePrelude: false,
+          outputTokens,
+        })}`);
+        console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no accept_mutation_scope/structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
+        controller.resetLargeMutationBudget();
+        syncActionToolSurface(productiveState);
       }
-      controller.resetLargeMutationBudget();
-      syncActionToolSurface(productiveState);
     }
 
     const preComplexityRequired =
@@ -2082,7 +2106,10 @@ export default function (pi) {
     // apply the elevated ceiling to exactly the upcoming response.
     const largeMutationBudgetGrantedThisTurn =
       stage === 'implementer' && controller.largeMutationBudgetPending();
-    if (largeMutationBudgetGrantedThisTurn) {
+    if (preserveElevatedAfterScopePrelude) {
+      targetActionCap = controller.largeMutationBudgetMaxTokens;
+      budgetReason = 'large_mutation_scope_prelude';
+    } else if (largeMutationBudgetGrantedThisTurn) {
       targetActionCap = controller.largeMutationBudgetMaxTokens;
       budgetReason = 'large_mutation_elevated';
       controller.activateLargeMutationBudget();
