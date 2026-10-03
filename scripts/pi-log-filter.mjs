@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import readline from "node:readline";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const tty = process.stdout.isTTY || Boolean(process.env.GITHUB_ACTIONS);
@@ -282,9 +282,24 @@ function printToolDetails(title, args, result, isError) {
   }
 }
 
+// Child sessions append their own per-response records to the metrics file, including ones that
+// ended in failure, timeout or cancellation. Replay them into the job log (once) so the usage
+// collector, which only reads logs, attributes them to this root stage.
+function replayDescendantMetrics() {
+  const file = process.env.PI_METRICS_FILE;
+  if (!file || !existsSync(file)) return;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.includes('"descendant":true')) continue;
+    try {
+      if (JSON.parse(line).descendant === true) console.log(`PI_METRIC ${line}`);
+    } catch { /* ignore a torn line */ }
+  }
+}
+
 function reportFinal(status) {
   if (reportedFinal) return;
   reportedFinal = true;
+  replayDescendantMetrics();
   closeGroup();
   const elapsed = Date.now() - sessionStarted;
   heading(status === "completed" ? "■" : "◼", `Agent ${status} · ${duration(elapsed)}`, status === "completed" ? C.green : C.yellow);
@@ -456,6 +471,9 @@ for await (const line of rl) {
       if (usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
         recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: fields, responseMs: elapsed });
+      } else {
+        // A completed response with no provider usage is an unknown, not an absent record.
+        recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: null, reason: "provider_usage_unavailable", responseMs: elapsed });
       }
       responseStarted = null;
       streamKind = null;
@@ -490,6 +508,7 @@ for await (const line of rl) {
             issue: issue ?? 0,
             phase,
             call: "subagent",
+            aggregate: true,
             response: subagentMetricNumber,
             agent: typeof started?.args?.agent === "string" ? started.args.agent : undefined,
             usage,

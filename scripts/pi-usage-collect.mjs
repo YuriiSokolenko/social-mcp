@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { githubClient } from "./pi-common/github-api.mjs";
 import { workflowFile } from "./pi-common/project-config.mjs";
+import { summarizeUsage } from "./pi-common/usage-ledger.mjs";
 
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
@@ -12,7 +13,8 @@ const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
 let run = event.workflow_run;
 const path = "reports/pi-usage.csv";
 const metricsBranch = "pi-metrics";
-const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "url"];
+const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "complete", "unknown_requests", "url"];
+const legacyColumns = columns.filter((column) => column !== "complete" && column !== "unknown_requests");
 const { raw: request } = githubClient({ repo, token });
 
 function events(log, prefix) {
@@ -31,12 +33,15 @@ function integer(value) {
 
 function parseCsv(source) {
   const lines = source.trim().split("\n");
-  if (lines[0] !== columns.join(",")) throw new Error("Unexpected usage CSV header");
+  const legacy = lines[0] === legacyColumns.join(",");
+  if (!legacy && lines[0] !== columns.join(",")) throw new Error("Unexpected usage CSV header");
+  const header = legacy ? legacyColumns : columns;
   return lines.slice(1).filter(Boolean).map((line) => {
     // All values in this file are numeric, fixed labels or URLs with no commas.
     const fields = line.split(",");
-    if (fields.length !== columns.length) throw new Error("Invalid usage CSV row");
-    return Object.fromEntries(columns.map((column, i) => [column, fields[i]]));
+    if (fields.length !== header.length) throw new Error("Invalid usage CSV row");
+    // Rows written before completeness accounting cannot prove their totals were complete.
+    return { complete: "unknown", unknown_requests: "", ...Object.fromEntries(header.map((column, i) => [column, fields[i]])) };
   });
 }
 
@@ -88,27 +93,20 @@ for (const job of jobs) {
   }
   const issue = task?.issue ?? 0;
   const phase = task?.phase ?? systemPhase;
-  const responses = new Map();
-  for (const metric of events(log, "PI_METRIC")) {
-    if (task && metric.issue !== issue || !integer(metric.response)) continue;
-    responses.set(`${metric.call}:${metric.response}`, metric);
-  }
-  const totals = { input: 0, output: 0, cache_read: 0, cache_write: 0, total_tokens: 0, model_seconds: 0 };
-  for (const metric of responses.values()) {
-    const usage = metric.usage ?? {};
-    totals.input += integer(usage.input);
-    totals.output += integer(usage.output);
-    totals.cache_read += integer(usage.cacheRead);
-    totals.cache_write += integer(usage.cacheWrite);
-    totals.total_tokens += integer(usage.totalTokens ?? (integer(usage.input) + integer(usage.output)));
-    totals.model_seconds += integer(metric.responseMs) / 1000;
-  }
+  const metrics = events(log, "PI_METRIC").filter((metric) => !task || metric.issue === issue);
+  const ledger = summarizeUsage(metrics);
+  const totals = {
+    input: ledger.totals.input, output: ledger.totals.output,
+    cache_read: ledger.totals.cacheRead, cache_write: ledger.totals.cacheWrite,
+    total_tokens: ledger.totals.total, model_seconds: ledger.totals.responseMs / 1000,
+  };
   const runnerSeconds = job.started_at && job.completed_at
     ? Math.max(0, Math.round((Date.parse(job.completed_at) - Date.parse(job.started_at)) / 1000)) : 0;
   newRows.push({
     scope: "attempt", issue, phase, run_id: run.id,
-    attempt: run.run_attempt, status: job.conclusion ?? "unknown", responses: responses.size,
+    attempt: run.run_attempt, status: job.conclusion ?? "unknown", responses: ledger.totals.responses,
     ...totals, model_seconds: totals.model_seconds.toFixed(1), runner_seconds: runnerSeconds,
+    complete: ledger.complete, unknown_requests: ledger.unknown.length,
     url: `https://github.com/${repo}/actions/runs/${run.id}/attempts/${run.run_attempt}`,
   });
 }
@@ -131,11 +129,14 @@ for (let retry = 0; retry < 8; retry++) {
     const total = issueTotals.get(row.issue) ?? {
       scope: "issue", issue: row.issue, phase: "all", run_id: "", attempt: "", status: "",
       responses: 0, input: 0, output: 0, cache_read: 0, cache_write: 0,
-      total_tokens: 0, model_seconds: 0, runner_seconds: 0, url: `https://github.com/${repo}/issues/${row.issue}`,
+      total_tokens: 0, model_seconds: 0, runner_seconds: 0, complete: true, unknown_requests: 0, url: `https://github.com/${repo}/issues/${row.issue}`,
     };
     for (const key of ["responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds"]) {
       total[key] += Number(row[key]);
     }
+    total.unknown_requests += Number(row.unknown_requests) || 0;
+    // An attempt whose completeness is unknown (legacy row) taints the issue total too.
+    if (String(row.complete) !== "true") total.complete = false;
     issueTotals.set(row.issue, total);
   }
   const sortedIssues = [...issueTotals.values()].sort((a, b) => Number(a.issue) - Number(b.issue));

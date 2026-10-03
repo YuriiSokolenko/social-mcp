@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -70,7 +70,7 @@ test("records finalized subagent tool usage as separate PI_METRIC rows", () => {
   ], { PI_ISSUE: "115", PI_PHASE: "implementation" });
 
   assert.match(output, /PI_METRIC \{"issue":115,"phase":"implementation","call":"main","response":1/);
-  assert.match(output, /PI_METRIC \{"issue":115,"phase":"implementation","call":"subagent","response":1,"agent":"scout","usage":\{"input":100,"output":20,"cacheRead":50,"cacheWrite":5,"totalTokens":175\},"responseMs":\d+\}/);
+  assert.match(output, /PI_METRIC \{"issue":115,"phase":"implementation","call":"subagent","aggregate":true,"response":1,"agent":"scout","usage":\{"input":100,"output":20,"cacheRead":50,"cacheWrite":5,"totalTokens":175\},"responseMs":\d+\}/);
 });
 
 test("reports completed usage at EOF when Pi never emits agent_end", () => {
@@ -207,4 +207,14 @@ test("redacts secret-bearing environment variable names and add-mask payloads", 
   assert.match(output, /DATABASE_PASSWORD=\[REDACTED\]/);
   assert.match(output, /MY_CREDENTIAL=\[REDACTED\]/);
   assert.match(output, /::add-mask::\[REDACTED\]/);
+});
+
+test("replays failed child-session usage from the metrics file into the job log", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-log-filter-metrics-"));
+  const file = join(dir, "metrics.jsonl");
+  const record = { issue: 115, phase: "implementation", descendant: true, call: "coding", childSession: "s1", response: 1, usage: { input: 5, output: 2, totalTokens: 7 } };
+  writeFileSync(file, `${JSON.stringify(record)}\n${JSON.stringify({ call: "main", response: 1 })}\n`);
+  const output = render([], { PI_METRICS_FILE: file });
+  assert.ok(output.includes(`PI_METRIC ${JSON.stringify(record)}`));
+  assert.equal((output.match(/"call":"main"/g) ?? []).length, 0);
 });

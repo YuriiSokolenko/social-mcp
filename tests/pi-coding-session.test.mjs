@@ -13,6 +13,7 @@ import {
   truncatedToolCallGuidance,
 } from '../scripts/pi-common/progress-controller.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+import { summarizeUsage } from '../scripts/pi-common/usage-ledger.mjs';
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-session-'));
@@ -135,6 +136,7 @@ test('the coding session is the same Implementer runtime, defined only in truste
 // ambient extensions; "tools" is the strict allowlist; context "fork" branches the parent's
 // persisted transcript. pi-bash-timeout.mjs needs the pi package, so the host asserts its path
 // but does not import it; run_check / submit_result executors are stubbed (their gates are real).
+let lastMetrics = [];
 function runtimeScenario(mode) {
   const dir = tempDir();
   try {
@@ -285,6 +287,7 @@ function runtimeScenario(mode) {
           childHandlers.get('turn_start')({ turnIndex: 0 });
           const blocked = await childHandlers.get('tool_call')({ toolName: 'bash', toolCallId: 'cleanup-bash', input: { command: 'rm -f stray.txt' } }, childCtx);
           assert.equal(blocked?.block, true, 'raw bash stays unavailable inside the coding session');
+          if (mode === 'incapable-transition') await childHandlers.get('turn_end')({ turnIndex: 0, message: { usage: { input: 7, output: 1, totalTokens: 8 } } }, childCtx);
           return respond(request, { status: 'completed', result: { kind: 'text', value: 'cleanup needs bash' }, usage: { output: 100 } });
         }
         if (mode === 'malformed-contract') {
@@ -306,7 +309,8 @@ function runtimeScenario(mode) {
         if (mode === 'tool-contract') {
           // write is in the authoritative first-request snapshot, so a missing executor is a real contract failure.
           await childHandlers.get('tool_execution_end')({ toolName: 'write', isError: true, result: { content: [{ type: 'text', text: 'Tool write not found' }] } }, childCtx);
-          return respond(request, { status: 'failed', error: 'nested executor unavailable' });
+          await childHandlers.get('turn_end')({ turnIndex: 0, message: { usage: { input: 10, output: 2, totalTokens: 12 } } }, childCtx);
+          return respond(request, { status: 'failed', error: 'nested executor unavailable', usage: { input: 50, output: 5, totalTokens: 55 } });
         }
         // Executors stubbed; the runtime's gates around them are real.
         childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
@@ -886,8 +890,12 @@ function runtimeScenario(mode) {
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context, PI_TERMINAL_RESULT_FILE: terminal,
         PI_IMPLEMENTER_RESULT_FILE: resultFile, PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
-        PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure },
+        PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure,
+        PI_METRICS_FILE: path.join(dir, 'metrics.jsonl'), PI_ISSUE: '7', PI_PHASE: 'implementation' },
     });
+    const metricsFile = path.join(dir, 'metrics.jsonl');
+    lastMetrics = fs.existsSync(metricsFile)
+      ? fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
     assert.equal(result.status, 0, result.stderr + result.stdout);
     return result.stdout + result.stderr;
   } finally {
@@ -1049,6 +1057,27 @@ test('#397–#402 nested unavailable tools abort as runtime infrastructure witho
   const logs = runtimeScenario('tool-contract');
   assert.match(logs, /PI_RUNTIME_FAILURE_NESTED/);
   assert.match(logs, /PI_TOOL_CONTRACT_FAILURE/);
+  // #425: the contract-failure exit still records the session and keeps the fork's per-response usage.
+  const session = lastMetrics.find(record => record.scope === 'session' && record.call === 'coding');
+  assert.equal(session?.status, 'contract_failure');
+  assert.equal(session.usage.totalTokens, 55);
+  // Per-response usage (12) and the failed envelope's roll-up (55) disagree: keep the known 55, flag the mismatch.
+  const ledger = summarizeUsage(lastMetrics);
+  assert.equal(ledger.calls.get('coding').total, 55);
+  assert.equal(ledger.complete, false);
+  assert.ok(ledger.unknown.some(entry => entry.reason === 'session_response_usage_mismatch'));
+  assert.ok(lastMetrics.some(record => record.call === 'coding' && record.scope === undefined && record.childSession === session.childSession));
+});
+
+test('#425 a second coding attempt after recovery keeps both sessions attributed once', () => {
+  runtimeScenario('incapable-transition');
+  const sessions = lastMetrics.filter(record => record.scope === 'session' && record.call === 'coding');
+  assert.equal(sessions.length, 2);
+  assert.notEqual(sessions[0].childSession, sessions[1].childSession);
+  const perSession = sessions.map(session => lastMetrics.filter(record => record.scope === undefined && record.childSession === session.childSession).length);
+  assert.ok(perSession.every(count => count > 0), 'each attempt has its own per-response usage');
+  const ledger = summarizeUsage(lastMetrics);
+  assert.equal(ledger.calls.get('coding').responses, perSession[0] + perSession[1]);
 });
 
 test('coding-session allowlist is derived from the executable registry, including hidden tools', () => {
