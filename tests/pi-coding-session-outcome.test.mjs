@@ -15,6 +15,7 @@ test('#402 earlier tool error is recovered by a trusted final submission', () =>
       status: 'ok',
       recovered_errors: ['read failed: unavailable tool'],
       unresolved_terminal_error: null,
+      receipt_error: null,
     },
   );
 });
@@ -35,4 +36,15 @@ test('#396 failed submit followed by valid retry succeeds while failed-only stay
   assert.equal(failedOnly.successful_final_submission, false);
   assert.equal(failedOnly.status, 'error');
   assert.equal(failedOnly.unresolved_terminal_error, 'submit_result file-set mismatch');
+});
+
+test('an invalid receipt is recoverable incomplete state, not a terminal session error', () => {
+  const result = normalizeCodingSessionOutcome({
+    submitted: false,
+    receiptError: new Error('terminal_receipt_candidate_mismatch'),
+  });
+  assert.equal(result.successful_final_submission, false);
+  assert.equal(result.status, 'incomplete');
+  assert.equal(result.unresolved_terminal_error, null);
+  assert.equal(result.receipt_error, 'terminal_receipt_candidate_mismatch');
 });

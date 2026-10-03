@@ -125,3 +125,52 @@ test('terminal receipt rejects foreign run, malformed marker and changed result 
     /terminal_receipt_invalid/,
   );
 });
+
+test('receipt defaults to the same run-start fallback base when latest dev is not integrated', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-fallback-base-'));
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo);
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  git('init', '-q');
+  git('config', 'user.name', 'Receipt Test');
+  git('config', 'user.email', 'receipt@example.invalid');
+  fs.writeFileSync(path.join(repo, 'app.py'), 'value = 1\n');
+  git('add', '-A');
+  git('commit', '-qm', 'base');
+  const startCommit = git('rev-parse', 'HEAD');
+  const branch = git('branch', '--show-current');
+
+  git('checkout', '-qb', 'upstream');
+  fs.writeFileSync(path.join(repo, 'upstream.py'), 'upstream = True\n');
+  git('add', '-A');
+  git('commit', '-qm', 'advance dev');
+  git('update-ref', 'refs/remotes/origin/dev', git('rev-parse', 'HEAD'));
+  git('checkout', '-q', branch);
+  fs.writeFileSync(path.join(repo, 'app.py'), 'value = 2\n');
+
+  const resultFile = path.join(root, 'result.json');
+  const terminalFile = path.join(root, 'terminal.json');
+  writeImplementerResult(resultFile, {
+    title: 'Fallback base',
+    summary: 'Bind a non-integrated candidate to its run-start base.',
+    changes: ['Update app value'],
+    files: ['app.py'],
+    security_notes: 'No security impact.',
+    limitations: 'None.',
+  });
+  const env = {
+    PI_STAGE: 'implementer',
+    PI_VALIDATION_RUN_ID: 'run-fallback',
+    PI_IMPLEMENTER_START_COMMIT: startCommit,
+    PI_TERMINAL_RESULT_FILE: terminalFile,
+  };
+
+  try {
+    const receipt = createSuccessfulTerminalReceipt({ cwd: repo, resultFile, env });
+    assert.equal(receipt.candidate_revision.base_commit, startCommit);
+    writeTerminalReceiptFile(terminalFile, receipt);
+    assert.doesNotThrow(() => assertSuccessfulTerminalReceipt({ cwd: repo, resultFile, env }));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

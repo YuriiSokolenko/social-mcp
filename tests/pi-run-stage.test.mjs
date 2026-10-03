@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { execFileSync } from 'node:child_process';
 
 import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
@@ -12,6 +13,11 @@ import { writeImplementerResult } from '../scripts/pi-common/implementer-result.
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
 import { createValidationRepairSpec, runStageWithValidationRecovery, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
 import { issueWorktreePatchPath } from '../scripts/pi-common/issue-worktree.mjs';
+import {
+  assertSuccessfulTerminalReceipt,
+  createSuccessfulTerminalReceipt,
+  writeTerminalReceiptFile,
+} from '../scripts/pi-common/terminal-receipt.mjs';
 
 function specFor(stage) {
   return createStageRunSpec({
@@ -475,6 +481,94 @@ test('shared validation recovery gives any implementer backend one focused repai
   assert.match(attempts[1].prompt, /BLE001 blind exception/);
   assert.equal(result.backend, 'fake');
   assert.equal(result.durationMs, 3);
+});
+
+test('trusted safe-fix drift routes into validation repair and resubmit', async (t) => {
+  const dir = temporaryDirectory(t, 'stage-safe-fix-resubmit-');
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  git('init', '-q');
+  git('config', 'user.name', 'Safe Fix Test');
+  git('config', 'user.email', 'safe-fix@example.invalid');
+  writeFileSync(join(dir, 'app.py'), 'value = 1\n');
+  git('add', '-A');
+  git('commit', '-qm', 'base');
+  const startCommit = git('rev-parse', 'HEAD');
+  git('update-ref', 'refs/remotes/origin/dev', startCommit);
+  writeFileSync(join(dir, 'app.py'), 'value = 2\n');
+
+  const resultFile = join(dir, 'implementer-result.json');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement the task',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: {
+      PI_STAGE: 'implementer',
+      PI_PHASE: 'implementation',
+      PI_IMPLEMENTER_RESULT_FILE: resultFile,
+      PI_VALIDATION_LEDGER_FILE: join(dir, 'ledger.jsonl'),
+      PI_VALIDATION_RUN_ID: 'safe-fix-run',
+      PI_IMPLEMENTER_START_COMMIT: startCommit,
+    },
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal.json'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+
+  const attempts = [];
+  let validations = 0;
+  const result = await runStageWithValidationRecovery(
+    spec,
+    async candidate => {
+      attempts.push(candidate);
+      writeImplementerResult(resultFile, {
+        title: 'Safe fix candidate',
+        summary: 'Exercise trusted validation mutation recovery.',
+        changes: ['Update app value'],
+        files: ['app.py'],
+        security_notes: 'No security impact.',
+        limitations: 'None.',
+      });
+      const env = {
+        ...candidate.environment,
+        PI_TERMINAL_RESULT_FILE: candidate.artifacts.terminalResultPath,
+      };
+      writeTerminalReceiptFile(
+        candidate.artifacts.terminalResultPath,
+        createSuccessfulTerminalReceipt({ cwd: dir, resultFile, env }),
+      );
+      return createStageRunResult({
+        backend: 'fake',
+        durationMs: 1,
+        artifacts: candidate.artifacts,
+      });
+    },
+    {
+      validate: () => {
+        validations += 1;
+        if (validations === 1) {
+          // Simulates Ruff's trusted safe-fix changing bytes after submit.
+          writeFileSync(join(dir, 'app.py'), 'value = 3\n');
+        }
+      },
+    },
+  );
+
+  assert.equal(attempts.length, 2);
+  assert.equal(validations, 2);
+  assert.equal(attempts[1].environment.PI_VALIDATION_REPAIR, 'true');
+  assert.equal(readFileSync(join(dir, 'app.py'), 'utf8'), 'value = 3\n');
+  assert.doesNotThrow(() => assertSuccessfulTerminalReceipt({
+    cwd: dir,
+    resultFile,
+    env: {
+      ...attempts[1].environment,
+      PI_TERMINAL_RESULT_FILE: spec.artifacts.terminalResultPath,
+    },
+  }));
+  assert.equal(result.backend, 'fake');
 });
 
 test('runtime failure metadata is cleared before every backend attempt', async (t) => {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { terminalResult, registerSubmitNudge, registerTerminalTool } from '../scripts/pi-common/terminal-tool.mjs';
+import { terminalMarkerSubmitted, terminalResult, registerSubmitNudge, registerTerminalTool } from '../scripts/pi-common/terminal-tool.mjs';
 
 test('terminalResult returns one terminating text result with details intact', () => {
   const details = { ok: true };
@@ -23,6 +23,31 @@ test('terminalResult records the shared terminal marker when configured', () => 
   } finally {
     if (previous === undefined) delete process.env.PI_TERMINAL_RESULT_FILE;
     else process.env.PI_TERMINAL_RESULT_FILE = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('implementer never accepts or creates the legacy bare terminal marker', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-strict-'));
+  const marker = path.join(dir, 'submitted');
+  try {
+    fs.writeFileSync(marker, 'submitted\n');
+    assert.equal(
+      terminalMarkerSubmitted({ PI_STAGE: 'implementer', PI_TERMINAL_RESULT_FILE: marker }),
+      false,
+    );
+    assert.equal(
+      terminalMarkerSubmitted({ PI_STAGE: 'reviewer', PI_TERMINAL_RESULT_FILE: marker }),
+      true,
+    );
+    assert.throws(
+      () => terminalResult('done', undefined, null, {
+        PI_STAGE: 'implementer',
+        PI_TERMINAL_RESULT_FILE: marker,
+      }),
+      /implementer_terminal_receipt_required/,
+    );
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
