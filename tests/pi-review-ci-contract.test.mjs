@@ -88,7 +88,7 @@ test('implementer integrates latest dev before shared post-backend validation an
   assert.match(validation, /validateFinalProductTree/);
   assert.match(
     validation,
-    /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
+    /result = await runBackendAttempt\(currentSpec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
   );
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
   assert.match(runner, /return await runSelectedStage\(spec, \{ backend, workspace \}\)/);
@@ -373,7 +373,7 @@ test('the PR body Validation section is rendered from the validation ledger, nev
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.doesNotMatch(publication, /validationLines/);
-  assert.match(publication, /renderValidationSection\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\)/);
+  assert.match(publication, /renderValidationSection\(ledgerRecords, \{ corrupted: ledgerCorrupted, candidateRevision \}\)/);
   assert.match(workflow, /PI_VALIDATION_LEDGER_FILE/);
   assert.match(workflow, /issue-publication\.mjs" pr "\$ISSUE" "\$PI_IMPLEMENTER_RESULT_FILE" "\$\{\{ github\.repository_owner \}\}" "\$PI_VALIDATION_LEDGER_FILE"/);
 });
@@ -713,7 +713,7 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
   assert.match(
     validation,
-    /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
+    /result = await runBackendAttempt\(currentSpec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
   );
 });
 

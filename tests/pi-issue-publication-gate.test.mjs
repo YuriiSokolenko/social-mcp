@@ -130,7 +130,11 @@ test('the issue-agent workflow passes the workflow_dispatch backend input direct
   // process could influence by writing to $GITHUB_ENV.
   assert.match(prStep, /issue-publication\.mjs" pr "\$ISSUE" "\$PI_IMPLEMENTER_RESULT_FILE" "\$\{\{ github\.repository_owner \}\}" "\$PI_VALIDATION_LEDGER_FILE" "\$\{\{ inputs\.backend \|\| 'pi' \}\}"/);
   assert.match(workflow, /verification_state=\$\(jq -r '\.verification_state' <<<"\$PR"\)/);
-  assert.match(workflow, /PI_TERMINAL_RESULT_FILE=\$RUNNER_TEMP\/pi-terminal-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}/);
+  assert.doesNotMatch(workflow, /PI_TERMINAL_RESULT_FILE/);
+  assert.match(
+    readScript('scripts/pi-run-stage.mjs', 'utf8'),
+    /writeGithubEnv\(env, 'PI_TERMINAL_RESULT_FILE', spec\.artifacts\.terminalResultPath\)/,
+  );
   const reviewStep = workflow.slice(workflow.indexOf('Start independent PR review'));
   assert.match(reviewStep, /if: steps\.checkpoint\.outputs\.changed == 'true' && steps\.pr\.outputs\.number != '' && steps\.pr\.outputs\.verification_state == 'VERIFIED'/);
 });
