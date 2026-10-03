@@ -50,10 +50,12 @@ export function registerSubmitNudge(pi, {
     if (nudgeCount > 0 && !repeatWhile()) return undefined;
     const limit = typeof maxNudges === 'function' ? maxNudges() : maxNudges;
     if (Number.isSafeInteger(limit) && limit >= 0 && nudgeCount >= limit) return undefined;
+    const resolvedContent = typeof content === 'function' ? content() : content;
+    if (typeof resolvedContent !== 'string' || !resolvedContent.trim()) return undefined;
     nudgeCount += 1;
     return {
       continue: true,
-      entries: [{ type: 'custom_message', customType, content, display: true }],
+      entries: [{ type: 'custom_message', customType, content: resolvedContent, display: true }],
     };
   });
 }
