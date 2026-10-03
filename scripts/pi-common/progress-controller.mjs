@@ -59,9 +59,11 @@ const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 // `begin_coding_session` hands the rest of the work to a 16k fork of this session that mutates
 // the worktree through the normal tools, so it earns the same progress/verification accounting.
 const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
-// The set of tools a one-shot elevated mutation response is allowed to spend
-// its turn on: an actual mutation, a rollback, or a terminal submission.
-export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ACCEPT_MUTATION_SCOPE_TOOL, ...TERMINAL_TOOLS]);
+// Actual finish actions that consume a one-shot elevated mutation response.
+export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
+// Scope declaration is a trusted prelude, not the mutation payload itself. It is allowed while
+// an elevated mutation budget is active, but must not consume that budget before the real edit.
+export const ELEVATED_MUTATION_TURN_TOOLS = new Set([...FINISH_TOOLS, ACCEPT_MUTATION_SCOPE_TOOL]);
 const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
 
 function positiveInteger(value, name) {
@@ -450,7 +452,7 @@ export class ProgressController {
     // spend it on nothing but an actual mutation, rollback, or terminal submission. This is
     // the real guarantee; the runtime's tool-surface restriction is UX on top of it, not a
     // substitute for it.
-    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !FINISH_TOOLS.has(toolName)) {
+    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !ELEVATED_MUTATION_TURN_TOOLS.has(toolName)) {
       return {
         block: true,
         reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only accept_mutation_scope, structural_edit, safe_edit, edit, write, rollback_last_mutation, or a terminal submit action are allowed.`,
