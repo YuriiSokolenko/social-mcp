@@ -190,13 +190,15 @@ function persistState(cwd, state, env) {
   const root = path.resolve(cwd);
   const normalized = normalizeMutationJournalState(root, state);
   if (!normalized) throw journalError('mutation_journal_invalid', 'mutation journal state is invalid');
-  states.set(root, normalized);
   const target = sidecarPath(env);
-  if (!target) return normalized;
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const temp = `${target}.tmp-${process.pid}-${randomUUID()}`;
-  fs.writeFileSync(temp, JSON.stringify(normalized, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(temp, target);
+  if (target) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const temp = `${target}.tmp-${process.pid}-${randomUUID()}`;
+    fs.writeFileSync(temp, JSON.stringify(normalized, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temp, target);
+  }
+  // The in-process state becomes authoritative only after the durable sidecar write succeeds.
+  states.set(root, normalized);
   return normalized;
 }
 
