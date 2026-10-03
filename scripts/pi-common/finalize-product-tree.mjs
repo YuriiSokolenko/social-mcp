@@ -46,11 +46,7 @@ export function integrateLatestDev({ conflictMessage, allowConflicts = false }) 
   return { conflicts: [] };
 }
 
-export function validateFinalProductTree({ cwd, ledgerPath, backend, env = process.env } = {}) {
-  const base = git(['merge-base', baseRef(), 'HEAD'], { cwd }).out;
-  const forbidden = forbiddenAgentPaths(base, cwd);
-  if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
-
+export function validateAcceptedScopeMetadata({ cwd, base, env = process.env } = {}) {
   const resultFile = env.PI_IMPLEMENTER_RESULT_FILE;
   const metadata = resultFile ? readImplementerResult(resultFile) : null;
   const changed = changedAgentPaths(base, cwd);
@@ -63,7 +59,7 @@ export function validateFinalProductTree({ cwd, ledgerPath, backend, env = proce
   }
   if (metadata?.outcome === IMPLEMENTER_OUTCOMES.changed) {
     if (metadata.scope_enforcement === 'predeclared') {
-      assertAcceptedMutationScope({ cwd, receipt: metadata.accepted_scope, base: baseRef() });
+      assertAcceptedMutationScope({ cwd, receipt: metadata.accepted_scope, base });
     } else if (metadata.scope_enforcement !== 'unsandboxed-gated') {
       throw new Error(JSON.stringify({
         code: 'accepted_scope_missing',
@@ -71,6 +67,14 @@ export function validateFinalProductTree({ cwd, ledgerPath, backend, env = proce
       }));
     }
   }
+  return metadata;
+}
 
+export function validateFinalProductTree({ cwd, ledgerPath, backend, env = process.env } = {}) {
+  const base = git(['merge-base', baseRef(), 'HEAD'], { cwd }).out;
+  const forbidden = forbiddenAgentPaths(base, cwd);
+  if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
+
+  validateAcceptedScopeMetadata({ cwd, base, env });
   runProductChecks({ cwd, ledgerPath, backend, env });
 }
