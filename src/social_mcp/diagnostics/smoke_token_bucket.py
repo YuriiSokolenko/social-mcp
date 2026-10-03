@@ -45,7 +45,7 @@ def token_bucket_transition(
     ):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{name} must be a number")
-        if not math.isfinite(value):
+        if isinstance(value, float) and not math.isfinite(value):
             raise ValueError(f"{name} must be finite")
         if value < 0:
             raise ValueError(f"{name} must not be negative")

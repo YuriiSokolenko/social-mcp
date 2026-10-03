@@ -24,6 +24,8 @@ def _decode(value):
     if isinstance(value, dict):
         if "$float" in value:
             return float(value["$float"])
+        if "$int" in value:
+            return 10 ** int(value["$int"].split("e")[1])
         if "$datetime" in value:
             return datetime.fromisoformat(value["$datetime"])
     return value
@@ -43,7 +45,7 @@ def test_probe(probe) -> None:
             function(*args)
     else:
         result = function(*args)
-        assert result == probe["returns"]
+        assert result == (tuple(probe["returns"]) if isinstance(probe["returns"], list) else probe["returns"])
 
 
 def test_manifest_is_well_formed() -> None:

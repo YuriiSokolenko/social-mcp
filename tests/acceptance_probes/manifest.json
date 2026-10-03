@@ -1,6 +1,6 @@
 {
   "description": "Trusted acceptance-boundary probes (#427). Control-plane protected: implementers cannot edit or delete them. Each probe is tied to a criterion and records whether the behaviour is an acceptance requirement or a documented policy choice.",
-  "args_encoding": "JSON values, plus {\"$float\": \"nan|inf|-inf|1.5\"} and {\"$datetime\": \"<ISO-8601>\"} tags.",
+  "args_encoding": "JSON values, plus {\"$float\": \"nan|inf|-inf|1.5\"} and {\"$datetime\": \"<ISO-8601>\"} tags, plus {\"$int\": \"1eN\"} for 10**N.",
   "criteria": {
     "retry-after-delta-grammar": {
       "source": "RFC 9110 section 10.2.3 delay-seconds = 1*DIGIT; issues #345/#400",
@@ -40,6 +40,7 @@
     {"id": "url-empty-query-no-marker", "criterion": "url-literal-preservation", "args": ["http://h/p?"], "returns": "http://h/p"},
     {"id": "bucket-bool-capacity", "criterion": "bucket-numeric-domain", "args": [0, true, 1, 1, 1], "raises": "ValueError"},
     {"id": "bucket-nan-tokens", "criterion": "bucket-numeric-domain", "args": [{"$float": "nan"}, 5, 1, 1, 1], "raises": "ValueError"},
+    {"id": "bucket-huge-int-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$int": "1e400"}, 1, 1, 1], "returns": [0, true]},
     {"id": "bucket-inf-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$float": "inf"}, 1, 1, 1], "raises": "ValueError"}
   ]
 }
