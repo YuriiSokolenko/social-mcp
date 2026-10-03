@@ -1476,7 +1476,7 @@ export default function (pi) {
     pi.registerTool({
       name: 'rollback_last_mutation',
       label: 'Rollback last mutation',
-      description: 'Fast shortcut for undoing the shared latest structural_edit/safe_edit/edit/write. Persistent journal order is authoritative across parent/coding-session processes and uses compare-before-undo. After bounded-journal degradation, rollback is available only in the process that made the local-only mutation; other processes refuse instead of selecting an older mutation. The local-only path also refuses if later bytes changed, but its prior bytes are not durable across process/resume boundaries.',
+      description: 'Fast shortcut for undoing the shared latest structural_edit/safe_edit/edit/write. Persistent journal order is authoritative across parent/coding-session processes and uses compare-before-undo. After bounded-journal degradation, rollback is available only in the process that made the local-only mutation; other processes refuse instead of selecting an older mutation. After resume the barrier is intentionally stale because no process owns its prior-byte snapshot, so this shortcut continues to refuse until a new journaled mutation supersedes the barrier or explicit targeted recovery resolves the state. The local-only path also refuses if later bytes changed.',
       parameters: Type.Object({
         reason: Type.String({ minLength: 1, maxLength: 500 }),
       }),
