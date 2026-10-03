@@ -18,6 +18,8 @@ export function normalizeUsage(value) {
   if (!Number.isSafeInteger(usage.totalTokens)) {
     usage.totalTokens = USAGE_KEYS.reduce((sum, key) => sum + (usage[key] ?? 0), 0);
   }
+  if (Number.isSafeInteger(value.turns) && value.turns >= 0) usage.turns = value.turns;
+  if (Number.isFinite(value.durationMs) && value.durationMs >= 0) usage.durationMs = value.durationMs;
   return usage;
 }
 
@@ -31,10 +33,33 @@ function responseKey(record) {
 }
 
 export function emptyTotals() {
-  return { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, responseMs: 0 };
+  return {
+    responses: 0,
+    providerResponses: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+    responseMs: 0,
+    providerResponseMs: 0,
+  };
 }
 
-function add(target, usage, responseMs) {
+function providerTurns(usage) {
+  return Number.isSafeInteger(usage?.turns) && usage.turns >= 0 ? usage.turns : 1;
+}
+
+function providerDurationMs(usage, fallback = 0) {
+  return Number.isFinite(usage?.durationMs) && usage.durationMs >= 0
+    ? usage.durationMs
+    : Number.isFinite(fallback) ? fallback : 0;
+}
+
+function add(target, usage, responseMs, {
+  providerResponses = 1,
+  providerResponseMs = responseMs,
+} = {}) {
   target.input += usage.input ?? 0;
   target.output += usage.output ?? 0;
   target.cacheRead += usage.cacheRead ?? 0;
@@ -42,6 +67,15 @@ function add(target, usage, responseMs) {
   target.total += usage.totalTokens;
   target.responseMs += Number.isFinite(responseMs) ? responseMs : 0;
   target.responses += 1;
+  target.providerResponses += Number.isSafeInteger(providerResponses) && providerResponses >= 0 ? providerResponses : 1;
+  target.providerResponseMs += Number.isFinite(providerResponseMs) && providerResponseMs >= 0 ? providerResponseMs : 0;
+}
+
+function supplementProviderRollup(target, sum, usage, responseMs = 0) {
+  const turns = Math.max(sum.providerResponses, providerTurns(usage));
+  const duration = Math.max(sum.providerResponseMs, providerDurationMs(usage, responseMs));
+  target.providerResponses += turns - sum.providerResponses;
+  target.providerResponseMs += duration - sum.providerResponseMs;
 }
 
 /**
@@ -80,8 +114,13 @@ export function summarizeUsage(records) {
       unknown.push({ call: record.call, childSession: sessionOf(record), response: record.response ?? null, reason: record.reason ?? "usage_unavailable" });
       return;
     }
-    add(row, usage, record.responseMs);
-    add(totals, usage, record.responseMs);
+    const rollup = Boolean(record.aggregate || record.scope === "session");
+    const provider = {
+      providerResponses: rollup ? providerTurns(usage) : 1,
+      providerResponseMs: rollup ? providerDurationMs(usage, record.responseMs) : (Number(record.responseMs) || 0),
+    };
+    add(row, usage, record.responseMs, provider);
+    add(totals, usage, record.responseMs, provider);
   };
   const responseSums = new Map();
   for (const record of responses.values()) {
@@ -90,34 +129,47 @@ export function summarizeUsage(records) {
     const usage = normalizeUsage(record.usage);
     if (session && usage) {
       const sum = responseSums.get(session) ?? emptyTotals();
-      add(sum, usage, 0);
+      add(sum, usage, 0, {
+        providerResponses: 1,
+        providerResponseMs: Number(record.responseMs) || 0,
+      });
       responseSums.set(session, sum);
     }
   }
   // Roll-ups per child session: the session's own record and any delegate aggregate. Keep the
   // largest known one; it is a lower bound that must never be discarded for a smaller sum.
   const rollups = new Map();
-  const offer = (session, call, usage) => {
+  const offer = (session, call, usage, responseMs = 0) => {
     if (!session || !usage) return;
-    if (!rollups.has(session) || usage.totalTokens > rollups.get(session).usage.totalTokens) rollups.set(session, { call, usage });
+    const existing = rollups.get(session);
+    if (!existing || usage.totalTokens > existing.usage.totalTokens ||
+        (usage.totalTokens === existing.usage.totalTokens && providerDurationMs(usage, responseMs) > providerDurationMs(existing.usage, existing.responseMs))) {
+      rollups.set(session, { call, usage, responseMs });
+    }
   };
   for (const record of aggregates.values()) {
     const session = sessionOf(record);
-    if (session) offer(session, record.call, normalizeUsage(record.usage));
+    if (session) offer(session, record.call, normalizeUsage(record.usage), record.responseMs);
     else include(record);
   }
-  for (const [session, record] of sessions) offer(session, record.call, normalizeUsage(record.usage));
+  for (const [session, record] of sessions) offer(session, record.call, normalizeUsage(record.usage), record.responseMs);
 
-  for (const [session, { call, usage }] of rollups) {
+  for (const [session, { call, usage, responseMs }] of rollups) {
     const row = calls.get(call) ?? emptyTotals();
     calls.set(call, row);
     const sum = responseSums.get(session);
     if (!sum) {
-      add(row, usage, 0);
-      add(totals, usage, 0);
+      const provider = {
+        providerResponses: providerTurns(usage),
+        providerResponseMs: providerDurationMs(usage, responseMs),
+      };
+      add(row, usage, 0, provider);
+      add(totals, usage, 0, provider);
       continue;
     }
     const sameVector = USAGE_KEYS.every((key) => (usage[key] ?? 0) === sum[key]) && usage.totalTokens === sum.total;
+    supplementProviderRollup(row, sum, usage, responseMs);
+    supplementProviderRollup(totals, sum, usage, responseMs);
     if (sameVector) continue;
     // Per-response records and the roll-up disagree somewhere in the vector: never double count and
     // never drop known tokens. Take the known lower bound per component; the total can be no
