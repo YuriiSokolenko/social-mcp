@@ -28,7 +28,7 @@ export default function (pi) {
         phase: 'planner_completed',
         status: prepared.status,
         plannerDurationMs: prepared.plannerDurationMs,
-        evidenceUsed: prepared.plannerEvidenceUsed ?? 0,
+        evidenceUsed: prepared.plannerEvidenceUsed ?? null,
         evidenceCap: prepared.plannerEvidenceCap ?? config.implementationPlannerEvidenceBudget,
         providerTurns: prepared.plannerProviderTurns ?? null,
         inputTokens: prepared.plannerUsage?.input ?? null,
