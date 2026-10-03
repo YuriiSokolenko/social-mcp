@@ -69,8 +69,6 @@ export function summarizeUsage(records) {
     }
     responses.set(responseKey(record), record);
   }
-  const answeredSessions = new Set([...responses.values()].map(sessionOf).filter(Boolean));
-
   const calls = new Map();
   const totals = emptyTotals();
   const unknown = [];
@@ -85,26 +83,62 @@ export function summarizeUsage(records) {
     add(row, usage, record.responseMs);
     add(totals, usage, record.responseMs);
   };
-  for (const record of responses.values()) include(record);
+  const responseSums = new Map();
+  for (const record of responses.values()) {
+    include(record);
+    const session = sessionOf(record);
+    const usage = normalizeUsage(record.usage);
+    if (session && usage) {
+      const sum = responseSums.get(session) ?? emptyTotals();
+      add(sum, usage, 0);
+      responseSums.set(session, sum);
+    }
+  }
+  // Roll-ups per child session: the session's own record and any delegate aggregate. Keep the
+  // largest known one; it is a lower bound that must never be discarded for a smaller sum.
+  const rollups = new Map();
+  const offer = (session, call, usage) => {
+    if (!session || !usage) return;
+    if (!rollups.has(session) || usage.totalTokens > rollups.get(session).usage.totalTokens) rollups.set(session, { call, usage });
+  };
   for (const record of aggregates.values()) {
     const session = sessionOf(record);
-    if (session && answeredSessions.has(session)) continue;
-    include(record);
+    if (session) offer(session, record.call, normalizeUsage(record.usage));
+    else include(record);
+  }
+  for (const [session, record] of sessions) offer(session, record.call, normalizeUsage(record.usage));
+
+  for (const [session, { call, usage }] of rollups) {
+    const row = calls.get(call) ?? emptyTotals();
+    calls.set(call, row);
+    const sum = responseSums.get(session);
+    if (!sum) {
+      add(row, usage, 0);
+      add(totals, usage, 0);
+      continue;
+    }
+    if (usage.totalTokens === sum.total) continue;
+    // Per-response records and the roll-up disagree: never double count, never drop known tokens.
+    if (usage.totalTokens > sum.total) {
+      const delta = {
+        input: Math.max(0, (usage.input ?? 0) - sum.input), output: Math.max(0, (usage.output ?? 0) - sum.output),
+        cacheRead: Math.max(0, (usage.cacheRead ?? 0) - sum.cacheRead), cacheWrite: Math.max(0, (usage.cacheWrite ?? 0) - sum.cacheWrite),
+        totalTokens: usage.totalTokens - sum.total,
+      };
+      for (const target of [row, totals]) {
+        target.input += delta.input; target.output += delta.output;
+        target.cacheRead += delta.cacheRead; target.cacheWrite += delta.cacheWrite;
+        target.total += delta.totalTokens;
+      }
+    }
+    unknown.push({ call, childSession: session, response: null, reason: "session_response_usage_mismatch" });
   }
   for (const [session, record] of sessions) {
     const status = String(record.status ?? "");
     if (!calls.has(record.call)) calls.set(record.call, emptyTotals());
-    const sessionUsage = normalizeUsage(record.usage);
-    const answered = answeredSessions.has(session)
-      || [...aggregates.values()].some((aggregate) => sessionOf(aggregate) === session && normalizeUsage(aggregate.usage));
-    // The session's own roll-up is the fallback when no per-response records exist for it.
-    if (!answered && sessionUsage) {
-      add(calls.get(record.call), sessionUsage, record.responseMs);
-      add(totals, sessionUsage, record.responseMs);
-    }
     if (INCOMPLETE_STATUSES.has(status)) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: `${status}_request_usage_unavailable` });
-    } else if (!answered && !sessionUsage && !record.usageKnownEmpty) {
+    } else if (!responseSums.has(session) && !rollups.has(session) && !record.usageKnownEmpty) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: "session_usage_unavailable" });
     }
   }

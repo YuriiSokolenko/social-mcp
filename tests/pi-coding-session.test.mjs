@@ -1061,6 +1061,11 @@ test('#397–#402 nested unavailable tools abort as runtime infrastructure witho
   const session = lastMetrics.find(record => record.scope === 'session' && record.call === 'coding');
   assert.equal(session?.status, 'contract_failure');
   assert.equal(session.usage.totalTokens, 55);
+  // Per-response usage (12) and the failed envelope's roll-up (55) disagree: keep the known 55, flag the mismatch.
+  const ledger = summarizeUsage(lastMetrics);
+  assert.equal(ledger.calls.get('coding').total, 55);
+  assert.equal(ledger.complete, false);
+  assert.ok(ledger.unknown.some(entry => entry.reason === 'session_response_usage_mismatch'));
   assert.ok(lastMetrics.some(record => record.call === 'coding' && record.scope === undefined && record.childSession === session.childSession));
 });
 

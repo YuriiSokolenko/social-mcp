@@ -103,3 +103,20 @@ test("a timed-out session stays incomplete even when earlier responses were acco
   const ledger = summarizeUsage([child("a", 1, u(10, 1)), { call: "planner", scope: "session", childSession: "a", status: "timed_out", usage: u(10, 1) }]);
   assert.equal(ledger.complete, false);
 });
+
+test("a larger session roll-up is kept as the lower bound next to smaller per-response sums, flagged as a mismatch", () => {
+  const ledger = summarizeUsage([
+    child("a", 1, u(10, 2)),
+    { call: "coding", scope: "session", childSession: "a", status: "error", usage: u(50, 5) },
+  ]);
+  assert.equal(ledger.totals.total, 55);
+  assert.equal(ledger.totals.responses, 1);
+  assert.equal(ledger.complete, false);
+  assert.equal(ledger.unknown[0].reason, "session_response_usage_mismatch");
+});
+
+test("a smaller roll-up never lowers the per-response sum", () => {
+  const ledger = summarizeUsage([child("a", 1, u(50, 5)), { call: "coding", scope: "session", childSession: "a", status: "error", usage: u(10, 2) }]);
+  assert.equal(ledger.totals.total, 55);
+  assert.equal(ledger.complete, false);
+});
