@@ -177,3 +177,58 @@ test("rejects a run with a trusted-looking title but an unrelated workflow path"
   assert.equal(result.status, 1);
   assert.match(result.stderr, /not a trusted Pi workflow/);
 });
+
+test("#425 summary and CSV agree on known totals and incompleteness for the same records", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-usage-agree-"));
+  const csvFile = join(dir, "usage.csv");
+  const eventFile = join(dir, "event.json");
+  const mockFile = join(dir, "mock.mjs");
+  const metricsFile = join(dir, "metrics.jsonl");
+  const records = [
+    { issue: 51, phase: "implementation", call: "main", response: 1, usage: { input: 20, output: 5, totalTokens: 25 }, responseMs: 2000 },
+    { issue: 51, phase: "implementation", call: "main", response: 2, usage: null, reason: "provider_usage_unavailable" },
+    { issue: 51, phase: "implementation", descendant: true, call: "coding", childSession: "s1", response: 1, usage: { input: 30, output: 7, totalTokens: 37 } },
+    { issue: 51, phase: "implementation", descendant: true, call: "coding", childSession: "s1", response: 1, usage: { input: 30, output: 7, totalTokens: 37 } },
+    { issue: 51, phase: "implementation", descendant: true, call: "coding", scope: "session", childSession: "s1", status: "timed_out", usage: null },
+    { issue: 51, phase: "implementation", descendant: true, call: "planner", scope: "session", childSession: "p1", status: "failed", usage: { input: 4, output: 1, totalTokens: 5 } },
+  ];
+  writeFileSync(metricsFile, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  const summary = spawnSync(process.execPath, ["scripts/pi-usage-summary.mjs"], {
+    encoding: "utf8", env: { ...process.env, PI_METRICS_FILE: metricsFile, PI_ISSUE: "51", PI_PHASE: "implementation" },
+  });
+  assert.equal(summary.status, 0, summary.stderr);
+  assert.match(summary.stdout, /INCOMPLETE, known lower bound\): 3 responses .* total 67 /);
+
+  writeFileSync(csvFile, readFileSync("reports/pi-usage.csv", "utf8").split("\n")[0] + "\n");
+  writeFileSync(eventFile, JSON.stringify({ workflow_run: {
+    id: 321, run_attempt: 1, status: "completed", name: "Pi Issue #51",
+    path: ".github/workflows/pi-issue-agent.yml", head_repository: { full_name: "test/repo" },
+  } }));
+  const log = ['2026-09-24T10:00:01Z PI_TASK {"issue":51,"phase":"implementation","call":"main"}',
+    ...records.map((record) => `2026-09-24T10:00:02Z PI_METRIC ${JSON.stringify(record)}`)].join("\n");
+  writeFileSync(mockFile, `
+    import { readFileSync, writeFileSync } from "node:fs";
+    const file = process.env.MOCK_CSV_FILE;
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.includes("/attempts/1/jobs")) return Response.json({ jobs: [{ id: 1, name: "pi", conclusion: "success" }] });
+      if (url.endsWith("/jobs/1/logs")) return new Response(${JSON.stringify(log)});
+      if (url.includes("/contents/reports/pi-usage.csv") && options.method === "PUT") {
+        writeFileSync(file, Buffer.from(JSON.parse(options.body).content, "base64"));
+        return Response.json({ content: { sha: "new" } });
+      }
+      if (url.includes("/contents/reports/pi-usage.csv")) return Response.json({ content: readFileSync(file).toString("base64"), sha: "old" });
+      throw new Error("Unexpected URL " + url);
+    };
+  `);
+  const result = spawnSync(process.execPath, ["--import", pathToFileURL(mockFile).href, "scripts/pi-usage-collect.mjs"], {
+    encoding: "utf8", env: { ...process.env, GITHUB_EVENT_PATH: eventFile, GITHUB_REPOSITORY: "test/repo", GITHUB_TOKEN: "synthetic-token", MOCK_CSV_FILE: csvFile },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const rows = readFileSync(csvFile, "utf8").trim().split("\n");
+  const header = rows[0].split(",");
+  const attempt = Object.fromEntries(header.map((column, i) => [column, rows[2].split(",")[i]]));
+  assert.equal(attempt.responses, "3");
+  assert.equal(attempt.total_tokens, "67");
+  assert.equal(attempt.complete, "false");
+  assert.equal(attempt.unknown_requests, "2");
+});

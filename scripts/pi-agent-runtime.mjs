@@ -1867,6 +1867,11 @@ export default function (pi) {
             console.warn(`PI_CODING_CAPABILITY_RECORD_INVALID ${JSON.stringify({ sessionId, error: String(error?.message ?? error) })}`);
           }
           if (contractFailure?.failure_code === 'PI_TOOL_CONTRACT_FAILURE') {
+            // This exit still owns whatever usage the child accrued; account it before aborting.
+            recordDescendantMetric({
+              call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
+              status: 'contract_failure', usage: response?.usage ?? sessionError?.delegationUsage ?? null,
+            });
             await abortToolContract(contractFailure.tool, ctx, contractFailure.reason);
             throw new Error(`PI_TOOL_CONTRACT_FAILURE: ${contractFailure.reason}`);
           }
