@@ -840,7 +840,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').preComplexityAllowedTools, undefined);
   assert.equal(stageConfig('implementer').preComplexityTransitionTools, undefined);
   assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
-  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 768);
+  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 2048);
   assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 900000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
