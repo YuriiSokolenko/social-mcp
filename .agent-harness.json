@@ -56,6 +56,7 @@
       ".github/workflows/",
       ".pi/",
       "agents/",
+      "tests/acceptance_probes/",
       "infra/github-runner-autoscaler/"
     ],
     "exact": [
