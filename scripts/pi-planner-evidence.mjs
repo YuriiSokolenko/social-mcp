@@ -26,6 +26,9 @@ function recordEvidenceState(gate, admission, env = process.env) {
 
 export default function (pi) {
   const gate = createPlannerEvidenceGate(evidenceBudget());
+  // Write an explicit zero before any evidence call. If the child cannot see/write the
+  // parent's sidecar path, the parent reports evidenceUsed=null rather than a false zero.
+  recordEvidenceState(gate, { used: 0 });
   pi.on('tool_call', async (event) => {
     const admission = gate.admit(event.toolName);
     if (admission.evidence && admission.allowed) {
