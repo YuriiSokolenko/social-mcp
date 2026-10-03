@@ -86,6 +86,7 @@ export async function runStageWithValidationRecovery(
         ledgerPath: spec.environment.PI_VALIDATION_LEDGER_FILE,
         backend: result.backend,
         env: spec.environment,
+        enforceAcceptedScope: true,
       });
       return createStageRunResult({
         backend: result.backend,
