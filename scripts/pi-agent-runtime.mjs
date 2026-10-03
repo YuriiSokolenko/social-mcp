@@ -754,12 +754,16 @@ export default function (pi) {
           // UX on top of the controller's own hard gate: while the elevated budget is active,
           // don't even show tools this turn is not allowed to call.
           ? elevatedMutationTurnToolNames(unrestrictedActiveTools, {
-              blockerTool: config.productiveProgress.blockerTool,
+              blockerTool: controller.evidenceUnlockAvailable()
+                ? config.productiveProgress.blockerTool
+                : null,
             })
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
-            blockerTool: config.productiveProgress.blockerTool,
+            blockerTool: controller.evidenceUnlockAvailable()
+              ? config.productiveProgress.blockerTool
+              : null,
             verificationTools: recoveryRetryReady
               ? [RETRY_FAILED_CHECK_TOOL]
               : verificationPermitted
@@ -1747,19 +1751,6 @@ export default function (pi) {
               `The coding session cannot expose required capability "${requiredCapability}", so it was not launched. ${capabilitySnapshotGuidance(agentReady.tools)} Use a currently exposed trusted recovery/action instead.`,
             );
           }
-          const firstRequestTools = actionRequiredToolNames(agentReady.tools, {
-            actionTools: sessionConfig.actionTools,
-            controlTools: sessionConfig.controlTools,
-            blockerTool: sessionConfig.blockerTool,
-            verificationTools: [],
-          });
-          const requiredCapabilityGuidance = requiredCapability && !firstRequestTools.includes(requiredCapability)
-            ? requiredCapability === sessionConfig.verificationTool
-              ? ` Required capability "${requiredCapability}" is not callable on the first request; a successful mutation must grant its focused verification permit first.`
-              : ['read', 'repo_search', 'indexed_repo_search'].includes(requiredCapability) && firstRequestTools.includes(sessionConfig.blockerTool)
-                ? ` Required capability "${requiredCapability}" is not callable on the first request; call ${sessionConfig.blockerTool} with one concrete missing fact to unlock one evidence action before using it.`
-                : ` Required capability "${requiredCapability}" is not callable on the first request; follow only runtime-exposed transitions until it appears.`
-            : '';
           sessionsStarted += 1;
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
@@ -1783,7 +1774,7 @@ export default function (pi) {
             response = await runStructuredSubagent(pi, ctx, {
               agent: sessionConfig.codingSessionAgent,
               nodeId: `coding-session-${toolCallId}`,
-              task: `Coding phase: continue this Implementer session and finish the issue. Implement the code and tests where needed using only tools currently exposed by the fork runtime. Verify when verification is exposed, fix failures, and finish through the exposed terminal action. Write code directly in tool arguments. ${capabilitySnapshotGuidance(firstRequestTools)}${requiredCapabilityGuidance}`,
+              task: 'Coding phase: continue this Implementer session and finish the issue. Implement the code and tests where needed using only tools exposed on each fork request. Inherited parent tool names are historical context, not current capability authority. Verify when verification is exposed, fix failures, and finish through the exposed terminal action. Write code directly in tool arguments.',
               timeoutMs: Number(sessionConfig.codingSessionTimeoutMs ?? 5400000),
               maxTokens: sessionConfig.codingSessionMaxTokens,
               // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
@@ -2537,12 +2528,14 @@ export default function (pi) {
     // after a real mutation/rollback/terminal action, or collapse it on unrelated/no-action use.
     let preserveElevatedAfterScopePrelude = false;
     if (stage === 'implementer' && controller.largeMutationBudgetActive()) {
-      if (elevatedTurnAttemptedEvidenceUnlock) {
-        const yielded = controller.yieldLargeMutationBudgetForEvidence();
+      const evidenceYield = elevatedTurnAttemptedEvidenceUnlock
+        ? controller.yieldLargeMutationBudgetForEvidence()
+        : { yielded: false, rearmed: false };
+      if (evidenceYield.yielded) {
         console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
           stage,
           phase: 'yielded_for_evidence',
-          ...yielded,
+          ...evidenceYield,
           outputTokens,
         })}`);
         elevatedScopePreludeUsed = false;
