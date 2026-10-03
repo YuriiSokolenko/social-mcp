@@ -142,12 +142,18 @@ function runtimeScenario(mode) {
     const scenario = path.join(dir, 'scenario.mjs');
     const work = path.join(dir, 'work');
     const terminal = path.join(dir, 'terminal.json');
+    const resultFile = path.join(dir, 'implementer-result.json');
+    const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
+    const remote = path.join(dir, 'remote.git');
+    execFileSync('git', ['init', '--bare', '-q', remote]);
     fs.mkdirSync(work);
     execFileSync('git', ['init', '-q', work]);
     execFileSync('git', ['-C', work, 'config', 'user.name', 'Coding Session Test']);
     execFileSync('git', ['-C', work, 'config', 'user.email', 'coding@example.invalid']);
     execFileSync('git', ['-C', work, 'commit', '--allow-empty', '-qm', 'base']);
+    execFileSync('git', ['-C', work, 'remote', 'add', 'origin', remote]);
+    execFileSync('git', ['-C', work, 'push', '-q', 'origin', 'HEAD:refs/heads/dev']);
     execFileSync('git', ['-C', work, 'update-ref', 'refs/remotes/origin/dev', 'HEAD']);
     fs.writeFileSync(context, JSON.stringify({ title: 'Coding session smoke', body: 'Create generated.py and its test' }));
     fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
@@ -173,6 +179,8 @@ function runtimeScenario(mode) {
       const fallbackEvidenceBudget = ${PREPARATION_FALLBACK_EVIDENCE_BUDGET};
       const cwd = ${JSON.stringify(work)};
       const terminal = ${JSON.stringify(terminal)};
+      const resultFile = ${JSON.stringify(resultFile)};
+      const scopeFile = ${JSON.stringify(scopeFile)};
       const runtimeFailure = ${JSON.stringify(runtimeFailure)};
       const controlScripts = ${JSON.stringify(path.dirname(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).pathname))};
       const sessionFile = ${JSON.stringify(path.join(dir, 'parent-session.jsonl'))};
@@ -312,7 +320,7 @@ function runtimeScenario(mode) {
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
-        if (mode !== 'no-submit') await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
+        if (!['no-submit', 'no-submit-parent-submit'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
         respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
       }
       bus.on('prompt-template:subagent:request', async request => {
@@ -551,7 +559,7 @@ function runtimeScenario(mode) {
         assert.equal(sessionRequests[0].spec.maxTokens, 16384);
         assert.doesNotMatch(sessionRequests[0].task, /abc123/, 'the constant is NOT handed over in the request');
       }
-      if (['flow', 'fallback', 'restored', 'tampered', 'containment', 'no-submit'].includes(mode)) {
+      if (['flow', 'fallback', 'restored', 'tampered', 'containment', 'no-submit', 'no-submit-parent-submit'].includes(mode)) {
         assert.ok(childCaps.length > 0 && childCaps.every(cap => cap === 16384), 'every coding-session response is 16384: ' + childCaps);
         assert.match(fs.readFileSync(cwd + '/generated.py', 'utf8'), /REQUIRED_CONSTANT = "abc123"/, 'the fork used context the request never carried');
         assert.equal(fs.readFileSync(cwd + '/generated.py', 'utf8').split('\\n')[1], 'HELP = "q: quit\\\\nr: restart"');
@@ -563,6 +571,22 @@ function runtimeScenario(mode) {
         // Smoke #285: the parent's own submit flag is false (the fork submitted), so the nudge
         // must honor the run-wide terminal marker instead of restarting the parent.
         assert.equal(handlers.get('agent_before_settle')(), undefined, 'no submit nudge after the fork submitted');
+      }
+      if (mode === 'no-submit-parent-submit') {
+        assert.notEqual(result.terminate, true);
+        assert.match(result.content[0].text, /ended without submit_result/);
+        await call('submit_result', {
+          title: 'Parent submit',
+          summary: 'Publish coding-session changes from the parent.',
+          changes: ['Add generated implementation and test'],
+          files: ['generated.py', 'test_generated.py'],
+          security_notes: 'No security impact.',
+          limitations: 'None.',
+        });
+        const metadata = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+        assert.equal(metadata.scope_enforcement, 'predeclared');
+        assert.deepEqual(metadata.accepted_scope.accepted.map(entry => entry.path), ['generated.py', 'test_generated.py']);
+        console.log('PARENT_SUBMIT_AFTER_FORK_OK');
       }
       if (mode === 'no-submit') {
         assert.notEqual(result.terminate, true);
@@ -584,6 +608,7 @@ function runtimeScenario(mode) {
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, scenario], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context, PI_TERMINAL_RESULT_FILE: terminal,
+        PI_IMPLEMENTER_RESULT_FILE: resultFile, PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure },
     });
@@ -622,6 +647,12 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   const logs = runtimeScenario('no-submit');
   assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
+});
+
+test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
+  const logs = runtimeScenario('no-submit-parent-submit');
+  assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
+  assert.match(logs, /PARENT_SUBMIT_AFTER_FORK_OK/);
 });
 
 test('first prose-only action-required retry stays forced through a ceiling turn until a real exposed tool', () => {
