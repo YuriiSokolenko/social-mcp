@@ -624,6 +624,20 @@ test('#424 cleanup-only resume seals an empty mutation journal into the checkpoi
   assert.notEqual(second.commit, startCommit);
   assert.deepEqual(mutationJournalStateFromRef(second.commit, work).entries, []);
   assert.equal(git('diff', '--quiet', startCommit, second.commit), '');
+
+  const headAfterSeal = git('rev-parse', 'HEAD').trim();
+  const third = saveCheckpoint({
+    issue: 424,
+    cwd: work,
+    startCommit,
+    expectedSha: second.commit,
+    resultFile: missingResult,
+    scopeFile: missingScope,
+    mutationJournalFile: journalFile,
+  });
+  assert.equal(third.changed, false);
+  assert.equal(third.reason, 'no-change');
+  assert.equal(git('rev-parse', 'HEAD').trim(), headAfterSeal, 'identical journal state must not add another empty checkpoint commit');
 });
 
 test('checkpoint persists accepted scope before submit_result and does not create empty scope-only commits', (t) => {
