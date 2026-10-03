@@ -1121,7 +1121,13 @@ test('while the elevated mutation budget is active, only a finish tool may execu
   assert.match(state.checkToolCall('lsp_start_server', {}).reason, blockedReason);
   assert.match(state.checkToolCall('run_check', { kind: 'ruff' }).reason, blockedReason);
 
-  // A finish tool (mutation, rollback, or terminal submit) is still allowed.
+  // Scope acceptance is a permitted prelude in the elevated turn, and actual
+  // mutation/rollback/terminal actions remain allowed.
+  assert.equal(state.checkToolCall('accept_mutation_scope', {
+    paths: ['arkanoid.py'],
+    disposition: 'publishable',
+    rationale: 'The issue requires the main implementation file.',
+  }), undefined);
   assert.equal(state.checkToolCall('write', { path: 'arkanoid.py' }), undefined);
 });
 
