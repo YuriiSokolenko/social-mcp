@@ -181,3 +181,24 @@ test('failed terminal action keeps settle recovery active until a successful ret
   assert.equal(result.terminate, true);
   assert.equal(settle(), undefined);
 });
+
+test('#426 repeated failed terminal action stops nudging after a bounded count', async () => {
+  let tool;
+  let settle;
+  const pi = {
+    registerTool(value) { tool = value; },
+    appendEntry() {},
+    on(event, fn) { if (event === 'agent_before_settle') settle = fn; },
+  };
+  registerTerminalTool(pi, {
+    label: 'Submit',
+    description: 'Submit result',
+    parameters: { type: 'object', properties: {} },
+    nudgeText: 'retry submit_result',
+    execute: async () => { throw new Error('submission_file_set_mismatch'); },
+  });
+
+  await assert.rejects(tool.execute('first', {}), /submission_file_set_mismatch/);
+  for (let index = 0; index < 3; index += 1) assert.equal(settle().continue, true);
+  assert.equal(settle(), undefined);
+});

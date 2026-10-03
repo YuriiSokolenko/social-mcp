@@ -701,6 +701,66 @@ test('terminal submission is never flagged as a loop', () => {
   assert.equal(terminal.tripped, false);
 });
 
+function failedSubmit(guard, text) {
+  return observation(guard, {
+    tool: 'submit_result',
+    input: { summary: 'done' },
+    result: { content: [{ type: 'text', text }] },
+    isError: true,
+  });
+}
+
+function scratchWrite(guard, file, before, after) {
+  return observation(guard, {
+    tool: 'write',
+    input: { path: file },
+    result: { ok: true },
+    repositoryStateBefore: before,
+    repositoryStateAfter: after,
+    mutationChanged: true,
+  });
+}
+
+test('#426 failed submit_result is a failed strategy, not terminal success', () => {
+  const guard = new SemanticLoopGuard();
+  const first = failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js');
+  assert.equal(first.classification, 'error');
+  assert.equal(first.tripped, false);
+});
+
+test('#426 reworded equivalent file-set failures trip as one strategy', () => {
+  const guard = new SemanticLoopGuard();
+  failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js was changed');
+  failedSubmit(guard, 'Rejected (submission_file_set_mismatch): scratch/a.js is unexpected');
+  const third = failedSubmit(guard, 'submission_file_set_mismatch -> unexpected path scratch/a.js');
+  assert.equal(third.tripped, true);
+  assert.equal(third.reason, 'repeated_failed_strategy');
+  assert.equal(third.repeatedFailure, true);
+});
+
+test('#426 scratch-only mutation does not clear the submission obligation', () => {
+  const guard = new SemanticLoopGuard();
+  failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js');
+  scratchWrite(guard, 'scratch/other.js', 'h0', 'h1');
+  failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js');
+  scratchWrite(guard, 'scratch/more.js', 'h1', 'h2');
+  const third = failedSubmit(guard, 'submission_file_set_mismatch: unexpected scratch/a.js');
+  assert.equal(third.tripped, true);
+});
+
+test('#426 fail, repair, fail, repair, exact pass completes without a trip', () => {
+  const guard = new SemanticLoopGuard();
+  for (const [index, file] of ['scratch/a.js', 'scratch/b.js'].entries()) {
+    const failed = failedSubmit(guard, 'submission_file_set_mismatch: unexpected ' + file);
+    assert.equal(failed.tripped, false);
+    const repair = scratchWrite(guard, file, 'r' + index, 'r' + (index + 1));
+    assert.equal(repair.tripped, false);
+  }
+  const pass = observation(guard, { tool: 'submit_result', input: { summary: 'done' }, result: { ok: true } });
+  assert.equal(pass.classification, 'terminal');
+  assert.equal(pass.tripped, false);
+});
+
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
 // Runs the real runtime extension against a mock `pi` in a child process.
