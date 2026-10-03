@@ -275,7 +275,7 @@ function runtimeScenario(mode) {
           assert.ok(request.task.includes('nearest_source_convention=src/demo_pkg/diagnostics/smoke_chunks.py'));
           assert.ok(request.task.includes('test_directory=tests/diagnostics'));
           assert.ok(request.task.includes('nearest_test_convention=tests/diagnostics/test_smoke_chunks.py'));
-          assert.match(request.task, /at most one targeted convention read/);
+          assert.match(request.task, /inspect only the nearest relevant sibling source\/test/);
           assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/);
         } else if (mode === 'non-additive-target') {
           assert.match(request.task, /Adjust existing parser/);
@@ -291,7 +291,7 @@ function runtimeScenario(mode) {
         assert.equal(request.ownerRunId, 'bootstrap-session', 'planner is hosted by the bootstrap session, never the main one');
         if (attempts === 1) assert.ok(request.timeoutMs <= 900000 && request.timeoutMs > 890000, '15 minute hard planner deadline');
         else assert.ok(request.timeoutMs <= 900000 && request.timeoutMs > 0, 'retry only gets the remaining deadline');
-        assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
+        assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048');
         if (mode === 'abort') { signal.abort(); return; }
         const good = mode === 'layout-aware'
           ? {
@@ -346,7 +346,7 @@ function runtimeScenario(mode) {
           assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
           assert.match(request.task, /"value"/);
           assert.match(request.task, /large_mutation/);
-          assert.match(request.task, /new module plus its test implementation/);
+          assert.match(request.task, /substantial new module plus tests/);
           assert.match(request.task, /240 characters/);
         }
         bus.emit('prompt-template:subagent:response', {
@@ -372,7 +372,7 @@ function runtimeScenario(mode) {
         artifact = planner.readPreparedImplementation(artifactFile);
         assert.ok(artifact, 'bootstrap wrote the PreparedImplementation artifact');
         // Hard context boundary: only the normalized artifact crosses, never planner transcript/retries.
-        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'failureClass'];
+        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceUsed', 'plannerEvidenceCap', 'plannerProviderTurns', 'failureClass'];
         assert.deepEqual(Object.keys(artifact).filter(key => !allowed.includes(key)), []);
       } else {
         assert.equal(fs.existsSync(artifactFile), false, 'restored work never runs fresh planner bootstrap');
