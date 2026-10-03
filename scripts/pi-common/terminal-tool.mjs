@@ -37,6 +37,10 @@ export function terminalMarkerSubmitted(env = process.env) {
   }
 }
 
+// A failed terminal submission is nonterminal but not endlessly renudgeable: after this many
+// nudges the stage settles with a truthful unsubmitted state instead of replaying itself.
+export const TERMINAL_FAILURE_NUDGE_LIMIT = 3;
+
 export function registerSubmitNudge(pi, {
   isSubmitted,
   customType,
@@ -107,7 +111,9 @@ export function registerTerminalTool(pi, {
     customType: nudgeType,
     content: nudgeText,
     repeatWhile: () => terminalFailed || nudgeRepeatWhile(),
-    maxNudges: () => terminalFailed ? null : nudgeMaxCount,
+    maxNudges: () => terminalFailed
+      ? Math.max(TERMINAL_FAILURE_NUDGE_LIMIT, nudgeMaxCount ?? 0)
+      : nudgeMaxCount,
   });
 
   return { isSubmitted: () => submitted || terminalMarkerSubmitted() };

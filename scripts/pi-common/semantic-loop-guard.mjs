@@ -270,6 +270,53 @@ function targetFamily(input) {
   return typeof value === 'string' ? value.slice(0, 1000) : '';
 }
 
+// A failed terminal submission is identified by its obligation (failure kind plus the exact
+// unexpected/missing/scratch paths it reports), not by its prose. Only those named lists are
+// parsed: the cleanup hint also echoes undo_mutation arguments and the intended expected_files,
+// which are not part of the blocker.
+const OBLIGATION_LISTS = Object.freeze([
+  ['unexpected', /unexpected files: ([^;]*?)(?=;|\. |$)/],
+  ['missing', /missing files: ([^;]*?)(?=;|\. |$)/],
+  ['scratch', /Runtime scratch artifacts cannot be submitted: (.*?)\. /],
+]);
+
+function parsePathList(text) {
+  return text.split(',').map(item => item.trim()).filter(Boolean);
+}
+
+export function submissionObligation(result) {
+  const text = boundedResultText(result);
+  const lists = {};
+  for (const [name, pattern] of OBLIGATION_LISTS) {
+    const match = pattern.exec(text);
+    if (match) lists[name] = [...new Set(parsePathList(match[1]))].sort();
+  }
+  const paths = [...new Set(Object.values(lists).flat())].sort();
+  if (paths.length > 0) return { paths, key: boundedStableHash(lists) };
+  try {
+    const code = JSON.parse(text)?.code;
+    if (typeof code === 'string' && code) return { paths: [], key: boundedStableHash({ code }) };
+  } catch {
+    // Not a structured error; the caller falls back to generic error normalization.
+  }
+  return null;
+}
+
+// The file a mutation acted on. Targeted recovery tools (undo_mutation, rollback_last_mutation,
+// recover_worktree) take no path argument, so the path comes from the runtime's result.
+function mutationTargetPath(input, result) {
+  const direct = targetFamily(input);
+  if (direct) return direct;
+  const fromDetails = result?.details?.path;
+  if (typeof fromDetails === 'string') return fromDetails;
+  try {
+    const parsed = JSON.parse(explicitResultText(result) ?? '');
+    return typeof parsed?.path === 'string' ? parsed.path : '';
+  } catch {
+    return '';
+  }
+}
+
 function strategyFamily(tool, input, productiveState, errorClass) {
   const operation = typeof input?.operation === 'string' ? input.operation : '';
   return boundedStableHash({
@@ -292,6 +339,9 @@ export class SemanticLoopGuard {
     this.failureWindow = [];
     this.repositoryWindow = [];
     this.steerOutstanding = false;
+    // Paths named by the outstanding failed terminal submission. Only a mutation that
+    // touches one of them can count as resolving that blocker.
+    this.terminalObligation = null;
     // Intentional one-shot credit: need_more_evidence declares that one successful
     // evidence call may resolve the missing fact even with an empty result. Errors
     // and blocked calls preserve the credit; the next successful eligible evidence
@@ -312,6 +362,11 @@ export class SemanticLoopGuard {
     const recoveringFromSteer = this.steerOutstanding;
     this.steerOutstanding = false;
     if (recoveringFromSteer) this.observationWindow = [];
+  }
+
+  _mutationTouchesObligation(target) {
+    const paths = this.terminalObligation?.paths ?? [];
+    return Boolean(target) && paths.some(item => target === item || target.endsWith('/' + item) || item.endsWith('/' + target));
   }
 
   _markNovelRepositoryState() {
@@ -367,14 +422,17 @@ export class SemanticLoopGuard {
       !MUTATION_TOOLS.has(tool) &&
       !NEUTRAL_TOOLS.has(tool);
 
-    if (TERMINAL_TOOLS.has(tool)) {
+    if (TERMINAL_TOOLS.has(tool) && !isError && !blocked) {
       this.declaredEvidencePending = false;
+      this.terminalObligation = null;
       return { ...base, classification: 'terminal' };
     }
 
     if (isError || blocked) {
-      const errorClass = normalizeErrorClass(result, blocked);
-      const family = strategyFamily(tool, input, productiveState, errorClass);
+      const obligation = TERMINAL_TOOLS.has(tool) && !blocked ? submissionObligation(result) : null;
+      const errorClass = obligation ? 'submission_' + obligation.key : normalizeErrorClass(result, blocked);
+      if (TERMINAL_TOOLS.has(tool)) this.terminalObligation = obligation ?? { paths: [], key: errorClass };
+      const family = strategyFamily(tool, TERMINAL_TOOLS.has(tool) ? {} : input, productiveState, errorClass);
       this._push(this.failureWindow, family);
       const count = this._count(this.failureWindow, family);
       const classification = blocked ? 'blocked' : 'error';
@@ -421,7 +479,20 @@ export class SemanticLoopGuard {
         ? this._count(this.repositoryWindow, repositoryStateAfter)
         : 0;
 
-      if (changed && seenBefore === 0) this._markNovelRepositoryState();
+      const resolvesObligation = this._mutationTouchesObligation(mutationTargetPath(input, result));
+      if (changed && this.terminalObligation && resolvesObligation) {
+        // A relevant fix resolves the blocker even when it restores an already-seen state
+        // (undo of an accidental B back to A). Repository revisit tracking stays intact.
+        this.terminalObligation = null;
+        if (seenBefore === 0) {
+          this._markNovelRepositoryState();
+        } else {
+          this.steerOutstanding = false;
+          this.failureWindow = [];
+        }
+      } else if (changed && seenBefore === 0 && !this.terminalObligation) {
+        this._markNovelRepositoryState();
+      }
       if (repositoryStateAfter) {
         this._push(this.repositoryWindow, repositoryStateAfter, this.windowSize + 1);
       }
