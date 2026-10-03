@@ -229,7 +229,7 @@ export const STAGES = Object.freeze({
     // `begin_coding_session` (16k ceiling on the fork only). The parent-side one-shot grant
     // `request_large_mutation_budget` is LEGACY: kept only as a stage-1 compatibility fallback.
     implementationPlannerAgent: 'implementation-planner',
-    implementationPlannerMaxTokens: 768,
+    implementationPlannerMaxTokens: 2048,
     implementationPlannerStructuredRetry: 1,
     // Hard maximum, not an expected duration: a healthy planner queued behind other model load must
     // not be cancelled early. Only a true 15-minute timeout enters PREPARATION_FALLBACK.
