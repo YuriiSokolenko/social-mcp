@@ -46,7 +46,7 @@ export function integrateLatestDev({ conflictMessage, allowConflicts = false }) 
   return { conflicts: [] };
 }
 
-export function validateAcceptedScopeMetadata({ cwd, base, env = process.env } = {}) {
+export function validateAcceptedScopeMetadata({ cwd, base = baseRef(), env = process.env } = {}) {
   const resultFile = env.PI_IMPLEMENTER_RESULT_FILE;
   const metadata = resultFile ? readImplementerResult(resultFile) : null;
   const changed = changedAgentPaths(base, cwd);
