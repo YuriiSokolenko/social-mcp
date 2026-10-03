@@ -46,6 +46,7 @@ import {
   recordSuccessfulMutation,
   snapshotFingerprint,
   undoMutation,
+  writeMutationJournalFile,
 } from './pi-common/mutation-journal.mjs';
 import { baseRef, projectConfig } from './pi-common/project-config.mjs';
 import {
@@ -1441,6 +1442,9 @@ export default function (pi) {
           if (error?.code === 'mutation_undo_persist_failed') invalidateTerminalReceipt(process.env);
           throw error;
         }
+        // Repository bytes are already changed at this point. Invalidate before file-set/ledger
+        // bookkeeping so a diagnostics persistence failure cannot leave a pre-undo receipt alive.
+        invalidateTerminalReceipt(process.env);
         let fileSet;
         try {
           const changed = worktreeChangedFiles(ctx.cwd, baseRef());
@@ -1468,7 +1472,6 @@ export default function (pi) {
             mutation: result,
           });
         }
-        invalidateTerminalReceipt(process.env);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
       },
     });
@@ -1588,6 +1591,11 @@ export default function (pi) {
           if (error?.code === 'mutation_undo_persist_failed') invalidateTerminalReceipt(process.env);
           throw error;
         }
+        // The persistent undo already changed repository state. Clear stale local rollback state
+        // and invalidate the terminal receipt before ledger persistence, which may itself fail.
+        lastSuccessfulMutationSnapshot = null;
+        lastSuccessfulMutationLocalOnlyMarkerId = null;
+        invalidateTerminalReceipt(process.env);
         if (process.env.PI_VALIDATION_LEDGER_FILE) {
           appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
             run_id: validationRunId(),
@@ -1602,9 +1610,6 @@ export default function (pi) {
             mutation: result,
           });
         }
-        lastSuccessfulMutationSnapshot = null;
-        lastSuccessfulMutationLocalOnlyMarkerId = null;
-        invalidateTerminalReceipt(process.env);
         return {
           content: [{
             type: 'text',
@@ -1680,6 +1685,18 @@ export default function (pi) {
           sessionsStarted += 1;
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
+          const inheritedMutationJournalFile = String(process.env.PI_MUTATION_JOURNAL_FILE ?? '').trim();
+          const fallbackMutationJournalFile = inheritedMutationJournalFile
+            ? null
+            : `${contractFile}.mutation-journal.json`;
+          const codingMutationJournalFile = inheritedMutationJournalFile || fallbackMutationJournalFile;
+          if (fallbackMutationJournalFile) {
+            writeMutationJournalFile(
+              ctx.cwd,
+              fallbackMutationJournalFile,
+              mutationJournalState(ctx.cwd, process.env),
+            );
+          }
           const startedAt = Date.now();
           codingSessionLog('started', { ...base, context: 'fork', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens });
           let response = null;
@@ -1701,13 +1718,35 @@ export default function (pi) {
                 ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
                   ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
                   : {}),
-                ...(process.env.PI_MUTATION_JOURNAL_FILE
-                  ? { PI_MUTATION_JOURNAL_FILE: process.env.PI_MUTATION_JOURNAL_FILE }
-                  : { PI_MUTATION_JOURNAL_STATE: JSON.stringify(mutationJournalState(ctx.cwd, process.env)) }),
+                PI_MUTATION_JOURNAL_FILE: codingMutationJournalFile,
               },
             }, signal);
           } catch (error) {
             sessionError = error;
+          } finally {
+            if (fallbackMutationJournalFile) {
+              try {
+                if (!fs.existsSync(fallbackMutationJournalFile)) {
+                  throw new Error('coding-session fallback mutation journal disappeared');
+                }
+                // Reload child journal mutations into the parent process cache before deleting
+                // the transport sidecar. Subsequent parent tools then see the fork's chronology.
+                mutationJournalState(ctx.cwd, {
+                  ...process.env,
+                  PI_MUTATION_JOURNAL_FILE: fallbackMutationJournalFile,
+                });
+              } catch (error) {
+                if (!sessionError) sessionError = error;
+                else {
+                  console.warn(`PI_CODING_MUTATION_JOURNAL_REFRESH_FAILED ${JSON.stringify({
+                    sessionId,
+                    error: String(error?.message ?? error),
+                  })}`);
+                }
+              } finally {
+                fs.rmSync(fallbackMutationJournalFile, { force: true });
+              }
+            }
           }
           let contractFailure = null;
           try {
