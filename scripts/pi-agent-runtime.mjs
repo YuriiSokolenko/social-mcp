@@ -70,6 +70,7 @@ import {
 } from './pi-common/terminal-receipt.mjs';
 import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
 import {
+  TRUSTED_RECOVERY_TOOLS,
   consumeUnavailableCapabilityAttempts,
   equivalentIncapableCodingSession,
   incapableCodingSessionRecord,
@@ -590,6 +591,8 @@ export default function (pi) {
   let unavailableToolAttempts = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
+  // Successful trusted recovery transitions in this process; releases the incapable-fork guard.
+  let trustedRecoveryEpoch = 0;
   let lastProviderProductiveState = null;
   // True only when this runtime itself removed the verification tool from the model
   // surface (permit exhaustion or exact-retry substitution). A later valid
@@ -1762,12 +1765,12 @@ export default function (pi) {
           }
           const equivalentIncapable = equivalentIncapableCodingSession(lastIncapableCodingSession, {
             contractTools: agentReady.tools,
-            repositoryState: lastIncapableCodingSession ? repositoryStateFingerprint(ctx.cwd) : null,
+            recoveryEpoch: trustedRecoveryEpoch,
           });
           if (equivalentIncapable) {
             refuse(
               'repeated_incapable_session',
-              `The previous coding session ended without a result after attempting ${equivalentIncapable.unreachable.join(', ')}, which the coding session can never expose, and nothing has changed since. An equivalent session was not launched. ${capabilitySnapshotGuidance(pi.getActiveTools())} Use a currently exposed trusted recovery/action instead.`,
+              `The previous coding session ended without a result after attempting ${equivalentIncapable.unreachable.join(', ')}, which the coding session can never expose, and no trusted recovery has succeeded since. An equivalent session was not launched. ${capabilitySnapshotGuidance(pi.getActiveTools())} Use a currently exposed trusted recovery/action instead.`,
               { unreachable: equivalentIncapable.unreachable, contractTools: equivalentIncapable.contractTools },
             );
           }
@@ -1889,7 +1892,7 @@ export default function (pi) {
             submitted,
             attemptedTools,
             contractTools: agentReady.tools,
-            repositoryState: submitted ? null : repositoryStateFingerprint(ctx.cwd),
+            recoveryEpoch: trustedRecoveryEpoch,
           });
           if (!submitted) lastIncapableCodingSession = incapable;
           codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
@@ -2307,6 +2310,7 @@ export default function (pi) {
       await abortToolContract(event.toolName, ctx);
       return;
     }
+    if (!event.isError && TRUSTED_RECOVERY_TOOLS.has(event.toolName)) trustedRecoveryEpoch += 1;
     // pi rejects a call whose arguments were cut off at the output ceiling before execution and
     // may not route that rejection through tool_result; steer from here so the truncation
     // guidance (begin the coding session instead of regenerating) still reaches the model once.

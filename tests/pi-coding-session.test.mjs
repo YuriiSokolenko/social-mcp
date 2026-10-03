@@ -704,11 +704,16 @@ function runtimeScenario(mode) {
         const first = await call('begin_coding_session', { reason: 'Clean up the stray file' });
         assert.match(first.content[0].text, /ended without submit_result/);
         assert.equal(fs.existsSync(sessionRequests[0].spec.capabilityFile), false, 'capability sidecar is consumed');
+        // An arbitrary worktree change is not a material transition: bash is still unreachable.
+        fs.writeFileSync(cwd + '/stray.txt', 'accidental\\n');
         if (mode === 'incapable-transition') {
-          // A material repository-state transition (e.g. trusted recovery) makes a new fork legitimate.
-          fs.writeFileSync(cwd + '/transition.txt', 'restored\\n');
+          // A successful trusted recovery transition resolves the cleanup the fork needed bash for.
+          active = [...active, 'recover_worktree'];
+          process.env.PI_VALIDATION_LEDGER_FILE = sessionFile + '.ledger.jsonl';
+          await call('recover_worktree', { action: 'delete_untracked', path: 'stray.txt', expected_files: [], reason: 'Remove the accidental file without a shell' });
+          assert.equal(fs.existsSync(cwd + '/stray.txt'), false);
           await tools.get('begin_coding_session').execute('after-transition', { reason: 'Retry after recovery' }, signal.signal, null, ctx);
-          assert.equal(sessionRequests.length, 2, 'fork launches again after a material transition');
+          assert.equal(sessionRequests.length, 2, 'fork launches again after a trusted recovery transition');
           console.log('INCAPABLE_FORK_TRANSITION_OK');
           process.exit(0);
         }
@@ -716,7 +721,7 @@ function runtimeScenario(mode) {
           () => tools.get('begin_coding_session').execute('repeat', { reason: 'Try the cleanup again' }, signal.signal, null, ctx),
           /attempting bash, which the coding session can never expose.*An equivalent session was not launched/s,
         );
-        assert.equal(sessionRequests.length, 1, 'equivalent incapable fork is rejected before launch');
+        assert.equal(sessionRequests.length, 1, 'equivalent incapable fork is rejected before launch, even after an unrelated file write');
         assert.ok(!registered.get('implementer-coding-session').tools.includes('bash'), 'no unrestricted shell is added to the fork');
         console.log('INCAPABLE_FORK_REPEAT_REJECTED_OK');
         process.exit(0);
@@ -913,7 +918,7 @@ test('#440 an equivalent capability-incompatible fork is rejected without model-
   assert.match(logs, /INCAPABLE_FORK_REPEAT_REJECTED_OK/);
 });
 
-test('#440 a material state transition after an incapable fork permits another coding session', () => {
+test('#440 a trusted recovery transition after an incapable fork permits another coding session', () => {
   const logs = runtimeScenario('incapable-transition');
   assert.doesNotMatch(logs, /repeated_incapable_session/);
   assert.match(logs, /INCAPABLE_FORK_TRANSITION_OK/);

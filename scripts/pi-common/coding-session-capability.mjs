@@ -36,31 +36,33 @@ export function consumeUnavailableCapabilityAttempts(file) {
   }
 }
 
+// Trusted recovery transitions that can resolve the work an incapable fork was launched for
+// (for example cleanup that the fork tried to do with raw bash). An arbitrary file write is not one.
+export const TRUSTED_RECOVERY_TOOLS = new Set(['undo_mutation', 'recover_worktree', 'rollback_last_mutation']);
+
 /**
  * A fork that ended without a final submission after attempting tools outside the coding-session
  * capability contract was incapable of the work it was launched for. Tools that are part of the
  * contract but were hidden in the fork's current state are not evidence: a later state may expose
  * them inside the fork.
  */
-export function incapableCodingSessionRecord({ submitted, attemptedTools = [], contractTools = [], repositoryState = null }) {
+export function incapableCodingSessionRecord({ submitted, attemptedTools = [], contractTools = [], recoveryEpoch = 0 }) {
   if (submitted) return null;
   const contract = [...new Set(contractTools)].sort();
   const unreachable = [...new Set(attemptedTools)].filter(name => !contract.includes(name)).sort();
   if (!unreachable.length) return null;
-  return { unreachable, contractTools: contract, repositoryState };
+  return { unreachable, contractTools: contract, recoveryEpoch };
 }
 
 /**
- * Returns the previous incapable record when a new launch would be equivalent: the fork still
- * cannot expose any capability the previous fork lacked and no repository-state transition is
- * proven since then. Returns null when the launch may proceed.
+ * Returns the still-blocking record when a new launch would be equivalent, or null when it may
+ * proceed. A launch may proceed only after a material transition: every previously unreachable
+ * capability is now in the contract, or a trusted recovery transition succeeded since the
+ * incapable fork ended. Capabilities that remain unreachable keep the guard in place.
  */
-export function equivalentIncapableCodingSession(previous, { contractTools = [], repositoryState = null }) {
+export function equivalentIncapableCodingSession(previous, { contractTools = [], recoveryEpoch = 0 }) {
   if (!previous) return null;
-  if (previous.unreachable.some(name => contractTools.includes(name))) return null;
-  const stateTransition =
-    previous.repositoryState != null &&
-    repositoryState != null &&
-    previous.repositoryState !== repositoryState;
-  return stateTransition ? null : previous;
+  if (recoveryEpoch !== previous.recoveryEpoch) return null;
+  const remaining = previous.unreachable.filter(name => !contractTools.includes(name));
+  return remaining.length ? { ...previous, unreachable: remaining } : null;
 }

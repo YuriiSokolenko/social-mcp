@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  TRUSTED_RECOVERY_TOOLS,
   consumeUnavailableCapabilityAttempts,
   equivalentIncapableCodingSession,
   incapableCodingSessionRecord,
@@ -40,20 +41,34 @@ test('only non-submitted forks that attempted tools outside the contract are inc
     'a contract tool hidden in one fork state is not proof of incapability',
   );
   assert.deepEqual(
-    incapableCodingSessionRecord({ submitted: false, attemptedTools: ['read', 'bash'], contractTools: CONTRACT, repositoryState: 'a' }),
-    { unreachable: ['bash'], contractTools: [...CONTRACT].sort(), repositoryState: 'a' },
+    incapableCodingSessionRecord({ submitted: false, attemptedTools: ['read', 'bash'], contractTools: CONTRACT, recoveryEpoch: 3 }),
+    { unreachable: ['bash'], contractTools: [...CONTRACT].sort(), recoveryEpoch: 3 },
   );
 });
 
-test('an equivalent retry is recognized until the capability or repository state materially changes', () => {
-  const previous = incapableCodingSessionRecord({ submitted: false, attemptedTools: ['bash'], contractTools: CONTRACT, repositoryState: 'a' });
-  assert.equal(equivalentIncapableCodingSession(null, { contractTools: CONTRACT, repositoryState: 'a' }), null);
-  assert.equal(equivalentIncapableCodingSession(previous, { contractTools: CONTRACT, repositoryState: 'a' }), previous);
+test('an equivalent retry is recognized until a trusted recovery or full capability transition', () => {
+  const previous = incapableCodingSessionRecord({ submitted: false, attemptedTools: ['bash'], contractTools: CONTRACT, recoveryEpoch: 1 });
+  assert.equal(equivalentIncapableCodingSession(null, { contractTools: CONTRACT, recoveryEpoch: 1 }), null);
+  assert.deepEqual(equivalentIncapableCodingSession(previous, { contractTools: CONTRACT, recoveryEpoch: 1 }), previous);
+  assert.equal(equivalentIncapableCodingSession(previous, { contractTools: CONTRACT, recoveryEpoch: 2 }), null, 'trusted recovery succeeded since');
+  assert.equal(equivalentIncapableCodingSession(previous, { contractTools: [...CONTRACT, 'bash'], recoveryEpoch: 1 }), null);
+});
+
+test('a partial capability transition keeps the guard for the capabilities that remain unreachable', () => {
+  const previous = incapableCodingSessionRecord({
+    submitted: false,
+    attemptedTools: ['bash', 'some_other_forbidden_tool'],
+    contractTools: CONTRACT,
+    recoveryEpoch: 0,
+  });
+  const blocking = equivalentIncapableCodingSession(previous, { contractTools: [...CONTRACT, 'bash'], recoveryEpoch: 0 });
+  assert.deepEqual(blocking.unreachable, ['some_other_forbidden_tool']);
   assert.equal(
-    equivalentIncapableCodingSession(previous, { contractTools: CONTRACT, repositoryState: null }),
-    previous,
-    'an unknown fingerprint does not prove a transition',
+    equivalentIncapableCodingSession(previous, { contractTools: [...CONTRACT, 'bash', 'some_other_forbidden_tool'], recoveryEpoch: 0 }),
+    null,
   );
-  assert.equal(equivalentIncapableCodingSession(previous, { contractTools: CONTRACT, repositoryState: 'b' }), null);
-  assert.equal(equivalentIncapableCodingSession(previous, { contractTools: [...CONTRACT, 'bash'], repositoryState: 'a' }), null);
+});
+
+test('trusted recovery transitions are the shell-free cleanup paths only', () => {
+  assert.deepEqual([...TRUSTED_RECOVERY_TOOLS].sort(), ['recover_worktree', 'rollback_last_mutation', 'undo_mutation']);
 });
