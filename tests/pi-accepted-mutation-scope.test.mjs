@@ -13,6 +13,7 @@ import {
   registerMutationScope,
 } from '../scripts/pi-common/accepted-mutation-scope.mjs';
 import { validateFinalProductTree } from '../scripts/pi-common/finalize-product-tree.mjs';
+import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 
 function repo(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-accepted-scope-'));
@@ -255,6 +256,46 @@ test('final product validation fails closed when a changed tree has no implement
       const diagnostic = JSON.parse(error.message);
       assert.equal(diagnostic.code, 'accepted_scope_missing');
       assert.deepEqual(diagnostic.unexpected_paths, ['feature.py']);
+      return true;
+    },
+  );
+});
+
+
+test('final product validation applies the accepted-scope gate before product checks', t => {
+  const { root } = repo(t);
+  const resultFile = path.join(root, '..', path.basename(root) + '-result.json');
+  t.after(() => fs.rmSync(resultFile, { force: true }));
+
+  fs.writeFileSync(path.join(root, 'feature.py'), 'value = 1\n');
+  fs.writeFileSync(path.join(root, 'scratch.py'), 'scratch = True\n');
+  writeImplementerResult(resultFile, {
+    title: 'Feature',
+    summary: 'Implement the requested feature.',
+    changes: ['Add feature'],
+    files: ['feature.py', 'scratch.py'],
+    security_notes: 'None.',
+    limitations: 'None.',
+    scope_enforcement: 'predeclared',
+    accepted_scope: {
+      schema_version: 1,
+      accepted: [{ path: 'feature.py', rationale: 'Issue requires this feature file.' }],
+      temporary: [],
+      baseline: [],
+    },
+  });
+
+  assert.throws(
+    () => validateFinalProductTree({
+      cwd: root,
+      ledgerPath: path.join(root, 'ledger.jsonl'),
+      backend: 'pi',
+      env: { PI_IMPLEMENTER_RESULT_FILE: resultFile },
+    }),
+    error => {
+      const diagnostic = JSON.parse(error.message);
+      assert.equal(diagnostic.code, 'accepted_scope_violation');
+      assert.deepEqual(diagnostic.unexpected_paths, ['scratch.py']);
       return true;
     },
   );
