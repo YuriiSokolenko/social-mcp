@@ -62,11 +62,11 @@ test("the CLI includes finalized subagent usage without treating subagent runs a
     })),
   ];
   const stdout = run(metrics);
-  assert.match(stdout, /Pi usage: 81 logical usage records · 81 provider responses · fresh 8,010 in \/ 1,605 out · cache read 4,000 · total 14,015 · 82\.0 s provider response time/);
+  assert.match(stdout, /Pi usage: 81 logical usage records · 81 provider responses · fresh 8,010 in \/ 1,605 out · cache read 4,000 · total 14,015 · 82\.0 s known provider response time · 0\.0 s delegated lifecycle time/);
   assert.doesNotMatch(stdout, /::warning::/);
 });
 
-test("the CLI reports delegated provider turns/time separately from logical usage records", () => {
+test("the CLI reports delegated lifecycle time without mislabeling it as provider response time", () => {
   const stdout = run([
     {
       call: "planner", scope: "session", childSession: "p1", status: "completed",
@@ -81,7 +81,8 @@ test("the CLI reports delegated provider turns/time separately from logical usag
     },
   ]);
   assert.match(stdout, /Pi usage: 4 logical usage records · 7 provider responses/);
-  assert.match(stdout, /212\.0 s provider response time/);
+  assert.match(stdout, /2\.0 s known provider response time/);
+  assert.match(stdout, /210\.0 s delegated lifecycle time/);
 });
 
 test("the CLI emits a warning annotation once a run is stuck", () => {
