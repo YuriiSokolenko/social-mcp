@@ -118,7 +118,7 @@ test('the coding session is the same Implementer runtime, defined only in truste
   assert.equal(progress.codingSessionMaxTokens, 16384);
   assert.equal(progress.actionResponseMaxTokens, 2048);
   assert.ok(progress.actionTools.includes('begin_coding_session'));
-  for (const tool of ['write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'rollback_last_mutation', 'need_more_evidence', 'submit_result', 'read']) {
+  for (const tool of ['write', 'edit', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'rollback_last_mutation', 'need_more_evidence', 'submit_result', 'read']) {
     assert.ok(progress.codingSessionTools.includes(tool), tool);
   }
   for (const tool of ['begin_coding_session', 'request_large_mutation_budget', 'subagent', 'subagents_enable', 'prepare_implementation', 'grep', 'find', 'ls']) {
