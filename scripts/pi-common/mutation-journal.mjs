@@ -29,7 +29,19 @@ function sidecarPath(env) {
 }
 
 function canonicalPath(cwd, requestedPath) {
-  return resolveMutationTarget(cwd, requestedPath).relative.split(path.sep).join('/');
+  if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
+    throw journalError('mutation_path_invalid', 'mutation journal path must be a non-empty string');
+  }
+  const root = path.resolve(cwd);
+  const absolute = path.resolve(root, requestedPath);
+  if (absolute === root || !absolute.startsWith(`${root}${path.sep}`)) {
+    throw journalError('mutation_path_invalid', 'mutation journal path escapes the current worktree', { path: requestedPath });
+  }
+  const relative = path.relative(root, absolute).split(path.sep).join('/');
+  if (relative === '.git' || relative.startsWith('.git/')) {
+    throw journalError('mutation_path_invalid', 'mutation journal cannot target .git', { path: relative });
+  }
+  return relative;
 }
 
 function normalizeFingerprint(input) {
