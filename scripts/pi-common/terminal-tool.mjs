@@ -10,8 +10,13 @@ import {
 export function terminalResult(text, details, receipt = null, env = process.env) {
   const marker = env.PI_TERMINAL_RESULT_FILE;
   if (marker) {
-    if (receipt) writeTerminalReceiptFile(marker, receipt);
-    else writeFileSync(marker, 'submitted\n', { encoding: 'utf8', mode: 0o600 });
+    if (receipt) {
+      writeTerminalReceiptFile(marker, receipt);
+    } else if (env.PI_STAGE === 'implementer') {
+      throw new Error(JSON.stringify({ code: 'implementer_terminal_receipt_required' }));
+    } else {
+      writeFileSync(marker, 'submitted\n', { encoding: 'utf8', mode: 0o600 });
+    }
   }
   return { content: [{ type: 'text', text }], details, terminate: true };
 }
@@ -23,6 +28,9 @@ export function terminalMarkerSubmitted(env = process.env) {
   try {
     if (!marker || !existsSync(marker)) return false;
     if (readTerminalReceiptFile(marker)) return true;
+    // Legacy bare markers remain valid only for non-Implementer stages whose
+    // terminal result carries no candidate publication authority.
+    if (env.PI_STAGE === 'implementer') return false;
     return readFileSync(marker, 'utf8').trim() === 'submitted';
   } catch {
     return false;

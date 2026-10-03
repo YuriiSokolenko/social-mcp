@@ -59,6 +59,10 @@ import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcom
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+// Bash is not part of accepted-scope mutation accounting, but it can still
+// change repository bytes. Conservatively invalidate an existing candidate
+// receipt before any Implementer bash call; a later submit_result can rebind it.
+const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 
@@ -1547,6 +1551,7 @@ export default function (pi) {
               receiptError = error;
             }
           }
+          if (receiptError) invalidateTerminalReceipt(process.env);
           const outcome = normalizeCodingSessionOutcome({
             submitted: Boolean(receiptResult),
             sessionError,
@@ -1582,10 +1587,17 @@ export default function (pi) {
             remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
               ? `You may call ${codingSessionTool} once more (${remaining} left). `
               : '';
-          const terminalFailure = sessionError ?? receiptError;
-          const message = `${terminalStatus}${terminalFailure ? ` (${String(terminalFailure?.message ?? terminalFailure)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
-          if (terminalFailure) throw new Error(message);
-          return { content: [{ type: 'text', text: message }], details: { ...base, submitted: false } };
+          const terminalDiagnostic = sessionError ?? receiptError;
+          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          // A real session/delegation error is still terminal for this tool call.
+          // A stale/invalid receipt is recoverable: return control so the parent
+          // can submit the current tree again instead of converting consistency
+          // drift into an execution failure.
+          if (sessionError) throw new Error(message);
+          return {
+            content: [{ type: 'text', text: message }],
+            details: { ...base, ...outcome, submitted: false },
+          };
         },
       });
     }
@@ -1883,7 +1895,7 @@ export default function (pi) {
       }
     }
 
-    if (stage === 'implementer' && CONTENT_MUTATION_TOOLS.has(event.toolName)) {
+    if (stage === 'implementer' && RECEIPT_INVALIDATING_TOOLS.has(event.toolName)) {
       invalidateTerminalReceipt(process.env);
     }
 

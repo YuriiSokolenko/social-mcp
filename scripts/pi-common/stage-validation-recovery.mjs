@@ -109,7 +109,9 @@ export async function runStageWithValidationRecovery(
         enforceAcceptedScope: true,
       });
       // checks.final may apply a trusted deterministic safe fix. Such a byte
-      // change invalidates the pre-validation submission and must be resubmitted.
+      // change invalidates the pre-validation submission. This assertion is
+      // intentionally inside the try: a mismatch throws into the repair branch
+      // below, which runs one focused validation-repair/resubmit attempt.
       assertAttemptTerminalReceipt(currentSpec);
       return createStageRunResult({
         backend: result.backend,
