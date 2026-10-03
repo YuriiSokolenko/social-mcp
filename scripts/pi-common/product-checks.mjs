@@ -5,6 +5,7 @@ import { runProcess } from './process.mjs';
 import { assertNoDuplicatePackageRoots } from './package-root-check.mjs';
 import { baseRef, expandCommand, projectConfig } from './project-config.mjs';
 import { ruffArgs } from './ruff-spec.mjs';
+import { computeCandidateRevision, resolveCandidateBase } from './candidate-revision.mjs';
 import {
   appendCheckRecord,
   FINAL_PIPELINE_COMPLETE_SOURCE,
@@ -165,6 +166,11 @@ export function runProductChecks({ cwd, ledgerPath, backend = 'pi', env = proces
       throw error;
     }
   }
+  const candidateBase = resolveCandidateBase({
+    cwd: root,
+    startCommit: env.PI_IMPLEMENTER_START_COMMIT,
+  });
+  const candidateRevision = computeCandidateRevision({ cwd: root, base: candidateBase });
   if (ledgerPath) {
     appendCheckRecord(ledgerPath, {
       kind: 'checks_final',
@@ -174,9 +180,11 @@ export function runProductChecks({ cwd, ledgerPath, backend = 'pi', env = proces
       stage: 'implementer',
       backend,
       run_id: resolveValidationRunId(env),
-      summary: 'All checks.final steps completed',
+      candidate_revision: candidateRevision,
+      summary: 'All checks.final steps completed for the recorded candidate revision',
     });
   }
+  return candidateRevision;
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {

@@ -162,7 +162,11 @@ function runtimeScenario(mode) {
       import fs from 'node:fs';
       import { EventEmitter } from 'node:events';
       const runtimeUrl = ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
+      const terminalReceiptUrl = ${JSON.stringify(new URL('../scripts/pi-common/terminal-receipt.mjs', import.meta.url).href)};
+      const implementerResultUrl = ${JSON.stringify(new URL('../scripts/pi-common/implementer-result.mjs', import.meta.url).href)};
       const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
+      const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile } = await import(terminalReceiptUrl);
+      const { writeImplementerResult } = await import(implementerResultUrl);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
@@ -274,7 +278,22 @@ function runtimeScenario(mode) {
         }
         // Executors stubbed; the runtime's gates around them are real.
         childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
-        childTools.get('submit_result').execute = async () => { fs.writeFileSync(terminal, 'submitted\\n'); return { content: [{ type: 'text', text: 'submitted' }] }; }; // same marker terminalResult() writes
+        childTools.get('submit_result').execute = async () => {
+          writeImplementerResult(resultFile, {
+            title: 't',
+            summary: 's',
+            changes: ['c'],
+            files: ['generated.py', 'test_generated.py'],
+            security_notes: 'n',
+            limitations: 'n',
+          });
+          const receiptEnv = { ...process.env, PI_TERMINAL_RESULT_FILE: terminal };
+          writeTerminalReceiptFile(
+            terminal,
+            createSuccessfulTerminalReceipt({ cwd, resultFile, env: receiptEnv }),
+          );
+          return { content: [{ type: 'text', text: 'submitted' }] };
+        };
         let turn = 0;
         if (mode === 'fork-prose-force') {
           childHandlers.get('turn_start')({ turnIndex: turn });

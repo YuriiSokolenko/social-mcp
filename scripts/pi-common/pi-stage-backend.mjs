@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 
 import { stageConfig } from './stage-config.mjs';
 import { createStageRunResult } from './stage-run-contract.mjs';
+import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
 
 const REPOMAP_PACKAGE = 'git:github.com/EnTeQuAk/pi-repomap@a4a2c85685a7a06ec850b23a2ae1bb7c9ecde9ab';
 
@@ -99,6 +100,17 @@ export async function runPiStage(spec, { workspace }) {
   if (filterCode !== 0) throw new Error(`Pi log filter failed with exit code ${filterCode}`);
   if (!fs.existsSync(spec.artifacts.terminalResultPath) || !fs.statSync(spec.artifacts.terminalResultPath).size) {
     throw new Error(`Pi stage ${spec.stage} exited without its terminal tool`);
+  }
+  if (
+    spec.stage === 'implementer' &&
+    spec.environment.PI_IMPLEMENTER_RESULT_FILE &&
+    spec.environment.PI_VALIDATION_RUN_ID
+  ) {
+    assertSuccessfulTerminalReceipt({
+      cwd: spec.cwd,
+      resultFile: spec.environment.PI_IMPLEMENTER_RESULT_FILE,
+      env: { ...spec.environment, PI_TERMINAL_RESULT_FILE: spec.artifacts.terminalResultPath },
+    });
   }
 
   return createStageRunResult({

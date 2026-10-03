@@ -51,9 +51,18 @@ import {
   mutationScopeReceipt,
   registerMutationScope,
 } from './pi-common/accepted-mutation-scope.mjs';
+import {
+  assertSuccessfulTerminalReceipt,
+  invalidateTerminalReceipt,
+} from './pi-common/terminal-receipt.mjs';
+import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
+// Bash is not part of accepted-scope mutation accounting, but it can still
+// change repository bytes. Conservatively invalidate an existing candidate
+// receipt before any Implementer bash call; a later submit_result can rebind it.
+const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 
@@ -1384,6 +1393,7 @@ export default function (pi) {
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         const result = recoverWorktree({ ...params, cwd: ctx.cwd, base: baseRef(), ledgerPath: process.env.PI_VALIDATION_LEDGER_FILE });
+        invalidateTerminalReceipt(process.env);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
       },
     });
@@ -1406,6 +1416,7 @@ export default function (pi) {
           fs.rmSync(snapshot.absolutePath, { force: true });
         }
         lastSuccessfulMutationSnapshot = null;
+        invalidateTerminalReceipt(process.env);
         return {
           content: [{
             type: 'text',
@@ -1525,19 +1536,44 @@ export default function (pi) {
             codingSessionLog('cancelled', { ...base, durationMs: Date.now() - startedAt });
             throw sessionError ?? new Error('coding session was cancelled');
           }
-          const submitted = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
+          let receiptResult = null;
+          let receiptError = null;
+          const markerPresent = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
+          if (markerPresent) {
+            try {
+              receiptResult = assertSuccessfulTerminalReceipt({
+                cwd: ctx.cwd,
+                resultFile: process.env.PI_IMPLEMENTER_RESULT_FILE,
+                env: process.env,
+                expectedSessionId: sessionId,
+              });
+            } catch (error) {
+              receiptError = error;
+            }
+          }
+          if (receiptError) invalidateTerminalReceipt(process.env);
+          const outcome = normalizeCodingSessionOutcome({
+            submitted: Boolean(receiptResult),
+            sessionError,
+            receiptError,
+          });
+          const submitted = outcome.successful_final_submission;
           codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
             ...base,
             durationMs: Date.now() - startedAt,
             usage: response?.usage ?? null,
-            submitted,
-            status: sessionError ? 'error' : 'ok',
-            ...(sessionError ? { error: String(sessionError?.message ?? sessionError) } : {}),
+            ...outcome,
           });
           if (submitted) {
             return {
               content: [{ type: 'text', text: 'Coding session completed the implementation and submitted the result. The work is done: stop now.' }],
-              details: { ...base, submitted: true },
+              details: {
+                ...base,
+                submitted: true,
+                successful_final_submission: true,
+                recovered_errors: outcome.recovered_errors,
+                unresolved_terminal_error: outcome.unresolved_terminal_error,
+              },
               // The fork already called submit_result; end this session without another turn.
               terminate: true,
             };
@@ -1551,9 +1587,17 @@ export default function (pi) {
             remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
               ? `You may call ${codingSessionTool} once more (${remaining} left). `
               : '';
-          const message = `${terminalStatus}${sessionError ? ` (${String(sessionError?.message ?? sessionError)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          const terminalDiagnostic = sessionError ?? receiptError;
+          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          // A real session/delegation error is still terminal for this tool call.
+          // A stale/invalid receipt is recoverable: return control so the parent
+          // can submit the current tree again instead of converting consistency
+          // drift into an execution failure.
           if (sessionError) throw new Error(message);
-          return { content: [{ type: 'text', text: message }], details: { ...base, submitted: false } };
+          return {
+            content: [{ type: 'text', text: message }],
+            details: { ...base, ...outcome, submitted: false },
+          };
         },
       });
     }
@@ -1849,6 +1893,10 @@ export default function (pi) {
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
         return containmentBlocked;
       }
+    }
+
+    if (stage === 'implementer' && RECEIPT_INVALIDATING_TOOLS.has(event.toolName)) {
+      invalidateTerminalReceipt(process.env);
     }
 
     const semanticMutation = loopGuard && isSemanticMutationTool(event.toolName);

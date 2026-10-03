@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { validateFinalProductTree } from './finalize-product-tree.mjs';
 import { IMPLEMENTER_OUTCOMES, readImplementerResult } from './implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from './stage-run-contract.mjs';
+import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
 
 const DEFAULT_REPAIR_ATTEMPTS = 1;
 const MAX_DIAGNOSTIC_CHARS = 20000;
@@ -52,6 +53,23 @@ async function runBackendAttempt(spec, runBackend) {
   return runBackend(spec);
 }
 
+function shouldBindTerminalReceipt(spec) {
+  return Boolean(
+    spec.stage === 'implementer' &&
+    spec.environment.PI_IMPLEMENTER_RESULT_FILE &&
+    spec.environment.PI_VALIDATION_RUN_ID
+  );
+}
+
+function assertAttemptTerminalReceipt(spec) {
+  if (!shouldBindTerminalReceipt(spec)) return null;
+  return assertSuccessfulTerminalReceipt({
+    cwd: spec.cwd,
+    resultFile: spec.environment.PI_IMPLEMENTER_RESULT_FILE,
+    env: { ...spec.environment, PI_TERMINAL_RESULT_FILE: spec.artifacts.terminalResultPath },
+  });
+}
+
 export async function runStageWithValidationRecovery(
   spec,
   runBackend,
@@ -63,11 +81,13 @@ export async function runStageWithValidationRecovery(
   if (typeof runBackend !== 'function') throw new Error('runBackend is required');
   if (typeof validate !== 'function') throw new Error('validate is required');
 
-  let result = await runBackendAttempt(spec, runBackend);
+  let currentSpec = spec;
+  let result = await runBackendAttempt(currentSpec, runBackend);
   if (spec.stage !== 'implementer') return result;
   let durationMs = result.durationMs;
 
   for (let attempt = 0; ; attempt += 1) {
+    assertAttemptTerminalReceipt(currentSpec);
     const implementerResult = readImplementerResult(spec.environment.PI_IMPLEMENTER_RESULT_FILE);
     if (
       implementerResult &&
@@ -88,6 +108,11 @@ export async function runStageWithValidationRecovery(
         env: spec.environment,
         enforceAcceptedScope: true,
       });
+      // checks.final may apply a trusted deterministic safe fix. Such a byte
+      // change invalidates the pre-validation submission. This assertion is
+      // intentionally inside the try: a mismatch throws into the repair branch
+      // below, which runs one focused validation-repair/resubmit attempt.
+      assertAttemptTerminalReceipt(currentSpec);
       return createStageRunResult({
         backend: result.backend,
         durationMs,
@@ -106,7 +131,8 @@ export async function runStageWithValidationRecovery(
         ? implementerResult.accepted_scope
         : null;
       const repairSpec = createValidationRepairSpec(spec, error, repairAttempt, acceptedScope);
-      result = await runBackendAttempt(repairSpec, runBackend);
+      currentSpec = repairSpec;
+      result = await runBackendAttempt(currentSpec, runBackend);
       durationMs += result.durationMs;
     }
   }

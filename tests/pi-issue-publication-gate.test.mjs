@@ -6,10 +6,25 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readScript } from './helpers/resolved-source.mjs';
 
-import { assertPublicationFileSet, isUnsandboxedBackend, nextLabelsForVerification, publicationBase, saveCheckpoint } from '../scripts/pi-common/issue-publication.mjs';
+import {
+  assertPublicationFileSet,
+  isUnsandboxedBackend,
+  nextLabelsForVerification,
+  publicationBase,
+  saveCheckpoint,
+  upsertPullRequest,
+} from '../scripts/pi-common/issue-publication.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { PIPELINE_LABELS } from '../scripts/pi-common/state-machine.mjs';
-import { VERIFICATION_STATES } from '../scripts/pi-common/validation-ledger.mjs';
+import {
+  appendCheckRecord,
+  FINAL_PIPELINE_COMPLETE_SOURCE,
+  VERIFICATION_STATES,
+} from '../scripts/pi-common/validation-ledger.mjs';
+import {
+  createSuccessfulTerminalReceipt,
+  writeTerminalReceiptFile,
+} from '../scripts/pi-common/terminal-receipt.mjs';
 import { acceptedScopeStateFromRef } from '../scripts/pi-common/issue-worktree.mjs';
 import { registerMutationScope } from '../scripts/pi-common/accepted-mutation-scope.mjs';
 
@@ -109,8 +124,11 @@ test('label objects in GitHub API shape (not bare strings) are handled identical
 
 test('upsertPullRequest derives trust from the backend argument, not the ledger, and returns verification_state', () => {
   const source = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
-  assert.match(source, /export async function upsertPullRequest\(\{ issue, resultFile, owner, ledgerFile, backend, cwd, startCommit \}\)/);
-  assert.match(source, /const verificationState = computeVerificationState\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\);/);
+  assert.match(source, /client = githubClient\(\)/);
+  assert.match(source, /const \{ api, replaceLabels \} = client;/);
+  assert.match(source, /const verificationState = computeVerificationState\(ledgerRecords, \{ corrupted: ledgerCorrupted, candidateRevision \}\);/);
+  assert.match(source, /assertSuccessfulTerminalReceipt\(\{/);
+  assert.match(source, /published_pr_head_mismatch/);
   assert.match(source, /const unsandboxedBackend = isUnsandboxedBackend\(backend\);/);
   assert.match(source, /nextLabelsForVerification\(existing\[0\]\.labels, verificationState, unsandboxedBackend\)/);
   assert.match(source, /nextLabelsForVerification\(\[\], verificationState, unsandboxedBackend\)/);
@@ -128,6 +146,11 @@ test('the issue-agent workflow passes the workflow_dispatch backend input direct
   // process could influence by writing to $GITHUB_ENV.
   assert.match(prStep, /issue-publication\.mjs" pr "\$ISSUE" "\$PI_IMPLEMENTER_RESULT_FILE" "\$\{\{ github\.repository_owner \}\}" "\$PI_VALIDATION_LEDGER_FILE" "\$\{\{ inputs\.backend \|\| 'pi' \}\}"/);
   assert.match(workflow, /verification_state=\$\(jq -r '\.verification_state' <<<"\$PR"\)/);
+  assert.doesNotMatch(workflow, /PI_TERMINAL_RESULT_FILE/);
+  assert.match(
+    readScript('scripts/pi-run-stage.mjs', 'utf8'),
+    /writeGithubEnv\(env, 'PI_TERMINAL_RESULT_FILE', spec\.artifacts\.terminalResultPath\)/,
+  );
   const reviewStep = workflow.slice(workflow.indexOf('Start independent PR review'));
   assert.match(reviewStep, /if: steps\.checkpoint\.outputs\.changed == 'true' && steps\.pr\.outputs\.number != '' && steps\.pr\.outputs\.verification_state == 'VERIFIED'/);
 });
@@ -308,6 +331,141 @@ test('publication base stays on integrated origin/dev even when the run started 
     assert.equal(publicationBase(dir, startCommit), 'origin/dev');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('publication base falls back to run-start when latest dev is not integrated', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-publication-fallback-base-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q');
+    configureTestGit((...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }));
+    fs.writeFileSync(path.join(dir, 'base.txt'), 'start\n');
+    git('add', '-A');
+    git('commit', '-qm', 'run start');
+    const startCommit = git('rev-parse', 'HEAD');
+    const branch = git('branch', '--show-current');
+
+    git('checkout', '-qb', 'upstream');
+    fs.writeFileSync(path.join(dir, 'upstream.txt'), 'latest dev\n');
+    git('add', '-A');
+    git('commit', '-qm', 'advance dev');
+    git('update-ref', 'refs/remotes/origin/dev', git('rev-parse', 'HEAD'));
+
+    git('checkout', '-q', branch);
+    fs.writeFileSync(path.join(dir, 'implementation.txt'), 'candidate\n');
+    git('add', '-A');
+    git('commit', '-qm', 'implementation');
+
+    assert.equal(publicationBase(dir, startCommit), startCommit);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('PR head mismatch is behaviourally gated before publication succeeds', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-pr-head-mismatch-'));
+  const repoDir = path.join(root, 'repo');
+  fs.mkdirSync(repoDir);
+  const git = (...args) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q');
+    git('config', 'user.name', 'PR Head Test');
+    git('config', 'user.email', 'pr-head@example.invalid');
+    fs.writeFileSync(path.join(repoDir, 'app.py'), 'value = 1\n');
+    git('add', '-A');
+    git('commit', '-qm', 'base');
+    const startCommit = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/dev', startCommit);
+
+    fs.writeFileSync(path.join(repoDir, 'app.py'), 'value = 2\n');
+    git('add', '-A');
+    git('commit', '-qm', 'candidate');
+
+    const resultFile = path.join(root, 'result.json');
+    const ledgerFile = path.join(root, 'ledger.jsonl');
+    const terminalFile = path.join(root, 'terminal.json');
+    writeImplementerResult(resultFile, {
+      title: 'Head mismatch',
+      summary: 'Exercise the post-create head gate.',
+      changes: ['Update app value'],
+      files: ['app.py'],
+      security_notes: 'No security impact.',
+      limitations: 'None.',
+      scope_enforcement: 'predeclared',
+      accepted_scope: {
+        schema_version: 1,
+        accepted: [{ path: 'app.py', rationale: 'Issue requires the app change.' }],
+        temporary: [],
+        baseline: [],
+      },
+    });
+    const env = {
+      PI_STAGE: 'implementer',
+      PI_ISSUE: '423',
+      PI_VALIDATION_RUN_ID: 'head-mismatch-run',
+      PI_IMPLEMENTER_START_COMMIT: startCommit,
+      PI_TERMINAL_RESULT_FILE: terminalFile,
+    };
+    const receipt = createSuccessfulTerminalReceipt({ cwd: repoDir, resultFile, env });
+    writeTerminalReceiptFile(terminalFile, receipt);
+    appendCheckRecord(ledgerFile, {
+      kind: 'checks_final',
+      scope: { whole_repo: true },
+      status: 'pass',
+      source: FINAL_PIPELINE_COMPLETE_SOURCE,
+      stage: 'implementer',
+      backend: 'pi',
+      run_id: 'head-mismatch-run',
+      candidate_revision: receipt.candidate_revision,
+      summary: 'complete',
+    });
+
+    const labels = [];
+    let apiCall = 0;
+    const client = {
+      api: async (_path, method = 'GET') => {
+        apiCall += 1;
+        if (apiCall === 1) return [];
+        assert.equal(method, 'POST');
+        return {
+          number: 91,
+          html_url: 'https://example.invalid/pr/91',
+          head: { sha: 'not-the-local-head' },
+          labels: [],
+        };
+      },
+      replaceLabels: async (number, nextLabels) => {
+        labels.push({ number, nextLabels });
+      },
+    };
+
+    await assert.rejects(
+      upsertPullRequest({
+        issue: 423,
+        resultFile,
+        owner: 'owner',
+        ledgerFile,
+        backend: 'pi',
+        cwd: repoDir,
+        startCommit,
+        env,
+        client,
+      }),
+      error => {
+        const diagnostic = JSON.parse(error.message);
+        assert.equal(diagnostic.code, 'published_pr_head_mismatch');
+        assert.equal(diagnostic.expected_head, git('rev-parse', 'HEAD'));
+        assert.equal(diagnostic.actual_head, 'not-the-local-head');
+        return true;
+      },
+    );
+    assert.deepEqual(labels, [{
+      number: 91,
+      nextLabels: [PIPELINE_LABELS.needsHuman],
+    }]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

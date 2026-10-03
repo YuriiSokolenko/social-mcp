@@ -9,6 +9,8 @@ import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projec
 import { PIPELINE_LABELS } from './state-machine.mjs';
 import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
 import { assertAcceptedMutationScope, readMutationScopeReceiptFile } from './accepted-mutation-scope.mjs';
+import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
+import { resolveCandidateBase } from './candidate-revision.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -71,8 +73,7 @@ export function pushWithMissingObjectRetry(args, {
  * checkpoint recovery.
  */
 export function publicationBase(cwd, startCommit) {
-  const integrated = git(['merge-base','--is-ancestor',baseRef(),'HEAD'], { cwd, allowFailure:true }).status === 0;
-  return integrated ? baseRef() : startCommit;
+  return resolveCandidateBase({ cwd, startCommit, configuredBase: baseRef() });
 }
 
 export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile, scopeFile }) {
@@ -136,10 +137,50 @@ export function assertPublicationFileSet({ cwd, base, resultFile }) {
   return changed;
 }
 
+export function assertPublicationCandidate({
+  cwd,
+  base,
+  resultFile,
+  ledgerFile,
+  terminalFile,
+  env = process.env,
+}) {
+  if (!ledgerFile) throw new Error('Validation ledger is required before publication');
+  const receiptEnv = {
+    ...env,
+    PI_TERMINAL_RESULT_FILE: terminalFile ?? env.PI_TERMINAL_RESULT_FILE,
+  };
+  const { candidateRevision } = assertSuccessfulTerminalReceipt({
+    cwd,
+    resultFile,
+    env: receiptEnv,
+    base,
+    bindAttempt: false,
+  });
+  const { records, corrupted } = readValidationLedger(ledgerFile);
+  const verificationState = computeVerificationState(records, { corrupted, candidateRevision });
+  if (verificationState !== VERIFICATION_STATES.VERIFIED) {
+    throw new Error(JSON.stringify({
+      code: 'publication_candidate_not_verified',
+      candidate_revision: candidateRevision.digest,
+      verification_state: verificationState,
+    }));
+  }
+  return { candidateRevision, verificationState };
+}
+
 export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token, resultFile }) {
   git(['diff','--check'], { cwd });
   const base = publicationBase(cwd, startCommit);
   const changed = assertPublicationFileSet({ cwd, base, resultFile });
+  assertPublicationCandidate({
+    cwd,
+    base,
+    resultFile,
+    ledgerFile: process.env.PI_VALIDATION_LEDGER_FILE,
+    terminalFile: process.env.PI_TERMINAL_RESULT_FILE,
+    env: process.env,
+  });
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Refusing to publish protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
@@ -203,8 +244,18 @@ export function nextLabelsForVerification(currentLabels, verificationState, unsa
   return [...names, PIPELINE_LABELS.needsHuman];
 }
 
-export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, backend, cwd, startCommit }) {
-  const { api, replaceLabels } = githubClient();
+export async function upsertPullRequest({
+  issue,
+  resultFile,
+  owner,
+  ledgerFile,
+  backend,
+  cwd,
+  startCommit,
+  env = process.env,
+  client = githubClient(),
+}) {
+  const { api, replaceLabels } = client;
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   const metadata = readImplementerResult(resultFile);
   if (!metadata) {
@@ -213,24 +264,46 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, 
   if (metadata.outcome !== IMPLEMENTER_OUTCOMES.changed) {
     throw new Error('Changed implementer result metadata is required before PR publication');
   }
+  if (!cwd || !startCommit) throw new Error('cwd and startCommit are required before PR publication');
+  const base = publicationBase(cwd, startCommit);
+  assertPublicationFileSet({ cwd, base, resultFile });
+  const { candidateRevision } = assertSuccessfulTerminalReceipt({
+    cwd,
+    resultFile,
+    env,
+    base,
+    bindAttempt: false,
+  });
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
   const { records: ledgerRecords, corrupted: ledgerCorrupted } = readValidationLedger(ledgerFile);
-  const verificationState = computeVerificationState(ledgerRecords, { corrupted: ledgerCorrupted });
+  const verificationState = computeVerificationState(ledgerRecords, { corrupted: ledgerCorrupted, candidateRevision });
   const unsandboxedBackend = isUnsandboxedBackend(backend);
   const tests = [
-    renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted }),
+    renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted, candidateRevision }),
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
   ].join('\n');
   const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
-  if (!cwd || !startCommit) throw new Error('cwd and startCommit are required before PR publication');
-  assertPublicationFileSet({ cwd, base: publicationBase(cwd, startCommit), resultFile });
+  const expectedCommit = git(['rev-parse','HEAD'], { cwd }).out.trim();
+  const assertPrHeadOrGate = async (pr, labels) => {
+    const actualCommit = pr?.head?.sha ?? null;
+    if (actualCommit === expectedCommit) return;
+    const gatedLabels = nextLabelsForVerification(labels, VERIFICATION_STATES.PENDING, false);
+    if (gatedLabels) await replaceLabels(pr.number, gatedLabels);
+    throw new Error(JSON.stringify({
+      code: 'published_pr_head_mismatch',
+      expected_head: expectedCommit,
+      actual_head: actualCommit,
+    }));
+  };
   if (existing[0]) {
     const pr = await api(`/pulls/${existing[0].number}`,'PATCH',{title:metadata.title,body});
+    await assertPrHeadOrGate(pr, existing[0].labels);
     const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState, unsandboxedBackend);
     if (nextLabels) await replaceLabels(pr.number, nextLabels);
     return { number:pr.number, url:pr.html_url, verification_state: verificationState };
   }
   const pr = await api('/pulls','POST',{title:metadata.title,head:issueBranch(issue),base:baseBranch(),body});
+  await assertPrHeadOrGate(pr, pr.labels ?? []);
   const nextLabels = nextLabelsForVerification([], verificationState, unsandboxedBackend);
   if (nextLabels) await replaceLabels(pr.number, nextLabels);
   return { number:pr.number, url:pr.html_url, verification_state: verificationState };

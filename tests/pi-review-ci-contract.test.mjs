@@ -88,7 +88,7 @@ test('implementer integrates latest dev before shared post-backend validation an
   assert.match(validation, /validateFinalProductTree/);
   assert.match(
     validation,
-    /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
+    /result = await runBackendAttempt\(currentSpec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
   );
   assert.match(runner, /runStageWithValidationRecovery\(spec, runBackend,/);
   assert.match(runner, /return await runSelectedStage\(spec, \{ backend, workspace \}\)/);
@@ -361,10 +361,12 @@ test('issue publication safely replaces only the branch head observed at run sta
   assert.doesNotMatch(publication, /push --set-upstream origin/);
 });
 
-test('issue publication attributes only changes beyond integrated latest dev to the Implementer', () => {
+test('issue publication attributes changes against the shared resolved candidate base', () => {
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
-  assert.match(publication, /merge-base','--is-ancestor','origin\/dev','HEAD'/);
-  assert.match(publication, /return integrated \? 'origin\/dev' : startCommit/);
+  const candidate = readScript('scripts/pi-common/candidate-revision.mjs', 'utf8');
+  assert.match(publication, /publicationBase[\s\S]*return resolveCandidateBase/);
+  assert.match(candidate, /merge-base', '--is-ancestor', configuredBase, 'HEAD'/);
+  assert.match(candidate, /return fallback/);
   assert.match(publication, /diff','--no-renames','--name-only','-z',base,'HEAD'/);
   assert.doesNotMatch(publication, /diff','--no-renames','--name-only','-z',startCommit,'HEAD'/);
 });
@@ -373,7 +375,7 @@ test('the PR body Validation section is rendered from the validation ledger, nev
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const publication = readScript('scripts/pi-common/issue-publication.mjs', 'utf8');
   assert.doesNotMatch(publication, /validationLines/);
-  assert.match(publication, /renderValidationSection\(ledgerRecords, \{ corrupted: ledgerCorrupted \}\)/);
+  assert.match(publication, /renderValidationSection\(ledgerRecords, \{ corrupted: ledgerCorrupted, candidateRevision \}\)/);
   assert.match(workflow, /PI_VALIDATION_LEDGER_FILE/);
   assert.match(workflow, /issue-publication\.mjs" pr "\$ISSUE" "\$PI_IMPLEMENTER_RESULT_FILE" "\$\{\{ github\.repository_owner \}\}" "\$PI_VALIDATION_LEDGER_FILE"/);
 });
@@ -713,7 +715,7 @@ test('fresh implementer metadata preflight stays before integration and shared e
   assert.doesNotMatch(tool, /validateFinalProductTree|runProductChecks/);
   assert.match(
     validation,
-    /result = await runBackendAttempt\(spec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
+    /result = await runBackendAttempt\(currentSpec, runBackend\)[\s\S]*validate\(\{[\s\S]*cwd: spec\.cwd,[\s\S]*ledgerPath: spec\.environment\.PI_VALIDATION_LEDGER_FILE,[\s\S]*backend: result\.backend,[\s\S]*env: spec\.environment,[\s\S]*\}\)/,
   );
 });
 
