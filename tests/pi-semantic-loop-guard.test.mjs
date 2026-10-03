@@ -1058,6 +1058,17 @@ test('#424 full persistent journal degrades to local rollback instead of blockin
 
       const rollback = registeredTools.get('rollback_last_mutation');
       assert.ok(rollback);
+
+      // A later bash-like write is unjournaled. Local-only rollback must not overwrite it.
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'intervening bash bytes\\n');
+      await assert.rejects(
+        rollback.execute('rollback-conflict', { reason: 'must not overwrite later bytes' }, null, null, ctx),
+        error => error.code === 'mutation_rollback_conflict',
+      );
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'intervening bash bytes\\n');
+
+      // Once the exact local-only post-state is restored, the owning process can safely roll back.
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'after\\n');
       await rollback.execute('rollback-local', { reason: 'exercise local fallback' }, null, null, ctx);
       assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'before\\n');
       console.log('JOURNAL_CAPACITY_DEGRADES_OK');
