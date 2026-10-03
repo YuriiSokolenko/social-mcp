@@ -417,7 +417,7 @@ test('#424 fresh submit_result exposes targeted mutation cleanup for accidental 
           assert.match(error.message, /Targeted cleanup available/);
           assert.match(error.message, new RegExp(entry.id));
           assert.match(error.message, /undo_mutation/);
-          assert.match(error.message, /expected_files:\["feature.py"\]/);
+          assert.match(error.message, /expected_files:\\["feature.py"\\]/);
           return true;
         },
       );
