@@ -18,7 +18,7 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { stageConfig } from './pi-common/stage-config.mjs';
-import { activeToolGuidance, capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames, repairProviderToolDefinitions } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -584,6 +584,9 @@ export default function (pi) {
   let unavailableToolAttempts = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
+  // Tools hidden only because one provider request could not carry their definitions. They are
+  // restored at the next surface sync so the next request boundary can repair them again.
+  let providerNarrowedTools = [];
   let lastProviderProductiveState = null;
   // True only when this runtime itself removed the verification tool from the model
   // surface (permit exhaustion or exact-retry substitution). A later valid
@@ -679,6 +682,10 @@ export default function (pi) {
     // Completed one-shot control tools disappear. Enabled tools such as `subagent` are shown only
     // where the controller gate lets them execute (evidence_allowed), never in action_required.
     const satisfied = controller.transitions.satisfiedToolNames();
+    if (providerNarrowedTools.length) {
+      pi.setActiveTools(mergeNewlyActiveTools(pi.getActiveTools(), providerNarrowedTools));
+      providerNarrowedTools = [];
+    }
     const current = pi.getActiveTools();
     const verificationTool = config.productiveProgress?.verificationTool ?? null;
     // Ledger corruption affects the final verification verdict, not whether
@@ -1011,26 +1018,41 @@ export default function (pi) {
         const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
         if (tools.length !== patched.tools.length) patched = { ...patched, tools };
 
+        const request = ++providerRequestSequence;
+        // The surface may have expanded after pi assembled this payload (for example the sync
+        // above restored run_check). Filtering cannot add a definition, so repair the request
+        // from the registry; whatever cannot be repaired is removed from the active surface for
+        // this request, so guidance and the tool_call gate match what the provider actually sees.
+        const presentBeforeRepair = providerToolNames(patched);
+        const missingDefinitions = pi.getActiveTools().filter(name => !presentBeforeRepair.includes(name));
+        if (missingDefinitions.length) {
+          const repair = repairProviderToolDefinitions(patched, missingDefinitions, pi.getAllTools?.() ?? []);
+          patched = repair.payload;
+          if (repair.unrepairable.length) {
+            providerNarrowedTools = mergeNewlyActiveTools(providerNarrowedTools, repair.unrepairable);
+            const unrepairable = new Set(repair.unrepairable);
+            setSurface(pi.getActiveTools().filter(name => !unrepairable.has(name)), 'provider_narrowed');
+          }
+          console.warn(`PI_PROVIDER_CAPABILITY_DIVERGENCE ${JSON.stringify({
+            stage,
+            request,
+            activeTools: [...active],
+            executableTools: presentBeforeRepair,
+            missingDefinitions,
+            repaired: repair.added,
+            narrowed: repair.unrepairable,
+          })}`);
+        }
+
         const executableTools = providerToolNames(patched);
         const activeTools = pi.getActiveTools();
         providerCapabilitySnapshot = {
-          request: ++providerRequestSequence,
+          request,
           productiveState,
           activeTools,
           executableTools,
         };
         console.log(`PI_PROVIDER_CAPABILITY_SNAPSHOT ${JSON.stringify({ stage, ...providerCapabilitySnapshot })}`);
-
-        const missingDefinitions = activeTools.filter(name => !executableTools.includes(name));
-        if (missingDefinitions.length) {
-          console.warn(`PI_PROVIDER_CAPABILITY_DIVERGENCE ${JSON.stringify({
-            stage,
-            request: providerCapabilitySnapshot.request,
-            activeTools,
-            executableTools,
-            missingDefinitions,
-          })}`);
-        }
 
         const enteringActionRequired =
           productiveState === 'action_required' &&

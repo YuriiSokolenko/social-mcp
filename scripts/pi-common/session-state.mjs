@@ -28,6 +28,48 @@ export function providerToolNames(payload) {
     .filter(name => typeof name === 'string' && name.length > 0))];
 }
 
+function providerToolDefinition(template, info) {
+  // JSON round-trip drops TypeBox symbol metadata, as the provider serializer does.
+  const parameters = JSON.parse(JSON.stringify(info.parameters ?? { type: 'object', properties: {} }));
+  const description = String(info.description ?? '');
+  if (template?.function && typeof template.function === 'object') {
+    return { type: template.type ?? 'function', function: { name: info.name, description, parameters } };
+  }
+  if (template && 'input_schema' in template) return { name: info.name, description, input_schema: parameters };
+  if (template && typeof template.name === 'string' && 'parameters' in template) {
+    return { type: template.type ?? 'function', name: info.name, description, parameters };
+  }
+  return null;
+}
+
+/**
+ * Adds definitions for tools that became active after the provider payload was assembled.
+ * The shape of an existing payload.tools entry is the template, so the added definition matches
+ * the provider API pi already serialized for. Names without a registered definition, or a payload
+ * without a recognizable template, are returned as unrepairable.
+ */
+export function repairProviderToolDefinitions(payload, missingNames, toolInfos = []) {
+  const template = Array.isArray(payload?.tools) ? payload.tools[0] : null;
+  const infos = new Map(toolInfos.filter(info => info?.name).map(info => [info.name, info]));
+  const added = [];
+  const unrepairable = [];
+  const definitions = [];
+  for (const name of missingNames) {
+    const definition = infos.has(name) ? providerToolDefinition(template, infos.get(name)) : null;
+    if (definition) {
+      definitions.push(definition);
+      added.push(name);
+    } else {
+      unrepairable.push(name);
+    }
+  }
+  return {
+    payload: definitions.length ? { ...payload, tools: [...payload.tools, ...definitions] } : payload,
+    added,
+    unrepairable,
+  };
+}
+
 export function capabilitySnapshotGuidance(activeToolNames) {
   return `${activeToolGuidance(activeToolNames)} This capability snapshot is authoritative for this provider request. Tool names mentioned in earlier history or static contracts but absent from this list are not directly callable now; use only an exposed runtime transition to make another capability available.`;
 }

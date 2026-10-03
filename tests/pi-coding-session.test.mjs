@@ -250,6 +250,7 @@ function runtimeScenario(mode) {
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
+          getAllTools: () => [...new Set([...childTools.keys(), ...definition.tools])].map(name => ({ name, description: 'tool ' + name, parameters: { type: 'object', properties: {} } })),
           on: (n, f) => childHandlers.set(n, f),
           getActiveTools: () => [...childActive], setActiveTools: names => { childActive = names.filter(name => definition.tools.includes(name)); },
           setModel: async model => { childCaps.push(model.maxTokens); childCtx.model = model; return true; },
@@ -283,6 +284,14 @@ function runtimeScenario(mode) {
           const spec = JSON.parse(process.env.PI_CODING_SESSION);
           fs.writeFileSync(spec.failureFile, '{"failure_code":');
           return respond(request, { status: 'failed', error: 'original delegation failure' });
+        }
+        if (mode === 'fork-provider-expansion') {
+          // #441: the fork surface expanded after this payload was assembled.
+          const stale = childActive.filter(name => name !== 'submit_result');
+          const repaired = providerPatch({ payload: { model: 'm', messages: [], tools: stale.map(name => ({ type: 'function', function: { name, description: name, parameters: { type: 'object' } } })) } }, childCtx);
+          assert.deepEqual(repaired.tools.map(tool => tool.function.name).sort(), [...childActive].sort(), 'fork request carries every active definition');
+          assert.deepEqual(repaired.tools.find(tool => tool.function.name === 'submit_result').function.parameters, { type: 'object', properties: {} });
+          console.log('FORK_PROVIDER_EXPANSION_OK');
         }
         if (mode === 'tool-contract') {
           await childHandlers.get('tool_execution_end')({ toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'Tool read not found' }] } }, childCtx);
@@ -403,15 +412,40 @@ function runtimeScenario(mode) {
         assert.equal(sessionRequests.length, 0);
         process.exit(0);
       }
-      const unarmedPayload = { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'write' } }] };
+      const unarmedPayload = { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) };
       const firstParentRequest = handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx);
       if (mode === 'restored') {
         assert.equal(firstParentRequest.tool_choice, 'required', 'direct action_required startup constrains the first parent request');
       } else {
-        assert.equal(firstParentRequest, unarmedPayload, 'preparation-phase parent request is unchanged');
+        assert.equal(firstParentRequest.tool_choice, undefined, 'preparation-phase parent request is not forced');
+        assert.deepEqual(firstParentRequest.tools.map(tool => tool.function.name), [...active], 'preparation-phase request carries exactly the active surface');
       }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
       assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
+      if (mode === 'provider-expansion') {
+        // #441: the active surface expanded after pi assembled the payload (submit_result missing).
+        handlers.get('turn_start')({ turnIndex: 0 });
+        const stale = active.filter(name => name !== 'submit_result');
+        const repaired = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: stale.map(name => ({ type: 'function', function: { name, description: name, parameters: { type: 'object' } } })) } }, ctx);
+        assert.deepEqual(repaired.tools.map(tool => tool.function.name).sort(), [...active].sort(), 'request is repaired with the newly active definition');
+        const added = repaired.tools.find(tool => tool.function.name === 'submit_result');
+        assert.equal(added.type, 'function');
+        assert.equal(typeof added.function.description, 'string');
+        assert.ok(active.includes('submit_result'), 'a repaired capability stays active');
+
+        // An unrecognized provider tool shape cannot be repaired: narrow instead of advertising it.
+        const unrecognized = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: stale.map(name => ({ name })) } }, ctx);
+        assert.ok(!active.includes('submit_result'), 'unrepairable capability is removed for this request');
+        assert.deepEqual(unrecognized.tools.map(tool => tool.name).sort(), [...active].sort(), 'surface equals the actual request');
+        const blocked = await handlers.get('tool_call')({ toolName: 'submit_result', toolCallId: 'narrowed', input: {} }, ctx);
+        assert.equal(blocked.block, true);
+        assert.doesNotMatch(blocked.reason.split('CURRENTLY EXPOSED TOOLS')[1], /submit_result/, 'guidance names only request capabilities');
+
+        handlers.get('turn_start')({ turnIndex: 1 });
+        assert.ok(active.includes('submit_result'), 'narrowing lasts one request; the next boundary may repair it');
+        console.log('PROVIDER_EXPANSION_OK');
+        process.exit(0);
+      }
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
       async function call(name, input = {}, { expectError = null } = {}) {
@@ -944,4 +978,18 @@ test('malformed fork provenance preserves the original delegation error and remo
 test('both missing-executor event orders abort only once', () => {
   runtimeScenario('parent-contract');
   runtimeScenario('parent-contract-reverse');
+});
+
+test('#441 parent provider request is repaired after surface expansion, or narrowed when it cannot be', () => {
+  const logs = runtimeScenario('provider-expansion');
+  assert.match(logs, /PI_PROVIDER_CAPABILITY_DIVERGENCE .*"missingDefinitions":\["submit_result"\].*"repaired":\["submit_result"\],"narrowed":\[\]/);
+  assert.match(logs, /PI_PROVIDER_CAPABILITY_DIVERGENCE .*"repaired":\[\],"narrowed":\["submit_result"\]/);
+  assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"provider_narrowed"/);
+  assert.match(logs, /PROVIDER_EXPANSION_OK/);
+});
+
+test('#441 coding-session provider request is repaired after surface expansion', () => {
+  const logs = runtimeScenario('fork-provider-expansion');
+  assert.match(logs, /FORK_PROVIDER_EXPANSION_OK/);
+  assert.match(logs, /"phase":"completed".*"submitted":true/);
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames } from '../scripts/pi-common/session-state.mjs';
+import { capabilitySnapshotGuidance, mergeNewlyActiveTools, providerToolNames, repairProviderToolDefinitions } from '../scripts/pi-common/session-state.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 const LSP = { server_id: 'python', workspace_root: '/work/tree' };
@@ -175,4 +175,36 @@ test('provider capability snapshot is derived from executable request definition
 
 test('mergeNewlyActiveTools keeps baseline order and adds newly enabled tools', () => {
   assert.deepEqual(mergeNewlyActiveTools(['a', 'b'], ['b', 'subagent']), ['a', 'b', 'subagent']);
+});
+
+test('repairProviderToolDefinitions adds missing definitions in the payload tool shape', () => {
+  const infos = [{ name: 'submit_result', description: 'Submit', parameters: { type: 'object', properties: { title: { type: 'string' } } } }];
+  const completions = repairProviderToolDefinitions(
+    { model: 'm', tools: [{ type: 'function', function: { name: 'write', description: 'w', parameters: {} } }] },
+    ['submit_result'],
+    infos,
+  );
+  assert.deepEqual(completions.added, ['submit_result']);
+  assert.deepEqual(completions.payload.tools[1], { type: 'function', function: { name: 'submit_result', description: 'Submit', parameters: infos[0].parameters } });
+
+  const responses = repairProviderToolDefinitions({ tools: [{ type: 'function', name: 'write', parameters: {} }] }, ['submit_result'], infos);
+  assert.deepEqual(responses.payload.tools[1], { type: 'function', name: 'submit_result', description: 'Submit', parameters: infos[0].parameters });
+
+  const anthropic = repairProviderToolDefinitions({ tools: [{ name: 'write', input_schema: {} }] }, ['submit_result'], infos);
+  assert.deepEqual(anthropic.payload.tools[1], { name: 'submit_result', description: 'Submit', input_schema: infos[0].parameters });
+});
+
+test('repairProviderToolDefinitions reports unrepairable names and leaves the payload unchanged', () => {
+  const payload = { tools: [{ name: 'write' }] };
+  const unknownShape = repairProviderToolDefinitions(payload, ['submit_result'], [{ name: 'submit_result', parameters: {} }]);
+  assert.equal(unknownShape.payload, payload);
+  assert.deepEqual(unknownShape.unrepairable, ['submit_result']);
+
+  const unregistered = repairProviderToolDefinitions(
+    { tools: [{ type: 'function', function: { name: 'write' } }] },
+    ['ghost'],
+    [],
+  );
+  assert.deepEqual(unregistered, { payload: unregistered.payload, added: [], unrepairable: ['ghost'] });
+  assert.equal(unregistered.payload.tools.length, 1);
 });
