@@ -435,12 +435,40 @@ function mutationTargetPath(input, result) {
   }
 }
 
+function mutationResultPaths(input, result) {
+  const candidates = [];
+  const direct = mutationTargetPath(input, result);
+  if (direct) candidates.push(direct);
+  const collect = value => {
+    if (typeof value === 'string' && value.trim()) candidates.push(value.trim());
+    if (Array.isArray(value)) {
+      for (const item of value) if (typeof item === 'string' && item.trim()) candidates.push(item.trim());
+    }
+  };
+  for (const source of [result?.details, result]) {
+    collect(source?.path);
+    collect(source?.paths);
+    collect(source?.files);
+    collect(source?.changed_files);
+  }
+  try {
+    const parsed = JSON.parse(explicitResultText(result) ?? '');
+    collect(parsed?.path);
+    collect(parsed?.paths);
+    collect(parsed?.files);
+    collect(parsed?.changed_files);
+  } catch {
+    // Unstructured mutation result: the direct target above remains authoritative.
+  }
+  return uniqueStrings(candidates);
+}
+
 export function mutationResolvesSubmissionObligation(obligation, input, result) {
   const paths = obligation?.paths ?? [];
-  const target = mutationTargetPath(input, result);
-  return Boolean(target) && paths.some(item =>
+  const targets = mutationResultPaths(input, result);
+  return targets.some(target => paths.some(item =>
     target === item || target.endsWith('/' + item) || item.endsWith('/' + target)
-  );
+  ));
 }
 
 function strategyFamily(tool, input, productiveState, errorClass) {
@@ -622,7 +650,7 @@ export class SemanticLoopGuard {
         ? this._count(this.repositoryWindow, repositoryStateAfter)
         : 0;
 
-      const resolvesObligation = this._mutationTouchesObligation(mutationTargetPath(input, result));
+      const resolvesObligation = mutationResolvesSubmissionObligation(this.terminalObligation, input, result);
       if (changed && this.terminalObligation && resolvesObligation) {
         // A relevant fix resolves the blocker even when it restores an already-seen state
         // (undo of an accidental B back to A). Repository revisit tracking stays intact.
