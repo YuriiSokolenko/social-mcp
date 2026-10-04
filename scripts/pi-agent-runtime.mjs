@@ -2309,6 +2309,12 @@ export default function (pi) {
     syncActionToolSurface(productiveState);
     if (consumedEvidence) {
       const activeToolNames = pi.getActiveTools();
+      console.info(`PI_EVIDENCE_PERMIT_CONSUMED ${JSON.stringify({
+        stage,
+        tool: consumedEvidence.tool,
+        productiveState,
+        activeTools: activeToolNames,
+      })}`);
       await pi.sendUserMessage(
         `RUNTIME EVIDENCE PERMIT CONSUMED: the one evidence action (${consumedEvidence.tool}) is complete. read/search evidence and repeated need_more_evidence are unavailable until successful productive progress. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
         { deliverAs: 'steer' },
