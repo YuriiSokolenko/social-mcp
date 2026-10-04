@@ -182,6 +182,13 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.match(terminalWake, /types: \[completed\]/);
   assert.match(terminalWake, /workflow_run\.event == 'pull_request'/);
   assert.match(terminalWake, /workflow_run\.head_repository\.full_name == github\.repository/);
+  assert.match(terminalWake, /runs-on: ubuntu-latest/);
+  assert.doesNotMatch(terminalWake, /runs-on: \[self-hosted[^\n]*n150[^\n]*general/);
+  assert.match(
+    terminalWake,
+    /concurrency:\n\s+group: ci-terminal-wake-\$\{\{ github\.event\.workflow_run\.id \}\}\n\s+cancel-in-progress: false/,
+  );
+  assert.doesNotMatch(terminalWake, /workflow_run\.conclusion/);
   assert.match(terminalWake, /ref: dev/);
   assert.match(terminalWake, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
   assert.doesNotMatch(terminalWake, /workflow_run\.head_sha|workflow_run\.pull_requests/);
