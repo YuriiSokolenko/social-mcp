@@ -9,7 +9,11 @@ import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
 import { mutationScopeReceipt } from './pi-common/accepted-mutation-scope.mjs';
 import { mutationCleanupHints } from './pi-common/mutation-journal.mjs';
 import { capabilitySnapshotGuidance } from './pi-common/session-state.mjs';
-import { assertCodingBehavioralValidation } from './pi-common/coding-session-validation.mjs';
+import { readPreparedImplementation } from './pi-common/implementation-planner.mjs';
+import {
+  assertCodingBehavioralValidation,
+  codingSessionSubmissionReadiness,
+} from './pi-common/coding-session-validation.mjs';
 
 const lines = (text) => text.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
 const gitPaths = (text) => text.split('\0').filter(Boolean);
@@ -138,6 +142,38 @@ function issueContext() {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+function assertPreparedOutputsForChangedCodingSubmission({
+  alreadySatisfied,
+  blockedReason,
+  runtimeOwnedMetadata,
+} = {}) {
+  if (
+    runtimeOwnedMetadata ||
+    alreadySatisfied ||
+    blockedReason ||
+    !String(process.env.PI_CODING_SESSION ?? '').trim()
+  ) {
+    return;
+  }
+  const prepared = readPreparedImplementation(process.env.PI_PREPARED_IMPLEMENTATION_FILE);
+  const readiness = codingSessionSubmissionReadiness({
+    prepared,
+    cwd: process.cwd(),
+    resumed: false,
+    validationRepair: false,
+  });
+  if (readiness.ready) return;
+
+  const error = new Error(JSON.stringify({
+    code: 'PREPARED_OUTPUTS_REQUIRED',
+    message: 'Fresh changed coding-session work cannot submit while required prepared outputs are missing. Create the outputs, or use already_satisfied / blocked_reason only when that terminal outcome is actually true.',
+    missing_outputs: readiness.missing_outputs,
+  }));
+  error.code = 'PREPARED_OUTPUTS_REQUIRED';
+  error.missingOutputs = readiness.missing_outputs;
+  throw error;
+}
+
 const IMPLEMENTER_MUTATION_TOOLS = Object.freeze(['structural_edit', 'safe_edit', 'edit', 'write']);
 
 export function implementerActionNudge(activeToolNames, { restored = false, validationRepair = false } = {}) {
@@ -223,20 +259,30 @@ export default function (pi) {
         return { data, text: 'BLOCKED. Human clarification is required before implementation can continue. Stop now.' };
       }
 
+      assertPreparedOutputsForChangedCodingSubmission({
+        alreadySatisfied,
+        blockedReason,
+        runtimeOwnedMetadata,
+      });
+
       const freshChangedMetadata = !runtimeOwnedMetadata && !alreadySatisfied
         ? validateFreshChangedSubmission(params)
         : null;
-      const knownChangedBeforeIntegration = changedPathsAgainstBase();
-      if (freshChangedMetadata) {
-        freshChangedMetadata.files = normalizeDeclaredFilesWithKnownFiles(
-          freshChangedMetadata.files,
-          knownChangedBeforeIntegration,
-        );
+      let knownChangedBeforeIntegration = null;
+      if (!alreadySatisfied) {
+        knownChangedBeforeIntegration = changedPathsAgainstBase();
+        if (freshChangedMetadata) {
+          freshChangedMetadata.files = normalizeDeclaredFilesWithKnownFiles(
+            freshChangedMetadata.files,
+            knownChangedBeforeIntegration,
+          );
+        }
+        assertCodingBehavioralValidation({
+          changedFiles: knownChangedBeforeIntegration,
+          env: process.env,
+          cwd: process.cwd(),
+        });
       }
-      assertCodingBehavioralValidation({
-        changedFiles: knownChangedBeforeIntegration,
-        env: process.env,
-      });
 
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
