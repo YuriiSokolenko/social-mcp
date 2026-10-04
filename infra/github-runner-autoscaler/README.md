@@ -56,9 +56,12 @@ built from `node:24-bookworm-slim` (Debian/glibc), contains only the GitHub
 Actions runner plus Git, Node.js, curl, jq, and runtime libraries, and has no
 Docker CLI/socket, Pi configuration, model endpoint, Android SDK, or build
 toolchain. Compose caps it at 1 CPU, 1 GiB RAM, and 512 PIDs, drops the
-default Linux capability set, adds back only `SETUID`/`SETGID` so PID 1 can
-launch the unprivileged runner, and enables `no-new-privileges`. The entrypoint uses the
-repository administration token only for first-time registration and
+default Linux capability set, and adds back only `SETUID`, `SETGID`, and
+`KILL`. `SETUID`/`SETGID` let PID 1 launch the unprivileged runner; `KILL`
+is required so root PID 1 can signal and reap the uid 1001 runner process group
+during graceful stop/recreate. The container also enables
+`no-new-privileges`. The entrypoint uses the repository administration token
+only for first-time registration and
 bounded post-failure recovery; the long-lived Actions runner and all workflow
 jobs run as the unprivileged `runner` user with `GH_ADMIN_TOKEN` removed from
 their environment. Normal Docker/host stops do not deregister the runner.
