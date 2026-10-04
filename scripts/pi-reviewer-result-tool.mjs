@@ -6,19 +6,21 @@ import { validateReviewResult } from './pi-review-result.mjs';
 export default function (pi) {
   const CriterionEvidence = Type.Object({
     criterion: Type.String({
+      maxLength: 500,
       description: 'One material acceptance criterion, quoted or paraphrased narrowly enough to identify it.',
     }),
     status: Type.Union([
       Type.Literal('ESTABLISHED'),
       Type.Literal('ASSUMPTION'),
     ]),
-    evidence: Type.Array(Type.String(), {
+    evidence: Type.Array(Type.String({ maxLength: 1000 }), {
       minItems: 1,
       maxItems: 4,
       description: 'Concrete code, trusted-test, or counterexample evidence. Do not use a generic "tests pass" claim.',
     }),
     assumption: Type.Optional(Type.String({
-      description: 'Required only for ASSUMPTION: the unresolved policy interpretation or compatibility choice.',
+      maxLength: 1000,
+      description: 'Required for ASSUMPTION. Omit for ESTABLISHED; if supplied there, runtime ignores it.',
     })),
   });
 
@@ -27,15 +29,17 @@ export default function (pi) {
     description: 'Submit the final PR review verdict as the last action, with one compact structured evidence entry for every material acceptance criterion.',
     parameters: Type.Object({
       verdict: Type.Union([Type.Literal('PASS'), Type.Literal('CHANGES_REQUESTED')]),
-      summary: Type.String({ description: 'Concise overall review comment. Structured criterion evidence is supplied separately.' }),
-      criteria_evidence: Type.Array(CriterionEvidence, {
-        minItems: 1,
-        maxItems: 30,
-        description: 'One entry per material acceptance criterion. Use ESTABLISHED when evidence proves the behavior; use ASSUMPTION only when issue wording leaves genuine policy latitude.',
+      summary: Type.String({
+        maxLength: 12000,
+        description: 'Concise overall review comment. Structured criterion evidence is supplied separately.',
       }),
+      criteria_evidence: Type.Optional(Type.Array(CriterionEvidence, {
+        maxItems: 30,
+        description: 'Required and non-empty for PASS. For CHANGES_REQUESTED it may be omitted when the blocking defect is not itself an acceptance-criterion finding.',
+      })),
     }),
     customType: 'review-result',
-    nudgeText: 'You finished without calling submit_result. Call it now with the final verdict and structured criteria_evidence.',
+    nudgeText: 'You finished without calling submit_result. Call it now. PASS requires structured criteria_evidence; CHANGES_REQUESTED may omit it when the blocking defect is outside the acceptance criteria.',
     successText: 'Review result recorded. Stop now.',
     execute: async (params) => ({
       data: validateReviewResult({
