@@ -1234,6 +1234,48 @@ test('#469 validation repair handoff is bounded, deterministic, and independent 
 });
 
 
+test('#470 repair handoff marks every truncated authoritative list as incomplete', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-handoff-truncated-');
+  const terminal = join(dir, 'terminal');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'repair',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: { terminalResultPath: terminal, metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: null },
+  });
+  const files = Array.from({ length: 25 }, (_, i) => `src/file_${i}.py`);
+  const changes = Array.from({ length: 25 }, (_, i) => `change ${i}`);
+  const accepted = files.map((file, i) => ({ path: file, rationale: `reason ${i}` }));
+  const baseline = Array.from({ length: 25 }, (_, i) => `baseline_${i}.py`);
+  const handoff = validationRepairHandoff(spec, new Error('validation failed'), {
+    implementerResult: {
+      outcome: 'changed',
+      title: 'Large repair',
+      summary: 'Many files',
+      changes,
+      files,
+    },
+    acceptedScope: { schema_version: 1, accepted, temporary: accepted, baseline },
+  });
+
+  assert.equal(handoff.changed_files.length, 20);
+  assert.equal(handoff.changed_files_total, 25);
+  assert.equal(handoff.changed_files_truncated, true);
+  assert.equal(handoff.completion.changes.length, 20);
+  assert.equal(handoff.completion.changes_total, 25);
+  assert.equal(handoff.completion.changes_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.accepted_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.accepted_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.temporary_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.temporary_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.baseline_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.baseline_truncated, true);
+  assert.match(validationRepairPrompt(new Error('validation failed'), handoff), /\*_truncated=true|\*_truncated/);
+});
+
+
 test('#469 repair handoff recomputes current changed files after a validation-time mutation', (t) => {
   const dir = temporaryDirectory(t, 'stage-repair-current-files-');
   execFileSync('git', ['init', '-q'], { cwd: dir });
