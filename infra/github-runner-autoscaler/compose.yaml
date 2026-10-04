@@ -80,7 +80,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/control-runner.Dockerfile
-    image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.2}
+    image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.3}
     container_name: ${CONTROL_RUNNER_NAME:-n150-control}
     restart: unless-stopped
     stop_grace_period: 30s
