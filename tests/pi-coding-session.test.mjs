@@ -748,7 +748,12 @@ function runtimeScenario(mode) {
               toolCallId: 'hidden-' + attempt.toolName + '-' + turn,
             }, ctx);
             assert.equal(hidden.block, true);
-            assert.match(hidden.reason, /not currently exposed/);
+            if (attempt.toolName === 'read') {
+              assert.match(hidden.reason, /not currently exposed/);
+            } else {
+              assert.match(hidden.reason, /capability lifecycle changed/);
+              assert.match(hidden.reason, /Do not retry the stale call/);
+            }
             assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
             await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
             assert.equal(aborts, index === 0 ? 0 : 1, 'unavailable calls abort only after a repeated unavailable-capability turn');
