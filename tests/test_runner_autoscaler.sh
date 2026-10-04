@@ -31,16 +31,24 @@ grep -q '^FROM node:24-bookworm-slim$' <<<"$control_dockerfile" || fail 'control
 grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$control_dockerfile" || fail 'control runner Actions Runner version must be pinned'
 grep -q 'ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
 grep -q 'unset GH_ADMIN_TOKEN' <<<"$control_entrypoint" || fail 'control jobs must not inherit repository-admin token'
-grep -q 'env -u GH_ADMIN_TOKEN RUNNER_MANUALLY_TRAP_SIG=1 gosu runner ./run.sh' <<<"$control_entrypoint" \
-  || fail 'control jobs must run unprivileged with upstream signal forwarding enabled'
+grep -q 'env -u GH_ADMIN_TOKEN gosu runner ./bin/Runner.Listener run' <<<"$control_entrypoint" \
+  || fail 'control runner must execute Runner.Listener directly to preserve upstream return codes'
+! grep -q 'gosu runner ./run.sh\|RUNNER_MANUALLY_TRAP_SIG' <<<"$control_entrypoint" \
+  || fail 'control runner must not hide listener failures behind run.sh/run-helper.sh'
 ! grep -q -- '--disableupdate' <<<"$control_entrypoint" || fail 'persistent control runner must keep GitHub self-update enabled'
 grep -q 'gosu runner rm -f .runner .credentials .credentials_rsaparams' <<<"$control_entrypoint" \
   || fail 'stale registration cleanup must run as the runner user'
 grep -q 'runner_api_healthy' <<<"$control_entrypoint" || fail 'control runner must gate destructive recovery on a healthy GitHub runners API'
+grep -q 'CONTROL_REPAIR_COOLDOWN_SECONDS' <<<"$control_entrypoint" \
+  || fail 'automatic re-registration must have a persistent cooldown'
 ! grep -q 'runner_registration_state\|per_page=100\|\.name == \$name' <<<"$control_entrypoint" \
   || fail 'control recovery must not make a pagination-sensitive name lookup'
 grep -q 'configure_runner &' <<<"$control_entrypoint" \
   || fail 'first-time registration must run asynchronously so PID 1 can handle stop signals'
+grep -q 'registration_pid' <<<"$control_entrypoint" && grep -q 'kill -INT --' <<<"$control_entrypoint" \
+  || fail 'registration shutdown must signal its process group'
+grep -q 'listener_pid' <<<"$control_entrypoint" && grep -q 'Runner.Listener process group' <<<"$control_entrypoint" \
+  || fail 'runner shutdown must signal the listener/worker process group'
 ! grep -q 'remove-token\|config.sh remove' <<<"$control_entrypoint" \
   || fail 'normal persistent runner lifecycle must not deregister on stop'
 trap_line="$(grep -n '^trap shutdown TERM INT$' <<<"$control_entrypoint" | cut -d: -f1)"
@@ -48,10 +56,22 @@ configure_line="$(grep -n '^if \[ ! -f \.runner \]; then$' <<<"$control_entrypoi
 [[ -n "$trap_line" && -n "$configure_line" && "$trap_line" -lt "$configure_line" ]] \
   || fail 'control runner must install its stop trap before first-time registration starts'
 
-# Execute the control entrypoint against a fake runner home. These scenarios
-# guard the persistent registration lifecycle without contacting GitHub.
+# Execute the control entrypoint against fake config.sh/Runner.Listener
+# processes. This exercises the exact upstream listener return codes that
+# run-helper.sh would otherwise normalize to success.
 control_harness="$(mktemp -d)"
-mkdir -p "$control_harness/bin" "$control_harness/runner"
+control_pid=""
+cleanup_control_harness() {
+  if [ -n "${control_pid:-}" ]; then
+    kill -TERM "${control_pid}" 2>/dev/null || true
+    wait "${control_pid}" 2>/dev/null || true
+    control_pid=""
+  fi
+  rm -rf "${control_harness:-}"
+}
+trap cleanup_control_harness EXIT
+
+mkdir -p "$control_harness/bin"
 cat > "$control_harness/bin/gosu" <<'GOSU'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -60,10 +80,10 @@ exec "$@"
 GOSU
 chmod +x "$control_harness/bin/gosu"
 
-run_control_case() {
-  local case_name="$1" curl_mode="$2" run_mode="$3"
+start_control_case() {
+  local case_name="$1" listener_mode="$2" api_mode="$3" config_mode="${4:-success}"
   local case_dir="$control_harness/$case_name"
-  mkdir -p "$case_dir/runner" "$case_dir/bin"
+  mkdir -p "$case_dir/runner/bin" "$case_dir/bin"
   cp "$control_harness/bin/gosu" "$case_dir/bin/gosu"
   : > "$case_dir/curl.log"
   printf 'registered\n' > "$case_dir/runner/.runner"
@@ -74,9 +94,13 @@ run_control_case() {
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >> "$case_dir/curl.log"
-case "$curl_mode" in
+if [[ "\$*" == *'/registration-token'* ]]; then
+  printf '%s\n' '{"token":"registration-token"}'
+  exit 0
+fi
+case "$api_mode" in
   error) exit 22 ;;
-  healthy) printf '%s\n' '{"runners":[{"name":"some-other-runner"}]}' ;;
+  healthy) printf '%s\n' '{"runners":[]}' ;;
   *) exit 88 ;;
 esac
 CURL
@@ -84,69 +108,146 @@ CURL
 
   cat > "$case_dir/runner/config.sh" <<'CONFIG'
 #!/usr/bin/env bash
-exit 99
+set -euo pipefail
+case "${CONFIG_MODE:-success}" in
+  success)
+    printf 'registered\n' > .runner
+    printf 'credentials\n' > .credentials
+    printf 'rsa\n' > .credentials_rsaparams
+    exit 0
+    ;;
+  fail)
+    printf 'partial\n' > .runner
+    printf 'partial\n' > .credentials
+    exit 9
+    ;;
+  *)
+    exit 98
+    ;;
+esac
 CONFIG
-  if [ "$run_mode" = fail ]; then
-    cat > "$case_dir/runner/run.sh" <<'RUN'
-#!/usr/bin/env bash
-set -euo pipefail
-[[ "${RUNNER_MANUALLY_TRAP_SIG:-}" == 1 ]] || exit 91
-exit 7
-RUN
-  else
-    cat > "$case_dir/runner/run.sh" <<'RUN'
-#!/usr/bin/env bash
-set -euo pipefail
-[[ "${RUNNER_MANUALLY_TRAP_SIG:-}" == 1 ]] || exit 91
-trap 'printf forwarded > "$SIGNAL_FORWARDED"; exit 0' TERM INT
-touch "$RUN_READY"
-while true; do sleep 1; done
-RUN
-  fi
-  chmod +x "$case_dir/runner/config.sh" "$case_dir/runner/run.sh"
 
-  if [ "$run_mode" = fail ]; then
-    status=0
+  cat > "$case_dir/runner/bin/Runner.Listener" <<'LISTENER'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${LISTENER_MODE}" in
+  exit1) exit 1 ;;
+  exit5) exit 5 ;;
+  exit7) exit 7 ;;
+  wait)
+    trap 'printf parent > "$SIGNAL_FORWARDED"; exit 0' INT TERM
+    (
+      trap 'printf child > "$CHILD_FORWARDED"; exit 0' INT TERM
+      touch "$RUN_READY"
+      while true; do sleep 1; done
+    ) &
+    child=$!
+    wait "$child"
+    ;;
+  *)
+    exit 97
+    ;;
+esac
+LISTENER
+  chmod +x "$case_dir/runner/config.sh" "$case_dir/runner/bin/Runner.Listener"
+
+  LISTENER_MODE="$listener_mode" CONFIG_MODE="$config_mode" \
+    RUN_READY="$case_dir/ready" SIGNAL_FORWARDED="$case_dir/forwarded" CHILD_FORWARDED="$case_dir/child-forwarded" \
     PATH="$case_dir/bin:$PATH" RUNNER_HOME="$case_dir/runner" \
-      GH_ADMIN_TOKEN=test-token GITHUB_REPOSITORY=example/repo \
-      bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
-      >"$case_dir/stdout" 2>"$case_dir/stderr" || status=$?
-    [[ "$status" == 7 ]] || fail "$case_name: expected listener status 7, got $status"
-  else
-    RUN_READY="$case_dir/ready" SIGNAL_FORWARDED="$case_dir/forwarded" PATH="$case_dir/bin:$PATH" RUNNER_HOME="$case_dir/runner" \
-      GH_ADMIN_TOKEN=test-token GITHUB_REPOSITORY=example/repo \
-      bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
-      >"$case_dir/stdout" 2>"$case_dir/stderr" &
-    control_pid=$!
-    for _ in {1..50}; do [ -f "$case_dir/ready" ] && break; sleep 0.02; done
-    [ -f "$case_dir/ready" ] || fail "$case_name: runner never started"
-    kill -TERM "$control_pid"
-    wait "$control_pid" || fail "$case_name: normal stop must exit successfully"
-  fi
-
+    GH_ADMIN_TOKEN=test-token GITHUB_REPOSITORY=example/repo \
+    CONTROL_RETRY_SECONDS=1 CONTROL_REPAIR_COOLDOWN_SECONDS=60 \
+    bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr" &
+  control_pid=$!
   CASE_DIR="$case_dir"
 }
 
-run_control_case api-error error fail
+wait_for_text() {
+  local file="$1" pattern="$2"
+  for _ in {1..100}; do
+    grep -q "$pattern" "$file" 2>/dev/null && return 0
+    sleep 0.02
+  done
+  return 1
+}
+
+stop_control_case() {
+  [ -n "${control_pid:-}" ] || return 0
+  kill -TERM "$control_pid" 2>/dev/null || true
+  wait "$control_pid" 2>/dev/null || true
+  control_pid=""
+}
+
+start_control_case api-error exit1 error
+wait_for_text "$CASE_DIR/stderr" 'preserving credentials' || fail 'api-error: recovery warning not observed'
 [[ -f "$CASE_DIR/runner/.runner" && -f "$CASE_DIR/runner/.credentials" ]] \
   || fail 'API reconciliation failure must preserve known local registration'
-grep -q 'preserving local credentials' "$CASE_DIR/stderr" \
-  || fail 'API reconciliation failure must be reported as non-destructive'
+stop_control_case
 
-run_control_case healthy-api healthy fail
-[[ ! -e "$CASE_DIR/runner/.runner" && ! -e "$CASE_DIR/runner/.credentials" && ! -e "$CASE_DIR/runner/.credentials_rsaparams" ]] \
-  || fail 'unexpected listener failure with a healthy runners API must force clean re-registration'
+start_control_case bounded-repair exit5 healthy
+wait_for_text "$CASE_DIR/stderr" 'inside cooldown' || fail 'bounded-repair: cooldown was not reached after repair'
+[[ -f "$CASE_DIR/runner/.runner" && -f "$CASE_DIR/runner/.credentials" ]] \
+  || fail 'bounded repair must leave the fresh registration in place'
+[[ -f "$CASE_DIR/runner/.control-last-repair" ]] || fail 'bounded repair must persist its cooldown marker'
+registration_posts="$(grep -c '/registration-token' "$CASE_DIR/curl.log" || true)"
+[[ "$registration_posts" == 1 ]] || fail "bounded repair expected one registration token POST, got $registration_posts"
+stop_control_case
 
-run_control_case normal-stop error wait
+start_control_case deprecated exit7 healthy
+wait_for_text "$CASE_DIR/stderr" 'runner version is deprecated' || fail 'deprecated: version warning not observed'
+[[ -f "$CASE_DIR/runner/.runner" && -f "$CASE_DIR/runner/.credentials" ]] \
+  || fail 'deprecated runner version must preserve registration'
+[[ ! -s "$CASE_DIR/curl.log" ]] || fail 'deprecated runner version must not call the GitHub runners API'
+stop_control_case
+
+start_control_case normal-stop wait error
+for _ in {1..100}; do [ -f "$CASE_DIR/ready" ] && break; sleep 0.02; done
+[ -f "$CASE_DIR/ready" ] || fail 'normal-stop: listener never started'
+kill -TERM "$control_pid"
+wait "$control_pid" || fail 'normal-stop: entrypoint did not exit cleanly'
+control_pid=""
+[[ -f "$CASE_DIR/forwarded" && -f "$CASE_DIR/child-forwarded" ]] \
+  || fail 'normal stop must signal the entire listener/worker process group'
 [[ -f "$CASE_DIR/runner/.runner" && -f "$CASE_DIR/runner/.credentials" ]] \
   || fail 'normal Docker stop must preserve persistent runner registration'
-[[ ! -s "$CASE_DIR/curl.log" ]] || fail 'normal Docker stop/restart must not require GitHub API access'
-[[ -f "$CASE_DIR/forwarded" ]] || fail 'normal stop must reach run.sh with upstream signal forwarding enabled'
+[[ ! -s "$CASE_DIR/curl.log" ]] || fail 'normal Docker stop must not require GitHub API access'
 
-# A TERM during first-time registration must interrupt PID 1 promptly instead
-# of waiting for foreground config.sh until Docker's grace period expires.
+failed_registration="$control_harness/failed-registration"
+mkdir -p "$failed_registration/runner/bin" "$failed_registration/bin"
+cp "$control_harness/bin/gosu" "$failed_registration/bin/gosu"
+cat > "$failed_registration/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *'/registration-token'* ]]; then
+  printf '%s\n' '{"token":"registration-token"}'
+else
+  printf '%s\n' '{"runners":[]}'
+fi
+CURL
+cat > "$failed_registration/runner/config.sh" <<'CONFIG'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'partial\n' > .runner
+printf 'partial\n' > .credentials
+exit 9
+CONFIG
+cat > "$failed_registration/runner/bin/Runner.Listener" <<'LISTENER'
+#!/usr/bin/env bash
+exit 97
+LISTENER
+chmod +x "$failed_registration/bin/curl" "$failed_registration/runner/config.sh" "$failed_registration/runner/bin/Runner.Listener"
+PATH="$failed_registration/bin:$PATH" RUNNER_HOME="$failed_registration/runner" \
+  GH_ADMIN_TOKEN=test-token GITHUB_REPOSITORY=example/repo CONTROL_RETRY_SECONDS=1 \
+  bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
+  >"$failed_registration/stdout" 2>"$failed_registration/stderr" &
+control_pid=$!
+wait_for_text "$failed_registration/stderr" 'registration failed status=9' || fail 'failed-registration: failure not observed'
+[[ ! -e "$failed_registration/runner/.runner" && ! -e "$failed_registration/runner/.credentials" ]] \
+  || fail 'failed first registration must clear partial local credentials'
+stop_control_case
+
 registration_case="$control_harness/registration-stop"
-mkdir -p "$registration_case/runner" "$registration_case/bin"
+mkdir -p "$registration_case/runner/bin" "$registration_case/bin"
 cp "$control_harness/bin/gosu" "$registration_case/bin/gosu"
 cat > "$registration_case/bin/curl" <<'CURL'
 #!/usr/bin/env bash
@@ -160,35 +261,44 @@ CURL
 cat > "$registration_case/runner/config.sh" <<'CONFIG'
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'partial\n' > .runner
+printf 'partial\n' > .credentials
 printf '%s\n' "$$" > "$CONFIG_PID_FILE"
+trap 'printf stopped > "$CONFIG_STOPPED"; exit 130' INT TERM
 touch "$CONFIG_READY"
 while true; do sleep 1; done
 CONFIG
-cat > "$registration_case/runner/run.sh" <<'RUN'
+cat > "$registration_case/runner/bin/Runner.Listener" <<'LISTENER'
 #!/usr/bin/env bash
 touch "$RUN_STARTED"
 exit 0
-RUN
-chmod +x "$registration_case/bin/curl" "$registration_case/runner/config.sh" "$registration_case/runner/run.sh"
-CONFIG_READY="$registration_case/config-ready" CONFIG_PID_FILE="$registration_case/config-pid" RUN_STARTED="$registration_case/run-started" \
+LISTENER
+chmod +x "$registration_case/bin/curl" "$registration_case/runner/config.sh" "$registration_case/runner/bin/Runner.Listener"
+CONFIG_READY="$registration_case/config-ready" CONFIG_PID_FILE="$registration_case/config-pid" \
+  CONFIG_STOPPED="$registration_case/config-stopped" RUN_STARTED="$registration_case/run-started" \
   PATH="$registration_case/bin:$PATH" RUNNER_HOME="$registration_case/runner" \
   GH_ADMIN_TOKEN=test-token GITHUB_REPOSITORY=example/repo \
   bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
   >"$registration_case/stdout" 2>"$registration_case/stderr" &
 control_pid=$!
-for _ in {1..50}; do [ -f "$registration_case/config-ready" ] && break; sleep 0.02; done
+for _ in {1..100}; do [ -f "$registration_case/config-ready" ] && break; sleep 0.02; done
 [ -f "$registration_case/config-ready" ] || fail 'registration-stop: config.sh never started'
+config_pid="$(cat "$registration_case/config-pid")"
 start="$(date +%s)"
 kill -TERM "$control_pid"
 wait "$control_pid" || fail 'registration-stop: TERM should stop PID 1 successfully'
+control_pid=""
 elapsed=$(( $(date +%s) - start ))
 [[ "$elapsed" -le 2 ]] || fail "registration-stop: PID 1 took ${elapsed}s to handle TERM"
+[[ -f "$registration_case/config-stopped" ]] || fail 'registration-stop: config process group did not receive shutdown signal'
+! kill -0 "$config_pid" 2>/dev/null || fail 'registration-stop: config.sh was orphaned'
+[[ ! -e "$registration_case/runner/.runner" && ! -e "$registration_case/runner/.credentials" ]] \
+  || fail 'registration-stop: interrupted registration left partial local state'
 [[ ! -e "$registration_case/run-started" ]] || fail 'registration-stop: listener started after interrupted registration'
-if [ -s "$registration_case/config-pid" ]; then
-  kill -TERM "$(cat "$registration_case/config-pid")" 2>/dev/null || true
-fi
 
 rm -rf "$control_harness"
+control_harness=""
+trap - EXIT
 
 # run_with_timeout must never block the caller past its own deadline, and must
 # never block past the wrapped command's actual completion when it finishes
