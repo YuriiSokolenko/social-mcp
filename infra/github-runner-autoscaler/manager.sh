@@ -38,9 +38,14 @@ CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
 DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
 DOCKER_DEEP_PROBE_INTERVAL_SECONDS="${DOCKER_DEEP_PROBE_INTERVAL_SECONDS:-300}"
+DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS="${DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS:-60}"
 DOCKER_HEALTH_RETRY_SECONDS=5
 [[ "$DOCKER_DEEP_PROBE_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
   echo "DOCKER_DEEP_PROBE_INTERVAL_SECONDS must be a positive integer" >&2
+  exit 1
+}
+[[ "$DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+  echo "DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS must be a positive integer" >&2
   exit 1
 }
 # Optional durable infra evidence (#437). Workers run with --rm and GitHub job
@@ -349,7 +354,7 @@ DOCKER_QUARANTINED=false
 DOCKER_HEALTHY_POLLS=0
 DOCKER_LAST_DEEP_PROBE_EPOCH=0
 DOCKER_DEEP_PROBE_REQUIRED=true
-DOCKER_DEEP_PROBE_RUNNING=false
+DOCKER_FORCED_DEEP_PROBE_PENDING=false
 
 docker_health_now() {
   date +%s
@@ -357,7 +362,7 @@ docker_health_now() {
 
 request_docker_deep_probe() {
   [ "$MOUNT_DOCKER_SOCKET" == true ] || return 0
-  DOCKER_DEEP_PROBE_REQUIRED=true
+  DOCKER_FORCED_DEEP_PROBE_PENDING=true
 }
 
 docker_deep_probe_due() {
@@ -365,11 +370,20 @@ docker_deep_probe_due() {
   [ "$DOCKER_QUARANTINED" == true ] && return 0
   [ "$DOCKER_DEEP_PROBE_REQUIRED" == true ] && return 0
 
-  local now
+  local now elapsed
   now="$(docker_health_now)" || return 0
   [[ "$now" =~ ^[0-9]+$ ]] || return 0
   [ "$now" -ge "$DOCKER_LAST_DEEP_PROBE_EPOCH" ] || return 0
-  [ $((now - DOCKER_LAST_DEEP_PROBE_EPOCH)) -ge "$DOCKER_DEEP_PROBE_INTERVAL_SECONDS" ]
+  elapsed=$((now - DOCKER_LAST_DEEP_PROBE_EPOCH))
+
+  # Container-start failures are a useful corruption signal, but failures such
+  # as a missing image or a busy daemon must not turn the expensive metadata
+  # walk back into a per-poll hot loop. Quarantine bypasses this throttle above.
+  if [ "$DOCKER_FORCED_DEEP_PROBE_PENDING" == true ]     && [ "$elapsed" -ge "$DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS" ]; then
+    return 0
+  fi
+
+  [ "$elapsed" -ge "$DOCKER_DEEP_PROBE_INTERVAL_SECONDS" ]
 }
 
 run_docker_health_check() {
@@ -406,26 +420,17 @@ run_docker_health_check() {
 }
 
 run_docker_deep_probe() {
-  if [ "$DOCKER_DEEP_PROBE_RUNNING" == true ]; then
-    log "warning: Docker metadata probe already running; refusing duplicate probe"
-    return 1
-  fi
-
-  DOCKER_DEEP_PROBE_RUNNING=true
-  if ! run_docker_health_check metadata; then
-    DOCKER_DEEP_PROBE_RUNNING=false
-    return 1
-  fi
+  run_docker_health_check metadata || return 1
 
   local now
   now="$(docker_health_now)" || now=
   if [[ "$now" =~ ^[0-9]+$ ]]; then
     DOCKER_LAST_DEEP_PROBE_EPOCH="$now"
     DOCKER_DEEP_PROBE_REQUIRED=false
+    DOCKER_FORCED_DEEP_PROBE_PENDING=false
   else
     DOCKER_DEEP_PROBE_REQUIRED=true
   fi
-  DOCKER_DEEP_PROBE_RUNNING=false
   log "Docker metadata health probe healthy interval=${DOCKER_DEEP_PROBE_INTERVAL_SECONDS}s"
 }
 
