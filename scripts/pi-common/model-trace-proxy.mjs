@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 
 const DEFAULT_MAX_BYTES = 100 * 1024 * 1024;
 const CREDENTIAL_FIELDS = new Set([
@@ -89,7 +90,7 @@ function parseBody(buffer) {
 }
 
 /** A local OpenAI-compatible forwarding proxy that records one JSONL exchange per call. */
-export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES, onExchange = null }) {
+export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES, traceSession = randomUUID(), onExchange = null }) {
   let nextSequence = 0;
   let writtenBytes = 0;
   let traceDisabled = false;
@@ -175,6 +176,7 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
 
     const record = {
       sequence,
+      traceSession,
       timestamp,
       stage,
       issue: issue || null,
@@ -189,6 +191,7 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       try {
         onExchange({
           sequence: record.sequence,
+          traceSession: record.traceSession,
           stage: record.stage,
           issue: record.issue,
           status: record.status,
