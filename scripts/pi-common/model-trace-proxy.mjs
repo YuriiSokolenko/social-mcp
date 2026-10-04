@@ -194,6 +194,8 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
           traceSession: record.traceSession,
           stage: record.stage,
           issue: record.issue,
+          requestMethod: record.request.method,
+          requestPath: record.request.path,
           status: record.status,
           elapsedMs: record.elapsedMs,
           transportError,
