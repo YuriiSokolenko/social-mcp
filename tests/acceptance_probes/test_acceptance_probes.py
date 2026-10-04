@@ -98,3 +98,19 @@ def test_manifest_is_well_formed() -> None:
     for name, criterion in CRITERIA.items():
         assert criterion["status"] and criterion["source"], name
         assert any(p["criterion"] == name for p in PROBES), f"criterion {name} has no probe"
+
+
+def test_deferred_target_is_required_when_current_issue_names_it(tmp_path, monkeypatch) -> None:
+    context = tmp_path / "issue.json"
+    context.write_text(
+        json.dumps({"body": "Add social_mcp.diagnostics.smoke_lru.LRUCache exactly as specified."}),
+        "utf-8",
+    )
+    monkeypatch.setenv("PI_ISSUE_CONTEXT", str(context))
+
+    assert _current_issue_requests("social_mcp.diagnostics.smoke_lru")
+    assert not _current_issue_requests("social_mcp.diagnostics.smoke_intervals")
+
+
+def test_missing_parent_package_is_treated_as_absent() -> None:
+    assert not _module_present("definitely_missing_acceptance_probe_parent.child")
