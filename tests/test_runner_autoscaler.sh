@@ -7,6 +7,422 @@ source "$(dirname "$0")/../infra/github-runner-autoscaler/manager.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_failure() { if "$@" >/dev/null 2>&1; then fail "expected failure: $*"; fi; }
 
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+control_compose="$(awk '/^  control-runner:/{capture=1} capture{if (/^volumes:/) exit; print}' "$repo_root/infra/github-runner-autoscaler/compose.yaml")"
+control_dockerfile="$(cat "$repo_root/infra/github-runner-autoscaler/control-runner.Dockerfile")"
+control_entrypoint="$(cat "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh")"
+
+grep -q '^  control-runner:$' "$repo_root/infra/github-runner-autoscaler/compose.yaml" || fail 'control runner service missing'
+grep -q 'RUNNER_LABELS: .*n150,control' <<<"$control_compose" || fail 'control runner must register n150,control labels'
+grep -q 'restart: unless-stopped' <<<"$control_compose" || fail 'control runner must survive host/container restarts'
+grep -q 'stop_grace_period: 120s' <<<"$control_compose" || fail 'control runner must allow bounded update/child shutdown'
+grep -q 'cpus: 1.00' <<<"$control_compose" || fail 'control runner CPU limit missing'
+grep -q 'mem_limit: 1g' <<<"$control_compose" || fail 'control runner memory limit missing'
+grep -q 'pids_limit: 512' <<<"$control_compose" || fail 'control runner PID limit missing'
+grep -q 'control-runner-state:/home/runner/actions-runner' <<<"$control_compose" || fail 'control runner root must use persistent named volume'
+grep -q 'CONTROL_RUNNER_STATE_VOLUME.*social-mcp-control-runner-state' "$repo_root/infra/github-runner-autoscaler/compose.yaml" || fail 'control runner persistent volume declaration missing'
+grep -q 'cap_drop:' <<<"$control_compose" && grep -q -- '- ALL' <<<"$control_compose" || fail 'control runner must drop the default capability set'
+grep -q -- '- SETGID' <<<"$control_compose" || fail 'control runner needs SETGID to launch the unprivileged worker'
+grep -q -- '- SETUID' <<<"$control_compose" || fail 'control runner needs SETUID to launch the unprivileged worker'
+grep -q -- '- KILL' <<<"$control_compose" || fail 'control runner needs KILL to signal the uid 1001 runner during graceful shutdown'
+! grep -q 'SYS_ADMIN\|NET_ADMIN\|SYS_PTRACE' <<<"$control_compose" || fail 'control runner must not regain unrelated privileged capabilities'
+grep -q 'no-new-privileges:true' <<<"$control_compose" || fail 'control runner no-new-privileges missing'
+! grep -q '/var/run/docker.sock' <<<"$control_compose" || fail 'control runner must never receive Docker socket'
+! grep -q 'MODEL_STATUS_URL\|PI_HOME\|PI_CONFIG\|MOUNT_PI_CONFIG' <<<"$control_compose" || fail 'control runner must not depend on Pi/model runtime'
+
+grep -q '^FROM node:24-bookworm-slim$' <<<"$control_dockerfile" || fail 'control runner must use slim Debian/glibc base'
+! grep -qi 'alpine\|docker-ce\|docker-compose' <<<"$control_dockerfile" || fail 'control runner image must stay free of Alpine and Docker tooling'
+grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$control_dockerfile" || fail 'control runner Actions Runner version must be pinned'
+grep -q 'ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
+grep -q 'ENV ACTIONS_RUNNER_BASELINE_VERSION=' <<<"$control_dockerfile" || fail 'control image must expose its verified runner baseline version'
+grep -q '/opt/actions-runner-baseline' <<<"$control_dockerfile" || fail 'control image must keep baseline package outside the persistent runner root'
+grep -q 'cp -a /opt/actions-runner-baseline/. /home/runner/actions-runner/' <<<"$control_dockerfile" || fail 'new control volume must be seeded with the runner package'
+
+grep -q 'unset GH_ADMIN_TOKEN' <<<"$control_entrypoint" || fail 'control jobs must not inherit repository-admin token'
+grep -q 'gosu runner ./bin/Runner.Listener run' <<<"$control_entrypoint" \
+  || fail 'control runner must execute Runner.Listener directly to preserve upstream return codes'
+! grep -q 'gosu runner ./run.sh\|RUNNER_MANUALLY_TRAP_SIG\|env -u GH_ADMIN_TOKEN' <<<"$control_entrypoint" \
+  || fail 'control runner must not hide listener failures behind run.sh or redundant environment wrappers'
+! grep -q -- '--disableupdate' <<<"$control_entrypoint" || fail 'persistent control runner must keep GitHub self-update enabled'
+grep -q 'registration_complete' <<<"$control_entrypoint" && grep -q '\[ -s .runner \].*\[ -s .credentials \]' <<<"$control_entrypoint" \
+  || fail 'control startup must reject half-written registration state'
+grep -q 'restore_runtime_baseline' <<<"$control_entrypoint" && grep -q 'ACTIONS_RUNNER_BASELINE_VERSION' <<<"$control_entrypoint" \
+  || fail 'persisted runner root must be recoverable/upgradable from the image baseline'
+grep -q 'gosu runner rm -f .runner .credentials .credentials_rsaparams' <<<"$control_entrypoint" \
+  || fail 'registration cleanup must run as the runner user'
+grep -q 'runner_api_healthy' <<<"$control_entrypoint" || fail 'credential repair must gate destructive recovery on a healthy runners API'
+grep -q 'credential_failures' <<<"$control_entrypoint" && grep -q 'retrying once with existing credentials before repair' <<<"$control_entrypoint" \
+  || fail 'listener credential/session failure must retry before re-registration'
+grep -q 'CONTROL_REPAIR_COOLDOWN_SECONDS' <<<"$control_entrypoint" \
+  || fail 'automatic re-registration must have a persistent cooldown'
+grep -q 'mark_repair' <<<"$control_entrypoint" && grep -q 'failed to persist repair cooldown' <<<"$control_entrypoint" \
+  || fail 'repair marker writes must fail closed instead of aborting PID 1'
+grep -q 'interruptible_sleep' <<<"$control_entrypoint" && grep -q 'sleep_pid' <<<"$control_entrypoint" \
+  || fail 'control runner backoff sleeps must remain interruptible by Docker stop'
+grep -q 'stop_process_group' <<<"$control_entrypoint" && grep -q 'CONTROL_CHILD_STOP_WAIT_SECONDS' <<<"$control_entrypoint" \
+  || fail 'control runner child shutdown must be bounded'
+grep -q 'launch_in_progress' <<<"$control_entrypoint" && grep -q 'shutdown_requested' <<<"$control_entrypoint" && grep -q 'complete_launch' <<<"$control_entrypoint" \
+  || fail 'signals arriving between child launch and PID capture must be deferred until the PID is owned'
+grep -q 'CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS' <<<"$control_entrypoint" && grep -q 'update_waiting' <<<"$control_entrypoint" \
+  || fail 'control runner shutdown must protect an in-flight self-update'
+! grep -q 'runner_registration_state\|per_page=100\|\.name == \$name' <<<"$control_entrypoint" \
+  || fail 'control recovery must not make a pagination-sensitive name lookup'
+! grep -q 'remove-token\|config.sh remove' <<<"$control_entrypoint" \
+  || fail 'normal persistent runner lifecycle must not deregister on stop'
+trap_line="$(grep -n '^trap shutdown TERM INT$' <<<"$control_entrypoint" | cut -d: -f1)"
+loop_line="$(grep -n '^while true; do$' <<<"$control_entrypoint" | head -n 1 | cut -d: -f1)"
+[[ -n "$trap_line" && -n "$loop_line" && "$trap_line" -lt "$loop_line" ]] \
+  || fail 'control runner must install its stop trap before registration/listener work starts'
+
+# Execute the control entrypoint against fake config.sh/Runner.Listener
+# processes. The fake listener preserves upstream return codes and supports
+# version probes, update completion, and process-group signal checks.
+control_harness="$(mktemp -d)"
+control_pid=""
+
+cleanup_control_harness() {
+  if [ -n "${control_pid:-}" ]; then
+    kill -TERM "${control_pid}" 2>/dev/null || true
+    for _ in {1..150}; do
+      kill -0 "${control_pid}" 2>/dev/null || break
+      sleep 0.02
+    done
+    kill -KILL "${control_pid}" 2>/dev/null || true
+    wait "${control_pid}" 2>/dev/null || true
+    control_pid=""
+  fi
+  rm -rf "${control_harness:-}"
+}
+trap cleanup_control_harness EXIT
+
+mkdir -p "$control_harness/basebin"
+cat > "$control_harness/basebin/gosu" <<'GOSU'
+#!/usr/bin/env bash
+set -euo pipefail
+shift
+exec "$@"
+GOSU
+chmod +x "$control_harness/basebin/gosu"
+
+wait_for_text() {
+  local file="$1" pattern="$2"
+  for _ in {1..200}; do
+    grep -q "$pattern" "$file" 2>/dev/null && return 0
+    sleep 0.02
+  done
+  return 1
+}
+
+wait_for_file() {
+  local file="$1"
+  for _ in {1..200}; do
+    [ -e "$file" ] && return 0
+    sleep 0.02
+  done
+  return 1
+}
+
+wait_control_exit() {
+  local label="$1"
+  for _ in {1..150}; do
+    kill -0 "$control_pid" 2>/dev/null || {
+      wait "$control_pid" 2>/dev/null || true
+      control_pid=""
+      return 0
+    }
+    sleep 0.02
+  done
+  kill -KILL "$control_pid" 2>/dev/null || true
+  wait "$control_pid" 2>/dev/null || true
+  control_pid=""
+  fail "$label: control entrypoint did not stop promptly"
+}
+
+stop_control_case() {
+  local label="$1"
+  [ -n "${control_pid:-}" ] || return 0
+  kill -TERM "$control_pid" 2>/dev/null || true
+  wait_control_exit "$label"
+}
+
+write_fake_runtime() {
+  local root="$1" version="$2"
+  mkdir -p "$root/bin"
+
+  cat > "$root/config.sh" <<'CONFIG'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$CONFIG_LOG"
+case "${CONFIG_MODE:-success}" in
+  success)
+    printf 'registered\n' > .runner
+    printf 'credentials\n' > .credentials
+    printf 'rsa\n' > .credentials_rsaparams
+    ;;
+  fail)
+    printf 'partial\n' > .runner
+    printf 'partial\n' > .credentials
+    exit 9
+    ;;
+  wait)
+    printf 'partial\n' > .runner
+    printf 'partial\n' > .credentials
+    exec node -e '
+      const fs=require("node:fs");
+      fs.writeFileSync(process.env.CONFIG_PID_FILE,String(process.pid));
+      process.on("SIGINT",()=>{fs.writeFileSync(process.env.CONFIG_STOPPED,"stopped");process.exit(130);});
+      fs.writeFileSync(process.env.CONFIG_READY,"ready");
+      setInterval(()=>{},1000);
+    '
+    ;;
+  *)
+    exit 98
+    ;;
+esac
+CONFIG
+  chmod +x "$root/config.sh"
+
+  cat > "$root/bin/Runner.Listener" <<'LISTENER'
+#!/usr/bin/env node
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const version = '__VERSION__';
+
+if (process.argv.includes('--version')) {
+  process.stdout.write(version + '\n');
+  process.exit(0);
+}
+
+const sequence = (process.env.LISTENER_SEQUENCE || 'wait').split(',');
+const indexFile = process.env.LISTENER_INDEX_FILE;
+let index = 0;
+try { index = Number(fs.readFileSync(indexFile, 'utf8')) || 0; } catch {}
+const mode = sequence[Math.min(index, sequence.length - 1)];
+fs.writeFileSync(indexFile, String(index + 1));
+
+if (/^[0-7]$/.test(mode)) {
+  const code = Number(mode);
+  if (code === 3 || code === 4) {
+    const delay = Number(process.env.UPDATE_DELAY_MS || 20);
+    const childSource = [
+      "const fs=require('node:fs');",
+      "setTimeout(()=>{fs.writeFileSync('update.finished','done');fs.writeFileSync(process.env.UPDATE_DONE,'done');process.exit(0);}," + delay + ");",
+    ].join('');
+    spawn(process.execPath, ['-e', childSource], { stdio: 'ignore', env: process.env });
+  }
+  process.exit(code);
+}
+
+if (mode === '97') process.exit(97);
+if (mode !== 'wait') process.exit(96);
+
+const childSource = [
+  "const fs=require('node:fs');",
+  "process.on('SIGINT',()=>{fs.writeFileSync(process.env.CHILD_FORWARDED,'child');process.exit(0);});",
+  "fs.writeFileSync(process.env.RUN_READY,'ready');",
+  "setInterval(()=>{},1000);",
+].join('');
+spawn(process.execPath, ['-e', childSource], { stdio: 'ignore', env: process.env });
+process.on('SIGINT', () => {
+  fs.writeFileSync(process.env.SIGNAL_FORWARDED, 'parent');
+  setTimeout(() => process.exit(0), 20);
+});
+setInterval(() => {}, 1000);
+LISTENER
+  sed -i "s/__VERSION__/$version/" "$root/bin/Runner.Listener"
+  chmod +x "$root/bin/Runner.Listener"
+}
+
+start_control_case() {
+  local case_name="$1" sequence="$2" api_mode="$3" registration_mode="${4:-complete}" config_mode="${5:-success}"
+  local runtime_version="${6:-2.337.0}" retry_seconds="${7:-0}" update_delay_ms="${8:-20}"
+  local case_dir="$control_harness/$case_name"
+
+  mkdir -p "$case_dir/runner" "$case_dir/baseline" "$case_dir/bin"
+  cp "$control_harness/basebin/gosu" "$case_dir/bin/gosu"
+  write_fake_runtime "$case_dir/runner" "$runtime_version"
+  write_fake_runtime "$case_dir/baseline" "2.337.0"
+  : > "$case_dir/curl.log"
+  : > "$case_dir/config.log"
+  printf '0\n' > "$case_dir/listener-index"
+
+  case "$registration_mode" in
+    complete)
+      printf 'registered\n' > "$case_dir/runner/.runner"
+      printf 'credentials\n' > "$case_dir/runner/.credentials"
+      printf 'rsa\n' > "$case_dir/runner/.credentials_rsaparams"
+      ;;
+    partial)
+      printf 'registered\n' > "$case_dir/runner/.runner"
+      ;;
+    none) ;;
+    *) fail "$case_name: unknown registration mode $registration_mode" ;;
+  esac
+
+  cat > "$case_dir/bin/curl" <<CURL
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$case_dir/curl.log"
+if [[ "\$*" == *'/registration-token'* ]]; then
+  printf '%s\n' '{"token":"registration-token"}'
+  exit 0
+fi
+case "$api_mode" in
+  error) exit 22 ;;
+  healthy) printf '%s\n' '{"runners":[]}' ;;
+  *) exit 88 ;;
+esac
+CURL
+  chmod +x "$case_dir/bin/curl"
+
+  LISTENER_SEQUENCE="$sequence" \
+    LISTENER_INDEX_FILE="$case_dir/listener-index" \
+    RUN_READY="$case_dir/ready" \
+    SIGNAL_FORWARDED="$case_dir/forwarded" \
+    CHILD_FORWARDED="$case_dir/child-forwarded" \
+    UPDATE_DONE="$case_dir/update-done" \
+    UPDATE_DELAY_MS="$update_delay_ms" \
+    CONFIG_MODE="$config_mode" \
+    CONFIG_LOG="$case_dir/config.log" \
+    CONFIG_READY="$case_dir/config-ready" \
+    CONFIG_PID_FILE="$case_dir/config-pid" \
+    CONFIG_STOPPED="$case_dir/config-stopped" \
+    PATH="$case_dir/bin:$PATH" \
+    RUNNER_HOME="$case_dir/runner" \
+    RUNNER_BASELINE_HOME="$case_dir/baseline" \
+    ACTIONS_RUNNER_BASELINE_VERSION=2.337.0 \
+    GH_ADMIN_TOKEN=test-token \
+    GITHUB_REPOSITORY=example/repo \
+    CONTROL_RETRY_SECONDS="$retry_seconds" \
+    CONTROL_SHORT_RETRY_SECONDS=0 \
+    CONTROL_REPAIR_COOLDOWN_SECONDS=60 \
+    CONTROL_UPDATE_WAIT_SECONDS=2 \
+    CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS=2 \
+    CONTROL_CHILD_STOP_WAIT_SECONDS=2 \
+    bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr" &
+  control_pid=$!
+  CASE_DIR="$case_dir"
+}
+
+# Clean exit 0 is preserved.
+start_control_case exit0 0 error
+wait_control_exit exit0
+grep -q 'listener exited cleanly' "$CASE_DIR/stderr" || fail 'exit0: clean listener exit not observed'
+
+# Retryable exit 2 retries and can recover.
+start_control_case retry2 2,0 error
+wait_for_text "$CASE_DIR/stderr" 'listener requested retry' || fail 'retry2: retry path not observed'
+wait_control_exit retry2
+
+# Update exits 3 and 4 wait for update.finished, remove it, and relaunch.
+for code in 3 4; do
+  start_control_case "update$code" "$code,0" error
+  wait_for_file "$CASE_DIR/update-done" || fail "update$code: fake update never completed"
+  wait_control_exit "update$code"
+  [[ ! -e "$CASE_DIR/runner/update.finished" ]] || fail "update$code: update.finished was not consumed"
+  grep -q 'waiting for update completion' "$CASE_DIR/stderr" || fail "update$code: update wait not observed"
+done
+
+# Config-refresh exit 6 uses a bounded short delay instead of a hot loop.
+start_control_case refresh6 6,0 error
+wait_for_text "$CASE_DIR/stderr" 'configuration refreshed; retrying listener after short delay' || fail 'refresh6: delayed refresh path not observed'
+wait_control_exit refresh6
+
+# Unknown listener failures preserve registration and retry rather than re-register.
+start_control_case unknown 97,0 healthy
+wait_for_text "$CASE_DIR/stderr" 'unexpected status=97; preserving registration' || fail 'unknown: preserve path not observed'
+wait_control_exit unknown
+[[ ! -s "$CASE_DIR/curl.log" ]] || fail 'unknown listener failure must not call runner registration APIs'
+
+# Exit 1 retries the same credentials once before any API-gated repair.
+start_control_case api-error 1,1,wait error
+wait_for_text "$CASE_DIR/stderr" 'retrying once with existing credentials before repair' || fail 'api-error: first credential retry not observed'
+wait_for_text "$CASE_DIR/stderr" 'runners API is unavailable; preserving credentials' || fail 'api-error: non-destructive API failure not observed'
+[[ -f "$CASE_DIR/runner/.runner" && -f "$CASE_DIR/runner/.credentials" ]] || fail 'API outage must preserve registration'
+[[ "$(grep -c '/registration-token' "$CASE_DIR/curl.log" || true)" == 0 ]] || fail 'API outage must not mint a replacement registration'
+stop_control_case api-error
+
+# Exit 5 also retries existing credentials first. Only the repeated conflict
+# can repair, and the repair marker is written before the destructive cleanup.
+start_control_case bounded-repair 5,5,0 healthy
+wait_for_text "$CASE_DIR/stderr" 'retrying once with existing credentials before repair' || fail 'bounded-repair: first same-credential retry missing'
+wait_for_text "$CASE_DIR/stderr" 'scheduling bounded clean re-registration' || fail 'bounded-repair: repair path not observed'
+wait_control_exit bounded-repair
+[[ -f "$CASE_DIR/runner/.control-last-repair" ]] || fail 'bounded repair must persist cooldown marker'
+[[ "$(grep -c '/registration-token' "$CASE_DIR/curl.log" || true)" == 1 ]] || fail 'bounded repair must mint exactly one replacement registration'
+
+# A cooldown marker that predates a new entrypoint process blocks repair after
+# the retry, proving cooldown state survives process/container restart.
+start_control_case cooldown-restart 5,5,wait healthy
+printf '%s\n' "$(date +%s)" > "$CASE_DIR/runner/.control-last-repair"
+wait_for_text "$CASE_DIR/stderr" 'inside cooldown, preserving credentials' || fail 'cooldown-restart: persisted cooldown not honored'
+[[ "$(grep -c '/registration-token' "$CASE_DIR/curl.log" || true)" == 0 ]] || fail 'persisted cooldown must block replacement registration'
+stop_control_case cooldown-restart
+
+# Deprecated-version exit 7 never re-registers; its long cooldown sleep remains
+# interruptible, unlike the short retry cases.
+start_control_case deprecated 7 healthy
+wait_for_text "$CASE_DIR/stderr" 'runner version is deprecated' || fail 'deprecated: version warning not observed'
+[[ ! -s "$CASE_DIR/curl.log" ]] || fail 'deprecated runner version must not call runners API'
+stop_control_case deprecated
+
+# Startup with only .runner is treated as half-written state, cleared, and
+# re-registered before the listener starts.
+start_control_case partial-start 0 healthy partial
+wait_control_exit partial-start
+grep -q 'incomplete control runner registration state' "$CASE_DIR/stderr" || fail 'partial-start: incomplete state not detected'
+[[ "$(grep -c '/registration-token' "$CASE_DIR/curl.log" || true)" == 1 ]] || fail 'partial-start: expected exactly one registration token POST'
+[[ -s "$CASE_DIR/runner/.runner" && -s "$CASE_DIR/runner/.credentials" ]] || fail 'partial-start: registration was not rebuilt'
+
+# A failed first registration clears partial files before the retry sleep.
+start_control_case failed-registration wait healthy none fail 2.337.0 5
+wait_for_text "$CASE_DIR/stderr" 'registration failed status=9' || fail 'failed-registration: failure not observed'
+[[ ! -e "$CASE_DIR/runner/.runner" && ! -e "$CASE_DIR/runner/.credentials" ]] || fail 'failed registration left partial local state'
+stop_control_case failed-registration
+
+# A runtime older than the image baseline is replaced from the external
+# baseline without discarding persistent registration state.
+start_control_case baseline-upgrade 0 error complete success 2.100.0
+wait_control_exit baseline-upgrade
+grep -q 'upgrading persisted runner runtime 2.100.0 -> baseline 2.337.0' "$CASE_DIR/stderr" || fail 'baseline-upgrade: persisted runtime was not upgraded'
+[[ -s "$CASE_DIR/runner/.runner" && -s "$CASE_DIR/runner/.credentials" ]] || fail 'baseline-upgrade: registration state was lost'
+
+# Normal Docker stop SIGINTs the full listener/worker process group and does
+# not require GitHub API access.
+start_control_case normal-stop wait error
+wait_for_file "$CASE_DIR/ready" || fail 'normal-stop: listener never started'
+kill -TERM "$control_pid"
+wait_control_exit normal-stop
+[[ -f "$CASE_DIR/forwarded" && -f "$CASE_DIR/child-forwarded" ]] || fail 'normal stop must signal listener and worker'
+[[ -f "$CASE_DIR/runner/.runner" && -f "$CASE_DIR/runner/.credentials" ]] || fail 'normal stop must preserve registration'
+[[ ! -s "$CASE_DIR/curl.log" ]] || fail 'normal stop must not need GitHub API'
+
+# TERM during first registration stops/waits for the whole config process group,
+# removes partial files, and never launches Runner.Listener.
+start_control_case registration-stop wait healthy none wait
+wait_for_file "$CASE_DIR/config-ready" || fail 'registration-stop: config process never became ready'
+config_pid="$(cat "$CASE_DIR/config-pid")"
+kill -TERM "$control_pid"
+wait_control_exit registration-stop
+[[ -f "$CASE_DIR/config-stopped" ]] || fail 'registration-stop: config process group did not receive SIGINT'
+! kill -0 "$config_pid" 2>/dev/null || fail 'registration-stop: config child was orphaned'
+[[ ! -e "$CASE_DIR/runner/.runner" && ! -e "$CASE_DIR/runner/.credentials" ]] || fail 'registration-stop: partial registration survived'
+[[ "$(cat "$CASE_DIR/listener-index")" == 0 ]] || fail 'registration-stop: listener started after interrupted registration'
+
+# TERM while wait_for_update is active waits for the in-flight update child
+# instead of tearing the container down immediately.
+start_control_case update-shutdown 3,wait error complete success 2.337.0 0 300
+wait_for_text "$CASE_DIR/stderr" 'waiting for update completion' || fail 'update-shutdown: update wait not entered'
+kill -TERM "$control_pid"
+wait_control_exit update-shutdown
+wait_for_file "$CASE_DIR/update-done" || fail 'update-shutdown: in-flight update was not allowed to finish'
+
+rm -rf "$control_harness"
+control_harness=""
+trap - EXIT
+
 # run_with_timeout must never block the caller past its own deadline, and must
 # never block past the wrapped command's actual completion when it finishes
 # early -- a prior version left a killed watchdog holding the caller's stdout

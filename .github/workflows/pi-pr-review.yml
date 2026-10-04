@@ -17,10 +17,6 @@ on:
           - default
           - laguna
           - qwen
-  pull_request:
-    types: [synchronize]
-    branches: [dev]
-
 permissions:
   actions: write
   contents: read
@@ -28,28 +24,10 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # synchronize has no inputs: key its invalidation per PR so pushes to different PRs never
-  # share a group (GitHub cancels older pending runs in a group, which would drop an invalidation).
-  group: ${{ github.event_name == 'pull_request' && format('pi-pr-review-invalidate-{0}', github.event.pull_request.number) || format('pi-pr-review-{0}', inputs.pr_number) }}
+  group: ${{ format('pi-pr-review-{0}', inputs.pr_number) }}
   cancel-in-progress: false
 
 jobs:
-  invalidate:
-    if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'pi/issue-')
-    runs-on: [self-hosted, linux, x64, n150, general]
-    steps:
-      - name: Checkout trusted dev
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          ref: dev
-
-      - name: Invalidate stale review verdict
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" invalidate "$PR"
-
   review:
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
