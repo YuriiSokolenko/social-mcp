@@ -463,12 +463,14 @@ function mutationResultPaths(input, result) {
   return uniqueStrings(candidates);
 }
 
+function targetMatchesObligationPath(target, obligationPath) {
+  return target === obligationPath || target.endsWith('/' + obligationPath);
+}
+
 export function mutationResolvesSubmissionObligation(obligation, input, result) {
   const paths = obligation?.paths ?? [];
   const targets = mutationResultPaths(input, result);
-  return targets.some(target => paths.some(item =>
-    target === item || target.endsWith('/' + item) || item.endsWith('/' + target)
-  ));
+  return targets.some(target => paths.some(item => targetMatchesObligationPath(target, item)));
 }
 
 function strategyFamily(tool, input, productiveState, errorClass) {
@@ -516,11 +518,6 @@ export class SemanticLoopGuard {
     const recoveringFromSteer = this.steerOutstanding;
     this.steerOutstanding = false;
     if (recoveringFromSteer) this.observationWindow = [];
-  }
-
-  _mutationTouchesObligation(target) {
-    const paths = this.terminalObligation?.paths ?? [];
-    return Boolean(target) && paths.some(item => target === item || target.endsWith('/' + item) || item.endsWith('/' + target));
   }
 
   _markNovelRepositoryState() {
