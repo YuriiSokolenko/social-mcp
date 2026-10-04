@@ -13,7 +13,7 @@ const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
 let run = event.workflow_run;
 const path = "reports/pi-usage.csv";
 const metricsBranch = "pi-metrics";
-const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "delegated_lifecycle_seconds", "runner_seconds", "complete", "unknown_requests", "url"];
+const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "complete", "unknown_requests", "url", "delegated_lifecycle_seconds"];
 const previousColumns = columns.filter((column) => column !== "delegated_lifecycle_seconds");
 const legacyColumns = previousColumns.filter((column) => column !== "complete" && column !== "unknown_requests");
 const { raw: request } = githubClient({ repo, token });
