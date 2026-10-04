@@ -578,8 +578,9 @@ test('Pi issue branch pushes invalidate verdict without creating a second review
   assert.match(invalidate, /push:[\s\S]*branches:[\s\S]*'pi\/issue-\*'/);
   assert.match(invalidate, /runs-on: ubuntu-latest/);
   assert.match(invalidate, /gh pr list[\s\S]*--head "\$GITHUB_REF_NAME"[\s\S]*--base dev/);
-  assert.match(invalidate, /review-state\.mjs" invalidate/);
-  assert.match(state, /replaceReviewLabels\(prNumber\)/);
+  assert.match(invalidate, /review-state\.mjs" invalidate "\$PR" "\$GITHUB_SHA"/);
+  assert.match(state, /pi-review:verdict:/);
+  assert.match(state, /status: 'current-verdict'/);
   assert.doesNotMatch(invalidate, /dispatchWorkflow|pi-pr-review\.yml/);
   assert.doesNotMatch(usage, /PR Review Invalidate/);
   assert.doesNotMatch(review, /Restart review after PR head changed/);
