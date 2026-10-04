@@ -246,6 +246,22 @@ export async function runStage(options, env = process.env) {
           issue: spec.environment.PI_ISSUE,
           provider: spec.model.provider,
           model: spec.model.id,
+          onExchange: exchange => {
+            const metric = {
+              issue: Number(spec.environment.PI_ISSUE) || 0,
+              phase: spec.environment.PI_PHASE ?? spec.stage,
+              call: 'provider',
+              record_type: 'provider_response',
+              provider_response: true,
+              response: exchange.sequence,
+              responseMs: exchange.elapsedMs,
+              status: exchange.status,
+              transport_error: exchange.transportError === true,
+            };
+            const line = JSON.stringify(metric);
+            fs.appendFileSync(spec.artifacts.metricsPath, `${line}\n`);
+            console.log(`PI_METRIC ${line}`);
+          },
         });
       } catch {
         // Tracing is optional. Preserve the established hp-laguna route if the local proxy cannot start.
