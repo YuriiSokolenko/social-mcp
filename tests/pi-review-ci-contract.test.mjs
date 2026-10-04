@@ -316,6 +316,7 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
 
   const exactLabels = (labels, expected) =>
     labels.length === expected.length && expected.every(label => labels.includes(label));
+
   const controlRunnerLabels = new Set(['self-hosted', 'linux', 'x64', 'n150', 'control']);
   const canMatchControlRunner = (spec) =>
     spec.parsed &&
@@ -323,45 +324,18 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
     spec.labels.length > 0 &&
     spec.labels.every(label => controlRunnerLabels.has(label));
 
-  const extraLabel = runsOnSpecs('jobs:\n  wake:\n    runs-on: [self-hosted, n150, general, control]')[0];
-  assert.equal(
-    exactLabels(extraLabel.labels, ['self-hosted', 'n150', 'control']),
-    false,
-    'an extra general label must not satisfy the dedicated control-runner contract',
-  );
+  const assertWorkflowIsolation = (name, workflow, terminalWake = false) => {
+    for (const line of workflow.split('\n')) {
+      const code = stripComment(line);
+      if (!/runs-on\s*:/.test(code) && !/["']runs-on["']\s*:/.test(code)) continue;
+      assert.match(
+        code,
+        /^\s*runs-on:\s*/,
+        `${name}: runs-on must use the canonical unquoted block/scalar key form`,
+      );
+    }
 
-  const groupWithComment = runsOnSpecs(
-    'jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment',
-  )[0];
-  assert.deepEqual(
-    { parsed: groupWithComment.parsed, labels: groupWithComment.labels, group: groupWithComment.group },
-    { parsed: true, labels: ['self-hosted', 'n150', 'general'], group: 'control-machines' },
-    'runner group names and comments must not be mistaken for control labels',
-  );
-
-  assert.deepEqual(
-    runsOnSpecs('jobs:\n  wake:\n    runs-on:\n      - self-hosted\n      - n150\n      - control')[0].labels,
-    ['self-hosted', 'n150', 'control'],
-    'multiline label lists must be parsed as labels',
-  );
-
-  assert.equal(
-    canMatchControlRunner(runsOnSpecs('jobs:\n  unsafe:\n    runs-on: [self-hosted, Linux, X64, n150]')[0]),
-    true,
-    'runner-label matching must be case-insensitive like GitHub',
-  );
-
-  assert.equal(
-    runsOnSpecs('jobs:\n  unsafe:\n    runs-on: [self-hosted, ${{ matrix.pool }}]')[0].parsed,
-    false,
-    'dynamic runs-on expressions must fail closed',
-  );
-
-  const workflowNames = fs.readdirSync(workflowDir).filter(name => /\.ya?ml$/.test(name));
-  for (const name of workflowNames) {
-    const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
     const specs = runsOnSpecs(workflow);
-
     for (const spec of specs) {
       assert.equal(
         spec.parsed,
@@ -370,12 +344,13 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
       );
     }
 
-    if (name === 'ci-terminal-wake.yml' || name === 'ci-terminal-wake.yaml') {
+    if (terminalWake) {
       assert.ok(
-        specs.some(spec => spec.group === null && exactLabels(spec.labels, ['self-hosted', 'n150', 'control'])),
+        specs.length > 0 &&
+          specs.every(spec => spec.group === null && exactLabels(spec.labels, ['self-hosted', 'n150', 'control'])),
         `${name}: terminal wake must target exactly self-hosted,n150,control with no runner group`,
       );
-      continue;
+      return;
     }
 
     for (const spec of specs) {
@@ -389,6 +364,61 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
         `${name}: runs-on labels must not be satisfiable by the dedicated control runner`,
       );
     }
+  };
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'dynamic-fixture.yml',
+      'jobs:\n  unsafe:\n    runs-on: [self-hosted, ${{ matrix.pool }}]',
+    ),
+    /statically parseable/,
+    'dynamic runs-on expressions must fail through the same validator used for real workflows',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'quoted-key-fixture.yaml',
+      'jobs:\n  unsafe:\n    "runs-on": [self-hosted, n150]',
+    ),
+    /canonical unquoted/,
+    'quoted runs-on keys must fail closed instead of bypassing parsing',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'flow-map-fixture.yaml',
+      'jobs: { unsafe: { runs-on: [self-hosted, n150] } }',
+    ),
+    /canonical unquoted/,
+    'flow-map runs-on forms must fail closed instead of bypassing parsing',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'case-fixture.yml',
+      'jobs:\n  unsafe:\n    runs-on: [self-hosted, Linux, X64, n150]',
+    ),
+    /must not be satisfiable/,
+    'label matching must be case-insensitive like GitHub',
+  );
+
+  const groupWithComment = runsOnSpecs(
+    'jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment',
+  )[0];
+  assert.deepEqual(
+    { parsed: groupWithComment.parsed, labels: groupWithComment.labels, group: groupWithComment.group },
+    { parsed: true, labels: ['self-hosted', 'n150', 'general'], group: 'control-machines' },
+    'runner group names and comments must not be mistaken for control labels',
+  );
+
+  const workflowNames = fs.readdirSync(workflowDir).filter(name => /\.ya?ml$/.test(name));
+  for (const name of workflowNames) {
+    const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
+    assertWorkflowIsolation(
+      name,
+      workflow,
+      name === 'ci-terminal-wake.yml' || name === 'ci-terminal-wake.yaml',
+    );
   }
 
   for (const name of ['ci.yml', 'pi-auto-merge.yml']) {
