@@ -59,6 +59,11 @@ import {
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import { classifyWorktreeDrift, recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
+import {
+  compactTerminalRecoveryPayload,
+  selectTerminalRecovery,
+  terminalRecoveryGuidance,
+} from './pi-common/terminal-recovery-controller.mjs';
 import { captureWorktreeBaseline, observeWorktreeDrift, readWorktreeBaseline, readWorktreeObserved } from './pi-common/worktree-baseline.mjs';
 import { assertImplementerFileSet } from './pi-common/implementer-result.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
@@ -337,6 +342,8 @@ export default function (pi) {
   let requireToolOnNextProviderRequest = false;
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
+  let terminalRecoveryState = null;
+  let terminalRecoveryRequiredTool = null;
   let unrestrictedActiveTools = null;
   let unavailableToolAttempts = 0;
   let unavailableCapabilityAttemptedThisTurn = false;
@@ -675,7 +682,55 @@ export default function (pi) {
     return guidance;
   }
 
-  async function handleLoopResult(loopResult, ctx) {
+  function terminalRecoveryPlan(loopResult, terminalInput, ctx) {
+    let currentChangedFiles = [];
+    let drift = [];
+    let acceptedPaths = [];
+    try {
+      currentChangedFiles = worktreeChangedFiles(ctx.cwd, baseRef());
+      const evidence = driftEvidence(ctx.cwd);
+      acceptedPaths = [...evidence.acceptedPaths];
+      drift = classifyWorktreeDrift({
+        cwd: ctx.cwd,
+        changed: currentChangedFiles,
+        expectedFiles: Array.isArray(terminalInput?.files) ? terminalInput.files : [],
+        ...evidence,
+      });
+    } catch (error) {
+      console.warn('PI_TERMINAL_RECOVERY_FACTS_FAILED ' + JSON.stringify({
+        stage,
+        obligationKey: loopResult.obligation?.key ?? null,
+        error: String(error?.message ?? error),
+      }));
+    }
+    return selectTerminalRecovery({
+      obligation: loopResult.obligation,
+      terminalInput,
+      activeToolNames: pi.getActiveTools(),
+      currentChangedFiles,
+      drift,
+      acceptedPaths,
+    });
+  }
+
+  function abortTerminalRecovery(loopResult, plan, metric, ctx) {
+    const reason = plan?.status === 'blocked'
+      ? plan.reason
+      : 'The same terminal obligation persisted after a deterministic repair was selected without obligation-reducing progress.';
+    const details = {
+      unresolved_obligation: loopResult.obligation ?? null,
+      selected_repair: plan ?? null,
+      checkpoint: {
+        repository_state: loopResult.repositoryState ?? null,
+        worktree_preserved: true,
+      },
+    };
+    recordRuntimeAbort('PI_TERMINAL_RECOVERY_BLOCKED', reason, details);
+    console.error('PI_TERMINAL_RECOVERY_BLOCKED ' + JSON.stringify({ ...metric, ...details, reason }));
+    ctx.abort();
+  }
+
+  async function handleLoopResult(loopResult, ctx, { terminalInput = null } = {}) {
     if (!loopResult?.tripped) return;
     const metric = {
       stage: loopResult.stage,
@@ -691,8 +746,49 @@ export default function (pi) {
       repeatedFailure: loopResult.repeatedFailure,
       returnedToSeenState: loopResult.returnedToSeenState,
       action: loopResult.action,
+      obligationKey: loopResult.obligation?.key ?? null,
+      obligationKind: loopResult.obligation?.kind ?? null,
     };
     console.log('PI_LOOP_GUARD ' + JSON.stringify(metric));
+
+    const terminalFailure =
+      loopResult.reason === 'repeated_failed_strategy' &&
+      loopResult.repeatedFailure === true &&
+      loopResult.obligation?.key &&
+      ['submit_result', 'submit_repair'].includes(loopResult.tool);
+
+    if (terminalFailure && loopResult.action === 'steer') {
+      const plan = terminalRecoveryPlan(loopResult, terminalInput, ctx);
+      terminalRecoveryState = {
+        obligationKey: loopResult.obligation.key,
+        obligation: loopResult.obligation,
+        plan,
+      };
+      if (plan.status === 'blocked') {
+        abortTerminalRecovery(loopResult, plan, metric, ctx);
+        return;
+      }
+      terminalRecoveryRequiredTool = plan.tool;
+      requireToolOnNextProviderRequest = true;
+      loopGuardSteeredThisTurn = true;
+      const guidance = terminalRecoveryGuidance(plan);
+      console.warn('PI_TERMINAL_RECOVERY_SELECTED ' + JSON.stringify({
+        ...metric,
+        plan,
+        activeTools: pi.getActiveTools(),
+      }));
+      await pi.sendUserMessage(guidance, { deliverAs: 'steer' });
+      return;
+    }
+
+    if (terminalFailure && loopResult.action === 'abort') {
+      const plan = terminalRecoveryState?.obligationKey === loopResult.obligation.key
+        ? terminalRecoveryState.plan
+        : terminalRecoveryPlan(loopResult, terminalInput, ctx);
+      abortTerminalRecovery(loopResult, plan, metric, ctx);
+      return;
+    }
+
     if (loopResult.action === 'steer') {
       loopGuardSteeredThisTurn = true;
       console.warn('PI_LOOP_GUARD_STEER ' + JSON.stringify(metric));
@@ -834,6 +930,9 @@ export default function (pi) {
       syncActionToolSurface(productiveState);
 
       let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
+      if (terminalRecoveryState) {
+        patched = compactTerminalRecoveryPayload(patched, terminalRecoveryState);
+      }
       if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
         codingSessionLog('thinking_disabled', {
           side: 'fork',
@@ -845,8 +944,33 @@ export default function (pi) {
 
       if (Array.isArray(patched?.tools)) {
         const active = new Set(pi.getActiveTools());
-        const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
-        if (tools.length !== patched.tools.length) patched = { ...patched, tools };
+        let tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
+        if (terminalRecoveryRequiredTool) {
+          const selected = tools.filter(tool =>
+            (tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
+          );
+          if (selected.length) {
+            tools = selected;
+            requireToolOnNextProviderRequest = true;
+            console.warn('PI_TERMINAL_RECOVERY_TOOL_SURFACE ' + JSON.stringify({
+              stage,
+              obligationKey: terminalRecoveryState?.obligationKey ?? null,
+              tool: terminalRecoveryRequiredTool,
+            }));
+          } else {
+            console.warn('PI_TERMINAL_RECOVERY_TOOL_DEFERRED ' + JSON.stringify({
+              stage,
+              obligationKey: terminalRecoveryState?.obligationKey ?? null,
+              tool: terminalRecoveryRequiredTool,
+            }));
+          }
+        }
+        if (
+          tools.length !== patched.tools.length ||
+          tools.some((tool, index) => tool !== patched.tools[index])
+        ) {
+          patched = { ...patched, tools };
+        }
 
         // pi resolves this turn's tool calls against the context captured with this payload, so
         // the payload's definitions are the executable surface of this request. A tool activated
@@ -1844,6 +1968,14 @@ export default function (pi) {
     // forcing must not remain stuck across the next provider request.
     const satisfiedProviderForcing = requireToolOnNextProviderRequest;
     if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
+    if (terminalRecoveryRequiredTool === event.toolName) {
+      console.log('PI_TERMINAL_RECOVERY_TOOL_ATTEMPT ' + JSON.stringify({
+        stage,
+        obligationKey: terminalRecoveryState?.obligationKey ?? null,
+        tool: event.toolName,
+      }));
+      terminalRecoveryRequiredTool = null;
+    }
 
     // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
     // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
@@ -2386,7 +2518,22 @@ export default function (pi) {
       });
       pendingLoopCalls.delete(event.toolCallId);
 
-      await handleLoopResult(loopResult, ctx);
+      await handleLoopResult(loopResult, ctx, {
+        terminalInput: ['submit_result', 'submit_repair'].includes(pendingLoopCall.toolName)
+          ? pendingLoopCall.input
+          : null,
+      });
+      if (
+        terminalRecoveryState &&
+        !event.isError &&
+        terminalRecoveryState.obligationKey &&
+        ['undo_mutation', 'recover_worktree', 'write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'retry_last_failed_check'].includes(pendingLoopCall.toolName)
+      ) {
+        // Keep the compact obligation identity for history compaction, but never force the same
+        // repair tool again after it actually executed. A new repeated terminal failure will
+        // re-plan from fresh repository/capability state.
+        terminalRecoveryRequiredTool = null;
+      }
     }
   });
 
