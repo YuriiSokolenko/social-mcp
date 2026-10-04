@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -238,6 +238,71 @@ test('#470 zero-usage tool-call-only provider response is not synthetic after a 
     assert.doesNotMatch(output, /"synthetic":true/);
     assert.match(output, /PI_METRIC .*"totalTokens":0/);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test('#470 byte-identical runtime failures each get their own synthetic settlement', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-failure-generation-'));
+  const failureFile = join(dir, 'runtime-failure.json');
+  const failure = '{"failure_code":"PI_ACTION_REQUIRED_ABORT"}';
+  writeFileSync(failureFile, failure);
+  const child = spawn(process.execPath, ['scripts/pi-log-filter.mjs'], {
+    env: {
+      ...process.env,
+      GITHUB_ACTIONS: 'true',
+      PI_ISSUE: '470',
+      PI_CALL: 'main',
+      PI_RUNTIME_FAILURE_FILE: failureFile,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+
+  const send = event => child.stdin.write(JSON.stringify(event) + '\n');
+  const waitFor = async predicate => {
+    const deadline = Date.now() + 3000;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error('timed out waiting for pi-log-filter output: ' + stdout + stderr);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
+
+  try {
+    send({ type: 'turn_start' });
+    send({ type: 'message_end', message: {
+      role: 'assistant',
+      content: [],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+    } });
+    await waitFor(() => (stdout.match(/"synthetic":true/g) ?? []).length === 1);
+
+    const replacement = failureFile + '.replacement';
+    writeFileSync(replacement, failure);
+    renameSync(replacement, failureFile);
+
+    send({ type: 'turn_start' });
+    send({ type: 'message_end', message: {
+      role: 'assistant',
+      content: [],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+    } });
+    child.stdin.end();
+
+    const exitCode = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    assert.equal(exitCode, 0, stderr);
+    assert.equal((stdout.match(/"synthetic":true/g) ?? []).length, 2, stdout);
+  } finally {
+    child.kill();
     rmSync(dir, { recursive: true, force: true });
   }
 });
