@@ -1,7 +1,8 @@
 # GitHub runner autoscaler
 
-This directory runs a small Docker-based autoscaler for the N150 host, as two
-independent pools -- each its own manager instance (see `compose.yaml`) so one
+This directory runs the N150 GitHub Actions runner stack: two independent
+autoscaled pools plus one dedicated persistent control-plane runner. Each
+autoscaled pool has its own manager instance (see `compose.yaml`) so one
 pool's stuck loop can never block the other's:
 
 - **`pi-runner-manager`** (pool label `pi-agent`) watches queued runs of
@@ -19,12 +20,21 @@ pool's stuck loop can never block the other's:
   `.env`): a workflow file moved onto the `general` label but left out of that
   list queues forever with nothing watching it -- check
   `grep -rl 'n150, *general' .github/workflows/` when adding one.
+- **`control-runner`** (labels `n150,control`) is one persistent lightweight
+  runner for short orchestration jobs such as `CI Terminal Wake`. It is not
+  autoscaled, does not join either heavy pool, and therefore remains available
+  while `n150/general` is saturated.
 
-Each pool keeps up to its own `MAX_RUNNERS` ephemeral self-hosted runner
-containers alive. Each worker registers with GitHub using `--ephemeral`,
+
+Each autoscaled pool keeps up to its own `MAX_RUNNERS` ephemeral self-hosted
+runner containers alive. Each worker registers with GitHub using `--ephemeral`,
 accepts one job, and is removed after the job. Running each CI job on its own
-disposable runner is also what lets several queued runs execute in parallel
-instead of serializing behind a single persistent runner.
+disposable runner is also what lets several queued runs execute in parallel.
+
+The control lane is deliberately different: exactly one persistent runner
+container executes at most one job at a time. Workflows must request
+`[self-hosted, n150, control]`; heavy jobs continue to require `general` or
+`pi-agent`, so they cannot land on the control runner.
 
 ## Security model
 
@@ -38,6 +48,16 @@ For a fine-grained personal access token, grant this repository:
 - Actions: Read
 
 The N150 Pi configuration is mounted read-only at `/pi-config-ro` and copied into each ephemeral worker's private writable `/home/runner/.pi/agent` directory at startup, only for the `pi-agent` pool (`MOUNT_PI_CONFIG=true`). This avoids Pi lock-file errors and prevents parallel workers from sharing mutable Pi state. Because the manager controls the host Docker daemon through `/var/run/docker.sock`, the source configured by `PI_HOME_HOST` must be a real host path.
+
+The persistent `control-runner` is intentionally constrained. Its image is
+built from `node:24-bookworm-slim` (Debian/glibc), contains only the GitHub
+Actions runner plus Git, Node.js, curl, jq, and runtime libraries, and has no
+Docker CLI/socket, Pi configuration, model endpoint, Android SDK, or build
+toolchain. Compose caps it at 0.5 CPU, 512 MiB RAM, and 256 PIDs, drops all
+Linux capabilities, and enables `no-new-privileges`. The entrypoint uses the
+repository administration token only to register/remove the runner; the
+long-lived Actions runner and all workflow jobs run as the unprivileged
+`runner` user with `GH_ADMIN_TOKEN` removed from their environment.
 
 The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
 (`worker-general.Dockerfile`) adds the Docker CLI and Compose plugin over the
@@ -74,12 +94,13 @@ image names, commands, or mount paths from the caller.
 
 ## N150 setup
 
-Build the manager, Pi worker, general worker, and separate check sandbox first:
+Build the manager, Pi worker, general worker, dedicated control runner, and separate check sandbox first:
 
 ```bash
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.5 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.0 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
@@ -101,6 +122,20 @@ To deploy the general worker update, build the exact `0.87.6` tag, set
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
 docker compose --env-file .env up -d --force-recreate --no-deps general-runner-manager
 ```
+
+To deploy or refresh the dedicated control lane, build the pinned image and
+recreate only `control-runner`. It uses `restart: unless-stopped`, so the
+same single runner returns after Docker or host restart:
+
+```bash
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.0 .
+docker compose --env-file .env up -d --force-recreate --no-deps control-runner
+docker compose --env-file .env logs --tail=100 control-runner
+```
+
+The control image pins GitHub Actions Runner `2.337.0` and verifies the
+official Linux x64 archive SHA-256 during the build. Do not add `general` or
+`pi-agent` to `CONTROL_RUNNER_LABELS`.
 
 ### `run_check` sandbox backend
 
@@ -141,17 +176,26 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Put the GitHub token into `.env`, then start both managers:
+Put the GitHub token into `.env`, then start both managers and the persistent control runner:
 
 ```bash
 docker compose --env-file .env up -d --build
-docker compose logs -f pi-runner-manager general-runner-manager
+docker compose logs -f pi-runner-manager general-runner-manager control-runner
 ```
 
 Before enabling `general-runner-manager`, stop and remove the old persistent
 `github-general-runner` container/registration (and, for `pi-runner-manager`,
 the old persistent `github-pi-runner` container) so neither consumes jobs in
 parallel with its ephemeral pool.
+
+For the #465 live smoke, first confirm `n150-control` is online in the
+repository runner list. Occupy all normal `n150/general` slots with ordinary
+heavy CI, then let a PR `CI` run reach a terminal state. Verify that its
+`CI Terminal Wake` job is assigned to `n150-control` promptly, before a
+general slot becomes free, and that it dispatches `Pi Auto Merge`. Repeat
+across a failing/cancelled PR CI followed by a successful PR CI and record the
+source CI run IDs plus wake start times. This is the live proof that the
+control lane is independent; the static tests only protect the configuration.
 
 The current Qwen model runtime supports eight concurrent model requests.
 `MODEL_MAX_CONCURRENCY` is the centralized model-capacity setting and defaults
