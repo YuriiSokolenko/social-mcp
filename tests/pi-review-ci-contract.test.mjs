@@ -57,6 +57,7 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
     'pi-issue-agent.yml',
     'pi-pr-fix.yml',
     'pi-pr-review.yml',
+    'pi-review-invalidate.yml',
     'pi-reconcile.yml',
     'pi-triage.yml',
     'pi-usage.yml',
@@ -569,13 +570,18 @@ test('reconciler gives normal PR handoffs a grace period before recovery dispatc
 
 test('PR head changes invalidate verdict without creating a second review scheduler', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const invalidate = fs.readFileSync('.github/workflows/pi-review-invalidate.yml', 'utf8');
+  const usage = fs.readFileSync('.github/workflows/pi-usage.yml', 'utf8');
   const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
-  assert.match(review, /pull_request:[\s\S]*types: \[synchronize\]/);
-  assert.match(review, /review-state\.mjs" invalidate/);
-  assert.match(state, /replaceReviewLabels\(prNumber\)/);
+  assert.doesNotMatch(review, /pull_request:[\s\S]*types: \[synchronize\]/);
   assert.match(review, /review:\n    if: github\.event_name == 'workflow_dispatch'/);
-  const invalidate = review.slice(review.indexOf('  invalidate:'), review.indexOf('  review:'));
-  assert.doesNotMatch(invalidate, /dispatch/);
+  assert.match(invalidate, /pull_request:[\s\S]*types: \[synchronize\]/);
+  assert.match(invalidate, /startsWith\(github\.event\.pull_request\.head\.ref, 'pi\/issue-'\)/);
+  assert.match(invalidate, /runs-on: ubuntu-latest/);
+  assert.match(invalidate, /review-state\.mjs" invalidate/);
+  assert.match(state, /replaceReviewLabels\(prNumber\)/);
+  assert.doesNotMatch(invalidate, /dispatchWorkflow|pi-pr-review\.yml/);
+  assert.doesNotMatch(usage, /PR Review Invalidate/);
   assert.doesNotMatch(review, /Restart review after PR head changed/);
 });
 
