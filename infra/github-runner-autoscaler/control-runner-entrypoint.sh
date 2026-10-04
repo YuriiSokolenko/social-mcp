@@ -5,22 +5,24 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${RUNNER_NAME:=n150-control}"
 : "${RUNNER_LABELS:=n150,control}"
+: "${ACTIONS_RUNNER_BASELINE_VERSION:?ACTIONS_RUNNER_BASELINE_VERSION is required}"
 : "${CONTROL_REPAIR_COOLDOWN_SECONDS:=300}"
 : "${CONTROL_RETRY_SECONDS:=30}"
+: "${CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS:=90}"
 
-[[ "${CONTROL_REPAIR_COOLDOWN_SECONDS}" =~ ^[0-9]+$ ]] || {
-  echo "CONTROL_REPAIR_COOLDOWN_SECONDS must be a non-negative integer" >&2
-  exit 2
-}
-[[ "${CONTROL_RETRY_SECONDS}" =~ ^[0-9]+$ ]] || {
-  echo "CONTROL_RETRY_SECONDS must be a non-negative integer" >&2
-  exit 2
-}
+for name in CONTROL_REPAIR_COOLDOWN_SECONDS CONTROL_RETRY_SECONDS CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS; do
+  value="${!name}"
+  [[ "${value}" =~ ^[0-9]+$ ]] || {
+    echo "${name} must be a non-negative integer" >&2
+    exit 2
+  }
+done
 
 ADMIN_TOKEN="${GH_ADMIN_TOKEN}"
 unset GH_ADMIN_TOKEN
 
 RUNNER_HOME="${RUNNER_HOME:-/home/runner/actions-runner}"
+RUNNER_BASELINE_HOME="${RUNNER_BASELINE_HOME:-/opt/actions-runner-baseline}"
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 REPAIR_MARKER=".control-last-repair"
 AUTH=(
@@ -48,6 +50,14 @@ clear_local_registration() {
   gosu runner rm -f .runner .credentials .credentials_rsaparams
 }
 
+registration_complete() {
+  [ -s .runner ] && [ -s .credentials ]
+}
+
+registration_files_present() {
+  [ -e .runner ] || [ -e .credentials ] || [ -e .credentials_rsaparams ]
+}
+
 configure_runner() {
   local token
   token="$(registration_token)"
@@ -59,6 +69,40 @@ configure_runner() {
     --work "_work" \
     --unattended \
     --replace
+}
+
+runtime_version() {
+  gosu runner ./bin/Runner.Listener --version 2>/dev/null | tail -n 1 | tr -d '\r'
+}
+
+version_is_older() {
+  local current="$1" baseline="$2" first
+  [ "${current}" != "${baseline}" ] || return 1
+  first="$(printf '%s\n%s\n' "${current}" "${baseline}" | sort -V | head -n 1)"
+  [ "${first}" = "${current}" ]
+}
+
+restore_runtime_baseline() {
+  echo "restoring control runner runtime baseline ${ACTIONS_RUNNER_BASELINE_VERSION}" >&2
+  gosu runner rm -rf bin externals
+  gosu runner cp -a "${RUNNER_BASELINE_HOME}/." "${RUNNER_HOME}/"
+}
+
+ensure_runtime_baseline() {
+  local current=""
+  if [ -x ./bin/Runner.Listener ]; then
+    current="$(runtime_version || true)"
+  fi
+
+  if [ -z "${current}" ]; then
+    restore_runtime_baseline
+    return
+  fi
+
+  if version_is_older "${current}" "${ACTIONS_RUNNER_BASELINE_VERSION}"; then
+    echo "upgrading persisted runner runtime ${current} -> baseline ${ACTIONS_RUNNER_BASELINE_VERSION}" >&2
+    restore_runtime_baseline
+  fi
 }
 
 repair_allowed() {
@@ -73,32 +117,47 @@ repair_allowed() {
 mark_repair() {
   local now
   now="$(date +%s)"
-  printf '%s\n' "${now}" | gosu runner tee "${REPAIR_MARKER}" >/dev/null
+  gosu runner sh -c 'printf "%s\n" "$1" > "$2"' _ "${now}" "${REPAIR_MARKER}"
 }
 
 sleep_pid=""
+listener_pid=""
+registration_pid=""
+update_waiting=0
 
 interruptible_sleep() {
   sleep "$1" &
   sleep_pid=$!
-  wait "$sleep_pid" 2>/dev/null || true
+  wait "${sleep_pid}" 2>/dev/null || true
   sleep_pid=""
 }
 
 wait_for_update() {
   local i
+  update_waiting=1
   for i in {0..30}; do
     if [ -f update.finished ]; then
-      gosu runner rm -f update.finished
+      gosu runner rm -f update.finished || true
+      update_waiting=0
       return 0
     fi
     interruptible_sleep 1
   done
-  return 0
+  update_waiting=0
+  return 1
 }
 
-listener_pid=""
-registration_pid=""
+wait_for_update_during_shutdown() {
+  local i
+  for ((i = 0; i < CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS; i += 1)); do
+    if [ -f update.finished ]; then
+      gosu runner rm -f update.finished || true
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
 
 shutdown() {
   trap - TERM INT
@@ -109,38 +168,48 @@ shutdown() {
     sleep_pid=""
   fi
 
+  if [ "${update_waiting}" -eq 1 ]; then
+    echo "control runner update is in progress; waiting for update script before shutdown" >&2
+    wait_for_update_during_shutdown || echo "warning: update did not finish before shutdown wait expired" >&2
+  fi
+
   if [ -n "${registration_pid}" ]; then
     kill -INT -- "-${registration_pid}" 2>/dev/null || true
     wait "${registration_pid}" 2>/dev/null || true
     registration_pid=""
-    # An interrupted config can leave partial local state. Remove it only after
-    # the full registration process group has stopped; the next start uses
-    # --replace to repair any server-side half-registration with the same name.
-    clear_local_registration || true
+    clear_local_registration || echo "warning: failed to clear interrupted registration state" >&2
   fi
 
   if [ -n "${listener_pid}" ]; then
-    # Match the official run.sh manual-trap behavior: SIGINT the entire
-    # Runner.Listener process group so an in-flight worker is cancelled too.
     kill -INT -- "-${listener_pid}" 2>/dev/null || true
     wait "${listener_pid}" 2>/dev/null || true
     listener_pid=""
   fi
 
-  # Normal Docker/host stops preserve a completed persistent registration.
   exit 0
 }
 trap shutdown TERM INT
 
 cd "${RUNNER_HOME}"
+ensure_runtime_baseline
 
-# Bash job control gives each background registration/listener job its own
-# process group. The shutdown trap can therefore signal the whole tree instead
-# of orphaning config.sh, Runner.Listener, or Runner.Worker.
+# Each background registration/listener/sleep receives its own process group.
+# PID 1 can therefore stop the whole active tree rather than orphaning children.
 set -m
 
+credential_failures=0
+
 while true; do
-  if [ ! -f .runner ]; then
+  if ! registration_complete; then
+    if registration_files_present; then
+      echo "warning: incomplete control runner registration state; clearing it before registration" >&2
+      if ! clear_local_registration; then
+        echo "warning: failed to clear incomplete registration state; retrying later" >&2
+        interruptible_sleep "${CONTROL_RETRY_SECONDS}"
+        continue
+      fi
+    fi
+
     configure_runner &
     registration_pid=$!
     registration_status=0
@@ -149,17 +218,22 @@ while true; do
 
     if [ "${registration_status}" -ne 0 ]; then
       echo "warning: control runner registration failed status=${registration_status}; clearing partial local state" >&2
-      clear_local_registration || true
+      clear_local_registration || echo "warning: failed to clear partial registration state" >&2
       interruptible_sleep "${CONTROL_RETRY_SECONDS}"
       continue
     fi
+
+    if ! registration_complete; then
+      echo "warning: config.sh exited successfully without complete registration files" >&2
+      clear_local_registration || echo "warning: failed to clear incomplete registration state" >&2
+      interruptible_sleep "${CONTROL_RETRY_SECONDS}"
+      continue
+    fi
+
+    credential_failures=0
   fi
 
-  # Run Runner.Listener directly rather than through run.sh/run-helper.sh.
-  # The upstream wrapper intentionally maps listener exits 1, 5, and unknown
-  # codes to 0; direct execution preserves the return code needed for bounded
-  # credential/session recovery while keeping GitHub's self-update enabled.
-  env -u GH_ADMIN_TOKEN gosu runner ./bin/Runner.Listener run &
+  gosu runner ./bin/Runner.Listener run &
   listener_pid=$!
   listener_status=0
   wait "${listener_pid}" || listener_status=$?
@@ -171,17 +245,36 @@ while true; do
       exit 0
       ;;
     2)
+      credential_failures=0
       echo "control runner listener requested retry" >&2
       interruptible_sleep 5
       ;;
     3|4)
+      credential_failures=0
       echo "control runner listener is updating; waiting for update completion" >&2
-      wait_for_update
+      if wait_for_update; then
+        if ! runtime_version >/dev/null 2>&1; then
+          echo "warning: updated runner runtime failed version probe; restoring image baseline" >&2
+          restore_runtime_baseline || echo "warning: failed to restore runner baseline after update" >&2
+        fi
+      else
+        echo "warning: runner update did not signal completion within upstream 31s window" >&2
+      fi
       ;;
     6)
-      echo "control runner configuration refreshed; restarting listener" >&2
+      credential_failures=0
+      echo "control runner configuration refreshed; retrying listener after short delay" >&2
+      interruptible_sleep 5
       ;;
     1|5)
+      credential_failures=$((credential_failures + 1))
+
+      if [ "${credential_failures}" -lt 2 ]; then
+        echo "warning: listener failed status=${listener_status}; retrying once with existing credentials before repair" >&2
+        interruptible_sleep "${CONTROL_RETRY_SECONDS}"
+        continue
+      fi
+
       if ! runner_api_healthy; then
         echo "warning: listener failed status=${listener_status} but GitHub runners API is unavailable; preserving credentials" >&2
         interruptible_sleep "${CONTROL_RETRY_SECONDS}"
@@ -194,15 +287,28 @@ while true; do
         continue
       fi
 
-      echo "warning: listener failed status=${listener_status}; scheduling one bounded clean re-registration" >&2
-      mark_repair
-      clear_local_registration
+      if ! mark_repair; then
+        echo "warning: failed to persist repair cooldown; preserving credentials" >&2
+        interruptible_sleep "${CONTROL_RETRY_SECONDS}"
+        continue
+      fi
+
+      if ! clear_local_registration; then
+        echo "warning: failed to clear registration for repair; preserving current files" >&2
+        interruptible_sleep "${CONTROL_RETRY_SECONDS}"
+        continue
+      fi
+
+      echo "warning: repeated listener failure status=${listener_status}; scheduling bounded clean re-registration" >&2
+      credential_failures=0
       ;;
     7)
+      credential_failures=0
       echo "error: GitHub runner version is deprecated; rebuild/deploy the control image with a supported runner version" >&2
       interruptible_sleep "${CONTROL_REPAIR_COOLDOWN_SECONDS}"
       ;;
     *)
+      credential_failures=0
       echo "warning: control runner listener exited unexpected status=${listener_status}; preserving registration" >&2
       interruptible_sleep "${CONTROL_RETRY_SECONDS}"
       ;;
