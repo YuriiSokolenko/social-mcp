@@ -2536,13 +2536,21 @@ export default function (pi) {
           : (config.productiveProgress?.actionResponseRetryMaxTokens ?? actionCap)
     );
     const effectiveAttemptedTool = actionTurnAttemptedTool || unavailableCapabilityAttemptedThisTurn;
-    if (runtimeActionRequired && unavailableCapabilityAttemptedThisTurn && !controller.turnMadeProgress) {
+    const unavailableCapabilityStrike =
+      runtimeActionRequired &&
+      unavailableCapabilityAttemptedThisTurn &&
+      !controller.turnMadeProgress &&
+      unavailableCapabilityKindThisTurn !== 'stale_after_capability_transition';
+    if (unavailableCapabilityStrike) {
       consecutiveUnavailableCapabilityTurns += 1;
-    } else if (!unavailableCapabilityAttemptedThisTurn || controller.turnMadeProgress) {
+    } else {
+      // "Consecutive" is literal: any non-strike turn resets the streak. A tool that was valid at
+      // provider-request start but became stale after an earlier same-response transition is a
+      // benign lifecycle race, not a model-error strike.
       consecutiveUnavailableCapabilityTurns = 0;
     }
     if (consecutiveUnavailableCapabilityTurns >= 2) {
-      const reason = `second consecutive unavailable/stale capability turn (${unavailableCapabilityKindThisTurn ?? 'unknown'}); aborting stage`;
+      const reason = `second consecutive unavailable capability turn (${unavailableCapabilityKindThisTurn ?? 'unknown'}); aborting stage`;
       recordRuntimeAbort(
         'PI_UNAVAILABLE_CAPABILITY_ABORT',
         reason,
