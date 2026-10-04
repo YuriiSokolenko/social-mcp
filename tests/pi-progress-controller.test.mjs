@@ -1259,6 +1259,9 @@ test('#469 need_more_evidence rejects multi-fact requests and consumes exactly o
     missing: 'Read tests/test_smoke_connect_four.py to obtain the exact import line needed for the repair edit.',
   }).ok, true);
   assert.equal(validateSingleEvidenceRequest({
+    missing: 'Read tests/test_smoke_connect_four.py to find the exact import anchor.',
+  }).ok, true, 'multiple verbs describing one target/fact stay valid');
+  assert.equal(validateSingleEvidenceRequest({
     missing: 'Whether smoke_connect_four.py already exists and its exact path, plus the exact contents of the pytest configuration in pyproject.toml.',
   }).ok, false, 'the broad request shape from #455 is rejected before consuming a permit');
 
