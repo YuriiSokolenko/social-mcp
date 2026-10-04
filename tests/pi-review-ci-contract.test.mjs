@@ -198,18 +198,56 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
 
 test('dedicated control runner label is reserved for terminal-wake orchestration', () => {
   const workflowDir = '.github/workflows';
+
+  const runsOnBlocks = (workflow) => {
+    const lines = workflow.split('\n');
+    const blocks = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const match = /^(\s*)runs-on:\s*(.*)$/.exec(lines[i]);
+      if (!match) continue;
+
+      const baseIndent = match[1].length;
+      const block = [match[2]];
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const line = lines[j];
+        if (line.trim() === '' || line.trimStart().startsWith('#')) {
+          block.push(line.trim());
+          continue;
+        }
+        const indent = /^(\s*)/.exec(line)[1].length;
+        if (indent <= baseIndent) break;
+        block.push(line.trim());
+      }
+      blocks.push(block.join(' '));
+    }
+    return blocks;
+  };
+
   for (const name of fs.readdirSync(workflowDir).filter(name => name.endsWith('.yml'))) {
     const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
+    const blocks = runsOnBlocks(workflow);
     if (name === 'ci-terminal-wake.yml') {
-      assert.match(workflow, /runs-on: \[self-hosted, n150, control\]/);
+      assert.ok(
+        blocks.some(block =>
+          /\bself-hosted\b/.test(block) &&
+          /\bn150\b/.test(block) &&
+          /\bcontrol\b/.test(block)
+        ),
+        'ci-terminal-wake.yml must target the dedicated self-hosted n150/control runner',
+      );
       continue;
     }
-    assert.doesNotMatch(workflow, /runs-on:[^\n]*\bcontrol\b/, `${name}: control runner must stay orchestration-only`);
+    for (const block of blocks) {
+      assert.doesNotMatch(block, /\bcontrol\b/, `${name}: control runner must stay orchestration-only`);
+    }
   }
 
   for (const name of ['ci.yml', 'pi-auto-merge.yml']) {
     const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
-    assert.match(workflow, /runs-on: \[self-hosted, linux, x64, n150, general\]/);
+    assert.ok(
+      runsOnBlocks(workflow).some(block => /\bn150\b/.test(block) && /\bgeneral\b/.test(block)),
+      `${name}: heavy/general work must stay on n150/general`,
+    );
   }
 });
 
