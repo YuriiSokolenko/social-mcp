@@ -19,7 +19,8 @@ jobs:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, n150, general]
+    # Control-plane bridge: keep this off the scarce n150/general CI pool.
+    runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Checkout trusted control repository
