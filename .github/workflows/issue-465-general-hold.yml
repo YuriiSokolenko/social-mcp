@@ -1,0 +1,26 @@
+name: "#465 General Saturation Hold"
+run-name: "#465 General Saturation Hold · ${{ github.event.pull_request.head.sha }}"
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hold:
+    if: github.event.pull_request.head.ref == 'smoke/issue-465-general-saturation'
+    name: hold-${{ matrix.slot }}
+    runs-on: [self-hosted, linux, x64, n150, general]
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4]
+    steps:
+      - name: Record start, hold the runner slot, and record end
+        shell: bash
+        run: |
+          date -u +'%Y-%m-%dT%H:%M:%SZ' | tee /tmp/issue-465-hold-start-${{ matrix.slot }}
+          sleep 300
+          date -u +'%Y-%m-%dT%H:%M:%SZ' | tee /tmp/issue-465-hold-end-${{ matrix.slot }}

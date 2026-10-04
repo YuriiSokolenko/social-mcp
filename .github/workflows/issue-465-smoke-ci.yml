@@ -1,0 +1,92 @@
+name: CI
+run-name: "#465 controlled CI terminal · ${{ github.event.pull_request.head.sha }}"
+
+on:
+  pull_request:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  confirm-general-saturation:
+    if: github.event.pull_request.head.ref == 'smoke/issue-465-general-saturation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Wait for all four holder jobs to be running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["GH_REPO"]
+          pr_number = int(os.environ["PR_NUMBER"])
+          head_sha = os.environ["HEAD_SHA"]
+          token = os.environ["GH_TOKEN"]
+          workflow = "issue-465-general-hold.yml"
+          deadline = time.monotonic() + 15 * 60
+          api = f"https://api.github.com/repos/{repo}"
+
+          def get(path):
+              request = urllib.request.Request(
+                  api + path,
+                  headers={"Accept": "application/vnd.github+json",
+                           "Authorization": f"Bearer {token}",
+                           "X-GitHub-Api-Version": "2022-11-28"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          latest_jobs = []
+          while time.monotonic() < deadline:
+              runs = get(
+                  f"/actions/workflows/{urllib.parse.quote(workflow, safe='')}/runs"
+                  f"?event=pull_request&head_sha={urllib.parse.quote(head_sha)}&per_page=100"
+              ).get("workflow_runs", [])
+              run = next((item for item in runs
+                          if item.get("head_sha") == head_sha
+                          and any(int(link.get("number", -1)) == pr_number
+                                  for link in item.get("pull_requests", []))), None)
+              if run:
+                  latest_jobs = get(f"/actions/runs/{run['id']}/jobs?per_page=100").get("jobs", [])
+                  holders = [job for job in latest_jobs
+                             if job.get("name", "").split(" / ")[-1] in
+                             {"hold-1", "hold-2", "hold-3", "hold-4"}]
+                  running = [job for job in holders if job.get("status") == "in_progress"]
+                  if len(running) == 4 and {job["name"].split(" / ")[-1] for job in running} == {
+                      "hold-1", "hold-2", "hold-3", "hold-4"
+                  }:
+                      confirmed_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+                      print(f"holder_workflow_run_id={run['id']}")
+                      print(f"holder_workflow_run_url={run['html_url']}")
+                      print(f"pr_number={pr_number}")
+                      print(f"head_sha={head_sha}")
+                      print(f"all_four_general_busy_at={confirmed_at}")
+                      for job in sorted(running, key=lambda item: item["name"]):
+                          print(f"holder_job_id={job['id']} name={job['name']} runner={job.get('runner_name')} started_at={job.get('started_at')}")
+                      sys.exit(0)
+              time.sleep(5)
+
+          print(f"Timed out waiting for four in_progress holder jobs; PR={pr_number} head={head_sha}", file=sys.stderr)
+          print(json.dumps([
+              {"id": job.get("id"), "name": job.get("name"), "status": job.get("status"),
+               "conclusion": job.get("conclusion"), "runner_name": job.get("runner_name"),
+               "started_at": job.get("started_at"), "completed_at": job.get("completed_at")}
+              for job in latest_jobs
+          ], indent=2), file=sys.stderr)
+          sys.exit(1)
+          PY
