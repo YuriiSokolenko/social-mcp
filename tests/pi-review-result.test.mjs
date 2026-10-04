@@ -42,14 +42,28 @@ test('prefers a submit_result tool entry and renders structured acceptance evide
   });
 });
 
-test('rejects a review result without structured criterion evidence', () => {
+test('PASS requires structured criterion evidence', () => {
   assert.throws(
     () => validateReviewResult({ verdict: 'PASS', text: 'Looks correct.' }),
-    /requires structured criteria_evidence/,
+    /PASS review result requires structured criteria_evidence/,
   );
 });
 
-test('requires an explicit assumption for assumption evidence', () => {
+test('CHANGES_REQUESTED can omit criterion evidence for a non-criterion blocker', () => {
+  assert.deepEqual(
+    validateReviewResult({
+      verdict: 'CHANGES_REQUESTED',
+      text: 'The PR contains an unrelated generated artifact that must be removed.',
+    }),
+    {
+      verdict: 'CHANGES_REQUESTED',
+      text: 'The PR contains an unrelated generated artifact that must be removed.',
+      criteria_evidence: [],
+    },
+  );
+});
+
+test('requires an explicit assumption only for ASSUMPTION evidence', () => {
   assert.throws(
     () => validateReviewResult({
       verdict: 'PASS',
@@ -80,5 +94,62 @@ test('requires an explicit assumption for assumption evidence', () => {
       evidence: ['Issue says numeric without naming Decimal or Fraction.'],
       assumption: 'Treat numbers.Real plus Decimal as the intended ordered numeric domain.',
     },
+  );
+});
+
+test('ignores an accidental assumption field on ESTABLISHED evidence', () => {
+  assert.deepEqual(
+    validateReviewResult({
+      verdict: 'PASS',
+      text: 'Behavior is established.',
+      criteria_evidence: [{
+        ...evidence[0],
+        assumption: 'Extraneous model field.',
+      }],
+    }).criteria_evidence[0],
+    evidence[0],
+  );
+});
+
+test('enforces evidence item and criterion count limits in runtime validation', () => {
+  assert.throws(
+    () => validateReviewResult({
+      verdict: 'PASS',
+      text: 'Too much evidence in one criterion.',
+      criteria_evidence: [{
+        criterion: 'One criterion',
+        status: 'ESTABLISHED',
+        evidence: ['1', '2', '3', '4', '5'],
+      }],
+    }),
+    /invalid review criterion evidence/,
+  );
+
+  assert.throws(
+    () => validateReviewResult({
+      verdict: 'PASS',
+      text: 'Too many criteria.',
+      criteria_evidence: Array.from({ length: 31 }, (_, index) => ({
+        criterion: `Criterion ${index}`,
+        status: 'ESTABLISHED',
+        evidence: ['Concrete evidence.'],
+      })),
+    }),
+    /invalid structured criteria_evidence/,
+  );
+});
+
+test('rejects a rendered review comment that exceeds the GitHub-safe bound', () => {
+  assert.throws(
+    () => validateReviewResult({
+      verdict: 'PASS',
+      text: 'x'.repeat(59000),
+      criteria_evidence: [{
+        criterion: 'A'.repeat(500),
+        status: 'ESTABLISHED',
+        evidence: ['B'.repeat(1000)],
+      }],
+    }),
+    /exceeds 60000 rendered characters/,
   );
 });
