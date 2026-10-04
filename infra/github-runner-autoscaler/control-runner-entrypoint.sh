@@ -76,6 +76,15 @@ mark_repair() {
   printf '%s\n' "${now}" | gosu runner tee "${REPAIR_MARKER}" >/dev/null
 }
 
+sleep_pid=""
+
+interruptible_sleep() {
+  sleep "$1" &
+  sleep_pid=$!
+  wait "$sleep_pid" 2>/dev/null || true
+  sleep_pid=""
+}
+
 wait_for_update() {
   local i
   for i in {0..30}; do
@@ -83,7 +92,7 @@ wait_for_update() {
       gosu runner rm -f update.finished
       return 0
     fi
-    sleep 1
+    interruptible_sleep 1
   done
   return 0
 }
@@ -93,6 +102,12 @@ registration_pid=""
 
 shutdown() {
   trap - TERM INT
+
+  if [ -n "${sleep_pid}" ]; then
+    kill -TERM -- "-${sleep_pid}" 2>/dev/null || true
+    wait "${sleep_pid}" 2>/dev/null || true
+    sleep_pid=""
+  fi
 
   if [ -n "${registration_pid}" ]; then
     kill -INT -- "-${registration_pid}" 2>/dev/null || true
@@ -135,7 +150,7 @@ while true; do
     if [ "${registration_status}" -ne 0 ]; then
       echo "warning: control runner registration failed status=${registration_status}; clearing partial local state" >&2
       clear_local_registration || true
-      sleep "${CONTROL_RETRY_SECONDS}"
+      interruptible_sleep "${CONTROL_RETRY_SECONDS}"
       continue
     fi
   fi
@@ -157,7 +172,7 @@ while true; do
       ;;
     2)
       echo "control runner listener requested retry" >&2
-      sleep 5
+      interruptible_sleep 5
       ;;
     3|4)
       echo "control runner listener is updating; waiting for update completion" >&2
@@ -169,13 +184,13 @@ while true; do
     1|5)
       if ! runner_api_healthy; then
         echo "warning: listener failed status=${listener_status} but GitHub runners API is unavailable; preserving credentials" >&2
-        sleep "${CONTROL_RETRY_SECONDS}"
+        interruptible_sleep "${CONTROL_RETRY_SECONDS}"
         continue
       fi
 
       if ! repair_allowed; then
         echo "warning: listener failed status=${listener_status}; automatic re-registration is inside cooldown, preserving credentials" >&2
-        sleep "${CONTROL_RETRY_SECONDS}"
+        interruptible_sleep "${CONTROL_RETRY_SECONDS}"
         continue
       fi
 
@@ -185,11 +200,11 @@ while true; do
       ;;
     7)
       echo "error: GitHub runner version is deprecated; rebuild/deploy the control image with a supported runner version" >&2
-      sleep "${CONTROL_REPAIR_COOLDOWN_SECONDS}"
+      interruptible_sleep "${CONTROL_REPAIR_COOLDOWN_SECONDS}"
       ;;
     *)
       echo "warning: control runner listener exited unexpected status=${listener_status}; preserving registration" >&2
-      sleep "${CONTROL_RETRY_SECONDS}"
+      interruptible_sleep "${CONTROL_RETRY_SECONDS}"
       ;;
   esac
 done
