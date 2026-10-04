@@ -807,7 +807,12 @@ export class ProgressController {
     });
   }
 
-  onToolExecutionEnd(toolName, isError, { madeProgress = true, input = null, strictBlockerEvidence = false } = {}) {
+  onToolExecutionEnd(toolName, isError, {
+    madeProgress = true,
+    input = null,
+    strictBlockerEvidence = false,
+    verificationEligible = madeProgress,
+  } = {}) {
     if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
       const pending = this.pendingEvidenceUnlock;
       const executionSignature = input == null ? null : toolCallSignature(toolName, input);
@@ -875,7 +880,12 @@ export class ProgressController {
       this.largeMutationBudgetState = 'pending';
       this.largeMutationBudgetSource = 'manual';
     }
-    if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
+    if (
+      !isError &&
+      verificationEligible === true &&
+      this.productiveVerificationTool &&
+      MUTATION_TOOLS.has(toolName)
+    ) {
       this.verificationPermits = 1;
       this.verificationState = 'available';
     }
