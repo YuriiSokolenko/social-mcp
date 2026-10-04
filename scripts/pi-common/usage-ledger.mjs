@@ -251,14 +251,11 @@ export function summarizeUsage(records) {
       calls.set(key, supplemental);
     }
     totals.providerResponses = Math.max(logicalProviderResponses, traced.providerResponses);
-    const traceCoversKnownResponses = traced.providerResponses >= logicalProviderResponses;
-    const traceLatencyComplete = tracedLatencySamples === traced.providerResponses;
-    if (traceCoversKnownResponses && traceLatencyComplete) {
-      // Complete trace coverage is the transport authority for aggregate provider latency.
-      totals.providerResponseMs = traced.providerResponseMs;
-    } else {
-      // Partial/untimed trace data must never lower latency already known from logical records.
-      totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
+    // Trace and logical rows are not correlated by request identity, so even equal counts do not
+    // prove that the trace covers the same calls. Preserve the strongest known lower bound and
+    // never let trace reconciliation reduce provider latency already attributed logically.
+    totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
+    if (traced.providerResponses < logicalProviderResponses || tracedLatencySamples < traced.providerResponses) {
       unknown.push({
         call: 'provider',
         childSession: null,
