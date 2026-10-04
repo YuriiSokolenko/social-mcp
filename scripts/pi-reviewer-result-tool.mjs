@@ -26,7 +26,7 @@ export default function (pi) {
 
   registerTerminalTool(pi, {
     label: 'Submit review result',
-    description: 'Submit the final PR review verdict as the last action, with one compact structured evidence entry for every material acceptance criterion.',
+    description: 'Submit the final PR review verdict as the last action. PASS requires one compact structured evidence entry for every material acceptance criterion; CHANGES_REQUESTED may omit criterion evidence for blockers outside the acceptance criteria.',
     parameters: Type.Object({
       verdict: Type.Union([Type.Literal('PASS'), Type.Literal('CHANGES_REQUESTED')]),
       summary: Type.String({
