@@ -84,6 +84,7 @@ import {
   codingSessionSubmissionReadiness,
   invalidateCodingBehavioralValidation,
   recordCodingBehavioralValidation,
+  repositoryFingerprintRequiresValidation,
   requiredPreparedOutputPaths,
 } from './pi-common/coding-session-validation.mjs';
 
@@ -2296,15 +2297,19 @@ export default function (pi) {
     const canonicalToolName = controllerToolName(event.toolName);
     if (!event.isError && canonicalToolName === 'bash') {
       const bashValidationFingerprintAfter = repositoryStateFingerprint(ctx?.cwd ?? process.cwd());
-      const bashChanged =
-        bashValidationFingerprintBefore &&
-        bashValidationFingerprintAfter
-          ? bashValidationFingerprintBefore !== bashValidationFingerprintAfter
-          : null;
-      if (bashChanged !== false && invalidateCodingBehavioralValidation(process.env)) {
+      const bashRequiresValidation = repositoryFingerprintRequiresValidation(
+        bashValidationFingerprintBefore,
+        bashValidationFingerprintAfter,
+      );
+      if (bashRequiresValidation && invalidateCodingBehavioralValidation(process.env)) {
+        const knownChange = Boolean(
+          bashValidationFingerprintBefore &&
+          bashValidationFingerprintAfter &&
+          bashValidationFingerprintBefore !== bashValidationFingerprintAfter
+        );
         console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
           stage,
-          status: bashChanged === true ? 'invalidated_by_bash_change' : 'invalidated_by_bash_unknown',
+          status: knownChange ? 'invalidated_by_bash_change' : 'invalidated_by_bash_unknown',
         })}`);
       }
     }
