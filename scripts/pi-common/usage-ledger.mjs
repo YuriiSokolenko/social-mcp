@@ -104,7 +104,7 @@ export function summarizeUsage(records) {
   const providerResponses = new Map();
   for (const record of records) {
     if (!record || typeof record !== "object" || typeof record.call !== "string") continue;
-    if (record.record_type === "provider_transport_error") continue;
+    if (record.record_type === "provider_transport_error" || record.record_type === "provider_exchange_diagnostic") continue;
     if (record.provider_response === true || record.record_type === "provider_response") {
       const sequence = Number(record.response);
       const providerSession = typeof record.provider_session === "string" && record.provider_session
