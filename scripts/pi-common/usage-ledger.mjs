@@ -225,21 +225,29 @@ export function summarizeUsage(records) {
   }
 
   if (providerResponses.size) {
+    const logicalProviderResponses = totals.providerResponses;
     const exact = emptyTotals();
     for (const record of providerResponses.values()) {
       exact.providerResponses += 1;
       const responseMs = Number(record.responseMs);
       if (Number.isFinite(responseMs) && responseMs >= 0) exact.providerResponseMs += responseMs;
     }
-    // Provider trace records are the transport authority: logical usage rows still own token
-    // attribution and lifecycle timing, while exact provider count/latency lives in one
-    // non-token row so summing the table cannot double-count either dimension.
+    // Trace records are authoritative for the calls they observed and for provider-only latency.
+    // Some provider calls can bypass the proxy (for example a separately hosted delegate), so a
+    // larger logical provider-turn count remains evidence of real calls rather than being erased.
+    // Keep those calls in a separate non-token row with no invented latency.
+    const untracedProviderResponses = Math.max(0, logicalProviderResponses - exact.providerResponses);
     for (const row of calls.values()) {
       row.providerResponses = 0;
       row.providerResponseMs = 0;
     }
     calls.set("provider", exact);
-    totals.providerResponses = exact.providerResponses;
+    if (untracedProviderResponses) {
+      const untraced = emptyTotals();
+      untraced.providerResponses = untracedProviderResponses;
+      calls.set("provider_untraced", untraced);
+    }
+    totals.providerResponses = exact.providerResponses + untracedProviderResponses;
     totals.providerResponseMs = exact.providerResponseMs;
   }
   return { calls, totals, unknown, complete: unknown.length === 0 };
