@@ -502,6 +502,45 @@ test('productive progress allows a bounded initial evidence sequence before acti
 });
 
 
+test('#470 runtime-side rejection restores the same one-action evidence permit', () => {
+  const state = controller({
+    productiveProgress: {
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 0,
+      actionTools: ['edit', 'write', 'submit_result'],
+      controlTools: [],
+    },
+  });
+  state.onTurnStart(0);
+  state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['plan'],
+    complexity: 'trivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'test',
+  });
+
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'exact import anchor',
+    reason: 'needed for the next safe edit',
+  }), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  const notice = state.consumeEvidenceActionNotice();
+  assert.deepEqual(notice, { tool: 'read' });
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.equal(state.restoreRuntimeBlockedEvidenceAction(notice), true);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined, 'same unlocked evidence action can be retried after harness rejection');
+  const retried = state.consumeEvidenceActionNotice();
+  assert.deepEqual(retried, { tool: 'read' });
+  state.onToolExecutionEnd('read', false, { strictBlockerEvidence: true });
+  assert.equal(state.productiveProgressState(), 'action_required', 'an actually executed retry consumes the one-action permit');
+});
+
+
 test('dispatcher closes exploration after prepared context is loaded', () => {
   const state = controller({
     requiredFirstReadPath: 'agents/dispatcher/AGENTS.md',
