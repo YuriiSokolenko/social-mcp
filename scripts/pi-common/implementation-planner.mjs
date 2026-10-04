@@ -185,6 +185,7 @@ export function discoverAdditivePythonLayout(cwd, issue) {
         ? repoRelativePath(path.relative(cwd, path.join(sourceDirectory, sourceSibling)))
         : null,
       testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
+      testTarget: repoRelativePath(path.relative(cwd, path.join(testDirectory, `test_${moduleName}.py`))),
       testConvention: testSibling
         ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
         : null,
@@ -244,7 +245,7 @@ export function validateImplementationPreparation(value) {
 export function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
   const issue = implementerIssueContext(env);
   const layoutGuidance = layoutHint
-    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat the resolved directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
+    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; test_target=${layoutHint.testTarget ?? 'none'}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat the resolved directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
     : '';
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
@@ -481,7 +482,7 @@ function layoutGuidance(layoutHint, { authoritative }) {
   if (!layoutHint) return '';
   const source = `Repository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; ` +
     `source directory ${layoutHint.sourceDirectory}${layoutHint.sourceConvention ? `; nearest source convention ${layoutHint.sourceConvention}` : ''}; ` +
-    `tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
+    `tests ${layoutHint.testDirectory}${layoutHint.testTarget ? `; new test target ${layoutHint.testTarget}` : ''}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
   return `\n${source} ${authoritative}`;
 }
 
