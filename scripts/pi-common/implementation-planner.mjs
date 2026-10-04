@@ -97,7 +97,7 @@ export const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
     large_mutation: { type: 'boolean' },
     reason: { type: 'string', minLength: 1, maxLength: 300 },
   },
-  required: ['steps', 'facts', 'complexity', 'evidence_budget', 'reason'],
+  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
   additionalProperties: true,
 });
 
@@ -161,17 +161,19 @@ function explicitAdditivePythonLayout(cwd, issueText) {
 
     const moduleName = path.basename(sourceTarget, '.py');
     const matchingTestName = `test_${moduleName}.py`;
-    const explicitTestTarget = testTargets.find(target => path.basename(target) === matchingTestName) ?? testTargets[0] ?? null;
+    const explicitTestTarget = testTargets.find(target => path.basename(target) === matchingTestName) ?? null;
     const mirroredTestParts = path.dirname(sourceTarget).split('/').slice(1);
     const fallbackTestDirectories = [
       path.join(cwd, 'tests', ...mirroredTestParts),
       path.join(cwd, 'tests'),
     ];
     const explicitTestDirectory = explicitTestTarget ? path.resolve(cwd, path.dirname(explicitTestTarget)) : null;
-    const testDirectory = explicitTestDirectory && explicitTestDirectory.startsWith(`${workspaceRoot}${path.sep}`) &&
-        fs.existsSync(explicitTestDirectory) && fs.statSync(explicitTestDirectory).isDirectory()
-      ? explicitTestDirectory
-      : fallbackTestDirectories.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isDirectory());
+    const explicitTestDirectorySafe = explicitTestDirectory &&
+      (explicitTestDirectory === workspaceRoot || explicitTestDirectory.startsWith(`${workspaceRoot}${path.sep}`));
+    const fallbackTestDirectory = fallbackTestDirectories.find(candidate =>
+      fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()
+    );
+    const testDirectory = explicitTestDirectorySafe ? explicitTestDirectory : fallbackTestDirectory;
     if (!testDirectory) continue;
 
     const sharedPrefix = moduleName.includes('_') ? `${moduleName.split('_')[0]}_` : '';
@@ -408,6 +410,8 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative cap is the child-side
     // gate (pi-planner-evidence.mjs); leave headroom for the result call and its schema retry.
     request.toolBudget = { hard: cap + 3 };
+    // Output-only retry deliberately gets exactly one result call. If that structured_output call
+    // is still schema-invalid, fail closed instead of opening another provider/tool turn.
     if (attempt > 0) request.toolBudget = { hard: 1 };
     request.childEnv = {
       [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap),
