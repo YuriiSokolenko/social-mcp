@@ -250,9 +250,11 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
             labels.push(...inlineLabels);
             continue;
           }
-          for (let k = j + 1; k < block.length && /^-\s+/.test(block[k]); k += 1) {
+          let k = j + 1;
+          for (; k < block.length && /^-\s+/.test(block[k]); k += 1) {
             labels.push(block[k].replace(/^-\s+/, '').replace(/^['"]|['"]$/g, ''));
           }
+          j = k - 1;
           continue;
         }
 
