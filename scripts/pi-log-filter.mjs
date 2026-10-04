@@ -473,10 +473,7 @@ for await (const line of rl) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
         const syntheticSettlement =
           firstTokenAt == null &&
-          !message.content?.some(part =>
-            (part?.type === 'text' && String(part.text ?? '').length > 0) ||
-            (part?.type === 'thinking' && String(part.thinking ?? part.text ?? '').length > 0)
-          ) &&
+          (!Array.isArray(message.content) || message.content.length === 0) &&
           ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']
             .every(key => !Number.isFinite(usage[key]) || usage[key] === 0) &&
           (
