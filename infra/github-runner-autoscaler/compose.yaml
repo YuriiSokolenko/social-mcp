@@ -80,7 +80,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/control-runner.Dockerfile
-    image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.5}
+    image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.6}
     container_name: ${CONTROL_RUNNER_NAME:-n150-control}
     restart: unless-stopped
     stop_grace_period: 120s
@@ -91,7 +91,10 @@ services:
       RUNNER_LABELS: ${CONTROL_RUNNER_LABELS:-n150,control}
       CONTROL_REPAIR_COOLDOWN_SECONDS: ${CONTROL_REPAIR_COOLDOWN_SECONDS:-300}
       CONTROL_RETRY_SECONDS: ${CONTROL_RETRY_SECONDS:-30}
+      CONTROL_SHORT_RETRY_SECONDS: ${CONTROL_SHORT_RETRY_SECONDS:-5}
+      CONTROL_UPDATE_WAIT_SECONDS: ${CONTROL_UPDATE_WAIT_SECONDS:-30}
       CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS: ${CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS:-90}
+      CONTROL_CHILD_STOP_WAIT_SECONDS: ${CONTROL_CHILD_STOP_WAIT_SECONDS:-30}
     cpus: 1.00
     mem_limit: 1g
     pids_limit: 512
