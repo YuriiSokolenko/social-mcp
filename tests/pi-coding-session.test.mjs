@@ -459,7 +459,7 @@ function runtimeScenario(mode) {
         assert.equal(await handlers.get('tool_call')(bashEvent, ctx), undefined, 'bounded bash reaches execution');
         let hiddenGit = null;
         if (mode === 'bash-error-mutates') {
-          fs.writeFileSync(cwd + '/bash-mutated.txt', 'changed\n');
+          fs.writeFileSync(cwd + '/bash-mutated.txt', 'changed\\n');
         } else {
           hiddenGit = cwd + '/.git-hidden-for-test';
           fs.renameSync(cwd + '/.git', hiddenGit);
