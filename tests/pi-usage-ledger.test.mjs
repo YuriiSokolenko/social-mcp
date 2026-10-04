@@ -263,4 +263,30 @@ test('#469 transport failures are diagnostic exchanges, not provider responses',
   ]);
   assert.equal(ledger.totals.providerResponses, 1);
   assert.equal(ledger.totals.providerResponseMs, 480);
+  assert.equal(ledger.complete, true, 'transport diagnostics do not create unknown usage obligations');
+  assert.deepEqual(ledger.unknown, []);
+});
+
+test('#469 provider response sequences may restart in a new proxy session without overwriting', () => {
+  const ledger = summarizeUsage([
+    {
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'initial-attempt',
+      response: 1,
+      responseMs: 400,
+    },
+    {
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'repair-attempt',
+      response: 1,
+      responseMs: 600,
+    },
+  ]);
+  assert.equal(ledger.totals.providerResponses, 2);
+  assert.equal(ledger.totals.providerResponseMs, 1000);
+  assert.equal(ledger.calls.get('provider').providerResponses, 2);
 });
