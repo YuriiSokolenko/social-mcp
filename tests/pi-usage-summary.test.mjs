@@ -52,7 +52,7 @@ test("the CLI emits no warning annotation for a small run", () => {
   assert.doesNotMatch(stdout, /::warning::/);
 });
 
-test("the CLI includes finalized subagent usage without treating subagent runs as main-loop responses", () => {
+test("the CLI includes finalized subagent usage and warns from corrected total provider-response count", () => {
   const metrics = [
     { call: "main", response: 1, usage: { input: 10, output: 5, totalTokens: 15 }, responseMs: 2000 },
     ...Array.from({ length: 80 }, (_, i) => ({
@@ -63,7 +63,7 @@ test("the CLI includes finalized subagent usage without treating subagent runs a
   ];
   const stdout = run(metrics);
   assert.match(stdout, /Pi usage: 81 logical usage records · 81 provider responses · fresh 8,010 in \/ 1,605 out · cache read 4,000 · total 14,015 · 82\.0 s known provider response time · 0\.0 s delegated lifecycle time/);
-  assert.doesNotMatch(stdout, /::warning::/);
+  assert.match(stdout, /::warning::Pi usage: 81 provider responses exceeds the 60-response guard threshold/);
 });
 
 test("the CLI reports delegated lifecycle time without mislabeling it as provider response time", () => {
