@@ -92,11 +92,14 @@ function preparedFacts(spec) {
   const prepared = readPreparedImplementation(target);
   if (!prepared) return null;
   const layout = prepared.layoutHint && typeof prepared.layoutHint === 'object'
-    ? Object.fromEntries(
-        ['sourceRoot', 'sourceDirectory', 'sourceTarget', 'sourceConvention', 'testDirectory', 'testTarget', 'testTargetRequired', 'testConvention']
+    ? Object.fromEntries([
+        ...['sourceRoot', 'sourceDirectory', 'sourceTarget', 'sourceConvention', 'testDirectory', 'testTarget', 'testConvention']
           .filter(key => typeof prepared.layoutHint[key] === 'string' && prepared.layoutHint[key])
           .map(key => [key, boundedText(prepared.layoutHint[key], 1000)]),
-      )
+        ...(typeof prepared.layoutHint.testTargetRequired === 'boolean'
+          ? [['testTargetRequired', prepared.layoutHint.testTargetRequired]]
+          : []),
+      ])
     : null;
   return {
     status: prepared.status,
