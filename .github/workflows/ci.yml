@@ -103,6 +103,107 @@ jobs:
           docker run --rm --entrypoint node "$image" -e "import('/opt/social-mcp/scripts/pi-common/run-check.mjs').then(() => console.log('run-check import ok'))"
           docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t "$worker_image" .
 
+      - name: Control runner capability and graceful-stop smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_image="${COMPOSE_PROJECT_NAME}-control-runner-check:latest"
+          fixture_image="${COMPOSE_PROJECT_NAME}-control-runner-stop-check:latest"
+          container="${COMPOSE_PROJECT_NAME}-control-runner-stop-check"
+          fixture="$RUNNER_TEMP/control-runner-stop-check"
+          rm -rf "$fixture"
+          mkdir -p "$fixture/control-test/bin"
+
+          cat > "$fixture/control-test/bin/Runner.Listener" <<'LISTENER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [ "${1:-}" = "--version" ]; then
+            printf '2.337.0\n'
+            exit 0
+          fi
+          [ "${1:-}" = "run" ] || exit 2
+          id -u > "$RUNNER_HOME/ready"
+          trap 'id -u > "$RUNNER_HOME/stopped"; exit 0' INT TERM
+          while true; do sleep 1; done
+          LISTENER
+          chmod +x "$fixture/control-test/bin/Runner.Listener"
+          printf '#!/usr/bin/env bash\nexit 99\n' > "$fixture/control-test/config.sh"
+          chmod +x "$fixture/control-test/config.sh"
+          printf 'registered\n' > "$fixture/control-test/.runner"
+          printf 'credentials\n' > "$fixture/control-test/.credentials"
+
+          cat > "$fixture/Dockerfile" <<'DOCKERFILE'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          COPY --chown=runner:runner control-test/ /control-test/
+          DOCKERFILE
+
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker image rm "$fixture_image" "$base_image" >/dev/null 2>&1 || true
+            rm -rf "$fixture"
+          }
+          trap cleanup EXIT
+
+          docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t "$base_image" .
+          docker build --build-arg "BASE_IMAGE=$base_image" -t "$fixture_image" "$fixture"
+
+          docker run -d --name "$container" \
+            --cap-drop ALL \
+            --cap-add SETGID \
+            --cap-add SETUID \
+            --cap-add KILL \
+            --security-opt no-new-privileges \
+            --cpus 1 \
+            --memory 1g \
+            --pids-limit 512 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            -e GH_ADMIN_TOKEN=dummy \
+            -e GITHUB_REPOSITORY=example/repo \
+            -e RUNNER_HOME=/control-test \
+            "$fixture_image" >/dev/null
+
+          for _ in {1..100}; do
+            docker exec "$container" test -f /control-test/ready >/dev/null 2>&1 && break
+            sleep 0.1
+          done
+          docker exec "$container" test -f /control-test/ready >/dev/null 2>&1 || {
+            docker logs "$container" >&2 || true
+            echo 'control runner listener did not start' >&2
+            exit 1
+          }
+
+          listener_uid="$(docker exec "$container" cat /control-test/ready)"
+          [ "$listener_uid" = "1001" ] || {
+            echo "control runner listener uid is $listener_uid, expected 1001" >&2
+            exit 1
+          }
+
+          started_at="$(date +%s)"
+          docker stop --time 5 "$container" >/dev/null
+          elapsed="$(( $(date +%s) - started_at ))"
+
+          docker cp "$container:/control-test/stopped" "$fixture/stopped" >/dev/null 2>&1 || {
+            docker logs "$container" >&2 || true
+            echo 'uid 1001 listener did not receive the graceful-stop signal' >&2
+            exit 1
+          }
+          stopped_uid="$(cat "$fixture/stopped")"
+          [ "$stopped_uid" = "1001" ] || {
+            echo "graceful-stop marker uid is $stopped_uid, expected 1001" >&2
+            exit 1
+          }
+
+          exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container")"
+          [ "$exit_code" -eq 0 ] || {
+            echo "control runner exited with code $exit_code instead of 0" >&2
+            exit 1
+          }
+          [ "$elapsed" -lt 10 ] || {
+            echo "control runner graceful stop took too long: ${elapsed}s" >&2
+            exit 1
+          }
+
       - name: Generate ephemeral test encryption key
         shell: bash
         run: |

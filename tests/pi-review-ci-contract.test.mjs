@@ -182,11 +182,252 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.match(terminalWake, /types: \[completed\]/);
   assert.match(terminalWake, /workflow_run\.event == 'pull_request'/);
   assert.match(terminalWake, /workflow_run\.head_repository\.full_name == github\.repository/);
+  assert.match(terminalWake, /runs-on: \[self-hosted, n150, control\]/);
+  assert.doesNotMatch(terminalWake, /runs-on: \[self-hosted[^\n]*n150[^\n]*general/);
+  assert.match(
+    terminalWake,
+    /concurrency:\n\s+group: ci-terminal-wake-\$\{\{ github\.event\.workflow_run\.id \}\}\n\s+cancel-in-progress: false/,
+  );
+  assert.doesNotMatch(terminalWake, /workflow_run\.conclusion/);
   assert.match(terminalWake, /ref: dev/);
   assert.match(terminalWake, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
   assert.doesNotMatch(terminalWake, /workflow_run\.head_sha|workflow_run\.pull_requests/);
   assert.doesNotMatch(terminalWake, /workflows: \["CI Terminal Wake"\]/);
   assert.doesNotMatch(ci, /contains\(github\.event\.head_commit\.message/);
+});
+
+test('dedicated control runner label is reserved for terminal-wake orchestration', () => {
+  const workflowDir = '.github/workflows';
+
+  const stripComment = (value) => value.replace(/\s+#.*$/, '').trim();
+  const normalizeLabel = (value) => value.trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+  const simpleScalar = /^[a-z0-9_.-]+$/i;
+
+  const parseList = (value) => {
+    const clean = stripComment(value).trim();
+    if (!clean.startsWith('[') || !clean.endsWith(']')) return null;
+    const labels = clean.slice(1, -1).split(',').map(normalizeLabel).filter(Boolean);
+    return labels.every(label => simpleScalar.test(label)) ? labels : null;
+  };
+
+  const runsOnSpecs = (workflow) => {
+    const lines = workflow.split('\n');
+    const specs = [];
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const match = /^(\s*)runs-on:\s*(.*)$/.exec(lines[i]);
+      if (!match) continue;
+
+      const baseIndent = match[1].length;
+      const inline = stripComment(match[2]);
+      if (inline) {
+        if (inline.includes('${{')) {
+          specs.push({ parsed: false, labels: [], group: null, raw: inline });
+          continue;
+        }
+
+        const list = parseList(inline);
+        if (list) {
+          specs.push({ parsed: true, labels: list, group: null, raw: inline });
+          continue;
+        }
+
+        const scalar = normalizeLabel(inline);
+        specs.push({
+          parsed: simpleScalar.test(scalar),
+          labels: simpleScalar.test(scalar) ? [scalar] : [],
+          group: null,
+          raw: inline,
+        });
+        continue;
+      }
+
+      const blockLines = [];
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const line = lines[j];
+        if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+        const indent = /^(\s*)/.exec(line)[1].length;
+        if (indent <= baseIndent) break;
+        blockLines.push(stripComment(line.trim()));
+      }
+
+      if (blockLines.some(line => line.includes('${{'))) {
+        specs.push({ parsed: false, labels: [], group: null, raw: blockLines.join(' ') });
+        continue;
+      }
+
+      let parsed = true;
+      let group = null;
+      const labels = [];
+      let sawStructuredKey = false;
+
+      for (let j = 0; j < blockLines.length; j += 1) {
+        const line = blockLines[j];
+        const groupMatch = /^group:\s*(.+)$/.exec(line);
+        if (groupMatch) {
+          sawStructuredKey = true;
+          const value = normalizeLabel(groupMatch[1]);
+          if (!simpleScalar.test(value)) parsed = false;
+          else group = value;
+          continue;
+        }
+
+        const labelsMatch = /^labels:\s*(.*)$/.exec(line);
+        if (labelsMatch) {
+          sawStructuredKey = true;
+          const value = labelsMatch[1].trim();
+          if (value) {
+            const inlineLabels = parseList(value);
+            if (inlineLabels) labels.push(...inlineLabels);
+            else {
+              const scalar = normalizeLabel(value);
+              if (!simpleScalar.test(scalar)) parsed = false;
+              else labels.push(scalar);
+            }
+            continue;
+          }
+
+          let k = j + 1;
+          for (; k < blockLines.length && /^-\s+/.test(blockLines[k]); k += 1) {
+            const label = normalizeLabel(blockLines[k].replace(/^-\s+/, ''));
+            if (!simpleScalar.test(label)) parsed = false;
+            else labels.push(label);
+          }
+          j = k - 1;
+          continue;
+        }
+
+        if (!sawStructuredKey && /^-\s+/.test(line)) {
+          const label = normalizeLabel(line.replace(/^-\s+/, ''));
+          if (!simpleScalar.test(label)) parsed = false;
+          else labels.push(label);
+          continue;
+        }
+
+        parsed = false;
+      }
+
+      if (labels.length === 0 && group === null) parsed = false;
+      specs.push({ parsed, labels, group, raw: blockLines.join(' ') });
+    }
+
+    return specs;
+  };
+
+  const exactLabels = (labels, expected) =>
+    labels.length === expected.length && expected.every(label => labels.includes(label));
+
+  const controlRunnerLabels = new Set(['self-hosted', 'linux', 'x64', 'n150', 'control']);
+  const canMatchControlRunner = (spec) =>
+    spec.parsed &&
+    spec.group === null &&
+    spec.labels.length > 0 &&
+    spec.labels.every(label => controlRunnerLabels.has(label));
+
+  const assertWorkflowIsolation = (name, workflow, terminalWake = false) => {
+    for (const line of workflow.split('\n')) {
+      const code = stripComment(line);
+      if (!/runs-on\s*:/.test(code) && !/["']runs-on["']\s*:/.test(code)) continue;
+      assert.match(
+        code,
+        /^\s*runs-on:\s*/,
+        `${name}: runs-on must use the canonical unquoted block/scalar key form`,
+      );
+    }
+
+    const specs = runsOnSpecs(workflow);
+    for (const spec of specs) {
+      assert.equal(
+        spec.parsed,
+        true,
+        `${name}: runs-on must be statically parseable; dynamic or unknown forms are forbidden`,
+      );
+    }
+
+    if (terminalWake) {
+      assert.ok(
+        specs.length > 0 &&
+          specs.every(spec => spec.group === null && exactLabels(spec.labels, ['self-hosted', 'n150', 'control'])),
+        `${name}: terminal wake must target exactly self-hosted,n150,control with no runner group`,
+      );
+      return;
+    }
+
+    for (const spec of specs) {
+      assert.ok(
+        !spec.labels.includes('control'),
+        `${name}: control label must stay reserved for terminal-wake orchestration`,
+      );
+      assert.equal(
+        canMatchControlRunner(spec),
+        false,
+        `${name}: runs-on labels must not be satisfiable by the dedicated control runner`,
+      );
+    }
+  };
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'dynamic-fixture.yml',
+      'jobs:\n  unsafe:\n    runs-on: [self-hosted, ${{ matrix.pool }}]',
+    ),
+    /statically parseable/,
+    'dynamic runs-on expressions must fail through the same validator used for real workflows',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'quoted-key-fixture.yaml',
+      'jobs:\n  unsafe:\n    "runs-on": [self-hosted, n150]',
+    ),
+    /canonical unquoted/,
+    'quoted runs-on keys must fail closed instead of bypassing parsing',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'flow-map-fixture.yaml',
+      'jobs: { unsafe: { runs-on: [self-hosted, n150] } }',
+    ),
+    /canonical unquoted/,
+    'flow-map runs-on forms must fail closed instead of bypassing parsing',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'case-fixture.yml',
+      'jobs:\n  unsafe:\n    runs-on: [self-hosted, Linux, X64, n150]',
+    ),
+    /must not be satisfiable/,
+    'label matching must be case-insensitive like GitHub',
+  );
+
+  const groupWithComment = runsOnSpecs(
+    'jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment',
+  )[0];
+  assert.deepEqual(
+    { parsed: groupWithComment.parsed, labels: groupWithComment.labels, group: groupWithComment.group },
+    { parsed: true, labels: ['self-hosted', 'n150', 'general'], group: 'control-machines' },
+    'runner group names and comments must not be mistaken for control labels',
+  );
+
+  const workflowNames = fs.readdirSync(workflowDir).filter(name => /\.ya?ml$/.test(name));
+  for (const name of workflowNames) {
+    const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
+    assertWorkflowIsolation(
+      name,
+      workflow,
+      name === 'ci-terminal-wake.yml' || name === 'ci-terminal-wake.yaml',
+    );
+  }
+
+  for (const name of ['ci.yml', 'pi-auto-merge.yml']) {
+    const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
+    assert.ok(
+      runsOnSpecs(workflow).some(spec => spec.labels.includes('n150') && spec.labels.includes('general')),
+      `${name}: heavy/general work must stay on n150/general`,
+    );
+  }
 });
 
 test('pi:needs-human on a PR stops review, repair, and merge automation', () => {
