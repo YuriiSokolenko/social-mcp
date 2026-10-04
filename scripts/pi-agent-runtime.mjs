@@ -687,6 +687,7 @@ export default function (pi) {
     let currentChangedFiles = [];
     let drift = [];
     let acceptedPaths = [];
+    let repositoryFactsAvailable = true;
     try {
       currentChangedFiles = worktreeChangedFiles(ctx.cwd, baseRef());
       const evidence = driftEvidence(ctx.cwd);
@@ -698,6 +699,7 @@ export default function (pi) {
         ...evidence,
       });
     } catch (error) {
+      repositoryFactsAvailable = false;
       console.warn('PI_TERMINAL_RECOVERY_FACTS_FAILED ' + JSON.stringify({
         stage,
         obligationKey: loopResult.obligation?.key ?? null,
@@ -711,6 +713,7 @@ export default function (pi) {
       currentChangedFiles,
       drift,
       acceptedPaths,
+      repositoryFactsAvailable,
     });
   }
 
