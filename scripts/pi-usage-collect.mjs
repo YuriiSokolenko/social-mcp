@@ -116,7 +116,7 @@ for (const job of jobs) {
     ? Math.max(0, Math.round((Date.parse(job.completed_at) - Date.parse(job.started_at)) / 1000)) : 0;
   newRows.push({
     scope: "attempt", issue, phase, run_id: run.id,
-    attempt: run.run_attempt, status: job.conclusion ?? "unknown", responses: ledger.totals.responses,
+    attempt: run.run_attempt, status: job.conclusion ?? "unknown", responses: ledger.totals.providerResponses,
     ...totals,
     model_seconds: totals.model_seconds.toFixed(1),
     delegated_lifecycle_seconds: totals.delegated_lifecycle_seconds.toFixed(1),
