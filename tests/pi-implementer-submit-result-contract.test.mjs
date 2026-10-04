@@ -716,7 +716,10 @@ test('#469 fresh coding session reports missing prepared outputs until they exis
         'Create src/connect_four.py and tests/test_connect_four.py.',
         'Run the targeted smoke test.',
       ],
-      layoutHint: { sourceTarget: 'src/connect_four.py' },
+      layoutHint: {
+        sourceTarget: 'src/connect_four.py',
+        testTarget: 'tests/test_connect_four.py',
+      },
     };
     const blocked = codingSessionSubmissionReadiness({ prepared, cwd: dir, changedFiles: [] });
     assert.equal(blocked.ready, false);
@@ -752,7 +755,7 @@ test('#469 fresh coding session reports missing prepared outputs until they exis
 });
 
 
-test('#470 prepared-output gate ignores removal, rename, negative, and URL path mentions', () => {
+test('#470 prepared-output gate ignores planner prose and uses only structured layout targets', () => {
   const prepared = {
     status: 'prepared',
     plan: [
@@ -762,12 +765,15 @@ test('#470 prepared-output gate ignores removal, rename, negative, and URL path 
       'Add tests/test_new.py based on https://example.com/a/b.html.',
       'Create src/new.py.',
     ],
-    layoutHint: { sourceTarget: 'src/old.py' },
+    layoutHint: {
+      sourceTarget: 'src/structured.py',
+      testTarget: 'tests/test_structured.py',
+    },
   };
 
   assert.deepEqual(
     requiredPreparedOutputPaths(prepared),
-    ['src/new.py', 'tests/test_new.py'],
+    ['src/structured.py', 'tests/test_structured.py'],
   );
 });
 
