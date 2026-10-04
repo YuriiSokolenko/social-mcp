@@ -218,3 +218,23 @@ test("replays failed child-session usage from the metrics file into the job log"
   assert.ok(output.includes(`PI_METRIC ${JSON.stringify(record)}`));
   assert.equal((output.match(/"call":"main"/g) ?? []).length, 0);
 });
+
+
+test('#469 zero-time empty settlement is explicitly synthetic without retyping ordinary zero usage', () => {
+  const synthetic = render([
+    { type: 'turn_start' },
+    { type: 'message_end', message: { role: 'assistant', content: [], usage: {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+    } } },
+    { type: 'agent_end', messages: [] },
+  ], { PI_ISSUE: '469', PI_CALL: 'repair' });
+  assert.match(synthetic, /"synthetic":true,"record_type":"synthetic_settlement"/);
+
+  const ordinary = render([
+    { type: 'message_start', message: { role: 'assistant' } },
+    { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'ack' }], usage: {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+    } } },
+  ], { PI_ISSUE: '469', PI_CALL: 'repair' });
+  assert.doesNotMatch(ordinary, /"synthetic":true/);
+});
