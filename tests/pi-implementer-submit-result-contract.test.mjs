@@ -455,6 +455,7 @@ test('#469 terminal result paths reject non-repository forms with INVALID_RESULT
   for (const value of [
     '/tmp/tests/test_x.py',
     'C:\\work\\tests\\test_x.py',
+    'C:/work/tests/test_x.py',
     '../tests/test_x.py',
     'file:///work/tests/test_x.py',
     'https://example.invalid/test_x.py',
@@ -525,8 +526,11 @@ test('#469 invalid submit_result path reports the known canonical changed set be
 
 test('#469 coding-session source plus pytest changes require a passing targeted pytest after latest mutation', () => {
   const env = { PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-469' }) };
-  const changedFiles = ['src/game.py', 'tests/test_game.py'];
-  assert.deepEqual(requiredCodingPytestTargets(changedFiles), ['tests/test_game.py']);
+  const changedFiles = [
+    'src/social_mcp/diagnostics/smoke_connect_four.py',
+    'tests/test_smoke_connect_four.py',
+  ];
+  assert.deepEqual(requiredCodingPytestTargets(changedFiles), ['tests/test_smoke_connect_four.py']);
 
   assert.throws(
     () => assertCodingBehavioralValidation({ changedFiles, env }),
@@ -538,9 +542,15 @@ test('#469 coding-session source plus pytest changes require a passing targeted 
     env,
   }), null);
   assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+  assert.equal(recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py::test_smoke'] },
+    result: { status: 'fail', kind: 'pytest' },
+    env,
+  }), null);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
 
   recordCodingBehavioralValidation({
-    scope: { targets: ['tests/test_game.py::test_smoke'] },
+    scope: { targets: ['tests/test_smoke_connect_four.py::test_smoke'] },
     result: { status: 'pass', kind: 'pytest' },
     env,
   });
