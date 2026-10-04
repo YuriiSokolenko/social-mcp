@@ -55,6 +55,14 @@ function delegatedLifecycleDurationMs(usage) {
   return Number.isFinite(usage?.durationMs) && usage.durationMs >= 0 ? usage.durationMs : 0;
 }
 
+function rollupLifecycleDurationMs(usage, responseMs = 0) {
+  const explicit = Number(responseMs);
+  const aggregateElapsed = Number.isFinite(explicit) && explicit >= 0 ? explicit : 0;
+  // Aggregate/session responseMs is lifecycle/tool elapsed time, not provider-only response time.
+  // Keep the best known lifecycle duration without adding overlapping measurements together.
+  return Math.max(delegatedLifecycleDurationMs(usage), aggregateElapsed);
+}
+
 function add(target, usage, responseMs, {
   providerResponses = 1,
   providerResponseMs = responseMs,
@@ -72,12 +80,12 @@ function add(target, usage, responseMs, {
   target.delegatedLifecycleMs += Number.isFinite(delegatedLifecycleMs) && delegatedLifecycleMs >= 0 ? delegatedLifecycleMs : 0;
 }
 
-function supplementProviderRollup(target, sum, usage) {
+function supplementProviderRollup(target, sum, usage, responseMs = 0) {
   const turns = Math.max(sum.providerResponses, providerTurns(usage));
   target.providerResponses += turns - sum.providerResponses;
-  // usage.durationMs is the delegated lifecycle duration, not a provider-only timer:
-  // it may include queueing, tool execution and runtime work. Keep it separate.
-  target.delegatedLifecycleMs += delegatedLifecycleDurationMs(usage);
+  // Delegated roll-up timing may arrive either as usage.durationMs or as the aggregate tool's
+  // responseMs. Both are lifecycle measurements, never provider-only response time.
+  target.delegatedLifecycleMs += rollupLifecycleDurationMs(usage, responseMs);
 }
 
 /**
@@ -117,12 +125,14 @@ export function summarizeUsage(records) {
       return;
     }
     const rollup = Boolean(record.aggregate || record.scope === "session");
-    const responseMs = rollup ? 0 : (Number(record.responseMs) || 0);
+    const responseMs = Number(record.responseMs) || 0;
     const provider = {
       providerResponses: rollup ? providerTurns(usage) : 1,
-      providerResponseMs: responseMs,
-      delegatedLifecycleMs: rollup ? delegatedLifecycleDurationMs(usage) : 0,
+      providerResponseMs: rollup ? 0 : responseMs,
+      delegatedLifecycleMs: rollup ? rollupLifecycleDurationMs(usage, responseMs) : 0,
     };
+    // Preserve generic elapsed timing for standalone aggregates, but never relabel that lifecycle
+    // measurement as provider response time.
     add(row, usage, responseMs, provider);
     add(totals, usage, responseMs, provider);
   };
@@ -166,15 +176,15 @@ export function summarizeUsage(records) {
       const provider = {
         providerResponses: providerTurns(usage),
         providerResponseMs: 0,
-        delegatedLifecycleMs: delegatedLifecycleDurationMs(usage),
+        delegatedLifecycleMs: rollupLifecycleDurationMs(usage, responseMs),
       };
-      add(row, usage, 0, provider);
-      add(totals, usage, 0, provider);
+      add(row, usage, Number(responseMs) || 0, provider);
+      add(totals, usage, Number(responseMs) || 0, provider);
       continue;
     }
     const sameVector = USAGE_KEYS.every((key) => (usage[key] ?? 0) === sum[key]) && usage.totalTokens === sum.total;
-    supplementProviderRollup(row, sum, usage);
-    supplementProviderRollup(totals, sum, usage);
+    supplementProviderRollup(row, sum, usage, responseMs);
+    supplementProviderRollup(totals, sum, usage, responseMs);
     if (sameVector) continue;
     // Per-response records and the roll-up disagree somewhere in the vector: never double count and
     // never drop known tokens. Take the known lower bound per component; the total can be no
