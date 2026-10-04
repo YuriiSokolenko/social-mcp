@@ -842,17 +842,20 @@ export class ProgressController {
       if (this.requireLspStartBeforeFindSymbol) this.lspServerReady = !isError;
     }
     if (this.productiveProgress && toolName === 'lsp_find_symbol') {
+      const strictBlockerEvidence = this.pendingEvidenceConsumptionNotice?.tool === toolName;
       if (!isError && this.productiveState === 'evidence_allowed') {
         this.semanticLookupAwaitingRead = true;
         this.semanticFallbackEvidenceUsed = false;
       } else if (isError) {
         this.semanticLookupAwaitingRead = false;
         this.semanticFallbackEvidenceUsed = false;
-        // Failed semantic discovery produced no evidence. Restore the permit
-        // consumed when the call was accepted so fallback search + exact read
-        // can still fit inside the same bounded evidence window.
-        this.productiveEvidenceRemaining += 1;
-        if (this.productiveState === 'action_required') this.productiveState = 'evidence_allowed';
+        if (!strictBlockerEvidence) {
+          // Planner/bootstrap evidence windows may recover from a failed semantic lookup.
+          // A need_more_evidence window is different: its one accepted action is consumed
+          // regardless of outcome, so failure must return to action_required.
+          this.productiveEvidenceRemaining += 1;
+          if (this.productiveState === 'action_required') this.productiveState = 'evidence_allowed';
+        }
       }
     }
     if (this.productiveProgress && toolName === 'read' && !isError && this.semanticLookupAwaitingRead) {
