@@ -84,6 +84,28 @@ export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
 }
 
+const EVIDENCE_PURPOSE_VERB = /\b(?:read|show|list|locate|find|search|grep|inspect|open|check)\b/gi;
+const EVIDENCE_PATH_TOKEN = /(?:^|\s)((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)/g;
+
+export function validateSingleEvidenceRequest(input = {}) {
+  const missing = typeof input.missing === 'string' ? input.missing.trim() : '';
+  if (!missing) return { ok: false, reason: 'need_more_evidence requires one concrete missing fact.' };
+
+  const verbs = [...missing.matchAll(EVIDENCE_PURPOSE_VERB)].map(match => match[0].toLowerCase());
+  const clauses = missing.split(/[;\n]+/).map(part => part.trim()).filter(Boolean);
+  const paths = [...missing.matchAll(EVIDENCE_PATH_TOKEN)].map(match => match[1]);
+  const coordinatedPaths = /\band\b/i.test(missing) && new Set(paths).size > 1;
+  const multiplePurposes = clauses.length > 1 || verbs.length > 1 || coordinatedPaths;
+
+  if (multiplePurposes) {
+    return {
+      ok: false,
+      reason: 'need_more_evidence accepts exactly one concrete missing fact and one evidence purpose; broad or multi-fact requests are rejected before opening an evidence permit.',
+    };
+  }
+  return { ok: true };
+}
+
 const TRUNCATED_TOOL_CALL_PATTERN = /output token limit|arguments may be truncated/i;
 
 export function classifyTruncatedToolCall({ toolName, isError, text }) {
@@ -254,6 +276,10 @@ export class ProgressController {
     // produce tool_execution_end(isError=true) in Pi core, so execution-end rollback must
     // never infer ownership from tool name alone.
     this.pendingEvidenceUnlock = null;
+    // Distinguish the one-action escape hatch opened by need_more_evidence from the
+    // planner/bootstrap evidence window, which may legitimately contain several actions.
+    this.blockerEvidenceWindowActive = false;
+    this.pendingEvidenceConsumptionNotice = null;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
     this.requireLspStartBeforeFindSymbol = config.requireLspStartBeforeFindSymbol === true;
@@ -403,6 +429,12 @@ export class ProgressController {
       this.productiveState === 'action_required' &&
       !this.evidenceUnlockUsedSinceProgress
     );
+  }
+
+  consumeEvidenceActionNotice() {
+    const notice = this.pendingEvidenceConsumptionNotice;
+    this.pendingEvidenceConsumptionNotice = null;
+    return notice;
   }
 
   complexityRecorded() {
@@ -637,6 +669,10 @@ export class ProgressController {
         this.productiveState = 'action_required';
       } else if (this.productiveState === 'action_required') {
         if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+          const evidenceRequest = validateSingleEvidenceRequest(input);
+          if (!evidenceRequest.ok) {
+            return { block: true, reason: `BLOCKED: ${evidenceRequest.reason}` };
+          }
           const blockerSignature = toolCallSignature(toolName, input);
           if (blockerSignature === this.lastEvidenceRequestSignature) {
             return {
@@ -657,6 +693,7 @@ export class ProgressController {
               evidenceUnlockUsedSinceProgress: this.evidenceUnlockUsedSinceProgress,
               productiveEvidenceRemaining: this.productiveEvidenceRemaining,
               productiveState: this.productiveState,
+              blockerEvidenceWindowActive: this.blockerEvidenceWindowActive,
             },
           };
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
@@ -697,21 +734,25 @@ export class ProgressController {
             };
           }
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
-          const semanticFallback = this.semanticLookupAwaitingRead &&
-            !this.semanticFallbackEvidenceUsed &&
-            toolName !== 'read' &&
-            toolName !== 'lsp_find_symbol';
-          if (semanticFallback) {
-            // A name lookup can complete successfully at the transport level yet
-            // return no useful match. Permit exactly one deterministic fallback
-            // discovery action without stealing the authoritative source read.
-            this.semanticFallbackEvidenceUsed = true;
+          if (this.blockerEvidenceWindowActive) {
+            // need_more_evidence is a strict one-action escape hatch: the first accepted
+            // evidence call consumes the permit immediately, whatever evidence tool it is.
+            this.productiveEvidenceRemaining = 0;
+            this.productiveState = 'action_required';
+            this.blockerEvidenceWindowActive = false;
+            this.pendingEvidenceConsumptionNotice = { tool: toolName };
           } else {
-            // Consume bounded evidence budget at accepted call time. This still
-            // prevents unbounded parallel exploration, while allowing a short
-            // locate -> read -> anchor sequence before mutation is required.
-            this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
-            if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
+            const semanticFallback = this.semanticLookupAwaitingRead &&
+              !this.semanticFallbackEvidenceUsed &&
+              toolName !== 'read' &&
+              toolName !== 'lsp_find_symbol';
+            if (semanticFallback) {
+              // Planner/bootstrap evidence windows retain the deterministic semantic fallback.
+              this.semanticFallbackEvidenceUsed = true;
+            } else {
+              this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
+              if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
+            }
           }
         }
       }
@@ -746,6 +787,7 @@ export class ProgressController {
       this.lastEvidenceRequestSignature = acceptedEvidenceUnlock.signature;
       this.evidenceUnlockUsedSinceProgress = true;
       this.productiveEvidenceRemaining = 1;
+      this.blockerEvidenceWindowActive = true;
       this.productiveState = 'evidence_allowed';
     }
     this.turnUsedTool = true;
@@ -778,6 +820,7 @@ export class ProgressController {
           this.evidenceUnlockUsedSinceProgress = pending.previous.evidenceUnlockUsedSinceProgress;
           this.productiveEvidenceRemaining = pending.previous.productiveEvidenceRemaining;
           this.productiveState = pending.previous.productiveState;
+          this.blockerEvidenceWindowActive = pending.previous.blockerEvidenceWindowActive;
         }
       }
     }
@@ -836,7 +879,10 @@ export class ProgressController {
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
       this.semanticFallbackEvidenceUsed = false;
-      if (madeProgress) this.evidenceUnlockUsedSinceProgress = false;
+      if (madeProgress) {
+        this.evidenceUnlockUsedSinceProgress = false;
+        this.blockerEvidenceWindowActive = false;
+      }
       if (toolName === ROLLBACK_TOOL || this.productiveState === 'evidence_allowed') {
         this.productiveState = 'action_required';
       }
