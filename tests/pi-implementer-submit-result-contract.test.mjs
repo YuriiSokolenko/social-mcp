@@ -550,11 +550,14 @@ test('#469 coding-session source plus pytest changes require a passing targeted 
   }), null);
   assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
 
-  assert.equal(recordCodingBehavioralValidation({
+  const nodeState = recordCodingBehavioralValidation({
     scope: { targets: ['tests/test_smoke_connect_four.py::test_smoke'] },
     result: { status: 'pass', kind: 'pytest' },
     env,
-  }), null);
+  });
+  assert.deepEqual(nodeState.targets, ['tests/test_smoke_connect_four.py']);
+  assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env }));
+  assert.equal(invalidateCodingBehavioralValidation(env), true);
   assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
 
   recordCodingBehavioralValidation({
@@ -578,6 +581,133 @@ test('#469 coding-session source plus pytest changes require a passing targeted 
   assert.equal(invalidateCodingBehavioralValidation(env), true);
   assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
 });
+
+test('#470 coding pytest gate ignores deleted/non-test Python files and accepts broader passing scopes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-pytest-scope-'));
+  const env = { PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-scope-470' }) };
+  const changedFiles = ['src/game.py', 'tests/test_game.py', 'tests/conftest.py', 'tests/__init__.py'];
+  try {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'game.py'), 'VALUE = 1\n');
+    fs.writeFileSync(path.join(dir, 'tests', 'test_game.py'), 'def test_value():\n    assert True\n');
+    fs.writeFileSync(path.join(dir, 'tests', 'conftest.py'), '# fixture config\n');
+    fs.writeFileSync(path.join(dir, 'tests', '__init__.py'), '');
+
+    assert.deepEqual(
+      requiredCodingPytestTargets(changedFiles, { cwd: dir }),
+      ['tests/test_game.py'],
+    );
+
+    recordCodingBehavioralValidation({
+      scope: { targets: ['tests'] },
+      result: { status: 'pass', kind: 'pytest' },
+      env,
+      cwd: dir,
+    });
+    assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env, cwd: dir }));
+
+    invalidateCodingBehavioralValidation(env);
+    recordCodingBehavioralValidation({
+      scope: { profile: 'pytest_all' },
+      result: { status: 'pass', kind: 'profile', profile: 'pytest_all' },
+      env,
+      cwd: dir,
+    });
+    assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env, cwd: dir }));
+
+    invalidateCodingBehavioralValidation(env);
+    fs.rmSync(path.join(dir, 'tests', 'test_game.py'));
+    assert.deepEqual(
+      requiredCodingPytestTargets(['src/game.py', 'tests/test_game.py'], { cwd: dir }),
+      [],
+      'deleted pytest files are not impossible required targets',
+    );
+    assert.doesNotThrow(() => assertCodingBehavioralValidation({
+      changedFiles: ['src/game.py', 'tests/test_game.py'],
+      env,
+      cwd: dir,
+    }));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('#470 changed coding submission keeps terminal outcomes reachable when prepared outputs are missing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-prepared-output-'));
+  const work = cleanGitWorktree(root);
+  const context = path.join(root, 'issue.json');
+  const resultFile = path.join(root, 'result.json');
+  const preparedFile = path.join(root, 'prepared.json');
+  fs.writeFileSync(context, JSON.stringify({ number: 470, title: 'Prepared output guard', body: 'Test context' }));
+  fs.writeFileSync(preparedFile, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Create src/required.py'],
+    complexity: 'nontrivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'Required source output.',
+    workspaceRoot: work,
+    freshBaseCommit: '',
+    baseRef: 'origin/dev',
+    layoutHint: { sourceTarget: 'src/required.py' },
+    plannerUsage: null,
+    plannerDurationMs: 1,
+  }));
+  try {
+    fs.writeFileSync(path.join(work, 'other.py'), 'VALUE = 1\n');
+    const program = `
+      const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      let tool;
+      const pi = { registerTool(value) { if (value.name === 'submit_result') tool = value; }, appendEntry() {}, on() {} };
+      registerResultTool(pi);
+      try {
+        await tool.execute('changed', {
+          title: 'Changed',
+          summary: 'Changed another file.',
+          changes: ['Change another file'],
+          files: ['other.py'],
+          security_notes: 'None.',
+          limitations: 'None.',
+        });
+      } catch (error) {
+        console.log('CHANGED_ERROR ' + error.message);
+      }
+      await import('node:fs').then(fs => fs.writeFileSync(${JSON.stringify(path.join(work, 'other.py'))}, 'base\n'));
+    `;
+    const child = runProgram({
+      dir: root,
+      cwd: work,
+      program,
+      env: {
+        GITHUB_WORKSPACE: PROJECT_ROOT,
+        PI_ISSUE: '470',
+        PI_ISSUE_CONTEXT: context,
+        PI_IMPLEMENTER_RESULT_FILE: resultFile,
+        PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-470' }),
+        PI_PREPARED_IMPLEMENTATION_FILE: preparedFile,
+        PI_RESUME_ACTIVE: 'false',
+        PI_VALIDATION_REPAIR: 'false',
+      },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+    assert.match(child.stdout, /PREPARED_OUTPUTS_REQUIRED/);
+
+    execFileSync('git', ['checkout', '--', 'other.py'], { cwd: work, stdio: 'ignore' });
+    const blocked = runSuccessfulSubmit({
+      modeEnv: {
+        PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-470-blocked' }),
+        PI_PREPARED_IMPLEMENTATION_FILE: preparedFile,
+      },
+      params: { blocked_reason: 'The required output cannot be produced without contradictory requirements.' },
+    });
+    assert.equal(blocked.metadata.outcome, 'blocked');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 
 test('#469 fresh coding session hides terminal submission while prepared required outputs are absent', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-readiness-'));
