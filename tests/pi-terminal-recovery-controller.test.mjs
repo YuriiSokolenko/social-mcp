@@ -269,3 +269,50 @@ test('#426 workflow preserves terminal recovery blocked provenance for needs-hum
   assert.doesNotMatch(workflow, /FAILURE_REASON="\$\(jq/);
   assert.match(workflow, /pi-transition\.mjs" issue needs-human/);
 });
+
+
+test('#426 cleanup expected_files never re-authorizes the accidental path being removed', () => {
+  const obligation = submissionObligation(
+    'Runtime scratch artifacts cannot be submitted: scratch/tmp.py. Remove them before submit_result.',
+  );
+  const plan = selectTerminalRecovery({
+    obligation,
+    terminalInput: { files: ['src/a.py', 'scratch/tmp.py'] },
+    activeToolNames: ['undo_mutation', 'submit_result'],
+    currentChangedFiles: ['src/a.py', 'scratch/tmp.py'],
+    acceptedPaths: ['src/a.py'],
+    drift: [{
+      path: 'scratch/tmp.py',
+      class: 'journaled',
+      action: 'undo_mutation',
+      mutation_id: 'm-scratch',
+    }],
+  });
+
+  assert.equal(plan.status, 'repair');
+  assert.equal(plan.tool, 'undo_mutation');
+  assert.deepEqual(plan.args.expected_files, ['src/a.py']);
+  assert.ok(!plan.args.expected_files.includes('scratch/tmp.py'));
+});
+
+test('#426 conflict recovery inspects first and refuses blind mutation-only capability', () => {
+  const obligation = submissionObligation(
+    'Latest dev conflicts with the implementation. Resolve these files and retry submit_result: src/conflict.py',
+  );
+
+  const transition = selectTerminalRecovery({
+    obligation,
+    activeToolNames: ['need_more_evidence', 'safe_edit', 'submit_result'],
+  });
+  assert.equal(transition.status, 'repair');
+  assert.equal(transition.tool, 'need_more_evidence');
+  assert.equal(transition.target, 'src/conflict.py');
+
+  const blocked = selectTerminalRecovery({
+    obligation,
+    activeToolNames: ['safe_edit', 'submit_result'],
+  });
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.requiredTool, 'read');
+  assert.match(blocked.reason, /refusing a blind mutation/);
+});
