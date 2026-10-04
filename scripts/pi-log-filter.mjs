@@ -470,7 +470,19 @@ for await (const line of rl) {
       heading("✓", `Model #${responseNumber} · ${metaLine}`, C.yellow);
       if (usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
-        recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: fields, responseMs: elapsed });
+        const syntheticSettlement = ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']
+          .every(key => !Number.isFinite(usage[key]) || usage[key] === 0);
+        recordMetric({
+          issue: issue ?? 0,
+          phase,
+          call,
+          response: responseNumber,
+          usage: fields,
+          responseMs: elapsed,
+          ...(syntheticSettlement
+            ? { synthetic: true, record_type: 'synthetic_settlement' }
+            : {}),
+        });
       } else {
         // A completed response with no provider usage is an unknown, not an absent record.
         recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: null, reason: "provider_usage_unavailable", responseMs: elapsed });
