@@ -2296,7 +2296,7 @@ export default function (pi) {
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
-    if (!event.isError && canonicalToolName === 'bash') {
+    if (canonicalToolName === 'bash') {
       const bashValidationFingerprintAfter = repositoryStateFingerprint(ctx?.cwd ?? process.cwd());
       const bashRequiresValidation = repositoryFingerprintRequiresValidation(
         bashValidationFingerprintBefore,
