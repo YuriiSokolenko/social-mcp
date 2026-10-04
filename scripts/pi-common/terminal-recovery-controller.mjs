@@ -276,6 +276,12 @@ function terminalToolCallNames(messages) {
   return names;
 }
 
+function terminalResultFromMessage(message) {
+  if (typeof message?.content === 'string') return message.content;
+  if (Array.isArray(message?.content)) return { content: message.content };
+  return message;
+}
+
 function messageText(message) {
   if (typeof message?.content === 'string') return message.content;
   if (Array.isArray(message?.content)) {
@@ -318,7 +324,7 @@ export function compactTerminalRecoveryPayload(payload, recoveryState) {
     const message = payload.messages[index];
     const name = message?.name ?? names.get(message?.tool_call_id);
     if (message?.role === 'tool' && TERMINAL_TOOLS.has(name)) {
-      const obligation = submissionObligation(message);
+      const obligation = submissionObligation(terminalResultFromMessage(message));
       if (obligation?.key === recoveryState.obligationKey) matchingToolIndexes.push(index);
     }
     if (
