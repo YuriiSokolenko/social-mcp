@@ -4,7 +4,7 @@ import path from 'node:path';
 export const CODING_TARGETED_PYTEST_STATE_ENV = 'PI_CODING_TARGETED_PYTEST_STATE';
 
 function canonicalRepoPath(value) {
-  const text = String(value ?? '').trim().replaceAll(/\\\\/g, '/');
+  const text = String(value ?? '').trim().replaceAll(/\\/g, '/');
   const file = text.split('::')[0];
   return path.posix.normalize(file).replace(/^\.\//, '');
 }
@@ -91,7 +91,7 @@ function candidatePreparedPath(value) {
   const text = String(value ?? '').trim().replace(/^[`'"]+|[`'",.;:]+$/g, '');
   if (!text || text.length > 1000) return null;
   if (!/[A-Za-z0-9_]\.[A-Za-z0-9]{1,12}$/.test(text)) return null;
-  if (text.startsWith('/') || text.startsWith('./') || /\\\\/.test(text) || /(^|\/)\.\.(\/|$)/.test(text)) return null;
+  if (text.startsWith('/') || text.startsWith('./') || /\\/.test(text) || /(^|\/)\.\.(\/|$)/.test(text)) return null;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return null;
   return path.posix.normalize(text);
 }
