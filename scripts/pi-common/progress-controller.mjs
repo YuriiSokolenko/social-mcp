@@ -84,24 +84,19 @@ export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
 }
 
-const EVIDENCE_PURPOSE_CLAUSE = /(?:^|[,;]\s*|\band\s+)(?:read|show|list|locate|find|search|grep|inspect|open|check)\b/gi;
-const EVIDENCE_PATH_TOKEN = /(?:^|\s)((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)/g;
-
 export function validateSingleEvidenceRequest(input = {}) {
   const missing = typeof input.missing === 'string' ? input.missing.trim() : '';
   if (!missing) return { ok: false, reason: 'need_more_evidence requires one concrete missing fact.' };
 
-  const clauses = missing.split(/[;\n]+/).map(part => part.trim()).filter(Boolean);
-  const purposeClauses = [...missing.matchAll(EVIDENCE_PURPOSE_CLAUSE)];
-  const paths = [...missing.matchAll(EVIDENCE_PATH_TOKEN)].map(match => match[1]);
-  const coordinatedPaths = /\band\b/i.test(missing) && new Set(paths).size > 1;
+  // Do not guess semantics from verbs, conjunctions, or the number of paths: a legitimate single
+  // fact can compare two files or say "read X, check the signature". The runtime already hard-limits
+  // the grant to one evidence tool call. Enforce only unambiguous structural broadening here.
+  const multipleLinesOrClauses = /[;\r\n]/.test(missing);
   const explicitAdditionalFact = /(?:,\s*)?\b(?:plus|as well as|additionally)\b/i.test(missing);
-  const multiplePurposes = clauses.length > 1 || purposeClauses.length > 1 || coordinatedPaths || explicitAdditionalFact;
-
-  if (multiplePurposes) {
+  if (multipleLinesOrClauses || explicitAdditionalFact) {
     return {
       ok: false,
-      reason: 'need_more_evidence accepts exactly one concrete missing fact and one evidence purpose; broad or multi-fact requests are rejected before opening an evidence permit.',
+      reason: 'need_more_evidence accepts one missing fact. Rewrite it as one line without semicolon-separated/additional facts; a single fact may reference or compare multiple paths. The grant unlocks exactly one evidence tool call.',
     };
   }
   return { ok: true };
