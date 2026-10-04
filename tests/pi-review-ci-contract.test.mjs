@@ -200,19 +200,20 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
   const workflowDir = '.github/workflows';
 
   const stripComment = (value) => value.replace(/\s+#.*$/, '').trim();
+  const normalizeLabel = (value) => value.trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+  const simpleScalar = /^[a-z0-9_.-]+$/i;
+
   const parseList = (value) => {
     const clean = stripComment(value).trim();
     if (!clean.startsWith('[') || !clean.endsWith(']')) return null;
-    return clean
-      .slice(1, -1)
-      .split(',')
-      .map(item => item.trim().replace(/^['"]|['"]$/g, ''))
-      .filter(Boolean);
+    const labels = clean.slice(1, -1).split(',').map(normalizeLabel).filter(Boolean);
+    return labels.every(label => simpleScalar.test(label)) ? labels : null;
   };
 
   const runsOnSpecs = (workflow) => {
     const lines = workflow.split('\n');
     const specs = [];
+
     for (let i = 0; i < lines.length; i += 1) {
       const match = /^(\s*)runs-on:\s*(.*)$/.exec(lines[i]);
       if (!match) continue;
@@ -220,50 +221,96 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
       const baseIndent = match[1].length;
       const inline = stripComment(match[2]);
       if (inline) {
-        specs.push({ labels: parseList(inline) ?? [inline.replace(/^['"]|['"]$/g, '')], group: null });
+        if (inline.includes('${{')) {
+          specs.push({ parsed: false, labels: [], group: null, raw: inline });
+          continue;
+        }
+
+        const list = parseList(inline);
+        if (list) {
+          specs.push({ parsed: true, labels: list, group: null, raw: inline });
+          continue;
+        }
+
+        const scalar = normalizeLabel(inline);
+        specs.push({
+          parsed: simpleScalar.test(scalar),
+          labels: simpleScalar.test(scalar) ? [scalar] : [],
+          group: null,
+          raw: inline,
+        });
         continue;
       }
 
-      const block = [];
+      const blockLines = [];
       for (let j = i + 1; j < lines.length; j += 1) {
         const line = lines[j];
         if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
         const indent = /^(\s*)/.exec(line)[1].length;
         if (indent <= baseIndent) break;
-        block.push(stripComment(line.trim()));
+        blockLines.push(stripComment(line.trim()));
       }
 
+      if (blockLines.some(line => line.includes('${{'))) {
+        specs.push({ parsed: false, labels: [], group: null, raw: blockLines.join(' ') });
+        continue;
+      }
+
+      let parsed = true;
       let group = null;
-      let labels = [];
-      for (let j = 0; j < block.length; j += 1) {
-        const line = block[j];
+      const labels = [];
+      let sawStructuredKey = false;
+
+      for (let j = 0; j < blockLines.length; j += 1) {
+        const line = blockLines[j];
         const groupMatch = /^group:\s*(.+)$/.exec(line);
         if (groupMatch) {
-          group = groupMatch[1].replace(/^['"]|['"]$/g, '');
+          sawStructuredKey = true;
+          const value = normalizeLabel(groupMatch[1]);
+          if (!simpleScalar.test(value)) parsed = false;
+          else group = value;
           continue;
         }
 
         const labelsMatch = /^labels:\s*(.*)$/.exec(line);
         if (labelsMatch) {
-          const inlineLabels = parseList(labelsMatch[1]);
-          if (inlineLabels) {
-            labels.push(...inlineLabels);
+          sawStructuredKey = true;
+          const value = labelsMatch[1].trim();
+          if (value) {
+            const inlineLabels = parseList(value);
+            if (inlineLabels) labels.push(...inlineLabels);
+            else {
+              const scalar = normalizeLabel(value);
+              if (!simpleScalar.test(scalar)) parsed = false;
+              else labels.push(scalar);
+            }
             continue;
           }
+
           let k = j + 1;
-          for (; k < block.length && /^-\s+/.test(block[k]); k += 1) {
-            labels.push(block[k].replace(/^-\s+/, '').replace(/^['"]|['"]$/g, ''));
+          for (; k < blockLines.length && /^-\s+/.test(blockLines[k]); k += 1) {
+            const label = normalizeLabel(blockLines[k].replace(/^-\s+/, ''));
+            if (!simpleScalar.test(label)) parsed = false;
+            else labels.push(label);
           }
           j = k - 1;
           continue;
         }
 
-        if (/^-\s+/.test(line)) {
-          labels.push(line.replace(/^-\s+/, '').replace(/^['"]|['"]$/g, ''));
+        if (!sawStructuredKey && /^-\s+/.test(line)) {
+          const label = normalizeLabel(line.replace(/^-\s+/, ''));
+          if (!simpleScalar.test(label)) parsed = false;
+          else labels.push(label);
+          continue;
         }
+
+        parsed = false;
       }
-      specs.push({ labels, group });
+
+      if (labels.length === 0 && group === null) parsed = false;
+      specs.push({ parsed, labels, group, raw: blockLines.join(' ') });
     }
+
     return specs;
   };
 
@@ -271,39 +318,62 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
     labels.length === expected.length && expected.every(label => labels.includes(label));
   const controlRunnerLabels = new Set(['self-hosted', 'linux', 'x64', 'n150', 'control']);
   const canMatchControlRunner = (spec) =>
+    spec.parsed &&
     spec.group === null &&
     spec.labels.length > 0 &&
     spec.labels.every(label => controlRunnerLabels.has(label));
 
+  const extraLabel = runsOnSpecs('jobs:\n  wake:\n    runs-on: [self-hosted, n150, general, control]')[0];
   assert.equal(
-    exactLabels(runsOnSpecs('jobs:\n  wake:\n    runs-on: [self-hosted, n150, general, control]')[0].labels,
-      ['self-hosted', 'n150', 'control']),
+    exactLabels(extraLabel.labels, ['self-hosted', 'n150', 'control']),
     false,
     'an extra general label must not satisfy the dedicated control-runner contract',
   );
+
+  const groupWithComment = runsOnSpecs(
+    'jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment',
+  )[0];
   assert.deepEqual(
-    runsOnSpecs('jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment')[0],
-    { labels: ['self-hosted', 'n150', 'general'], group: 'control-machines' },
+    { parsed: groupWithComment.parsed, labels: groupWithComment.labels, group: groupWithComment.group },
+    { parsed: true, labels: ['self-hosted', 'n150', 'general'], group: 'control-machines' },
     'runner group names and comments must not be mistaken for control labels',
   );
+
   assert.deepEqual(
     runsOnSpecs('jobs:\n  wake:\n    runs-on:\n      - self-hosted\n      - n150\n      - control')[0].labels,
     ['self-hosted', 'n150', 'control'],
     'multiline label lists must be parsed as labels',
   );
+
   assert.equal(
-    canMatchControlRunner(runsOnSpecs('jobs:\n  unsafe:\n    runs-on: [self-hosted, n150]')[0]),
+    canMatchControlRunner(runsOnSpecs('jobs:\n  unsafe:\n    runs-on: [self-hosted, Linux, X64, n150]')[0]),
     true,
-    'bare self-hosted/n150 jobs are capable of landing on the control runner',
+    'runner-label matching must be case-insensitive like GitHub',
   );
 
-  for (const name of fs.readdirSync(workflowDir).filter(name => name.endsWith('.yml'))) {
+  assert.equal(
+    runsOnSpecs('jobs:\n  unsafe:\n    runs-on: [self-hosted, ${{ matrix.pool }}]')[0].parsed,
+    false,
+    'dynamic runs-on expressions must fail closed',
+  );
+
+  const workflowNames = fs.readdirSync(workflowDir).filter(name => /\.ya?ml$/.test(name));
+  for (const name of workflowNames) {
     const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
     const specs = runsOnSpecs(workflow);
-    if (name === 'ci-terminal-wake.yml') {
+
+    for (const spec of specs) {
+      assert.equal(
+        spec.parsed,
+        true,
+        `${name}: runs-on must be statically parseable; dynamic or unknown forms are forbidden`,
+      );
+    }
+
+    if (name === 'ci-terminal-wake.yml' || name === 'ci-terminal-wake.yaml') {
       assert.ok(
         specs.some(spec => spec.group === null && exactLabels(spec.labels, ['self-hosted', 'n150', 'control'])),
-        'ci-terminal-wake.yml must target exactly self-hosted,n150,control with no runner group',
+        `${name}: terminal wake must target exactly self-hosted,n150,control with no runner group`,
       );
       continue;
     }
