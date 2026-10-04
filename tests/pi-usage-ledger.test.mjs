@@ -215,8 +215,10 @@ test('#469 synthetic settlement stays logical but exact provider trace reports 2
     ledger.totals.providerResponseMs,
     Array.from({ length: 24 }, (_, index) => 1000 + index).reduce((sum, value) => sum + value, 0),
   );
-  assert.equal(ledger.calls.get('provider').providerResponses, 24);
-  assert.equal(ledger.calls.get('provider').responses, 0);
+  assert.equal(ledger.calls.get('planner').providerResponses, 6);
+  assert.equal(ledger.calls.get('main').providerResponses, 1);
+  assert.equal(ledger.calls.get('coding').providerResponses, 12);
+  assert.equal(ledger.calls.get('repair').providerResponses, 5);
   assert.equal(ledger.totals.responses, 20, 'logical roll-ups and synthetic settlement remain a separate record dimension');
   assert.notEqual(ledger.totals.responses, ledger.totals.providerResponses);
 });
@@ -285,10 +287,11 @@ test('#470 provider totals keep logical calls that bypass the trace proxy withou
   assert.equal(ledger.totals.providerResponseMs, 700);
   assert.equal(ledger.calls.get('planner').providerResponses, 2);
   assert.equal(ledger.calls.get('planner').providerResponseMs, 0);
-  const supplemental = [...ledger.calls.entries()].find(([key]) => key.startsWith('provider_trace_unattributed'))?.[1];
-  assert.ok(supplemental);
-  assert.equal(supplemental.providerResponses, 0);
-  assert.equal(supplemental.providerResponseMs, 700);
+  assert.equal(
+    [...ledger.calls.keys()].some(key => key.startsWith('provider_trace_unattributed')),
+    false,
+    'a smaller partial trace does not erase or duplicate logically attributed provider calls',
+  );
 });
 
 
@@ -331,7 +334,7 @@ test('#470 trace reconciliation never overwrites call rows with provider-like na
   const supplementalKey = [...ledger.calls.keys()].find(key => key.startsWith('provider_trace_unattributed') && key !== 'provider_trace_unattributed');
   assert.ok(supplementalKey);
   assert.equal(ledger.calls.get(supplementalKey).providerResponses, 1);
-  assert.equal(ledger.calls.get(supplementalKey).providerResponseMs, 2700);
+  assert.equal(ledger.calls.get(supplementalKey).providerResponseMs, 0);
 });
 
 
@@ -356,5 +359,8 @@ test('#469 provider response sequences may restart in a new proxy session withou
   ]);
   assert.equal(ledger.totals.providerResponses, 2);
   assert.equal(ledger.totals.providerResponseMs, 1000);
-  assert.equal(ledger.calls.get('provider').providerResponses, 2);
+  const supplemental = [...ledger.calls.entries()].find(([key]) => key.startsWith('provider_trace_unattributed'))?.[1];
+  assert.ok(supplemental);
+  assert.equal(supplemental.providerResponses, 2);
+  assert.equal(supplemental.providerResponseMs, 0);
 });
