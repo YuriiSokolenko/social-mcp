@@ -593,6 +593,7 @@ test('#470 repository fingerprint validation policy preserves read-only bash and
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /mutationChanged !== false/);
   assert.match(runtime, /repositoryFingerprintRequiresValidation\(\s*bashValidationFingerprintBefore,\s*bashValidationFingerprintAfter/);
+  assert.doesNotMatch(runtime, /if \(!event\.isError && canonicalToolName === 'bash'\)/);
 });
 
 
@@ -733,6 +734,7 @@ test('#469 fresh coding session reports missing prepared outputs until they exis
       layoutHint: {
         sourceTarget: 'src/connect_four.py',
         testTarget: 'tests/test_connect_four.py',
+        testTargetRequired: true,
       },
     };
     const blocked = codingSessionSubmissionReadiness({ prepared, cwd: dir, changedFiles: [] });
@@ -769,6 +771,25 @@ test('#469 fresh coding session reports missing prepared outputs until they exis
 });
 
 
+test('#470 inferred test targets are guidance, not mandatory prepared outputs', () => {
+  const inferred = {
+    status: 'prepared',
+    layoutHint: {
+      sourceTarget: 'src/widget.py',
+      testTarget: 'tests/test_widget.py',
+      testTargetRequired: false,
+    },
+  };
+  assert.deepEqual(requiredPreparedOutputPaths(inferred), ['src/widget.py']);
+
+  const explicit = {
+    ...inferred,
+    layoutHint: { ...inferred.layoutHint, testTargetRequired: true },
+  };
+  assert.deepEqual(requiredPreparedOutputPaths(explicit), ['src/widget.py', 'tests/test_widget.py']);
+});
+
+
 test('#470 prepared-output gate ignores planner prose and uses only structured layout targets', () => {
   const prepared = {
     status: 'prepared',
@@ -782,6 +803,7 @@ test('#470 prepared-output gate ignores planner prose and uses only structured l
     layoutHint: {
       sourceTarget: 'src/structured.py',
       testTarget: 'tests/test_structured.py',
+      testTargetRequired: true,
     },
   };
 
@@ -792,15 +814,10 @@ test('#470 prepared-output gate ignores planner prose and uses only structured l
 });
 
 
-test('#469 targeted pytest state survives coding fork return to parent', () => {
+test('#469 targeted pytest state survives coding fork return to parent without resurrecting stale parent env', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-validation-state-'));
   const terminal = path.join(dir, 'terminal.json');
   const changedFiles = ['src/game.py', 'tests/test_game.py'];
-  const childEnv = {
-    PI_CODING_SESSION: JSON.stringify({ sessionId: 'child-469' }),
-    PI_CODING_SESSION_USED: 'true',
-    PI_TERMINAL_RESULT_FILE: terminal,
-  };
   const parentEnv = {
     PI_CODING_SESSION_USED: 'true',
     PI_TERMINAL_RESULT_FILE: terminal,
@@ -809,10 +826,18 @@ test('#469 targeted pytest state survives coding fork return to parent', () => {
     recordCodingBehavioralValidation({
       scope: { targets: ['tests/test_game.py'] },
       result: { status: 'pass', kind: 'pytest' },
-      env: childEnv,
+      env: parentEnv,
     });
     assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env: parentEnv }));
-    assert.equal(invalidateCodingBehavioralValidation(parentEnv), true);
+
+    // A fork inherits the parent's env snapshot. Its mutation invalidates the shared file and only
+    // its own env copy; the parent must treat the missing shared file as authoritative.
+    const childEnv = {
+      ...parentEnv,
+      PI_CODING_SESSION: JSON.stringify({ sessionId: 'child-469' }),
+    };
+    assert.equal(invalidateCodingBehavioralValidation(childEnv), true);
+    assert.ok(parentEnv.PI_CODING_TARGETED_PYTEST_STATE, 'parent still holds the inherited stale snapshot');
     assert.throws(
       () => assertCodingBehavioralValidation({ changedFiles, env: parentEnv }),
       /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/,
