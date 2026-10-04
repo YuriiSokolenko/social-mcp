@@ -4,11 +4,12 @@ import { Type } from 'typebox';
 import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
 import { baseRef } from './pi-common/project-config.mjs';
 import { runGit as git } from './pi-common/git.mjs';
-import { assertImplementerFileSet, writeImplementerResult } from './pi-common/implementer-result.mjs';
+import { assertImplementerFileSet, normalizeImplementerFiles, writeImplementerResult } from './pi-common/implementer-result.mjs';
 import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
 import { mutationScopeReceipt } from './pi-common/accepted-mutation-scope.mjs';
 import { mutationCleanupHints } from './pi-common/mutation-journal.mjs';
 import { capabilitySnapshotGuidance } from './pi-common/session-state.mjs';
+import { assertCodingBehavioralValidation } from './pi-common/coding-session-validation.mjs';
 
 const lines = (text) => text.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
 const gitPaths = (text) => text.split('\0').filter(Boolean);
@@ -19,11 +20,31 @@ function changedPathsAgainstBase() {
 }
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
 
-function assertFileSetWithMutationRecovery(actualFiles, declaredFiles) {
+function invalidResultPathWithKnownFiles(error, knownChangedFiles) {
+  if (error?.code !== 'INVALID_RESULT_PATH') throw error;
+  const known = Array.isArray(knownChangedFiles) && knownChangedFiles.length
+    ? knownChangedFiles.join(', ')
+    : '(none)';
+  const enriched = new Error(`${error.message}. Known canonical changed files: ${known}`);
+  enriched.code = 'INVALID_RESULT_PATH';
+  enriched.path = error.path;
+  throw enriched;
+}
+
+function normalizeDeclaredFilesWithKnownFiles(declaredFiles, knownChangedFiles) {
   try {
-    return assertImplementerFileSet(actualFiles, declaredFiles);
+    return normalizeImplementerFiles(declaredFiles);
   } catch (error) {
-    const declared = new Set(Array.isArray(declaredFiles) ? declaredFiles : []);
+    invalidResultPathWithKnownFiles(error, knownChangedFiles);
+  }
+}
+
+function assertFileSetWithMutationRecovery(actualFiles, declaredFiles) {
+  const canonicalDeclared = normalizeDeclaredFilesWithKnownFiles(declaredFiles, actualFiles);
+  try {
+    return assertImplementerFileSet(actualFiles, canonicalDeclared);
+  } catch (error) {
+    const declared = new Set(canonicalDeclared);
     const unexpected = actualFiles.filter(file => !declared.has(file));
     const hints = mutationCleanupHints(process.cwd(), unexpected, process.env);
     if (!hints.length) throw error;
@@ -205,6 +226,17 @@ export default function (pi) {
       const freshChangedMetadata = !runtimeOwnedMetadata && !alreadySatisfied
         ? validateFreshChangedSubmission(params)
         : null;
+      const knownChangedBeforeIntegration = changedPathsAgainstBase();
+      if (freshChangedMetadata) {
+        freshChangedMetadata.files = normalizeDeclaredFilesWithKnownFiles(
+          freshChangedMetadata.files,
+          knownChangedBeforeIntegration,
+        );
+      }
+      assertCodingBehavioralValidation({
+        changedFiles: knownChangedBeforeIntegration,
+        env: process.env,
+      });
 
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
