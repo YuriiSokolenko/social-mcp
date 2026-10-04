@@ -379,6 +379,24 @@ test('output-only retry hides evidence tools when the child supports active-tool
   assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }), undefined);
 });
 
+
+test('broad discovery stays available only as a justified targeted-evidence escalation', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-stale-target-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const issue = path.join(dir, 'issue.json');
+  fs.writeFileSync(issue, JSON.stringify({
+    title: 'Repair stale target',
+    body: 'Update src/old/place.py; if that named path is stale, locate the replacement and preserve its tests.',
+  }));
+  const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
+  assert.ok(PLANNER_EVIDENCE_TOOLS.includes('find'), 'find remains available to the planner');
+  assert.match(task, /Broad find\/ls\/search is escalation only/);
+  assert.match(task, /missing, stale, contradictory/);
+  const gate = createPlannerEvidenceGate(6);
+  assert.equal(gate.admit('read').allowed, true, 'targeted evidence can run first');
+  assert.equal(gate.admit('find').allowed, true, 'broad discovery is not globally prohibited after a concrete gap');
+});
+
 test('planner evidence sidecar distinguishes a real zero from unavailable state', async (t) => {
   const { dir, env } = fixture(t, {});
   const host = plannerHost({
