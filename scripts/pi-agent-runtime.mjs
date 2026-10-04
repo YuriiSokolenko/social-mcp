@@ -2277,6 +2277,15 @@ export default function (pi) {
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
+    if (!event.isError && ['rollback_last_mutation', 'recover_worktree', 'undo_mutation'].includes(canonicalToolName)) {
+      if (invalidateCodingBehavioralValidation(process.env)) {
+        console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+          stage,
+          status: 'invalidated_by_recovery_mutation',
+          tool: canonicalToolName,
+        })}`);
+      }
+    }
     const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
       madeProgress: effectiveProgress,
