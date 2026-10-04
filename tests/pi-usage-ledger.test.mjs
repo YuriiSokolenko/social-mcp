@@ -264,7 +264,7 @@ test('#469 transport failures are diagnostic exchanges, not provider responses',
     },
   ]);
   assert.equal(ledger.totals.providerResponses, 1);
-  assert.equal(ledger.totals.providerResponseMs, 480);
+  assert.equal(ledger.totals.providerResponseMs, 500, 'trace reconciliation never lowers known logical provider latency');
   assert.equal(ledger.complete, true, 'transport diagnostics do not create unknown usage obligations');
   assert.deepEqual(ledger.unknown, []);
 });
