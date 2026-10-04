@@ -470,8 +470,15 @@ for await (const line of rl) {
       heading("✓", `Model #${responseNumber} · ${metaLine}`, C.yellow);
       if (usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
-        const syntheticSettlement = ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']
-          .every(key => !Number.isFinite(usage[key]) || usage[key] === 0);
+        const syntheticSettlement =
+          elapsed === 0 &&
+          firstTokenAt == null &&
+          !message.content?.some(part =>
+            (part?.type === 'text' && String(part.text ?? '').length > 0) ||
+            (part?.type === 'thinking' && String(part.thinking ?? part.text ?? '').length > 0)
+          ) &&
+          ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']
+            .every(key => !Number.isFinite(usage[key]) || usage[key] === 0);
         recordMetric({
           issue: issue ?? 0,
           phase,
