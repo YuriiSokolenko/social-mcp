@@ -562,6 +562,18 @@ test('#469 coding-session source plus pytest changes require a passing targeted 
     env,
   });
   assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env }));
+  assert.equal(recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py'] },
+    result: { status: 'fail', kind: 'pytest' },
+    env,
+  }), null);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+
+  recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
   assert.equal(invalidateCodingBehavioralValidation(env), true);
   assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
 });
