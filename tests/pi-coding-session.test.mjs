@@ -175,9 +175,11 @@ function runtimeScenario(mode) {
       const runtimeUrl = ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
       const terminalReceiptUrl = ${JSON.stringify(new URL('../scripts/pi-common/terminal-receipt.mjs', import.meta.url).href)};
       const implementerResultUrl = ${JSON.stringify(new URL('../scripts/pi-common/implementer-result.mjs', import.meta.url).href)};
+      const codingValidationUrl = ${JSON.stringify(new URL('../scripts/pi-common/coding-session-validation.mjs', import.meta.url).href)};
       const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
       const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile } = await import(terminalReceiptUrl);
       const { writeImplementerResult } = await import(implementerResultUrl);
+      const { recordCodingBehavioralValidation } = await import(codingValidationUrl);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
@@ -321,7 +323,16 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'nested executor unavailable', usage: { input: 50, output: 5, totalTokens: 55 } });
         }
         // Executors stubbed; the runtime's gates around them are real.
-        childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
+        childTools.get('run_check').execute = async (_toolCallId, params) => {
+          if (params?.kind === 'pytest') {
+            recordCodingBehavioralValidation({
+              scope: { targets: params.targets },
+              result: { status: 'pass', kind: 'pytest' },
+              env: process.env,
+            });
+          }
+          return { content: [{ type: 'text', text: 'check passed' }] };
+        };
         childTools.get('submit_result').execute = async () => {
           writeImplementerResult(resultFile, {
             title: 't',
@@ -878,6 +889,9 @@ function runtimeScenario(mode) {
       }
       assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048', 'parent child-budget mirror restored');
       assert.ok(!process.env.PI_CODING_SESSION, 'coding-session mode is scoped to the fork');
+      if (sessionRequests.length) {
+        assert.equal(process.env.PI_CODING_SESSION_USED, 'true', 'parent retains the durable coding-lifecycle validation marker');
+      }
       assert.ok(caps.filter(cap => cap !== 32000).every(cap => cap === 2048), 'parent stays at 2048: ' + caps);
       if (mode === 'no-session') assert.equal(sessionRequests.length, 0, 'no fresh-prompt fallback');
       else {
