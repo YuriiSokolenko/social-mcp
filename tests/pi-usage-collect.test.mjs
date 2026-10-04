@@ -53,7 +53,7 @@ test("aggregates a cancelled attempt once and preserves it on reprocessing", () 
   const rows = readFileSync(csvFile, "utf8").trim().split("\n");
   assert.equal(rows.length, 3); // header, issue total, one attempt
   assert.match(rows[1], /^issue,51,all,,,/);
-  assert.match(rows[1], /,2,50,12,0,0,62,5\.0,300,/);
+  assert.match(rows[1], /,2,50,12,0,0,62,5\.0,0\.0,300,/);
   assert.match(rows[2], /^attempt,51,implementation,123,2,cancelled,/);
 });
 
@@ -157,7 +157,7 @@ test("collects a Pi Architect run's usage under its 'architect' job name", () =>
   });
   assert.equal(result.status, 0, result.stderr);
   const rows = readFileSync(csvFile, "utf8").trim().split("\n");
-  assert.match(rows[2], /^attempt,9,architect,321,1,success,1,0,0,0,0,91519,20\.7,4404,/);
+  assert.match(rows[2], /^attempt,9,architect,321,1,success,1,0,0,0,0,91519,20\.7,0\.0,4404,/);
 });
 
 test("rejects a run with a trusted-looking title but an unrelated workflow path", () => {
@@ -178,9 +178,10 @@ test("rejects a run with a trusted-looking title but an unrelated workflow path"
   assert.match(result.stderr, /not a trusted Pi workflow/);
 });
 
-test("CSV model_seconds keeps provider-response semantics and excludes delegated lifecycle duration", () => {
+test("CSV separates provider response time from delegated lifecycle time", () => {
   const source = readFileSync("scripts/pi-usage-collect.mjs", "utf8");
   assert.match(source, /model_seconds: ledger\.totals\.providerResponseMs \/ 1000/);
+  assert.match(source, /delegated_lifecycle_seconds: ledger\.totals\.delegatedLifecycleMs \/ 1000/);
   assert.doesNotMatch(source, /model_seconds: ledger\.totals\.delegatedLifecycleMs/);
 });
 
@@ -196,7 +197,7 @@ test("#425 summary and CSV agree on known totals and incompleteness for the same
     { issue: 51, phase: "implementation", descendant: true, call: "coding", childSession: "s1", response: 1, usage: { input: 30, output: 7, totalTokens: 37 } },
     { issue: 51, phase: "implementation", descendant: true, call: "coding", childSession: "s1", response: 1, usage: { input: 30, output: 7, totalTokens: 37 } },
     { issue: 51, phase: "implementation", descendant: true, call: "coding", scope: "session", childSession: "s1", status: "timed_out", usage: null },
-    { issue: 51, phase: "implementation", descendant: true, call: "planner", scope: "session", childSession: "p1", status: "failed", usage: { input: 4, output: 1, totalTokens: 5 } },
+    { issue: 51, phase: "implementation", descendant: true, call: "planner", scope: "session", childSession: "p1", status: "failed", usage: { input: 4, output: 1, totalTokens: 5, turns: 1, durationMs: 7000 } },
   ];
   writeFileSync(metricsFile, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
   const summary = spawnSync(process.execPath, ["scripts/pi-usage-summary.mjs"], {
@@ -235,6 +236,8 @@ test("#425 summary and CSV agree on known totals and incompleteness for the same
   const attempt = Object.fromEntries(header.map((column, i) => [column, rows[2].split(",")[i]]));
   assert.equal(attempt.responses, "3");
   assert.equal(attempt.total_tokens, "67");
+  assert.equal(attempt.model_seconds, "2.0", "only the explicit main response contributes provider response time");
+  assert.equal(attempt.delegated_lifecycle_seconds, "7.0", "planner lifecycle time is visible in its own CSV column");
   assert.equal(attempt.complete, "false");
   assert.equal(attempt.unknown_requests, "2");
 });
