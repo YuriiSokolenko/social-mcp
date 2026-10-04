@@ -61,6 +61,8 @@ grep -q 'interruptible_sleep' <<<"$control_entrypoint" && grep -q 'sleep_pid' <<
   || fail 'control runner backoff sleeps must remain interruptible by Docker stop'
 grep -q 'stop_process_group' <<<"$control_entrypoint" && grep -q 'CONTROL_CHILD_STOP_WAIT_SECONDS' <<<"$control_entrypoint" \
   || fail 'control runner child shutdown must be bounded'
+grep -q 'launch_in_progress' <<<"$control_entrypoint" && grep -q 'shutdown_requested' <<<"$control_entrypoint" && grep -q 'complete_launch' <<<"$control_entrypoint" \
+  || fail 'signals arriving between child launch and PID capture must be deferred until the PID is owned'
 grep -q 'CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS' <<<"$control_entrypoint" && grep -q 'update_waiting' <<<"$control_entrypoint" \
   || fail 'control runner shutdown must protect an in-flight self-update'
 ! grep -q 'runner_registration_state\|per_page=100\|\.name == \$name' <<<"$control_entrypoint" \
