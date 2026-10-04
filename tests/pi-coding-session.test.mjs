@@ -714,19 +714,28 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'action-hidden-abort') {
-          handlers.get('turn_start')({ turnIndex: turn });
-          const hidden = await handlers.get('tool_call')({
-            toolName: 'read',
-            toolCallId: 'hidden-' + turn,
-            input: { path: 'config.py' },
-          }, ctx);
-          assert.equal(hidden.block, true);
-          assert.match(hidden.reason, /not currently exposed/);
-          assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
-          const afterHidden = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-          assert.equal(afterHidden.tool_choice, undefined, 'hidden provider-emitted tool clears transport forcing');
-          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-          assert.equal(aborts, 1, 'hidden tool remains non-progress and trips the second-strike watchdog');
+          for (let attempt = 1; attempt <= 2; attempt += 1) {
+            handlers.get('turn_start')({ turnIndex: turn });
+            const hidden = await handlers.get('tool_call')({
+              toolName: 'read',
+              toolCallId: 'hidden-' + turn,
+              input: { path: 'config.py' },
+            }, ctx);
+            assert.equal(hidden.block, true);
+            assert.match(hidden.reason, /not currently exposed/);
+            assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
+            if (attempt === 1) {
+              const afterHidden = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+              assert.equal(afterHidden.tool_choice, undefined, 'hidden provider-emitted tool clears transport forcing');
+            }
+            await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+            assert.equal(aborts, attempt === 1 ? 0 : 1, 'unavailable calls abort only after a repeated unavailable-capability turn');
+          }
+          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+          assert.equal(failure.failure_class, 'model_execution_abort');
+          assert.equal(failure.failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
+          assert.match(failure.reason, /unavailable\/stale capability/);
+          console.log('UNAVAILABLE_CAPABILITY_FAILURE ' + JSON.stringify(failure));
           process.exit(0);
         }
 
@@ -991,11 +1000,13 @@ test('an already-completed repeated tool call clears forcing but still fails clo
   assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
-test('a hidden provider-emitted tool clears forcing but remains non-progress and aborts on the watchdog', () => {
+test('#469 repeated hidden provider-emitted tools abort as unavailable capability, never prose-only', () => {
   const logs = runtimeScenario('action-hidden-abort');
-  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
+  assert.ok((logs.match(/PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/g) ?? []).length >= 2);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"read".*"unavailable":true/);
-  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable\/stale capability turn/);
+  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
 test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
