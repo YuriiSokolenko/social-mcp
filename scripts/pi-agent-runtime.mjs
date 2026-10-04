@@ -2474,10 +2474,13 @@ export default function (pi) {
     }
     const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
     const outstandingTerminalObligation = loopGuard?.terminalObligation ?? null;
+    const terminalObligationHasExactMutationPaths =
+      Array.isArray(outstandingTerminalObligation?.paths) &&
+      outstandingTerminalObligation.paths.length > 0;
     const verificationEligible =
       effectiveProgress &&
       (
-        !outstandingTerminalObligation ||
+        !terminalObligationHasExactMutationPaths ||
         mutationResolvesSubmissionObligation(
           outstandingTerminalObligation,
           pendingLoopCall?.input ?? acceptedToolInput,
