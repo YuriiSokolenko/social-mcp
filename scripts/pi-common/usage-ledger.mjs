@@ -236,18 +236,21 @@ export function summarizeUsage(records) {
 
     // Preserve call-level logical attribution. The transport trace can prove that additional calls
     // or latency exist, but it cannot map them back to planner/main/coding rows. Add only the
-    // unattributed positive delta, under a collision-free synthetic row, so call rows are never
-    // overwritten or zeroed and summing the table still reconciles to the known lower bound.
+    // unattributed positive response-count delta, under a collision-free synthetic row, so call
+    // rows are never overwritten or zeroed. Trace latency stays aggregate-only because it cannot
+    // be safely distributed without double-counting logical per-call measurements.
     const supplemental = emptyTotals();
     supplemental.providerResponses = Math.max(0, traced.providerResponses - logicalProviderResponses);
-    supplemental.providerResponseMs = Math.max(0, traced.providerResponseMs - logicalProviderResponseMs);
-    if (supplemental.providerResponses || supplemental.providerResponseMs) {
+    if (supplemental.providerResponses) {
       let key = 'provider_trace_unattributed';
       while (calls.has(key)) key += '_';
       calls.set(key, supplemental);
     }
     totals.providerResponses = Math.max(logicalProviderResponses, traced.providerResponses);
-    totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
+    // When trace data exists it is the transport authority for aggregate provider latency.
+    // Keep logical per-call timing visible for attribution, but do not add or max it into the
+    // traced total because those measurements can overlap the same provider exchanges.
+    totals.providerResponseMs = traced.providerResponseMs;
   }
   return { calls, totals, unknown, complete: unknown.length === 0 };
 }
