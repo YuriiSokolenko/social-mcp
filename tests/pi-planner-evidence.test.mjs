@@ -11,7 +11,11 @@ import {
   PLANNER_EVIDENCE_BUDGET_ENV,
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
+  PLANNER_OUTPUT_ONLY_ENV,
+  PLANNER_RESULT_TOOL,
   createPlannerEvidenceGate,
+  discoverAdditivePythonLayout,
+  normalizeImplementationPreparation,
   plannerEvidenceBudget,
   plannerTask,
   prepareImplementation,
@@ -267,6 +271,10 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
             `Add 503 retry inside ${target} in src/net/transport.py; preserve the observed single delivery entry point.`,
             'Extend tests/test_transport.py using the observed sibling pytest function layout for the retry path.',
           ],
+          facts: [
+            'src/net/transport.py exposes send_with_backoff as the outbound delivery entry point.',
+            'tests/test_transport.py uses plain pytest test functions for transport behavior.',
+          ],
           complexity: 'nontrivial', evidence_budget: 1, large_mutation: false,
           reason: 'Discovery is resolved, but main still needs the current src/net/transport.py text as its mutation anchor.',
         } },
@@ -277,6 +285,11 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
   assert.equal(prepared.status, 'prepared');
   assert.match(prepared.plan[0], /send_with_backoff in src\/net\/transport\.py/, 'plan reflects repository evidence, not issue prose');
   assert.match(prepared.plan[1], /observed sibling pytest function layout/, 'derived test convention crosses as a fact');
+  assert.deepEqual(prepared.repositoryFacts, [
+    'src/net/transport.py exposes send_with_backoff as the outbound delivery entry point.',
+    'tests/test_transport.py uses plain pytest test functions for transport behavior.',
+  ]);
+  assert.match(preparedImplementationBlock(prepared), /Repository facts already established by planner/);
   assert.equal(prepared.evidenceBudget, 1, 'existing-file mutation keeps one current-anchor read even after planner discovery');
   assert.equal(prepared.plannerEvidenceUsed, 2);
   assert.equal(prepared.plannerEvidenceCap, 6);
@@ -304,9 +317,11 @@ test('planner prompt prefers targeted evidence and carries resolved facts forwar
       body: 'Create src/social_mcp/diagnostics/smoke_connect_four.py and tests/test_smoke_connect_four.py.',
     }));
     const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
-    assert.match(task, /exact path\/directory\/symbol\/test/);
-    assert.match(task, /avoid root listings and repo-wide discovery/);
-    assert.match(task, /state the fact in steps\/reason instead of telling main to rediscover it/);
+    assert.match(task, /first evidence action must target that named location/);
+    assert.match(task, /Broad find\/ls\/search is escalation only/);
+    assert.match(task, /missing, stale, contradictory/);
+    assert.match(task, /Return facts as 0-6 concise repository-derived facts/);
+    assert.match(task, /Never finish a planner attempt with prose/);
     assert.match(task, /ONLY the repository evidence main still needs/);
     assert.match(task, /current mutation anchor/);
     assert.match(task, /reserve at least one action for each existing file main must modify/);
@@ -316,6 +331,143 @@ test('planner prompt prefers targeted evidence and carries resolved facts forwar
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('exact issue source/test paths produce an authoritative additive layout without broad discovery', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-exact-layout-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'src', 'social_mcp', 'diagnostics'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src', 'social_mcp', 'diagnostics', 'smoke_chunks.py'), 'def chunks(): return []\n');
+  fs.writeFileSync(path.join(dir, 'tests', 'test_smoke_chunks.py'), 'def test_chunks(): pass\n');
+
+  const layout = discoverAdditivePythonLayout(dir, {
+    title: 'Add Connect Four smoke',
+    body: 'Create src/social_mcp/diagnostics/smoke_connect_four.py and tests/test_smoke_connect_four.py.',
+  });
+  assert.equal(layout.sourceTarget, 'src/social_mcp/diagnostics/smoke_connect_four.py');
+  assert.equal(layout.testTarget, 'tests/test_smoke_connect_four.py');
+  assert.equal(layout.sourceConvention, 'src/social_mcp/diagnostics/smoke_chunks.py');
+  assert.equal(layout.testConvention, 'tests/test_smoke_chunks.py');
+});
+
+test('exact additive layout ignores unrelated explicit tests and keeps missing explicit test directories coherent', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-layout-edges-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', 'smoke_chunks.py'), 'def chunks(): return []\n');
+  fs.writeFileSync(path.join(dir, 'tests', 'test_unrelated.py'), 'def test_unrelated(): pass\n');
+
+  const unrelated = discoverAdditivePythonLayout(dir, {
+    title: 'Add widget smoke',
+    body: 'Create src/demo_pkg/diagnostics/smoke_widget.py and tests/test_unrelated.py.',
+  });
+  assert.equal(unrelated.testDirectory, 'tests');
+  assert.equal(unrelated.testTarget, 'tests/test_smoke_widget.py', 'an unrelated explicit test must not become the target');
+
+  const explicitMissingDirectory = discoverAdditivePythonLayout(dir, {
+    title: 'Add widget smoke',
+    body: 'Create src/demo_pkg/diagnostics/smoke_widget.py and tests/diagnostics/test_smoke_widget.py.',
+  });
+  assert.equal(explicitMissingDirectory.testDirectory, 'tests/diagnostics');
+  assert.equal(explicitMissingDirectory.testTarget, 'tests/diagnostics/test_smoke_widget.py');
+  assert.equal(explicitMissingDirectory.testConvention, null);
+});
+
+test('facts normalization is bounded and empty facts still fail canonical validation', () => {
+  const longFact = 'x'.repeat(250);
+  const normalized = normalizeImplementationPreparation({
+    steps: ['Do it'],
+    facts: [longFact, ' two ', 'three', 'four', 'five', 'six', 'seven'],
+    complexity: 'trivial',
+    evidence_budget: 0,
+    large_mutation: false,
+    reason: 'ok',
+  });
+  assert.equal(normalized.facts.length, 6);
+  assert.equal(normalized.facts[0].length, 200);
+  assert.equal(normalized.facts[1], 'two');
+
+  assert.throws(() => validateImplementationPreparation(normalizeImplementationPreparation({
+    steps: ['Do it'],
+    facts: ['   '],
+    complexity: 'trivial',
+    evidence_budget: 0,
+    large_mutation: false,
+    reason: 'ok',
+  })), /invalid repository fact/);
+});
+
+test('output-only retry hides evidence tools when the child supports active-tool control', async (t) => {
+  const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  const previousOutputOnly = process.env[PLANNER_OUTPUT_ONLY_ENV];
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '0';
+  process.env[PLANNER_OUTPUT_ONLY_ENV] = 'true';
+  t.after(() => {
+    if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+    else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+    if (previousOutputOnly === undefined) delete process.env[PLANNER_OUTPUT_ONLY_ENV];
+    else process.env[PLANNER_OUTPUT_ONLY_ENV] = previousOutputOnly;
+  });
+  const handlers = new Map();
+  let active = [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL];
+  t.mock.method(console, 'log', () => {});
+  plannerEvidenceExtension({
+    on: (event, fn) => handlers.set(event, fn),
+    getActiveTools: () => [...active],
+    setActiveTools: tools => { active = [...tools]; },
+  });
+
+  await handlers.get('resources_discover')();
+  assert.deepEqual(active, [PLANNER_RESULT_TOOL]);
+  const blocked = await handlers.get('tool_call')({ toolName: 'find', input: {} });
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /output-only/);
+  assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }), undefined);
+});
+
+test('output-only retry keeps the call-time gate when active-tool narrowing is unavailable', async (t) => {
+  const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  const previousOutputOnly = process.env[PLANNER_OUTPUT_ONLY_ENV];
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '0';
+  process.env[PLANNER_OUTPUT_ONLY_ENV] = 'true';
+  t.after(() => {
+    if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+    else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+    if (previousOutputOnly === undefined) delete process.env[PLANNER_OUTPUT_ONLY_ENV];
+    else process.env[PLANNER_OUTPUT_ONLY_ENV] = previousOutputOnly;
+  });
+  const handlers = new Map();
+  const warnings = t.mock.method(console, 'warn', () => {});
+  plannerEvidenceExtension({
+    on: (event, fn) => handlers.set(event, fn),
+    getActiveTools: () => [...PLANNER_EVIDENCE_TOOLS],
+    setActiveTools: () => assert.fail('surface narrowing must not run without structured_output'),
+  });
+
+  await handlers.get('resources_discover')();
+  assert.ok(warnings.mock.calls.some(call => String(call.arguments[0]).includes('"fallback":"tool_call_gate"')));
+  const blocked = await handlers.get('tool_call')({ toolName: 'read', input: {} });
+  assert.equal(blocked.block, true);
+  assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }), undefined);
+});
+
+test('broad discovery stays available only as a justified targeted-evidence escalation', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-stale-target-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const issue = path.join(dir, 'issue.json');
+  fs.writeFileSync(issue, JSON.stringify({
+    title: 'Repair stale target',
+    body: 'Update src/old/place.py; if that named path is stale, locate the replacement and preserve its tests.',
+  }));
+  const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
+  assert.ok(PLANNER_EVIDENCE_TOOLS.includes('find'), 'find remains available to the planner');
+  assert.match(task, /Broad find\/ls\/search is escalation only/);
+  assert.match(task, /missing, stale, contradictory/);
+  const gate = createPlannerEvidenceGate(6);
+  assert.equal(gate.admit('read').allowed, true, 'targeted evidence can run first');
+  assert.equal(gate.admit('find').allowed, true, 'broad discovery is not globally prohibited after a concrete gap');
 });
 
 test('planner evidence sidecar distinguishes a real zero from unavailable state', async (t) => {
@@ -354,7 +506,7 @@ test('only the normalized PreparedImplementation crosses into the main Implement
   assert.deepEqual(Object.keys(prepared).sort(), [
     'baseRef', 'complexity', 'evidenceBudget', 'freshBaseCommit', 'largeMutation', 'layoutHint', 'plan',
     'plannerDurationMs', 'plannerEvidenceCap', 'plannerEvidenceUsed', 'plannerProviderTurns', 'plannerUsage',
-    'reason', 'status', 'version', 'workspaceRoot',
+    'reason', 'repositoryFacts', 'status', 'version', 'workspaceRoot',
   ]);
   const block = preparedImplementationBlock(prepared);
   assert.doesNotMatch(`${JSON.stringify(prepared)}${block}`, /PLANNER_READ_RESULT_MARKER|PI_PLANNER_EVIDENCE|tool history/);
@@ -419,19 +571,28 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
   const attempts = [];
   const host = plannerHost({
     cwd: dir,
-    async driveChild() {
+    async driveChild(request) {
       const handlers = [];
-      plannerEvidenceExtension({ on: (_event, fn) => handlers.push(fn) });
+      plannerEvidenceExtension({ on: (event, fn) => { if (event === 'tool_call') handlers.push(fn); } });
+      const outputOnly = process.env[PLANNER_OUTPUT_ONLY_ENV] === 'true';
       const verdicts = [];
-      for (let index = 0; index < 7; index += 1) verdicts.push(await handlers[0]({ toolName: 'read', input: {} }));
+      if (!outputOnly) {
+        for (let index = 0; index < 7; index += 1) verdicts.push(await handlers[0]({ toolName: 'read', input: {} }));
+      }
       const structured = await handlers[0]({ toolName: 'structured_output', input: {} });
-      attempts.push({ accepted: verdicts.filter(verdict => verdict === undefined).length, structured });
+      attempts.push({
+        accepted: verdicts.filter(verdict => verdict === undefined).length,
+        structured,
+        outputOnly,
+        hard: request.toolBudget.hard,
+        task: request.task,
+      });
       if (attempts.length === 1) {
-        return { status: 'failed', error: 'Structured output validation failed: value: bad', usage: { input: 100, output: 10 } };
+        return { status: 'failed', error: 'Structured output validation failed: value: bad', usage: { input: 100, output: 10, turns: 2, toolCalls: 7 } };
       }
       return {
-        status: 'completed', usage: { input: 50, output: 5 },
-        result: { kind: 'structured', value: { steps: ['Do it'], complexity: 'trivial', evidence_budget: 1, large_mutation: false, reason: 'ok' } },
+        status: 'completed', usage: { input: 50, output: 5, turns: 1, toolCalls: 1 },
+        result: { kind: 'structured', value: { steps: ['Do it'], facts: ['The target is already resolved.'], complexity: 'trivial', evidence_budget: 1, large_mutation: false, reason: 'ok' } },
       };
     },
   });
@@ -439,16 +600,79 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
 
   assert.equal(host.requests.length, 2);
   assert.deepEqual(attempts.map(attempt => attempt.accepted), [6, 0], 'first attempt spends the full 6; the retry gets none');
+  assert.deepEqual(attempts.map(attempt => attempt.outputOnly), [false, true]);
+  assert.deepEqual(attempts.map(attempt => attempt.hard), [9, 1], 'retry has room for structured_output only');
+  assert.match(attempts[1].task, /EVIDENCE PHASE CLOSED/);
+  assert.match(attempts[1].task, /only valid successful completion is structured_output/);
   assert.equal(attempts[1].structured, undefined, 'structured_output stays available on the retry');
   assert.equal(prepared.status, 'prepared');
-  assert.deepEqual(prepared.plannerUsage, { input: 150, output: 15 }, 'all attempts are aggregated');
+  assert.deepEqual(prepared.repositoryFacts, ['The target is already resolved.']);
+  assert.deepEqual(prepared.plannerUsage, { input: 150, output: 15, turns: 3, toolCalls: 8 }, 'all attempts are aggregated');
   assert.equal(prepared.plannerEvidenceUsed, 6, 'retry cap=0 cannot erase evidence spent by the first attempt');
   assert.equal(prepared.plannerEvidenceCap, 6);
   const records = fs.readFileSync(metrics, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.equal(records.length, 1, 'exactly one metric record for the planner lifecycle');
   assert.equal(records[0].call, 'planner');
   assert.equal(records[0].status, 'completed');
-  assert.deepEqual(records[0].usage, { input: 150, output: 15 });
+  assert.deepEqual(records[0].usage, { input: 150, output: 15, turns: 3, toolCalls: 8 });
+});
+
+
+test('malformed pseudo-tool on output-only retry is classified explicitly and fails closed', async (t) => {
+  const { dir, env } = fixture(t, {});
+  const warnings = t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'log', () => {});
+  let attempts = 0;
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      attempts++;
+      if (attempts === 1) {
+        return {
+          status: 'failed',
+          error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.',
+          usage: { input: 100, output: 10, turns: 1, toolCalls: 0 },
+        };
+      }
+      return {
+        status: 'failed',
+        error: 'Tool <|virtual| not found',
+        usage: { input: 25, output: 3, turns: 1, toolCalls: 1 },
+      };
+    },
+  });
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(attempts, 2, 'malformed retry is never given another retry');
+  assert.equal(prepared.status, 'fallback');
+  assert.ok(warnings.mock.calls.some(call =>
+    String(call.arguments[0]).includes('"reason":"output_only_invalid_tool"')
+  ));
+});
+
+test('output-only retry reports a multi-turn or extra-tool anomaly instead of hiding it', async (t) => {
+  const { dir, env } = fixture(t, {});
+  const warnings = t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'log', () => {});
+  let attempts = 0;
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      attempts++;
+      if (attempts === 1) {
+        return { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.', usage: { input: 100, output: 10, turns: 1, toolCalls: 0 } };
+      }
+      return {
+        status: 'completed',
+        usage: { input: 50, output: 5, turns: 2, toolCalls: 2 },
+        result: { kind: 'structured', value: {
+          steps: ['Do it'], facts: [], complexity: 'trivial', evidence_budget: 0, large_mutation: false, reason: 'ok',
+        } },
+      };
+    },
+  });
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'prepared');
+  assert.ok(warnings.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_OUTPUT_ONLY_ANOMALY ')));
 });
 
 test('a failed planner lifecycle still records one aggregated planner metric and keeps its usage for the fallback', async (t) => {

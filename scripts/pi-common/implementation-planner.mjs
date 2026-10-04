@@ -13,6 +13,8 @@ import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs'
 export const MAX_PLANNER_EVIDENCE_BUDGET = 6;
 
 const MAX_PLANNER_STEP_LENGTH = 240;
+const MAX_PLANNER_FACTS = 6;
+const MAX_PLANNER_FACT_LENGTH = 200;
 
 // Planner evidence budget: how many read-only repository actions the planner itself may spend
 // while preparing the plan. Deliberately separate from the output `evidence_budget` above (the
@@ -21,6 +23,7 @@ export const MAX_PLANNER_REPOSITORY_EVIDENCE = 6;
 export const DEFAULT_PLANNER_EVIDENCE_BUDGET = MAX_PLANNER_REPOSITORY_EVIDENCE;
 export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
+export const PLANNER_OUTPUT_ONLY_ENV = 'PI_PLANNER_OUTPUT_ONLY';
 
 // Smallest equivalent read-only surface that pi-subagents children expose reliably. The
 // extension-backed repo_search/LSP tools live in the parent runtime and are not available in the
@@ -84,6 +87,11 @@ export const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
       maxItems: 8,
       items: { type: 'string', minLength: 1 },
     },
+    facts: {
+      type: 'array',
+      maxItems: MAX_PLANNER_FACTS,
+      items: { type: 'string', minLength: 1 },
+    },
     complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
     evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
     large_mutation: { type: 'boolean' },
@@ -126,10 +134,76 @@ function nearestPythonSibling(directory, preferredPrefix, excludeName = '') {
   return files[0];
 }
 
-// Bounded, model-free orientation for additive Python work. It recognizes a conventional src/
-// layout from a dotted target already present in the issue, then looks only at that package
-// directory and its nearest mirrored tests directory. Package names remain data from the issue
-// and worktree; the generic runtime never hard-codes product-specific paths.
+function issuePythonFileTargets(issueText) {
+  const seen = new Set();
+  const targets = [];
+  for (const match of String(issueText).matchAll(/\b((?:src|tests)\/[A-Za-z0-9_./-]+\.py)\b/g)) {
+    const candidate = match[1];
+    if (candidate.split('/').includes('..') || seen.has(candidate)) continue;
+    seen.add(candidate);
+    targets.push(candidate);
+  }
+  return targets;
+}
+
+function explicitAdditivePythonLayout(cwd, issueText) {
+  const targets = issuePythonFileTargets(issueText);
+  const sourceTargets = targets.filter(target => target.startsWith('src/'));
+  const testTargets = targets.filter(target => target.startsWith('tests/'));
+
+  for (const sourceTarget of sourceTargets) {
+    const sourceTargetAbsolute = path.resolve(cwd, sourceTarget);
+    const workspaceRoot = path.resolve(cwd);
+    if (!sourceTargetAbsolute.startsWith(`${workspaceRoot}${path.sep}`)) continue;
+    const sourceDirectory = path.dirname(sourceTargetAbsolute);
+    if (!fs.existsSync(sourceDirectory) || !fs.statSync(sourceDirectory).isDirectory()) continue;
+    if (fs.existsSync(sourceTargetAbsolute)) continue;
+
+    const moduleName = path.basename(sourceTarget, '.py');
+    const matchingTestName = `test_${moduleName}.py`;
+    const explicitTestTarget = testTargets.find(target => path.basename(target) === matchingTestName) ?? null;
+    const mirroredTestParts = path.dirname(sourceTarget).split('/').slice(1);
+    const fallbackTestDirectories = [
+      path.join(cwd, 'tests', ...mirroredTestParts),
+      path.join(cwd, 'tests'),
+    ];
+    const explicitTestDirectory = explicitTestTarget ? path.resolve(cwd, path.dirname(explicitTestTarget)) : null;
+    const explicitTestDirectorySafe = explicitTestDirectory &&
+      (explicitTestDirectory === workspaceRoot || explicitTestDirectory.startsWith(`${workspaceRoot}${path.sep}`));
+    const fallbackTestDirectory = fallbackTestDirectories.find(candidate =>
+      fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()
+    );
+    const testDirectory = explicitTestDirectorySafe ? explicitTestDirectory : fallbackTestDirectory;
+    if (!testDirectory) continue;
+
+    const sharedPrefix = moduleName.includes('_') ? `${moduleName.split('_')[0]}_` : '';
+    const sourceSibling = nearestPythonSibling(sourceDirectory, sharedPrefix, `${moduleName}.py`);
+    const testSibling = nearestPythonSibling(testDirectory, `test_${sharedPrefix}`, matchingTestName);
+    const testTarget = explicitTestTarget ??
+      repoRelativePath(path.relative(cwd, path.join(testDirectory, matchingTestName)));
+
+    return {
+      dottedTarget: null,
+      sourceRoot: 'src',
+      sourceDirectory: repoRelativePath(path.relative(cwd, sourceDirectory)),
+      sourceTarget,
+      sourceConvention: sourceSibling
+        ? repoRelativePath(path.relative(cwd, path.join(sourceDirectory, sourceSibling)))
+        : null,
+      testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
+      testTarget,
+      testConvention: testSibling
+        ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
+        : null,
+    };
+  }
+  return null;
+}
+
+// Bounded, model-free orientation for additive Python work. Exact source/test paths named by the
+// issue win first; otherwise it recognizes a conventional src/ layout from a dotted target and
+// looks only at that package directory plus the nearest mirrored tests directory. Package names
+// remain data from the issue and worktree; the generic runtime never hard-codes product paths.
 export function discoverAdditivePythonLayout(cwd, issue) {
   const srcRoot = path.join(cwd, 'src');
   const testsRoot = path.join(cwd, 'tests');
@@ -137,6 +211,9 @@ export function discoverAdditivePythonLayout(cwd, issue) {
       !fs.existsSync(testsRoot) || !fs.statSync(testsRoot).isDirectory()) return null;
 
   const issueText = `${String(issue?.title ?? '')}\n${String(issue?.body ?? '')}`;
+  const explicitLayout = explicitAdditivePythonLayout(cwd, issueText);
+  if (explicitLayout) return explicitLayout;
+
   const dottedTargets = [...issueText.matchAll(/`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,})`/g)]
     .map(match => match[1]);
 
@@ -185,6 +262,7 @@ export function discoverAdditivePythonLayout(cwd, issue) {
         ? repoRelativePath(path.relative(cwd, path.join(sourceDirectory, sourceSibling)))
         : null,
       testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
+      testTarget: repoRelativePath(path.relative(cwd, path.join(testDirectory, `test_${moduleName}.py`))),
       testConvention: testSibling
         ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
         : null,
@@ -193,19 +271,26 @@ export function discoverAdditivePythonLayout(cwd, issue) {
   return null;
 }
 
-// Safe repairs only: keep the five canonical fields, trim strings, truncate overlong steps.
+// Safe repairs only: keep the canonical fields, trim strings, and bound step/fact lengths.
+// facts is a compact repository-derived handoff, never raw evidence or planner transcript.
 // large_mutation is an optional planner hint: omission safely defaults to false, while an
 // explicitly present non-boolean value is preserved so strict validation rejects it.
 export function normalizeImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const trim = item => typeof item === 'string' ? item.trim() : item;
   const normalized = {};
-  for (const key of ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
+  for (const key of ['steps', 'facts', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
     if (!(key in value)) continue;
-    normalized[key] = key === 'steps' && Array.isArray(value.steps)
-      ? value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step)
-      : trim(value[key]);
+    if (key === 'steps' && Array.isArray(value.steps)) {
+      normalized.steps = value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step);
+    } else if (key === 'facts' && Array.isArray(value.facts)) {
+      normalized.facts = value.facts.slice(0, MAX_PLANNER_FACTS)
+        .map(fact => typeof fact === 'string' ? fact.trim().slice(0, MAX_PLANNER_FACT_LENGTH).trim() : fact);
+    } else {
+      normalized[key] = trim(value[key]);
+    }
   }
+  if (!('facts' in normalized)) normalized.facts = [];
   if (!('large_mutation' in normalized)) normalized.large_mutation = false;
   return normalized;
 }
@@ -216,7 +301,8 @@ export function validateImplementationPreparation(value) {
   }
   const keys = Object.keys(value);
   const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason'];
-  if (keys.length !== requiredKeys.length || !requiredKeys.every(key => keys.includes(key))) {
+  const allowedKeys = new Set([...requiredKeys, 'facts']);
+  if (!requiredKeys.every(key => keys.includes(key)) || keys.some(key => !allowedKeys.has(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
   if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 8) {
@@ -225,6 +311,14 @@ export function validateImplementationPreparation(value) {
   const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
   if (steps.some(step => !step || step.length > MAX_PLANNER_STEP_LENGTH)) {
     throw new Error('Implementation planner returned an invalid plan step');
+  }
+  const factsValue = value.facts ?? [];
+  if (!Array.isArray(factsValue) || factsValue.length > MAX_PLANNER_FACTS) {
+    throw new Error('Implementation planner returned an invalid repository facts list');
+  }
+  const facts = factsValue.map(fact => typeof fact === 'string' ? fact.trim() : '');
+  if (facts.some(fact => !fact || fact.length > MAX_PLANNER_FACT_LENGTH)) {
+    throw new Error('Implementation planner returned an invalid repository fact');
   }
   if (!['trivial', 'nontrivial'].includes(value.complexity)) {
     throw new Error(`Implementation planner returned invalid complexity: ${String(value.complexity)}`);
@@ -238,27 +332,33 @@ export function validateImplementationPreparation(value) {
   }
   const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
   if (!reason || reason.length > 300) throw new Error('Implementation planner returned an invalid reason');
-  return { steps, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
+  return { steps, facts, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
 }
 
-export function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
+export function plannerTask(env = process.env, { repair = false, layoutHint = null, outputOnly = false } = {}) {
   const issue = implementerIssueContext(env);
   const layoutGuidance = layoutHint
-    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat the resolved directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
+    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; test_target=${layoutHint.testTarget ?? 'unknown'}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat these resolved targets/directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
     : '';
+  const evidencePolicy = outputOnly
+    ? `EVIDENCE PHASE CLOSED. This retry is output-only: do not inspect the repository again and do not call read, grep, find, or ls. Use the issue plus the runtime facts already present in this prompt. Your only valid successful completion is structured_output.`
+    : `Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue names an exact path/directory/symbol/test, your first evidence action must target that named location (or the authoritative nearest sibling supplied by the runtime). Broad find/ls/search is escalation only after a targeted location is missing, stale, contradictory, or leaves a concrete planning uncertainty unresolved. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.`;
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
-Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue already names an exact path/directory/symbol/test, inspect there directly; avoid root listings and repo-wide discovery. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.
+MANDATORY COMPLETION: a successful attempt ends only by calling structured_output. Never finish a planner attempt with prose. After the final evidence result, call structured_output immediately in the same provider lifecycle instead of spending a reasoning-only turn.
+${evidencePolicy}
 
-Synthesize what you learn into the handoff. If you established a repository fact, state the fact in steps/reason instead of telling main to rediscover it. Keep the plan concise: 1-8 ordered steps, each <=240 characters. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
+Synthesize what you learn into the handoff. Return facts as 0-${MAX_PLANNER_FACTS} concise repository-derived facts (each <=${MAX_PLANNER_FACT_LENGTH} characters): observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought. If you established a useful fact, preserve it in facts and make plan steps act on it instead of telling main to rediscover it.
+
+Keep the plan concise: 1-8 ordered steps, each <=240 characters. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
 
 Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository evidence main still needs after consuming your handoff. Resolved discovery/convention facts cost main 0, but they do not replace a current mutation anchor: reserve at least one action for each existing file main must modify and has not itself seen, so it can read the current text/AST before editing. New-file-only work may use 0. Complexity is independent of evidence needs.
 
 Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget (for example a substantial new module plus tests), not merely because complexity is nontrivial. Do not implement the task.
 
-The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Do not gather new evidence on this retry; follow the exact output contract immediately below.` : ''}
+The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Evidence remains closed; follow the exact output contract immediately below.` : ''}
 
-Output contract: call structured_output with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. reason must be one concise sentence <=300 characters.
+Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. reason must be one concise sentence <=300 characters.
 
 Issue title:
 ${issue.title}
@@ -310,9 +410,13 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative cap is the child-side
     // gate (pi-planner-evidence.mjs); leave headroom for the result call and its schema retry.
     request.toolBudget = { hard: cap + 3 };
+    // Output-only retry deliberately gets exactly one result call. If that structured_output call
+    // is still schema-invalid, fail closed instead of opening another provider/tool turn.
+    if (attempt > 0) request.toolBudget = { hard: 1 };
     request.childEnv = {
       [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap),
       [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
+      [PLANNER_OUTPUT_ONLY_ENV]: attempt > 0 ? 'true' : 'false',
     };
   };
   const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
@@ -334,15 +438,29 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
         }
         response = await runStructuredSubagent(pi, ctx, request, signal);
         usage = addUsage(usage, response.usage);
+        if (attempt > 0 && (Number(response.usage?.turns ?? 0) > 1 || Number(response.usage?.toolCalls ?? 0) > 1)) {
+          console.warn(`PI_PLANNER_OUTPUT_ONLY_ANOMALY ${JSON.stringify({
+            providerTurns: response.usage?.turns ?? null,
+            toolCalls: response.usage?.toolCalls ?? null,
+            handling: 'retry_completed_but_output_only_surface_was_not_single_turn',
+          })}`);
+        }
         break;
       } catch (error) {
         usage = addUsage(usage, error?.delegationUsage);
         const message = String(error?.message ?? error);
         const missing = message.includes('Missing structured_output call');
         const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
-        const retryable = missing || schemaFailure;
-        const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
-        if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
+        const outputOnlyInvalidTool = attempt > 0 && /(?:tool .* not found|unknown tool|tool budget)/i.test(message);
+        const retryable = !outputOnlyInvalidTool && (missing || schemaFailure);
+        const reason = outputOnlyInvalidTool
+          ? 'output_only_invalid_tool'
+          : missing ? 'missing_structured_output'
+            : schemaFailure ? 'structured_output_schema_failure'
+              : 'planner_infrastructure_failure';
+        if (retryable && attempt < retries) {
+          request.task = plannerTask(process.env, { repair: schemaFailure, layoutHint, outputOnly: true });
+        }
         console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
           agent: config.implementationPlannerAgent,
           reason,
@@ -402,6 +520,7 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       ...common,
       status: 'prepared',
       plan: planned.steps,
+      repositoryFacts: planned.facts,
       complexity: planned.complexity,
       evidenceBudget: planned.evidenceBudget,
       largeMutation: planned.largeMutation,
@@ -455,7 +574,7 @@ export function validatePreparedImplementation(value) {
   }
   if (value.status === 'prepared') {
     validateImplementationPreparation({
-      steps: value.plan, complexity: value.complexity, evidence_budget: value.evidenceBudget,
+      steps: value.plan, facts: value.repositoryFacts ?? [], complexity: value.complexity, evidence_budget: value.evidenceBudget,
       large_mutation: value.largeMutation, reason: value.reason,
     });
   } else if (typeof value.reason !== 'string' || !value.failureClass) {
@@ -498,10 +617,13 @@ If the canonical source/test layout is not already clear, use the bounded fallba
 ${provenance}${layoutGuidance(prepared.layoutHint, { authoritative: 'This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.' })}`;
   }
   const numberedPlan = prepared.plan.map((step, index) => `${index + 1}. ${step}`).join('\n');
+  const repositoryFacts = Array.isArray(prepared.repositoryFacts) && prepared.repositoryFacts.length > 0
+    ? `\nRepository facts already established by planner:\n${prepared.repositoryFacts.map(fact => `- ${fact}`).join('\n')}\n`
+    : '\n';
   return `Runtime-prepared implementation state:
 Implementation plan:
 ${numberedPlan}
-
+${repositoryFacts}
 Complexity: ${prepared.complexity} — ${prepared.reason}
 Evidence budget: ${prepared.evidenceBudget}
 Large mutation: ${largeMutationArmed ? 'auto-arm one-shot elevated mutation budget when evidence is complete' : 'normal mutation budget'}
