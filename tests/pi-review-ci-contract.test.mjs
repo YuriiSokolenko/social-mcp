@@ -568,16 +568,16 @@ test('reconciler gives normal PR handoffs a grace period before recovery dispatc
 });
 
 
-test('PR head changes invalidate verdict without creating a second review scheduler', () => {
+test('Pi issue branch pushes invalidate verdict without creating a second review scheduler', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const invalidate = fs.readFileSync('.github/workflows/pi-review-invalidate.yml', 'utf8');
   const usage = fs.readFileSync('.github/workflows/pi-usage.yml', 'utf8');
   const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
   assert.doesNotMatch(review, /pull_request:[\s\S]*types: \[synchronize\]/);
   assert.match(review, /review:\n    if: github\.event_name == 'workflow_dispatch'/);
-  assert.match(invalidate, /pull_request:[\s\S]*types: \[synchronize\]/);
-  assert.match(invalidate, /startsWith\(github\.event\.pull_request\.head\.ref, 'pi\/issue-'\)/);
+  assert.match(invalidate, /push:[\s\S]*branches:[\s\S]*'pi\/issue-\*'/);
   assert.match(invalidate, /runs-on: ubuntu-latest/);
+  assert.match(invalidate, /gh pr list[\s\S]*--head "\$GITHUB_REF_NAME"[\s\S]*--base dev/);
   assert.match(invalidate, /review-state\.mjs" invalidate/);
   assert.match(state, /replaceReviewLabels\(prNumber\)/);
   assert.doesNotMatch(invalidate, /dispatchWorkflow|pi-pr-review\.yml/);
