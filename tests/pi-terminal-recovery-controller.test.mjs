@@ -361,3 +361,27 @@ test('#426 file-set recovery fails closed when canonical repository facts are un
   assert.match(plan.reason, /repository\/worktree facts are unavailable/);
   assert.equal(plan.obligationKey, obligation.key);
 });
+
+
+test('#426 basename-only mutation cannot resolve an exact-path terminal obligation', () => {
+  const obligation = submissionObligation(
+    'Implementer file-set mismatch: unexpected files: src/a.py',
+  );
+  assert.equal(
+    mutationResolvesSubmissionObligation(
+      obligation,
+      { path: 'a.py' },
+      { details: { path: 'a.py' } },
+    ),
+    false,
+  );
+  assert.equal(
+    mutationResolvesSubmissionObligation(
+      obligation,
+      { path: '/checkout/src/a.py' },
+      { details: { path: '/checkout/src/a.py' } },
+    ),
+    true,
+    'an absolute runtime path may suffix-match the exact repository-relative obligation',
+  );
+});
