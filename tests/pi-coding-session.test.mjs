@@ -1046,7 +1046,7 @@ test('#469 evidence unlock is single-use and stale read/blocker calls abort as u
   const logs = runtimeScenario('action-hidden-abort');
   assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
-  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"need_more_evidence"/);
+  assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"need_more_evidence"/);
   assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable\/stale capability turn/);
   assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
