@@ -347,6 +347,7 @@ test('exact issue source/test paths produce an authoritative additive layout wit
   });
   assert.equal(layout.sourceTarget, 'src/social_mcp/diagnostics/smoke_connect_four.py');
   assert.equal(layout.testTarget, 'tests/test_smoke_connect_four.py');
+  assert.equal(layout.testTargetRequired, true);
   assert.equal(layout.sourceConvention, 'src/social_mcp/diagnostics/smoke_chunks.py');
   assert.equal(layout.testConvention, 'tests/test_smoke_chunks.py');
 });
@@ -365,6 +366,7 @@ test('exact additive layout ignores unrelated explicit tests and keeps missing e
   });
   assert.equal(unrelated.testDirectory, 'tests');
   assert.equal(unrelated.testTarget, 'tests/test_smoke_widget.py', 'an unrelated explicit test must not become the target');
+  assert.equal(unrelated.testTargetRequired, false, 'an inferred test path is guidance only');
 
   const explicitMissingDirectory = discoverAdditivePythonLayout(dir, {
     title: 'Add widget smoke',
@@ -372,6 +374,7 @@ test('exact additive layout ignores unrelated explicit tests and keeps missing e
   });
   assert.equal(explicitMissingDirectory.testDirectory, 'tests/diagnostics');
   assert.equal(explicitMissingDirectory.testTarget, 'tests/diagnostics/test_smoke_widget.py');
+  assert.equal(explicitMissingDirectory.testTargetRequired, true);
   assert.equal(explicitMissingDirectory.testConvention, null);
 });
 
