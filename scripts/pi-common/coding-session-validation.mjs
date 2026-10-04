@@ -102,8 +102,10 @@ function pytestScopeCoverage(scope, cwd) {
   const targets = [];
   const directories = [];
   for (const raw of Array.isArray(scope?.targets) ? scope.targets : []) {
-    const target = canonicalRepoPath(raw);
-    if (!target) continue;
+    const rawText = String(raw ?? '').trim().replaceAll(/\\/g, '/');
+    const nodeSelected = rawText.includes('::');
+    const target = canonicalRepoPath(rawText);
+    if (!target || nodeSelected) continue;
     const absolute = path.resolve(cwd, target);
     if (target.endsWith('.py') || (fs.existsSync(absolute) && fs.statSync(absolute).isFile())) {
       targets.push(target);
@@ -189,7 +191,7 @@ export function assertCodingBehavioralValidation({
   if (missing.length) {
     const error = new Error(JSON.stringify({
       code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
-      message: 'Changed Python source and directly affected pytest tests require a passing pytest run after the latest mutation before submit_result. Exact files, node ids within those files, an enclosing directory target, or the pytest_all profile all satisfy the requirement.',
+      message: 'Changed Python source and directly affected pytest tests require a passing pytest run after the latest mutation before submit_result. Exact test files, an enclosing directory target, or the pytest_all profile satisfy the requirement; a single pytest node id does not cover the rest of a changed test file.',
       required_targets: missing,
       action: { kind: 'pytest', targets: missing },
     }));
