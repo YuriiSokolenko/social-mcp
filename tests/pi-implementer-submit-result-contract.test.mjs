@@ -475,9 +475,14 @@ test('#469 terminal result paths reject non-repository forms with INVALID_RESULT
 });
 
 test('#470 valid git filenames with colon or backslash survive result file-set validation', () => {
-  const files = ['foo:bar.txt', 'dir\\literal.txt'];
-  assert.deepEqual(normalizeImplementerFiles(files), ['dir\\literal.txt', 'foo:bar.txt']);
-  assert.deepEqual(assertImplementerFileSet(files, files), ['dir\\literal.txt', 'foo:bar.txt']);
+  const files = ['file:notes.txt', 'foo:bar.txt', 'dir\\literal.txt'];
+  assert.deepEqual(normalizeImplementerFiles(files), ['dir\\literal.txt', 'file:notes.txt', 'foo:bar.txt']);
+  assert.deepEqual(assertImplementerFileSet(files, files), ['dir\\literal.txt', 'file:notes.txt', 'foo:bar.txt']);
+  assert.deepEqual(
+    requiredCodingPytestTargets(['src/game.py', 'dir\\test_game.py']),
+    [],
+    'a literal backslash in a git filename is never reinterpreted as a directory separator for pytest coverage',
+  );
 });
 
 
@@ -575,6 +580,28 @@ test('#469 coding-session source plus pytest changes require a passing targeted 
     env,
   });
   assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env }));
+
+  const unrelatedFailureState = recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_unrelated.py'] },
+    result: { status: 'fail', kind: 'pytest' },
+    env,
+  });
+  assert.deepEqual(unrelatedFailureState?.targets, ['tests/test_smoke_connect_four.py']);
+  assert.doesNotThrow(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    'a failing unrelated pytest target must not erase coverage for the required changed test',
+  );
+
+  assert.equal(recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py'] },
+    result: { status: 'infra_error', kind: 'pytest' },
+    env,
+  }), null);
+  assert.doesNotThrow(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    'pytest infrastructure errors carry no behavioral evidence and preserve prior passing coverage',
+  );
+
   assert.equal(recordCodingBehavioralValidation({
     scope: { targets: ['tests/test_smoke_connect_four.py'] },
     result: { status: 'fail', kind: 'pytest' },
