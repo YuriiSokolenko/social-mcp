@@ -58,8 +58,10 @@
     {"id": "lru-bool-capacity", "criterion": "lru-capacity-integer", "args": [true], "raises": "ValueError"},
     {"id": "interval-bool-bound", "criterion": "interval-numeric-domain", "args": [[[true, 2]]], "raises": "ValueError"},
     {"id": "interval-float-nan", "criterion": "interval-numeric-domain", "args": [[[{"$float": "nan"}, 2]]], "raises": "ValueError"},
+    {"id": "interval-decimal-nan", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "NaN"}, 2]]], "raises": "ValueError"},
     {"id": "interval-decimal", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "1.0"}, {"$decimal": "2.0"}], [{"$decimal": "2.0"}, {"$decimal": "3.0"}]]], "accepts": true},
     {"id": "interval-fraction", "criterion": "interval-numeric-domain", "args": [[[{"$fraction": [1, 2]}, 1], [1, {"$fraction": [3, 2]}]]], "accepts": true},
-    {"id": "interval-infinity", "criterion": "interval-numeric-domain", "args": [[[0, {"$float": "inf"}], [1, 2]]], "accepts": true}
+    {"id": "interval-infinity", "criterion": "interval-numeric-domain", "args": [[[0, {"$float": "inf"}], [1, 2]]], "accepts": true},
+    {"id": "interval-decimal-infinity", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "0"}, {"$decimal": "Infinity"}], [{"$decimal": "1"}, {"$decimal": "2"}]]], "accepts": true}
   ]
 }
