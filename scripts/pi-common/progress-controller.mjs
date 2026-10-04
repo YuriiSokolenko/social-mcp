@@ -84,19 +84,17 @@ export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
 }
 
-const EVIDENCE_PURPOSE_VERB = /\b(?:read|show|list|locate|find|search|grep|inspect|open|check)\b/gi;
 const EVIDENCE_PATH_TOKEN = /(?:^|\s)((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)/g;
 
 export function validateSingleEvidenceRequest(input = {}) {
   const missing = typeof input.missing === 'string' ? input.missing.trim() : '';
   if (!missing) return { ok: false, reason: 'need_more_evidence requires one concrete missing fact.' };
 
-  const verbs = [...missing.matchAll(EVIDENCE_PURPOSE_VERB)].map(match => match[0].toLowerCase());
   const clauses = missing.split(/[;\n]+/).map(part => part.trim()).filter(Boolean);
   const paths = [...missing.matchAll(EVIDENCE_PATH_TOKEN)].map(match => match[1]);
   const coordinatedPaths = /\band\b/i.test(missing) && new Set(paths).size > 1;
   const explicitAdditionalFact = /(?:,\s*)?\b(?:plus|as well as|additionally)\b/i.test(missing);
-  const multiplePurposes = clauses.length > 1 || verbs.length > 1 || coordinatedPaths || explicitAdditionalFact;
+  const multiplePurposes = clauses.length > 1 || coordinatedPaths || explicitAdditionalFact;
 
   if (multiplePurposes) {
     return {
