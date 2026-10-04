@@ -15,6 +15,7 @@ import {
   PLANNER_RESULT_TOOL,
   createPlannerEvidenceGate,
   discoverAdditivePythonLayout,
+  normalizeImplementationPreparation,
   plannerEvidenceBudget,
   plannerTask,
   prepareImplementation,
@@ -332,7 +333,6 @@ test('planner prompt prefers targeted evidence and carries resolved facts forwar
   }
 });
 
-
 test('exact issue source/test paths produce an authoritative additive layout without broad discovery', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-exact-layout-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -349,6 +349,54 @@ test('exact issue source/test paths produce an authoritative additive layout wit
   assert.equal(layout.testTarget, 'tests/test_smoke_connect_four.py');
   assert.equal(layout.sourceConvention, 'src/social_mcp/diagnostics/smoke_chunks.py');
   assert.equal(layout.testConvention, 'tests/test_smoke_chunks.py');
+});
+
+test('exact additive layout ignores unrelated explicit tests and keeps missing explicit test directories coherent', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-layout-edges-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src', 'demo_pkg', 'diagnostics', 'smoke_chunks.py'), 'def chunks(): return []\n');
+  fs.writeFileSync(path.join(dir, 'tests', 'test_unrelated.py'), 'def test_unrelated(): pass\n');
+
+  const unrelated = discoverAdditivePythonLayout(dir, {
+    title: 'Add widget smoke',
+    body: 'Create src/demo_pkg/diagnostics/smoke_widget.py and tests/test_unrelated.py.',
+  });
+  assert.equal(unrelated.testDirectory, 'tests');
+  assert.equal(unrelated.testTarget, 'tests/test_smoke_widget.py', 'an unrelated explicit test must not become the target');
+
+  const explicitMissingDirectory = discoverAdditivePythonLayout(dir, {
+    title: 'Add widget smoke',
+    body: 'Create src/demo_pkg/diagnostics/smoke_widget.py and tests/diagnostics/test_smoke_widget.py.',
+  });
+  assert.equal(explicitMissingDirectory.testDirectory, 'tests/diagnostics');
+  assert.equal(explicitMissingDirectory.testTarget, 'tests/diagnostics/test_smoke_widget.py');
+  assert.equal(explicitMissingDirectory.testConvention, null);
+});
+
+test('facts normalization is bounded and empty facts still fail canonical validation', () => {
+  const longFact = 'x'.repeat(250);
+  const normalized = normalizeImplementationPreparation({
+    steps: ['Do it'],
+    facts: [longFact, ' two ', 'three', 'four', 'five', 'six', 'seven'],
+    complexity: 'trivial',
+    evidence_budget: 0,
+    large_mutation: false,
+    reason: 'ok',
+  });
+  assert.equal(normalized.facts.length, 6);
+  assert.equal(normalized.facts[0].length, 200);
+  assert.equal(normalized.facts[1], 'two');
+
+  assert.throws(() => validateImplementationPreparation(normalizeImplementationPreparation({
+    steps: ['Do it'],
+    facts: ['   '],
+    complexity: 'trivial',
+    evidence_budget: 0,
+    large_mutation: false,
+    reason: 'ok',
+  })), /invalid repository fact/);
 });
 
 test('output-only retry hides evidence tools when the child supports active-tool control', async (t) => {
@@ -379,6 +427,31 @@ test('output-only retry hides evidence tools when the child supports active-tool
   assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }), undefined);
 });
 
+test('output-only retry keeps the call-time gate when active-tool narrowing is unavailable', async (t) => {
+  const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  const previousOutputOnly = process.env[PLANNER_OUTPUT_ONLY_ENV];
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '0';
+  process.env[PLANNER_OUTPUT_ONLY_ENV] = 'true';
+  t.after(() => {
+    if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+    else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+    if (previousOutputOnly === undefined) delete process.env[PLANNER_OUTPUT_ONLY_ENV];
+    else process.env[PLANNER_OUTPUT_ONLY_ENV] = previousOutputOnly;
+  });
+  const handlers = new Map();
+  const warnings = t.mock.method(console, 'warn', () => {});
+  plannerEvidenceExtension({
+    on: (event, fn) => handlers.set(event, fn),
+    getActiveTools: () => [...PLANNER_EVIDENCE_TOOLS],
+    setActiveTools: () => assert.fail('surface narrowing must not run without structured_output'),
+  });
+
+  await handlers.get('resources_discover')();
+  assert.ok(warnings.mock.calls.some(call => String(call.arguments[0]).includes('"fallback":"tool_call_gate"')));
+  const blocked = await handlers.get('tool_call')({ toolName: 'read', input: {} });
+  assert.equal(blocked.block, true);
+  assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }), undefined);
+});
 
 test('broad discovery stays available only as a justified targeted-evidence escalation', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-stale-target-'));
@@ -543,7 +616,6 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
   assert.equal(records[0].status, 'completed');
   assert.deepEqual(records[0].usage, { input: 150, output: 15, turns: 3, toolCalls: 8 });
 });
-
 
 
 test('malformed pseudo-tool on output-only retry is classified explicitly and fails closed', async (t) => {
