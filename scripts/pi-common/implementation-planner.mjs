@@ -256,9 +256,9 @@ Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository ev
 
 Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget (for example a substantial new module plus tests), not merely because complexity is nontrivial. Do not implement the task.
 
-The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}
+The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Do not gather new evidence on this retry; follow the exact output contract immediately below.` : ''}
 
-Output contract: call structured_output with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. reason must be one concise sentence <=300 characters.${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Return the exact five-field value object above; do not gather new evidence on this retry.` : ''}
+Output contract: call structured_output with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. reason must be one concise sentence <=300 characters.
 
 Issue title:
 ${issue.title}
