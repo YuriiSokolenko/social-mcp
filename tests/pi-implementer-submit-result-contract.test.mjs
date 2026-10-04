@@ -549,8 +549,15 @@ test('#469 coding-session source plus pytest changes require a passing targeted 
   }), null);
   assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
 
-  recordCodingBehavioralValidation({
+  assert.equal(recordCodingBehavioralValidation({
     scope: { targets: ['tests/test_smoke_connect_four.py::test_smoke'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  }), null);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+
+  recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py'] },
     result: { status: 'pass', kind: 'pytest' },
     env,
   });
@@ -619,7 +626,7 @@ test('#469 targeted pytest state survives coding fork return to parent', () => {
   };
   try {
     recordCodingBehavioralValidation({
-      scope: { targets: ['tests/test_game.py::test_behavior'] },
+      scope: { targets: ['tests/test_game.py'] },
       result: { status: 'pass', kind: 'pytest' },
       env: childEnv,
     });
