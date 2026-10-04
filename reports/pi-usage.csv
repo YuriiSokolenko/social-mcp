@@ -465,4 +465,5 @@ attempt,0,triage,37215721058,1,success,0,legacy_unknown,,0,0,0,0,0,0.0,20,true,0
 attempt,0,dispatcher,37215721064,1,success,0,legacy_unknown,,0,0,0,0,0,0.0,19,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37215721064/attempts/1,0.0
 attempt,0,dispatcher,37222908793,1,success,0,legacy_unknown,,0,0,0,0,0,0.0,13,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37222908793/attempts/1,0.0
 attempt,0,triage,37222908794,1,success,0,legacy_unknown,,0,0,0,0,0,0.0,15,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37222908794/attempts/1,0.0
+attempt,0,triage,37236819397,1,success,0,logical,0,0,0,0,0,0,0.0,13,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37236819397/attempts/1,0.0
 attempt,0,dispatcher,37236819442,1,success,0,logical,0,0,0,0,0,0,0.0,11,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37236819442/attempts/1,0.0
