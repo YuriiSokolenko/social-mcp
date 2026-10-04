@@ -69,18 +69,20 @@ function boundedStrings(value, { maxItems = REPAIR_HANDOFF_MAX_ITEMS, maxChars =
 
 function acceptedScopeFacts(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const accepted = Array.isArray(value.accepted)
-    ? value.accepted.slice(0, REPAIR_HANDOFF_MAX_ITEMS).flatMap(item => {
-        if (!item || typeof item !== 'object' || typeof item.path !== 'string') return [];
-        return [{
-          path: boundedText(item.path, 1000),
-          disposition: item.disposition === 'temporary' ? 'temporary' : 'publishable',
-        }];
-      })
-    : [];
+  const entries = list => (Array.isArray(list) ? list : [])
+    .slice(0, REPAIR_HANDOFF_MAX_ITEMS)
+    .flatMap(item => {
+      if (!item || typeof item !== 'object' || typeof item.path !== 'string') return [];
+      return [{
+        path: boundedText(item.path, 1000),
+        rationale: boundedText(item.rationale, 500),
+      }];
+    });
   return {
     schema_version: Number.isSafeInteger(value.schema_version) ? value.schema_version : null,
-    accepted,
+    accepted: entries(value.accepted),
+    temporary: entries(value.temporary),
+    baseline: boundedStrings(value.baseline, { maxItems: REPAIR_HANDOFF_MAX_ITEMS, maxChars: 1000 }),
   };
 }
 
