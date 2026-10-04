@@ -114,6 +114,59 @@ test('planner evidence state records only bounded counters, never repository con
   assert.doesNotMatch(fs.readFileSync(stateFile, 'utf8'), /path|content|result|transcript/i);
 });
 
+test('aborted planner cleanup prevents a late child from recreating the evidence sidecar', async (t) => {
+  const { dir, env } = fixture(t, {});
+  const controller = new AbortController();
+  let stateFile = null;
+  let finishLateWrite;
+  const lateWrite = new Promise(resolve => { finishLateWrite = resolve; });
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'log', () => {});
+
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      stateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+      const retainedChildEnv = {
+        [PLANNER_EVIDENCE_BUDGET_ENV]: process.env[PLANNER_EVIDENCE_BUDGET_ENV],
+        [PLANNER_EVIDENCE_STATE_FILE_ENV]: stateFile,
+      };
+      const handlers = [];
+      plannerEvidenceExtension({ on: (_event, fn) => handlers.push(fn) });
+      controller.abort();
+
+      // The real delegated child is a separate process and retains its inherited env after the
+      // parent stops waiting. Yield until the parent has rejected and run its lifecycle cleanup,
+      // then simulate one late child tool call with that retained environment.
+      await new Promise(resolve => setImmediate(resolve));
+      const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+      const previousStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+      Object.assign(process.env, retainedChildEnv);
+      try {
+        await handlers[0]({ toolName: 'read', input: {} });
+      } finally {
+        if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+        else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+        if (previousStateFile === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+        else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousStateFile;
+        finishLateWrite();
+      }
+      return { status: 'completed', usage: { output: 1 }, result: { kind: 'structured', value: {
+        steps: ['unused'], complexity: 'trivial', evidence_budget: 0, large_mutation: false, reason: 'unused',
+      } } };
+    },
+  });
+
+  await assert.rejects(
+    prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), controller.signal, { env }),
+    /aborted/,
+  );
+  await lateWrite;
+  assert.ok(stateFile, 'child received a sidecar path');
+  assert.equal(fs.existsSync(path.dirname(stateFile)), false, 'lifecycle-owned sidecar directory stays removed');
+  assert.equal(fs.existsSync(stateFile), false, 'late child write cannot recreate an orphaned sidecar');
+});
+
 test('the gate counts every accepted call, so failed or empty results still consume the cap', () => {
   const gate = createPlannerEvidenceGate(2);
   // The gate is admission-time: it cannot see (or be refunded by) a call's outcome.
