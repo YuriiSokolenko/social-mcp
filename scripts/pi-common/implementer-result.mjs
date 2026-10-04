@@ -19,11 +19,11 @@ export function normalizeImplementerFiles(value) {
     if (/^[A-Za-z]:[\\/]/.test(file) || file.startsWith('\\\\')) {
       throw invalidResultPath(file, 'Windows absolute paths are not repository-relative git paths');
     }
-    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(file)) {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(file) || /^file:/i.test(file)) {
       throw invalidResultPath(file, 'URI-like paths are not repository-relative git paths');
     }
-    if (file.startsWith('/') || file.startsWith('./') || file.includes('\\')) {
-      throw invalidResultPath(file, 'Implementer result files must use canonical repository-relative git paths');
+    if (file.startsWith('/') || file.startsWith('./')) {
+      throw invalidResultPath(file, 'Implementer result files must use repository-relative git paths');
     }
     const segments = file.split('/');
     if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
