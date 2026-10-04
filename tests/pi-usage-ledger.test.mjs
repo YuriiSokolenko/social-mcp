@@ -267,6 +267,28 @@ test('#469 transport failures are diagnostic exchanges, not provider responses',
   assert.deepEqual(ledger.unknown, []);
 });
 
+test('#470 provider totals keep logical calls that bypass the trace proxy', () => {
+  const ledger = summarizeUsage([
+    { call: 'planner', scope: 'session', childSession: 'planner-untraced', status: 'completed',
+      usage: u(50, 5, 55, { turns: 2, durationMs: 1200 }) },
+    {
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'main-traced',
+      response: 1,
+      responseMs: 700,
+    },
+  ]);
+
+  assert.equal(ledger.totals.providerResponses, 2);
+  assert.equal(ledger.totals.providerResponseMs, 700);
+  assert.equal(ledger.calls.get('provider').providerResponses, 1);
+  assert.equal(ledger.calls.get('provider_untraced').providerResponses, 1);
+  assert.equal(ledger.calls.get('provider_untraced').providerResponseMs, 0);
+});
+
+
 test('#469 provider response sequences may restart in a new proxy session without overwriting', () => {
   const ledger = summarizeUsage([
     {
