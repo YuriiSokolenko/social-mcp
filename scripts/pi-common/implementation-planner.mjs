@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 
 import { recordDescendantMetric, runStructuredSubagent } from './structured-subagent.mjs';
 import { baseRef } from './project-config.mjs';
@@ -19,6 +20,7 @@ const MAX_PLANNER_STEP_LENGTH = 240;
 export const MAX_PLANNER_REPOSITORY_EVIDENCE = 6;
 export const DEFAULT_PLANNER_EVIDENCE_BUDGET = MAX_PLANNER_REPOSITORY_EVIDENCE;
 export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
+export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
 
 // Smallest equivalent read-only surface that pi-subagents children expose reliably. The
 // extension-backed repo_search/LSP tools live in the parent runtime and are not available in the
@@ -56,6 +58,18 @@ export function createPlannerEvidenceGate(budget) {
       return { allowed: true, evidence: true, used, remaining: cap - used };
     },
   };
+}
+
+function readPlannerEvidenceUsed(file, cap) {
+  if (!file) return null;
+  try {
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const used = Number(state?.used);
+    if (!Number.isSafeInteger(used) || used < 0) return null;
+    return Math.min(used, cap);
+  } catch {
+    return null;
+  }
 }
 
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
@@ -230,11 +244,21 @@ export function validateImplementationPreparation(value) {
 export function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
   const issue = implementerIssueContext(env);
   const layoutGuidance = layoutHint
-    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
+    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat the resolved directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
     : '';
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. You may spend a small, hard-capped number of read-only repository evidence actions (at most ${MAX_PLANNER_REPOSITORY_EVIDENCE}; typically 1-3) to plan against the current worktree, then you must return the structured result. Do not implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
+  return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
-Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "large_mutation": true|false, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the five listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } } and nothing else.` : ''}
+Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue already names an exact path/directory/symbol/test, inspect there directly; avoid root listings and repo-wide discovery. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.
+
+Synthesize what you learn into the handoff. If you established a repository fact, state the fact in steps/reason instead of telling main to rediscover it. Keep the plan concise: 1-8 ordered steps, each <=240 characters. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
+
+Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository evidence main still needs after consuming your handoff. Resolved discovery/convention facts cost main 0, but they do not replace a current mutation anchor: reserve at least one action for each existing file main must modify and has not itself seen, so it can read the current text/AST before editing. New-file-only work may use 0. Complexity is independent of evidence needs.
+
+Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget (for example a substantial new module plus tests), not merely because complexity is nontrivial. Do not implement the task.
+
+The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Do not gather new evidence on this retry; follow the exact output contract immediately below.` : ''}
+
+Output contract: call structured_output with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. reason must be one concise sentence <=300 characters.
 
 Issue title:
 ${issue.title}
@@ -268,9 +292,14 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     timeoutMs: 0,
-    maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
+    maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
   };
   const evidenceCap = plannerEvidenceBudget(config);
+  // Keep the sidecar inside a lifecycle-owned directory. If the parent times out/aborts before
+  // the delegated child has actually stopped, removing the directory prevents a late child write
+  // from recreating an orphaned state file directly under the shared tmpdir.
+  const evidenceStateDir = fs.mkdtempSync(path.join(tmpdir(), 'pi-planner-evidence-'));
+  const evidenceStateFile = path.join(evidenceStateDir, `${randomUUID()}.json`);
   // Every attempt is a fresh child with a fresh gate, so the cap must be spent across the whole
   // planning lifecycle, not per attempt. The parent cannot see how much a failed child used, so
   // fail closed: only the first attempt may gather evidence; a retry gets 0 (structured_output
@@ -281,7 +310,10 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative cap is the child-side
     // gate (pi-planner-evidence.mjs); leave headroom for the result call and its schema retry.
     request.toolBudget = { hard: cap + 3 };
-    request.childEnv = { [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap) };
+    request.childEnv = {
+      [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap),
+      [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
+    };
   };
   const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
   // One hard deadline for the whole planning lifecycle: retries only get the remaining time.
@@ -328,10 +360,18 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     }
     const validated = validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
     status = 'completed';
-    return { ...validated, usage, layoutHint };
+    return {
+      ...validated,
+      usage,
+      layoutHint,
+      evidenceUsed: readPlannerEvidenceUsed(evidenceStateFile, evidenceCap),
+      evidenceCap,
+    };
   } catch (error) {
     if (error && typeof error === 'object') {
       error.delegationUsage = usage;
+      error.plannerEvidenceUsed = readPlannerEvidenceUsed(evidenceStateFile, evidenceCap);
+      error.plannerEvidenceCap = evidenceCap;
       status = error.delegationStatus ?? 'error';
     }
     throw error;
@@ -339,6 +379,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     recordDescendantMetric({
       call: 'planner', scope: 'session', childSession, parentSession: ctx.sessionManager.getSessionId(), status, usage,
     });
+    fs.rmSync(evidenceStateDir, { recursive: true, force: true });
   }
 }
 
@@ -367,6 +408,9 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       reason: planned.reason,
       layoutHint,
       plannerUsage: planned.usage,
+      plannerEvidenceUsed: planned.evidenceUsed,
+      plannerEvidenceCap: planned.evidenceCap,
+      plannerProviderTurns: Number.isSafeInteger(planned.usage?.turns) ? planned.usage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
   } catch (error) {
@@ -378,6 +422,9 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       reason: String(error?.message ?? error),
       layoutHint,
       plannerUsage: error?.delegationUsage ?? null,
+      plannerEvidenceUsed: Number.isSafeInteger(error?.plannerEvidenceUsed) ? error.plannerEvidenceUsed : null,
+      plannerEvidenceCap: Number.isSafeInteger(error?.plannerEvidenceCap) ? error.plannerEvidenceCap : plannerEvidenceBudget(config),
+      plannerProviderTurns: Number.isSafeInteger(error?.delegationUsage?.turns) ? error.delegationUsage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
   }

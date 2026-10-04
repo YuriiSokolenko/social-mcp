@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { completenessNote, summarizeUsage } from "../scripts/pi-common/usage-ledger.mjs";
 
-const u = (input, output, totalTokens = input + output) => ({ input, output, totalTokens });
+const u = (input, output, totalTokens = input + output, extra = {}) => ({ input, output, totalTokens, ...extra });
 const main = (response, usage) => ({ call: "main", response, usage });
 const child = (childSession, response, usage, extra = {}) => ({ call: "coding", childSession, response, usage, ...extra });
 
@@ -23,9 +23,42 @@ test("#402: a null child aggregate cannot hide five completed child responses", 
   assert.equal(ledger.complete, true);
 });
 
+test("#463: logical records expose provider turns while lifecycle duration stays separate from provider time", () => {
+  const records = [
+    { call: "planner", scope: "session", childSession: "p1", status: "completed",
+      usage: u(30873, 1433, 32306, { turns: 4, durationMs: 92646 }) },
+    { call: "main", response: 1, usage: u(23555, 133), responseMs: 12749 },
+    { call: "main", response: 2, usage: u(11265, 390), responseMs: 26355 },
+    { call: "main", response: 3, usage: u(11844, 108), responseMs: 11000 },
+    child("c1", 1, u(15000, 3000)),
+    child("c1", 2, u(16000, 2000)),
+    child("c1", 3, u(17190, 432)),
+    { call: "coding", scope: "session", childSession: "c1", status: "completed",
+      usage: u(48190, 5432, 53622, { turns: 3, durationMs: 325000 }) },
+  ];
+  const ledger = summarizeUsage(records);
+  assert.equal(ledger.totals.responses, 7, "existing logical-record count stays stable");
+  assert.equal(ledger.totals.providerResponses, 10, "4 planner + 3 main + 3 coding provider turns");
+  assert.equal(ledger.calls.get("planner").responses, 1);
+  assert.equal(ledger.calls.get("planner").providerResponses, 4);
+  assert.equal(ledger.calls.get("coding").responses, 3, "coding session roll-up does not duplicate its per-response records");
+  assert.equal(ledger.calls.get("coding").providerResponses, 3);
+  assert.equal(ledger.totals.providerResponseMs, 12749 + 26355 + 11000, "lifecycle duration is not provider response time");
+  assert.equal(ledger.totals.delegatedLifecycleMs, 92646 + 325000, "planner/coding lifecycle time remains observable separately");
+  assert.equal(ledger.complete, true);
+});
+
+
 test("a session roll-up is the fallback when a failed child has no per-response records", () => {
-  const ledger = summarizeUsage([{ call: "coding", scope: "session", childSession: "f", status: "error", usage: u(40, 2) }]);
+  const ledger = summarizeUsage([{
+    call: "coding", scope: "session", childSession: "f", status: "error",
+    usage: u(40, 2, 42, { turns: 2, durationMs: 9000 }),
+  }]);
   assert.equal(ledger.totals.total, 42);
+  assert.equal(ledger.totals.responses, 1);
+  assert.equal(ledger.totals.providerResponses, 2);
+  assert.equal(ledger.totals.providerResponseMs, 0, "a lifecycle-only roll-up cannot manufacture provider response time");
+  assert.equal(ledger.totals.delegatedLifecycleMs, 9000);
   assert.equal(ledger.complete, true);
 });
 
@@ -50,11 +83,15 @@ test("replayed duplicate records and an aggregate beside per-response usage do n
   const ledger = summarizeUsage(records);
   assert.equal(ledger.totals.total, 22);
   assert.equal(ledger.totals.responses, 2);
+  assert.equal(ledger.totals.providerResponses, 2);
 });
 
 test("an aggregate with no per-response records is still attributed once", () => {
-  const ledger = summarizeUsage([{ call: "subagent", aggregate: true, response: 1, usage: u(7, 3) }]);
+  const ledger = summarizeUsage([{ call: "subagent", aggregate: true, response: 1, usage: u(7, 3), responseMs: 1234 }]);
   assert.equal(ledger.totals.total, 10);
+  assert.equal(ledger.totals.responseMs, 1234, "standalone aggregate keeps its generic elapsed timing");
+  assert.equal(ledger.totals.providerResponseMs, 0, "aggregate tool elapsed time is not provider-only response time");
+  assert.equal(ledger.totals.delegatedLifecycleMs, 1234, "aggregate tool elapsed time remains visible as delegated lifecycle time");
 });
 
 test("missing provider usage is unknown, not zero, and names the affected request", () => {

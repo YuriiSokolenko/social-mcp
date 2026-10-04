@@ -13,8 +13,9 @@ const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
 let run = event.workflow_run;
 const path = "reports/pi-usage.csv";
 const metricsBranch = "pi-metrics";
-const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "complete", "unknown_requests", "url"];
-const legacyColumns = columns.filter((column) => column !== "complete" && column !== "unknown_requests");
+const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "complete", "unknown_requests", "url", "delegated_lifecycle_seconds"];
+const previousColumns = columns.filter((column) => column !== "delegated_lifecycle_seconds");
+const legacyColumns = previousColumns.filter((column) => column !== "complete" && column !== "unknown_requests");
 const { raw: request } = githubClient({ repo, token });
 
 function events(log, prefix) {
@@ -33,15 +34,24 @@ function integer(value) {
 
 function parseCsv(source) {
   const lines = source.trim().split("\n");
-  const legacy = lines[0] === legacyColumns.join(",");
-  if (!legacy && lines[0] !== columns.join(",")) throw new Error("Unexpected usage CSV header");
-  const header = legacy ? legacyColumns : columns;
+  const headerLine = lines[0];
+  const header = headerLine === columns.join(",")
+    ? columns
+    : headerLine === previousColumns.join(",")
+      ? previousColumns
+      : headerLine === legacyColumns.join(",")
+        ? legacyColumns
+        : null;
+  if (!header) throw new Error("Unexpected usage CSV header");
   return lines.slice(1).filter(Boolean).map((line) => {
     // All values in this file are numeric, fixed labels or URLs with no commas.
     const fields = line.split(",");
     if (fields.length !== header.length) throw new Error("Invalid usage CSV row");
-    // Rows written before completeness accounting cannot prove their totals were complete.
-    return { complete: "unknown", unknown_requests: "", ...Object.fromEntries(header.map((column, i) => [column, fields[i]])) };
+    // Older rows cannot prove completeness and pre-#463 rows have no delegated lifecycle timing.
+    return {
+      complete: "unknown", unknown_requests: "", delegated_lifecycle_seconds: "",
+      ...Object.fromEntries(header.map((column, i) => [column, fields[i]])),
+    };
   });
 }
 
@@ -98,14 +108,19 @@ for (const job of jobs) {
   const totals = {
     input: ledger.totals.input, output: ledger.totals.output,
     cache_read: ledger.totals.cacheRead, cache_write: ledger.totals.cacheWrite,
-    total_tokens: ledger.totals.total, model_seconds: ledger.totals.responseMs / 1000,
+    total_tokens: ledger.totals.total,
+    model_seconds: ledger.totals.providerResponseMs / 1000,
+    delegated_lifecycle_seconds: ledger.totals.delegatedLifecycleMs / 1000,
   };
   const runnerSeconds = job.started_at && job.completed_at
     ? Math.max(0, Math.round((Date.parse(job.completed_at) - Date.parse(job.started_at)) / 1000)) : 0;
   newRows.push({
     scope: "attempt", issue, phase, run_id: run.id,
     attempt: run.run_attempt, status: job.conclusion ?? "unknown", responses: ledger.totals.responses,
-    ...totals, model_seconds: totals.model_seconds.toFixed(1), runner_seconds: runnerSeconds,
+    ...totals,
+    model_seconds: totals.model_seconds.toFixed(1),
+    delegated_lifecycle_seconds: totals.delegated_lifecycle_seconds.toFixed(1),
+    runner_seconds: runnerSeconds,
     complete: ledger.complete, unknown_requests: ledger.unknown.length,
     url: `https://github.com/${repo}/actions/runs/${run.id}/attempts/${run.run_attempt}`,
   });
@@ -129,9 +144,10 @@ for (let retry = 0; retry < 8; retry++) {
     const total = issueTotals.get(row.issue) ?? {
       scope: "issue", issue: row.issue, phase: "all", run_id: "", attempt: "", status: "",
       responses: 0, input: 0, output: 0, cache_read: 0, cache_write: 0,
-      total_tokens: 0, model_seconds: 0, runner_seconds: 0, complete: true, unknown_requests: 0, url: `https://github.com/${repo}/issues/${row.issue}`,
+      total_tokens: 0, model_seconds: 0, delegated_lifecycle_seconds: 0,
+      runner_seconds: 0, complete: true, unknown_requests: 0, url: `https://github.com/${repo}/issues/${row.issue}`,
     };
-    for (const key of ["responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds"]) {
+    for (const key of ["responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "delegated_lifecycle_seconds", "runner_seconds"]) {
       total[key] += Number(row[key]);
     }
     total.unknown_requests += Number(row.unknown_requests) || 0;
@@ -140,7 +156,10 @@ for (let retry = 0; retry < 8; retry++) {
     issueTotals.set(row.issue, total);
   }
   const sortedIssues = [...issueTotals.values()].sort((a, b) => Number(a.issue) - Number(b.issue));
-  for (const row of sortedIssues) row.model_seconds = row.model_seconds.toFixed(1);
+  for (const row of sortedIssues) {
+    row.model_seconds = row.model_seconds.toFixed(1);
+    row.delegated_lifecycle_seconds = row.delegated_lifecycle_seconds.toFixed(1);
+  }
   const sortedAttempts = [...attempts.values()].sort((a, b) => Number(a.run_id) - Number(b.run_id) || Number(a.attempt) - Number(b.attempt));
   const payload = {
     message: `chore: update Pi usage for run ${run.id} attempt ${run.run_attempt}`,

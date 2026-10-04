@@ -178,6 +178,13 @@ test("rejects a run with a trusted-looking title but an unrelated workflow path"
   assert.match(result.stderr, /not a trusted Pi workflow/);
 });
 
+test("CSV separates provider response time from delegated lifecycle time", () => {
+  const source = readFileSync("scripts/pi-usage-collect.mjs", "utf8");
+  assert.match(source, /model_seconds: ledger\.totals\.providerResponseMs \/ 1000/);
+  assert.match(source, /delegated_lifecycle_seconds: ledger\.totals\.delegatedLifecycleMs \/ 1000/);
+  assert.doesNotMatch(source, /model_seconds: ledger\.totals\.delegatedLifecycleMs/);
+});
+
 test("#425 summary and CSV agree on known totals and incompleteness for the same records", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-usage-agree-"));
   const csvFile = join(dir, "usage.csv");
@@ -190,14 +197,14 @@ test("#425 summary and CSV agree on known totals and incompleteness for the same
     { issue: 51, phase: "implementation", descendant: true, call: "coding", childSession: "s1", response: 1, usage: { input: 30, output: 7, totalTokens: 37 } },
     { issue: 51, phase: "implementation", descendant: true, call: "coding", childSession: "s1", response: 1, usage: { input: 30, output: 7, totalTokens: 37 } },
     { issue: 51, phase: "implementation", descendant: true, call: "coding", scope: "session", childSession: "s1", status: "timed_out", usage: null },
-    { issue: 51, phase: "implementation", descendant: true, call: "planner", scope: "session", childSession: "p1", status: "failed", usage: { input: 4, output: 1, totalTokens: 5 } },
+    { issue: 51, phase: "implementation", descendant: true, call: "planner", scope: "session", childSession: "p1", status: "failed", usage: { input: 4, output: 1, totalTokens: 5, turns: 1, durationMs: 7000 } },
   ];
   writeFileSync(metricsFile, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
   const summary = spawnSync(process.execPath, ["scripts/pi-usage-summary.mjs"], {
     encoding: "utf8", env: { ...process.env, PI_METRICS_FILE: metricsFile, PI_ISSUE: "51", PI_PHASE: "implementation" },
   });
   assert.equal(summary.status, 0, summary.stderr);
-  assert.match(summary.stdout, /INCOMPLETE, known lower bound\): 3 responses .* total 67 /);
+  assert.match(summary.stdout, /INCOMPLETE, known lower bound\): 3 logical usage records · 3 provider responses .* total 67 /);
 
   writeFileSync(csvFile, readFileSync("reports/pi-usage.csv", "utf8").split("\n")[0] + "\n");
   writeFileSync(eventFile, JSON.stringify({ workflow_run: {
@@ -229,6 +236,8 @@ test("#425 summary and CSV agree on known totals and incompleteness for the same
   const attempt = Object.fromEntries(header.map((column, i) => [column, rows[2].split(",")[i]]));
   assert.equal(attempt.responses, "3");
   assert.equal(attempt.total_tokens, "67");
+  assert.equal(attempt.model_seconds, "2.0", "only the explicit main response contributes provider response time");
+  assert.equal(attempt.delegated_lifecycle_seconds, "7.0", "planner lifecycle time is visible in its own CSV column");
   assert.equal(attempt.complete, "false");
   assert.equal(attempt.unknown_requests, "2");
 });

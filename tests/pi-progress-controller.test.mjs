@@ -555,7 +555,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
   assert.match(bootstrapPlanner, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
   assert.match(bootstrapPlanner, /evidence_budget: \{ type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET \}/);
-  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 768[\s\S]*request\.toolBudget = \{ hard: cap \+ 3 \}/);
+  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 2048[\s\S]*request\.toolBudget = \{ hard: cap \+ 3 \}/);
   assert.doesNotMatch(`${runtime}${bootstrapPlanner}`, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(runtime, /controller\.applyPreparedImplementation\(preparedImplementation\)/);
   assert.match(runtime, /directActionImplementer[\s\S]*requireComplexity: false/);
@@ -840,7 +840,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').preComplexityAllowedTools, undefined);
   assert.equal(stageConfig('implementer').preComplexityTransitionTools, undefined);
   assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
-  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 768);
+  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 2048);
   assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 900000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
