@@ -610,7 +610,7 @@ test('runtime preserves a large mutation budget through scope declaration, then 
   // actually let through, never for one it blocked.
   assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
   assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
-  assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput/);
+  assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput[\s\S]*strictBlockerEvidence: consumedEvidence\?\.tool === canonicalToolName/);
   assert.match(runtime, /return blocked;\s*\}[\s\S]{0,400}const evidenceConsumptionNotice = controller\.consumeEvidenceActionNotice\(\);[\s\S]{0,400}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
   assert.match(planner, /evidence_budget/);
 });
@@ -1311,6 +1311,45 @@ test('#469 need_more_evidence rejects multi-fact requests and consumes exactly o
   state.onToolExecutionEnd('edit', false, { madeProgress: true, input: { path: 'src/game.py' } });
   assert.equal(state.evidenceUnlockAvailable(), true);
 });
+
+test('#470 failed strict blocker LSP evidence stays consumed after runtime drains its notice', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const request = {
+    missing: 'Find the exact signature of MissingSymbol.',
+    reason: 'The signature is the only fact needed before the edit.',
+  };
+  assert.equal(state.checkToolCall('need_more_evidence', request), undefined);
+  state.onToolExecutionEnd('need_more_evidence', false, { madeProgress: false, input: request });
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  const lookup = { name: 'MissingSymbol' };
+  assert.equal(state.checkToolCall('lsp_find_symbol', lookup), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  const notice = state.consumeEvidenceActionNotice();
+  assert.deepEqual(notice, { tool: 'lsp_find_symbol' });
+
+  state.onToolExecutionEnd('lsp_find_symbol', true, {
+    madeProgress: false,
+    input: lookup,
+    strictBlockerEvidence: notice?.tool === 'lsp_find_symbol',
+  });
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(
+    state.checkToolCall('repo_search', { query: 'MissingSymbol' }).reason,
+    /productive progress requires an action/,
+  );
+});
+
 
 test('#469 stale unavailable capability attempts are not wired to the prose-only abort reason', () => {
   const source = readScript('scripts/pi-agent-runtime.mjs');
