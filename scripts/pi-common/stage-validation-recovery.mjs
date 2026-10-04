@@ -93,7 +93,7 @@ function preparedFacts(spec) {
   if (!prepared) return null;
   const layout = prepared.layoutHint && typeof prepared.layoutHint === 'object'
     ? Object.fromEntries(
-        ['sourceRoot', 'sourceDirectory', 'sourceTarget', 'sourceConvention', 'testDirectory', 'testConvention']
+        ['sourceRoot', 'sourceDirectory', 'sourceTarget', 'sourceConvention', 'testDirectory', 'testTarget', 'testConvention']
           .filter(key => typeof prepared.layoutHint[key] === 'string' && prepared.layoutHint[key])
           .map(key => [key, boundedText(prepared.layoutHint[key], 1000)]),
       )
