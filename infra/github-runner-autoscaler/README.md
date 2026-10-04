@@ -427,17 +427,23 @@ runs the cheap `docker info` liveness check so daemon loss still fails closed
 without delaying queue observation. The expensive `docker system df` metadata
 walk runs once at manager startup, then on
 `GENERAL_DOCKER_DEEP_PROBE_INTERVAL_SECONDS` (default 300 seconds), after a
-failed general-runner container start, and during quarantine recovery. The
-manager is single-threaded and keeps the last successful deep-probe timestamp,
-so ordinary calls from both the main loop and `spawn_runner` share one cadence
-and cannot overlap metadata walks. This is intentional: `docker system df`
-traverses rw snapshots and detects the #401 corruption, but on the N150 it can
-take about ten seconds and must not sit on every queue-poll fast path.
+failed general-runner container start, and during quarantine recovery. A
+container-start failure requests an early deep probe, but outside quarantine
+those forced probes are limited to one per 60 seconds so a persistent unrelated
+failure (for example, a missing image) cannot recreate the old per-poll CPU
+hot loop. Quarantine recovery deliberately bypasses that throttle.
 
-General workers still repeat both checks before registering with GitHub,
-closing the gap between manager health and runner startup; Pi workers still
-have no Docker socket. A successful deep probe is timestamped in manager logs,
-which makes the configured cadence visible during idle validation.
+The manager is single-threaded and keeps the last successful deep-probe
+timestamp, so ordinary calls from both the main loop and `spawn_runner` share
+one cadence. This is intentional: `docker system df` traverses rw snapshots
+and detects the #401 corruption, but on the N150 it can take about ten seconds
+and must not sit on every queue-poll fast path.
+
+General workers independently repeat both `docker info` and `docker system df`
+before registering with GitHub, closing the manager's periodic-check window
+before a worker can accept a job. Pi workers still have no Docker socket. A
+successful deep probe is timestamped in manager logs, which makes the configured
+cadence visible during idle validation.
 
 A check that still fails after one five-second retry stops the spawn batch and quarantines the general pool. The manager
 removes only idle registrations with the `general` label belonging to its own prefix; GitHub refuses deletion
