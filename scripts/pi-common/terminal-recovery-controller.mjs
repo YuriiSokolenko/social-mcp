@@ -1,8 +1,6 @@
 import { submissionObligation } from './semantic-loop-guard.mjs';
 
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
-const DIRECT_MUTATION_TOOLS = Object.freeze(['safe_edit', 'structural_edit', 'edit', 'write']);
-
 function uniqueStrings(value) {
   return [...new Set((Array.isArray(value) ? value : [])
     .filter(item => typeof item === 'string' && item.trim())
@@ -48,10 +46,6 @@ function cleanupExpectedFiles(terminalInput, currentChangedFiles, cleanupPaths) 
 
 function driftForPath(drift, target) {
   return (Array.isArray(drift) ? drift : []).find(item => item?.path === target) ?? null;
-}
-
-function firstActiveMutation(active) {
-  return DIRECT_MUTATION_TOOLS.find(tool => active.has(tool)) ?? null;
 }
 
 /**
