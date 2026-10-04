@@ -192,6 +192,7 @@ function explicitAdditivePythonLayout(cwd, issueText) {
         : null,
       testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
       testTarget,
+      testTargetRequired: explicitTestTarget != null,
       testConvention: testSibling
         ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
         : null,
@@ -263,6 +264,7 @@ export function discoverAdditivePythonLayout(cwd, issue) {
         : null,
       testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
       testTarget: repoRelativePath(path.relative(cwd, path.join(testDirectory, `test_${moduleName}.py`))),
+      testTargetRequired: false,
       testConvention: testSibling
         ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
         : null,
