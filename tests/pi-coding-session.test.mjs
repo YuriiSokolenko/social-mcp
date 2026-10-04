@@ -1044,7 +1044,7 @@ test('an already-completed repeated tool call clears forcing but still fails clo
 
 test('#469 evidence unlock is single-use and stale read/blocker calls abort as unavailable capability, never prose-only', () => {
   const logs = runtimeScenario('action-hidden-abort');
-  assert.match(logs, /RUNTIME EVIDENCE PERMIT CONSUMED/);
+  assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"need_more_evidence"/);
   assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable\/stale capability turn/);
