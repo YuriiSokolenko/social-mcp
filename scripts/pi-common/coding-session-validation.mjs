@@ -163,7 +163,7 @@ export function recordCodingBehavioralValidation({
 export function assertCodingBehavioralValidation({
   changedFiles,
   env = process.env,
-  cwd = process.cwd(),
+  cwd = null,
 } = {}) {
   if (!validationLifecycleActive(env)) return [];
   // git diff --name-only includes deleted paths. A deleted pytest file cannot be
