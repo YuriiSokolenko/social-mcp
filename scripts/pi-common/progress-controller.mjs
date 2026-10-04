@@ -438,6 +438,18 @@ export class ProgressController {
     return notice;
   }
 
+  restoreRuntimeBlockedEvidenceAction(notice) {
+    if (!notice || !this.productiveProgress || !this.productiveBlockerTool) return false;
+    // need_more_evidence grants exactly one executable evidence action. A harness/runtime policy
+    // rejection is not an evidence attempt, so restore the same open permit instead of forcing the
+    // model to lose it or request a second unlock.
+    this.pendingEvidenceConsumptionNotice = null;
+    this.productiveEvidenceRemaining = Math.max(1, this.productiveEvidenceRemaining);
+    this.productiveState = 'evidence_allowed';
+    this.blockerEvidenceWindowActive = true;
+    return true;
+  }
+
   complexityRecorded() {
     return !this.requireComplexity || Boolean(this.complexity);
   }
