@@ -321,8 +321,10 @@ function runtimeScenario(mode) {
         if (mode === 'envelope-retry') {
           if (attempts === 1) assert.doesNotMatch(request.task, /REPAIR/);
           else {
-            assert.match(request.task, /REPAIR: the previous structured_output envelope was rejected/);
-            assert.ok(request.task.includes('Output contract: call structured_output with exactly { "value": { "steps"'));
+            const repairAt = request.task.indexOf('REPAIR: the previous structured_output envelope was rejected');
+            const contractAt = request.task.indexOf('Output contract: call structured_output with exactly { "value": { "steps"');
+            assert.ok(repairAt >= 0, 'retry prompt carries repair guidance');
+            assert.ok(contractAt > repairAt, 'repair guidance immediately precedes the exact output contract');
           }
           reply = attempts === 2 ? { status: 'completed', result: { kind: 'structured', value: good } } : { status: 'failed', error: schemaError };
         } else if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
