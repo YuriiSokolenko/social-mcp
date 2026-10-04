@@ -243,6 +243,32 @@ test('#470 zero-usage tool-call-only provider response is not synthetic after a 
 });
 
 
+test('#470 a real empty provider response after a runtime failure is not synthetic', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-real-empty-'));
+  const failureFile = join(dir, 'runtime-failure.json');
+  writeFileSync(failureFile, '{"failure_code":"PI_ACTION_REQUIRED_ABORT"}');
+  try {
+    const output = render([
+      { type: 'turn_start' },
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'message_end', message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: 'provider returned an empty error response',
+        content: [],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+      } },
+      { type: 'agent_end', messages: [] },
+    ], { PI_ISSUE: '470', PI_CALL: 'main', PI_RUNTIME_FAILURE_FILE: failureFile });
+
+    assert.doesNotMatch(output, /"synthetic":true/);
+    assert.match(output, /PI_METRIC .*"totalTokens":0/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
 test('#469 abort settlement is explicitly synthetic without retyping ordinary zero usage', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-settlement-'));
   const failureFile = join(dir, 'runtime-failure.json');
