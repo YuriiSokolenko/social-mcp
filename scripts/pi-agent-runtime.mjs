@@ -2040,7 +2040,6 @@ export default function (pi) {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
-      restoreRuntimeBlockedEvidence();
       return noOpBlocked;
     }
 
@@ -2056,10 +2055,12 @@ export default function (pi) {
           env: process.env,
         });
       } catch (error) {
-        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
+        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') {
+          restoreRuntimeBlockedEvidence();
+          throw error;
+        }
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
-        restoreRuntimeBlockedEvidence();
         return containmentBlocked;
       }
     }
@@ -2101,7 +2102,6 @@ export default function (pi) {
           tool: event.toolName,
           reason,
         }));
-        restoreRuntimeBlockedEvidence();
         return {
           block: true,
           reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
