@@ -1,2 +1,3 @@
 Temporary live-smoke marker for Issue #465. This file will be removed after CI wake validation.
 Second temporary CI event for cancellation-to-success recovery validation.
+Success recovery transition after the failure event.
