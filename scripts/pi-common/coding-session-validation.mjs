@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 export const CODING_TARGETED_PYTEST_STATE_ENV = 'PI_CODING_TARGETED_PYTEST_STATE';
@@ -83,4 +84,46 @@ export function assertCodingBehavioralValidation({
     throw error;
   }
   return required;
+}
+
+
+function candidatePreparedPath(value) {
+  const text = String(value ?? '').trim().replace(/^[`'"]+|[`'",.;:]+$/g, '');
+  if (!text || text.length > 1000) return null;
+  if (!/[A-Za-z0-9_]\.[A-Za-z0-9]{1,12}$/.test(text)) return null;
+  if (text.startsWith('/') || text.startsWith('./') || text.includes('\\\\') || /(^|\/)\.\.(\/|$)/.test(text)) return null;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return null;
+  return path.posix.normalize(text);
+}
+
+export function requiredPreparedOutputPaths(prepared) {
+  if (!prepared || prepared.status !== 'prepared') return [];
+  const candidates = [];
+  const hinted = candidatePreparedPath(prepared.layoutHint?.sourceTarget);
+  if (hinted) candidates.push(hinted);
+  for (const step of Array.isArray(prepared.plan) ? prepared.plan : []) {
+    const matches = String(step).match(/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,12}/g) ?? [];
+    for (const match of matches) {
+      const candidate = candidatePreparedPath(match);
+      if (candidate) candidates.push(candidate);
+    }
+  }
+  return [...new Set(candidates)].sort();
+}
+
+export function codingSessionSubmissionReadiness({
+  prepared,
+  cwd = process.cwd(),
+  changedFiles = [],
+  resumed = false,
+  validationRepair = false,
+} = {}) {
+  if (resumed || validationRepair || (Array.isArray(changedFiles) && changedFiles.length > 0)) {
+    return { ready: true, missing_outputs: [] };
+  }
+  const required = requiredPreparedOutputPaths(prepared);
+  const missing = required.filter(file => !fs.existsSync(path.resolve(cwd, file)));
+  return missing.length
+    ? { ready: false, missing_outputs: missing }
+    : { ready: true, missing_outputs: [] };
 }
