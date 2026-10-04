@@ -226,29 +226,28 @@ export function summarizeUsage(records) {
 
   if (providerResponses.size) {
     const logicalProviderResponses = totals.providerResponses;
-    const exact = emptyTotals();
+    const logicalProviderResponseMs = totals.providerResponseMs;
+    const traced = emptyTotals();
     for (const record of providerResponses.values()) {
-      exact.providerResponses += 1;
+      traced.providerResponses += 1;
       const responseMs = Number(record.responseMs);
-      if (Number.isFinite(responseMs) && responseMs >= 0) exact.providerResponseMs += responseMs;
+      if (Number.isFinite(responseMs) && responseMs >= 0) traced.providerResponseMs += responseMs;
     }
-    // Trace records are authoritative for the calls they observed and for provider-only latency.
-    // Some provider calls can bypass the proxy (for example a separately hosted delegate), so a
-    // larger logical provider-turn count remains evidence of real calls rather than being erased.
-    // Keep those calls in a separate non-token row with no invented latency.
-    const untracedProviderResponses = Math.max(0, logicalProviderResponses - exact.providerResponses);
-    for (const row of calls.values()) {
-      row.providerResponses = 0;
-      row.providerResponseMs = 0;
+
+    // Preserve call-level logical attribution. The transport trace can prove that additional calls
+    // or latency exist, but it cannot map them back to planner/main/coding rows. Add only the
+    // unattributed positive delta, under a collision-free synthetic row, so call rows are never
+    // overwritten or zeroed and summing the table still reconciles to the known lower bound.
+    const supplemental = emptyTotals();
+    supplemental.providerResponses = Math.max(0, traced.providerResponses - logicalProviderResponses);
+    supplemental.providerResponseMs = Math.max(0, traced.providerResponseMs - logicalProviderResponseMs);
+    if (supplemental.providerResponses || supplemental.providerResponseMs) {
+      let key = 'provider_trace_unattributed';
+      while (calls.has(key)) key += '_';
+      calls.set(key, supplemental);
     }
-    calls.set("provider", exact);
-    if (untracedProviderResponses) {
-      const untraced = emptyTotals();
-      untraced.providerResponses = untracedProviderResponses;
-      calls.set("provider_untraced", untraced);
-    }
-    totals.providerResponses = exact.providerResponses + untracedProviderResponses;
-    totals.providerResponseMs = exact.providerResponseMs;
+    totals.providerResponses = Math.max(logicalProviderResponses, traced.providerResponses);
+    totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
   }
   return { calls, totals, unknown, complete: unknown.length === 0 };
 }
