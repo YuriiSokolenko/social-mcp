@@ -408,19 +408,9 @@ export default function (pi) {
     if (!codingSession) return { ready: true, missing_outputs: [] };
     const prepared = readPreparedImplementation(process.env.PI_PREPARED_IMPLEMENTATION_FILE);
     if (!requiredPreparedOutputPaths(prepared).length) return { ready: true, missing_outputs: [] };
-    let changedFiles;
-    try {
-      changedFiles = worktreeChangedFiles(process.cwd(), baseRef());
-    } catch (error) {
-      // Readiness is a UX guard, not a terminal invariant. If repository status cannot be
-      // established, leave submit_result visible and let its trusted execute path decide.
-      console.warn(`PI_CODING_SUBMIT_READINESS_UNKNOWN ${JSON.stringify({ error: String(error?.message ?? error) })}`);
-      return { ready: true, missing_outputs: [] };
-    }
     return codingSessionSubmissionReadiness({
       prepared,
       cwd: process.cwd(),
-      changedFiles,
       resumed: resumedImplementer,
       validationRepair,
     });
