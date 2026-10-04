@@ -96,7 +96,18 @@ export function recordCodingBehavioralValidation({
         .filter(Boolean))].sort()
     : [];
   if (!targets.length) return null;
-  const state = { schema_version: 1, kind: 'pytest', targets };
+  const previous = readValidationState(env);
+  const priorTargets =
+    previous?.schema_version === 1 &&
+    previous?.kind === 'pytest' &&
+    Array.isArray(previous.targets)
+      ? previous.targets.map(canonicalRepoPath).filter(Boolean)
+      : [];
+  const state = {
+    schema_version: 1,
+    kind: 'pytest',
+    targets: [...new Set([...priorTargets, ...targets])].sort(),
+  };
   writeValidationState(state, env);
   return state;
 }
