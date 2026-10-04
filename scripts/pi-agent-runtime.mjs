@@ -55,6 +55,7 @@ import {
   SemanticLoopGuard,
   isSemanticMutationTool,
   loopGuardLimits,
+  mutationResolvesSubmissionObligation,
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
@@ -2472,10 +2473,22 @@ export default function (pi) {
       }
     }
     const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
+    const outstandingTerminalObligation = loopGuard?.terminalObligation ?? null;
+    const verificationEligible =
+      effectiveProgress &&
+      (
+        !outstandingTerminalObligation ||
+        mutationResolvesSubmissionObligation(
+          outstandingTerminalObligation,
+          pendingLoopCall?.input ?? acceptedToolInput,
+          event.result,
+        )
+      );
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
       madeProgress: effectiveProgress,
       input: acceptedToolInput,
       strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
+      verificationEligible,
     });
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
