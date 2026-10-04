@@ -15,7 +15,9 @@ function validationStatePath(env = process.env) {
   const explicit = String(env.PI_CODING_TARGETED_PYTEST_STATE_FILE ?? '').trim();
   if (explicit) return explicit;
   const ledger = String(env.PI_VALIDATION_LEDGER_FILE ?? '').trim();
-  return ledger ? `${ledger}.coding-targeted-pytest.json` : null;
+  if (ledger) return `${ledger}.coding-targeted-pytest.json`;
+  const terminal = String(env.PI_TERMINAL_RESULT_FILE ?? '').trim();
+  return terminal ? `${terminal}.coding-targeted-pytest.json` : null;
 }
 
 function readValidationState(env = process.env) {
