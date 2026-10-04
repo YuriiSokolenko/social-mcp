@@ -199,53 +199,98 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
 test('dedicated control runner label is reserved for terminal-wake orchestration', () => {
   const workflowDir = '.github/workflows';
 
-  const runsOnBlocks = (workflow) => {
+  const stripComment = (value) => value.replace(/\s+#.*$/, '').trim();
+  const parseList = (value) => {
+    const clean = stripComment(value).trim();
+    if (!clean.startsWith('[') || !clean.endsWith(']')) return null;
+    return clean
+      .slice(1, -1)
+      .split(',')
+      .map(item => item.trim().replace(/^['"]|['"]$/g, ''))
+      .filter(Boolean);
+  };
+
+  const runsOnSpecs = (workflow) => {
     const lines = workflow.split('\n');
-    const blocks = [];
+    const specs = [];
     for (let i = 0; i < lines.length; i += 1) {
       const match = /^(\s*)runs-on:\s*(.*)$/.exec(lines[i]);
       if (!match) continue;
 
       const baseIndent = match[1].length;
-      const block = [match[2]];
+      const inline = stripComment(match[2]);
+      if (inline) {
+        specs.push({ labels: parseList(inline) ?? [inline.replace(/^['"]|['"]$/g, '')], group: null });
+        continue;
+      }
+
+      const block = [];
       for (let j = i + 1; j < lines.length; j += 1) {
         const line = lines[j];
-        if (line.trim() === '' || line.trimStart().startsWith('#')) {
-          block.push(line.trim());
-          continue;
-        }
+        if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
         const indent = /^(\s*)/.exec(line)[1].length;
         if (indent <= baseIndent) break;
-        block.push(line.trim());
+        block.push(stripComment(line.trim()));
       }
-      blocks.push(block.join(' '));
+
+      let group = null;
+      let labels = [];
+      for (let j = 0; j < block.length; j += 1) {
+        const line = block[j];
+        const groupMatch = /^group:\s*(.+)$/.exec(line);
+        if (groupMatch) {
+          group = groupMatch[1].replace(/^['"]|['"]$/g, '');
+          continue;
+        }
+
+        const labelsMatch = /^labels:\s*(.*)$/.exec(line);
+        if (labelsMatch) {
+          const inlineLabels = parseList(labelsMatch[1]);
+          if (inlineLabels) {
+            labels.push(...inlineLabels);
+            continue;
+          }
+          for (let k = j + 1; k < block.length && /^-\s+/.test(block[k]); k += 1) {
+            labels.push(block[k].replace(/^-\s+/, '').replace(/^['"]|['"]$/g, ''));
+          }
+          continue;
+        }
+
+        if (/^-\s+/.test(line)) {
+          labels.push(line.replace(/^-\s+/, '').replace(/^['"]|['"]$/g, ''));
+        }
+      }
+      specs.push({ labels, group });
     }
-    return blocks;
+    return specs;
   };
+
+  const exactLabels = (labels, expected) =>
+    labels.length === expected.length && expected.every(label => labels.includes(label));
 
   for (const name of fs.readdirSync(workflowDir).filter(name => name.endsWith('.yml'))) {
     const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
-    const blocks = runsOnBlocks(workflow);
+    const specs = runsOnSpecs(workflow);
     if (name === 'ci-terminal-wake.yml') {
       assert.ok(
-        blocks.some(block =>
-          /\bself-hosted\b/.test(block) &&
-          /\bn150\b/.test(block) &&
-          /\bcontrol\b/.test(block)
-        ),
-        'ci-terminal-wake.yml must target the dedicated self-hosted n150/control runner',
+        specs.some(spec => spec.group === null && exactLabels(spec.labels, ['self-hosted', 'n150', 'control'])),
+        'ci-terminal-wake.yml must target exactly self-hosted,n150,control with no runner group',
       );
       continue;
     }
-    for (const block of blocks) {
-      assert.doesNotMatch(block, /\bcontrol\b/, `${name}: control runner must stay orchestration-only`);
+
+    for (const spec of specs) {
+      assert.ok(
+        !spec.labels.includes('control'),
+        `${name}: control label must stay reserved for terminal-wake orchestration`,
+      );
     }
   }
 
   for (const name of ['ci.yml', 'pi-auto-merge.yml']) {
     const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
     assert.ok(
-      runsOnBlocks(workflow).some(block => /\bn150\b/.test(block) && /\bgeneral\b/.test(block)),
+      runsOnSpecs(workflow).some(spec => spec.labels.includes('n150') && spec.labels.includes('general')),
       `${name}: heavy/general work must stay on n150/general`,
     );
   }
