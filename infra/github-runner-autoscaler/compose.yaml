@@ -73,6 +73,32 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - general-runner-evidence:/evidence
 
+  # Always-on control-plane lane for tiny orchestration jobs. This runner is
+  # intentionally not autoscaled and cannot satisfy jobs requiring `general`
+  # or `pi-agent`.
+  control-runner:
+    build:
+      context: ../..
+      dockerfile: infra/github-runner-autoscaler/control-runner.Dockerfile
+    image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.0}
+    container_name: ${CONTROL_RUNNER_NAME:-n150-control}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      GH_ADMIN_TOKEN: ${GH_ADMIN_TOKEN}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}
+      RUNNER_NAME: ${CONTROL_RUNNER_NAME:-n150-control}
+      RUNNER_LABELS: ${CONTROL_RUNNER_LABELS:-n150,control}
+    cpus: 0.50
+    mem_limit: 512m
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+
 volumes:
   general-runner-evidence:
     name: ${GENERAL_EVIDENCE_VOLUME:-social-mcp-general-runner-evidence}
