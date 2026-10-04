@@ -12,6 +12,7 @@ import {
   codingSessionSubmissionReadiness,
   invalidateCodingBehavioralValidation,
   recordCodingBehavioralValidation,
+  repositoryFingerprintRequiresValidation,
   requiredCodingPytestTargets,
   requiredPreparedOutputPaths,
 } from '../scripts/pi-common/coding-session-validation.mjs';
@@ -581,6 +582,19 @@ test('#469 coding-session source plus pytest changes require a passing targeted 
   assert.equal(invalidateCodingBehavioralValidation(env), true);
   assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
 });
+
+test('#470 repository fingerprint validation policy preserves read-only bash and fails closed on uncertainty', () => {
+  assert.equal(repositoryFingerprintRequiresValidation('same', 'same'), false);
+  assert.equal(repositoryFingerprintRequiresValidation('before', 'after'), true);
+  assert.equal(repositoryFingerprintRequiresValidation(null, 'after'), true);
+  assert.equal(repositoryFingerprintRequiresValidation('before', null), true);
+  assert.equal(repositoryFingerprintRequiresValidation(null, null), true);
+
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /mutationChanged !== false/);
+  assert.match(runtime, /repositoryFingerprintRequiresValidation\(\s*bashValidationFingerprintBefore,\s*bashValidationFingerprintAfter/);
+});
+
 
 test('#470 coding pytest gate ignores deleted/non-test Python files and accepts broader passing scopes', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-pytest-scope-'));
