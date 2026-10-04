@@ -6,6 +6,7 @@ import { createStageRunResult, createStageRunSpec } from './stage-run-contract.m
 import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
 import { mutationCleanupHints } from './mutation-journal.mjs';
 import { readPreparedImplementation } from './implementation-planner.mjs';
+import { computeCandidateRevision } from './candidate-revision.mjs';
 
 const DEFAULT_REPAIR_ATTEMPTS = 1;
 const MAX_DIAGNOSTIC_CHARS = 20000;
@@ -108,12 +109,31 @@ function preparedFacts(spec) {
   };
 }
 
+function repairChangedFiles(spec, terminalReceipt, implementerResult) {
+  const fallback = Array.isArray(implementerResult?.files) ? implementerResult.files : [];
+  const base = terminalReceipt?.candidateRevision?.base_commit ??
+    terminalReceipt?.receipt?.candidate_revision?.base_commit ??
+    null;
+  if (spec?.cwd && base) {
+    try {
+      return computeCandidateRevision({ cwd: spec.cwd, base }).files;
+    } catch {
+      // The receipt-bound result remains a safe bounded fallback if git state
+      // cannot be re-read while constructing diagnostics.
+    }
+  }
+  return fallback;
+}
+
 export function validationRepairHandoff(spec, error, {
   implementerResult = null,
   terminalReceipt = null,
   acceptedScope = null,
 } = {}) {
-  const files = boundedStrings(implementerResult?.files, { maxItems: REPAIR_HANDOFF_MAX_ITEMS, maxChars: 1000 }).sort();
+  const files = boundedStrings(
+    repairChangedFiles(spec, terminalReceipt, implementerResult),
+    { maxItems: REPAIR_HANDOFF_MAX_ITEMS, maxChars: 1000 },
+  ).sort();
   const completion = implementerResult
     ? {
         outcome: implementerResult.outcome ?? null,
