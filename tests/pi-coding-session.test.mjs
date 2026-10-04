@@ -757,7 +757,7 @@ function runtimeScenario(mode) {
           const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
           assert.equal(failure.failure_class, 'model_execution_abort');
           assert.equal(failure.failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
-          assert.match(failure.reason, /unavailable\/stale capability/);
+          assert.ok(failure.reason.includes('unavailable/stale capability'));
           console.log('UNAVAILABLE_CAPABILITY_FAILURE ' + JSON.stringify(failure));
           process.exit(0);
         }
