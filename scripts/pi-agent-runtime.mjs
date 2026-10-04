@@ -2027,6 +2027,9 @@ export default function (pi) {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
+      // A post-controller block has no tool_execution_end; do not let a consumed-evidence
+      // notice leak forward and get attributed to a later tool.
+      controller.consumeEvidenceActionNotice();
       return noOpBlocked;
     }
 
@@ -2045,6 +2048,7 @@ export default function (pi) {
         if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
+        controller.consumeEvidenceActionNotice();
         return containmentBlocked;
       }
     }
@@ -2086,6 +2090,7 @@ export default function (pi) {
           tool: event.toolName,
           reason,
         }));
+        controller.consumeEvidenceActionNotice();
         return {
           block: true,
           reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
