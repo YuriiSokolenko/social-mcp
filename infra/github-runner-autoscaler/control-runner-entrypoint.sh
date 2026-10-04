@@ -8,9 +8,12 @@ set -euo pipefail
 : "${ACTIONS_RUNNER_BASELINE_VERSION:?ACTIONS_RUNNER_BASELINE_VERSION is required}"
 : "${CONTROL_REPAIR_COOLDOWN_SECONDS:=300}"
 : "${CONTROL_RETRY_SECONDS:=30}"
+: "${CONTROL_SHORT_RETRY_SECONDS:=5}"
+: "${CONTROL_UPDATE_WAIT_SECONDS:=30}"
 : "${CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS:=90}"
+: "${CONTROL_CHILD_STOP_WAIT_SECONDS:=30}"
 
-for name in CONTROL_REPAIR_COOLDOWN_SECONDS CONTROL_RETRY_SECONDS CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS; do
+for name in CONTROL_REPAIR_COOLDOWN_SECONDS CONTROL_RETRY_SECONDS CONTROL_SHORT_RETRY_SECONDS CONTROL_UPDATE_WAIT_SECONDS CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS CONTROL_CHILD_STOP_WAIT_SECONDS; do
   value="${!name}"
   [[ "${value}" =~ ^[0-9]+$ ]] || {
     echo "${name} must be a non-negative integer" >&2
@@ -135,7 +138,7 @@ interruptible_sleep() {
 wait_for_update() {
   local i
   update_waiting=1
-  for i in {0..30}; do
+  for ((i = 0; i <= CONTROL_UPDATE_WAIT_SECONDS; i += 1)); do
     if [ -f update.finished ]; then
       gosu runner rm -f update.finished || true
       update_waiting=0
@@ -159,6 +162,22 @@ wait_for_update_during_shutdown() {
   return 1
 }
 
+stop_process_group() {
+  local pid="$1" signal="$2" i
+
+  kill "-${signal}" -- "-${pid}" 2>/dev/null || true
+  for ((i = 0; i < CONTROL_CHILD_STOP_WAIT_SECONDS; i += 1)); do
+    kill -0 "${pid}" 2>/dev/null || break
+    sleep 1
+  done
+
+  if kill -0 "${pid}" 2>/dev/null; then
+    echo "warning: process group ${pid} did not stop after ${CONTROL_CHILD_STOP_WAIT_SECONDS}s; killing it" >&2
+    kill -KILL -- "-${pid}" 2>/dev/null || true
+  fi
+  wait "${pid}" 2>/dev/null || true
+}
+
 shutdown() {
   trap - TERM INT
 
@@ -174,15 +193,13 @@ shutdown() {
   fi
 
   if [ -n "${registration_pid}" ]; then
-    kill -INT -- "-${registration_pid}" 2>/dev/null || true
-    wait "${registration_pid}" 2>/dev/null || true
+    stop_process_group "${registration_pid}" INT
     registration_pid=""
     clear_local_registration || echo "warning: failed to clear interrupted registration state" >&2
   fi
 
   if [ -n "${listener_pid}" ]; then
-    kill -INT -- "-${listener_pid}" 2>/dev/null || true
-    wait "${listener_pid}" 2>/dev/null || true
+    stop_process_group "${listener_pid}" INT
     listener_pid=""
   fi
 
@@ -247,7 +264,7 @@ while true; do
     2)
       credential_failures=0
       echo "control runner listener requested retry" >&2
-      interruptible_sleep 5
+      interruptible_sleep "${CONTROL_SHORT_RETRY_SECONDS}"
       ;;
     3|4)
       credential_failures=0
@@ -264,7 +281,7 @@ while true; do
     6)
       credential_failures=0
       echo "control runner configuration refreshed; retrying listener after short delay" >&2
-      interruptible_sleep 5
+      interruptible_sleep "${CONTROL_SHORT_RETRY_SECONDS}"
       ;;
     1|5)
       credential_failures=$((credential_failures + 1))
