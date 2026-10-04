@@ -316,6 +316,25 @@ test('#470 partial trace latency never lowers a larger known logical provider la
 });
 
 
+test('#470 equal-count trace with missing latency does not erase logical provider latency', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 1), responseMs: 5000 },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'untimed-trace',
+      response: 1,
+    },
+  ]);
+
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 5000);
+  assert.equal(ledger.complete, false);
+  assert.ok(ledger.unknown.some(entry => entry.reason === 'provider_trace_incomplete'));
+});
+
+
 test('#470 trace reconciliation never overwrites call rows with provider-like names', () => {
   const ledger = summarizeUsage([
     { call: 'provider', response: 1, usage: u(10, 1), responseMs: 100 },
