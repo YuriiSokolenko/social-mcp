@@ -5,12 +5,24 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${RUNNER_NAME:=n150-control}"
 : "${RUNNER_LABELS:=n150,control}"
+: "${CONTROL_REPAIR_COOLDOWN_SECONDS:=300}"
+: "${CONTROL_RETRY_SECONDS:=30}"
+
+[[ "${CONTROL_REPAIR_COOLDOWN_SECONDS}" =~ ^[0-9]+$ ]] || {
+  echo "CONTROL_REPAIR_COOLDOWN_SECONDS must be a non-negative integer" >&2
+  exit 2
+}
+[[ "${CONTROL_RETRY_SECONDS}" =~ ^[0-9]+$ ]] || {
+  echo "CONTROL_RETRY_SECONDS must be a non-negative integer" >&2
+  exit 2
+}
 
 ADMIN_TOKEN="${GH_ADMIN_TOKEN}"
 unset GH_ADMIN_TOKEN
 
 RUNNER_HOME="${RUNNER_HOME:-/home/runner/actions-runner}"
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+REPAIR_MARKER=".control-last-repair"
 AUTH=(
   -H "Accept: application/vnd.github+json"
   -H "X-GitHub-Api-Version: 2026-03-10"
@@ -49,65 +61,135 @@ configure_runner() {
     --replace
 }
 
-runner_pid=""
+repair_allowed() {
+  local now last
+  [ ! -f "${REPAIR_MARKER}" ] && return 0
+  now="$(date +%s)"
+  last="$(cat "${REPAIR_MARKER}" 2>/dev/null || true)"
+  [[ "${last}" =~ ^[0-9]+$ ]] || return 0
+  (( now - last >= CONTROL_REPAIR_COOLDOWN_SECONDS ))
+}
+
+mark_repair() {
+  local now
+  now="$(date +%s)"
+  printf '%s\n' "${now}" | gosu runner tee "${REPAIR_MARKER}" >/dev/null
+}
+
+wait_for_update() {
+  local i
+  for i in {0..30}; do
+    if [ -f update.finished ]; then
+      gosu runner rm -f update.finished
+      return 0
+    fi
+    sleep 1
+  done
+  return 0
+}
+
+listener_pid=""
 registration_pid=""
+
 shutdown() {
   trap - TERM INT
+
   if [ -n "${registration_pid}" ]; then
-    kill -TERM "${registration_pid}" 2>/dev/null || true
+    kill -INT -- "-${registration_pid}" 2>/dev/null || true
+    wait "${registration_pid}" 2>/dev/null || true
+    registration_pid=""
+    # An interrupted config can leave partial local state. Remove it only after
+    # the full registration process group has stopped; the next start uses
+    # --replace to repair any server-side half-registration with the same name.
+    clear_local_registration || true
   fi
-  if [ -n "${runner_pid}" ]; then
-    # run.sh forwards this to Runner.Listener when RUNNER_MANUALLY_TRAP_SIG=1.
-    kill -TERM "${runner_pid}" 2>/dev/null || true
-    wait "${runner_pid}" 2>/dev/null || true
+
+  if [ -n "${listener_pid}" ]; then
+    # Match the official run.sh manual-trap behavior: SIGINT the entire
+    # Runner.Listener process group so an in-flight worker is cancelled too.
+    kill -INT -- "-${listener_pid}" 2>/dev/null || true
+    wait "${listener_pid}" 2>/dev/null || true
+    listener_pid=""
   fi
-  # This is a persistent runner. Keep its GitHub registration and local
-  # credentials across normal Docker/host restarts so control-plane capacity
-  # can return without any GitHub API call.
+
+  # Normal Docker/host stops preserve a completed persistent registration.
   exit 0
 }
 trap shutdown TERM INT
 
 cd "${RUNNER_HOME}"
-if [ ! -f .runner ]; then
-  # Run first-time registration asynchronously. Bash executes traps promptly
-  # while waiting for a background job, so docker stop cannot get stuck behind
-  # a foreground config.sh until the 30s grace period expires.
-  configure_runner &
-  registration_pid=$!
-  registration_status=0
-  wait "${registration_pid}" || registration_status=$?
-  registration_pid=""
-  [ "${registration_status}" -eq 0 ] || exit "${registration_status}"
-fi
 
-# The long-lived runner and every workflow job execute as the unprivileged
-# runner user without the repository-admin token in their environment.
-# Do not pass --disableupdate: GitHub's supported self-update path prevents
-# a persistent control runner from aging out while the container stays alive.
-# The official run.sh only forwards TERM/INT to Runner.Listener when this flag
-# is set, so keep it enabled for graceful Docker stop/job cancellation.
-env -u GH_ADMIN_TOKEN RUNNER_MANUALLY_TRAP_SIG=1 gosu runner ./run.sh &
-runner_pid=$!
+# Bash job control gives each background registration/listener job its own
+# process group. The shutdown trap can therefore signal the whole tree instead
+# of orphaning config.sh, Runner.Listener, or Runner.Worker.
+set -m
 
-status=0
-wait "${runner_pid}" || status=$?
-runner_pid=""
+while true; do
+  if [ ! -f .runner ]; then
+    configure_runner &
+    registration_pid=$!
+    registration_status=0
+    wait "${registration_pid}" || registration_status=$?
+    registration_pid=""
 
-# Any unexpected listener failure can mean the persisted credentials are no
-# longer usable even when GitHub still has a runner with this name. Avoid a
-# pagination/name-reconciliation decision entirely: if the runners API is
-# healthy, clear local credentials so the next restart obtains a fresh token
-# and config.sh --replace repairs either present or absent server state. If the
-# API itself is unavailable or malformed, preserve the known local credentials
-# and let Docker retry later.
-if [ "${status}" -ne 0 ] && [ -f .runner ]; then
-  if runner_api_healthy; then
-    echo "warning: control runner listener failed status=${status}; forcing clean re-registration" >&2
-    clear_local_registration
-  else
-    echo "warning: could not verify GitHub runners API; preserving local credentials" >&2
+    if [ "${registration_status}" -ne 0 ]; then
+      echo "warning: control runner registration failed status=${registration_status}; clearing partial local state" >&2
+      clear_local_registration || true
+      sleep "${CONTROL_RETRY_SECONDS}"
+      continue
+    fi
   fi
-fi
 
-exit "${status}"
+  # Run Runner.Listener directly rather than through run.sh/run-helper.sh.
+  # The upstream wrapper intentionally maps listener exits 1, 5, and unknown
+  # codes to 0; direct execution preserves the return code needed for bounded
+  # credential/session recovery while keeping GitHub's self-update enabled.
+  env -u GH_ADMIN_TOKEN gosu runner ./bin/Runner.Listener run &
+  listener_pid=$!
+  listener_status=0
+  wait "${listener_pid}" || listener_status=$?
+  listener_pid=""
+
+  case "${listener_status}" in
+    0)
+      echo "control runner listener exited cleanly; stopping container" >&2
+      exit 0
+      ;;
+    2)
+      echo "control runner listener requested retry" >&2
+      sleep 5
+      ;;
+    3|4)
+      echo "control runner listener is updating; waiting for update completion" >&2
+      wait_for_update
+      ;;
+    6)
+      echo "control runner configuration refreshed; restarting listener" >&2
+      ;;
+    1|5)
+      if ! runner_api_healthy; then
+        echo "warning: listener failed status=${listener_status} but GitHub runners API is unavailable; preserving credentials" >&2
+        sleep "${CONTROL_RETRY_SECONDS}"
+        continue
+      fi
+
+      if ! repair_allowed; then
+        echo "warning: listener failed status=${listener_status}; automatic re-registration is inside cooldown, preserving credentials" >&2
+        sleep "${CONTROL_RETRY_SECONDS}"
+        continue
+      fi
+
+      echo "warning: listener failed status=${listener_status}; scheduling one bounded clean re-registration" >&2
+      mark_repair
+      clear_local_registration
+      ;;
+    7)
+      echo "error: GitHub runner version is deprecated; rebuild/deploy the control image with a supported runner version" >&2
+      sleep "${CONTROL_REPAIR_COOLDOWN_SECONDS}"
+      ;;
+    *)
+      echo "warning: control runner listener exited unexpected status=${listener_status}; preserving registration" >&2
+      sleep "${CONTROL_RETRY_SECONDS}"
+      ;;
+  esac
+done
