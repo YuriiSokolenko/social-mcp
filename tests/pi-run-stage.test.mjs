@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 
-import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
+import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
 import { buildBootstrapInvocation, buildPiInvocation, runPiStage } from '../scripts/pi-common/pi-stage-backend.mjs';
@@ -230,6 +230,32 @@ test('issue worktree patch names use normalized GitHub artifact identity semanti
     `/tmp/pi-resume-local-${process.pid}-1.patch`,
   );
 });
+
+test('#470 provider accounting counts only successful completion endpoints', () => {
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/responses',
+    status: 200,
+    transportError: false,
+  }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/chat/completions?foo=bar',
+    status: 201,
+    transportError: false,
+  }), true);
+
+  for (const exchange of [
+    { requestMethod: 'GET', requestPath: '/v1/models', status: 200, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/responses', status: 429, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/chat/completions', status: 500, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/responses', status: 200, transportError: true },
+    { requestMethod: 'POST', requestPath: '/v1/embeddings', status: 200, transportError: false },
+  ]) {
+    assert.equal(isCountedProviderResponse(exchange), false, JSON.stringify(exchange));
+  }
+});
+
 
 test('model endpoint defaults to the shared Open Responses server on port 4001', () => {
   const { spec } = buildStageRunSpec({
