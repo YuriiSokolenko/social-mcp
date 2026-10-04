@@ -95,7 +95,8 @@ export function validateSingleEvidenceRequest(input = {}) {
   const clauses = missing.split(/[;\n]+/).map(part => part.trim()).filter(Boolean);
   const paths = [...missing.matchAll(EVIDENCE_PATH_TOKEN)].map(match => match[1]);
   const coordinatedPaths = /\band\b/i.test(missing) && new Set(paths).size > 1;
-  const multiplePurposes = clauses.length > 1 || verbs.length > 1 || coordinatedPaths;
+  const explicitAdditionalFact = /(?:,\s*)?\b(?:plus|as well as|additionally)\b/i.test(missing);
+  const multiplePurposes = clauses.length > 1 || verbs.length > 1 || coordinatedPaths || explicitAdditionalFact;
 
   if (multiplePurposes) {
     return {
