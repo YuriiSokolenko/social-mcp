@@ -499,16 +499,16 @@ export default function (pi) {
     if (guardSignature !== lastCodingSubmissionGuardSignature) {
       lastCodingSubmissionGuardSignature = guardSignature;
       if (!submissionReadiness.ready) {
-        console.warn(`PI_CODING_SUBMIT_DEFERRED ${JSON.stringify({
+        console.warn(`PI_CODING_SUBMIT_GUARD ${JSON.stringify({
           stage,
           reason: 'prepared_outputs_missing',
           missingOutputs: submissionReadiness.missing_outputs,
+          terminalOutcomesRemainAvailable: true,
         })}`);
       }
     }
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
-      (name !== 'submit_result' || submissionReadiness.ready) &&
       (!verificationTool || name !== verificationTool || (verificationPermitted && !recoveryRetryReady)) &&
       (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
@@ -1132,6 +1132,7 @@ export default function (pi) {
         scope,
         result,
         env: process.env,
+        cwd: ctx.cwd,
       });
       if (codingValidation) {
         console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
@@ -2302,6 +2303,7 @@ export default function (pi) {
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
       madeProgress: effectiveProgress,
       input: acceptedToolInput,
+      strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
     });
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
