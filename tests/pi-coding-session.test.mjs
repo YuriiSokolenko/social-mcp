@@ -35,6 +35,15 @@ test('coding-session guidance uses only exposed tools and routes missing evidenc
   assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
 });
 
+test('#470 evidence-consumed notices are correlated to the exact tool call', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.set\(event\.toolCallId, evidenceConsumptionNotice\)/);
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.get\(event\.toolCallId\)/);
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.delete\(event\.toolCallId\)/);
+  assert.doesNotMatch(runtime, /const consumedEvidence = controller\.consumeEvidenceActionNotice\(\);/);
+});
+
+
 test('every file mutation target must be physically inside the worktree', () => {
   const dir = tempDir();
   const outside = tempDir();
