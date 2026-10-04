@@ -13,6 +13,7 @@ import {
   invalidateCodingBehavioralValidation,
   recordCodingBehavioralValidation,
   requiredCodingPytestTargets,
+  requiredPreparedOutputPaths,
 } from '../scripts/pi-common/coding-session-validation.mjs';
 
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -620,6 +621,26 @@ test('#469 fresh coding session hides terminal submission while prepared require
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test('#470 prepared-output gate ignores removal, rename, negative, and URL path mentions', () => {
+  const prepared = {
+    status: 'prepared',
+    plan: [
+      'Delete src/old.py.',
+      'Rename a/x.py to a/y.py.',
+      'Do not touch docs/foo.md.',
+      'Add tests/test_new.py based on https://example.com/a/b.html.',
+      'Create src/new.py.',
+    ],
+    layoutHint: { sourceTarget: 'src/old.py' },
+  };
+
+  assert.deepEqual(
+    requiredPreparedOutputPaths(prepared),
+    ['src/new.py', 'tests/test_new.py'],
+  );
 });
 
 
