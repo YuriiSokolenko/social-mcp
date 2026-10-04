@@ -55,42 +55,55 @@ The persistent `control-runner` is intentionally constrained. Its image is
 built from `node:24-bookworm-slim` (Debian/glibc), contains only the GitHub
 Actions runner plus Git, Node.js, curl, jq, and runtime libraries, and has no
 Docker CLI/socket, Pi configuration, model endpoint, Android SDK, or build
-toolchain. Compose caps it at 0.5 CPU, 512 MiB RAM, and 256 PIDs, drops the
+toolchain. Compose caps it at 1 CPU, 1 GiB RAM, and 512 PIDs, drops the
 default Linux capability set, adds back only `SETUID`/`SETGID` so PID 1 can
 launch the unprivileged runner, and enables `no-new-privileges`. The entrypoint uses the
 repository administration token only for first-time registration and
-post-failure recovery; the long-lived Actions runner and all workflow jobs run
-as the unprivileged `runner` user with `GH_ADMIN_TOKEN` removed from their
-environment. Normal Docker/host stops do not deregister the runner, so a
-restart with existing local credentials needs no GitHub API call. The
-entrypoint enables the official runner's `RUNNER_MANUALLY_TRAP_SIG` path so
-TERM/INT reaches `Runner.Listener`. First-time `config.sh` runs
-asynchronously so PID 1 can handle Docker stop while registration is in
-progress.
+bounded post-failure recovery; the long-lived Actions runner and all workflow
+jobs run as the unprivileged `runner` user with `GH_ADMIN_TOKEN` removed from
+their environment. Normal Docker/host stops do not deregister the runner.
+
+The complete runner root at `/home/runner/actions-runner` is backed by the
+named volume `CONTROL_RUNNER_STATE_VOLUME` (default
+`social-mcp-control-runner-state`). Registration files, the repair-cooldown
+marker, work/update state, and any self-updated runner binaries therefore
+survive container restart, `--force-recreate`, and normal Compose down/up.
+The image also keeps its verified bootstrap package at
+`/opt/actions-runner-baseline` outside that volume. On startup, if the
+persisted runtime is missing/corrupt or older than the image baseline, the
+entrypoint restores only the runner package from that baseline while keeping
+registration/cooldown state.
 
 The entrypoint runs `bin/Runner.Listener run` directly instead of routing
 through GitHub's `run.sh` / `run-helper.sh`. The upstream wrapper maps
 listener exit codes such as terminated error (1) and session conflict (5) to
-success, which hides the distinction needed for recovery. Direct execution
-preserves those codes while still allowing the runner's normal self-update
-flow: retry/update/config-refresh codes are handled explicitly.
+success; direct execution preserves those codes while the entrypoint explicitly
+keeps the upstream retry/update/config-refresh behavior.
 
-Credential/session recovery is bounded. Exit 1 or 5 can trigger a clean
-`config.sh --replace` only when the repository runners API is healthy and
-the persisted repair cooldown has expired. The cooldown marker survives
-listener restarts, so a persistent fault cannot create a new runner
-registration on every cycle. Version-deprecated exit 7 and unknown failures
-never re-register. API/network/JSON failure is non-destructive and keeps the
-current credentials.
+Credential/session recovery is deliberately conservative. The first exit 1 or
+5 retries with the existing credentials, which lets a transient session
+conflict after Docker restart expire naturally. Only a repeated 1/5 failure
+can attempt `config.sh --replace`, and only when the repository runners API is
+healthy and the persisted repair cooldown has expired. A failed cooldown write
+or failed credential cleanup is non-destructive. Version-deprecated exit 7 and
+unknown failures never re-register; exit 6 has a short retry delay rather than
+a hot loop.
 
-First-time `config.sh` and `Runner.Listener` each run in their own process
-group. Docker TERM makes PID 1 send SIGINT to the whole active group and wait
-for it, matching the upstream manual-trap intent without orphaning
-`config.sh`, `Runner.Listener`, or `Runner.Worker`. Failed or interrupted
-first registration clears partial local `.runner` / credential files before
-retry. Retry, repair-cooldown, and update waits are also launched as
-interruptible background sleeps, so Docker stop is not deferred behind a long
-backoff interval.
+Startup requires both non-empty `.runner` and `.credentials`; a half-written
+registration is cleared before `config.sh` runs. First-time `config.sh` and
+`Runner.Listener` each run in their own process group. Docker TERM makes PID 1
+signal and wait for the whole active process group, avoiding orphaned
+registration/listener children. Failed or interrupted registration clears
+partial local state. Retry/cooldown sleeps are interruptible.
+
+GitHub self-update remains enabled. Upstream `update.sh` waits for
+`Runner.Listener` to exit, switches the versioned `bin`/`externals`
+symlinks, and writes `update.finished`. The entrypoint keeps the same 31-second
+normal update wait as upstream, probes the updated listener after a confirmed
+`update.finished`, and restores the image baseline only if that completed
+runtime cannot answer `--version`. During Docker shutdown it waits up to
+`CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS` (default 90s) for an in-flight update;
+Compose gives the container a 120-second stop grace period.
 
 The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
 (`worker-general.Dockerfile`) adds the Docker CLI and Compose plugin over the
@@ -133,7 +146,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.5 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.5 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.6 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
@@ -157,11 +170,12 @@ docker compose --env-file .env up -d --force-recreate --no-deps general-runner-m
 ```
 
 To deploy or refresh the dedicated control lane, build the pinned image and
-recreate only `control-runner`. It uses `restart: unless-stopped`, so the
-same single runner returns after Docker or host restart:
+recreate only `control-runner`. Its named runner-root volume is retained, so
+the same registration/cooldown/self-updated runtime survives restart and
+recreate:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.5 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.6 .
 docker compose --env-file .env up -d --force-recreate --no-deps control-runner
 docker compose --env-file .env logs --tail=100 control-runner
 ```
@@ -177,8 +191,11 @@ runtime ceiling. When updating that baseline, bump both
 `ACTIONS_RUNNER_VERSION` and `ACTIONS_RUNNER_SHA256`, bump
 `CONTROL_RUNNER_IMAGE`, rebuild the image, recreate only `control-runner`,
 and verify that `n150-control` is online in the repository Actions runner
-list before relying on it. Do not add `general` or `pi-agent` to
-`CONTROL_RUNNER_LABELS`.
+list before relying on it. The startup baseline check upgrades an older
+persisted runtime without deleting its registration state. Do not remove
+`CONTROL_RUNNER_STATE_VOLUME` during an ordinary deploy; deleting that volume
+is an explicit reset that discards registration and cooldown state. Do not add
+`general` or `pi-agent` to `CONTROL_RUNNER_LABELS`.
 
 ### `run_check` sandbox backend
 
