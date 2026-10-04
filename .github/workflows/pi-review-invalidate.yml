@@ -1,10 +1,10 @@
 name: PR Review Invalidate
-run-name: "♻️ Invalidate review · PR #${{ github.event.pull_request.number }}"
+run-name: "♻️ Invalidate review · ${{ github.ref_name }}"
 
 on:
-  pull_request:
-    types: [synchronize]
-    branches: [dev]
+  push:
+    branches:
+      - 'pi/issue-*'
 
 permissions:
   contents: read
@@ -12,14 +12,11 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: pr-review-invalidate-${{ github.event.pull_request.number }}
+  group: pr-review-invalidate-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   invalidate:
-    if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'pi/issue-')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -29,8 +26,21 @@ jobs:
           persist-credentials: false
           ref: dev
 
-      - name: Invalidate stale review verdict
+      - name: Find open PR and invalidate stale review verdict
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" invalidate "$PR"
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --head "$GITHUB_REF_NAME" \
+            --base dev \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -z "$PR" ]; then
+            echo "No open dev PR for $GITHUB_REF_NAME; nothing to invalidate"
+            exit 0
+          fi
+          node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" invalidate "$PR"
