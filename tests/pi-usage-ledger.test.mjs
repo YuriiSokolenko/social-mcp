@@ -267,7 +267,7 @@ test('#469 transport failures are diagnostic exchanges, not provider responses',
   assert.deepEqual(ledger.unknown, []);
 });
 
-test('#470 provider totals keep logical calls that bypass the trace proxy', () => {
+test('#470 provider totals keep logical calls that bypass the trace proxy without erasing attribution', () => {
   const ledger = summarizeUsage([
     { call: 'planner', scope: 'session', childSession: 'planner-untraced', status: 'completed',
       usage: u(50, 5, 55, { turns: 2, durationMs: 1200 }) },
@@ -283,9 +283,55 @@ test('#470 provider totals keep logical calls that bypass the trace proxy', () =
 
   assert.equal(ledger.totals.providerResponses, 2);
   assert.equal(ledger.totals.providerResponseMs, 700);
+  assert.equal(ledger.calls.get('planner').providerResponses, 2);
+  assert.equal(ledger.calls.get('planner').providerResponseMs, 0);
+  const supplemental = [...ledger.calls.entries()].find(([key]) => key.startsWith('provider_trace_unattributed'))?.[1];
+  assert.ok(supplemental);
+  assert.equal(supplemental.providerResponses, 0);
+  assert.equal(supplemental.providerResponseMs, 700);
+});
+
+
+test('#470 trace reconciliation never overwrites call rows with provider-like names', () => {
+  const ledger = summarizeUsage([
+    { call: 'provider', response: 1, usage: u(10, 1), responseMs: 100 },
+    { call: 'provider_trace_unattributed', response: 1, usage: u(20, 2), responseMs: 200 },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'trace',
+      response: 1,
+      responseMs: 900,
+    },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'trace',
+      response: 2,
+      responseMs: 1000,
+    },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'trace',
+      response: 3,
+      responseMs: 1100,
+    },
+  ]);
+
+  assert.equal(ledger.calls.get('provider').total, 11);
   assert.equal(ledger.calls.get('provider').providerResponses, 1);
-  assert.equal(ledger.calls.get('provider_untraced').providerResponses, 1);
-  assert.equal(ledger.calls.get('provider_untraced').providerResponseMs, 0);
+  assert.equal(ledger.calls.get('provider_trace_unattributed').total, 22);
+  assert.equal(ledger.calls.get('provider_trace_unattributed').providerResponses, 1);
+  assert.equal(ledger.totals.providerResponses, 3);
+  assert.equal(ledger.totals.providerResponseMs, 3000);
+  const supplementalKey = [...ledger.calls.keys()].find(key => key.startsWith('provider_trace_unattributed') && key !== 'provider_trace_unattributed');
+  assert.ok(supplementalKey);
+  assert.equal(ledger.calls.get(supplementalKey).providerResponses, 1);
+  assert.equal(ledger.calls.get(supplementalKey).providerResponseMs, 2700);
 });
 
 
