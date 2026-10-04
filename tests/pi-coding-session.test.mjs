@@ -188,7 +188,7 @@ function runtimeScenario(mode) {
       const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
       const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile } = await import(terminalReceiptUrl);
       const { writeImplementerResult } = await import(implementerResultUrl);
-      const { recordCodingBehavioralValidation } = await import(codingValidationUrl);
+      const { assertCodingBehavioralValidation, recordCodingBehavioralValidation } = await import(codingValidationUrl);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
@@ -439,6 +439,49 @@ function runtimeScenario(mode) {
       parentResultTool(pi);
       assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the provider constraint hook');
       assert.equal(handlers.has('turn_end'), true, 'the parent installs provider error recovery on the authoritative turn boundary');
+      if (mode === 'bash-error-mutates' || mode === 'bash-error-unknown') {
+        process.env.PI_CODING_SESSION_USED = 'true';
+        const changedFiles = ['src/game.py', 'tests/test_game.py'];
+        recordCodingBehavioralValidation({
+          scope: { targets: ['tests/test_game.py'] },
+          result: { status: 'pass', kind: 'pytest' },
+          env: process.env,
+          cwd,
+        });
+        assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env: process.env }));
+
+        handlers.get('turn_start')({ turnIndex: 0 });
+        const bashEvent = {
+          toolName: 'bash',
+          toolCallId: 'failed-bash-validation',
+          input: { command: 'git status --short -- generated.py' },
+        };
+        assert.equal(await handlers.get('tool_call')(bashEvent, ctx), undefined, 'bounded bash reaches execution');
+        let hiddenGit = null;
+        if (mode === 'bash-error-mutates') {
+          fs.writeFileSync(cwd + '/bash-mutated.txt', 'changed\n');
+        } else {
+          hiddenGit = cwd + '/.git-hidden-for-test';
+          fs.renameSync(cwd + '/.git', hiddenGit);
+        }
+        try {
+          await handlers.get('tool_execution_end')({
+            ...bashEvent,
+            isError: true,
+            result: { content: [{ type: 'text', text: 'command failed after execution' }] },
+          }, ctx);
+        } finally {
+          if (hiddenGit && fs.existsSync(hiddenGit)) fs.renameSync(hiddenGit, cwd + '/.git');
+        }
+        assert.throws(
+          () => assertCodingBehavioralValidation({ changedFiles, env: process.env }),
+          /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/,
+          'failed bash must invalidate stale pytest evidence when the worktree changed or fingerprint is unknown',
+        );
+        console.log(mode === 'bash-error-mutates' ? 'FAILED_BASH_MUTATION_INVALIDATED' : 'FAILED_BASH_UNKNOWN_INVALIDATED');
+        process.exit(0);
+      }
+
       if (mode === 'parent-contract' || mode === 'parent-contract-reverse') {
         const resultEvent = { toolCallId: 'missing-bash', toolName: 'bash', isError: true, content: [{ type: 'text', text: 'Tool bash not found' }] };
         const executionEvent = { ...resultEvent, result: { content: resultEvent.content } };
@@ -1162,6 +1205,14 @@ test('#425 a second coding attempt after recovery keeps both sessions attributed
 
 test('coding-session allowlist is derived from the executable registry, including hidden tools', () => {
   runtimeScenario('narrow-registry');
+});
+
+test('#470 failed bash invalidates pytest evidence when it changed the worktree', () => {
+  assert.match(runtimeScenario('bash-error-mutates'), /FAILED_BASH_MUTATION_INVALIDATED/);
+});
+
+test('#470 failed bash invalidates pytest evidence when repository fingerprint is unknown', () => {
+  assert.match(runtimeScenario('bash-error-unknown'), /FAILED_BASH_UNKNOWN_INVALIDATED/);
 });
 
 test('#399 executor-unavailable bash tool result aborts the parent as infrastructure immediately', () => {
