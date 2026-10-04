@@ -59,6 +59,7 @@ export function selectTerminalRecovery({
   currentChangedFiles = [],
   drift = [],
   acceptedPaths = [],
+  repositoryFactsAvailable = true,
 } = {}) {
   if (!obligation?.key) return blocked(obligation, 'The failed terminal submission has no stable unresolved-obligation identity.');
 
@@ -146,6 +147,12 @@ export function selectTerminalRecovery({
   }
 
   if (obligation.kind === 'file_set' || obligation.kind === 'file_set_cleanup') {
+    if (!repositoryFactsAvailable) {
+      return blocked(
+        obligation,
+        'Canonical repository/worktree facts are unavailable, so file-set recovery cannot safely infer cleanup or publication metadata.',
+      );
+    }
     const scratch = new Set(uniqueStrings(obligation.scratch));
     const unexpected = uniqueStrings(obligation.unexpected);
     const missing = uniqueStrings(obligation.missing);
