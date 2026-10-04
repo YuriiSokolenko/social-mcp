@@ -262,9 +262,10 @@ test('#426 workflow preserves terminal recovery blocked provenance for needs-hum
     'both no-change and changed-work failure paths validate, classify and report terminal recovery blocked',
   );
   assert.equal(
-    (workflow.match(/FAILURE_REASON="\$\(jq -r '\.reason' "\$PI_RUNTIME_FAILURE_FILE"\)"/g) ?? []).length,
+    (workflow.match(/FAILURE_REASON="Terminal recovery exhausted or could not select a capability-valid deterministic repair;/g) ?? []).length,
     2,
-    'both workflow failure paths preserve the precise runtime reason',
+    'both workflow failure paths map the blocked code to fixed trusted guidance',
   );
+  assert.doesNotMatch(workflow, /FAILURE_REASON="\$\(jq/);
   assert.match(workflow, /pi-transition\.mjs" issue needs-human/);
 });
