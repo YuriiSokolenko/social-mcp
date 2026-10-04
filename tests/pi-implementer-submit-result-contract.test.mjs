@@ -6,6 +6,16 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { assertImplementerFileSet, normalizeImplementerFiles } from '../scripts/pi-common/implementer-result.mjs';
+import {
+  assertCodingBehavioralValidation,
+  codingSessionSubmissionReadiness,
+  invalidateCodingBehavioralValidation,
+  recordCodingBehavioralValidation,
+  repositoryFingerprintRequiresValidation,
+  requiredCodingPytestTargets,
+  requiredPreparedOutputPaths,
+} from '../scripts/pi-common/coding-session-validation.mjs';
 
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const RESULT_TOOL_URL = new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href;
@@ -440,4 +450,464 @@ test('#424 fresh submit_result exposes targeted mutation cleanup for accidental 
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test('#469 terminal result paths reject non-repository forms with INVALID_RESULT_PATH', () => {
+  for (const value of [
+    '/tmp/tests/test_x.py',
+    'C:\\work\\tests\\test_x.py',
+    'C:/work/tests/test_x.py',
+    '../tests/test_x.py',
+    'file:///work/tests/test_x.py',
+    'https://example.invalid/test_x.py',
+  ]) {
+    assert.throws(
+      () => normalizeImplementerFiles([value]),
+      error => error?.code === 'INVALID_RESULT_PATH' && /INVALID_RESULT_PATH/.test(error.message),
+      value,
+    );
+  }
+  assert.deepEqual(
+    normalizeImplementerFiles(['tests/test_x.py', 'src/x.py', 'tests/test_x.py']),
+    ['src/x.py', 'tests/test_x.py'],
+  );
+});
+
+test('#470 valid git filenames with colon or backslash survive result file-set validation', () => {
+  const files = ['file:notes.txt', 'foo:bar.txt', 'dir\\literal.txt'];
+  assert.deepEqual(normalizeImplementerFiles(files), ['dir\\literal.txt', 'file:notes.txt', 'foo:bar.txt']);
+  assert.deepEqual(assertImplementerFileSet(files, files), ['dir\\literal.txt', 'file:notes.txt', 'foo:bar.txt']);
+  assert.deepEqual(
+    requiredCodingPytestTargets(['src/game.py', 'dir\\test_game.py']),
+    [],
+    'a literal backslash in a git filename is never reinterpreted as a directory separator for pytest coverage',
+  );
+});
+
+
+test('#469 invalid submit_result path reports the known canonical changed set before file-set recovery', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-invalid-path-'));
+  const work = cleanGitWorktree(root);
+  const context = path.join(root, 'issue.json');
+  const resultFile = path.join(root, 'result.json');
+  fs.mkdirSync(path.join(work, 'tests'), { recursive: true });
+  fs.writeFileSync(path.join(work, 'tests', 'test_x.py'), 'def test_x():\n    assert True\n');
+  fs.writeFileSync(context, JSON.stringify({ number: 469, title: 'Path validation', body: 'Test context' }));
+  try {
+    const program = `
+      const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      let tool;
+      const pi = { registerTool(value) { if (value.name === 'submit_result') tool = value; }, appendEntry() {}, on() {} };
+      registerResultTool(pi);
+      try {
+        await tool.execute('submit', {
+          title: 'Path fix',
+          summary: 'Validate result path.',
+          changes: ['Add a test'],
+          files: ['C:\\\\work\\\\tests\\\\test_x.py'],
+          security_notes: 'No security impact.',
+          limitations: 'None.',
+        });
+        console.log(JSON.stringify({ ok: true }));
+      } catch (error) {
+        console.log(JSON.stringify({ ok: false, code: error.code, message: error.message }));
+      }
+    `;
+    const child = runProgram({
+      dir: root,
+      cwd: work,
+      program,
+      env: {
+        GITHUB_WORKSPACE: PROJECT_ROOT,
+        PI_ISSUE: '469',
+        PI_ISSUE_CONTEXT: context,
+        PI_IMPLEMENTER_RESULT_FILE: resultFile,
+        PI_RESUME_ACTIVE: 'false',
+        PI_VALIDATION_REPAIR: 'false',
+      },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+    const output = JSON.parse(child.stdout.trim().split('\n').at(-1));
+    assert.equal(output.ok, false);
+    assert.equal(output.code, 'INVALID_RESULT_PATH');
+    assert.match(output.message, /Known canonical changed files: tests\/test_x\.py/);
+    assert.doesNotMatch(output.message, /undo_mutation/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('#469 coding-session source plus pytest changes require a passing targeted pytest after latest mutation', () => {
+  const env = { PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-469' }) };
+  const changedFiles = [
+    'src/social_mcp/diagnostics/smoke_connect_four.py',
+    'tests/test_smoke_connect_four.py',
+  ];
+  assert.deepEqual(requiredCodingPytestTargets(changedFiles), ['tests/test_smoke_connect_four.py']);
+
+  assert.throws(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    error => error?.code === 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+  );
+  assert.equal(recordCodingBehavioralValidation({
+    scope: { paths: ['src/game.py'] },
+    result: { status: 'pass', kind: 'python_compile' },
+    env,
+  }), null);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+  assert.equal(recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py::test_smoke'] },
+    result: { status: 'fail', kind: 'pytest' },
+    env,
+  }), null);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+
+  const nodeState = recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py::test_smoke'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
+  assert.equal(nodeState, null, 'one pytest node does not validate the rest of a changed test file');
+  assert.throws(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/,
+  );
+
+  recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
+  assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env }));
+
+  const unrelatedFailureState = recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_unrelated.py'] },
+    result: { status: 'fail', kind: 'pytest' },
+    env,
+  });
+  assert.deepEqual(unrelatedFailureState?.targets, ['tests/test_smoke_connect_four.py']);
+  assert.doesNotThrow(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    'a failing unrelated pytest target must not erase coverage for the required changed test',
+  );
+
+  assert.equal(recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py'] },
+    result: { status: 'infra_error', kind: 'pytest' },
+    env,
+  }), null);
+  assert.doesNotThrow(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    'pytest infrastructure errors carry no behavioral evidence and preserve prior passing coverage',
+  );
+
+  assert.equal(recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py'] },
+    result: { status: 'fail', kind: 'pytest' },
+    env,
+  }), null);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+
+  recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_smoke_connect_four.py'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
+  assert.equal(invalidateCodingBehavioralValidation(env), true);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+});
+
+test('#470 repository fingerprint validation policy preserves read-only bash and fails closed on uncertainty', () => {
+  assert.equal(repositoryFingerprintRequiresValidation('same', 'same'), false);
+  assert.equal(repositoryFingerprintRequiresValidation('before', 'after'), true);
+  assert.equal(repositoryFingerprintRequiresValidation(null, 'after'), true);
+  assert.equal(repositoryFingerprintRequiresValidation('before', null), true);
+  assert.equal(repositoryFingerprintRequiresValidation(null, null), true);
+
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /mutationChanged !== false/);
+  assert.match(runtime, /repositoryFingerprintRequiresValidation\(\s*bashValidationFingerprintBefore,\s*bashValidationFingerprintAfter/);
+  assert.doesNotMatch(runtime, /if \(!event\.isError && canonicalToolName === 'bash'\)/);
+});
+
+
+test('#470 coding pytest gate ignores deleted/non-test Python files and accepts broader passing scopes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-pytest-scope-'));
+  const env = { PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-scope-470' }) };
+  const changedFiles = ['src/game.py', 'tests/test_game.py', 'tests/conftest.py', 'tests/__init__.py'];
+  try {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'game.py'), 'VALUE = 1\n');
+    fs.writeFileSync(path.join(dir, 'tests', 'test_game.py'), 'def test_value():\n    assert True\n');
+    fs.writeFileSync(path.join(dir, 'tests', 'conftest.py'), '# fixture config\n');
+    fs.writeFileSync(path.join(dir, 'tests', '__init__.py'), '');
+
+    assert.deepEqual(
+      requiredCodingPytestTargets(changedFiles, { cwd: dir }),
+      ['tests/test_game.py'],
+    );
+
+    recordCodingBehavioralValidation({
+      scope: { targets: ['tests'] },
+      result: { status: 'pass', kind: 'pytest' },
+      env,
+      cwd: dir,
+    });
+    assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env, cwd: dir }));
+
+    invalidateCodingBehavioralValidation(env);
+    recordCodingBehavioralValidation({
+      scope: { profile: 'pytest_all' },
+      result: { status: 'pass', kind: 'profile', profile: 'pytest_all' },
+      env,
+      cwd: dir,
+    });
+    assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env, cwd: dir }));
+
+    invalidateCodingBehavioralValidation(env);
+    fs.rmSync(path.join(dir, 'tests', 'test_game.py'));
+    assert.deepEqual(
+      requiredCodingPytestTargets(['src/game.py', 'tests/test_game.py'], { cwd: dir }),
+      [],
+      'deleted pytest files are not impossible required targets',
+    );
+    assert.doesNotThrow(() => assertCodingBehavioralValidation({
+      changedFiles: ['src/game.py', 'tests/test_game.py'],
+      env,
+      cwd: dir,
+    }));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('#470 changed coding submission keeps terminal outcomes reachable when prepared outputs are missing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-prepared-output-'));
+  const work = cleanGitWorktree(root);
+  const context = path.join(root, 'issue.json');
+  const resultFile = path.join(root, 'result.json');
+  const preparedFile = path.join(root, 'prepared.json');
+  fs.writeFileSync(context, JSON.stringify({ number: 470, title: 'Prepared output guard', body: 'Test context' }));
+  fs.writeFileSync(preparedFile, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Create src/required.py'],
+    complexity: 'nontrivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'Required source output.',
+    workspaceRoot: work,
+    freshBaseCommit: '',
+    baseRef: 'origin/dev',
+    layoutHint: { sourceTarget: 'src/required.py' },
+    plannerUsage: null,
+    plannerDurationMs: 1,
+  }));
+  try {
+    fs.writeFileSync(path.join(work, 'other.py'), 'VALUE = 1\n');
+    const program = `
+      const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      let tool;
+      const pi = { registerTool(value) { if (value.name === 'submit_result') tool = value; }, appendEntry() {}, on() {} };
+      registerResultTool(pi);
+      try {
+        await tool.execute('changed', {
+          title: 'Changed',
+          summary: 'Changed another file.',
+          changes: ['Change another file'],
+          files: ['other.py'],
+          security_notes: 'None.',
+          limitations: 'None.',
+        });
+      } catch (error) {
+        console.log('CHANGED_ERROR ' + error.message);
+      }
+    `;
+    const child = runProgram({
+      dir: root,
+      cwd: work,
+      program,
+      env: {
+        GITHUB_WORKSPACE: PROJECT_ROOT,
+        PI_ISSUE: '470',
+        PI_ISSUE_CONTEXT: context,
+        PI_IMPLEMENTER_RESULT_FILE: resultFile,
+        PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-470' }),
+        PI_PREPARED_IMPLEMENTATION_FILE: preparedFile,
+        PI_RESUME_ACTIVE: 'false',
+        PI_VALIDATION_REPAIR: 'false',
+      },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+    assert.match(child.stdout, /PREPARED_OUTPUTS_REQUIRED/);
+
+    const blocked = runSuccessfulSubmit({
+      modeEnv: {
+        PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-470-blocked' }),
+        PI_PREPARED_IMPLEMENTATION_FILE: preparedFile,
+      },
+      params: { blocked_reason: 'The required output cannot be produced without contradictory requirements.' },
+    });
+    assert.equal(blocked.metadata.outcome, 'blocked');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('#469 fresh coding session reports missing prepared outputs until they exist', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-readiness-'));
+  try {
+    const prepared = {
+      status: 'prepared',
+      plan: [
+        'Create src/connect_four.py and tests/test_connect_four.py.',
+        'Run the targeted smoke test.',
+      ],
+      layoutHint: {
+        sourceTarget: 'src/connect_four.py',
+        testTarget: 'tests/test_connect_four.py',
+        testTargetRequired: true,
+      },
+    };
+    const blocked = codingSessionSubmissionReadiness({ prepared, cwd: dir, changedFiles: [] });
+    assert.equal(blocked.ready, false);
+    assert.deepEqual(blocked.missing_outputs, ['src/connect_four.py', 'tests/test_connect_four.py']);
+
+    const unrelatedMutation = codingSessionSubmissionReadiness({
+      prepared,
+      cwd: dir,
+      changedFiles: ['README.md'],
+    });
+    assert.equal(unrelatedMutation.ready, false);
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'connect_four.py'), '# source\n');
+    fs.writeFileSync(path.join(dir, 'tests', 'test_connect_four.py'), '# test\n');
+    const completeCandidate = codingSessionSubmissionReadiness({
+      prepared,
+      cwd: dir,
+      changedFiles: ['src/connect_four.py', 'tests/test_connect_four.py'],
+    });
+    assert.equal(completeCandidate.ready, true);
+
+    const resumed = codingSessionSubmissionReadiness({
+      prepared,
+      cwd: dir,
+      changedFiles: [],
+      resumed: true,
+    });
+    assert.equal(resumed.ready, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test('#470 inferred test targets are guidance, not mandatory prepared outputs', () => {
+  const inferred = {
+    status: 'prepared',
+    layoutHint: {
+      sourceTarget: 'src/widget.py',
+      testTarget: 'tests/test_widget.py',
+      testTargetRequired: false,
+    },
+  };
+  assert.deepEqual(requiredPreparedOutputPaths(inferred), ['src/widget.py']);
+
+  const explicit = {
+    ...inferred,
+    layoutHint: { ...inferred.layoutHint, testTargetRequired: true },
+  };
+  assert.deepEqual(requiredPreparedOutputPaths(explicit), ['src/widget.py', 'tests/test_widget.py']);
+});
+
+
+test('#470 prepared-output gate ignores planner prose and uses only structured layout targets', () => {
+  const prepared = {
+    status: 'prepared',
+    plan: [
+      'Delete src/old.py.',
+      'Rename a/x.py to a/y.py.',
+      'Do not touch docs/foo.md.',
+      'Add tests/test_new.py based on https://example.com/a/b.html.',
+      'Create src/new.py.',
+    ],
+    layoutHint: {
+      sourceTarget: 'src/structured.py',
+      testTarget: 'tests/test_structured.py',
+      testTargetRequired: true,
+    },
+  };
+
+  assert.deepEqual(
+    requiredPreparedOutputPaths(prepared),
+    ['src/structured.py', 'tests/test_structured.py'],
+  );
+});
+
+
+test('#469 targeted pytest state survives coding fork return to parent without resurrecting stale parent env', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-validation-state-'));
+  const terminal = path.join(dir, 'terminal.json');
+  const changedFiles = ['src/game.py', 'tests/test_game.py'];
+  const parentEnv = {
+    PI_CODING_SESSION_USED: 'true',
+    PI_TERMINAL_RESULT_FILE: terminal,
+  };
+  try {
+    recordCodingBehavioralValidation({
+      scope: { targets: ['tests/test_game.py'] },
+      result: { status: 'pass', kind: 'pytest' },
+      env: parentEnv,
+    });
+    assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env: parentEnv }));
+
+    // A fork inherits the parent's env snapshot. Its mutation invalidates the shared file and only
+    // its own env copy; the parent must treat the missing shared file as authoritative.
+    const childEnv = {
+      ...parentEnv,
+      PI_CODING_SESSION: JSON.stringify({ sessionId: 'child-469' }),
+    };
+    assert.equal(invalidateCodingBehavioralValidation(childEnv), true);
+    assert.ok(parentEnv.PI_CODING_TARGETED_PYTEST_STATE, 'parent still holds the inherited stale snapshot');
+    assert.throws(
+      () => assertCodingBehavioralValidation({ changedFiles, env: parentEnv }),
+      /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test('#469 targeted pytest passes accumulate across files until the next mutation', () => {
+  const env = { PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-multi-469' }) };
+  const changedFiles = ['src/game.py', 'tests/test_a.py', 'tests/test_b.py'];
+
+  recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_a.py'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
+  assert.throws(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    error => error?.requiredTargets?.length === 1 && error.requiredTargets[0] === 'tests/test_b.py',
+  );
+
+  const state = recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_b.py'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
+  assert.deepEqual(state.targets, ['tests/test_a.py', 'tests/test_b.py']);
+  assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env }));
+
+  invalidateCodingBehavioralValidation(env);
+  assert.throws(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    error => error?.requiredTargets?.length === 2,
+  );
 });

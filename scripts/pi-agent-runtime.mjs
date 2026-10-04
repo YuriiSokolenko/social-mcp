@@ -79,6 +79,14 @@ import {
   incapableCodingSessionRecord,
   recordUnavailableCapabilityAttempt,
 } from './pi-common/coding-session-capability.mjs';
+import {
+  CODING_SESSION_USED_ENV,
+  codingSessionSubmissionReadiness,
+  invalidateCodingBehavioralValidation,
+  recordCodingBehavioralValidation,
+  repositoryFingerprintRequiresValidation,
+  requiredPreparedOutputPaths,
+} from './pi-common/coding-session-validation.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
@@ -331,6 +339,9 @@ export default function (pi) {
   let loopGuardSteeredThisTurn = false;
   let unrestrictedActiveTools = null;
   let unavailableToolAttempts = 0;
+  let unavailableCapabilityAttemptedThisTurn = false;
+  let unavailableCapabilityKindThisTurn = null;
+  let consecutiveUnavailableCapabilityTurns = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
   // Successful trusted recovery transitions in this process; releases the incapable-fork guard.
@@ -394,6 +405,20 @@ export default function (pi) {
   }
 
   let lastSurfaceSignature = null;
+  let lastCodingSubmissionGuardSignature = null;
+
+  function codingSubmissionReadiness() {
+    if (!codingSession) return { ready: true, missing_outputs: [] };
+    const prepared = readPreparedImplementation(process.env.PI_PREPARED_IMPLEMENTATION_FILE);
+    if (!requiredPreparedOutputPaths(prepared).length) return { ready: true, missing_outputs: [] };
+    return codingSessionSubmissionReadiness({
+      prepared,
+      cwd: process.cwd(),
+      resumed: resumedImplementer,
+      validationRepair,
+    });
+  }
+
   function setSurface(names, reason) {
     pi.setActiveTools(names);
     const actual = pi.getActiveTools();
@@ -469,6 +494,19 @@ export default function (pi) {
         !verificationToolHiddenByPermitGate
       ) {
         unrestrictedActiveTools = unrestrictedActiveTools.filter(name => name !== verificationTool);
+      }
+    }
+    const submissionReadiness = codingSubmissionReadiness();
+    const guardSignature = submissionReadiness.ready ? 'ready' : submissionReadiness.missing_outputs.join('\0');
+    if (guardSignature !== lastCodingSubmissionGuardSignature) {
+      lastCodingSubmissionGuardSignature = guardSignature;
+      if (!submissionReadiness.ready) {
+        console.warn(`PI_CODING_SUBMIT_GUARD ${JSON.stringify({
+          stage,
+          reason: 'prepared_outputs_missing',
+          missingOutputs: submissionReadiness.missing_outputs,
+          terminalOutcomesRemainAvailable: true,
+        })}`);
       }
     }
     const visible = names => names.filter(name =>
@@ -786,10 +824,12 @@ export default function (pi) {
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
   let codingResponseNumber = 0;
+  let codingProviderRequestStartedAt = null;
   if (stage === 'implementer') {
     let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
       forcedProviderRequestInFlight = false;
+      if (codingSession) codingProviderRequestStartedAt = Date.now();
       const productiveState = syncProductiveState();
       syncActionToolSurface(productiveState);
 
@@ -998,6 +1038,8 @@ export default function (pi) {
   const truncationGuidedCalls = new Set();
   const pendingLoopCalls = new Map();
   const pendingToolInputs = new Map();
+  const pendingEvidenceConsumptionNotices = new Map();
+  const pendingBashValidationFingerprints = new Map();
   let lastSuccessfulMutationSnapshot = null;
   let lastSuccessfulMutationLocalOnlyMarkerId = null;
 
@@ -1089,6 +1131,19 @@ export default function (pi) {
     async function executeAuthoritativeRunCheck(params, ctx, { retry = false } = {}) {
       const result = await runCheck(ctx.cwd, params);
       const scope = normalizeScope(params, ctx.cwd);
+      const codingValidation = recordCodingBehavioralValidation({
+        scope,
+        result,
+        env: process.env,
+        cwd: ctx.cwd,
+      });
+      if (codingValidation) {
+        console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+          stage,
+          status: 'pass',
+          targets: codingValidation.targets,
+        })}`);
+      }
       console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
       const appendedRecord = appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
         kind: result.kind,
@@ -1498,6 +1553,10 @@ export default function (pi) {
             );
           }
           sessionsStarted += 1;
+          // Durable in the parent process: if the fork returns without terminal submission,
+          // parent-side run_check/mutations/submit_result remain under the same behavioral
+          // validation contract.
+          process.env[CODING_SESSION_USED_ENV] = 'true';
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
           const capabilityFile = `${contractFile}.capabilities.json`;
@@ -1749,6 +1808,8 @@ export default function (pi) {
 
   pi.on('turn_start', (event) => {
     actionTurnAttemptedTool = false;
+    unavailableCapabilityAttemptedThisTurn = false;
+    unavailableCapabilityKindThisTurn = null;
     elevatedTurnAttemptedFinishTool = false;
     elevatedTurnAttemptedScopePrelude = false;
     elevatedTurnAttemptedEvidenceUnlock = false;
@@ -1799,7 +1860,11 @@ export default function (pi) {
       !activeToolNames.includes(event.toolName);
     if (enforceActiveSurface) {
       unavailableToolAttempts += 1;
+      unavailableCapabilityAttemptedThisTurn = true;
       const presentAtRequestStart = providerCapabilitySnapshot?.executableTools?.includes(event.toolName) === true;
+      unavailableCapabilityKindThisTurn = presentAtRequestStart
+        ? 'stale_after_capability_transition'
+        : 'not_exposed_in_provider_request';
       const unavailable = {
         block: true,
         reason: presentAtRequestStart
@@ -1929,6 +1994,15 @@ export default function (pi) {
       }
       return blocked;
     }
+    // Capture the controller notice now, but publish it only for this exact toolCallId after
+    // execution. Any later runtime-side block simply drops this local value.
+    const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice();
+    const restoreRuntimeBlockedEvidence = () => {
+      if (evidenceConsumptionNotice) {
+        controller.restoreRuntimeBlockedEvidenceAction(evidenceConsumptionNotice);
+      }
+    };
+    try {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
@@ -1982,7 +2056,9 @@ export default function (pi) {
           env: process.env,
         });
       } catch (error) {
-        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
+        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') {
+          throw error;
+        }
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
         return containmentBlocked;
@@ -2032,7 +2108,13 @@ export default function (pi) {
         };
       }
     }
+    if (stage === 'implementer' && canonicalToolName === 'bash') {
+      pendingBashValidationFingerprints.set(event.toolCallId, repositoryStateFingerprint(cwd));
+    }
     pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
+    if (evidenceConsumptionNotice) {
+      pendingEvidenceConsumptionNotices.set(event.toolCallId, evidenceConsumptionNotice);
+    }
     if (loopGuard) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
@@ -2043,9 +2125,21 @@ export default function (pi) {
       });
     }
     return undefined;
+    } catch (error) {
+      // The controller has already converted the one-action evidence window back to
+      // action_required by this point. If trusted runtime setup throws before execution,
+      // restore that same permit so a harness failure cannot silently consume it.
+      restoreRuntimeBlockedEvidence();
+      throw error;
+    }
   });
   pi.on('tool_execution_end', async (event, ctx) => {
+    const consumedEvidence = pendingEvidenceConsumptionNotices.get(event.toolCallId) ?? null;
+    pendingEvidenceConsumptionNotices.delete(event.toolCallId);
+    const bashValidationFingerprintBefore = pendingBashValidationFingerprints.get(event.toolCallId) ?? null;
+    pendingBashValidationFingerprints.delete(event.toolCallId);
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
+      if (consumedEvidence) controller.restoreRuntimeBlockedEvidenceAction(consumedEvidence);
       await handleMissingExecutor(event, ctx);
       return;
     }
@@ -2111,6 +2205,15 @@ export default function (pi) {
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
+      if (!event.isError && mutationChanged !== false) {
+        if (invalidateCodingBehavioralValidation(process.env)) {
+          console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+            stage,
+            status: mutationChanged === true ? 'invalidated_by_mutation' : 'invalidated_by_unknown_mutation',
+            path: mutationSnapshot?.path ?? null,
+          })}`);
+        }
+      }
       if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot) {
         const mutationCwd = pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd();
 
@@ -2209,10 +2312,38 @@ export default function (pi) {
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
+    if (stage === 'implementer' && canonicalToolName === 'bash') {
+      const bashValidationFingerprintAfter = repositoryStateFingerprint(ctx?.cwd ?? process.cwd());
+      const bashRequiresValidation = repositoryFingerprintRequiresValidation(
+        bashValidationFingerprintBefore,
+        bashValidationFingerprintAfter,
+      );
+      if (bashRequiresValidation && invalidateCodingBehavioralValidation(process.env)) {
+        const knownChange = Boolean(
+          bashValidationFingerprintBefore &&
+          bashValidationFingerprintAfter &&
+          bashValidationFingerprintBefore !== bashValidationFingerprintAfter
+        );
+        console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+          stage,
+          status: knownChange ? 'invalidated_by_bash_change' : 'invalidated_by_bash_unknown',
+        })}`);
+      }
+    }
+    if (!event.isError && ['rollback_last_mutation', 'recover_worktree', 'undo_mutation'].includes(canonicalToolName)) {
+      if (invalidateCodingBehavioralValidation(process.env)) {
+        console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+          stage,
+          status: 'invalidated_by_recovery_mutation',
+          tool: canonicalToolName,
+        })}`);
+      }
+    }
     const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
       madeProgress: effectiveProgress,
       input: acceptedToolInput,
+      strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
     });
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
@@ -2226,6 +2357,19 @@ export default function (pi) {
     pendingToolInputs.delete(event.toolCallId);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
+    if (consumedEvidence) {
+      const activeToolNames = pi.getActiveTools();
+      console.info(`PI_EVIDENCE_PERMIT_CONSUMED ${JSON.stringify({
+        stage,
+        tool: consumedEvidence.tool,
+        productiveState,
+        activeTools: activeToolNames,
+      })}`);
+      await pi.sendUserMessage(
+        `RUNTIME EVIDENCE PERMIT CONSUMED: the one evidence action (${consumedEvidence.tool}) is complete. read/search evidence and repeated need_more_evidence are unavailable until successful productive progress. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
+        { deliverAs: 'steer' },
+      );
+    }
     if (transitionRecord) await announceTransition(transitionRecord, productiveState);
 
     if (loopGuard && pendingLoopCall) {
@@ -2272,8 +2416,10 @@ export default function (pi) {
       recordDescendantMetric({
         call: 'coding', childSession: codingSession.sessionId, response: codingResponseNumber,
         usage: event.message?.usage ?? null,
+        responseMs: codingProviderRequestStartedAt == null ? 0 : Math.max(0, Date.now() - codingProviderRequestStartedAt),
         ...(event.message?.usage ? {} : { reason: 'provider_usage_unavailable' }),
       });
+      codingProviderRequestStartedAt = null;
     }
     const status = providerErrorStatus(event.message);
     const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
@@ -2396,11 +2542,41 @@ export default function (pi) {
           ? (config.postComplexityActionResponseRetryMaxTokens ?? actionCap)
           : (config.productiveProgress?.actionResponseRetryMaxTokens ?? actionCap)
     );
+    const effectiveAttemptedTool = actionTurnAttemptedTool || unavailableCapabilityAttemptedThisTurn;
+    const unavailableCapabilityStrike =
+      runtimeActionRequired &&
+      unavailableCapabilityAttemptedThisTurn &&
+      !controller.turnMadeProgress &&
+      unavailableCapabilityKindThisTurn !== 'stale_after_capability_transition';
+    if (unavailableCapabilityStrike) {
+      consecutiveUnavailableCapabilityTurns += 1;
+    } else {
+      // "Consecutive" is literal: any non-strike turn resets the streak. A tool that was valid at
+      // provider-request start but became stale after an earlier same-response transition is a
+      // benign lifecycle race, not a model-error strike.
+      consecutiveUnavailableCapabilityTurns = 0;
+    }
+    if (consecutiveUnavailableCapabilityTurns >= 2) {
+      const reason = `second consecutive unavailable capability turn (${unavailableCapabilityKindThisTurn ?? 'unknown'}); aborting stage`;
+      recordRuntimeAbort(
+        'PI_UNAVAILABLE_CAPABILITY_ABORT',
+        reason,
+        {
+          unavailableToolAttempts,
+          consecutiveUnavailableCapabilityTurns,
+          unavailableCapabilityKind: unavailableCapabilityKindThisTurn,
+        },
+      );
+      console.error(`PI_UNAVAILABLE_CAPABILITY_ABORT: ${reason}`);
+      ctx.abort();
+      return;
+    }
+
     actionRequiredProseOnlyTurns = nextActionRequiredProseOnlyTurns(
       actionRequiredProseOnlyTurns,
       {
         actionRequired: runtimeActionRequired,
-        attemptedTool: actionTurnAttemptedTool,
+        attemptedTool: effectiveAttemptedTool,
         madeProgress: controller.turnMadeProgress,
         responseHitOutputCeiling,
       },
@@ -2434,7 +2610,7 @@ export default function (pi) {
 
     ceilingWithoutToolTurns = nextCeilingWithoutToolTurns(ceilingWithoutToolTurns, {
       actionRequired: runtimeActionRequired,
-      attemptedTool: actionTurnAttemptedTool,
+      attemptedTool: effectiveAttemptedTool,
       madeProgress: controller.turnMadeProgress,
       responseHitOutputCeiling,
     });
@@ -2518,7 +2694,8 @@ export default function (pi) {
       afterTurn: event.turnIndex,
       outputTokens,
       madeProgress: controller.turnMadeProgress,
-      attemptedTool: actionTurnAttemptedTool,
+      attemptedTool: effectiveAttemptedTool,
+      unavailableCapabilityAttempted: unavailableCapabilityAttemptedThisTurn,
       responseHitOutputCeiling,
       nextBudget: next.level,
       maxTokens: appliedActionCap || next.maxTokens,

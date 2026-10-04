@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import readline from "node:readline";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const tty = process.stdout.isTTY || Boolean(process.env.GITHUB_ACTIONS);
@@ -34,6 +34,9 @@ let thinkingStreamed = false;
 let textStreamed = false;
 let reasoningAvailable = false;
 let redactingPrivateKey = false;
+let assistantMessageStarted = false;
+let runtimeFailureSignatureSeen = null;
+let runtimeFailureSettlementClaimed = false;
 const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 let measuredResponses = 0;
 let totalResponseMs = 0;
@@ -47,6 +50,20 @@ const phase = process.env.PI_PHASE ?? "agent";
 const call = process.env.PI_CALL ?? "main";
 const summaryFile = process.env.GITHUB_STEP_SUMMARY;
 const activityFile = process.env.PI_ACTIVITY_FILE;
+const runtimeFailureFile = process.env.PI_RUNTIME_FAILURE_FILE;
+
+function runtimeFailureSignature() {
+  if (!runtimeFailureFile || !existsSync(runtimeFailureFile)) return null;
+  try {
+    const stat = statSync(runtimeFailureFile);
+    // recordRuntimeAbort writes a fresh temp file then atomically renames it over the target.
+    // Track that file generation, not JSON contents: two distinct aborts may intentionally carry
+    // byte-identical failure records and each still owns its own synthetic settlement.
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } catch {
+    return null;
+  }
+}
 
 function recordActivity(kind, extra = {}) {
   if (!activityFile) return;
@@ -399,6 +416,7 @@ for await (const line of rl) {
       firstTokenAt = null;
       thinkingStreamed = false;
       textStreamed = false;
+      assistantMessageStarted = false;
       streamKind = null;
       lastUsage = null;
       responseNumber += 1;
@@ -407,7 +425,10 @@ for await (const line of rl) {
       heading("◉", `Model #${responseNumber} · ${new Date().toISOString().slice(11, 19)} UTC`, C.blue);
       break;
     case "message_start":
-      if (event.message?.role === "assistant" && responseStarted == null) responseStarted = Date.now();
+      if (event.message?.role === "assistant") {
+        assistantMessageStarted = true;
+        if (responseStarted == null) responseStarted = Date.now();
+      }
       break;
     case "message_update": {
       const update = event.assistantMessageEvent ?? {};
@@ -470,7 +491,31 @@ for await (const line of rl) {
       heading("✓", `Model #${responseNumber} · ${metaLine}`, C.yellow);
       if (usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
-        recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: fields, responseMs: elapsed });
+        const failureSignature = runtimeFailureSignature();
+        if (failureSignature !== runtimeFailureSignatureSeen) {
+          runtimeFailureSignatureSeen = failureSignature;
+          runtimeFailureSettlementClaimed = false;
+        }
+        const syntheticSettlement =
+          !assistantMessageStarted &&
+          firstTokenAt == null &&
+          (!Array.isArray(message.content) || message.content.length === 0) &&
+          ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']
+            .every(key => !Number.isFinite(usage[key]) || usage[key] === 0) &&
+          Boolean(failureSignature) &&
+          !runtimeFailureSettlementClaimed;
+        if (syntheticSettlement) runtimeFailureSettlementClaimed = true;
+        recordMetric({
+          issue: issue ?? 0,
+          phase,
+          call,
+          response: responseNumber,
+          usage: fields,
+          responseMs: elapsed,
+          ...(syntheticSettlement
+            ? { synthetic: true, record_type: 'synthetic_settlement' }
+            : {}),
+        });
       } else {
         // A completed response with no provider usage is an unknown, not an absent record.
         recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: null, reason: "provider_usage_unavailable", responseMs: elapsed });

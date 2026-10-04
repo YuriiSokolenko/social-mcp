@@ -5,14 +5,14 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 
-import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
+import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
 import { buildBootstrapInvocation, buildPiInvocation, runPiStage } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { PREPARED_IMPLEMENTATION_PLACEHOLDER, isFreshImplementerWork, withPreparedImplementation } from '../scripts/pi-common/stage-config.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
-import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairHandoff, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
 import { captureMutationSnapshot } from '../scripts/pi-common/mutation-snapshot.mjs';
 import { recordSuccessfulMutation } from '../scripts/pi-common/mutation-journal.mjs';
 import { issueWorktreePatchPath } from '../scripts/pi-common/issue-worktree.mjs';
@@ -230,6 +230,44 @@ test('issue worktree patch names use normalized GitHub artifact identity semanti
     `/tmp/pi-resume-local-${process.pid}-1.patch`,
   );
 });
+
+test('#470 provider accounting counts only successful completion endpoints', () => {
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/responses',
+    status: 200,
+    transportError: false,
+  }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/chat/completions?foo=bar',
+    status: 201,
+    transportError: false,
+  }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/completions',
+    status: 200,
+    transportError: false,
+  }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/messages',
+    status: 200,
+    transportError: false,
+  }), true);
+
+  for (const exchange of [
+    { requestMethod: 'GET', requestPath: '/v1/models', status: 200, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/responses', status: 429, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/chat/completions', status: 500, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/responses', status: 200, transportError: true },
+    { requestMethod: 'POST', requestPath: '/v1/embeddings', status: 200, transportError: false },
+  ]) {
+    assert.equal(isCountedProviderResponse(exchange), false, JSON.stringify(exchange));
+  }
+});
+
 
 test('model endpoint defaults to the shared Open Responses server on port 4001', () => {
   const { spec } = buildStageRunSpec({
@@ -1126,4 +1164,172 @@ test('restored and validation-repair Implementer runs never launch the planner b
     assert.equal(calls[0].bootstrap, false);
     assert.equal(calls[0].prepared, null);
   }
+});
+
+
+test('#469 validation repair handoff is bounded, deterministic, and independent of parent transcript size', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-handoff-');
+  const terminal = join(dir, 'terminal');
+  const preparedPath = `${terminal}.prepared-implementation.json`;
+  writeFileSync(preparedPath, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Edit src/connect_four.py', 'Update tests/test_connect_four.py'],
+    complexity: 'nontrivial',
+    evidenceBudget: 1,
+    largeMutation: true,
+    reason: 'Source and direct smoke test both change.',
+    workspaceRoot: dir,
+    freshBaseCommit: 'abc123',
+    baseRef: 'origin/dev',
+    layoutHint: {
+      sourceRoot: 'src',
+      sourceDirectory: 'src',
+      sourceTarget: 'src/connect_four.py',
+      sourceConvention: 'src/tic_tac_toe.py',
+      testDirectory: 'tests',
+      testTarget: 'tests/test_connect_four.py',
+      testTargetRequired: true,
+      testConvention: 'tests/test_tic_tac_toe.py',
+    },
+    plannerUsage: null,
+    plannerDurationMs: 100,
+  }));
+  const makeSpec = prompt => createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt,
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: { terminalResultPath: terminal, metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: null },
+  });
+  const result = {
+    outcome: 'changed',
+    title: 'Fix Connect Four smoke path',
+    summary: 'Add source and direct smoke coverage.',
+    changes: ['Fix import wiring', 'Add smoke coverage'],
+    files: ['src/connect_four.py', 'tests/test_connect_four.py'],
+  };
+  const acceptedScope = {
+    schema_version: 1,
+    accepted: [
+      { path: 'src/connect_four.py', disposition: 'publishable', rationale: 'source' },
+      { path: 'tests/test_connect_four.py', disposition: 'publishable', rationale: 'test' },
+    ],
+  };
+  const receipt = {
+    receipt: {
+      session_id: 'coding-session-469',
+      candidate_revision: { digest: 'candidate-469' },
+    },
+  };
+  const failure = new Error('pytest failed: tests/test_connect_four.py::test_smoke');
+  const handoff = validationRepairHandoff(makeSpec('short'), failure, {
+    implementerResult: result,
+    terminalReceipt: receipt,
+    acceptedScope,
+  });
+  assert.deepEqual(handoff.changed_files, ['src/connect_four.py', 'tests/test_connect_four.py']);
+  assert.equal(handoff.completion.session_id, 'coding-session-469');
+  assert.equal(handoff.completion.candidate_revision, 'candidate-469');
+  assert.equal(handoff.prepared_implementation.layout_hint.sourceTarget, 'src/connect_four.py');
+  assert.equal(handoff.prepared_implementation.layout_hint.testTarget, 'tests/test_connect_four.py');
+  assert.equal(handoff.prepared_implementation.layout_hint.testTargetRequired, true);
+  assert.match(handoff.validation_failure, /pytest failed/);
+
+  const shortRepair = createValidationRepairSpec(makeSpec('short'), failure, 1, acceptedScope, result, receipt);
+  const hugeRepair = createValidationRepairSpec(makeSpec('x'.repeat(1_000_000)), failure, 1, acceptedScope, result, receipt);
+  assert.equal(shortRepair.prompt, hugeRepair.prompt, 'repair prompt must not grow with inherited transcript text');
+  assert.ok(shortRepair.prompt.length < 30_000);
+  assert.match(shortRepair.prompt, /Runtime repair handoff/);
+  assert.match(shortRepair.prompt, /tests\/test_connect_four\.py/);
+});
+
+
+test('#470 repair handoff marks every truncated authoritative list as incomplete', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-handoff-truncated-');
+  const terminal = join(dir, 'terminal');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'repair',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: { terminalResultPath: terminal, metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: null },
+  });
+  const files = Array.from({ length: 25 }, (_, i) => `src/file_${i}.py`);
+  const changes = Array.from({ length: 25 }, (_, i) => `change ${i}`);
+  const accepted = files.map((file, i) => ({ path: file, rationale: `reason ${i}` }));
+  const baseline = Array.from({ length: 25 }, (_, i) => `baseline_${i}.py`);
+  const handoff = validationRepairHandoff(spec, new Error('validation failed'), {
+    implementerResult: {
+      outcome: 'changed',
+      title: 'Large repair',
+      summary: 'Many files',
+      changes,
+      files,
+    },
+    acceptedScope: { schema_version: 1, accepted, temporary: accepted, baseline },
+  });
+
+  assert.equal(handoff.changed_files.length, 20);
+  assert.equal(handoff.changed_files_total, 25);
+  assert.equal(handoff.changed_files_truncated, true);
+  assert.equal(handoff.completion.changes.length, 20);
+  assert.equal(handoff.completion.changes_total, 25);
+  assert.equal(handoff.completion.changes_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.accepted_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.accepted_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.temporary_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.temporary_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.baseline_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.baseline_truncated, true);
+  assert.match(validationRepairPrompt(new Error('validation failed'), handoff), /\*_truncated=true|\*_truncated/);
+});
+
+
+test('#469 repair handoff recomputes current changed files after a validation-time mutation', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-current-files-');
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Repair Handoff Test'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'repair@example.invalid'], { cwd: dir });
+  writeFileSync(join(dir, 'README.md'), 'base\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+  const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+  writeFileSync(join(dir, 'source.py'), 'VALUE = 1\n');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+  const implementerResult = {
+    outcome: 'changed',
+    title: 'Change source',
+    summary: 'Initial candidate',
+    changes: ['Change source'],
+    files: ['source.py'],
+  };
+
+  // Simulate a trusted validation safe-fix that changes the candidate after submit_result.
+  writeFileSync(join(dir, 'validation_fix.py'), 'FIXED = True\n');
+  const handoff = validationRepairHandoff(spec, new Error('final validation failed'), {
+    implementerResult,
+    terminalReceipt: {
+      candidateRevision: { base_commit: baseCommit },
+      receipt: {
+        session_id: 'coding-469',
+        candidate_revision: { base_commit: baseCommit, digest: 'before-validation-fix' },
+      },
+    },
+  });
+  assert.deepEqual(handoff.changed_files, ['source.py', 'validation_fix.py']);
 });

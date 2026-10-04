@@ -484,6 +484,7 @@ function runtimeScenario(mode) {
               sourceConvention: 'src/demo_pkg/diagnostics/smoke_chunks.py',
               testDirectory: 'tests/diagnostics',
               testTarget: 'tests/diagnostics/test_smoke_widget.py',
+              testTargetRequired: false,
               testConvention: 'tests/diagnostics/test_smoke_chunks.py',
             });
             assert.match(prepared.text, /Repository layout hint: source root src/);

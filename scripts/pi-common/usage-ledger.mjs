@@ -81,7 +81,8 @@ function add(target, usage, responseMs, {
 }
 
 function supplementProviderRollup(target, sum, usage, responseMs = 0) {
-  const turns = Math.max(sum.providerResponses, providerTurns(usage));
+  const reportedTurns = Math.max(0, providerTurns(usage) - (sum.syntheticResponses ?? 0));
+  const turns = Math.max(sum.providerResponses, reportedTurns);
   target.providerResponses += turns - sum.providerResponses;
   // Delegated roll-up timing may arrive either as usage.durationMs or as the aggregate tool's
   // responseMs. Both are lifecycle measurements, never provider-only response time.
@@ -100,8 +101,21 @@ export function summarizeUsage(records) {
   const responses = new Map();
   const aggregates = new Map();
   const sessions = new Map();
+  const providerResponses = new Map();
   for (const record of records) {
     if (!record || typeof record !== "object" || typeof record.call !== "string") continue;
+    if (record.record_type === "provider_transport_error" || record.record_type === "provider_exchange_diagnostic") continue;
+    if (record.provider_response === true || record.record_type === "provider_response") {
+      const sequence = Number(record.response);
+      const providerSession = typeof record.provider_session === "string" && record.provider_session
+        ? record.provider_session
+        : "legacy";
+      const key = Number.isSafeInteger(sequence) && sequence >= 0
+        ? `provider:${providerSession}:${sequence}`
+        : `provider:${providerSession}:${providerResponses.size + 1}`;
+      providerResponses.set(key, record);
+      continue;
+    }
     const session = sessionOf(record);
     if (record.scope === "session" && session) {
       sessions.set(session, record);
@@ -125,10 +139,11 @@ export function summarizeUsage(records) {
       return;
     }
     const rollup = Boolean(record.aggregate || record.scope === "session");
+    const synthetic = record.synthetic === true || record.record_type === "synthetic_settlement";
     const responseMs = Number(record.responseMs) || 0;
     const provider = {
-      providerResponses: rollup ? providerTurns(usage) : 1,
-      providerResponseMs: rollup ? 0 : responseMs,
+      providerResponses: rollup ? providerTurns(usage) : synthetic ? 0 : 1,
+      providerResponseMs: rollup || synthetic ? 0 : responseMs,
       delegatedLifecycleMs: rollup ? rollupLifecycleDurationMs(usage, responseMs) : 0,
     };
     // Preserve generic elapsed timing for standalone aggregates, but never relabel that lifecycle
@@ -143,10 +158,12 @@ export function summarizeUsage(records) {
     const usage = normalizeUsage(record.usage);
     if (session && usage) {
       const sum = responseSums.get(session) ?? emptyTotals();
+      const synthetic = record.synthetic === true || record.record_type === "synthetic_settlement";
       add(sum, usage, 0, {
-        providerResponses: 1,
-        providerResponseMs: Number(record.responseMs) || 0,
+        providerResponses: synthetic ? 0 : 1,
+        providerResponseMs: synthetic ? 0 : Number(record.responseMs) || 0,
       });
+      if (synthetic) sum.syntheticResponses = (sum.syntheticResponses ?? 0) + 1;
       responseSums.set(session, sum);
     }
   }
@@ -204,6 +221,47 @@ export function summarizeUsage(records) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: `${status}_request_usage_unavailable` });
     } else if (!responseSums.has(session) && !rollups.has(session) && !record.usageKnownEmpty) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: "session_usage_unavailable" });
+    }
+  }
+
+  if (providerResponses.size) {
+    const logicalProviderResponses = totals.providerResponses;
+    const logicalProviderResponseMs = totals.providerResponseMs;
+    const traced = emptyTotals();
+    let tracedLatencySamples = 0;
+    for (const record of providerResponses.values()) {
+      traced.providerResponses += 1;
+      const responseMs = Number(record.responseMs);
+      if (Number.isFinite(responseMs) && responseMs >= 0) {
+        traced.providerResponseMs += responseMs;
+        tracedLatencySamples += 1;
+      }
+    }
+
+    // Preserve call-level logical attribution. The transport trace can prove that additional calls
+    // or latency exist, but it cannot map them back to planner/main/coding rows. Add only the
+    // unattributed positive response-count delta, under a collision-free synthetic row, so call
+    // rows are never overwritten or zeroed. Trace latency stays aggregate-only because it cannot
+    // be safely distributed without double-counting logical per-call measurements.
+    const supplemental = emptyTotals();
+    supplemental.providerResponses = Math.max(0, traced.providerResponses - logicalProviderResponses);
+    if (supplemental.providerResponses) {
+      let key = 'provider_trace_unattributed';
+      while (calls.has(key)) key += '_';
+      calls.set(key, supplemental);
+    }
+    totals.providerResponses = Math.max(logicalProviderResponses, traced.providerResponses);
+    // Trace and logical rows are not correlated by request identity, so even equal counts do not
+    // prove that the trace covers the same calls. Preserve the strongest known lower bound and
+    // never let trace reconciliation reduce provider latency already attributed logically.
+    totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
+    if (traced.providerResponses < logicalProviderResponses || tracedLatencySamples < traced.providerResponses) {
+      unknown.push({
+        call: 'provider',
+        childSession: null,
+        response: null,
+        reason: 'provider_trace_incomplete',
+      });
     }
   }
   return { calls, totals, unknown, complete: unknown.length === 0 };

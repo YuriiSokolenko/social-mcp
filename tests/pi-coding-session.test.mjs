@@ -35,6 +35,15 @@ test('coding-session guidance uses only exposed tools and routes missing evidenc
   assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
 });
 
+test('#470 evidence-consumed notices are correlated to the exact tool call', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.set\(event\.toolCallId, evidenceConsumptionNotice\)/);
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.get\(event\.toolCallId\)/);
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.delete\(event\.toolCallId\)/);
+  assert.doesNotMatch(runtime, /const consumedEvidence = controller\.consumeEvidenceActionNotice\(\);/);
+});
+
+
 test('every file mutation target must be physically inside the worktree', () => {
   const dir = tempDir();
   const outside = tempDir();
@@ -175,9 +184,11 @@ function runtimeScenario(mode) {
       const runtimeUrl = ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
       const terminalReceiptUrl = ${JSON.stringify(new URL('../scripts/pi-common/terminal-receipt.mjs', import.meta.url).href)};
       const implementerResultUrl = ${JSON.stringify(new URL('../scripts/pi-common/implementer-result.mjs', import.meta.url).href)};
+      const codingValidationUrl = ${JSON.stringify(new URL('../scripts/pi-common/coding-session-validation.mjs', import.meta.url).href)};
       const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
       const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile } = await import(terminalReceiptUrl);
       const { writeImplementerResult } = await import(implementerResultUrl);
+      const { assertCodingBehavioralValidation, recordCodingBehavioralValidation } = await import(codingValidationUrl);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
@@ -214,7 +225,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -321,7 +332,16 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'nested executor unavailable', usage: { input: 50, output: 5, totalTokens: 55 } });
         }
         // Executors stubbed; the runtime's gates around them are real.
-        childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
+        childTools.get('run_check').execute = async (_toolCallId, params) => {
+          if (params?.kind === 'pytest') {
+            recordCodingBehavioralValidation({
+              scope: { targets: params.targets },
+              result: { status: 'pass', kind: 'pytest' },
+              env: process.env,
+            });
+          }
+          return { content: [{ type: 'text', text: 'check passed' }] };
+        };
         childTools.get('submit_result').execute = async () => {
           writeImplementerResult(resultFile, {
             title: 't',
@@ -419,6 +439,49 @@ function runtimeScenario(mode) {
       parentResultTool(pi);
       assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the provider constraint hook');
       assert.equal(handlers.has('turn_end'), true, 'the parent installs provider error recovery on the authoritative turn boundary');
+      if (mode === 'bash-error-mutates' || mode === 'bash-error-unknown') {
+        process.env.PI_CODING_SESSION_USED = 'true';
+        const changedFiles = ['src/game.py', 'tests/test_game.py'];
+        recordCodingBehavioralValidation({
+          scope: { targets: ['tests/test_game.py'] },
+          result: { status: 'pass', kind: 'pytest' },
+          env: process.env,
+          cwd,
+        });
+        assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env: process.env }));
+
+        handlers.get('turn_start')({ turnIndex: 0 });
+        const bashEvent = {
+          toolName: 'bash',
+          toolCallId: 'failed-bash-validation',
+          input: { command: 'git status --short -- generated.py' },
+        };
+        assert.equal(await handlers.get('tool_call')(bashEvent, ctx), undefined, 'bounded bash reaches execution');
+        let hiddenGit = null;
+        if (mode === 'bash-error-mutates') {
+          fs.writeFileSync(cwd + '/bash-mutated.txt', 'changed\\n');
+        } else {
+          hiddenGit = cwd + '/.git-hidden-for-test';
+          fs.renameSync(cwd + '/.git', hiddenGit);
+        }
+        try {
+          await handlers.get('tool_execution_end')({
+            ...bashEvent,
+            isError: true,
+            result: { content: [{ type: 'text', text: 'command failed after execution' }] },
+          }, ctx);
+        } finally {
+          if (hiddenGit && fs.existsSync(hiddenGit)) fs.renameSync(hiddenGit, cwd + '/.git');
+        }
+        assert.throws(
+          () => assertCodingBehavioralValidation({ changedFiles, env: process.env }),
+          /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/,
+          'failed bash must invalidate stale pytest evidence when the worktree changed or fingerprint is unknown',
+        );
+        console.log(mode === 'bash-error-mutates' ? 'FAILED_BASH_MUTATION_INVALIDATED' : 'FAILED_BASH_UNKNOWN_INVALIDATED');
+        process.exit(0);
+      }
+
       if (mode === 'parent-contract' || mode === 'parent-contract-reverse') {
         const resultEvent = { toolCallId: 'missing-bash', toolName: 'bash', isError: true, content: [{ type: 'text', text: 'Tool bash not found' }] };
         const executionEvent = { ...resultEvent, result: { content: resultEvent.content } };
@@ -549,6 +612,47 @@ function runtimeScenario(mode) {
       }
       fs.rmSync(cwd + '/config.py');
       for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
+
+      if (mode === 'evidence-missing-executor') {
+        await call('need_more_evidence', {
+          missing: 'Exact import anchor required for the next edit.',
+          reason: 'One source lookup is required before mutating.',
+        });
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const providerPayload = {
+          model: 'm',
+          messages: [],
+          tools: active.map(name => ({ type: 'function', function: { name } })),
+        };
+        const request = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+        assert.ok(request.tools.some(tool => tool.function.name === 'read'), 'the unlocked evidence request advertises read');
+
+        const failedRead = { toolName: 'read', toolCallId: 'missing-evidence-read', input: { path: 'src/missing.py' } };
+        assert.equal(await handlers.get('tool_call')(failedRead, ctx), undefined, 'evidence read is accepted before executor failure');
+        await handlers.get('tool_execution_end')({
+          ...failedRead,
+          isError: true,
+          result: { content: [{ type: 'text', text: 'Tool read not found' }] },
+        }, ctx);
+        assert.equal(aborts, 1, 'advertised missing executor remains an infrastructure abort');
+
+        handlers.get('turn_start')({ turnIndex: turn + 1 });
+        const retryPayload = {
+          model: 'm',
+          messages: [],
+          tools: active.map(name => ({ type: 'function', function: { name } })),
+        };
+        const retryRequest = handlers.get('before_provider_request')({ payload: retryPayload }, ctx);
+        assert.ok(retryRequest.tools.some(tool => tool.function.name === 'read'), 'runtime restored the same evidence permit after executor rejection');
+        assert.equal(
+          await handlers.get('tool_call')({ toolName: 'read', toolCallId: 'retry-evidence-read', input: { path: 'src/missing.py' } }, ctx),
+          undefined,
+          'restored evidence action is executable without a second need_more_evidence call',
+        );
+        console.log('EVIDENCE_MISSING_EXECUTOR_PERMIT_RESTORED');
+        process.exit(0);
+      }
 
       if (mode === 'elevated-evidence-write') {
         await call('accept_mutation_scope', {
@@ -714,19 +818,64 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'action-hidden-abort') {
-          handlers.get('turn_start')({ turnIndex: turn });
-          const hidden = await handlers.get('tool_call')({
-            toolName: 'read',
-            toolCallId: 'hidden-' + turn,
-            input: { path: 'config.py' },
-          }, ctx);
-          assert.equal(hidden.block, true);
-          assert.match(hidden.reason, /not currently exposed/);
-          assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
-          const afterHidden = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-          assert.equal(afterHidden.tool_choice, undefined, 'hidden provider-emitted tool clears transport forcing');
-          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-          assert.equal(aborts, 1, 'hidden tool remains non-progress and trips the second-strike watchdog');
+          // #469 exact lifecycle: one blocker opens one evidence action, then both read and
+          // repeated need_more_evidence disappear until productive progress occurs.
+          fs.writeFileSync(cwd + '/evidence.txt', 'exact import anchor\\n');
+          await call('need_more_evidence', {
+            missing: 'Read evidence.txt to obtain the exact import anchor needed for the edit.',
+            reason: 'The exact import anchor is the only unresolved implementation fact.',
+          });
+          await call('read', { path: 'evidence.txt' });
+          fs.rmSync(cwd + '/evidence.txt');
+
+          const consumedSteer = steers.findLast(text => /RUNTIME EVIDENCE PERMIT CONSUMED/.test(text));
+          assert.ok(consumedSteer, 'runtime emits an explicit consumed-permit steer');
+          assert.ok(consumedSteer.includes('read/search evidence and repeated need_more_evidence are unavailable'));
+          assert.ok(!active.includes('read'), 'read is removed after the single evidence action');
+          assert.ok(!active.includes('need_more_evidence'), 'blocker is removed until productive progress');
+
+          const staleAttempts = [
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+            {
+              toolName: 'need_more_evidence',
+              input: {
+                missing: 'Read evidence.txt for another fact.',
+                reason: 'Attempt a second evidence unlock without productive progress.',
+              },
+              kind: 'stale',
+            },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+          ];
+          for (let index = 0; index < staleAttempts.length; index += 1) {
+            const attempt = staleAttempts[index];
+            handlers.get('turn_start')({ turnIndex: turn });
+            const hidden = await handlers.get('tool_call')({
+              toolName: attempt.toolName,
+              input: attempt.input,
+              toolCallId: 'hidden-' + attempt.toolName + '-' + turn,
+            }, ctx);
+            assert.equal(hidden.block, true);
+            if (attempt.kind === 'unavailable') {
+              assert.match(hidden.reason, /not currently exposed/);
+            } else {
+              assert.match(hidden.reason, /capability lifecycle changed/);
+              assert.match(hidden.reason, /Do not retry the stale call/);
+            }
+            assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
+            await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+            assert.equal(
+              aborts,
+              index === staleAttempts.length - 1 ? 1 : 0,
+              'stale lifecycle races reset the strike streak; only two later genuine unavailable turns abort',
+            );
+          }
+
+          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+          assert.equal(failure.failure_class, 'model_execution_abort');
+          assert.equal(failure.failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
+          assert.ok(failure.reason.includes('unavailable capability'));
+          console.log('UNAVAILABLE_CAPABILITY_FAILURE ' + JSON.stringify(failure));
           process.exit(0);
         }
 
@@ -841,6 +990,9 @@ function runtimeScenario(mode) {
       }
       assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048', 'parent child-budget mirror restored');
       assert.ok(!process.env.PI_CODING_SESSION, 'coding-session mode is scoped to the fork');
+      if (sessionRequests.length) {
+        assert.equal(process.env.PI_CODING_SESSION_USED, 'true', 'parent retains the durable coding-lifecycle validation marker');
+      }
       assert.ok(caps.filter(cap => cap !== 32000).every(cap => cap === 2048), 'parent stays at 2048: ' + caps);
       if (mode === 'no-session') assert.equal(sessionRequests.length, 0, 'no fresh-prompt fallback');
       else {
@@ -991,11 +1143,25 @@ test('an already-completed repeated tool call clears forcing but still fails clo
   assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
-test('a hidden provider-emitted tool clears forcing but remains non-progress and aborts on the watchdog', () => {
+test('#470 missing evidence executor restores the permit through the real runtime hooks', () => {
+  const logs = runtimeScenario('evidence-missing-executor');
+  const failureLine = logs.split('\n').find(line => line.startsWith('PI_RUNTIME_FAILURE '));
+  assert.ok(failureLine, 'runtime contract failure is recorded');
+  const failure = JSON.parse(failureLine.slice('PI_RUNTIME_FAILURE '.length));
+  assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+  assert.equal(failure.tool, 'read');
+  assert.match(logs, /EVIDENCE_MISSING_EXECUTOR_PERMIT_RESTORED/);
+});
+
+
+test('#469 evidence unlock is single-use; stale lifecycle races reset strikes before genuine unavailable calls can abort', () => {
   const logs = runtimeScenario('action-hidden-abort');
+  assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"read".*"unavailable":true/);
-  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+  assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"need_more_evidence"/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable capability turn/);
+  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
 test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
@@ -1099,6 +1265,14 @@ test('#425 a second coding attempt after recovery keeps both sessions attributed
 
 test('coding-session allowlist is derived from the executable registry, including hidden tools', () => {
   runtimeScenario('narrow-registry');
+});
+
+test('#470 failed bash invalidates pytest evidence when it changed the worktree', () => {
+  assert.match(runtimeScenario('bash-error-mutates'), /FAILED_BASH_MUTATION_INVALIDATED/);
+});
+
+test('#470 failed bash invalidates pytest evidence when repository fingerprint is unknown', () => {
+  assert.match(runtimeScenario('bash-error-unknown'), /FAILED_BASH_UNKNOWN_INVALIDATED/);
 });
 
 test('#399 executor-unavailable bash tool result aborts the parent as infrastructure immediately', () => {

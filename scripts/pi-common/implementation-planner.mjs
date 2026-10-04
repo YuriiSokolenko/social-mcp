@@ -192,6 +192,7 @@ function explicitAdditivePythonLayout(cwd, issueText) {
         : null,
       testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
       testTarget,
+      testTargetRequired: explicitTestTarget != null,
       testConvention: testSibling
         ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
         : null,
@@ -263,6 +264,7 @@ export function discoverAdditivePythonLayout(cwd, issue) {
         : null,
       testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
       testTarget: repoRelativePath(path.relative(cwd, path.join(testDirectory, `test_${moduleName}.py`))),
+      testTargetRequired: false,
       testConvention: testSibling
         ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
         : null,
@@ -600,7 +602,7 @@ function layoutGuidance(layoutHint, { authoritative }) {
   if (!layoutHint) return '';
   const source = `Repository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; ` +
     `source directory ${layoutHint.sourceDirectory}${layoutHint.sourceConvention ? `; nearest source convention ${layoutHint.sourceConvention}` : ''}; ` +
-    `tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
+    `tests ${layoutHint.testDirectory}${layoutHint.testTarget ? `; new test target ${layoutHint.testTarget}` : ''}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
   return `\n${source} ${authoritative}`;
 }
 

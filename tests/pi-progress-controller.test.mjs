@@ -18,6 +18,7 @@ import {
   nextActionResponseCap,
   nextResponseBudgetLevel,
   toolCallSignature,
+  validateSingleEvidenceRequest,
 } from '../scripts/pi-common/progress-controller.mjs';
 import { repoSearch } from '../scripts/pi-common/repo-search.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
@@ -501,6 +502,45 @@ test('productive progress allows a bounded initial evidence sequence before acti
 });
 
 
+test('#470 runtime-side rejection restores the same one-action evidence permit', () => {
+  const state = controller({
+    productiveProgress: {
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 1,
+      actionTools: ['edit', 'write', 'submit_result'],
+      controlTools: [],
+    },
+  });
+  state.onTurnStart(0);
+  state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['plan'],
+    complexity: 'trivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'test',
+  });
+
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'exact import anchor',
+    reason: 'needed for the next safe edit',
+  }), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  const notice = state.consumeEvidenceActionNotice();
+  assert.deepEqual(notice, { tool: 'read' });
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.equal(state.restoreRuntimeBlockedEvidenceAction(notice), true);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined, 'same unlocked evidence action can be retried after harness rejection');
+  const retried = state.consumeEvidenceActionNotice();
+  assert.deepEqual(retried, { tool: 'read' });
+  state.onToolExecutionEnd('read', false, { strictBlockerEvidence: true });
+  assert.equal(state.productiveProgressState(), 'action_required', 'an actually executed retry consumes the one-action permit');
+});
+
+
 test('dispatcher closes exploration after prepared context is loaded', () => {
   const state = controller({
     requiredFirstReadPath: 'agents/dispatcher/AGENTS.md',
@@ -609,8 +649,8 @@ test('runtime preserves a large mutation budget through scope declaration, then 
   // actually let through, never for one it blocked.
   assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
   assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
-  assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput/);
-  assert.match(runtime, /return blocked;\s*\}[\s\S]{0,200}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
+  assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput[\s\S]*strictBlockerEvidence: consumedEvidence\?\.tool === canonicalToolName/);
+  assert.match(runtime, /return blocked;\s*\}[\s\S]{0,400}const evidenceConsumptionNotice = controller\.consumeEvidenceActionNotice\(\);[\s\S]{0,400}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
   assert.match(planner, /evidence_budget/);
 });
 
@@ -1247,4 +1287,107 @@ test('runtime surfaces truncated tool calls through the tool_result hook', () =>
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /pi\.on\('tool_result'/);
   assert.match(runtime, /truncatedToolCallGuidance/);
+});
+
+
+test('#469 need_more_evidence validates shape only and consumes exactly one evidence action', () => {
+  for (const missing of [
+    'Does for(;;) exist in loop.py?',
+    'Where is the plus operator handled in calc.py?',
+    'Differences between src/a.py and src/b.py relevant to the import signature.',
+    'Read tests/test_smoke_connect_four.py, check the signature needed for the repair edit.',
+    'Read a.py and read b.py.',
+    'Exact pytest configuration; exact smoke test location.',
+  ]) {
+    assert.equal(
+      validateSingleEvidenceRequest({ missing }).ok,
+      true,
+      `free-text semantics are not guessed for: ${missing}`,
+    );
+  }
+  assert.equal(validateSingleEvidenceRequest({ missing: '   ' }).ok, false);
+
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const request = {
+    missing: 'Read tests/test_smoke_connect_four.py to obtain the exact import line needed for the repair edit.',
+    reason: 'The exact import statement is the only missing fact.',
+  };
+  assert.equal(state.checkToolCall('need_more_evidence', request), undefined);
+  state.onToolExecutionEnd('need_more_evidence', false, { madeProgress: false, input: request });
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.evidenceUnlockAvailable(), false);
+
+  assert.equal(state.checkToolCall('read', { path: 'tests/test_smoke_connect_four.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.deepEqual(state.consumeEvidenceActionNotice(), { tool: 'read' });
+  assert.equal(state.consumeEvidenceActionNotice(), null);
+  state.onToolExecutionEnd('read', false, { madeProgress: false, input: { path: 'tests/test_smoke_connect_four.py' } });
+
+  const repeated = state.checkToolCall('need_more_evidence', {
+    missing: 'Read tests/test_smoke_connect_four.py for another detail.',
+    reason: 'Try another lookup',
+  });
+  assert.equal(repeated.block, true);
+  assert.match(repeated.reason, /extra evidence permit was already used/);
+
+  assert.equal(state.checkToolCall('edit', { path: 'src/game.py' }), undefined);
+  state.onToolExecutionEnd('edit', false, { madeProgress: true, input: { path: 'src/game.py' } });
+  assert.equal(state.evidenceUnlockAvailable(), true);
+});
+
+test('#470 failed strict blocker LSP evidence stays consumed after runtime drains its notice', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const request = {
+    missing: 'Find the exact signature of MissingSymbol.',
+    reason: 'The signature is the only fact needed before the edit.',
+  };
+  assert.equal(state.checkToolCall('need_more_evidence', request), undefined);
+  state.onToolExecutionEnd('need_more_evidence', false, { madeProgress: false, input: request });
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  const lookup = { name: 'MissingSymbol' };
+  assert.equal(state.checkToolCall('lsp_find_symbol', lookup), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  const notice = state.consumeEvidenceActionNotice();
+  assert.deepEqual(notice, { tool: 'lsp_find_symbol' });
+
+  state.onToolExecutionEnd('lsp_find_symbol', true, {
+    madeProgress: false,
+    input: lookup,
+    strictBlockerEvidence: notice?.tool === 'lsp_find_symbol',
+  });
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(
+    state.checkToolCall('repo_search', { query: 'MissingSymbol' }).reason,
+    /productive progress requires an action/,
+  );
+});
+
+
+test('#469 stale unavailable capability attempts are not wired to the prose-only abort reason', () => {
+  const source = readScript('scripts/pi-agent-runtime.mjs');
+  assert.match(source, /PI_UNAVAILABLE_CAPABILITY_ABORT/);
+  assert.match(source, /unavailableCapabilityAttemptedThisTurn/);
+  assert.match(source, /effectiveAttemptedTool = actionTurnAttemptedTool \|\| unavailableCapabilityAttemptedThisTurn/);
+  assert.match(source, /RUNTIME EVIDENCE PERMIT CONSUMED/);
 });

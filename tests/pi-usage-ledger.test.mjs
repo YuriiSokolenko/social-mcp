@@ -180,3 +180,260 @@ test("a larger roll-up with redistributed components keeps total consistent with
   assert.ok(total >= input + output + cacheRead + cacheWrite);
   assert.equal(ledger.complete, false);
 });
+
+
+test('#469 synthetic settlement stays logical but exact provider trace reports 24 real responses', () => {
+  const records = [
+    { call: 'planner', scope: 'session', childSession: 'planner-469', status: 'completed',
+      usage: u(600, 60, 660, { turns: 6, durationMs: 6000 }) },
+    main(1, u(100, 10)),
+    ...Array.from({ length: 12 }, (_, index) => child('coding-469', index + 1, u(20, 2), { responseMs: 200 + index })),
+    { call: 'coding', scope: 'session', childSession: 'coding-469', status: 'completed',
+      usage: u(240, 24, 264, { turns: 12, durationMs: 12000 }) },
+    ...Array.from({ length: 5 }, (_, index) => ({
+      call: 'repair', response: index + 1, usage: u(15, 1), responseMs: 300 + index,
+    })),
+    {
+      call: 'main',
+      response: 2,
+      usage: u(0, 0, 0),
+      responseMs: 0,
+      synthetic: true,
+      record_type: 'synthetic_settlement',
+    },
+    ...Array.from({ length: 24 }, (_, index) => ({
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      response: index + 1,
+      responseMs: 1000 + index,
+    })),
+  ];
+  const ledger = summarizeUsage(records);
+  assert.equal(ledger.totals.providerResponses, 24, '6 planner + 1 parent + 12 coding + 5 repair');
+  assert.equal(
+    ledger.totals.providerResponseMs,
+    Array.from({ length: 24 }, (_, index) => 1000 + index).reduce((sum, value) => sum + value, 0),
+  );
+  assert.equal(ledger.calls.get('planner').providerResponses, 6);
+  assert.equal(ledger.calls.get('main').providerResponses, 1);
+  assert.equal(ledger.calls.get('coding').providerResponses, 12);
+  assert.equal(ledger.calls.get('repair').providerResponses, 5);
+  assert.equal(ledger.totals.responses, 20, 'logical roll-ups and synthetic settlement remain a separate record dimension');
+  assert.notEqual(ledger.totals.responses, ledger.totals.providerResponses);
+});
+
+test('#469 synthetic zero-token response never increments fallback provider count', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 2), responseMs: 700 },
+    {
+      call: 'main',
+      response: 2,
+      usage: u(0, 0, 0),
+      responseMs: 0,
+      synthetic: true,
+      record_type: 'synthetic_settlement',
+    },
+  ]);
+  assert.equal(ledger.totals.responses, 2);
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 700);
+});
+
+
+test('#470 HTTP/non-completion trace diagnostics never become provider responses or unknown usage', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 2), responseMs: 500 },
+    {
+      call: 'provider',
+      provider_response: false,
+      record_type: 'provider_exchange_diagnostic',
+      provider_session: 'trace-1',
+      response: 1,
+      responseMs: 1200,
+      status: 429,
+      request_method: 'POST',
+      request_path: '/v1/responses',
+    },
+    {
+      call: 'provider',
+      provider_response: false,
+      record_type: 'provider_exchange_diagnostic',
+      provider_session: 'trace-1',
+      response: 2,
+      responseMs: 50,
+      status: 200,
+      request_method: 'GET',
+      request_path: '/v1/models',
+    },
+  ]);
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 500);
+  assert.equal(ledger.complete, true);
+  assert.deepEqual(ledger.unknown, []);
+});
+
+
+test('#469 transport failures are diagnostic exchanges, not provider responses', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 2), responseMs: 500 },
+    {
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      response: 1,
+      responseMs: 480,
+      status: 200,
+      transport_error: false,
+    },
+    {
+      call: 'provider',
+      provider_response: false,
+      record_type: 'provider_transport_error',
+      response: 2,
+      responseMs: 1200,
+      status: 502,
+      transport_error: true,
+    },
+  ]);
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 500, 'trace reconciliation never lowers known logical provider latency');
+  assert.equal(ledger.complete, true, 'transport diagnostics do not create unknown usage obligations');
+  assert.deepEqual(ledger.unknown, []);
+});
+
+test('#470 provider totals keep logical calls that bypass the trace proxy without erasing attribution', () => {
+  const ledger = summarizeUsage([
+    { call: 'planner', scope: 'session', childSession: 'planner-untraced', status: 'completed',
+      usage: u(50, 5, 55, { turns: 2, durationMs: 1200 }) },
+    {
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'main-traced',
+      response: 1,
+      responseMs: 700,
+    },
+  ]);
+
+  assert.equal(ledger.totals.providerResponses, 2);
+  assert.equal(ledger.totals.providerResponseMs, 700);
+  assert.equal(ledger.calls.get('planner').providerResponses, 2);
+  assert.equal(ledger.calls.get('planner').providerResponseMs, 0);
+  assert.equal(
+    [...ledger.calls.keys()].some(key => key.startsWith('provider_trace_unattributed')),
+    false,
+    'a smaller partial trace does not erase or duplicate logically attributed provider calls',
+  );
+  assert.equal(ledger.complete, false);
+  assert.ok(ledger.unknown.some(entry => entry.reason === 'provider_trace_incomplete'));
+});
+
+
+test('#470 partial trace latency never lowers a larger known logical provider latency', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 1), responseMs: 5000 },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'partial-latency',
+      response: 1,
+      responseMs: 700,
+    },
+  ]);
+
+  assert.equal(ledger.calls.get('main').providerResponseMs, 5000);
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 5000);
+});
+
+
+test('#470 equal-count trace with missing latency does not erase logical provider latency', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 1), responseMs: 5000 },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'untimed-trace',
+      response: 1,
+    },
+  ]);
+
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 5000);
+  assert.equal(ledger.complete, false);
+  assert.ok(ledger.unknown.some(entry => entry.reason === 'provider_trace_incomplete'));
+});
+
+
+test('#470 trace reconciliation never overwrites call rows with provider-like names', () => {
+  const ledger = summarizeUsage([
+    { call: 'provider', response: 1, usage: u(10, 1), responseMs: 100 },
+    { call: 'provider_trace_unattributed', response: 1, usage: u(20, 2), responseMs: 200 },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'trace',
+      response: 1,
+      responseMs: 900,
+    },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'trace',
+      response: 2,
+      responseMs: 1000,
+    },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'trace',
+      response: 3,
+      responseMs: 1100,
+    },
+  ]);
+
+  assert.equal(ledger.calls.get('provider').total, 11);
+  assert.equal(ledger.calls.get('provider').providerResponses, 1);
+  assert.equal(ledger.calls.get('provider_trace_unattributed').total, 22);
+  assert.equal(ledger.calls.get('provider_trace_unattributed').providerResponses, 1);
+  assert.equal(ledger.totals.providerResponses, 3);
+  assert.equal(ledger.totals.providerResponseMs, 3000);
+  const supplementalKey = [...ledger.calls.keys()].find(key => key.startsWith('provider_trace_unattributed') && key !== 'provider_trace_unattributed');
+  assert.ok(supplementalKey);
+  assert.equal(ledger.calls.get(supplementalKey).providerResponses, 1);
+  assert.equal(ledger.calls.get(supplementalKey).providerResponseMs, 0);
+});
+
+
+test('#469 provider response sequences may restart in a new proxy session without overwriting', () => {
+  const ledger = summarizeUsage([
+    {
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'initial-attempt',
+      response: 1,
+      responseMs: 400,
+    },
+    {
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'repair-attempt',
+      response: 1,
+      responseMs: 600,
+    },
+  ]);
+  assert.equal(ledger.totals.providerResponses, 2);
+  assert.equal(ledger.totals.providerResponseMs, 1000);
+  const supplemental = [...ledger.calls.entries()].find(([key]) => key.startsWith('provider_trace_unattributed'))?.[1];
+  assert.ok(supplemental);
+  assert.equal(supplemental.providerResponses, 2);
+  assert.equal(supplemental.providerResponseMs, 0);
+});
