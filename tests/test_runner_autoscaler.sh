@@ -244,7 +244,7 @@ start_control_case() {
   write_fake_runtime "$case_dir/baseline" "2.337.0"
   : > "$case_dir/curl.log"
   : > "$case_dir/config.log"
-  : > "$case_dir/listener-index"
+  printf '0\n' > "$case_dir/listener-index"
 
   case "$registration_mode" in
     complete)
