@@ -146,7 +146,7 @@ image names, commands, or mount paths from the caller.
 Build the manager, Pi worker, general worker, dedicated control runner, and separate check sandbox first:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.5 .
+docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.6 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.6 .
@@ -420,18 +420,30 @@ Project configuration lives in `.pi/repomap.json` with `refreshStrategy: "auto"`
 
 RepoMap writes its incremental cache under `.pi/cache/`; that path is gitignored so ephemeral Architect navigation state is never committed.
 
-## General-pool daemon quarantine (#430)
+## General-pool daemon quarantine (#430, #474)
 
-The general manager checks bounded `docker info` and `docker system df` before
-polling/starting workers. The second check traverses container rw snapshots;
-`docker ps` alone did not expose the corruption seen in the #401 smoke run.
-Workers repeat these checks before registering with GitHub, closing the gap
-between manager health and runner startup. Pi workers still have no Docker socket.
+The general manager uses two bounded Docker health levels. Every scheduler poll
+runs the cheap `docker info` liveness check so daemon loss still fails closed
+without delaying queue observation. The expensive `docker system df` metadata
+walk runs once at manager startup, then on
+`GENERAL_DOCKER_DEEP_PROBE_INTERVAL_SECONDS` (default 300 seconds), after a
+failed general-runner container start, and during quarantine recovery. The
+manager is single-threaded and keeps the last successful deep-probe timestamp,
+so ordinary calls from both the main loop and `spawn_runner` share one cadence
+and cannot overlap metadata walks. This is intentional: `docker system df`
+traverses rw snapshots and detects the #401 corruption, but on the N150 it can
+take about ten seconds and must not sit on every queue-poll fast path.
+
+General workers still repeat both checks before registering with GitHub,
+closing the gap between manager health and runner startup; Pi workers still
+have no Docker socket. A successful deep probe is timestamped in manager logs,
+which makes the configured cadence visible during idle validation.
 
 A check that still fails after one five-second retry stops the spawn batch and quarantines the general pool. The manager
 removes only idle registrations with the `general` label belonging to its own prefix; GitHub refuses deletion
-of busy runners. It leaves busy jobs and other pools alone, checks again on the next
-bounded poll, and releases quarantine only after two healthy polls. A log containing
+of busy runners. It leaves busy jobs and other pools alone. While quarantined,
+each recovery poll runs both liveness and deep metadata validation, and the pool
+is released only after two consecutive healthy polls. A log containing
 `infra_error code=DOCKER_METADATA_CORRUPTION` means the daemon reported the specific
 `rw layer snapshot not found` error. Other health failures use
 `DOCKER_DAEMON_UNHEALTHY`. No host-wide prune, storage deletion, or daemon restart is
@@ -463,7 +475,7 @@ All writes are best-effort and never fail a job or block registration. Read them
 Evidence is disabled when `INFRA_EVIDENCE_DIR` is unset.
 
 Deploy these changes by building the new manager tag
-`n150/pi-runner-manager:run-check-docker-0.1.5` and general worker tag
+`n150/pi-runner-manager:run-check-docker-0.1.6` and general worker tag
 `n150/github-general-runner-ephemeral:0.87.6` from this checkout, then updating the
 host `.env` and recreating the managers. Existing cached tags do not acquire the
 new gates. Do not restart busy worker containers during deployment.
