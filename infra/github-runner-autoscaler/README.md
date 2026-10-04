@@ -56,9 +56,14 @@ Docker CLI/socket, Pi configuration, model endpoint, Android SDK, or build
 toolchain. Compose caps it at 0.5 CPU, 512 MiB RAM, and 256 PIDs, drops the
 default Linux capability set, adds back only `SETUID`/`SETGID` so PID 1 can
 launch the unprivileged runner, and enables `no-new-privileges`. The entrypoint uses the
-repository administration token only to register/remove the runner; the
-long-lived Actions runner and all workflow jobs run as the unprivileged
-`runner` user with `GH_ADMIN_TOKEN` removed from their environment.
+repository administration token only for first-time registration and
+post-failure registration reconciliation; the long-lived Actions runner and
+all workflow jobs run as the unprivileged `runner` user with
+`GH_ADMIN_TOKEN` removed from their environment. Normal Docker/host stops do
+not deregister the runner, so a restart with existing local credentials needs
+no GitHub API call. After an unexpected listener failure, reconciliation is
+non-destructive on API errors and clears local credentials only when a
+successful GitHub response proves that the named runner registration is absent.
 
 The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
 (`worker-general.Dockerfile`) adds the Docker CLI and Compose plugin over the
@@ -101,7 +106,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.5 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.1 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.2 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
@@ -129,7 +134,7 @@ recreate only `control-runner`. It uses `restart: unless-stopped`, so the
 same single runner returns after Docker or host restart:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.1 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.2 .
 docker compose --env-file .env up -d --force-recreate --no-deps control-runner
 docker compose --env-file .env logs --tail=100 control-runner
 ```
