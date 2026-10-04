@@ -223,6 +223,20 @@ export async function runSelectedStage(spec, { backend, workspace }, {
   return result;
 }
 
+export function isCountedProviderResponse(exchange) {
+  if (exchange?.transportError === true) return false;
+  const status = Number(exchange?.status);
+  if (!Number.isInteger(status) || status < 200 || status >= 300) return false;
+  if (String(exchange?.requestMethod ?? '').toUpperCase() !== 'POST') return false;
+  let pathname;
+  try {
+    pathname = new URL(String(exchange?.requestPath ?? '/'), 'http://trace.invalid').pathname.replace(/\/+$/, '');
+  } catch {
+    return false;
+  }
+  return pathname.endsWith('/chat/completions') || pathname.endsWith('/responses');
+}
+
 export async function runStage(options, env = process.env) {
   const { spec, workspace, backend } = buildStageRunSpec(options, env);
   let traceProxy;
@@ -247,17 +261,24 @@ export async function runStage(options, env = process.env) {
           provider: spec.model.provider,
           model: spec.model.id,
           onExchange: exchange => {
+            const providerResponse = isCountedProviderResponse(exchange);
             const metric = {
               issue: Number(spec.environment.PI_ISSUE) || 0,
               phase: spec.environment.PI_PHASE ?? spec.stage,
               call: 'provider',
-              record_type: exchange.transportError === true ? 'provider_transport_error' : 'provider_response',
-              provider_response: exchange.transportError !== true,
+              record_type: exchange.transportError === true
+                ? 'provider_transport_error'
+                : providerResponse
+                  ? 'provider_response'
+                  : 'provider_exchange_diagnostic',
+              provider_response: providerResponse,
               provider_session: exchange.traceSession,
               response: exchange.sequence,
               responseMs: exchange.elapsedMs,
               status: exchange.status,
               transport_error: exchange.transportError === true,
+              request_method: exchange.requestMethod ?? null,
+              request_path: exchange.requestPath ?? null,
             };
             const line = JSON.stringify(metric);
             fs.appendFileSync(spec.artifacts.metricsPath, `${line}\n`);
