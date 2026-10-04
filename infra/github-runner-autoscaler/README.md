@@ -68,13 +68,27 @@ TERM/INT reaches `Runner.Listener`. First-time `config.sh` runs
 asynchronously so PID 1 can handle Docker stop while registration is in
 progress.
 
-After an unexpected listener failure, recovery deliberately avoids any
-pagination-sensitive runner-name lookup. A valid response from the repository
-runners API is only a health gate: local credentials are cleared as the
-`runner` user and the next container restart obtains a fresh registration
-token and uses `config.sh --replace` to repair either present or absent server
-state. Any runners-API/network/JSON failure is non-destructive and preserves
-the existing local credentials for a later retry.
+The entrypoint runs `bin/Runner.Listener run` directly instead of routing
+through GitHub's `run.sh` / `run-helper.sh`. The upstream wrapper maps
+listener exit codes such as terminated error (1) and session conflict (5) to
+success, which hides the distinction needed for recovery. Direct execution
+preserves those codes while still allowing the runner's normal self-update
+flow: retry/update/config-refresh codes are handled explicitly.
+
+Credential/session recovery is bounded. Exit 1 or 5 can trigger a clean
+`config.sh --replace` only when the repository runners API is healthy and
+the persisted repair cooldown has expired. The cooldown marker survives
+listener restarts, so a persistent fault cannot create a new runner
+registration on every cycle. Version-deprecated exit 7 and unknown failures
+never re-register. API/network/JSON failure is non-destructive and keeps the
+current credentials.
+
+First-time `config.sh` and `Runner.Listener` each run in their own process
+group. Docker TERM makes PID 1 send SIGINT to the whole active group and wait
+for it, matching the upstream manual-trap intent without orphaning
+`config.sh`, `Runner.Listener`, or `Runner.Worker`. Failed or interrupted
+first registration clears partial local `.runner` / credential files before
+retry.
 
 The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
 (`worker-general.Dockerfile`) adds the Docker CLI and Compose plugin over the
@@ -117,7 +131,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.5 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.3 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.4 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
@@ -145,7 +159,7 @@ recreate only `control-runner`. It uses `restart: unless-stopped`, so the
 same single runner returns after Docker or host restart:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.3 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.4 .
 docker compose --env-file .env up -d --force-recreate --no-deps control-runner
 docker compose --env-file .env logs --tail=100 control-runner
 ```
