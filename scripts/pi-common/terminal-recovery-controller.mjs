@@ -37,11 +37,8 @@ function repair(obligation, kind, tool, extra = {}) {
   };
 }
 
-function cleanupExpectedFiles(terminalInput, currentChangedFiles, cleanupPaths) {
-  const cleanup = new Set(cleanupPaths);
-  const declared = uniqueStrings(terminalInput?.files).filter(file => !cleanup.has(file));
-  if (declared.length) return declared;
-  return uniqueStrings(currentChangedFiles).filter(file => !cleanup.has(file));
+function cleanupExpectedFiles(currentChangedFiles, target) {
+  return uniqueStrings(currentChangedFiles).filter(file => file !== target);
 }
 
 function driftForPath(drift, target) {
@@ -161,7 +158,7 @@ export function selectTerminalRecovery({
     if (cleanupPaths.length) {
       const target = cleanupPaths[0];
       const classified = driftForPath(drift, target);
-      const expectedFiles = cleanupExpectedFiles(terminalInput, current, cleanupPaths);
+      const expectedFiles = cleanupExpectedFiles(current, target);
       if (classified?.action === 'undo_mutation') {
         if (!active.has('undo_mutation')) {
           return blocked(obligation, `Accidental path ${target} is journaled, but undo_mutation is not executable now.`, {
