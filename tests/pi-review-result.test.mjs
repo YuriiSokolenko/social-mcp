@@ -74,7 +74,7 @@ test('requires an explicit assumption only for ASSUMPTION evidence', () => {
         evidence: ['Issue says numeric without naming Decimal or Fraction.'],
       }],
     }),
-    /requires an explicit assumption/,
+    /requires a bounded explicit assumption/,
   );
 
   assert.deepEqual(
@@ -140,15 +140,17 @@ test('enforces evidence item and criterion count limits in runtime validation', 
 });
 
 test('rejects a rendered review comment that exceeds the GitHub-safe bound', () => {
+  const oversizedEvidence = Array.from({ length: 12 }, (_, index) => ({
+    criterion: `Criterion ${index} ${'A'.repeat(480)}`,
+    status: 'ASSUMPTION',
+    evidence: Array.from({ length: 4 }, () => 'B'.repeat(1000)),
+    assumption: 'C'.repeat(1000),
+  }));
   assert.throws(
     () => validateReviewResult({
       verdict: 'PASS',
-      text: 'x'.repeat(59000),
-      criteria_evidence: [{
-        criterion: 'A'.repeat(500),
-        status: 'ESTABLISHED',
-        evidence: ['B'.repeat(1000)],
-      }],
+      text: 'Bounded fields can still exceed the aggregate comment limit.',
+      criteria_evidence: oversizedEvidence,
     }),
     /exceeds 60000 rendered characters/,
   );
