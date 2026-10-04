@@ -70,20 +70,33 @@ function boundedStrings(value, { maxItems = REPAIR_HANDOFF_MAX_ITEMS, maxChars =
 
 function acceptedScopeFacts(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const entries = list => (Array.isArray(list) ? list : [])
-    .slice(0, REPAIR_HANDOFF_MAX_ITEMS)
-    .flatMap(item => {
-      if (!item || typeof item !== 'object' || typeof item.path !== 'string') return [];
-      return [{
+  const entries = list => {
+    const valid = (Array.isArray(list) ? list : [])
+      .filter(item => item && typeof item === 'object' && typeof item.path === 'string');
+    return {
+      items: valid.slice(0, REPAIR_HANDOFF_MAX_ITEMS).map(item => ({
         path: boundedText(item.path, 1000),
         rationale: boundedText(item.rationale, 500),
-      }];
-    });
+      })),
+      total: valid.length,
+      truncated: valid.length > REPAIR_HANDOFF_MAX_ITEMS,
+    };
+  };
+  const accepted = entries(value.accepted);
+  const temporary = entries(value.temporary);
+  const baselineRaw = (Array.isArray(value.baseline) ? value.baseline : [])
+    .filter(item => typeof item === 'string' && item.trim());
   return {
     schema_version: Number.isSafeInteger(value.schema_version) ? value.schema_version : null,
-    accepted: entries(value.accepted),
-    temporary: entries(value.temporary),
-    baseline: boundedStrings(value.baseline, { maxItems: REPAIR_HANDOFF_MAX_ITEMS, maxChars: 1000 }),
+    accepted: accepted.items,
+    accepted_total: accepted.total,
+    accepted_truncated: accepted.truncated,
+    temporary: temporary.items,
+    temporary_total: temporary.total,
+    temporary_truncated: temporary.truncated,
+    baseline: boundedStrings(baselineRaw, { maxItems: REPAIR_HANDOFF_MAX_ITEMS, maxChars: 1000 }),
+    baseline_total: baselineRaw.length,
+    baseline_truncated: baselineRaw.length > REPAIR_HANDOFF_MAX_ITEMS,
   };
 }
 
@@ -133,16 +146,23 @@ export function validationRepairHandoff(spec, error, {
   terminalReceipt = null,
   acceptedScope = null,
 } = {}) {
+  const rawFiles = repairChangedFiles(spec, terminalReceipt, implementerResult)
+    .filter(item => typeof item === 'string' && item.trim());
   const files = boundedStrings(
-    repairChangedFiles(spec, terminalReceipt, implementerResult),
+    rawFiles,
     { maxItems: REPAIR_HANDOFF_MAX_ITEMS, maxChars: 1000 },
   ).sort();
+  const rawChanges = Array.isArray(implementerResult?.changes)
+    ? implementerResult.changes.filter(item => typeof item === 'string' && item.trim())
+    : [];
   const completion = implementerResult
     ? {
         outcome: implementerResult.outcome ?? null,
         title: boundedText(implementerResult.title, 500),
         summary: boundedText(implementerResult.summary, 1200),
-        changes: boundedStrings(implementerResult.changes, { maxItems: REPAIR_HANDOFF_MAX_ITEMS, maxChars: 500 }),
+        changes: boundedStrings(rawChanges, { maxItems: REPAIR_HANDOFF_MAX_ITEMS, maxChars: 500 }),
+        changes_total: rawChanges.length,
+        changes_truncated: rawChanges.length > REPAIR_HANDOFF_MAX_ITEMS,
         session_id: terminalReceipt?.receipt?.session_id ?? null,
         candidate_revision: terminalReceipt?.receipt?.candidate_revision?.digest ?? null,
       }
@@ -151,6 +171,8 @@ export function validationRepairHandoff(spec, error, {
     schema_version: 1,
     validation_failure: validationDiagnostics(error),
     changed_files: files,
+    changed_files_total: rawFiles.length,
+    changed_files_truncated: rawFiles.length > REPAIR_HANDOFF_MAX_ITEMS,
     accepted_mutation_scope: acceptedScopeFacts(acceptedScope),
     completion,
     prepared_implementation: preparedFacts(spec),
@@ -159,7 +181,7 @@ export function validationRepairHandoff(spec, error, {
 
 export function validationRepairPrompt(error, handoff = null) {
   const handoffText = handoff
-    ? `\n\nRuntime repair handoff (bounded, authoritative metadata; do not rediscover these facts):\n${JSON.stringify(handoff, null, 2)}`
+    ? `\n\nRuntime repair handoff (bounded metadata. Fields with *_truncated=true are incomplete tails: trust the included entries, but rediscover only the omitted tail if validation requires it. Untruncated fields are authoritative and must not be rediscovered):\n${JSON.stringify(handoff, null, 2)}`
     : `\n\nValidation diagnostics:\n${validationDiagnostics(error)}`;
   return `The previous implementation attempt finished and its changes are still present in the current worktree.
 
