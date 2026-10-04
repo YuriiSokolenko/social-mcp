@@ -1036,6 +1036,7 @@ export default function (pi) {
   const truncationGuidedCalls = new Set();
   const pendingLoopCalls = new Map();
   const pendingToolInputs = new Map();
+  const pendingEvidenceConsumptionNotices = new Map();
   let lastSuccessfulMutationSnapshot = null;
   let lastSuccessfulMutationLocalOnlyMarkerId = null;
 
@@ -1989,6 +1990,9 @@ export default function (pi) {
       }
       return blocked;
     }
+    // Capture the controller notice now, but publish it only for this exact toolCallId after
+    // execution. Any later runtime-side block simply drops this local value.
+    const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice();
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
@@ -2027,9 +2031,6 @@ export default function (pi) {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
-      // A post-controller block has no tool_execution_end; do not let a consumed-evidence
-      // notice leak forward and get attributed to a later tool.
-      controller.consumeEvidenceActionNotice();
       return noOpBlocked;
     }
 
@@ -2048,7 +2049,6 @@ export default function (pi) {
         if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
-        controller.consumeEvidenceActionNotice();
         return containmentBlocked;
       }
     }
@@ -2090,7 +2090,6 @@ export default function (pi) {
           tool: event.toolName,
           reason,
         }));
-        controller.consumeEvidenceActionNotice();
         return {
           block: true,
           reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
@@ -2098,6 +2097,9 @@ export default function (pi) {
       }
     }
     pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
+    if (evidenceConsumptionNotice) {
+      pendingEvidenceConsumptionNotices.set(event.toolCallId, evidenceConsumptionNotice);
+    }
     if (loopGuard) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
@@ -2110,6 +2112,8 @@ export default function (pi) {
     return undefined;
   });
   pi.on('tool_execution_end', async (event, ctx) => {
+    const consumedEvidence = pendingEvidenceConsumptionNotices.get(event.toolCallId) ?? null;
+    pendingEvidenceConsumptionNotices.delete(event.toolCallId);
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
       await handleMissingExecutor(event, ctx);
       return;
@@ -2299,7 +2303,6 @@ export default function (pi) {
       madeProgress: effectiveProgress,
       input: acceptedToolInput,
     });
-    const consumedEvidence = controller.consumeEvidenceActionNotice();
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
