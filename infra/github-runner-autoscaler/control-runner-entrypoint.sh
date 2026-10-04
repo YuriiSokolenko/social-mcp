@@ -30,6 +30,16 @@ remove_token() {
     "${API}/actions/runners/remove-token" | jq -er '.token'
 }
 
+runner_registration_present() {
+  curl -fsS --connect-timeout 5 --max-time 15 -K <(auth_header) "${AUTH[@]}" \
+    "${API}/actions/runners?name=${RUNNER_NAME}&per_page=100" \
+    | jq -e --arg name "${RUNNER_NAME}" '.runners | any(.[]; .name == $name)' >/dev/null
+}
+
+clear_local_registration() {
+  rm -f .runner .credentials .credentials_rsaparams
+}
+
 configure_runner() {
   local token
   token="$(registration_token)"
@@ -40,8 +50,7 @@ configure_runner() {
     --labels "${RUNNER_LABELS}" \
     --work "_work" \
     --unattended \
-    --replace \
-    --disableupdate
+    --replace
 }
 
 remove_runner() {
@@ -50,11 +59,6 @@ remove_runner() {
   token="$(remove_token)" || return 0
   gosu runner ./config.sh remove --token "${token}" >/dev/null 2>&1 || true
 }
-
-cd "${RUNNER_HOME}"
-if [ ! -f .runner ]; then
-  configure_runner
-fi
 
 runner_pid=""
 shutdown() {
@@ -66,13 +70,36 @@ shutdown() {
   remove_runner
   exit 0
 }
+# PID 1 must handle stop signals even while registration is still in progress.
 trap shutdown TERM INT
+
+cd "${RUNNER_HOME}"
+
+if [ -f .runner ]; then
+  if ! runner_registration_present; then
+    echo "warning: local control-runner registration is stale; registering again" >&2
+    clear_local_registration
+  fi
+fi
+if [ ! -f .runner ]; then
+  configure_runner
+fi
 
 # The long-lived runner and every workflow job execute as the unprivileged
 # runner user without the repository-admin token in their environment.
+# Do not pass --disableupdate: GitHub's supported self-update path prevents
+# a persistent control runner from aging out while the container stays alive.
 env -u GH_ADMIN_TOKEN gosu runner ./run.sh &
 runner_pid=$!
 
 status=0
 wait "${runner_pid}" || status=$?
+runner_pid=""
+
+# A failed listener can leave a server/local registration mismatch. Remove the
+# registration best-effort so Docker's restart policy starts from a clean state.
+if [ "${status}" -ne 0 ]; then
+  echo "warning: control runner exited status=${status}; clearing registration for restart" >&2
+  remove_runner
+fi
 exit "${status}"
