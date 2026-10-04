@@ -83,15 +83,18 @@ services:
     image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.5}
     container_name: ${CONTROL_RUNNER_NAME:-n150-control}
     restart: unless-stopped
-    stop_grace_period: 30s
+    stop_grace_period: 120s
     environment:
       GH_ADMIN_TOKEN: ${GH_ADMIN_TOKEN}
       GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}
       RUNNER_NAME: ${CONTROL_RUNNER_NAME:-n150-control}
       RUNNER_LABELS: ${CONTROL_RUNNER_LABELS:-n150,control}
-    cpus: 0.50
-    mem_limit: 512m
-    pids_limit: 256
+      CONTROL_REPAIR_COOLDOWN_SECONDS: ${CONTROL_REPAIR_COOLDOWN_SECONDS:-300}
+      CONTROL_RETRY_SECONDS: ${CONTROL_RETRY_SECONDS:-30}
+      CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS: ${CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS:-90}
+    cpus: 1.00
+    mem_limit: 1g
+    pids_limit: 512
     cap_drop:
       - ALL
     cap_add:
@@ -101,8 +104,12 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
+    volumes:
+      - control-runner-state:/home/runner/actions-runner
 
 volumes:
+  control-runner-state:
+    name: ${CONTROL_RUNNER_STATE_VOLUME:-social-mcp-control-runner-state}
   general-runner-evidence:
     name: ${GENERAL_EVIDENCE_VOLUME:-social-mcp-general-runner-evidence}
   run-check-stage:
