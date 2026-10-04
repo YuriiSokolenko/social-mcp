@@ -41,6 +41,8 @@ grep -q 'gosu runner rm -f .runner .credentials .credentials_rsaparams' <<<"$con
 grep -q 'runner_api_healthy' <<<"$control_entrypoint" || fail 'control runner must gate destructive recovery on a healthy GitHub runners API'
 grep -q 'CONTROL_REPAIR_COOLDOWN_SECONDS' <<<"$control_entrypoint" \
   || fail 'automatic re-registration must have a persistent cooldown'
+grep -q 'interruptible_sleep' <<<"$control_entrypoint" && grep -q 'sleep_pid' <<<"$control_entrypoint" \
+  || fail 'control runner backoff sleeps must remain interruptible by Docker stop'
 ! grep -q 'runner_registration_state\|per_page=100\|\.name == \$name' <<<"$control_entrypoint" \
   || fail 'control recovery must not make a pagination-sensitive name lookup'
 grep -q 'configure_runner &' <<<"$control_entrypoint" \
