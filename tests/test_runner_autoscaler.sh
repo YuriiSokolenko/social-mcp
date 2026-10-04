@@ -764,8 +764,9 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   DOCKER_HEALTHY_POLLS=0
   DOCKER_LAST_DEEP_PROBE_EPOCH=0
   DOCKER_DEEP_PROBE_REQUIRED=true
-  DOCKER_DEEP_PROBE_RUNNING=false
+  DOCKER_FORCED_DEEP_PROBE_PENDING=false
   DOCKER_DEEP_PROBE_INTERVAL_SECONDS=300
+  DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS=60
   NOW=1000
   CHECK_LOG="$(mktemp)"
   docker_health_now() { printf '%s\n' "$NOW"; }
@@ -790,6 +791,38 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   rm -f "$CHECK_LOG"
 )
 
+# A cadence-triggered deep probe must still classify metadata corruption and
+# quarantine the pool rather than treating the slow path as advisory.
+(
+  MOUNT_DOCKER_SOCKET=true
+  DOCKER_QUARANTINED=false
+  DOCKER_HEALTHY_POLLS=0
+  DOCKER_LAST_DEEP_PROBE_EPOCH=1000
+  DOCKER_DEEP_PROBE_REQUIRED=false
+  DOCKER_FORCED_DEEP_PROBE_PENDING=false
+  DOCKER_DEEP_PROBE_INTERVAL_SECONDS=300
+  DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS=60
+  NOW=1300
+  CHECK_LOG="$(mktemp)"
+  docker_health_now() { printf '%s\n' "$NOW"; }
+  sleep() { [[ "$1" == "$DOCKER_HEALTH_RETRY_SECONDS" ]] || fail "unexpected health retry delay: $1"; }
+  run_with_timeout() {
+    shift
+    printf '%s\n' "$*" >> "$CHECK_LOG"
+    if [[ "$*" == 'docker system df' ]]; then
+      echo 'Error response from daemon: rw layer snapshot not found for container cadence-test' >&2
+      return 1
+    fi
+    return 0
+  }
+
+  if general_daemon_health > "$STATUS_LOG" 2>&1; then fail 'cadence corruption did not fail closed'; fi
+  [[ "$DOCKER_QUARANTINED" == true ]] || fail 'cadence corruption did not quarantine the pool'
+  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == 2 ]] || fail 'cadence metadata failure did not get exactly one retry'
+  grep -q 'infra_error code=DOCKER_METADATA_CORRUPTION' "$STATUS_LOG" || fail 'cadence corruption was not classified'
+  rm -f "$CHECK_LOG"
+)
+
 # #474: a lightweight daemon failure still fails closed immediately and does
 # not need to run the expensive metadata walk first.
 (
@@ -798,8 +831,9 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   DOCKER_HEALTHY_POLLS=0
   DOCKER_LAST_DEEP_PROBE_EPOCH=1000
   DOCKER_DEEP_PROBE_REQUIRED=false
-  DOCKER_DEEP_PROBE_RUNNING=false
+  DOCKER_FORCED_DEEP_PROBE_PENDING=false
   DOCKER_DEEP_PROBE_INTERVAL_SECONDS=300
+  DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS=60
   NOW=1010
   CHECK_LOG="$(mktemp)"
   docker_health_now() { printf '%s\n' "$NOW"; }
@@ -821,8 +855,8 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   rm -f "$CHECK_LOG"
 )
 
-# #474: a failed general-runner container start forces a deep validation
-# immediately instead of waiting for the periodic cadence.
+# A persistent unrelated docker run failure may request repeated deep validation,
+# but the expensive probe is throttled to at most once per minute outside quarantine.
 (
   MOUNT_DOCKER_SOCKET=true
   MOUNT_PI_CONFIG=false
@@ -834,24 +868,71 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   DOCKER_HEALTHY_POLLS=0
   DOCKER_LAST_DEEP_PROBE_EPOCH=1000
   DOCKER_DEEP_PROBE_REQUIRED=false
-  DOCKER_DEEP_PROBE_RUNNING=false
+  DOCKER_FORCED_DEEP_PROBE_PENDING=false
   DOCKER_DEEP_PROBE_INTERVAL_SECONDS=300
-  NOW=1010
+  DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS=60
+  NOW=1060
   CHECK_LOG="$(mktemp)"
   docker_health_now() { printf '%s\n' "$NOW"; }
   registration_token() { printf 'tok\n'; }
   run_with_timeout() {
     shift
     printf '%s\n' "$*" >> "$CHECK_LOG"
-    if [[ "$*" == docker\ run* ]]; then
+    if [[ "$*" == docker\ run* ]]; then return 1; fi
+    return 0
+  }
+
+  if spawn_runner >/dev/null 2>&1; then fail 'failed docker run unexpectedly succeeded'; fi
+  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == 1 ]] || fail 'first eligible docker run failure did not force metadata validation'
+  [[ "$DOCKER_FORCED_DEEP_PROBE_PENDING" == false ]] || fail 'successful forced probe did not clear its pending flag'
+
+  NOW=1066
+  if spawn_runner >/dev/null 2>&1; then fail 'second failed docker run unexpectedly succeeded'; fi
+  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == 1 ]] || fail 'forced metadata validation ignored its minimum interval'
+  [[ "$DOCKER_FORCED_DEEP_PROBE_PENDING" == true ]] || fail 'throttled forced probe request was not retained'
+
+  NOW=1120
+  if spawn_runner >/dev/null 2>&1; then fail 'third failed docker run unexpectedly succeeded'; fi
+  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == 2 ]] || fail 'pending forced metadata validation did not run after the minimum interval'
+  rm -f "$CHECK_LOG"
+)
+
+# If the rate-limited forced probe does run and finds the known snapshot error,
+# it still quarantines the pool before another runner can be registered.
+(
+  MOUNT_DOCKER_SOCKET=true
+  MOUNT_PI_CONFIG=false
+  PIP_CACHE_HOST_DIR=
+  RUNNER_PREFIX=n150-gen-eph
+  RUNNER_IMAGE=test-general-image:tag
+  RUNNER_LABELS=n150,general
+  DOCKER_QUARANTINED=false
+  DOCKER_HEALTHY_POLLS=0
+  DOCKER_LAST_DEEP_PROBE_EPOCH=1000
+  DOCKER_DEEP_PROBE_REQUIRED=false
+  DOCKER_FORCED_DEEP_PROBE_PENDING=false
+  DOCKER_DEEP_PROBE_INTERVAL_SECONDS=300
+  DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS=60
+  NOW=1060
+  CHECK_LOG="$(mktemp)"
+  docker_health_now() { printf '%s\n' "$NOW"; }
+  registration_token() { printf 'tok\n'; }
+  sleep() { [[ "$1" == "$DOCKER_HEALTH_RETRY_SECONDS" ]] || fail "unexpected health retry delay: $1"; }
+  run_with_timeout() {
+    shift
+    printf '%s\n' "$*" >> "$CHECK_LOG"
+    if [[ "$*" == docker\ run* ]]; then return 1; fi
+    if [[ "$*" == 'docker system df' ]]; then
+      echo 'Error response from daemon: rw layer snapshot not found for container forced-test' >&2
       return 1
     fi
     return 0
   }
 
-  if spawn_runner >/dev/null 2>&1; then fail 'failed docker run unexpectedly succeeded'; fi
-  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == 1 ]] || fail 'docker run failure did not force immediate metadata validation'
-  [[ "$DOCKER_DEEP_PROBE_REQUIRED" == false ]] || fail 'successful forced metadata validation did not clear the force flag'
+  if spawn_runner > "$STATUS_LOG" 2>&1; then fail 'failed docker run with corrupt metadata unexpectedly succeeded'; fi
+  [[ "$DOCKER_QUARANTINED" == true ]] || fail 'forced metadata corruption did not quarantine the pool'
+  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == 2 ]] || fail 'forced corrupt metadata probe did not get exactly one retry'
+  grep -q 'infra_error code=DOCKER_METADATA_CORRUPTION' "$STATUS_LOG" || fail 'forced corruption was not classified'
   rm -f "$CHECK_LOG"
 )
 
@@ -863,9 +944,11 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   DOCKER_QUARANTINED=false
   DOCKER_HEALTHY_POLLS=0
   HEALTH_FAIL=true
+  CHECK_LOG="$(mktemp)"
   sleep() { [[ "$1" == "$DOCKER_HEALTH_RETRY_SECONDS" ]] || fail "unexpected health retry delay: $1"; }
   run_with_timeout() {
     shift
+    [[ "$*" != 'docker system df' ]] || printf '%s\n' "$*" >> "$CHECK_LOG"
     if [[ "$*" == 'docker system df' && "$HEALTH_FAIL" == true ]]; then
       echo 'Error response from daemon: rw layer snapshot not found for container 37d2be901d24' >&2
       return 1
@@ -877,9 +960,15 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
   grep -q 'infra_error code=DOCKER_METADATA_CORRUPTION' "$STATUS_LOG" || fail 'corruption lacks actionable infrastructure classification'
   if general_daemon_health >/dev/null; then fail 'unrepaired daemon accepted work'; fi
   HEALTH_FAIL=false
+  before_recovery="$(grep -c -Fx 'docker system df' "$CHECK_LOG")"
   if general_daemon_health >/dev/null; then fail 'one healthy poll released quarantine too early'; fi
+  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == $((before_recovery + 1)) ]] \
+    || fail 'first recovery poll did not perform deep metadata validation'
   general_daemon_health >/dev/null || fail 'healthy daemon did not recover'
+  [[ "$(grep -c -Fx 'docker system df' "$CHECK_LOG")" == $((before_recovery + 2)) ]] \
+    || fail 'second recovery poll did not perform deep metadata validation'
   [[ "$DOCKER_QUARANTINED" == false ]] || fail 'quarantine not released after repair'
+  rm -f "$CHECK_LOG"
 )
 
 # #437: quarantine and recovery leave durable evidence, once per transition.
