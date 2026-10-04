@@ -37,7 +37,12 @@ MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
 DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
+DOCKER_DEEP_PROBE_INTERVAL_SECONDS="${DOCKER_DEEP_PROBE_INTERVAL_SECONDS:-300}"
 DOCKER_HEALTH_RETRY_SECONDS=5
+[[ "$DOCKER_DEEP_PROBE_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+  echo "DOCKER_DEEP_PROBE_INTERVAL_SECONDS must be a positive integer" >&2
+  exit 1
+}
 # Optional durable infra evidence (#437). Workers run with --rm and GitHub job
 # logs can expire, so quarantine events and worker diagnostics go to a volume.
 INFRA_EVIDENCE_DIR="${INFRA_EVIDENCE_DIR:-}"
@@ -342,35 +347,98 @@ record_infra_evidence() {
 # Never prune/restart a shared daemon automatically; that could kill busy jobs.
 DOCKER_QUARANTINED=false
 DOCKER_HEALTHY_POLLS=0
+DOCKER_LAST_DEEP_PROBE_EPOCH=0
+DOCKER_DEEP_PROBE_REQUIRED=true
+DOCKER_DEEP_PROBE_RUNNING=false
+
+docker_health_now() {
+  date +%s
+}
+
+request_docker_deep_probe() {
+  [ "$MOUNT_DOCKER_SOCKET" == true ] || return 0
+  DOCKER_DEEP_PROBE_REQUIRED=true
+}
+
+docker_deep_probe_due() {
+  [ "$MOUNT_DOCKER_SOCKET" == true ] || return 1
+  [ "$DOCKER_QUARANTINED" == true ] && return 0
+  [ "$DOCKER_DEEP_PROBE_REQUIRED" == true ] && return 0
+
+  local now
+  now="$(docker_health_now)" || return 0
+  [[ "$now" =~ ^[0-9]+$ ]] || return 0
+  [ "$now" -ge "$DOCKER_LAST_DEEP_PROBE_EPOCH" ] || return 0
+  [ $((now - DOCKER_LAST_DEEP_PROBE_EPOCH)) -ge "$DOCKER_DEEP_PROBE_INTERVAL_SECONDS" ]
+}
+
+run_docker_health_check() {
+  local command="$1" output code attempts=0
+  while true; do
+    if [ "$command" == info ]; then
+      if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker info 2>&1)"; then
+        return 0
+      fi
+    else
+      # Unlike `ps`, system df traverses rw snapshots and detects the #401 corruption.
+      if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker system df 2>&1)"; then
+        return 0
+      fi
+    fi
+
+    if [ "$attempts" -eq 0 ]; then
+      attempts=1
+      log "warning: Docker $command health check failed; retrying once in ${DOCKER_HEALTH_RETRY_SECONDS}s: $output"
+      sleep "$DOCKER_HEALTH_RETRY_SECONDS"
+      continue
+    fi
+
+    code=DOCKER_DAEMON_UNHEALTHY
+    [[ "$output" != *'rw layer snapshot not found'* ]] || code=DOCKER_METADATA_CORRUPTION
+    DOCKER_HEALTHY_POLLS=0
+    if [ "$DOCKER_QUARANTINED" != true ]; then
+      DOCKER_QUARANTINED=true
+      record_infra_evidence quarantined "code=$code check=$command diagnostic=$output"
+    fi
+    log "infra_error code=$code general pool quarantined check=$command diagnostic=$output; inspect Docker/containerd journals and stale container IDs; repair host before retrying (no automatic prune/restart)"
+    return 1
+  done
+}
+
+run_docker_deep_probe() {
+  if [ "$DOCKER_DEEP_PROBE_RUNNING" == true ]; then
+    log "warning: Docker metadata probe already running; refusing duplicate probe"
+    return 1
+  fi
+
+  DOCKER_DEEP_PROBE_RUNNING=true
+  if ! run_docker_health_check metadata; then
+    DOCKER_DEEP_PROBE_RUNNING=false
+    return 1
+  fi
+
+  local now
+  now="$(docker_health_now)" || now=
+  if [[ "$now" =~ ^[0-9]+$ ]]; then
+    DOCKER_LAST_DEEP_PROBE_EPOCH="$now"
+    DOCKER_DEEP_PROBE_REQUIRED=false
+  else
+    DOCKER_DEEP_PROBE_REQUIRED=true
+  fi
+  DOCKER_DEEP_PROBE_RUNNING=false
+  log "Docker metadata health probe healthy interval=${DOCKER_DEEP_PROBE_INTERVAL_SECONDS}s"
+}
+
 general_daemon_health() {
   [ "$MOUNT_DOCKER_SOCKET" == true ] || return 0
-  local output command code attempts
-  for command in info metadata; do
-    attempts=0
-    while true; do
-      if [ "$command" == info ]; then
-        if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker info 2>&1)"; then break; fi
-      else
-        # Unlike `ps`, system df traverses rw snapshots and detects the #401 corruption.
-        if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker system df 2>&1)"; then break; fi
-      fi
-      if [ "$attempts" -eq 0 ]; then
-        attempts=1
-        log "warning: Docker $command health check failed; retrying once in ${DOCKER_HEALTH_RETRY_SECONDS}s: $output"
-        sleep "$DOCKER_HEALTH_RETRY_SECONDS"
-        continue
-      fi
-      code=DOCKER_DAEMON_UNHEALTHY
-      [[ "$output" != *'rw layer snapshot not found'* ]] || code=DOCKER_METADATA_CORRUPTION
-      DOCKER_HEALTHY_POLLS=0
-      if [ "$DOCKER_QUARANTINED" != true ]; then
-        DOCKER_QUARANTINED=true
-        record_infra_evidence quarantined "code=$code check=$command diagnostic=$output"
-      fi
-      log "infra_error code=$code general pool quarantined check=$command diagnostic=$output; inspect Docker/containerd journals and stale container IDs; repair host before retrying (no automatic prune/restart)"
-      return 1
-    done
-  done
+
+  # Keep the scheduler fast path cheap: daemon liveness is checked every poll,
+  # while the storage/metadata walk is startup/cadence/failure/recovery only.
+  run_docker_health_check info || return 1
+  if docker_deep_probe_due; then
+    run_docker_deep_probe || return 1
+  fi
+
   if [ "$DOCKER_QUARANTINED" == true ]; then
     DOCKER_HEALTHY_POLLS=$((DOCKER_HEALTHY_POLLS + 1))
     [ "$DOCKER_HEALTHY_POLLS" -ge 2 ] || return 1
@@ -450,7 +518,14 @@ spawn_runner() {
 
   log "starting ephemeral runner $name (labels=${RUNNER_LABELS})"
 
-  run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run "${docker_args[@]}" "${RUNNER_IMAGE}" >/dev/null
+  if ! run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run "${docker_args[@]}" "${RUNNER_IMAGE}" >/dev/null; then
+    # A failed container create/start can be the first visible symptom of
+    # snapshot metadata corruption. Validate deeply now instead of waiting for
+    # the periodic cadence; Pi runners never take this path.
+    request_docker_deep_probe
+    general_daemon_health || true
+    return 1
+  fi
 }
 
 main() {
