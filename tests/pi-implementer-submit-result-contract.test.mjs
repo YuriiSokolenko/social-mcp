@@ -564,12 +564,22 @@ test('#469 fresh coding session hides terminal submission while prepared require
     assert.equal(blocked.ready, false);
     assert.deepEqual(blocked.missing_outputs, ['src/connect_four.py', 'tests/test_connect_four.py']);
 
-    const afterMutation = codingSessionSubmissionReadiness({
+    const unrelatedMutation = codingSessionSubmissionReadiness({
       prepared,
       cwd: dir,
-      changedFiles: ['src/connect_four.py'],
+      changedFiles: ['README.md'],
     });
-    assert.equal(afterMutation.ready, true);
+    assert.equal(unrelatedMutation.ready, false);
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'connect_four.py'), '# source\n');
+    fs.writeFileSync(path.join(dir, 'tests', 'test_connect_four.py'), '# test\n');
+    const completeCandidate = codingSessionSubmissionReadiness({
+      prepared,
+      cwd: dir,
+      changedFiles: ['src/connect_four.py', 'tests/test_connect_four.py'],
+    });
+    assert.equal(completeCandidate.ready, true);
 
     const resumed = codingSessionSubmissionReadiness({
       prepared,
