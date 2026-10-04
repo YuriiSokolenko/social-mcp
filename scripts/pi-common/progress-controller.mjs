@@ -807,7 +807,7 @@ export class ProgressController {
     });
   }
 
-  onToolExecutionEnd(toolName, isError, { madeProgress = true, input = null } = {}) {
+  onToolExecutionEnd(toolName, isError, { madeProgress = true, input = null, strictBlockerEvidence = false } = {}) {
     if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
       const pending = this.pendingEvidenceUnlock;
       const executionSignature = input == null ? null : toolCallSignature(toolName, input);
@@ -843,7 +843,6 @@ export class ProgressController {
       if (this.requireLspStartBeforeFindSymbol) this.lspServerReady = !isError;
     }
     if (this.productiveProgress && toolName === 'lsp_find_symbol') {
-      const strictBlockerEvidence = this.pendingEvidenceConsumptionNotice?.tool === toolName;
       if (!isError && this.productiveState === 'evidence_allowed') {
         this.semanticLookupAwaitingRead = true;
         this.semanticFallbackEvidenceUsed = false;
