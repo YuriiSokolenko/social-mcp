@@ -289,12 +289,21 @@ function uniqueStrings(value) {
 }
 
 function structuredSubmissionError(text) {
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  const parseObject = value => {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+  const exact = parseObject(text);
+  if (exact) return exact;
+  // Tool runtimes may prefix a thrown Error message (for example "Error: {...}").
+  // Recover only one bounded JSON object; prose outside it is not part of the obligation.
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  return start >= 0 && end > start ? parseObject(text.slice(start, end + 1)) : null;
 }
 
 function conflictObligation(text) {
