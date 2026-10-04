@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { recoverReviewFailure } from '../scripts/pi-common/review-state.mjs';
+import { applyReview, invalidateReview, recoverReviewFailure } from '../scripts/pi-common/review-state.mjs';
 
 function fakeClient({ head = 'head-1', labels = ['pi:mr-created', 'review:passed'], dispatchError = null } = {}) {
   const state = {
@@ -83,5 +83,44 @@ test('failure from a stale review head is ignored', async () => {
   assert.deepEqual(result, { status: 'stale' });
   assert.deepEqual(client.state.dispatches, []);
   assert.equal(client.state.comments.length, 0);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+});
+
+
+test('delayed invalidator does not erase a verdict already applied to the pushed HEAD', async () => {
+  const client = fakeClient({ head: 'head-2', labels: ['pi:mr-created'] });
+  const applied = await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-2',
+    verdict: 'PASS',
+    text: 'Looks good.',
+  }, client);
+
+  assert.deepEqual(applied, { status: 'applied', verdict: 'PASS' });
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+  assert.match(client.state.comments[0].body, /pi-review:verdict:head-2:PASS/);
+
+  const invalidated = await invalidateReview(7, 'head-2', client);
+  assert.deepEqual(invalidated, { status: 'current-verdict' });
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+});
+
+test('invalidator clears a stale verdict when no verdict marker exists for the pushed HEAD', async () => {
+  const client = fakeClient({ head: 'head-2', labels: ['pi:mr-created', 'review:passed'] });
+  client.state.comments.push({ body: '<!-- pi-review:verdict:head-1:PASS -->' });
+
+  const result = await invalidateReview(7, 'head-2', client);
+
+  assert.deepEqual(result, { status: 'invalidated' });
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
+});
+
+test('invalidator from an older push cannot mutate a newer PR HEAD', async () => {
+  const client = fakeClient({ head: 'head-3', labels: ['pi:mr-created', 'review:passed'] });
+  client.state.comments.push({ body: '<!-- pi-review:verdict:head-3:PASS -->' });
+
+  const result = await invalidateReview(7, 'head-2', client);
+
+  assert.deepEqual(result, { status: 'stale-push' });
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
 });

@@ -15,7 +15,9 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.sha }}
+  # PR updates share one group, so a newer synchronize cancels stale queued/in-progress CI.
+  # Pushes to dev stay SHA-scoped because each merged commit must complete post-merge handling.
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.workflow, github.sha) }}
   cancel-in-progress: true
 
 jobs:

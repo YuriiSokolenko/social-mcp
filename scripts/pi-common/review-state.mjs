@@ -7,8 +7,8 @@ import { workflowFile } from './project-config.mjs';
 import { PIPELINE_LABELS } from './state-machine.mjs';
 
 
-async function replaceReviewLabels(prNumber, target = null) {
-  const { loadPullRequest, replaceLabels } = githubClient();
+async function replaceReviewLabels(prNumber, target = null, client = githubClient()) {
+  const { loadPullRequest, replaceLabels } = client;
   const pr = await loadPullRequest(prNumber);
   const keep = withoutReviewLabels(pr);
   const next = target ? [...keep, target] : keep;
@@ -21,8 +21,29 @@ async function replaceReviewLabels(prNumber, target = null) {
  * schedules Reviewer: synchronize invalidates state only; normal ownership or
  * Reconciler recovery is responsible for the next run.
  */
-export async function invalidateReview(prNumber) {
-  await replaceReviewLabels(prNumber);
+function reviewVerdictMarker(head, verdict) {
+  return `<!-- pi-review:verdict:${head}:${verdict} -->`;
+}
+
+export async function invalidateReview(prNumber, expectedHead = null, client = githubClient()) {
+  const { loadPullRequest, replaceLabels, pages } = client;
+  const pr = await loadPullRequest(prNumber);
+  if (expectedHead && pr.head.sha !== expectedHead) return { status: 'stale-push' };
+
+  const labels = prLabelNames(pr);
+  const hasVerdict = labels.includes(REVIEW_PASSED) || labels.includes(REVIEW_CHANGES_REQUESTED);
+  if (!hasVerdict) return { status: 'no-verdict' };
+
+  if (expectedHead) {
+    const comments = await pages(`/issues/${prNumber}/comments`);
+    const markerPrefix = `<!-- pi-review:verdict:${expectedHead}:`;
+    if (comments.some(item => String(item.body ?? '').includes(markerPrefix))) {
+      return { status: 'current-verdict' };
+    }
+  }
+
+  await replaceLabels(prNumber, withoutReviewLabels(labels));
+  return { status: 'invalidated' };
 }
 
 /**
@@ -30,8 +51,8 @@ export async function invalidateReview(prNumber) {
  * Human gate and HEAD are re-read immediately before mutation so a verdict
  * cannot race a human takeover or a synchronize event.
  */
-export async function applyReview({ prNumber, reviewedHead, verdict, text }) {
-  const { loadPullRequest, replaceLabels, comment } = githubClient();
+export async function applyReview({ prNumber, reviewedHead, verdict, text }, client = githubClient()) {
+  const { loadPullRequest, replaceLabels, comment } = client;
   const pr = await loadPullRequest(prNumber);
   const currentLabels = prLabelNames(pr);
   if (currentLabels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
@@ -41,7 +62,7 @@ export async function applyReview({ prNumber, reviewedHead, verdict, text }) {
   }
   const target = verdict === 'PASS' ? REVIEW_PASSED : REVIEW_CHANGES_REQUESTED;
   await replaceLabels(prNumber, withReviewVerdict(currentLabels, target));
-  await comment(prNumber, text);
+  await comment(prNumber, `${text}\n\n${reviewVerdictMarker(reviewedHead, verdict)}`);
   return { status: 'applied', verdict };
 }
 
@@ -116,7 +137,7 @@ export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outc
 async function main() {
   const [cmd, rawPr, a, b, c] = process.argv.slice(2);
   const prNumber = Number(rawPr);
-  if (cmd === 'invalidate') return invalidateReview(prNumber);
+  if (cmd === 'invalidate') return invalidateReview(prNumber, a);
   if (cmd === 'apply') {
     const result = await applyReview({ prNumber, reviewedHead: a, verdict: b, text: fs.readFileSync(c, 'utf8') });
     return process.stdout.write(JSON.stringify(result));
@@ -130,6 +151,6 @@ async function main() {
     });
     return process.stdout.write(JSON.stringify(result));
   }
-  throw new Error('usage: review-state.mjs invalidate <pr> | apply <pr> <head> <verdict> <text-file> | dispatch <pr> <verdict> | recover-failure <pr> <head> <run-id>');
+  throw new Error('usage: review-state.mjs invalidate <pr> [expected-head] | apply <pr> <head> <verdict> <text-file> | dispatch <pr> <verdict> | recover-failure <pr> <head> <run-id>');
 }
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main().catch(e=>{console.error(e);process.exitCode=1;});
