@@ -18,6 +18,7 @@ import {
   nextActionResponseCap,
   nextResponseBudgetLevel,
   toolCallSignature,
+  validateSingleEvidenceRequest,
 } from '../scripts/pi-common/progress-controller.mjs';
 import { repoSearch } from '../scripts/pi-common/repo-search.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
@@ -1247,4 +1248,68 @@ test('runtime surfaces truncated tool calls through the tool_result hook', () =>
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /pi\.on\('tool_result'/);
   assert.match(runtime, /truncatedToolCallGuidance/);
+});
+
+
+test('#469 need_more_evidence rejects multi-fact requests and consumes exactly one evidence action', () => {
+  assert.equal(validateSingleEvidenceRequest({
+    missing: 'Show pytest config, list the tests directory, and locate smoke_connect_four.py.',
+  }).ok, false);
+  assert.equal(validateSingleEvidenceRequest({
+    missing: 'Read tests/test_smoke_connect_four.py to obtain the exact import line needed for the repair edit.',
+  }).ok, true);
+
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const broad = state.checkToolCall('need_more_evidence', {
+    missing: 'Show pytest config, list the tests directory, and locate smoke_connect_four.py.',
+    reason: 'Too many unknowns',
+  });
+  assert.equal(broad.block, true);
+  assert.match(broad.reason, /exactly one concrete missing fact/);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.evidenceUnlockAvailable(), true);
+
+  const request = {
+    missing: 'Read tests/test_smoke_connect_four.py to obtain the exact import line needed for the repair edit.',
+    reason: 'The exact import statement is the only missing fact.',
+  };
+  assert.equal(state.checkToolCall('need_more_evidence', request), undefined);
+  state.onToolExecutionEnd('need_more_evidence', false, { madeProgress: false, input: request });
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.evidenceUnlockAvailable(), false);
+
+  assert.equal(state.checkToolCall('read', { path: 'tests/test_smoke_connect_four.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.deepEqual(state.consumeEvidenceActionNotice(), { tool: 'read' });
+  assert.equal(state.consumeEvidenceActionNotice(), null);
+  state.onToolExecutionEnd('read', false, { madeProgress: false, input: { path: 'tests/test_smoke_connect_four.py' } });
+
+  const repeated = state.checkToolCall('need_more_evidence', {
+    missing: 'Read tests/test_smoke_connect_four.py for another detail.',
+    reason: 'Try another lookup',
+  });
+  assert.equal(repeated.block, true);
+  assert.match(repeated.reason, /extra evidence permit was already used/);
+
+  assert.equal(state.checkToolCall('edit', { path: 'src/game.py' }), undefined);
+  state.onToolExecutionEnd('edit', false, { madeProgress: true, input: { path: 'src/game.py' } });
+  assert.equal(state.evidenceUnlockAvailable(), true);
+});
+
+test('#469 stale unavailable capability attempts are not wired to the prose-only abort reason', () => {
+  const source = readScript('scripts/pi-agent-runtime.mjs');
+  assert.match(source, /PI_UNAVAILABLE_CAPABILITY_ABORT/);
+  assert.match(source, /unavailableCapabilityAttemptedThisTurn/);
+  assert.match(source, /effectiveAttemptedTool = actionTurnAttemptedTool \|\| unavailableCapabilityAttemptedThisTurn/);
+  assert.match(source, /RUNTIME EVIDENCE PERMIT CONSUMED/);
 });
