@@ -435,6 +435,14 @@ function mutationTargetPath(input, result) {
   }
 }
 
+export function mutationResolvesSubmissionObligation(obligation, input, result) {
+  const paths = obligation?.paths ?? [];
+  const target = mutationTargetPath(input, result);
+  return Boolean(target) && paths.some(item =>
+    target === item || target.endsWith('/' + item) || item.endsWith('/' + target)
+  );
+}
+
 function strategyFamily(tool, input, productiveState, errorClass) {
   const operation = typeof input?.operation === 'string' ? input.operation : '';
   return boundedStableHash({
