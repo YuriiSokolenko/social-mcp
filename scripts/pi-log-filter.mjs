@@ -34,6 +34,9 @@ let thinkingStreamed = false;
 let textStreamed = false;
 let reasoningAvailable = false;
 let redactingPrivateKey = false;
+let assistantMessageStarted = false;
+let runtimeFailureSignatureSeen = null;
+let runtimeFailureSettlementClaimed = false;
 const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 let measuredResponses = 0;
 let totalResponseMs = 0;
@@ -48,6 +51,11 @@ const call = process.env.PI_CALL ?? "main";
 const summaryFile = process.env.GITHUB_STEP_SUMMARY;
 const activityFile = process.env.PI_ACTIVITY_FILE;
 const runtimeFailureFile = process.env.PI_RUNTIME_FAILURE_FILE;
+
+function runtimeFailureSignature() {
+  if (!runtimeFailureFile || !existsSync(runtimeFailureFile)) return null;
+  try { return readFileSync(runtimeFailureFile, 'utf8'); } catch { return null; }
+}
 
 function recordActivity(kind, extra = {}) {
   if (!activityFile) return;
@@ -400,6 +408,7 @@ for await (const line of rl) {
       firstTokenAt = null;
       thinkingStreamed = false;
       textStreamed = false;
+      assistantMessageStarted = false;
       streamKind = null;
       lastUsage = null;
       responseNumber += 1;
@@ -408,7 +417,10 @@ for await (const line of rl) {
       heading("◉", `Model #${responseNumber} · ${new Date().toISOString().slice(11, 19)} UTC`, C.blue);
       break;
     case "message_start":
-      if (event.message?.role === "assistant" && responseStarted == null) responseStarted = Date.now();
+      if (event.message?.role === "assistant") {
+        assistantMessageStarted = true;
+        if (responseStarted == null) responseStarted = Date.now();
+      }
       break;
     case "message_update": {
       const update = event.assistantMessageEvent ?? {};
@@ -471,15 +483,20 @@ for await (const line of rl) {
       heading("✓", `Model #${responseNumber} · ${metaLine}`, C.yellow);
       if (usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
+        const failureSignature = runtimeFailureSignature();
+        if (failureSignature !== runtimeFailureSignatureSeen) {
+          runtimeFailureSignatureSeen = failureSignature;
+          runtimeFailureSettlementClaimed = false;
+        }
         const syntheticSettlement =
+          !assistantMessageStarted &&
           firstTokenAt == null &&
           (!Array.isArray(message.content) || message.content.length === 0) &&
           ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']
             .every(key => !Number.isFinite(usage[key]) || usage[key] === 0) &&
-          (
-            elapsed === 0 ||
-            Boolean(runtimeFailureFile && existsSync(runtimeFailureFile))
-          );
+          Boolean(failureSignature) &&
+          !runtimeFailureSettlementClaimed;
+        if (syntheticSettlement) runtimeFailureSettlementClaimed = true;
         recordMetric({
           issue: issue ?? 0,
           phase,
