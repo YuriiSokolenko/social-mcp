@@ -87,8 +87,11 @@ test("replayed duplicate records and an aggregate beside per-response usage do n
 });
 
 test("an aggregate with no per-response records is still attributed once", () => {
-  const ledger = summarizeUsage([{ call: "subagent", aggregate: true, response: 1, usage: u(7, 3) }]);
+  const ledger = summarizeUsage([{ call: "subagent", aggregate: true, response: 1, usage: u(7, 3), responseMs: 1234 }]);
   assert.equal(ledger.totals.total, 10);
+  assert.equal(ledger.totals.responseMs, 1234, "standalone aggregate keeps its generic elapsed timing");
+  assert.equal(ledger.totals.providerResponseMs, 0, "aggregate tool elapsed time is not provider-only response time");
+  assert.equal(ledger.totals.delegatedLifecycleMs, 1234, "aggregate tool elapsed time remains visible as delegated lifecycle time");
 });
 
 test("missing provider usage is unknown, not zero, and names the affected request", () => {
