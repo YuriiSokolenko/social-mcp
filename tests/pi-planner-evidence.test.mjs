@@ -541,7 +541,7 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
   assert.equal(records.length, 1, 'exactly one metric record for the planner lifecycle');
   assert.equal(records[0].call, 'planner');
   assert.equal(records[0].status, 'completed');
-  assert.deepEqual(records[0].usage, { input: 150, output: 15 });
+  assert.deepEqual(records[0].usage, { input: 150, output: 15, turns: 3, toolCalls: 8 });
 });
 
 
