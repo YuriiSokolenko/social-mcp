@@ -52,10 +52,19 @@ test("aggregates a cancelled attempt once and preserves it on reprocessing", () 
   }
   const rows = readFileSync(csvFile, "utf8").trim().split("\n");
   assert.equal(rows.length, 3); // header, issue total, one attempt
-  assert.match(rows[1], /^issue,51,all,,,/);
-  assert.match(rows[0], /responses,provider_responses,input/);
-  assert.match(rows[1], /,2,2,50,12,0,0,62,5\.0,300,/);
-  assert.match(rows[2], /^attempt,51,implementation,123,2,cancelled,/);
+  const header = rows[0].split(",");
+  const issueRow = Object.fromEntries(header.map((column, i) => [column, rows[1].split(",")[i]]));
+  const attemptRow = Object.fromEntries(header.map((column, i) => [column, rows[2].split(",")[i]]));
+  assert.equal(issueRow.scope, "issue");
+  assert.equal(issueRow.issue, "51");
+  assert.equal(issueRow.responses, "2");
+  assert.equal(issueRow.responses_semantics, "logical");
+  assert.equal(issueRow.provider_responses, "2");
+  assert.equal(issueRow.total_tokens, "62");
+  assert.equal(issueRow.model_seconds, "5.0");
+  assert.equal(issueRow.runner_seconds, "300");
+  assert.equal(attemptRow.scope, "attempt");
+  assert.equal(attemptRow.status, "cancelled");
 });
 
 
@@ -158,8 +167,78 @@ test("collects a Pi Architect run's usage under its 'architect' job name", () =>
   });
   assert.equal(result.status, 0, result.stderr);
   const rows = readFileSync(csvFile, "utf8").trim().split("\n");
-  assert.match(rows[2], /^attempt,9,architect,321,1,success,1,1,0,0,0,0,91519,20\.7,4404,/);
+  const header = rows[0].split(",");
+  const attempt = Object.fromEntries(header.map((column, i) => [column, rows[2].split(",")[i]]));
+  assert.equal(attempt.scope, "attempt");
+  assert.equal(attempt.issue, "9");
+  assert.equal(attempt.responses, "1");
+  assert.equal(attempt.responses_semantics, "logical");
+  assert.equal(attempt.provider_responses, "1");
+  assert.equal(attempt.total_tokens, "91519");
+  assert.equal(attempt.model_seconds, "20.7");
+  assert.equal(attempt.runner_seconds, "4404");
 });
+
+test("#470 legacy response semantics stay explicitly unknown instead of corrupting issue totals", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-usage-legacy-semantics-"));
+  const csvFile = join(dir, "usage.csv");
+  const eventFile = join(dir, "event.json");
+  const mockFile = join(dir, "mock.mjs");
+  writeFileSync(csvFile, [
+    "scope,issue,phase,run_id,attempt,status,responses,input,output,cache_read,cache_write,total_tokens,model_seconds,runner_seconds,url",
+    "attempt,51,implementation,100,1,success,99,10,2,0,0,12,1.0,10,https://github.com/test/repo/actions/runs/100/attempts/1",
+    "",
+  ].join("\n"));
+  writeFileSync(eventFile, JSON.stringify({ workflow_run: {
+    id: 101, run_attempt: 1, status: "completed", name: "Pi Issue #51",
+    path: ".github/workflows/pi-issue-agent.yml",
+    head_repository: { full_name: "test/repo" },
+  } }));
+  writeFileSync(mockFile, `
+    import { readFileSync, writeFileSync } from "node:fs";
+    const file = process.env.MOCK_CSV_FILE;
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.includes("/attempts/1/jobs")) return Response.json({ jobs: [{
+        id: 700, name: "pi", conclusion: "success",
+        started_at: "2026-09-25T11:00:00Z", completed_at: "2026-09-25T11:00:10Z",
+      }] });
+      if (url.endsWith("/jobs/700/logs")) return new Response([
+        '2026-09-25T11:00:01Z PI_TASK {"issue":51,"phase":"implementation","call":"main"}',
+        '2026-09-25T11:00:02Z PI_METRIC {"issue":51,"call":"main","response":1,"usage":{"input":5,"output":1,"totalTokens":6},"responseMs":500}',
+      ].join("\\n"));
+      if (url.includes("/contents/reports/pi-usage.csv") && options.method === "PUT") {
+        writeFileSync(file, Buffer.from(JSON.parse(options.body).content, "base64"));
+        return Response.json({ content: { sha: "new" } });
+      }
+      if (url.includes("/contents/reports/pi-usage.csv")) return Response.json({
+        content: readFileSync(file).toString("base64"), sha: "old",
+      });
+      throw new Error("Unexpected URL " + url);
+    };
+  `);
+  const result = spawnSync(process.execPath, ["--import", pathToFileURL(mockFile).href, "scripts/pi-usage-collect.mjs"], {
+    encoding: "utf8", env: {
+      ...process.env, GITHUB_EVENT_PATH: eventFile, GITHUB_REPOSITORY: "test/repo",
+      GITHUB_TOKEN: "synthetic-token", MOCK_CSV_FILE: csvFile,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const rows = readFileSync(csvFile, "utf8").trim().split("\n");
+  const header = rows[0].split(",");
+  const parsed = rows.slice(1).map(row => Object.fromEntries(header.map((column, i) => [column, row.split(",")[i]])));
+  const issue = parsed.find(row => row.scope === "issue" && row.issue === "51");
+  const legacy = parsed.find(row => row.scope === "attempt" && row.run_id === "100");
+  const fresh = parsed.find(row => row.scope === "attempt" && row.run_id === "101");
+  assert.equal(legacy.responses, "99", "legacy cell is preserved verbatim");
+  assert.equal(legacy.responses_semantics, "legacy_unknown");
+  assert.equal(legacy.provider_responses, "");
+  assert.equal(fresh.responses_semantics, "logical");
+  assert.equal(fresh.provider_responses, "1");
+  assert.equal(issue.responses, "", "ambiguous historical response counts are not summed into a misleading issue total");
+  assert.equal(issue.responses_semantics, "mixed_or_unknown");
+  assert.equal(issue.provider_responses, "", "provider total stays unknown while any historical attempt lacks that metric");
+});
+
 
 test("rejects a run with a trusted-looking title but an unrelated workflow path", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-usage-untrusted-"));
@@ -236,6 +315,7 @@ test("#425 summary and CSV agree on known totals and incompleteness for the same
   const header = rows[0].split(",");
   const attempt = Object.fromEntries(header.map((column, i) => [column, rows[2].split(",")[i]]));
   assert.equal(attempt.responses, "3", "responses keeps historical logical-record semantics");
+  assert.equal(attempt.responses_semantics, "logical");
   assert.equal(attempt.provider_responses, "3", "provider transport count is stored separately");
   assert.equal(attempt.total_tokens, "67");
   assert.equal(attempt.model_seconds, "2.0", "only the explicit main response contributes provider response time");
