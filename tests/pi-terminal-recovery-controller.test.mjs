@@ -316,3 +316,29 @@ test('#426 conflict recovery inspects first and refuses blind mutation-only capa
   assert.equal(blocked.requiredTool, 'read');
   assert.match(blocked.reason, /refusing a blind mutation/);
 });
+
+
+test('#426 multi-path cleanup validates one deterministic repair step at a time', () => {
+  const obligation = submissionObligation(
+    'Implementer file-set mismatch: unexpected files: scratch/a.py, scratch/b.py',
+  );
+  const plan = selectTerminalRecovery({
+    obligation,
+    terminalInput: { files: ['src/real.py'] },
+    activeToolNames: ['undo_mutation', 'submit_result'],
+    currentChangedFiles: ['scratch/a.py', 'scratch/b.py', 'src/real.py'],
+    acceptedPaths: ['src/real.py'],
+    drift: [
+      { path: 'scratch/a.py', class: 'journaled', action: 'undo_mutation', mutation_id: 'm-a' },
+      { path: 'scratch/b.py', class: 'journaled', action: 'undo_mutation', mutation_id: 'm-b' },
+    ],
+  });
+
+  assert.equal(plan.target, 'scratch/a.py');
+  assert.equal(plan.args.mutation_id, 'm-a');
+  assert.deepEqual(
+    plan.args.expected_files,
+    ['scratch/b.py', 'src/real.py'],
+    'first undo predicts exactly the one-step post-repair worktree; the next obligation remains visible',
+  );
+});
