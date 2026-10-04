@@ -220,6 +220,29 @@ test("replays failed child-session usage from the metrics file into the job log"
 });
 
 
+test('#470 zero-usage tool-call-only provider response is not synthetic after a prior runtime failure', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-tool-call-'));
+  const failureFile = join(dir, 'runtime-failure.json');
+  writeFileSync(failureFile, '{"failure_code":"PI_ACTION_REQUIRED_ABORT"}');
+  try {
+    const output = render([
+      { type: 'turn_start' },
+      { type: 'message_end', message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'call-1', name: 'submit_result', arguments: {} }],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+      } },
+      { type: 'agent_end', messages: [] },
+    ], { PI_ISSUE: '470', PI_CALL: 'main', PI_RUNTIME_FAILURE_FILE: failureFile });
+
+    assert.doesNotMatch(output, /"synthetic":true/);
+    assert.match(output, /PI_METRIC .*"totalTokens":0/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
 test('#469 abort settlement is explicitly synthetic without retyping ordinary zero usage', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-settlement-'));
   const failureFile = join(dir, 'runtime-failure.json');
