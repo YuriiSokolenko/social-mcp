@@ -831,10 +831,12 @@ export default function (pi) {
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
   let codingResponseNumber = 0;
+  let codingProviderRequestStartedAt = null;
   if (stage === 'implementer') {
     let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
       forcedProviderRequestInFlight = false;
+      if (codingSession) codingProviderRequestStartedAt = Date.now();
       const productiveState = syncProductiveState();
       syncActionToolSurface(productiveState);
 
@@ -2346,8 +2348,10 @@ export default function (pi) {
       recordDescendantMetric({
         call: 'coding', childSession: codingSession.sessionId, response: codingResponseNumber,
         usage: event.message?.usage ?? null,
+        responseMs: codingProviderRequestStartedAt == null ? 0 : Math.max(0, Date.now() - codingProviderRequestStartedAt),
         ...(event.message?.usage ? {} : { reason: 'provider_usage_unavailable' }),
       });
+      codingProviderRequestStartedAt = null;
     }
     const status = providerErrorStatus(event.message);
     const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
