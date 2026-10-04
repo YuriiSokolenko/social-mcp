@@ -545,6 +545,38 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
 });
 
 
+
+test('malformed pseudo-tool on output-only retry is classified explicitly and fails closed', async (t) => {
+  const { dir, env } = fixture(t, {});
+  const warnings = t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'log', () => {});
+  let attempts = 0;
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      attempts++;
+      if (attempts === 1) {
+        return {
+          status: 'failed',
+          error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.',
+          usage: { input: 100, output: 10, turns: 1, toolCalls: 0 },
+        };
+      }
+      return {
+        status: 'failed',
+        error: 'Tool <|virtual| not found',
+        usage: { input: 25, output: 3, turns: 1, toolCalls: 1 },
+      };
+    },
+  });
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(attempts, 2, 'malformed retry is never given another retry');
+  assert.equal(prepared.status, 'fallback');
+  assert.ok(warnings.mock.calls.some(call =>
+    String(call.arguments[0]).includes('"reason":"output_only_invalid_tool"')
+  ));
+});
+
 test('output-only retry reports a multi-turn or extra-tool anomaly instead of hiding it', async (t) => {
   const { dir, env } = fixture(t, {});
   const warnings = t.mock.method(console, 'warn', () => {});
