@@ -180,3 +180,59 @@ test("a larger roll-up with redistributed components keeps total consistent with
   assert.ok(total >= input + output + cacheRead + cacheWrite);
   assert.equal(ledger.complete, false);
 });
+
+
+test('#469 synthetic settlement stays logical but exact provider trace reports 24 real responses', () => {
+  const records = [
+    { call: 'planner', scope: 'session', childSession: 'planner-469', status: 'completed',
+      usage: u(600, 60, 660, { turns: 6, durationMs: 6000 }) },
+    main(1, u(100, 10)),
+    ...Array.from({ length: 12 }, (_, index) => child('coding-469', index + 1, u(20, 2), { responseMs: 200 + index })),
+    { call: 'coding', scope: 'session', childSession: 'coding-469', status: 'completed',
+      usage: u(240, 24, 264, { turns: 12, durationMs: 12000 }) },
+    ...Array.from({ length: 5 }, (_, index) => ({
+      call: 'repair', response: index + 1, usage: u(15, 1), responseMs: 300 + index,
+    })),
+    {
+      call: 'main',
+      response: 2,
+      usage: u(0, 0, 0),
+      responseMs: 0,
+      synthetic: true,
+      record_type: 'synthetic_settlement',
+    },
+    ...Array.from({ length: 24 }, (_, index) => ({
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      response: index + 1,
+      responseMs: 1000 + index,
+    })),
+  ];
+  const ledger = summarizeUsage(records);
+  assert.equal(ledger.totals.providerResponses, 24, '6 planner + 1 parent + 12 coding + 5 repair');
+  assert.equal(
+    ledger.totals.providerResponseMs,
+    Array.from({ length: 24 }, (_, index) => 1000 + index).reduce((sum, value) => sum + value, 0),
+  );
+  assert.equal(ledger.calls.get('provider').providerResponses, 24);
+  assert.equal(ledger.calls.get('provider').responses, 0);
+  assert.ok(ledger.totals.responses > ledger.totals.providerResponses, 'logical roll-ups/synthetic records remain a separate dimension');
+});
+
+test('#469 synthetic zero-token response never increments fallback provider count', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 2), responseMs: 700 },
+    {
+      call: 'main',
+      response: 2,
+      usage: u(0, 0, 0),
+      responseMs: 0,
+      synthetic: true,
+      record_type: 'synthetic_settlement',
+    },
+  ]);
+  assert.equal(ledger.totals.responses, 2);
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 700);
+});
