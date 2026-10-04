@@ -7,6 +7,10 @@ import { readPiJsonl } from "./pi-common/result-jsonl.mjs";
 const EVIDENCE_STATUSES = new Set(["ESTABLISHED", "ASSUMPTION"]);
 const MAX_CRITERIA_EVIDENCE = 30;
 const MAX_EVIDENCE_ITEMS = 4;
+const MAX_CRITERION_CHARS = 500;
+const MAX_EVIDENCE_CHARS = 1000;
+const MAX_ASSUMPTION_CHARS = 1000;
+const MAX_SUMMARY_CHARS = 12000;
 const MAX_REVIEW_COMMENT_CHARS = 60000;
 
 function clean(value) {
@@ -24,15 +28,16 @@ function validateCriterionEvidence(item, index) {
 
   if (
     !criterion ||
+    criterion.length > MAX_CRITERION_CHARS ||
     !EVIDENCE_STATUSES.has(status) ||
     evidence.length === 0 ||
     evidence.length > MAX_EVIDENCE_ITEMS ||
-    evidence.some(entry => !entry)
+    evidence.some(entry => !entry || entry.length > MAX_EVIDENCE_CHARS)
   ) {
     throw new Error(`invalid review criterion evidence at index ${index}`);
   }
-  if (status === "ASSUMPTION" && !assumption) {
-    throw new Error(`review criterion evidence at index ${index} requires an explicit assumption`);
+  if (status === "ASSUMPTION" && (!assumption || assumption.length > MAX_ASSUMPTION_CHARS)) {
+    throw new Error(`review criterion evidence at index ${index} requires a bounded explicit assumption`);
   }
 
   return {
@@ -59,7 +64,8 @@ function renderReviewResult(result) {
 }
 
 export function validateReviewResult(result) {
-  if (!["PASS", "CHANGES_REQUESTED"].includes(result?.verdict) || typeof result.text !== "string" || !result.text.trim()) {
+  const text = clean(result?.text);
+  if (!["PASS", "CHANGES_REQUESTED"].includes(result?.verdict) || !text || text.length > MAX_SUMMARY_CHARS) {
     throw new Error("invalid review result");
   }
   const rawEvidence = result.criteria_evidence ?? [];
@@ -72,7 +78,7 @@ export function validateReviewResult(result) {
 
   const validated = {
     verdict: result.verdict,
-    text: result.text.trim(),
+    text,
     criteria_evidence: rawEvidence.map(validateCriterionEvidence),
   };
   if (renderReviewResult(validated).length > MAX_REVIEW_COMMENT_CHARS) {
