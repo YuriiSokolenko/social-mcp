@@ -90,7 +90,10 @@ export function recordCodingBehavioralValidation({
   if (!validationLifecycleActive(env)) return null;
   if (result?.status !== 'pass' || result?.kind !== 'pytest') return null;
   const targets = Array.isArray(scope?.targets)
-    ? [...new Set(scope.targets.map(canonicalRepoPath).filter(Boolean))].sort()
+    ? [...new Set(scope.targets
+        .filter(target => typeof target === 'string' && !target.includes('::'))
+        .map(canonicalRepoPath)
+        .filter(Boolean))].sort()
     : [];
   if (!targets.length) return null;
   const state = { schema_version: 1, kind: 'pytest', targets };
