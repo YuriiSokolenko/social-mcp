@@ -118,9 +118,7 @@ export function codingSessionSubmissionReadiness({
   resumed = false,
   validationRepair = false,
 } = {}) {
-  if (resumed || validationRepair || (Array.isArray(changedFiles) && changedFiles.length > 0)) {
-    return { ready: true, missing_outputs: [] };
-  }
+  if (resumed || validationRepair) return { ready: true, missing_outputs: [] };
   const required = requiredPreparedOutputPaths(prepared);
   const missing = required.filter(file => !fs.existsSync(path.resolve(cwd, file)));
   return missing.length
