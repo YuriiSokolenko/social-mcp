@@ -1290,22 +1290,22 @@ test('runtime surfaces truncated tool calls through the tool_result hook', () =>
 });
 
 
-test('#469 need_more_evidence structurally bounds broad requests and consumes exactly one evidence action', () => {
-  const multiline = validateSingleEvidenceRequest({
-    missing: 'Exact pytest configuration; exact smoke test location.',
-  });
-  assert.equal(multiline.ok, false);
-  assert.match(multiline.reason, /Rewrite it as one line/);
-
-  assert.equal(validateSingleEvidenceRequest({
-    missing: 'Differences between src/a.py and src/b.py relevant to the import signature.',
-  }).ok, true, 'one fact may legitimately compare two paths');
-  assert.equal(validateSingleEvidenceRequest({
-    missing: 'Read tests/test_smoke_connect_four.py, check the signature needed for the repair edit.',
-  }).ok, true, 'verbs are not used as a brittle proxy for fact count');
-  assert.equal(validateSingleEvidenceRequest({
-    missing: 'Whether smoke_connect_four.py already exists, plus the exact pytest configuration.',
-  }).ok, false, 'explicitly additional facts are rejected before consuming a permit');
+test('#469 need_more_evidence validates shape only and consumes exactly one evidence action', () => {
+  for (const missing of [
+    'Does for(;;) exist in loop.py?',
+    'Where is the plus operator handled in calc.py?',
+    'Differences between src/a.py and src/b.py relevant to the import signature.',
+    'Read tests/test_smoke_connect_four.py, check the signature needed for the repair edit.',
+    'Read a.py and read b.py.',
+    'Exact pytest configuration; exact smoke test location.',
+  ]) {
+    assert.equal(
+      validateSingleEvidenceRequest({ missing }).ok,
+      true,
+      `free-text semantics are not guessed for: ${missing}`,
+    );
+  }
+  assert.equal(validateSingleEvidenceRequest({ missing: '   ' }).ok, false);
 
   const state = controller({
     productiveProgress: {
@@ -1317,15 +1317,6 @@ test('#469 need_more_evidence structurally bounds broad requests and consumes ex
     },
   });
   state.onTurnStart(0);
-
-  const broad = state.checkToolCall('need_more_evidence', {
-    missing: 'Exact pytest configuration; exact smoke test location.',
-    reason: 'Too many unknowns',
-  });
-  assert.equal(broad.block, true);
-  assert.match(broad.reason, /Rewrite it as one line/);
-  assert.equal(state.productiveProgressState(), 'action_required');
-  assert.equal(state.evidenceUnlockAvailable(), true);
 
   const request = {
     missing: 'Read tests/test_smoke_connect_four.py to obtain the exact import line needed for the repair edit.',
