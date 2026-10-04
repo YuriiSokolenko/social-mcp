@@ -269,10 +269,9 @@ function targetFamily(input) {
   return typeof value === 'string' ? value.slice(0, 1000) : '';
 }
 
-// A failed terminal submission is identified by its obligation (failure kind plus the exact
-// unexpected/missing/scratch paths it reports), not by its prose. Only those named lists are
-// parsed: the cleanup hint also echoes undo_mutation arguments and the intended expected_files,
-// which are not part of the blocker.
+// A failed terminal submission is identified by its unresolved obligation, not by prose.
+// Keep only trusted structured fields that determine the next repair. Cleanup hints may echo
+// expected_files or mutation ids; those are deliberately excluded from the fingerprint.
 const OBLIGATION_LISTS = Object.freeze([
   ['unexpected', /unexpected files: ([^;]*?)(?=;|\. |$)/],
   ['missing', /missing files: ([^;]*?)(?=;|\. |$)/],
@@ -283,22 +282,133 @@ function parsePathList(text) {
   return text.split(',').map(item => item.trim()).filter(Boolean);
 }
 
+function uniqueStrings(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .filter(item => typeof item === 'string' && item.trim())
+    .map(item => item.trim()))].sort();
+}
+
+function structuredSubmissionError(text) {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function conflictObligation(text) {
+  const match = /Latest dev conflicts with the implementation\. Resolve these files and retry submit_result: ([^\n]+)/.exec(text);
+  if (!match) return null;
+  const conflictPaths = uniqueStrings(parsePathList(match[1]));
+  if (!conflictPaths.length) return null;
+  return {
+    kind: 'conflict',
+    code: 'latest_dev_conflict',
+    paths: conflictPaths,
+    conflictPaths,
+    key: boundedStableHash({ code: 'latest_dev_conflict', conflict_paths: conflictPaths }),
+  };
+}
+
 export function submissionObligation(result) {
   const text = boundedResultText(result);
   const lists = {};
   for (const [name, pattern] of OBLIGATION_LISTS) {
     const match = pattern.exec(text);
-    if (match) lists[name] = [...new Set(parsePathList(match[1]))].sort();
+    if (match) lists[name] = uniqueStrings(parsePathList(match[1]));
   }
-  const paths = [...new Set(Object.values(lists).flat())].sort();
-  if (paths.length > 0) return { paths, key: boundedStableHash(lists) };
+  const paths = uniqueStrings(Object.values(lists).flat());
+  if (paths.length > 0) {
+    return {
+      kind: lists.scratch?.length ? 'file_set_cleanup' : 'file_set',
+      code: 'implementer_file_set',
+      paths,
+      unexpected: lists.unexpected ?? [],
+      missing: lists.missing ?? [],
+      scratch: lists.scratch ?? [],
+      key: boundedStableHash(lists),
+    };
+  }
+
+  const conflict = conflictObligation(text);
+  if (conflict) return conflict;
+
+  const parsed = structuredSubmissionError(text);
+  const code = typeof parsed?.code === 'string' ? parsed.code : '';
+  if (!code) return null;
+
+  if (code === 'missing_publication_fields') {
+    const missingFields = uniqueStrings(parsed.missing_fields);
+    return {
+      kind: 'metadata',
+      code,
+      paths: [],
+      missingFields,
+      key: boundedStableHash({ code, missing_fields: missingFields }),
+    };
+  }
+  if (code === 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED') {
+    const requiredTargets = uniqueStrings(parsed.required_targets);
+    const action = parsed.action && typeof parsed.action === 'object' && !Array.isArray(parsed.action)
+      ? {
+          kind: typeof parsed.action.kind === 'string' ? parsed.action.kind : null,
+          paths: uniqueStrings(parsed.action.paths),
+          targets: uniqueStrings(parsed.action.targets),
+          profile: typeof parsed.action.profile === 'string' ? parsed.action.profile : null,
+        }
+      : null;
+    return {
+      kind: 'validation',
+      code,
+      // Validation targets are not mutation obligations: an unrelated edit to a test path must
+      // not make the failed submission disappear. Only authoritative passing validation does.
+      paths: [],
+      requiredTargets,
+      action,
+      key: boundedStableHash({ code, required_targets: requiredTargets, action }),
+    };
+  }
+  if (code === 'PREPARED_OUTPUTS_REQUIRED') {
+    const missingOutputs = uniqueStrings(parsed.missing_outputs);
+    return {
+      kind: 'prepared_outputs',
+      code,
+      paths: missingOutputs,
+      missingOutputs,
+      key: boundedStableHash({ code, missing_outputs: missingOutputs }),
+    };
+  }
+
+  return {
+    kind: 'coded',
+    code,
+    paths: [],
+    key: boundedStableHash({ code }),
+  };
+}
+
+function passingValidationResult(result) {
+  if (result?.details?.status === 'pass') return true;
+  const text = explicitResultText(result);
+  if (!text) return false;
   try {
-    const code = JSON.parse(text)?.code;
-    if (typeof code === 'string' && code) return { paths: [], key: boundedStableHash({ code }) };
+    return JSON.parse(text)?.status === 'pass';
   } catch {
-    // Not a structured error; the caller falls back to generic error normalization.
+    return false;
   }
-  return null;
+}
+
+function exactValidationActionMatches(obligation, tool, input) {
+  if (tool !== 'run_check' || obligation?.kind !== 'validation' || !obligation.action) return false;
+  const expected = obligation.action;
+  if (expected.kind && input?.kind !== expected.kind) return false;
+  if (expected.profile && input?.profile !== expected.profile) return false;
+  const same = (left, right) =>
+    JSON.stringify(uniqueStrings(left)) === JSON.stringify(uniqueStrings(right));
+  if (expected.paths.length && !same(input?.paths, expected.paths)) return false;
+  if (expected.targets.length && !same(input?.targets, expected.targets)) return false;
+  return true;
 }
 
 // The file a mutation acted on. Targeted recovery tools (undo_mutation, rollback_last_mutation,
@@ -435,13 +545,30 @@ export class SemanticLoopGuard {
       this._push(this.failureWindow, family);
       const count = this._count(this.failureWindow, family);
       const classification = blocked ? 'blocked' : 'error';
-      const failed = { ...base, classification, errorClass };
+      const failed = {
+        ...base,
+        classification,
+        errorClass,
+        obligation: TERMINAL_TOOLS.has(tool) ? this.terminalObligation : null,
+      };
       if (count >= this.revisitThreshold) {
         return this._trip(failed, 'repeated_failed_strategy', 'failure_strategy', count, {
           repeatedFailure: true,
         });
       }
       return failed;
+    }
+
+    if (
+      this.terminalObligation?.kind === 'validation' &&
+      exactValidationActionMatches(this.terminalObligation, tool, input) &&
+      passingValidationResult(result)
+    ) {
+      this.terminalObligation = null;
+      this.steerOutstanding = false;
+      this.failureWindow = [];
+      this.observationWindow = [];
+      return { ...base, classification: 'success_obligation_resolved' };
     }
 
     if (MUTATION_TOOLS.has(tool)) {
