@@ -234,7 +234,12 @@ export function isCountedProviderResponse(exchange) {
   } catch {
     return false;
   }
-  return pathname.endsWith('/chat/completions') || pathname.endsWith('/responses');
+  return [
+    '/chat/completions',
+    '/completions',
+    '/responses',
+    '/messages',
+  ].some(suffix => pathname.endsWith(suffix));
 }
 
 export async function runStage(options, env = process.env) {
