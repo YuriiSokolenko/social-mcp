@@ -107,13 +107,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          image="${COMPOSE_PROJECT_NAME}-control-runner-check:latest"
+          base_image="${COMPOSE_PROJECT_NAME}-control-runner-check:latest"
+          fixture_image="${COMPOSE_PROJECT_NAME}-control-runner-stop-check:latest"
           container="${COMPOSE_PROJECT_NAME}-control-runner-stop-check"
           fixture="$RUNNER_TEMP/control-runner-stop-check"
           rm -rf "$fixture"
-          mkdir -p "$fixture/bin"
+          mkdir -p "$fixture/control-test/bin"
 
-          cat > "$fixture/bin/Runner.Listener" <<'LISTENER'
+          cat > "$fixture/control-test/bin/Runner.Listener" <<'LISTENER'
           #!/usr/bin/env bash
           set -euo pipefail
           if [ "${1:-}" = "--version" ]; then
@@ -121,24 +122,32 @@ jobs:
             exit 0
           fi
           [ "${1:-}" = "run" ] || exit 2
-          printf 'ready\n' > "$RUNNER_HOME/ready"
-          trap 'printf "stopped\n" > "$RUNNER_HOME/stopped"; exit 0' INT TERM
+          id -u > "$RUNNER_HOME/ready"
+          trap 'id -u > "$RUNNER_HOME/stopped"; exit 0' INT TERM
           while true; do sleep 1; done
           LISTENER
-          chmod +x "$fixture/bin/Runner.Listener"
-          printf '#!/usr/bin/env bash\nexit 99\n' > "$fixture/config.sh"
-          chmod +x "$fixture/config.sh"
-          printf 'registered\n' > "$fixture/.runner"
-          printf 'credentials\n' > "$fixture/.credentials"
+          chmod +x "$fixture/control-test/bin/Runner.Listener"
+          printf '#!/usr/bin/env bash\nexit 99\n' > "$fixture/control-test/config.sh"
+          chmod +x "$fixture/control-test/config.sh"
+          printf 'registered\n' > "$fixture/control-test/.runner"
+          printf 'credentials\n' > "$fixture/control-test/.credentials"
+
+          cat > "$fixture/Dockerfile" <<'DOCKERFILE'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          COPY --chown=runner:runner control-test/ /control-test/
+          DOCKERFILE
 
           cleanup() {
             docker rm -f "$container" >/dev/null 2>&1 || true
-            docker image rm "$image" >/dev/null 2>&1 || true
+            docker image rm "$fixture_image" "$base_image" >/dev/null 2>&1 || true
             rm -rf "$fixture"
           }
           trap cleanup EXIT
 
-          docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t "$image" .
+          docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t "$base_image" .
+          docker build --build-arg "BASE_IMAGE=$base_image" -t "$fixture_image" "$fixture"
+
           docker run -d --name "$container" \
             --cap-drop ALL \
             --cap-add SETGID \
@@ -152,16 +161,21 @@ jobs:
             -e GH_ADMIN_TOKEN=dummy \
             -e GITHUB_REPOSITORY=example/repo \
             -e RUNNER_HOME=/control-test \
-            -v "$fixture:/control-test" \
-            "$image" >/dev/null
+            "$fixture_image" >/dev/null
 
           for _ in {1..100}; do
-            [ -f "$fixture/ready" ] && break
+            docker exec "$container" test -f /control-test/ready >/dev/null 2>&1 && break
             sleep 0.1
           done
-          [ -f "$fixture/ready" ] || {
+          docker exec "$container" test -f /control-test/ready >/dev/null 2>&1 || {
             docker logs "$container" >&2 || true
             echo 'control runner listener did not start' >&2
+            exit 1
+          }
+
+          listener_uid="$(docker exec "$container" cat /control-test/ready)"
+          [ "$listener_uid" = "1001" ] || {
+            echo "control runner listener uid is $listener_uid, expected 1001" >&2
             exit 1
           }
 
@@ -169,11 +183,17 @@ jobs:
           docker stop --time 5 "$container" >/dev/null
           elapsed="$(( $(date +%s) - started_at ))"
 
-          [ -f "$fixture/stopped" ] || {
+          docker cp "$container:/control-test/stopped" "$fixture/stopped" >/dev/null 2>&1 || {
             docker logs "$container" >&2 || true
             echo 'uid 1001 listener did not receive the graceful-stop signal' >&2
             exit 1
           }
+          stopped_uid="$(cat "$fixture/stopped")"
+          [ "$stopped_uid" = "1001" ] || {
+            echo "graceful-stop marker uid is $stopped_uid, expected 1001" >&2
+            exit 1
+          }
+
           exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container")"
           [ "$exit_code" -eq 0 ] || {
             echo "control runner exited with code $exit_code instead of 0" >&2
