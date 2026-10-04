@@ -13,8 +13,9 @@ const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
 let run = event.workflow_run;
 const path = "reports/pi-usage.csv";
 const metricsBranch = "pi-metrics";
-const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "complete", "unknown_requests", "url", "delegated_lifecycle_seconds"];
-const previousColumns = columns.filter((column) => column !== "delegated_lifecycle_seconds");
+const columns = ["scope", "issue", "phase", "run_id", "attempt", "status", "responses", "provider_responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "runner_seconds", "complete", "unknown_requests", "url", "delegated_lifecycle_seconds"];
+const preProviderColumns = columns.filter((column) => column !== "provider_responses");
+const previousColumns = preProviderColumns.filter((column) => column !== "delegated_lifecycle_seconds");
 const legacyColumns = previousColumns.filter((column) => column !== "complete" && column !== "unknown_requests");
 const { raw: request } = githubClient({ repo, token });
 
@@ -37,11 +38,13 @@ function parseCsv(source) {
   const headerLine = lines[0];
   const header = headerLine === columns.join(",")
     ? columns
-    : headerLine === previousColumns.join(",")
-      ? previousColumns
-      : headerLine === legacyColumns.join(",")
-        ? legacyColumns
-        : null;
+    : headerLine === preProviderColumns.join(",")
+      ? preProviderColumns
+      : headerLine === previousColumns.join(",")
+        ? previousColumns
+        : headerLine === legacyColumns.join(",")
+          ? legacyColumns
+          : null;
   if (!header) throw new Error("Unexpected usage CSV header");
   return lines.slice(1).filter(Boolean).map((line) => {
     // All values in this file are numeric, fixed labels or URLs with no commas.
@@ -50,6 +53,9 @@ function parseCsv(source) {
     // Older rows cannot prove completeness and pre-#463 rows have no delegated lifecycle timing.
     return {
       complete: "unknown", unknown_requests: "", delegated_lifecycle_seconds: "",
+      // Historical "responses" means logical usage records. Older files have no trustworthy
+      // transport-response count, so leave the new column blank rather than reinterpret history.
+      provider_responses: "",
       ...Object.fromEntries(header.map((column, i) => [column, fields[i]])),
     };
   });
@@ -116,7 +122,9 @@ for (const job of jobs) {
     ? Math.max(0, Math.round((Date.parse(job.completed_at) - Date.parse(job.started_at)) / 1000)) : 0;
   newRows.push({
     scope: "attempt", issue, phase, run_id: run.id,
-    attempt: run.run_attempt, status: job.conclusion ?? "unknown", responses: ledger.totals.providerResponses,
+    attempt: run.run_attempt, status: job.conclusion ?? "unknown",
+    responses: ledger.totals.responses,
+    provider_responses: ledger.totals.providerResponses,
     ...totals,
     model_seconds: totals.model_seconds.toFixed(1),
     delegated_lifecycle_seconds: totals.delegated_lifecycle_seconds.toFixed(1),
@@ -143,11 +151,11 @@ for (let retry = 0; retry < 8; retry++) {
     if (Number(row.issue) === 0) continue;
     const total = issueTotals.get(row.issue) ?? {
       scope: "issue", issue: row.issue, phase: "all", run_id: "", attempt: "", status: "",
-      responses: 0, input: 0, output: 0, cache_read: 0, cache_write: 0,
+      responses: 0, provider_responses: 0, input: 0, output: 0, cache_read: 0, cache_write: 0,
       total_tokens: 0, model_seconds: 0, delegated_lifecycle_seconds: 0,
       runner_seconds: 0, complete: true, unknown_requests: 0, url: `https://github.com/${repo}/issues/${row.issue}`,
     };
-    for (const key of ["responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "delegated_lifecycle_seconds", "runner_seconds"]) {
+    for (const key of ["responses", "provider_responses", "input", "output", "cache_read", "cache_write", "total_tokens", "model_seconds", "delegated_lifecycle_seconds", "runner_seconds"]) {
       total[key] += Number(row[key]);
     }
     total.unknown_requests += Number(row.unknown_requests) || 0;
