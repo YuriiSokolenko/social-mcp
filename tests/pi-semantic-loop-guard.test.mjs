@@ -1562,3 +1562,84 @@ test('#426 runtime checkpoints a genuinely unmapped terminal obligation instead 
     fs.rmSync(failureFile, { force: true });
   }
 });
+
+
+test('#426 runtime maps repeated journaled file-set failure to targeted undo', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-cleanup-runtime-'));
+  const journalFile = path.join(os.tmpdir(), `pi-terminal-cleanup-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src/a.js'), 'export const a = 1;\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'undo_mutation', 'recover_worktree'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const journal = await import(JOURNAL_URL);
+      const snapshots = await import(SNAPSHOT_URL);
+      const { default: install } = await import(RUNTIME_URL);
+
+      const repo = ${JSON.stringify(repo)};
+      const before = snapshots.captureMutationSnapshot(repo, 'scratch/a.js');
+      fs.mkdirSync(path.join(repo, 'scratch'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'scratch/a.js'), 'temporary\n');
+      const after = snapshots.captureMutationSnapshot(repo, 'scratch/a.js');
+      const entry = journal.recordSuccessfulMutation({
+        cwd: repo,
+        before,
+        after,
+        tool: 'write',
+        disposition: 'temporary',
+        env: process.env,
+      });
+
+      install(pi);
+      let aborts = 0;
+      const ctx = { cwd: repo, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: 'Implementer file-set mismatch: unexpected files: scratch/a.js' }],
+      };
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'submit-cleanup-' + index,
+          toolName: 'submit_result',
+          input: { summary: 'done', files: ['src/a.js'] },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      assert.equal(aborts, 0);
+      assert.equal(messages.length, 1);
+      assert.match(messages[0][0], /deterministic targeted_cleanup repair selected/);
+      assert.match(messages[0][0], new RegExp(entry.id));
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'undo_mutation', parameters: {} } },
+            { type: 'function', function: { name: 'recover_worktree', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(patched.tools.map(tool => tool.function.name), ['undo_mutation']);
+      assert.equal(patched.tool_choice, 'required');
+      console.log('TERMINAL_RECOVERY_TARGETED_UNDO_RUNTIME_OK');
+    `, { PI_MUTATION_JOURNAL_FILE: journalFile });
+
+    assert.match(result.stdout, /TERMINAL_RECOVERY_TARGETED_UNDO_RUNTIME_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+  }
+});
