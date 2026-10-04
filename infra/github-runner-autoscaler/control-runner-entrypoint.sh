@@ -127,10 +127,21 @@ sleep_pid=""
 listener_pid=""
 registration_pid=""
 update_waiting=0
+launch_in_progress=0
+shutdown_requested=0
+
+complete_launch() {
+  launch_in_progress=0
+  if [ "${shutdown_requested}" -eq 1 ]; then
+    shutdown
+  fi
+}
 
 interruptible_sleep() {
+  launch_in_progress=1
   sleep "$1" &
   sleep_pid=$!
+  complete_launch
   wait "${sleep_pid}" 2>/dev/null || true
   sleep_pid=""
 }
@@ -179,6 +190,11 @@ stop_process_group() {
 }
 
 shutdown() {
+  if [ "${launch_in_progress}" -eq 1 ]; then
+    shutdown_requested=1
+    return
+  fi
+
   trap - TERM INT
 
   if [ -n "${sleep_pid}" ]; then
@@ -227,8 +243,10 @@ while true; do
       fi
     fi
 
+    launch_in_progress=1
     configure_runner &
     registration_pid=$!
+    complete_launch
     registration_status=0
     wait "${registration_pid}" || registration_status=$?
     registration_pid=""
@@ -250,8 +268,10 @@ while true; do
     credential_failures=0
   fi
 
+  launch_in_progress=1
   gosu runner ./bin/Runner.Listener run &
   listener_pid=$!
+  complete_launch
   listener_status=0
   wait "${listener_pid}" || listener_status=$?
   listener_pid=""
