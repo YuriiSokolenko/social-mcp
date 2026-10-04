@@ -2002,6 +2002,7 @@ export default function (pi) {
         controller.restoreRuntimeBlockedEvidenceAction(evidenceConsumptionNotice);
       }
     };
+    try {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
@@ -2056,7 +2057,6 @@ export default function (pi) {
         });
       } catch (error) {
         if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') {
-          restoreRuntimeBlockedEvidence();
           throw error;
         }
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
@@ -2125,6 +2125,13 @@ export default function (pi) {
       });
     }
     return undefined;
+    } catch (error) {
+      // The controller has already converted the one-action evidence window back to
+      // action_required by this point. If trusted runtime setup throws before execution,
+      // restore that same permit so a harness failure cannot silently consume it.
+      restoreRuntimeBlockedEvidence();
+      throw error;
+    }
   });
   pi.on('tool_execution_end', async (event, ctx) => {
     const consumedEvidence = pendingEvidenceConsumptionNotices.get(event.toolCallId) ?? null;
