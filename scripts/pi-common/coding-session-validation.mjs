@@ -120,6 +120,10 @@ function coveredByDirectory(file, directory) {
   return relative === '' || (relative && relative !== '..' && !relative.startsWith('../'));
 }
 
+export function repositoryFingerprintRequiresValidation(before, after) {
+  return !(typeof before === 'string' && before && typeof after === 'string' && after && before === after);
+}
+
 export function invalidateCodingBehavioralValidation(env = process.env) {
   if (!validationLifecycleActive(env)) return false;
   const target = validationStatePath(env);
