@@ -714,23 +714,45 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'action-hidden-abort') {
-          for (let attempt = 1; attempt <= 2; attempt += 1) {
+          // #469 exact lifecycle: one blocker opens one evidence action, then both read and
+          // repeated need_more_evidence disappear until productive progress occurs.
+          fs.writeFileSync(cwd + '/evidence.txt', 'exact import anchor\n');
+          await call('need_more_evidence', {
+            missing: 'Read evidence.txt to obtain the exact import anchor needed for the edit.',
+            reason: 'The exact import anchor is the only unresolved implementation fact.',
+          });
+          await call('read', { path: 'evidence.txt' });
+          fs.rmSync(cwd + '/evidence.txt');
+
+          assert.match(steers.at(-1), /RUNTIME EVIDENCE PERMIT CONSUMED/);
+          assert.match(steers.at(-1), /read\/search evidence and repeated need_more_evidence are unavailable/);
+          assert.ok(!active.includes('read'), 'read is removed after the single evidence action');
+          assert.ok(!active.includes('need_more_evidence'), 'blocker is removed until productive progress');
+
+          const staleAttempts = [
+            { toolName: 'read', input: { path: 'evidence.txt' } },
+            {
+              toolName: 'need_more_evidence',
+              input: {
+                missing: 'Read evidence.txt for another fact.',
+                reason: 'Attempt a second evidence unlock without productive progress.',
+              },
+            },
+          ];
+          for (let index = 0; index < staleAttempts.length; index += 1) {
+            const attempt = staleAttempts[index];
             handlers.get('turn_start')({ turnIndex: turn });
             const hidden = await handlers.get('tool_call')({
-              toolName: 'read',
-              toolCallId: 'hidden-' + turn,
-              input: { path: 'config.py' },
+              ...attempt,
+              toolCallId: 'hidden-' + attempt.toolName + '-' + turn,
             }, ctx);
             assert.equal(hidden.block, true);
             assert.match(hidden.reason, /not currently exposed/);
             assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
-            if (attempt === 1) {
-              const afterHidden = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-              assert.equal(afterHidden.tool_choice, undefined, 'hidden provider-emitted tool clears transport forcing');
-            }
             await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-            assert.equal(aborts, attempt === 1 ? 0 : 1, 'unavailable calls abort only after a repeated unavailable-capability turn');
+            assert.equal(aborts, index === 0 ? 0 : 1, 'unavailable calls abort only after a repeated unavailable-capability turn');
           }
+
           const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
           assert.equal(failure.failure_class, 'model_execution_abort');
           assert.equal(failure.failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
@@ -1000,10 +1022,11 @@ test('an already-completed repeated tool call clears forcing but still fails clo
   assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
-test('#469 repeated hidden provider-emitted tools abort as unavailable capability, never prose-only', () => {
+test('#469 evidence unlock is single-use and stale read/blocker calls abort as unavailable capability, never prose-only', () => {
   const logs = runtimeScenario('action-hidden-abort');
-  assert.ok((logs.match(/PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/g) ?? []).length >= 2);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"read".*"unavailable":true/);
+  assert.match(logs, /RUNTIME EVIDENCE PERMIT CONSUMED/);
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"need_more_evidence"/);
   assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable\/stale capability turn/);
   assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
