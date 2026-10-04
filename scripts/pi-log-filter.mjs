@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import readline from "node:readline";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const tty = process.stdout.isTTY || Boolean(process.env.GITHUB_ACTIONS);
@@ -54,7 +54,15 @@ const runtimeFailureFile = process.env.PI_RUNTIME_FAILURE_FILE;
 
 function runtimeFailureSignature() {
   if (!runtimeFailureFile || !existsSync(runtimeFailureFile)) return null;
-  try { return readFileSync(runtimeFailureFile, 'utf8'); } catch { return null; }
+  try {
+    const stat = statSync(runtimeFailureFile);
+    // recordRuntimeAbort writes a fresh temp file then atomically renames it over the target.
+    // Track that file generation, not JSON contents: two distinct aborts may intentionally carry
+    // byte-identical failure records and each still owns its own synthetic settlement.
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } catch {
+    return null;
+  }
 }
 
 function recordActivity(kind, extra = {}) {
