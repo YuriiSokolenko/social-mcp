@@ -40,9 +40,9 @@ function repair(obligation, kind, tool, extra = {}) {
 }
 
 function cleanupExpectedFiles(terminalInput, currentChangedFiles, cleanupPaths) {
-  const declared = uniqueStrings(terminalInput?.files);
-  if (declared.length) return declared;
   const cleanup = new Set(cleanupPaths);
+  const declared = uniqueStrings(terminalInput?.files).filter(file => !cleanup.has(file));
+  if (declared.length) return declared;
   return uniqueStrings(currentChangedFiles).filter(file => !cleanup.has(file));
 }
 
@@ -148,15 +148,9 @@ export function selectTerminalRecovery({
         },
       });
     }
-    const mutationTool = firstActiveMutation(active);
-    if (mutationTool) {
-      return repair(obligation, 'resolve_conflict', mutationTool, {
-        target,
-        incompleteArgs: ['conflict-specific mutation arguments'],
-      });
-    }
-    return blocked(obligation, `Conflict path ${target} cannot be inspected or mutated with the current capability snapshot.`, {
+    return blocked(obligation, `Conflict path ${target} cannot be inspected with the current capability snapshot; refusing a blind mutation.`, {
       target,
+      requiredTool: 'read',
     });
   }
 
@@ -254,9 +248,6 @@ export function terminalRecoveryGuidance(plan) {
   }
   if (plan.kind === 'create_prepared_output') {
     return `${marker}: deterministic prepared-output repair selected. Call write next for ${plan.target}; provide only the task-required file content. Do not resubmit or explore first.`;
-  }
-  if (plan.kind === 'resolve_conflict') {
-    return `${marker}: deterministic conflict repair selected for ${plan.target}. Call ${plan.tool} next and modify only that named conflict path using the conflict state already known in this session. Do not restart implementation or touch unrelated paths.`;
   }
 
   const args = plan.args ? JSON.stringify(plan.args) : '{}';
