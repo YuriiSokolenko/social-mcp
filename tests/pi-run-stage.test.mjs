@@ -68,6 +68,15 @@ function implementerStartup(t, extraEnv = {}) {
   });
 }
 
+test('implementer spec preserves issue context for authoritative final validation', (t) => {
+  const { spec } = implementerStartup(t);
+  assert.match(spec.environment.PI_ISSUE_CONTEXT, /issue\.json$/);
+
+  const repair = createValidationRepairSpec(spec, new Error('pytest failed'), 1);
+  assert.equal(repair.environment.PI_ISSUE_CONTEXT, spec.environment.PI_ISSUE_CONTEXT);
+});
+
+
 test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => {
   const env = {
     RUNNER_TEMP: '/tmp/runner',
