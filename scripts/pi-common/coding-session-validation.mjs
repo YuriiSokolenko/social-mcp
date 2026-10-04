@@ -50,7 +50,7 @@ function writeValidationState(state, env = process.env) {
 }
 
 function canonicalRepoPath(value) {
-  const text = String(value ?? '').trim().replaceAll(/\\/g, '/');
+  const text = String(value ?? '').trim();
   const file = text.split('::')[0];
   return path.posix.normalize(file).replace(/^\.\//, '');
 }
@@ -102,7 +102,7 @@ function pytestScopeCoverage(scope, cwd) {
   const targets = [];
   const directories = [];
   for (const raw of Array.isArray(scope?.targets) ? scope.targets : []) {
-    const rawText = String(raw ?? '').trim().replaceAll(/\\/g, '/');
+    const rawText = String(raw ?? '').trim();
     const nodeSelected = rawText.includes('::');
     const target = canonicalRepoPath(rawText);
     if (!target || nodeSelected) continue;
@@ -151,8 +151,62 @@ export function recordCodingBehavioralValidation({
     (result?.kind === 'profile' && result?.profile === 'pytest_all');
   if (!pytestResult) return null;
   if (result?.status !== 'pass') {
-    invalidateCodingBehavioralValidation(env);
-    return null;
+    // Infrastructure/timeout/invalid outcomes provide no behavioral evidence and must not erase
+    // unrelated coverage earned by earlier successful pytest runs. A real pytest assertion failure
+    // revokes only coverage that overlaps the failed scope.
+    if (result?.status !== 'fail') return null;
+    const previous = pytestCoverageFromState(readValidationState(env));
+    if (!previous.wholeRepo && !previous.targets.length && !previous.directories.length) return null;
+
+    const wholeRepoFailure = scope?.whole_repo === true || scope?.profile === 'pytest_all';
+    if (wholeRepoFailure) {
+      invalidateCodingBehavioralValidation(env);
+      return null;
+    }
+
+    const failedTargets = [];
+    const failedDirectories = [];
+    for (const raw of Array.isArray(scope?.targets) ? scope.targets : []) {
+      const rawText = String(raw ?? '').trim();
+      const target = canonicalRepoPath(rawText);
+      if (!target) continue;
+      const nodeSelected = rawText.includes('::');
+      const absolute = path.resolve(cwd, target);
+      if (nodeSelected || target.endsWith('.py') || (fs.existsSync(absolute) && fs.statSync(absolute).isFile())) {
+        failedTargets.push(target);
+      } else {
+        failedDirectories.push(target);
+      }
+    }
+    if (!failedTargets.length && !failedDirectories.length) {
+      invalidateCodingBehavioralValidation(env);
+      return null;
+    }
+
+    const targetFailed = target =>
+      failedTargets.includes(target) ||
+      failedDirectories.some(directory => coveredByDirectory(target, directory));
+    const directoryFailed = directory =>
+      failedTargets.some(target => coveredByDirectory(target, directory)) ||
+      failedDirectories.some(failed =>
+        coveredByDirectory(directory, failed) || coveredByDirectory(failed, directory)
+      );
+
+    const state = {
+      schema_version: 2,
+      kind: 'pytest',
+      targets: previous.targets.filter(target => !targetFailed(target)),
+      directories: previous.directories.filter(directory => !directoryFailed(directory)),
+      // A later concrete failure means a prior whole-repository pass can no longer stand as
+      // blanket coverage. Explicit unrelated file/directory passes remain usable.
+      whole_repo: false,
+    };
+    if (!state.targets.length && !state.directories.length) {
+      invalidateCodingBehavioralValidation(env);
+      return null;
+    }
+    writeValidationState(state, env);
+    return state;
   }
 
   const current = pytestScopeCoverage(scope, cwd);
