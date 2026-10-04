@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { normalizeImplementerFiles } from '../scripts/pi-common/implementer-result.mjs';
+import { assertImplementerFileSet, normalizeImplementerFiles } from '../scripts/pi-common/implementer-result.mjs';
 import {
   assertCodingBehavioralValidation,
   codingSessionSubmissionReadiness,
@@ -473,6 +473,13 @@ test('#469 terminal result paths reject non-repository forms with INVALID_RESULT
     ['src/x.py', 'tests/test_x.py'],
   );
 });
+
+test('#470 valid git filenames with colon or backslash survive result file-set validation', () => {
+  const files = ['foo:bar.txt', 'dir\\literal.txt'];
+  assert.deepEqual(normalizeImplementerFiles(files), ['dir\\literal.txt', 'foo:bar.txt']);
+  assert.deepEqual(assertImplementerFileSet(files, files), ['dir\\literal.txt', 'foo:bar.txt']);
+});
+
 
 test('#469 invalid submit_result path reports the known canonical changed set before file-set recovery', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-invalid-path-'));
