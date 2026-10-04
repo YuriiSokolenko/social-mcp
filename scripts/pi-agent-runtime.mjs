@@ -1037,6 +1037,7 @@ export default function (pi) {
   const pendingLoopCalls = new Map();
   const pendingToolInputs = new Map();
   const pendingEvidenceConsumptionNotices = new Map();
+  const pendingBashValidationFingerprints = new Map();
   let lastSuccessfulMutationSnapshot = null;
   let lastSuccessfulMutationLocalOnlyMarkerId = null;
 
@@ -2097,6 +2098,9 @@ export default function (pi) {
         };
       }
     }
+    if (stage === 'implementer' && canonicalToolName === 'bash') {
+      pendingBashValidationFingerprints.set(event.toolCallId, repositoryStateFingerprint(cwd));
+    }
     pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
     if (evidenceConsumptionNotice) {
       pendingEvidenceConsumptionNotices.set(event.toolCallId, evidenceConsumptionNotice);
@@ -2115,6 +2119,8 @@ export default function (pi) {
   pi.on('tool_execution_end', async (event, ctx) => {
     const consumedEvidence = pendingEvidenceConsumptionNotices.get(event.toolCallId) ?? null;
     pendingEvidenceConsumptionNotices.delete(event.toolCallId);
+    const bashValidationFingerprintBefore = pendingBashValidationFingerprints.get(event.toolCallId) ?? null;
+    pendingBashValidationFingerprints.delete(event.toolCallId);
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
       await handleMissingExecutor(event, ctx);
       return;
@@ -2181,10 +2187,16 @@ export default function (pi) {
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
-      if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot) {
+      if (!event.isError && mutationChanged !== false) {
         if (invalidateCodingBehavioralValidation(process.env)) {
-          console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({ stage, status: 'invalidated_by_mutation', path: mutationSnapshot.path })}`);
+          console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+            stage,
+            status: mutationChanged === true ? 'invalidated_by_mutation' : 'invalidated_by_unknown_mutation',
+            path: mutationSnapshot?.path ?? null,
+          })}`);
         }
+      }
+      if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot) {
         const mutationCwd = pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd();
 
         const restorePreMutationSnapshot = () => {
@@ -2283,10 +2295,16 @@ export default function (pi) {
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
     if (!event.isError && canonicalToolName === 'bash') {
-      if (invalidateCodingBehavioralValidation(process.env)) {
+      const bashValidationFingerprintAfter = repositoryStateFingerprint(ctx?.cwd ?? process.cwd());
+      const bashChanged =
+        bashValidationFingerprintBefore &&
+        bashValidationFingerprintAfter
+          ? bashValidationFingerprintBefore !== bashValidationFingerprintAfter
+          : null;
+      if (bashChanged !== false && invalidateCodingBehavioralValidation(process.env)) {
         console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
           stage,
-          status: 'invalidated_by_bash',
+          status: bashChanged === true ? 'invalidated_by_bash_change' : 'invalidated_by_bash_unknown',
         })}`);
       }
     }
