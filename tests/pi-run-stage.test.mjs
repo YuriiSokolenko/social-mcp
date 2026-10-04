@@ -12,7 +12,7 @@ import { buildBootstrapInvocation, buildPiInvocation, runPiStage } from '../scri
 import { PREPARED_IMPLEMENTATION_PLACEHOLDER, isFreshImplementerWork, withPreparedImplementation } from '../scripts/pi-common/stage-config.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
-import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairHandoff, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
 import { captureMutationSnapshot } from '../scripts/pi-common/mutation-snapshot.mjs';
 import { recordSuccessfulMutation } from '../scripts/pi-common/mutation-journal.mjs';
 import { issueWorktreePatchPath } from '../scripts/pi-common/issue-worktree.mjs';
@@ -1126,4 +1126,79 @@ test('restored and validation-repair Implementer runs never launch the planner b
     assert.equal(calls[0].bootstrap, false);
     assert.equal(calls[0].prepared, null);
   }
+});
+
+
+test('#469 validation repair handoff is bounded, deterministic, and independent of parent transcript size', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-handoff-');
+  const terminal = join(dir, 'terminal');
+  const preparedPath = `${terminal}.prepared-implementation.json`;
+  writeFileSync(preparedPath, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Edit src/connect_four.py', 'Update tests/test_connect_four.py'],
+    complexity: 'nontrivial',
+    evidenceBudget: 1,
+    largeMutation: true,
+    reason: 'Source and direct smoke test both change.',
+    workspaceRoot: dir,
+    freshBaseCommit: 'abc123',
+    baseRef: 'origin/dev',
+    layoutHint: {
+      sourceRoot: 'src',
+      sourceDirectory: 'src',
+      sourceTarget: 'src/connect_four.py',
+      sourceConvention: 'src/tic_tac_toe.py',
+      testDirectory: 'tests',
+      testConvention: 'tests/test_tic_tac_toe.py',
+    },
+    plannerUsage: null,
+    plannerDurationMs: 100,
+  }));
+  const makeSpec = prompt => createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt,
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: { terminalResultPath: terminal, metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: null },
+  });
+  const result = {
+    outcome: 'changed',
+    title: 'Fix Connect Four smoke path',
+    summary: 'Add source and direct smoke coverage.',
+    changes: ['Fix import wiring', 'Add smoke coverage'],
+    files: ['src/connect_four.py', 'tests/test_connect_four.py'],
+  };
+  const acceptedScope = {
+    schema_version: 1,
+    accepted: [
+      { path: 'src/connect_four.py', disposition: 'publishable', rationale: 'source' },
+      { path: 'tests/test_connect_four.py', disposition: 'publishable', rationale: 'test' },
+    ],
+  };
+  const receipt = {
+    receipt: {
+      session_id: 'coding-session-469',
+      candidate_revision: { digest: 'candidate-469' },
+    },
+  };
+  const failure = new Error('pytest failed: tests/test_connect_four.py::test_smoke');
+  const handoff = validationRepairHandoff(makeSpec('short'), failure, {
+    implementerResult: result,
+    terminalReceipt: receipt,
+    acceptedScope,
+  });
+  assert.deepEqual(handoff.changed_files, ['src/connect_four.py', 'tests/test_connect_four.py']);
+  assert.equal(handoff.completion.session_id, 'coding-session-469');
+  assert.equal(handoff.completion.candidate_revision, 'candidate-469');
+  assert.equal(handoff.prepared_implementation.layout_hint.sourceTarget, 'src/connect_four.py');
+  assert.match(handoff.validation_failure, /pytest failed/);
+
+  const shortRepair = createValidationRepairSpec(makeSpec('short'), failure, 1, acceptedScope, result, receipt);
+  const hugeRepair = createValidationRepairSpec(makeSpec('x'.repeat(1_000_000)), failure, 1, acceptedScope, result, receipt);
+  assert.equal(shortRepair.prompt, hugeRepair.prompt, 'repair prompt must not grow with inherited transcript text');
+  assert.ok(shortRepair.prompt.length < 30_000);
+  assert.match(shortRepair.prompt, /Runtime repair handoff/);
+  assert.match(shortRepair.prompt, /tests\/test_connect_four\.py/);
 });
