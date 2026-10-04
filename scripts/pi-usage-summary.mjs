@@ -46,9 +46,13 @@ for (const [call, row] of calls) {
   lines.push(`| ${call} | ${row.responses} | ${row.providerResponses} | ${n(row.input)} | ${n(row.output)} | ${n(row.cacheRead)} | ${n(row.cacheWrite)} | ${n(row.total)} | ${(row.providerResponseMs / 1000).toFixed(1)} s | ${(row.delegatedLifecycleMs / 1000).toFixed(1)} s |`);
 }
 lines.push(`| **Total${ledger.complete ? "" : " (known lower bound)"}** | **${totals.responses}** | **${totals.providerResponses}** | **${n(totals.input)}** | **${n(totals.output)}** | **${n(totals.cacheRead)}** | **${n(totals.cacheWrite)}** | **${n(totals.total)}** | **${(totals.providerResponseMs / 1000).toFixed(1)} s** | **${(totals.delegatedLifecycleMs / 1000).toFixed(1)} s** |`);
-lines.push("", "Logical usage records preserve token accounting, including synthetic settlement records. When provider trace metrics are present, the provider row is the transport authority for the exact real request count and elapsed provider time; synthetic settlements never increment it.", "Delegated lifecycle time comes from delegate durationMs and is shown separately because it may include queueing, tool execution and other runtime work; it is not added to provider response time.", "Total tokens include repeated cache reads. Fresh input/output and cache traffic are shown separately so cumulative cached context is not mistaken for newly consumed context.", "");
+lines.push("", "Logical usage records preserve token accounting, including synthetic settlement records. Provider trace metrics strengthen aggregate request-count/time lower bounds when available; synthetic settlements never increment provider-response counts.", "Usage guard warnings remain scoped to the main model call stream because their thresholds were calibrated for main-agent convergence, not planner/coding/delegate traffic.", "Delegated lifecycle time comes from delegate durationMs and is shown separately because it may include queueing, tool execution and other runtime work; it is not added to provider response time.", "Total tokens include repeated cache reads. Fresh input/output and cache traffic are shown separately so cumulative cached context is not mistaken for newly consumed context.", "");
 lines.push(`> ${completenessNote(ledger)}`, "");
-const warning = usageWarning(totals.providerResponses, totals.providerResponseMs / 1000);
+const mainUsage = calls.get('main');
+const warning = usageWarning(
+  mainUsage?.providerResponses ?? 0,
+  (mainUsage?.providerResponseMs ?? 0) / 1000,
+);
 if (warning) lines.push(`> [!WARNING]`, `> ${warning}`, "");
 if (summary) appendFileSync(summary, lines.join("\n") + "\n");
 console.log(`Pi usage${ledger.complete ? "" : " (INCOMPLETE, known lower bound)"}: ${totals.responses} logical usage records · ${totals.providerResponses} provider responses · fresh ${n(totals.input)} in / ${n(totals.output)} out · cache read ${n(totals.cacheRead)} · total ${n(totals.total)} · ${(totals.providerResponseMs / 1000).toFixed(1)} s known provider response time · ${(totals.delegatedLifecycleMs / 1000).toFixed(1)} s delegated lifecycle time`);
