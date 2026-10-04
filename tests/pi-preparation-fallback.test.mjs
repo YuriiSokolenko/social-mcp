@@ -377,7 +377,7 @@ function runtimeScenario(mode) {
         artifact = planner.readPreparedImplementation(artifactFile);
         assert.ok(artifact, 'bootstrap wrote the PreparedImplementation artifact');
         // Hard context boundary: only the normalized artifact crosses, never planner transcript/retries.
-        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceUsed', 'plannerEvidenceCap', 'plannerProviderTurns', 'failureClass'];
+        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceUsed', 'plannerEvidenceCap', 'plannerProviderTurns', 'failureClass'];
         assert.deepEqual(Object.keys(artifact).filter(key => !allowed.includes(key)), []);
       } else {
         assert.equal(fs.existsSync(artifactFile), false, 'restored work never runs fresh planner bootstrap');
