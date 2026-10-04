@@ -602,3 +602,34 @@ test('#469 fresh coding session hides terminal submission while prepared require
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test('#469 targeted pytest state survives coding fork return to parent', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-validation-state-'));
+  const terminal = path.join(dir, 'terminal.json');
+  const changedFiles = ['src/game.py', 'tests/test_game.py'];
+  const childEnv = {
+    PI_CODING_SESSION: JSON.stringify({ sessionId: 'child-469' }),
+    PI_CODING_SESSION_USED: 'true',
+    PI_TERMINAL_RESULT_FILE: terminal,
+  };
+  const parentEnv = {
+    PI_CODING_SESSION_USED: 'true',
+    PI_TERMINAL_RESULT_FILE: terminal,
+  };
+  try {
+    recordCodingBehavioralValidation({
+      scope: { targets: ['tests/test_game.py::test_behavior'] },
+      result: { status: 'pass', kind: 'pytest' },
+      env: childEnv,
+    });
+    assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env: parentEnv }));
+    assert.equal(invalidateCodingBehavioralValidation(parentEnv), true);
+    assert.throws(
+      () => assertCodingBehavioralValidation({ changedFiles, env: parentEnv }),
+      /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
