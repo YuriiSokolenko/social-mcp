@@ -53,7 +53,8 @@ test("aggregates a cancelled attempt once and preserves it on reprocessing", () 
   const rows = readFileSync(csvFile, "utf8").trim().split("\n");
   assert.equal(rows.length, 3); // header, issue total, one attempt
   assert.match(rows[1], /^issue,51,all,,,/);
-  assert.match(rows[1], /,2,50,12,0,0,62,5\.0,300,/);
+  assert.match(rows[0], /responses,provider_responses,input/);
+  assert.match(rows[1], /,2,2,50,12,0,0,62,5\.0,300,/);
   assert.match(rows[2], /^attempt,51,implementation,123,2,cancelled,/);
 });
 
@@ -157,7 +158,7 @@ test("collects a Pi Architect run's usage under its 'architect' job name", () =>
   });
   assert.equal(result.status, 0, result.stderr);
   const rows = readFileSync(csvFile, "utf8").trim().split("\n");
-  assert.match(rows[2], /^attempt,9,architect,321,1,success,1,0,0,0,0,91519,20\.7,4404,/);
+  assert.match(rows[2], /^attempt,9,architect,321,1,success,1,1,0,0,0,0,91519,20\.7,4404,/);
 });
 
 test("rejects a run with a trusted-looking title but an unrelated workflow path", () => {
@@ -234,7 +235,8 @@ test("#425 summary and CSV agree on known totals and incompleteness for the same
   const rows = readFileSync(csvFile, "utf8").trim().split("\n");
   const header = rows[0].split(",");
   const attempt = Object.fromEntries(header.map((column, i) => [column, rows[2].split(",")[i]]));
-  assert.equal(attempt.responses, "3");
+  assert.equal(attempt.responses, "3", "responses keeps historical logical-record semantics");
+  assert.equal(attempt.provider_responses, "3", "provider transport count is stored separately");
   assert.equal(attempt.total_tokens, "67");
   assert.equal(attempt.model_seconds, "2.0", "only the explicit main response contributes provider response time");
   assert.equal(attempt.delegated_lifecycle_seconds, "7.0", "planner lifecycle time is visible in its own CSV column");
