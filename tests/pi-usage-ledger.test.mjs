@@ -237,3 +237,30 @@ test('#469 synthetic zero-token response never increments fallback provider coun
   assert.equal(ledger.totals.providerResponses, 1);
   assert.equal(ledger.totals.providerResponseMs, 700);
 });
+
+
+test('#469 transport failures are diagnostic exchanges, not provider responses', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 2), responseMs: 500 },
+    {
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      response: 1,
+      responseMs: 480,
+      status: 200,
+      transport_error: false,
+    },
+    {
+      call: 'provider',
+      provider_response: false,
+      record_type: 'provider_transport_error',
+      response: 2,
+      responseMs: 1200,
+      status: 502,
+      transport_error: true,
+    },
+  ]);
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 480);
+});
