@@ -556,10 +556,11 @@ test('#469 coding-session source plus pytest changes require a passing targeted 
     result: { status: 'pass', kind: 'pytest' },
     env,
   });
-  assert.deepEqual(nodeState.targets, ['tests/test_smoke_connect_four.py']);
-  assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env }));
-  assert.equal(invalidateCodingBehavioralValidation(env), true);
-  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+  assert.equal(nodeState, null, 'one pytest node does not validate the rest of a changed test file');
+  assert.throws(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/,
+  );
 
   recordCodingBehavioralValidation({
     scope: { targets: ['tests/test_smoke_connect_four.py'] },
