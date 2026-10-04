@@ -1997,6 +1997,11 @@ export default function (pi) {
     // Capture the controller notice now, but publish it only for this exact toolCallId after
     // execution. Any later runtime-side block simply drops this local value.
     const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice();
+    const restoreRuntimeBlockedEvidence = () => {
+      if (evidenceConsumptionNotice) {
+        controller.restoreRuntimeBlockedEvidenceAction(evidenceConsumptionNotice);
+      }
+    };
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
@@ -2035,6 +2040,7 @@ export default function (pi) {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
+      restoreRuntimeBlockedEvidence();
       return noOpBlocked;
     }
 
@@ -2053,6 +2059,7 @@ export default function (pi) {
         if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
+        restoreRuntimeBlockedEvidence();
         return containmentBlocked;
       }
     }
@@ -2094,6 +2101,7 @@ export default function (pi) {
           tool: event.toolName,
           reason,
         }));
+        restoreRuntimeBlockedEvidence();
         return {
           block: true,
           reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
@@ -2124,6 +2132,7 @@ export default function (pi) {
     const bashValidationFingerprintBefore = pendingBashValidationFingerprints.get(event.toolCallId) ?? null;
     pendingBashValidationFingerprints.delete(event.toolCallId);
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
+      if (consumedEvidence) controller.restoreRuntimeBlockedEvidenceAction(consumedEvidence);
       await handleMissingExecutor(event, ctx);
       return;
     }
