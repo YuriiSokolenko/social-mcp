@@ -269,6 +269,11 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
 
   const exactLabels = (labels, expected) =>
     labels.length === expected.length && expected.every(label => labels.includes(label));
+  const controlRunnerLabels = new Set(['self-hosted', 'linux', 'x64', 'n150', 'control']);
+  const canMatchControlRunner = (spec) =>
+    spec.group === null &&
+    spec.labels.length > 0 &&
+    spec.labels.every(label => controlRunnerLabels.has(label));
 
   assert.equal(
     exactLabels(runsOnSpecs('jobs:\n  wake:\n    runs-on: [self-hosted, n150, general, control]')[0].labels,
@@ -286,6 +291,11 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
     ['self-hosted', 'n150', 'control'],
     'multiline label lists must be parsed as labels',
   );
+  assert.equal(
+    canMatchControlRunner(runsOnSpecs('jobs:\n  unsafe:\n    runs-on: [self-hosted, n150]')[0]),
+    true,
+    'bare self-hosted/n150 jobs are capable of landing on the control runner',
+  );
 
   for (const name of fs.readdirSync(workflowDir).filter(name => name.endsWith('.yml'))) {
     const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
@@ -302,6 +312,11 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
       assert.ok(
         !spec.labels.includes('control'),
         `${name}: control label must stay reserved for terminal-wake orchestration`,
+      );
+      assert.equal(
+        canMatchControlRunner(spec),
+        false,
+        `${name}: runs-on labels must not be satisfiable by the dedicated control runner`,
       );
     }
   }
