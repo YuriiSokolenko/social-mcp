@@ -182,7 +182,7 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.match(terminalWake, /types: \[completed\]/);
   assert.match(terminalWake, /workflow_run\.event == 'pull_request'/);
   assert.match(terminalWake, /workflow_run\.head_repository\.full_name == github\.repository/);
-  assert.match(terminalWake, /runs-on: ubuntu-latest/);
+  assert.match(terminalWake, /runs-on: \[self-hosted, n150, control\]/);
   assert.doesNotMatch(terminalWake, /runs-on: \[self-hosted[^\n]*n150[^\n]*general/);
   assert.match(
     terminalWake,
@@ -194,6 +194,23 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.doesNotMatch(terminalWake, /workflow_run\.head_sha|workflow_run\.pull_requests/);
   assert.doesNotMatch(terminalWake, /workflows: \["CI Terminal Wake"\]/);
   assert.doesNotMatch(ci, /contains\(github\.event\.head_commit\.message/);
+});
+
+test('dedicated control runner label is reserved for terminal-wake orchestration', () => {
+  const workflowDir = '.github/workflows';
+  for (const name of fs.readdirSync(workflowDir).filter(name => name.endsWith('.yml'))) {
+    const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
+    if (name === 'ci-terminal-wake.yml') {
+      assert.match(workflow, /runs-on: \[self-hosted, n150, control\]/);
+      continue;
+    }
+    assert.doesNotMatch(workflow, /runs-on:[^\n]*\bcontrol\b/, `${name}: control runner must stay orchestration-only`);
+  }
+
+  for (const name of ['ci.yml', 'pi-auto-merge.yml']) {
+    const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
+    assert.match(workflow, /runs-on: \[self-hosted, linux, x64, n150, general\]/);
+  }
 });
 
 test('pi:needs-human on a PR stops review, repair, and merge automation', () => {
