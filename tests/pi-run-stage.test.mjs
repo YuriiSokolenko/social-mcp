@@ -1202,3 +1202,50 @@ test('#469 validation repair handoff is bounded, deterministic, and independent 
   assert.match(shortRepair.prompt, /Runtime repair handoff/);
   assert.match(shortRepair.prompt, /tests\/test_connect_four\.py/);
 });
+
+
+test('#469 repair handoff recomputes current changed files after a validation-time mutation', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-current-files-');
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Repair Handoff Test'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'repair@example.invalid'], { cwd: dir });
+  writeFileSync(join(dir, 'README.md'), 'base\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+  const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+  writeFileSync(join(dir, 'source.py'), 'VALUE = 1\n');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+  const implementerResult = {
+    outcome: 'changed',
+    title: 'Change source',
+    summary: 'Initial candidate',
+    changes: ['Change source'],
+    files: ['source.py'],
+  };
+
+  // Simulate a trusted validation safe-fix that changes the candidate after submit_result.
+  writeFileSync(join(dir, 'validation_fix.py'), 'FIXED = True\n');
+  const handoff = validationRepairHandoff(spec, new Error('final validation failed'), {
+    implementerResult,
+    terminalReceipt: {
+      candidateRevision: { base_commit: baseCommit },
+      receipt: {
+        session_id: 'coding-469',
+        candidate_revision: { base_commit: baseCommit, digest: 'before-validation-fix' },
+      },
+    },
+  });
+  assert.deepEqual(handoff.changed_files, ['source.py', 'validation_fix.py']);
+});
