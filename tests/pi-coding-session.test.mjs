@@ -794,24 +794,28 @@ function runtimeScenario(mode) {
           assert.ok(!active.includes('need_more_evidence'), 'blocker is removed until productive progress');
 
           const staleAttempts = [
-            { toolName: 'read', input: { path: 'evidence.txt' } },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
             {
               toolName: 'need_more_evidence',
               input: {
                 missing: 'Read evidence.txt for another fact.',
                 reason: 'Attempt a second evidence unlock without productive progress.',
               },
+              kind: 'stale',
             },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
           ];
           for (let index = 0; index < staleAttempts.length; index += 1) {
             const attempt = staleAttempts[index];
             handlers.get('turn_start')({ turnIndex: turn });
             const hidden = await handlers.get('tool_call')({
-              ...attempt,
+              toolName: attempt.toolName,
+              input: attempt.input,
               toolCallId: 'hidden-' + attempt.toolName + '-' + turn,
             }, ctx);
             assert.equal(hidden.block, true);
-            if (attempt.toolName === 'read') {
+            if (attempt.kind === 'unavailable') {
               assert.match(hidden.reason, /not currently exposed/);
             } else {
               assert.match(hidden.reason, /capability lifecycle changed/);
@@ -819,13 +823,17 @@ function runtimeScenario(mode) {
             }
             assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
             await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-            assert.equal(aborts, index === 0 ? 0 : 1, 'unavailable calls abort only after a repeated unavailable-capability turn');
+            assert.equal(
+              aborts,
+              index === staleAttempts.length - 1 ? 1 : 0,
+              'stale lifecycle races reset the strike streak; only two later genuine unavailable turns abort',
+            );
           }
 
           const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
           assert.equal(failure.failure_class, 'model_execution_abort');
           assert.equal(failure.failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
-          assert.ok(failure.reason.includes('unavailable/stale capability'));
+          assert.ok(failure.reason.includes('unavailable capability'));
           console.log('UNAVAILABLE_CAPABILITY_FAILURE ' + JSON.stringify(failure));
           process.exit(0);
         }
@@ -1099,7 +1107,7 @@ test('#469 evidence unlock is single-use and stale read/blocker calls abort as u
   assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"need_more_evidence"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable\/stale capability turn/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable capability turn/);
   assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
