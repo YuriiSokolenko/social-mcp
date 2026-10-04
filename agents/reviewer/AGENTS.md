@@ -98,7 +98,7 @@ For complex changes, inspect additional architecture/security context only for c
 
 For factual claims about **existing current behavior**, the checked-out current code and relevant tests are authoritative. An issue can request a behavior change, but it cannot make an inaccurate description of already-existing behavior true. If the issue text and inspected current code conflict, do not approve documentation, comments, tests, or implementation that repeat the false factual claim merely because the issue asked for it. Treat a PR that introduces or preserves a materially misleading factual description of current behavior as a concrete correctness defect and use `CHANGES_REQUESTED` with the exact mismatch. Correcting that factual mismatch is not scope expansion.
 
-Acceptance evidence: for every material acceptance criterion, submit one compact `criteria_evidence` entry. Use `ESTABLISHED` only when concrete code, trusted-test, or counterexample evidence proves the behavior; passing tests written in the same PR are not enough by themselves for a rejection/preservation/type/ordering boundary. Use `ASSUMPTION` when the issue leaves genuine policy latitude, and state that assumption explicitly instead of silently choosing a stricter contract. Do not claim stricter validation or "verbatim" behavior than the inspected code proves. When one concrete question remains, you may run one narrow read-only probe of the changed function; this does not permit rerunning the deterministic prerequisites. `tests/acceptance_probes/` holds trusted probes that run with the product tests; some smoke-pack probes activate only when their target module exists, so recreated/reset smoke modules still inherit the independent oracle. A PR must not weaken or delete these probes.
+Acceptance evidence: for PASS, submit one compact `criteria_evidence` entry for every material acceptance criterion. Use `ESTABLISHED` only when concrete code, trusted-test, or counterexample evidence proves the behavior; passing tests written in the same PR are not enough by themselves for a rejection/preservation/type/ordering boundary. Use `ASSUMPTION` when the issue leaves genuine policy latitude, and state that assumption explicitly instead of silently choosing a stricter contract. For CHANGES_REQUESTED, `criteria_evidence` may be omitted when the blocking defect is outside the acceptance criteria. Do not claim stricter validation or "verbatim" behavior than the inspected code proves. When one concrete question remains, you may run one narrow read-only probe of the changed function; this does not permit rerunning the deterministic prerequisites. `tests/acceptance_probes/` holds trusted probes that run with the product tests; some smoke-pack probes activate only when their target module exists, so recreated/reset smoke modules still inherit the independent oracle. A PR must not weaken or delete these probes.
 
 Evaluate only dimensions relevant to the change:
 
@@ -153,7 +153,7 @@ KISS, YAGNI, and SOLID are heuristics for an already-existing review question, n
 
 ## Verdict and submission
 
-Call `submit_result` exactly once as your final action. Include one `criteria_evidence` item per material acceptance criterion and keep each item compact enough to fit the review response budget.
+Call `submit_result` exactly once as your final action. PASS requires one `criteria_evidence` item per material acceptance criterion. CHANGES_REQUESTED may omit the field when the blocking defect is not an acceptance-criterion finding. Keep each item compact enough to fit the review response budget.
 
 `submit_result({"verdict":"PASS","summary":"...","criteria_evidence":[{"criterion":"Reject non-integer capacity","status":"ESTABLISHED","evidence":["Constructor rejects bool before int acceptance; trusted bool-capacity probe passes."]}]})`
 
@@ -161,7 +161,7 @@ When policy wording is genuinely ambiguous, record the interpretation instead of
 
 `submit_result({"verdict":"PASS","summary":"...","criteria_evidence":[{"criterion":"Accept numeric interval bounds","status":"ASSUMPTION","evidence":["Issue says numeric but does not enumerate numeric classes."],"assumption":"Treat numbers.Real plus Decimal as the intended ordered numeric domain."}]})`
 
-Use the same structured field with `CHANGES_REQUESTED`; the blocking summary must still state the concrete defect.
+For `CHANGES_REQUESTED`, include structured evidence when it helps identify the failed criterion, but do not invent a criterion entry for an unrelated blocking defect. The blocking summary must still state the concrete defect.
 
 Use **PASS** when the PR satisfies the linked issue and you found no concrete blocking defect in the relevant correctness, regression, test, architecture, or security dimensions.
 
