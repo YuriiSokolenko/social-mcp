@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   SemanticLoopGuard,
@@ -250,4 +251,20 @@ test('#426 multi-path coding-session result can resolve only the named terminal 
     ),
     false,
   );
+});
+
+
+test('#426 workflow preserves terminal recovery blocked provenance for needs-human routing', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  assert.equal(
+    (workflow.match(/PI_TERMINAL_RECOVERY_BLOCKED/g) ?? []).length,
+    6,
+    'both no-change and changed-work failure paths validate, classify and report terminal recovery blocked',
+  );
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="\$\(jq -r '\.reason' "\$PI_RUNTIME_FAILURE_FILE"\)"/g) ?? []).length,
+    2,
+    'both workflow failure paths preserve the precise runtime reason',
+  );
+  assert.match(workflow, /pi-transition\.mjs" issue needs-human/);
 });
