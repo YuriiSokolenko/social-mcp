@@ -1150,6 +1150,7 @@ test('#469 validation repair handoff is bounded, deterministic, and independent 
       sourceTarget: 'src/connect_four.py',
       sourceConvention: 'src/tic_tac_toe.py',
       testDirectory: 'tests',
+      testTarget: 'tests/test_connect_four.py',
       testConvention: 'tests/test_tic_tac_toe.py',
     },
     plannerUsage: null,
@@ -1193,6 +1194,7 @@ test('#469 validation repair handoff is bounded, deterministic, and independent 
   assert.equal(handoff.completion.session_id, 'coding-session-469');
   assert.equal(handoff.completion.candidate_revision, 'candidate-469');
   assert.equal(handoff.prepared_implementation.layout_hint.sourceTarget, 'src/connect_four.py');
+  assert.equal(handoff.prepared_implementation.layout_hint.testTarget, 'tests/test_connect_four.py');
   assert.match(handoff.validation_failure, /pytest failed/);
 
   const shortRepair = createValidationRepairSpec(makeSpec('short'), failure, 1, acceptedScope, result, receipt);
