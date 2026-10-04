@@ -89,7 +89,7 @@ function parseBody(buffer) {
 }
 
 /** A local OpenAI-compatible forwarding proxy that records one JSONL exchange per call. */
-export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES }) {
+export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES, onExchange = null }) {
   let nextSequence = 0;
   let writtenBytes = 0;
   let traceDisabled = false;
@@ -185,6 +185,20 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       elapsedMs: Date.now() - started,
       ...(error ? { error } : {}),
     };
+    if (typeof onExchange === 'function') {
+      try {
+        onExchange({
+          sequence: record.sequence,
+          stage: record.stage,
+          issue: record.issue,
+          status: record.status,
+          elapsedMs: record.elapsedMs,
+          transportError,
+        });
+      } catch {
+        // Provider accounting is best effort and must never affect model traffic.
+      }
+    }
     const line = `${JSON.stringify(record)}\n`;
     const bytes = Buffer.byteLength(line);
     const marker = `${JSON.stringify({ sequence, timestamp: new Date().toISOString(), stage, issue: issue || null, traceLimitReached: true, maxBytes })}\n`;
