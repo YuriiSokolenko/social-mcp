@@ -1150,7 +1150,7 @@ test('#470 missing evidence executor restores the permit through the real runtim
 });
 
 
-test('#469 evidence unlock is single-use and stale read/blocker calls abort as unavailable capability, never prose-only', () => {
+test('#469 evidence unlock is single-use; stale lifecycle races reset strikes before genuine unavailable calls can abort', () => {
   const logs = runtimeScenario('action-hidden-abort');
   assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
