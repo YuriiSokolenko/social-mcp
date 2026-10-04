@@ -101,7 +101,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.5 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.0 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.1 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
@@ -129,14 +129,24 @@ recreate only `control-runner`. It uses `restart: unless-stopped`, so the
 same single runner returns after Docker or host restart:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.0 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.1 .
 docker compose --env-file .env up -d --force-recreate --no-deps control-runner
 docker compose --env-file .env logs --tail=100 control-runner
 ```
 
-The control image pins GitHub Actions Runner `2.337.0` and verifies the
-official Linux x64 archive SHA-256 during the build. Do not add `general` or
-`pi-agent` to `CONTROL_RUNNER_LABELS`.
+The control image uses GitHub Actions Runner `2.337.0` as its verified
+bootstrap baseline and checks the official Linux x64 archive SHA-256 during
+the build. The entrypoint intentionally does **not** pass `--disableupdate`:
+the persistent runner keeps GitHub's supported self-update path enabled, so it
+does not age out merely because the container stays online.
+
+Treat the Dockerfile version as the rebuild baseline, not as a permanent
+runtime ceiling. When updating that baseline, bump both
+`ACTIONS_RUNNER_VERSION` and `ACTIONS_RUNNER_SHA256`, bump
+`CONTROL_RUNNER_IMAGE`, rebuild the image, recreate only `control-runner`,
+and verify that `n150-control` is online in the repository Actions runner
+list before relying on it. Do not add `general` or `pi-agent` to
+`CONTROL_RUNNER_LABELS`.
 
 ### `run_check` sandbox backend
 
@@ -190,7 +200,8 @@ the old persistent `github-pi-runner` container) so neither consumes jobs in
 parallel with its ephemeral pool.
 
 For the #465 live smoke, first confirm `n150-control` is online in the
-repository runner list. Occupy all normal `n150/general` slots with ordinary
+repository runner list and note its reported runner version. Occupy all normal
+`n150/general` slots with ordinary
 heavy CI, then let a PR `CI` run reach a terminal state. Verify that its
 `CI Terminal Wake` job is assigned to `n150-control` promptly, before a
 general slot becomes free, and that it dispatches `Pi Auto Merge`. Repeat
