@@ -292,6 +292,27 @@ test('#470 provider totals keep logical calls that bypass the trace proxy withou
     false,
     'a smaller partial trace does not erase or duplicate logically attributed provider calls',
   );
+  assert.equal(ledger.complete, false);
+  assert.ok(ledger.unknown.some(entry => entry.reason === 'provider_trace_incomplete'));
+});
+
+
+test('#470 partial trace latency never lowers a larger known logical provider latency', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 1), responseMs: 5000 },
+    {
+      call: 'transport',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'partial-latency',
+      response: 1,
+      responseMs: 700,
+    },
+  ]);
+
+  assert.equal(ledger.calls.get('main').providerResponseMs, 5000);
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 5000);
 });
 
 
