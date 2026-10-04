@@ -9,7 +9,7 @@ set -euo pipefail
 ADMIN_TOKEN="${GH_ADMIN_TOKEN}"
 unset GH_ADMIN_TOKEN
 
-RUNNER_HOME="/home/runner/actions-runner"
+RUNNER_HOME="${RUNNER_HOME:-/home/runner/actions-runner}"
 API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 AUTH=(
   -H "Accept: application/vnd.github+json"
@@ -25,19 +25,21 @@ registration_token() {
     "${API}/actions/runners/registration-token" | jq -er '.token'
 }
 
-remove_token() {
-  curl -fsS --connect-timeout 5 --max-time 15 -K <(auth_header) -X POST "${AUTH[@]}" \
-    "${API}/actions/runners/remove-token" | jq -er '.token'
-}
+runner_registration_state() {
+  local response
+  response="$(curl -fsS --connect-timeout 5 --max-time 15 -K <(auth_header) "${AUTH[@]}" \
+    "${API}/actions/runners?per_page=100")" || return 1
 
-runner_registration_present() {
-  curl -fsS --connect-timeout 5 --max-time 15 -K <(auth_header) "${AUTH[@]}" \
-    "${API}/actions/runners?name=${RUNNER_NAME}&per_page=100" \
-    | jq -e --arg name "${RUNNER_NAME}" '.runners | any(.[]; .name == $name)' >/dev/null
+  jq -er --arg name "${RUNNER_NAME}" '
+    if (.runners | type) != "array" then error("missing runners")
+    elif any(.runners[]; .name == $name) then "present"
+    else "absent"
+    end
+  ' <<<"${response}"
 }
 
 clear_local_registration() {
-  rm -f .runner .credentials .credentials_rsaparams
+  gosu runner rm -f .runner .credentials .credentials_rsaparams
 }
 
 configure_runner() {
@@ -53,13 +55,6 @@ configure_runner() {
     --replace
 }
 
-remove_runner() {
-  local token
-  [ -f .runner ] || return 0
-  token="$(remove_token)" || return 0
-  gosu runner ./config.sh remove --token "${token}" >/dev/null 2>&1 || true
-}
-
 runner_pid=""
 shutdown() {
   trap - TERM INT
@@ -67,20 +62,15 @@ shutdown() {
     kill -TERM "${runner_pid}" 2>/dev/null || true
     wait "${runner_pid}" 2>/dev/null || true
   fi
-  remove_runner
+  # This is a persistent runner. Keep its GitHub registration and local
+  # credentials across normal Docker/host restarts so control-plane capacity
+  # can return without any GitHub API call.
   exit 0
 }
-# PID 1 must handle stop signals even while registration is still in progress.
+# PID 1 must handle stop signals even while first-time registration is in progress.
 trap shutdown TERM INT
 
 cd "${RUNNER_HOME}"
-
-if [ -f .runner ]; then
-  if ! runner_registration_present; then
-    echo "warning: local control-runner registration is stale; registering again" >&2
-    clear_local_registration
-  fi
-fi
 if [ ! -f .runner ]; then
   configure_runner
 fi
@@ -96,10 +86,21 @@ status=0
 wait "${runner_pid}" || status=$?
 runner_pid=""
 
-# A failed listener can leave a server/local registration mismatch. Remove the
-# registration best-effort so Docker's restart policy starts from a clean state.
-if [ "${status}" -ne 0 ]; then
-  echo "warning: control runner exited status=${status}; clearing registration for restart" >&2
-  remove_runner
+# A listener failure may mean GitHub removed this registration. Reconcile only
+# after the failure, never during a healthy restart. API failures are
+# deliberately non-destructive: preserve the known local registration and let
+# Docker retry later. Only a successful API response proving the runner absent
+# permits local credentials to be cleared.
+if [ "${status}" -ne 0 ] && [ -f .runner ]; then
+  state=""
+  if state="$(runner_registration_state)"; then
+    if [ "${state}" = "absent" ]; then
+      echo "warning: control runner registration is absent on GitHub; clearing stale local credentials" >&2
+      clear_local_registration
+    fi
+  else
+    echo "warning: could not reconcile control runner registration; preserving local credentials" >&2
+  fi
 fi
+
 exit "${status}"
