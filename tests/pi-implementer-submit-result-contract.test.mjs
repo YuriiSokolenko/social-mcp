@@ -6,6 +6,14 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { normalizeImplementerFiles } from '../scripts/pi-common/implementer-result.mjs';
+import {
+  assertCodingBehavioralValidation,
+  codingSessionSubmissionReadiness,
+  invalidateCodingBehavioralValidation,
+  recordCodingBehavioralValidation,
+  requiredCodingPytestTargets,
+} from '../scripts/pi-common/coding-session-validation.mjs';
 
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const RESULT_TOOL_URL = new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href;
@@ -439,5 +447,138 @@ test('#424 fresh submit_result exposes targeted mutation cleanup for accidental 
     assert.equal(child.status, 0, child.stderr + child.stdout);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('#469 terminal result paths reject non-repository forms with INVALID_RESULT_PATH', () => {
+  for (const value of [
+    '/tmp/tests/test_x.py',
+    'C:\\work\\tests\\test_x.py',
+    '../tests/test_x.py',
+    'file:///work/tests/test_x.py',
+    'https://example.invalid/test_x.py',
+  ]) {
+    assert.throws(
+      () => normalizeImplementerFiles([value]),
+      error => error?.code === 'INVALID_RESULT_PATH' && /INVALID_RESULT_PATH/.test(error.message),
+      value,
+    );
+  }
+  assert.deepEqual(
+    normalizeImplementerFiles(['tests/test_x.py', 'src/x.py', 'tests/test_x.py']),
+    ['src/x.py', 'tests/test_x.py'],
+  );
+});
+
+test('#469 invalid submit_result path reports the known canonical changed set before file-set recovery', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-invalid-path-'));
+  const work = cleanGitWorktree(root);
+  const context = path.join(root, 'issue.json');
+  const resultFile = path.join(root, 'result.json');
+  fs.mkdirSync(path.join(work, 'tests'), { recursive: true });
+  fs.writeFileSync(path.join(work, 'tests', 'test_x.py'), 'def test_x():\n    assert True\n');
+  fs.writeFileSync(context, JSON.stringify({ number: 469, title: 'Path validation', body: 'Test context' }));
+  try {
+    const program = `
+      const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      let tool;
+      const pi = { registerTool(value) { if (value.name === 'submit_result') tool = value; }, appendEntry() {}, on() {} };
+      registerResultTool(pi);
+      try {
+        await tool.execute('submit', {
+          title: 'Path fix',
+          summary: 'Validate result path.',
+          changes: ['Add a test'],
+          files: ['C:\\\\work\\\\tests\\\\test_x.py'],
+          security_notes: 'No security impact.',
+          limitations: 'None.',
+        });
+        console.log(JSON.stringify({ ok: true }));
+      } catch (error) {
+        console.log(JSON.stringify({ ok: false, code: error.code, message: error.message }));
+      }
+    `;
+    const child = runProgram({
+      dir: root,
+      cwd: work,
+      program,
+      env: {
+        GITHUB_WORKSPACE: PROJECT_ROOT,
+        PI_ISSUE: '469',
+        PI_ISSUE_CONTEXT: context,
+        PI_IMPLEMENTER_RESULT_FILE: resultFile,
+        PI_RESUME_ACTIVE: 'false',
+        PI_VALIDATION_REPAIR: 'false',
+      },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+    const output = JSON.parse(child.stdout.trim().split('\n').at(-1));
+    assert.equal(output.ok, false);
+    assert.equal(output.code, 'INVALID_RESULT_PATH');
+    assert.match(output.message, /Known canonical changed files: tests\/test_x\.py/);
+    assert.doesNotMatch(output.message, /undo_mutation/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('#469 coding-session source plus pytest changes require a passing targeted pytest after latest mutation', () => {
+  const env = { PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-469' }) };
+  const changedFiles = ['src/game.py', 'tests/test_game.py'];
+  assert.deepEqual(requiredCodingPytestTargets(changedFiles), ['tests/test_game.py']);
+
+  assert.throws(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    error => error?.code === 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+  );
+  assert.equal(recordCodingBehavioralValidation({
+    scope: { paths: ['src/game.py'] },
+    result: { status: 'pass', kind: 'python_compile' },
+    env,
+  }), null);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+
+  recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_game.py::test_smoke'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
+  assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env }));
+  assert.equal(invalidateCodingBehavioralValidation(env), true);
+  assert.throws(() => assertCodingBehavioralValidation({ changedFiles, env }), /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/);
+});
+
+test('#469 fresh coding session hides terminal submission while prepared required outputs are absent', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-readiness-'));
+  try {
+    const prepared = {
+      status: 'prepared',
+      plan: [
+        'Create src/connect_four.py and tests/test_connect_four.py.',
+        'Run the targeted smoke test.',
+      ],
+      layoutHint: { sourceTarget: 'src/connect_four.py' },
+    };
+    const blocked = codingSessionSubmissionReadiness({ prepared, cwd: dir, changedFiles: [] });
+    assert.equal(blocked.ready, false);
+    assert.deepEqual(blocked.missing_outputs, ['src/connect_four.py', 'tests/test_connect_four.py']);
+
+    const afterMutation = codingSessionSubmissionReadiness({
+      prepared,
+      cwd: dir,
+      changedFiles: ['src/connect_four.py'],
+    });
+    assert.equal(afterMutation.ready, true);
+
+    const resumed = codingSessionSubmissionReadiness({
+      prepared,
+      cwd: dir,
+      changedFiles: [],
+      resumed: true,
+    });
+    assert.equal(resumed.ready, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
