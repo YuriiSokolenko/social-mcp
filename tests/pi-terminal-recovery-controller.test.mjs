@@ -342,3 +342,22 @@ test('#426 multi-path cleanup validates one deterministic repair step at a time'
     'first undo predicts exactly the one-step post-repair worktree; the next obligation remains visible',
   );
 });
+
+
+test('#426 file-set recovery fails closed when canonical repository facts are unavailable', () => {
+  const obligation = submissionObligation(
+    'Implementer file-set mismatch: missing files: src/a.py',
+  );
+  const plan = selectTerminalRecovery({
+    obligation,
+    activeToolNames: ['submit_result', 'undo_mutation'],
+    currentChangedFiles: [],
+    acceptedPaths: [],
+    drift: [],
+    repositoryFactsAvailable: false,
+  });
+
+  assert.equal(plan.status, 'blocked');
+  assert.match(plan.reason, /repository\/worktree facts are unavailable/);
+  assert.equal(plan.obligationKey, obligation.key);
+});
