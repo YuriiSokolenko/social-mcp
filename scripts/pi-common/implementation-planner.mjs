@@ -295,7 +295,11 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
   };
   const evidenceCap = plannerEvidenceBudget(config);
-  const evidenceStateFile = path.join(tmpdir(), `pi-planner-evidence-${randomUUID()}.json`);
+  // Keep the sidecar inside a lifecycle-owned directory. If the parent times out/aborts before
+  // the delegated child has actually stopped, removing the directory prevents a late child write
+  // from recreating an orphaned state file directly under the shared tmpdir.
+  const evidenceStateDir = fs.mkdtempSync(path.join(tmpdir(), 'pi-planner-evidence-'));
+  const evidenceStateFile = path.join(evidenceStateDir, `${randomUUID()}.json`);
   // Every attempt is a fresh child with a fresh gate, so the cap must be spent across the whole
   // planning lifecycle, not per attempt. The parent cannot see how much a failed child used, so
   // fail closed: only the first attempt may gather evidence; a retry gets 0 (structured_output
@@ -375,7 +379,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     recordDescendantMetric({
       call: 'planner', scope: 'session', childSession, parentSession: ctx.sessionManager.getSessionId(), status, usage,
     });
-    fs.rmSync(evidenceStateFile, { force: true });
+    fs.rmSync(evidenceStateDir, { recursive: true, force: true });
   }
 }
 
