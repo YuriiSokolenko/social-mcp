@@ -1462,3 +1462,103 @@ test('control scenario read semantic lookup source edit verify submit completes 
   ];
   assert.equal(results.some(result => result.tripped), false);
 });
+
+
+test('#426 runtime selects submit_result metadata repair and constrains the next provider surface', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+    let aborts = 0;
+    const ctx = { cwd: "/tmp", abort: () => { aborts += 1; } };
+    // Use the real checkout for trusted git facts while keeping this test mutation-free.
+    ctx.cwd = process.env.GITHUB_WORKSPACE;
+
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'missing_publication_fields',
+        missing_fields: ['limitations', 'security_notes'],
+      }) }],
+    };
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'submit-' + index,
+        toolName: 'submit_result',
+        input: { title: 'Fix', summary: 'Summary' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    assert.equal(aborts, 0);
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /RUNTIME TERMINAL RECOVERY/);
+    assert.match(messages[0][0], /missing publication fields/);
+
+    const patched = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'write', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(
+      patched.tools.map(tool => tool.function.name),
+      ['submit_result'],
+      'deterministic recovery tool is the only executable provider tool for the retry',
+    );
+    assert.equal(patched.tool_choice, 'required');
+    console.log('TERMINAL_RECOVERY_METADATA_RUNTIME_OK');
+  `);
+  assert.match(result.stdout, /TERMINAL_RECOVERY_METADATA_RUNTIME_OK/);
+  assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+  assert.match(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_SURFACE/);
+});
+
+test('#426 runtime checkpoints a genuinely unmapped terminal obligation instead of generic loop abort', () => {
+  const failureFile = path.join(os.tmpdir(), `pi-terminal-recovery-blocked-${process.pid}-${Date.now()}.json`);
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'UNMAPPED_TERMINAL_REQUIREMENT',
+          detail: 'cannot infer a safe repair',
+        }) }],
+      };
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'submit-blocked-' + index,
+          toolName: 'submit_result',
+          input: { summary: 'done' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+      assert.equal(aborts, 1);
+      console.log('TERMINAL_RECOVERY_BLOCKED_RUNTIME_OK');
+    `, { PI_RUNTIME_FAILURE_FILE: failureFile });
+    assert.match(result.stdout, /TERMINAL_RECOVERY_BLOCKED_RUNTIME_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+
+    const checkpoint = JSON.parse(fs.readFileSync(failureFile, 'utf8'));
+    assert.equal(checkpoint.failure_code, 'PI_TERMINAL_RECOVERY_BLOCKED');
+    assert.equal(checkpoint.unresolved_obligation.code, 'UNMAPPED_TERMINAL_REQUIREMENT');
+    assert.equal(checkpoint.checkpoint.worktree_preserved, true);
+    assert.match(checkpoint.reason, /No deterministic repair mapping/);
+  } finally {
+    fs.rmSync(failureFile, { force: true });
+  }
+});
