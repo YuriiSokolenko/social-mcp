@@ -225,7 +225,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -612,6 +612,47 @@ function runtimeScenario(mode) {
       }
       fs.rmSync(cwd + '/config.py');
       for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
+
+      if (mode === 'evidence-missing-executor') {
+        await call('need_more_evidence', {
+          missing: 'Exact import anchor required for the next edit.',
+          reason: 'One source lookup is required before mutating.',
+        });
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const providerPayload = {
+          model: 'm',
+          messages: [],
+          tools: active.map(name => ({ type: 'function', function: { name } })),
+        };
+        const request = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+        assert.ok(request.tools.some(tool => tool.function.name === 'read'), 'the unlocked evidence request advertises read');
+
+        const failedRead = { toolName: 'read', toolCallId: 'missing-evidence-read', input: { path: 'src/missing.py' } };
+        assert.equal(await handlers.get('tool_call')(failedRead, ctx), undefined, 'evidence read is accepted before executor failure');
+        await handlers.get('tool_execution_end')({
+          ...failedRead,
+          isError: true,
+          result: { content: [{ type: 'text', text: 'Tool read not found' }] },
+        }, ctx);
+        assert.equal(aborts, 1, 'advertised missing executor remains an infrastructure abort');
+
+        handlers.get('turn_start')({ turnIndex: turn + 1 });
+        const retryPayload = {
+          model: 'm',
+          messages: [],
+          tools: active.map(name => ({ type: 'function', function: { name } })),
+        };
+        const retryRequest = handlers.get('before_provider_request')({ payload: retryPayload }, ctx);
+        assert.ok(retryRequest.tools.some(tool => tool.function.name === 'read'), 'runtime restored the same evidence permit after executor rejection');
+        assert.equal(
+          await handlers.get('tool_call')({ toolName: 'read', toolCallId: 'retry-evidence-read', input: { path: 'src/missing.py' } }, ctx),
+          undefined,
+          'restored evidence action is executable without a second need_more_evidence call',
+        );
+        console.log('EVIDENCE_MISSING_EXECUTOR_PERMIT_RESTORED');
+        process.exit(0);
+      }
 
       if (mode === 'elevated-evidence-write') {
         await call('accept_mutation_scope', {
@@ -1101,6 +1142,13 @@ test('an already-completed repeated tool call clears forcing but still fails clo
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"alreadySatisfied":true/);
   assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
+
+test('#470 missing evidence executor restores the permit through the real runtime hooks', () => {
+  const logs = runtimeScenario('evidence-missing-executor');
+  assert.match(logs, /PI_RUNTIME_FAILURE .*"failure_code":"PI_TOOL_CONTRACT_FAILURE".*"tool":"read"/);
+  assert.match(logs, /EVIDENCE_MISSING_EXECUTOR_PERMIT_RESTORED/);
+});
+
 
 test('#469 evidence unlock is single-use and stale read/blocker calls abort as unavailable capability, never prose-only', () => {
   const logs = runtimeScenario('action-hidden-abort');
