@@ -1589,7 +1589,7 @@ test('#426 runtime maps repeated journaled file-set failure to targeted undo', (
       const repo = ${JSON.stringify(repo)};
       const before = snapshots.captureMutationSnapshot(repo, 'scratch/a.js');
       fs.mkdirSync(path.join(repo, 'scratch'), { recursive: true });
-      fs.writeFileSync(path.join(repo, 'scratch/a.js'), 'temporary\n');
+      fs.writeFileSync(path.join(repo, 'scratch/a.js'), 'temporary\\n');
       const after = snapshots.captureMutationSnapshot(repo, 'scratch/a.js');
       const entry = journal.recordSuccessfulMutation({
         cwd: repo,
