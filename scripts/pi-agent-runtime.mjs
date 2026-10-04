@@ -80,6 +80,7 @@ import {
   recordUnavailableCapabilityAttempt,
 } from './pi-common/coding-session-capability.mjs';
 import {
+  CODING_SESSION_USED_ENV,
   codingSessionSubmissionReadiness,
   invalidateCodingBehavioralValidation,
   recordCodingBehavioralValidation,
@@ -1547,6 +1548,10 @@ export default function (pi) {
             );
           }
           sessionsStarted += 1;
+          // Durable in the parent process: if the fork returns without terminal submission,
+          // parent-side run_check/mutations/submit_result remain under the same behavioral
+          // validation contract.
+          process.env[CODING_SESSION_USED_ENV] = 'true';
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
           const capabilityFile = `${contractFile}.capabilities.json`;
@@ -2267,7 +2272,7 @@ export default function (pi) {
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
-    if (!event.isError && codingSession && canonicalToolName === 'bash') {
+    if (!event.isError && canonicalToolName === 'bash') {
       if (invalidateCodingBehavioralValidation(process.env)) {
         console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
           stage,
