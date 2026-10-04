@@ -217,7 +217,8 @@ test('#469 synthetic settlement stays logical but exact provider trace reports 2
   );
   assert.equal(ledger.calls.get('provider').providerResponses, 24);
   assert.equal(ledger.calls.get('provider').responses, 0);
-  assert.ok(ledger.totals.responses > ledger.totals.providerResponses, 'logical roll-ups/synthetic records remain a separate dimension');
+  assert.equal(ledger.totals.responses, 20, 'logical roll-ups and synthetic settlement remain a separate record dimension');
+  assert.notEqual(ledger.totals.responses, ledger.totals.providerResponses);
 });
 
 test('#469 synthetic zero-token response never increments fallback provider count', () => {
