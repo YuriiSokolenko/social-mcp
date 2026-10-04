@@ -88,7 +88,11 @@ export function recordCodingBehavioralValidation({
   env = process.env,
 } = {}) {
   if (!validationLifecycleActive(env)) return null;
-  if (result?.status !== 'pass' || result?.kind !== 'pytest') return null;
+  if (result?.kind !== 'pytest') return null;
+  if (result?.status !== 'pass') {
+    invalidateCodingBehavioralValidation(env);
+    return null;
+  }
   const targets = Array.isArray(scope?.targets)
     ? [...new Set(scope.targets
         .filter(target => typeof target === 'string' && !target.includes('::'))
