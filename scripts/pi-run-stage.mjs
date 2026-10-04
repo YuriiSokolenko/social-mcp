@@ -253,6 +253,7 @@ export async function runStage(options, env = process.env) {
               call: 'provider',
               record_type: exchange.transportError === true ? 'provider_transport_error' : 'provider_response',
               provider_response: exchange.transportError !== true,
+              provider_session: exchange.traceSession,
               response: exchange.sequence,
               responseMs: exchange.elapsedMs,
               status: exchange.status,
