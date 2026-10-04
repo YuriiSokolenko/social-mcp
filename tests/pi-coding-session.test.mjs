@@ -726,7 +726,7 @@ function runtimeScenario(mode) {
 
           const consumedSteer = steers.findLast(text => /RUNTIME EVIDENCE PERMIT CONSUMED/.test(text));
           assert.ok(consumedSteer, 'runtime emits an explicit consumed-permit steer');
-          assert.match(consumedSteer, /read\/search evidence and repeated need_more_evidence are unavailable/);
+          assert.ok(consumedSteer.includes('read/search evidence and repeated need_more_evidence are unavailable'));
           assert.ok(!active.includes('read'), 'read is removed after the single evidence action');
           assert.ok(!active.includes('need_more_evidence'), 'blocker is removed until productive progress');
 
