@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.5}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.6}
     container_name: pi-runner-manager
     restart: unless-stopped
     environment:
@@ -46,7 +46,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.5}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.6}
     container_name: general-runner-manager
     restart: unless-stopped
     environment:
@@ -67,6 +67,7 @@ services:
       CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
       CURL_MAX_TIME_SECONDS: ${CURL_MAX_TIME_SECONDS:-15}
       DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
+      DOCKER_DEEP_PROBE_INTERVAL_SECONDS: ${GENERAL_DOCKER_DEEP_PROBE_INTERVAL_SECONDS:-300}
       INFRA_EVIDENCE_DIR: /evidence
       INFRA_EVIDENCE_VOLUME: ${GENERAL_EVIDENCE_VOLUME:-social-mcp-general-runner-evidence}
     volumes:
