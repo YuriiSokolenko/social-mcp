@@ -1145,7 +1145,11 @@ test('an already-completed repeated tool call clears forcing but still fails clo
 
 test('#470 missing evidence executor restores the permit through the real runtime hooks', () => {
   const logs = runtimeScenario('evidence-missing-executor');
-  assert.match(logs, /PI_RUNTIME_FAILURE .*"failure_code":"PI_TOOL_CONTRACT_FAILURE".*"tool":"read"/);
+  const failureLine = logs.split('\n').find(line => line.startsWith('PI_RUNTIME_FAILURE '));
+  assert.ok(failureLine, 'runtime contract failure is recorded');
+  const failure = JSON.parse(failureLine.slice('PI_RUNTIME_FAILURE '.length));
+  assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+  assert.equal(failure.tool, 'read');
   assert.match(logs, /EVIDENCE_MISSING_EXECUTOR_PERMIT_RESTORED/);
 });
 
