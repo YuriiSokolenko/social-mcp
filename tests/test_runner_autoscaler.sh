@@ -32,6 +32,13 @@ grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$control_dockerfile" || fail 'contr
 grep -q 'ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
 grep -q 'unset GH_ADMIN_TOKEN' <<<"$control_entrypoint" || fail 'control jobs must not inherit repository-admin token'
 grep -q 'env -u GH_ADMIN_TOKEN gosu runner ./run.sh' <<<"$control_entrypoint" || fail 'control jobs must run unprivileged without admin token'
+! grep -q -- '--disableupdate' <<<"$control_entrypoint" || fail 'persistent control runner must keep GitHub self-update enabled'
+grep -q 'runner_registration_present' <<<"$control_entrypoint" || fail 'control runner must verify persisted registration state'
+grep -q 'clear_local_registration' <<<"$control_entrypoint" || fail 'control runner must recover from stale local registration state'
+trap_line="$(grep -n '^trap shutdown TERM INT$' <<<"$control_entrypoint" | cut -d: -f1)"
+configure_line="$(grep -n '^if \[ -f \.runner \]; then$' <<<"$control_entrypoint" | cut -d: -f1)"
+[[ -n "$trap_line" && -n "$configure_line" && "$trap_line" -lt "$configure_line" ]] \
+  || fail 'control runner must install its stop trap before registration/recovery starts'
 
 # run_with_timeout must never block the caller past its own deadline, and must
 # never block past the wrapped command's actual completion when it finishes
