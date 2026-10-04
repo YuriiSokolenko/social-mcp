@@ -244,6 +244,18 @@ test('#470 provider accounting counts only successful completion endpoints', () 
     status: 201,
     transportError: false,
   }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/completions',
+    status: 200,
+    transportError: false,
+  }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/messages',
+    status: 200,
+    transportError: false,
+  }), true);
 
   for (const exchange of [
     { requestMethod: 'GET', requestPath: '/v1/models', status: 200, transportError: false },
