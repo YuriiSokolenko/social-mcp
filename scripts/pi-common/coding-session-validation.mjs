@@ -194,46 +194,23 @@ export function assertCodingBehavioralValidation({
 }
 
 
-const PREPARED_PATH_TOKEN = /[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,12}/g;
-const PREPARED_CREATE_STEP = /^\s*(?:create|add|generate|introduce|write)\b/i;
-const PREPARED_REMOVAL_STEP = /^\s*(?:delete|remove|rename|move)\b/i;
-
 function candidatePreparedPath(value) {
-  const text = String(value ?? '').trim().replace(/^[`'"]+|[`'",.;:]+$/g, '');
+  const text = String(value ?? '').trim();
   if (!text || text.length > 1000) return null;
   if (!/[A-Za-z0-9_]\.[A-Za-z0-9]{1,12}$/.test(text)) return null;
   if (text.startsWith('/') || text.startsWith('./') || /\\/.test(text) || /(^|\/)\.\.(\/|$)/.test(text)) return null;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return null;
-  // A bare hostname followed by URL-like path segments can otherwise look like a repo file.
-  if (/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\//.test(text)) return null;
   return path.posix.normalize(text);
-}
-
-function preparedStepPaths(step) {
-  const matches = String(step).match(PREPARED_PATH_TOKEN) ?? [];
-  return matches.map(candidatePreparedPath).filter(Boolean);
 }
 
 export function requiredPreparedOutputPaths(prepared) {
   if (!prepared || prepared.status !== 'prepared') return [];
-  const steps = Array.isArray(prepared.plan) ? prepared.plan.map(String) : [];
-  const removedOrRenamed = new Set(
-    steps
-      .filter(step => PREPARED_REMOVAL_STEP.test(step))
-      .flatMap(preparedStepPaths),
-  );
-  const candidates = [];
-  const hinted = candidatePreparedPath(prepared.layoutHint?.sourceTarget);
-  if (hinted && !removedOrRenamed.has(hinted)) candidates.push(hinted);
-  for (const step of steps) {
-    // Free-form plan text is not an output schema. Only explicit creation/addition steps
-    // may contribute extra required outputs; delete/rename/negative mentions stay advisory.
-    if (!PREPARED_CREATE_STEP.test(step)) continue;
-    for (const candidate of preparedStepPaths(step)) {
-      if (!removedOrRenamed.has(candidate)) candidates.push(candidate);
-    }
-  }
-  return [...new Set(candidates)].sort();
+  // Prepared output gating consumes only model-free structured layout facts. Planner prose is
+  // advisory and must never become a filesystem requirement through regex extraction.
+  return [...new Set([
+    candidatePreparedPath(prepared.layoutHint?.sourceTarget),
+    candidatePreparedPath(prepared.layoutHint?.testTarget),
+  ].filter(Boolean))].sort();
 }
 
 export function codingSessionSubmissionReadiness({
