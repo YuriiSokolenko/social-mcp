@@ -241,6 +241,39 @@ test('#469 synthetic zero-token response never increments fallback provider coun
 });
 
 
+test('#470 HTTP/non-completion trace diagnostics never become provider responses or unknown usage', () => {
+  const ledger = summarizeUsage([
+    { call: 'main', response: 1, usage: u(10, 2), responseMs: 500 },
+    {
+      call: 'provider',
+      provider_response: false,
+      record_type: 'provider_exchange_diagnostic',
+      provider_session: 'trace-1',
+      response: 1,
+      responseMs: 1200,
+      status: 429,
+      request_method: 'POST',
+      request_path: '/v1/responses',
+    },
+    {
+      call: 'provider',
+      provider_response: false,
+      record_type: 'provider_exchange_diagnostic',
+      provider_session: 'trace-1',
+      response: 2,
+      responseMs: 50,
+      status: 200,
+      request_method: 'GET',
+      request_path: '/v1/models',
+    },
+  ]);
+  assert.equal(ledger.totals.providerResponses, 1);
+  assert.equal(ledger.totals.providerResponseMs, 500);
+  assert.equal(ledger.complete, true);
+  assert.deepEqual(ledger.unknown, []);
+});
+
+
 test('#469 transport failures are diagnostic exchanges, not provider responses', () => {
   const ledger = summarizeUsage([
     { call: 'main', response: 1, usage: u(10, 2), responseMs: 500 },
