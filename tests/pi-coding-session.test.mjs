@@ -716,7 +716,7 @@ function runtimeScenario(mode) {
         if (mode === 'action-hidden-abort') {
           // #469 exact lifecycle: one blocker opens one evidence action, then both read and
           // repeated need_more_evidence disappear until productive progress occurs.
-          fs.writeFileSync(cwd + '/evidence.txt', 'exact import anchor\n');
+          fs.writeFileSync(cwd + '/evidence.txt', 'exact import anchor\\n');
           await call('need_more_evidence', {
             missing: 'Read evidence.txt to obtain the exact import anchor needed for the edit.',
             reason: 'The exact import anchor is the only unresolved implementation fact.',
