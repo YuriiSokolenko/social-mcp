@@ -38,14 +38,10 @@ CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
 DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
 DOCKER_DEEP_PROBE_INTERVAL_SECONDS="${DOCKER_DEEP_PROBE_INTERVAL_SECONDS:-300}"
-DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS="${DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS:-60}"
+DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS=60
 DOCKER_HEALTH_RETRY_SECONDS=5
 [[ "$DOCKER_DEEP_PROBE_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
   echo "DOCKER_DEEP_PROBE_INTERVAL_SECONDS must be a positive integer" >&2
-  exit 1
-}
-[[ "$DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
-  echo "DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS must be a positive integer" >&2
   exit 1
 }
 # Optional durable infra evidence (#437). Workers run with --rm and GitHub job
@@ -379,7 +375,8 @@ docker_deep_probe_due() {
   # Container-start failures are a useful corruption signal, but failures such
   # as a missing image or a busy daemon must not turn the expensive metadata
   # walk back into a per-poll hot loop. Quarantine bypasses this throttle above.
-  if [ "$DOCKER_FORCED_DEEP_PROBE_PENDING" == true ]     && [ "$elapsed" -ge "$DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS" ]; then
+  if [ "$DOCKER_FORCED_DEEP_PROBE_PENDING" == true ] \
+    && [ "$elapsed" -ge "$DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS" ]; then
     return 0
   fi
 
@@ -525,8 +522,9 @@ spawn_runner() {
 
   if ! run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run "${docker_args[@]}" "${RUNNER_IMAGE}" >/dev/null; then
     # A failed container create/start can be the first visible symptom of
-    # snapshot metadata corruption. Validate deeply now instead of waiting for
-    # the periodic cadence; Pi runners never take this path.
+    # snapshot metadata corruption. Request an early deep validation, bounded
+    # by the forced-probe minimum gap so unrelated persistent failures cannot
+    # recreate a per-poll metadata hot loop. Pi runners never take this path.
     request_docker_deep_probe
     general_daemon_health || true
     return 1
