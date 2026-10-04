@@ -192,3 +192,38 @@ test('#426 recovery context compacts only obsolete equivalent terminal diagnosti
   assert.match(payload.messages[3].content, /superseded repeated terminal diagnostic/);
   assert.equal(payload.messages[8].content, recovery, 'newest recovery directive is preserved');
 });
+
+
+test('#426 prefixed structured terminal errors preserve the same obligation identity', () => {
+  const exact = submissionObligation(JSON.stringify({
+    code: 'missing_publication_fields',
+    missing_fields: ['limitations', 'security_notes'],
+  }));
+  const prefixed = submissionObligation('Error: ' + JSON.stringify({
+    code: 'missing_publication_fields',
+    missing_fields: ['security_notes', 'limitations'],
+  }));
+  assert.equal(prefixed.kind, 'metadata');
+  assert.equal(prefixed.key, exact.key);
+  assert.deepEqual(prefixed.missingFields, ['limitations', 'security_notes']);
+});
+
+test('#426 compactor recognizes structured tool content instead of the message envelope', () => {
+  const error = JSON.stringify({
+    code: 'missing_publication_fields',
+    missing_fields: ['limitations'],
+  });
+  const obligation = submissionObligation(error);
+  const messages = [
+    { role: 'assistant', tool_calls: [{ id: 'a', function: { name: 'submit_result', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'a', content: error },
+    { role: 'assistant', tool_calls: [{ id: 'b', function: { name: 'submit_result', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'b', content: 'Error: ' + error },
+  ];
+  const payload = compactTerminalRecoveryPayload(
+    { messages },
+    { obligationKey: obligation.key },
+  );
+  assert.match(payload.messages[1].content, /superseded repeated terminal diagnostic/);
+  assert.equal(payload.messages[3].content, 'Error: ' + error);
+});
