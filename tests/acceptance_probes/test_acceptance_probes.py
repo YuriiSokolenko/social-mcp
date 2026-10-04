@@ -12,6 +12,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
@@ -50,7 +51,13 @@ def _module_present(module: str) -> bool:
         return False
 
 
-def _current_issue_requests(module: str) -> bool:
+ISSUE_TARGET_MARKER = re.compile(
+    r"^\s*(?:[-*]\s*)?trusted-acceptance-target\s*:\s*(\S+)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _current_issue_requires(module: str) -> bool:
     context_path = os.environ.get("PI_ISSUE_CONTEXT")
     if not context_path:
         return False
@@ -58,14 +65,18 @@ def _current_issue_requests(module: str) -> bool:
         context = json.loads(Path(context_path).read_text("utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return module in str(context.get("body", ""))
+    for line in str(context.get("body", "")).splitlines():
+        match = ISSUE_TARGET_MARKER.match(line)
+        if match and match.group(1) == module:
+            return True
+    return False
 
 
 def _target(criterion: str):
     contract = CRITERIA[criterion]
     module, _, name = contract["target"].partition(":")
     if contract.get("activation") == "when-target-present" and not _module_present(module):
-        if _current_issue_requests(module):
+        if _current_issue_requires(module):
             pytest.fail(f"trusted acceptance target required by current issue is missing: {module}")
         pytest.skip(f"trusted acceptance target is not present in this candidate: {module}")
     return getattr(importlib.import_module(module), name)
@@ -100,16 +111,40 @@ def test_manifest_is_well_formed() -> None:
         assert any(p["criterion"] == name for p in PROBES), f"criterion {name} has no probe"
 
 
-def test_deferred_target_is_required_when_current_issue_names_it(tmp_path, monkeypatch) -> None:
+def test_deferred_target_marker_exercises_the_missing_target_fail_path(tmp_path, monkeypatch) -> None:
     context = tmp_path / "issue.json"
     context.write_text(
-        json.dumps({"body": "Add social_mcp.diagnostics.smoke_lru.LRUCache exactly as specified."}),
+        json.dumps({
+            "body": (
+                "Recreate the smoke contract.\n"
+                "trusted-acceptance-target: social_mcp.diagnostics.smoke_lru\n"
+            ),
+        }),
+        "utf-8",
+    )
+    monkeypatch.setenv("PI_ISSUE_CONTEXT", str(context))
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _module: None)
+
+    assert _current_issue_requires("social_mcp.diagnostics.smoke_lru")
+    with pytest.raises(pytest.fail.Exception, match="trusted acceptance target required"):
+        _target("lru-capacity-integer")
+
+
+def test_free_text_module_mentions_do_not_activate_deferred_targets(tmp_path, monkeypatch) -> None:
+    context = tmp_path / "issue.json"
+    context.write_text(
+        json.dumps({
+            "title": "Do not touch smoke_lru",
+            "body": (
+                "Do not touch social_mcp.diagnostics.smoke_lru.\n"
+                "The old path was src/social_mcp/diagnostics/smoke_lru.py.\n"
+            ),
+        }),
         "utf-8",
     )
     monkeypatch.setenv("PI_ISSUE_CONTEXT", str(context))
 
-    assert _current_issue_requests("social_mcp.diagnostics.smoke_lru")
-    assert not _current_issue_requests("social_mcp.diagnostics.smoke_intervals")
+    assert not _current_issue_requires("social_mcp.diagnostics.smoke_lru")
 
 
 def test_missing_parent_package_is_treated_as_absent() -> None:
