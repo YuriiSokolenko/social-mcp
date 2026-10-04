@@ -32,9 +32,11 @@ accepts one job, and is removed after the job. Running each CI job on its own
 disposable runner is also what lets several queued runs execute in parallel.
 
 The control lane is deliberately different: exactly one persistent runner
-container executes at most one job at a time. Workflows must request
-`[self-hosted, n150, control]`; heavy jobs continue to require `general` or
-`pi-agent`, so they cannot land on the control runner.
+container executes at most one job at a time. `CI Terminal Wake` must request
+exactly `[self-hosted, n150, control]`. Every other self-hosted N150 workflow
+must require a pool-specific label such as `general` or `pi-agent`; a bare
+`self-hosted`/`n150` selector would also match the control runner and is
+blocked by the workflow contract test.
 
 ## Security model
 
@@ -57,13 +59,22 @@ toolchain. Compose caps it at 0.5 CPU, 512 MiB RAM, and 256 PIDs, drops the
 default Linux capability set, adds back only `SETUID`/`SETGID` so PID 1 can
 launch the unprivileged runner, and enables `no-new-privileges`. The entrypoint uses the
 repository administration token only for first-time registration and
-post-failure registration reconciliation; the long-lived Actions runner and
-all workflow jobs run as the unprivileged `runner` user with
-`GH_ADMIN_TOKEN` removed from their environment. Normal Docker/host stops do
-not deregister the runner, so a restart with existing local credentials needs
-no GitHub API call. After an unexpected listener failure, reconciliation is
-non-destructive on API errors and clears local credentials only when a
-successful GitHub response proves that the named runner registration is absent.
+post-failure recovery; the long-lived Actions runner and all workflow jobs run
+as the unprivileged `runner` user with `GH_ADMIN_TOKEN` removed from their
+environment. Normal Docker/host stops do not deregister the runner, so a
+restart with existing local credentials needs no GitHub API call. The
+entrypoint enables the official runner's `RUNNER_MANUALLY_TRAP_SIG` path so
+TERM/INT reaches `Runner.Listener`. First-time `config.sh` runs
+asynchronously so PID 1 can handle Docker stop while registration is in
+progress.
+
+After an unexpected listener failure, recovery deliberately avoids any
+pagination-sensitive runner-name lookup. A valid response from the repository
+runners API is only a health gate: local credentials are cleared as the
+`runner` user and the next container restart obtains a fresh registration
+token and uses `config.sh --replace` to repair either present or absent server
+state. Any runners-API/network/JSON failure is non-destructive and preserves
+the existing local credentials for a later retry.
 
 The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
 (`worker-general.Dockerfile`) adds the Docker CLI and Compose plugin over the
@@ -106,7 +117,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.5 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.2 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.3 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
 ```
 
@@ -134,7 +145,7 @@ recreate only `control-runner`. It uses `restart: unless-stopped`, so the
 same single runner returns after Docker or host restart:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.2 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.3 .
 docker compose --env-file .env up -d --force-recreate --no-deps control-runner
 docker compose --env-file .env logs --tail=100 control-runner
 ```
