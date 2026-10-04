@@ -47,6 +47,7 @@ const phase = process.env.PI_PHASE ?? "agent";
 const call = process.env.PI_CALL ?? "main";
 const summaryFile = process.env.GITHUB_STEP_SUMMARY;
 const activityFile = process.env.PI_ACTIVITY_FILE;
+const runtimeFailureFile = process.env.PI_RUNTIME_FAILURE_FILE;
 
 function recordActivity(kind, extra = {}) {
   if (!activityFile) return;
@@ -471,14 +472,17 @@ for await (const line of rl) {
       if (usage && Object.values(usage).some(Number.isFinite)) {
         const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
         const syntheticSettlement =
-          elapsed === 0 &&
           firstTokenAt == null &&
           !message.content?.some(part =>
             (part?.type === 'text' && String(part.text ?? '').length > 0) ||
             (part?.type === 'thinking' && String(part.thinking ?? part.text ?? '').length > 0)
           ) &&
           ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']
-            .every(key => !Number.isFinite(usage[key]) || usage[key] === 0);
+            .every(key => !Number.isFinite(usage[key]) || usage[key] === 0) &&
+          (
+            elapsed === 0 ||
+            Boolean(runtimeFailureFile && existsSync(runtimeFailureFile))
+          );
         recordMetric({
           issue: issue ?? 0,
           phase,
