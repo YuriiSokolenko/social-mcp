@@ -167,11 +167,11 @@ stop_process_group() {
 
   kill "-${signal}" -- "-${pid}" 2>/dev/null || true
   for ((i = 0; i < CONTROL_CHILD_STOP_WAIT_SECONDS; i += 1)); do
-    kill -0 "${pid}" 2>/dev/null || break
+    kill -0 -- "-${pid}" 2>/dev/null || break
     sleep 1
   done
 
-  if kill -0 "${pid}" 2>/dev/null; then
+  if kill -0 -- "-${pid}" 2>/dev/null; then
     echo "warning: process group ${pid} did not stop after ${CONTROL_CHILD_STOP_WAIT_SECONDS}s; killing it" >&2
     kill -KILL -- "-${pid}" 2>/dev/null || true
   fi
