@@ -239,6 +239,7 @@ function logPreparedImplementation(prepared, applied) {
     console.log(`PI_PLAN ${JSON.stringify({
       stage,
       steps: prepared.plan,
+      repositoryFacts: prepared.repositoryFacts ?? [],
       complexity: prepared.complexity,
       evidenceBudget: prepared.evidenceBudget,
       largeMutation: prepared.largeMutation,
