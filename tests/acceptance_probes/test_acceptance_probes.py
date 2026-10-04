@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+import os
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
@@ -42,10 +43,30 @@ def _decode(value):
     return value
 
 
+def _module_present(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+
+def _current_issue_requests(module: str) -> bool:
+    context_path = os.environ.get("PI_ISSUE_CONTEXT")
+    if not context_path:
+        return False
+    try:
+        context = json.loads(Path(context_path).read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return module in str(context.get("body", ""))
+
+
 def _target(criterion: str):
     contract = CRITERIA[criterion]
     module, _, name = contract["target"].partition(":")
-    if contract.get("activation") == "when-target-present" and importlib.util.find_spec(module) is None:
+    if contract.get("activation") == "when-target-present" and not _module_present(module):
+        if _current_issue_requests(module):
+            pytest.fail(f"trusted acceptance target required by current issue is missing: {module}")
         pytest.skip(f"trusted acceptance target is not present in this candidate: {module}")
     return getattr(importlib.import_module(module), name)
 
