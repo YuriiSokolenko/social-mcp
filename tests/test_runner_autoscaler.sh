@@ -160,7 +160,7 @@ CURL
 cat > "$registration_case/runner/config.sh" <<'CONFIG'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$" > "$CONFIG_PID_FILE"
+printf '%s\n' "$$" > "$CONFIG_PID_FILE"
 touch "$CONFIG_READY"
 while true; do sleep 1; done
 CONFIG
