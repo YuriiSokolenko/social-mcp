@@ -57,19 +57,67 @@ function isPytestPath(file) {
   const base = path.posix.basename(normalized);
   return normalized.endsWith('.py') && (
     base.startsWith('test_') ||
-    base.endsWith('_test.py') ||
-    normalized.split('/').includes('tests')
+    base.endsWith('_test.py')
   );
 }
 
-export function requiredCodingPytestTargets(changedFiles) {
+export function requiredCodingPytestTargets(changedFiles, { cwd = null } = {}) {
   const files = [...new Set((Array.isArray(changedFiles) ? changedFiles : [])
     .map(canonicalRepoPath)
     .filter(Boolean))].sort();
   const python = files.filter(file => file.endsWith('.py'));
-  const tests = python.filter(isPytestPath);
+  const tests = python
+    .filter(isPytestPath)
+    .filter(file => !cwd || fs.existsSync(path.resolve(cwd, file)));
   const sources = python.filter(file => !isPytestPath(file));
   return sources.length && tests.length ? tests : [];
+}
+
+function pytestCoverageFromState(state) {
+  if (!state || state.kind !== 'pytest') {
+    return { targets: [], directories: [], wholeRepo: false };
+  }
+  if (state.schema_version === 1) {
+    return {
+      targets: Array.isArray(state.targets) ? state.targets.map(canonicalRepoPath).filter(Boolean) : [],
+      directories: [],
+      wholeRepo: false,
+    };
+  }
+  if (state.schema_version !== 2) {
+    return { targets: [], directories: [], wholeRepo: false };
+  }
+  return {
+    targets: Array.isArray(state.targets) ? state.targets.map(canonicalRepoPath).filter(Boolean) : [],
+    directories: Array.isArray(state.directories) ? state.directories.map(canonicalRepoPath).filter(Boolean) : [],
+    wholeRepo: state.whole_repo === true,
+  };
+}
+
+function pytestScopeCoverage(scope, cwd) {
+  const wholeRepo = scope?.whole_repo === true || scope?.profile === 'pytest_all';
+  const targets = [];
+  const directories = [];
+  for (const raw of Array.isArray(scope?.targets) ? scope.targets : []) {
+    const target = canonicalRepoPath(raw);
+    if (!target) continue;
+    const absolute = path.resolve(cwd, target);
+    if (target.endsWith('.py') || (fs.existsSync(absolute) && fs.statSync(absolute).isFile())) {
+      targets.push(target);
+    } else {
+      directories.push(target);
+    }
+  }
+  return {
+    targets: [...new Set(targets)].sort(),
+    directories: [...new Set(directories)].sort(),
+    wholeRepo,
+  };
+}
+
+function coveredByDirectory(file, directory) {
+  const relative = path.posix.relative(directory, file);
+  return relative === '' || (relative && relative !== '..' && !relative.startsWith('../'));
 }
 
 export function invalidateCodingBehavioralValidation(env = process.env) {
@@ -86,31 +134,27 @@ export function recordCodingBehavioralValidation({
   scope,
   result,
   env = process.env,
+  cwd = process.cwd(),
 } = {}) {
   if (!validationLifecycleActive(env)) return null;
-  if (result?.kind !== 'pytest') return null;
+  const pytestResult =
+    result?.kind === 'pytest' ||
+    (result?.kind === 'profile' && result?.profile === 'pytest_all');
+  if (!pytestResult) return null;
   if (result?.status !== 'pass') {
     invalidateCodingBehavioralValidation(env);
     return null;
   }
-  const targets = Array.isArray(scope?.targets)
-    ? [...new Set(scope.targets
-        .filter(target => typeof target === 'string' && !target.includes('::'))
-        .map(canonicalRepoPath)
-        .filter(Boolean))].sort()
-    : [];
-  if (!targets.length) return null;
-  const previous = readValidationState(env);
-  const priorTargets =
-    previous?.schema_version === 1 &&
-    previous?.kind === 'pytest' &&
-    Array.isArray(previous.targets)
-      ? previous.targets.map(canonicalRepoPath).filter(Boolean)
-      : [];
+
+  const current = pytestScopeCoverage(scope, cwd);
+  if (!current.wholeRepo && !current.targets.length && !current.directories.length) return null;
+  const previous = pytestCoverageFromState(readValidationState(env));
   const state = {
-    schema_version: 1,
+    schema_version: 2,
     kind: 'pytest',
-    targets: [...new Set([...priorTargets, ...targets])].sort(),
+    targets: [...new Set([...previous.targets, ...current.targets])].sort(),
+    directories: [...new Set([...previous.directories, ...current.directories])].sort(),
+    whole_repo: previous.wholeRepo || current.wholeRepo,
   };
   writeValidationState(state, env);
   return state;
@@ -119,22 +163,26 @@ export function recordCodingBehavioralValidation({
 export function assertCodingBehavioralValidation({
   changedFiles,
   env = process.env,
+  cwd = process.cwd(),
 } = {}) {
   if (!validationLifecycleActive(env)) return [];
-  const required = requiredCodingPytestTargets(changedFiles);
+  // git diff --name-only includes deleted paths. A deleted pytest file cannot be
+  // executed and must never become an impossible terminal requirement.
+  const required = requiredCodingPytestTargets(changedFiles, { cwd });
   if (!required.length) return [];
 
-  const state = readValidationState(env);
-  const validated = new Set(
-    state?.schema_version === 1 && state?.kind === 'pytest' && Array.isArray(state.targets)
-      ? state.targets.map(canonicalRepoPath)
-      : [],
-  );
-  const missing = required.filter(file => !validated.has(file));
+  const coverage = pytestCoverageFromState(readValidationState(env));
+  const validated = new Set(coverage.targets);
+  const missing = coverage.wholeRepo
+    ? []
+    : required.filter(file =>
+        !validated.has(file) &&
+        !coverage.directories.some(directory => coveredByDirectory(file, directory))
+      );
   if (missing.length) {
     const error = new Error(JSON.stringify({
       code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
-      message: 'Changed Python source and directly affected pytest tests require a passing targeted pytest run after the latest mutation before submit_result.',
+      message: 'Changed Python source and directly affected pytest tests require a passing pytest run after the latest mutation before submit_result. Exact files, node ids within those files, an enclosing directory target, or the pytest_all profile all satisfy the requirement.',
       required_targets: missing,
       action: { kind: 'pytest', targets: missing },
     }));
