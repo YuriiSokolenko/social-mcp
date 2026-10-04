@@ -22,7 +22,10 @@ function validationStatePath(env = process.env) {
 
 function readValidationState(env = process.env) {
   const target = validationStatePath(env);
-  if (target && fs.existsSync(target)) {
+  if (target) {
+    // A configured shared state file is authoritative across parent/fork runtimes. Its absence
+    // means validation was invalidated in another process; never resurrect a stale env snapshot.
+    if (!fs.existsSync(target)) return null;
     try {
       return JSON.parse(fs.readFileSync(target, 'utf8'));
     } catch {
@@ -213,7 +216,9 @@ export function requiredPreparedOutputPaths(prepared) {
   // advisory and must never become a filesystem requirement through regex extraction.
   return [...new Set([
     candidatePreparedPath(prepared.layoutHint?.sourceTarget),
-    candidatePreparedPath(prepared.layoutHint?.testTarget),
+    prepared.layoutHint?.testTargetRequired === true
+      ? candidatePreparedPath(prepared.layoutHint?.testTarget)
+      : null,
   ].filter(Boolean))].sort();
 }
 
