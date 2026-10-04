@@ -247,10 +247,18 @@ export function summarizeUsage(records) {
       calls.set(key, supplemental);
     }
     totals.providerResponses = Math.max(logicalProviderResponses, traced.providerResponses);
-    // When trace data exists it is the transport authority for aggregate provider latency.
-    // Keep logical per-call timing visible for attribution, but do not add or max it into the
-    // traced total because those measurements can overlap the same provider exchanges.
-    totals.providerResponseMs = traced.providerResponseMs;
+    // A complete trace is the best transport measurement; a partial trace must never lower latency
+    // already known from logical per-call records. max() avoids double counting while preserving
+    // the stronger lower bound from either source.
+    totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
+    if (traced.providerResponses < logicalProviderResponses) {
+      unknown.push({
+        call: 'provider',
+        childSession: null,
+        response: null,
+        reason: 'provider_trace_incomplete',
+      });
+    }
   }
   return { calls, totals, unknown, complete: unknown.length === 0 };
 }
