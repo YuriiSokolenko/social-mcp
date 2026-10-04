@@ -2267,6 +2267,14 @@ export default function (pi) {
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
+    if (!event.isError && codingSession && canonicalToolName === 'bash') {
+      if (invalidateCodingBehavioralValidation(process.env)) {
+        console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+          stage,
+          status: 'invalidated_by_bash',
+        })}`);
+      }
+    }
     if (!event.isError && ['rollback_last_mutation', 'recover_worktree', 'undo_mutation'].includes(canonicalToolName)) {
       if (invalidateCodingBehavioralValidation(process.env)) {
         console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
