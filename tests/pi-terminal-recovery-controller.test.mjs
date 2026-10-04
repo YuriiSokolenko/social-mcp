@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   SemanticLoopGuard,
+  mutationResolvesSubmissionObligation,
   submissionObligation,
 } from '../scripts/pi-common/semantic-loop-guard.mjs';
 import {
@@ -226,4 +227,27 @@ test('#426 compactor recognizes structured tool content instead of the message e
   );
   assert.match(payload.messages[1].content, /superseded repeated terminal diagnostic/);
   assert.equal(payload.messages[3].content, 'Error: ' + error);
+});
+
+
+test('#426 multi-path coding-session result can resolve only the named terminal obligation', () => {
+  const obligation = submissionObligation(
+    'Implementer file-set mismatch: unexpected files: scratch/tmp.py',
+  );
+  assert.equal(
+    mutationResolvesSubmissionObligation(
+      obligation,
+      { reason: 'repair' },
+      { details: { changed_files: ['src/real.py', 'scratch/tmp.py'] } },
+    ),
+    true,
+  );
+  assert.equal(
+    mutationResolvesSubmissionObligation(
+      obligation,
+      { reason: 'unrelated work' },
+      { details: { changed_files: ['src/real.py'] } },
+    ),
+    false,
+  );
 });
