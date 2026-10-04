@@ -81,7 +81,8 @@ function add(target, usage, responseMs, {
 }
 
 function supplementProviderRollup(target, sum, usage, responseMs = 0) {
-  const turns = Math.max(sum.providerResponses, providerTurns(usage));
+  const reportedTurns = Math.max(0, providerTurns(usage) - (sum.syntheticResponses ?? 0));
+  const turns = Math.max(sum.providerResponses, reportedTurns);
   target.providerResponses += turns - sum.providerResponses;
   // Delegated roll-up timing may arrive either as usage.durationMs or as the aggregate tool's
   // responseMs. Both are lifecycle measurements, never provider-only response time.
@@ -100,8 +101,17 @@ export function summarizeUsage(records) {
   const responses = new Map();
   const aggregates = new Map();
   const sessions = new Map();
+  const providerResponses = new Map();
   for (const record of records) {
     if (!record || typeof record !== "object" || typeof record.call !== "string") continue;
+    if (record.provider_response === true || record.record_type === "provider_response") {
+      const sequence = Number(record.response);
+      const key = Number.isSafeInteger(sequence) && sequence >= 0
+        ? `provider:${sequence}`
+        : `provider:${providerResponses.size + 1}`;
+      providerResponses.set(key, record);
+      continue;
+    }
     const session = sessionOf(record);
     if (record.scope === "session" && session) {
       sessions.set(session, record);
@@ -125,10 +135,11 @@ export function summarizeUsage(records) {
       return;
     }
     const rollup = Boolean(record.aggregate || record.scope === "session");
+    const synthetic = record.synthetic === true || record.record_type === "synthetic_settlement";
     const responseMs = Number(record.responseMs) || 0;
     const provider = {
-      providerResponses: rollup ? providerTurns(usage) : 1,
-      providerResponseMs: rollup ? 0 : responseMs,
+      providerResponses: rollup ? providerTurns(usage) : synthetic ? 0 : 1,
+      providerResponseMs: rollup || synthetic ? 0 : responseMs,
       delegatedLifecycleMs: rollup ? rollupLifecycleDurationMs(usage, responseMs) : 0,
     };
     // Preserve generic elapsed timing for standalone aggregates, but never relabel that lifecycle
@@ -143,10 +154,12 @@ export function summarizeUsage(records) {
     const usage = normalizeUsage(record.usage);
     if (session && usage) {
       const sum = responseSums.get(session) ?? emptyTotals();
+      const synthetic = record.synthetic === true || record.record_type === "synthetic_settlement";
       add(sum, usage, 0, {
-        providerResponses: 1,
-        providerResponseMs: Number(record.responseMs) || 0,
+        providerResponses: synthetic ? 0 : 1,
+        providerResponseMs: synthetic ? 0 : Number(record.responseMs) || 0,
       });
+      if (synthetic) sum.syntheticResponses = (sum.syntheticResponses ?? 0) + 1;
       responseSums.set(session, sum);
     }
   }
@@ -205,6 +218,25 @@ export function summarizeUsage(records) {
     } else if (!responseSums.has(session) && !rollups.has(session) && !record.usageKnownEmpty) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: "session_usage_unavailable" });
     }
+  }
+
+  if (providerResponses.size) {
+    const exact = emptyTotals();
+    for (const record of providerResponses.values()) {
+      exact.providerResponses += 1;
+      const responseMs = Number(record.responseMs);
+      if (Number.isFinite(responseMs) && responseMs >= 0) exact.providerResponseMs += responseMs;
+    }
+    // Provider trace records are the transport authority: logical usage rows still own token
+    // attribution and lifecycle timing, while exact provider count/latency lives in one
+    // non-token row so summing the table cannot double-count either dimension.
+    for (const row of calls.values()) {
+      row.providerResponses = 0;
+      row.providerResponseMs = 0;
+    }
+    calls.set("provider", exact);
+    totals.providerResponses = exact.providerResponses;
+    totals.providerResponseMs = exact.providerResponseMs;
   }
   return { calls, totals, unknown, complete: unknown.length === 0 };
 }
