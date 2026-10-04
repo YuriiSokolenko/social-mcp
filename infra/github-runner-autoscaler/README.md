@@ -53,8 +53,9 @@ The persistent `control-runner` is intentionally constrained. Its image is
 built from `node:24-bookworm-slim` (Debian/glibc), contains only the GitHub
 Actions runner plus Git, Node.js, curl, jq, and runtime libraries, and has no
 Docker CLI/socket, Pi configuration, model endpoint, Android SDK, or build
-toolchain. Compose caps it at 0.5 CPU, 512 MiB RAM, and 256 PIDs, drops all
-Linux capabilities, and enables `no-new-privileges`. The entrypoint uses the
+toolchain. Compose caps it at 0.5 CPU, 512 MiB RAM, and 256 PIDs, drops the
+default Linux capability set, adds back only `SETUID`/`SETGID` so PID 1 can
+launch the unprivileged runner, and enables `no-new-privileges`. The entrypoint uses the
 repository administration token only to register/remove the runner; the
 long-lived Actions runner and all workflow jobs run as the unprivileged
 `runner` user with `GH_ADMIN_TOKEN` removed from their environment.
