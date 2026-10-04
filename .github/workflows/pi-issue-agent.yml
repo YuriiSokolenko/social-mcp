@@ -240,7 +240,7 @@ jobs:
               elif jq -e '.failure_code == "PI_TERMINAL_RECOVERY_BLOCKED"' "$PI_RUNTIME_FAILURE_FILE" >/dev/null; then
                 FAILURE_CLASS="model_execution_abort"
                 FAILURE_CODE="PI_TERMINAL_RECOVERY_BLOCKED"
-                FAILURE_REASON="$(jq -r '.reason' "$PI_RUNTIME_FAILURE_FILE")"
+                FAILURE_REASON="Terminal recovery exhausted or could not select a capability-valid deterministic repair; inspect the run log and preserved checkpoint for the exact unmet invariant"
               fi
             else
               FAILURE_CLASS="execution_failure"
@@ -289,7 +289,7 @@ jobs:
               elif jq -e '.failure_code == "PI_TERMINAL_RECOVERY_BLOCKED"' "$PI_RUNTIME_FAILURE_FILE" >/dev/null; then
                 FAILURE_CLASS="model_execution_abort"
                 FAILURE_CODE="PI_TERMINAL_RECOVERY_BLOCKED"
-                FAILURE_REASON="$(jq -r '.reason' "$PI_RUNTIME_FAILURE_FILE")"
+                FAILURE_REASON="Terminal recovery exhausted or could not select a capability-valid deterministic repair; inspect the run log and preserved checkpoint for the exact unmet invariant"
               fi
             else
               FAILURE_CLASS="execution_failure"
