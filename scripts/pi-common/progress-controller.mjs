@@ -88,17 +88,10 @@ export function validateSingleEvidenceRequest(input = {}) {
   const missing = typeof input.missing === 'string' ? input.missing.trim() : '';
   if (!missing) return { ok: false, reason: 'need_more_evidence requires one concrete missing fact.' };
 
-  // Do not guess semantics from verbs, conjunctions, or the number of paths: a legitimate single
-  // fact can compare two files or say "read X, check the signature". The runtime already hard-limits
-  // the grant to one evidence tool call. Enforce only unambiguous structural broadening here.
-  const multipleLinesOrClauses = /[;\r\n]/.test(missing);
-  const explicitAdditionalFact = /(?:,\s*)?\b(?:plus|as well as|additionally)\b/i.test(missing);
-  if (multipleLinesOrClauses || explicitAdditionalFact) {
-    return {
-      ok: false,
-      reason: 'need_more_evidence accepts one missing fact. Rewrite it as one line without semicolon-separated/additional facts; a single fact may reference or compare multiple paths. The grant unlocks exactly one evidence tool call.',
-    };
-  }
+  // Natural-language fact counting is not reliable: punctuation, conjunctions, words such as
+  // "plus", and multi-path comparisons all have legitimate single-fact uses. The enforceable
+  // boundary is therefore operational, not lexical: one blocker invocation opens exactly one
+  // evidence tool call, after which the controller returns to action_required.
   return { ok: true };
 }
 
