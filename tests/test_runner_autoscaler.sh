@@ -16,9 +16,12 @@ control_entrypoint="$(cat "$repo_root/infra/github-runner-autoscaler/control-run
 grep -q '^  control-runner:$' "$repo_root/infra/github-runner-autoscaler/compose.yaml" || fail 'control runner service missing'
 grep -q 'RUNNER_LABELS: .*n150,control' <<<"$control_compose" || fail 'control runner must register n150,control labels'
 grep -q 'restart: unless-stopped' <<<"$control_compose" || fail 'control runner must survive host/container restarts'
-grep -q 'cpus: 0.50' <<<"$control_compose" || fail 'control runner CPU limit missing'
-grep -q 'mem_limit: 512m' <<<"$control_compose" || fail 'control runner memory limit missing'
-grep -q 'pids_limit: 256' <<<"$control_compose" || fail 'control runner PID limit missing'
+grep -q 'stop_grace_period: 120s' <<<"$control_compose" || fail 'control runner must allow bounded update/child shutdown'
+grep -q 'cpus: 1.00' <<<"$control_compose" || fail 'control runner CPU limit missing'
+grep -q 'mem_limit: 1g' <<<"$control_compose" || fail 'control runner memory limit missing'
+grep -q 'pids_limit: 512' <<<"$control_compose" || fail 'control runner PID limit missing'
+grep -q 'control-runner-state:/home/runner/actions-runner' <<<"$control_compose" || fail 'control runner root must use persistent named volume'
+grep -q 'CONTROL_RUNNER_STATE_VOLUME.*social-mcp-control-runner-state' "$repo_root/infra/github-runner-autoscaler/compose.yaml" || fail 'control runner persistent volume declaration missing'
 grep -q 'cap_drop:' <<<"$control_compose" && grep -q -- '- ALL' <<<"$control_compose" || fail 'control runner must drop the default capability set'
 grep -q -- '- SETGID' <<<"$control_compose" || fail 'control runner needs only SETGID to launch the unprivileged worker'
 grep -q -- '- SETUID' <<<"$control_compose" || fail 'control runner needs only SETUID to launch the unprivileged worker'
@@ -26,37 +29,48 @@ grep -q -- '- SETUID' <<<"$control_compose" || fail 'control runner needs only S
 grep -q 'no-new-privileges:true' <<<"$control_compose" || fail 'control runner no-new-privileges missing'
 ! grep -q '/var/run/docker.sock' <<<"$control_compose" || fail 'control runner must never receive Docker socket'
 ! grep -q 'MODEL_STATUS_URL\|PI_HOME\|PI_CONFIG\|MOUNT_PI_CONFIG' <<<"$control_compose" || fail 'control runner must not depend on Pi/model runtime'
+
 grep -q '^FROM node:24-bookworm-slim$' <<<"$control_dockerfile" || fail 'control runner must use slim Debian/glibc base'
 ! grep -qi 'alpine\|docker-ce\|docker-compose' <<<"$control_dockerfile" || fail 'control runner image must stay free of Alpine and Docker tooling'
 grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$control_dockerfile" || fail 'control runner Actions Runner version must be pinned'
 grep -q 'ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
+grep -q 'ENV ACTIONS_RUNNER_BASELINE_VERSION=' <<<"$control_dockerfile" || fail 'control image must expose its verified runner baseline version'
+grep -q '/opt/actions-runner-baseline' <<<"$control_dockerfile" || fail 'control image must keep baseline package outside the persistent runner root'
+grep -q 'cp -a /opt/actions-runner-baseline/. /home/runner/actions-runner/' <<<"$control_dockerfile" || fail 'new control volume must be seeded with the runner package'
+
 grep -q 'unset GH_ADMIN_TOKEN' <<<"$control_entrypoint" || fail 'control jobs must not inherit repository-admin token'
-grep -q 'env -u GH_ADMIN_TOKEN gosu runner ./bin/Runner.Listener run' <<<"$control_entrypoint" \
+grep -q 'gosu runner ./bin/Runner.Listener run' <<<"$control_entrypoint" \
   || fail 'control runner must execute Runner.Listener directly to preserve upstream return codes'
-! grep -q 'gosu runner ./run.sh\|RUNNER_MANUALLY_TRAP_SIG' <<<"$control_entrypoint" \
-  || fail 'control runner must not hide listener failures behind run.sh/run-helper.sh'
+! grep -q 'gosu runner ./run.sh\|RUNNER_MANUALLY_TRAP_SIG\|env -u GH_ADMIN_TOKEN' <<<"$control_entrypoint" \
+  || fail 'control runner must not hide listener failures behind run.sh or redundant environment wrappers'
 ! grep -q -- '--disableupdate' <<<"$control_entrypoint" || fail 'persistent control runner must keep GitHub self-update enabled'
+grep -q 'registration_complete' <<<"$control_entrypoint" && grep -q '\[ -s .runner \].*\[ -s .credentials \]' <<<"$control_entrypoint" \
+  || fail 'control startup must reject half-written registration state'
+grep -q 'restore_runtime_baseline' <<<"$control_entrypoint" && grep -q 'ACTIONS_RUNNER_BASELINE_VERSION' <<<"$control_entrypoint" \
+  || fail 'persisted runner root must be recoverable/upgradable from the image baseline'
 grep -q 'gosu runner rm -f .runner .credentials .credentials_rsaparams' <<<"$control_entrypoint" \
-  || fail 'stale registration cleanup must run as the runner user'
-grep -q 'runner_api_healthy' <<<"$control_entrypoint" || fail 'control runner must gate destructive recovery on a healthy GitHub runners API'
+  || fail 'registration cleanup must run as the runner user'
+grep -q 'runner_api_healthy' <<<"$control_entrypoint" || fail 'credential repair must gate destructive recovery on a healthy runners API'
+grep -q 'credential_failures' <<<"$control_entrypoint" && grep -q 'retrying once with existing credentials before repair' <<<"$control_entrypoint" \
+  || fail 'listener credential/session failure must retry before re-registration'
 grep -q 'CONTROL_REPAIR_COOLDOWN_SECONDS' <<<"$control_entrypoint" \
   || fail 'automatic re-registration must have a persistent cooldown'
+grep -q 'mark_repair' <<<"$control_entrypoint" && grep -q 'failed to persist repair cooldown' <<<"$control_entrypoint" \
+  || fail 'repair marker writes must fail closed instead of aborting PID 1'
 grep -q 'interruptible_sleep' <<<"$control_entrypoint" && grep -q 'sleep_pid' <<<"$control_entrypoint" \
   || fail 'control runner backoff sleeps must remain interruptible by Docker stop'
+grep -q 'stop_process_group' <<<"$control_entrypoint" && grep -q 'CONTROL_CHILD_STOP_WAIT_SECONDS' <<<"$control_entrypoint" \
+  || fail 'control runner child shutdown must be bounded'
+grep -q 'CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS' <<<"$control_entrypoint" && grep -q 'update_waiting' <<<"$control_entrypoint" \
+  || fail 'control runner shutdown must protect an in-flight self-update'
 ! grep -q 'runner_registration_state\|per_page=100\|\.name == \$name' <<<"$control_entrypoint" \
   || fail 'control recovery must not make a pagination-sensitive name lookup'
-grep -q 'configure_runner &' <<<"$control_entrypoint" \
-  || fail 'first-time registration must run asynchronously so PID 1 can handle stop signals'
-grep -q 'registration_pid' <<<"$control_entrypoint" && grep -q 'kill -INT --' <<<"$control_entrypoint" \
-  || fail 'registration shutdown must signal its process group'
-grep -q 'listener_pid' <<<"$control_entrypoint" && grep -q 'Runner.Listener process group' <<<"$control_entrypoint" \
-  || fail 'runner shutdown must signal the listener/worker process group'
 ! grep -q 'remove-token\|config.sh remove' <<<"$control_entrypoint" \
   || fail 'normal persistent runner lifecycle must not deregister on stop'
 trap_line="$(grep -n '^trap shutdown TERM INT$' <<<"$control_entrypoint" | cut -d: -f1)"
-configure_line="$(grep -n '^if \[ ! -f \.runner \]; then$' <<<"$control_entrypoint" | cut -d: -f1)"
-[[ -n "$trap_line" && -n "$configure_line" && "$trap_line" -lt "$configure_line" ]] \
-  || fail 'control runner must install its stop trap before first-time registration starts'
+loop_line="$(grep -n '^while true; do$' <<<"$control_entrypoint" | head -n 1 | cut -d: -f1)"
+[[ -n "$trap_line" && -n "$loop_line" && "$trap_line" -lt "$loop_line" ]] \
+  || fail 'control runner must install its stop trap before registration/listener work starts'
 
 # Execute the control entrypoint against fake config.sh/Runner.Listener
 # processes. Node fakes handle SIGINT explicitly, matching Runner.Listener's
