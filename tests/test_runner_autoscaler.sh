@@ -31,11 +31,16 @@ grep -q '^FROM node:24-bookworm-slim$' <<<"$control_dockerfile" || fail 'control
 grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$control_dockerfile" || fail 'control runner Actions Runner version must be pinned'
 grep -q 'ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
 grep -q 'unset GH_ADMIN_TOKEN' <<<"$control_entrypoint" || fail 'control jobs must not inherit repository-admin token'
-grep -q 'env -u GH_ADMIN_TOKEN gosu runner ./run.sh' <<<"$control_entrypoint" || fail 'control jobs must run unprivileged without admin token'
+grep -q 'env -u GH_ADMIN_TOKEN RUNNER_MANUALLY_TRAP_SIG=1 gosu runner ./run.sh' <<<"$control_entrypoint" \
+  || fail 'control jobs must run unprivileged with upstream signal forwarding enabled'
 ! grep -q -- '--disableupdate' <<<"$control_entrypoint" || fail 'persistent control runner must keep GitHub self-update enabled'
 grep -q 'gosu runner rm -f .runner .credentials .credentials_rsaparams' <<<"$control_entrypoint" \
   || fail 'stale registration cleanup must run as the runner user'
-grep -q 'runner_registration_state' <<<"$control_entrypoint" || fail 'control runner must reconcile failed listeners explicitly'
+grep -q 'runner_api_healthy' <<<"$control_entrypoint" || fail 'control runner must gate destructive recovery on a healthy GitHub runners API'
+! grep -q 'runner_registration_state\|per_page=100\|\.name == \$name' <<<"$control_entrypoint" \
+  || fail 'control recovery must not make a pagination-sensitive name lookup'
+grep -q 'configure_runner &' <<<"$control_entrypoint" \
+  || fail 'first-time registration must run asynchronously so PID 1 can handle stop signals'
 ! grep -q 'remove-token\|config.sh remove' <<<"$control_entrypoint" \
   || fail 'normal persistent runner lifecycle must not deregister on stop'
 trap_line="$(grep -n '^trap shutdown TERM INT$' <<<"$control_entrypoint" | cut -d: -f1)"
@@ -46,7 +51,6 @@ configure_line="$(grep -n '^if \[ ! -f \.runner \]; then$' <<<"$control_entrypoi
 # Execute the control entrypoint against a fake runner home. These scenarios
 # guard the persistent registration lifecycle without contacting GitHub.
 control_harness="$(mktemp -d)"
-trap 'rm -rf "$control_harness"' EXIT
 mkdir -p "$control_harness/bin" "$control_harness/runner"
 cat > "$control_harness/bin/gosu" <<'GOSU'
 #!/usr/bin/env bash
@@ -72,8 +76,7 @@ set -euo pipefail
 printf '%s\n' "\$*" >> "$case_dir/curl.log"
 case "$curl_mode" in
   error) exit 22 ;;
-  absent) printf '%s\n' '{"runners":[]}' ;;
-  present) printf '%s\n' '{"runners":[{"name":"n150-control"}]}' ;;
+  healthy) printf '%s\n' '{"runners":[{"name":"some-other-runner"}]}' ;;
   *) exit 88 ;;
 esac
 CURL
@@ -86,13 +89,16 @@ CONFIG
   if [ "$run_mode" = fail ]; then
     cat > "$case_dir/runner/run.sh" <<'RUN'
 #!/usr/bin/env bash
+set -euo pipefail
+[[ "${RUNNER_MANUALLY_TRAP_SIG:-}" == 1 ]] || exit 91
 exit 7
 RUN
   else
     cat > "$case_dir/runner/run.sh" <<'RUN'
 #!/usr/bin/env bash
 set -euo pipefail
-trap 'exit 0' TERM INT
+[[ "${RUNNER_MANUALLY_TRAP_SIG:-}" == 1 ]] || exit 91
+trap 'printf forwarded > "$SIGNAL_FORWARDED"; exit 0' TERM INT
 touch "$RUN_READY"
 while true; do sleep 1; done
 RUN
@@ -107,7 +113,7 @@ RUN
       >"$case_dir/stdout" 2>"$case_dir/stderr" || status=$?
     [[ "$status" == 7 ]] || fail "$case_name: expected listener status 7, got $status"
   else
-    RUN_READY="$case_dir/ready" PATH="$case_dir/bin:$PATH" RUNNER_HOME="$case_dir/runner" \
+    RUN_READY="$case_dir/ready" SIGNAL_FORWARDED="$case_dir/forwarded" PATH="$case_dir/bin:$PATH" RUNNER_HOME="$case_dir/runner" \
       GH_ADMIN_TOKEN=test-token GITHUB_REPOSITORY=example/repo \
       bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
       >"$case_dir/stdout" 2>"$case_dir/stderr" &
@@ -127,14 +133,62 @@ run_control_case api-error error fail
 grep -q 'preserving local credentials' "$CASE_DIR/stderr" \
   || fail 'API reconciliation failure must be reported as non-destructive'
 
-run_control_case confirmed-absent absent fail
+run_control_case healthy-api healthy fail
 [[ ! -e "$CASE_DIR/runner/.runner" && ! -e "$CASE_DIR/runner/.credentials" && ! -e "$CASE_DIR/runner/.credentials_rsaparams" ]] \
-  || fail 'confirmed missing GitHub registration must clear stale local credentials'
+  || fail 'unexpected listener failure with a healthy runners API must force clean re-registration'
 
 run_control_case normal-stop error wait
 [[ -f "$CASE_DIR/runner/.runner" && -f "$CASE_DIR/runner/.credentials" ]] \
   || fail 'normal Docker stop must preserve persistent runner registration'
 [[ ! -s "$CASE_DIR/curl.log" ]] || fail 'normal Docker stop/restart must not require GitHub API access'
+[[ -f "$CASE_DIR/forwarded" ]] || fail 'normal stop must reach run.sh with upstream signal forwarding enabled'
+
+# A TERM during first-time registration must interrupt PID 1 promptly instead
+# of waiting for foreground config.sh until Docker's grace period expires.
+registration_case="$control_harness/registration-stop"
+mkdir -p "$registration_case/runner" "$registration_case/bin"
+cp "$control_harness/bin/gosu" "$registration_case/bin/gosu"
+cat > "$registration_case/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *'/registration-token'* ]]; then
+  printf '%s\n' '{"token":"registration-token"}'
+else
+  exit 88
+fi
+CURL
+cat > "$registration_case/runner/config.sh" <<'CONFIG'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$" > "$CONFIG_PID_FILE"
+touch "$CONFIG_READY"
+while true; do sleep 1; done
+CONFIG
+cat > "$registration_case/runner/run.sh" <<'RUN'
+#!/usr/bin/env bash
+touch "$RUN_STARTED"
+exit 0
+RUN
+chmod +x "$registration_case/bin/curl" "$registration_case/runner/config.sh" "$registration_case/runner/run.sh"
+CONFIG_READY="$registration_case/config-ready" CONFIG_PID_FILE="$registration_case/config-pid" RUN_STARTED="$registration_case/run-started" \
+  PATH="$registration_case/bin:$PATH" RUNNER_HOME="$registration_case/runner" \
+  GH_ADMIN_TOKEN=test-token GITHUB_REPOSITORY=example/repo \
+  bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
+  >"$registration_case/stdout" 2>"$registration_case/stderr" &
+control_pid=$!
+for _ in {1..50}; do [ -f "$registration_case/config-ready" ] && break; sleep 0.02; done
+[ -f "$registration_case/config-ready" ] || fail 'registration-stop: config.sh never started'
+start="$(date +%s)"
+kill -TERM "$control_pid"
+wait "$control_pid" || fail 'registration-stop: TERM should stop PID 1 successfully'
+elapsed=$(( $(date +%s) - start ))
+[[ "$elapsed" -le 2 ]] || fail "registration-stop: PID 1 took ${elapsed}s to handle TERM"
+[[ ! -e "$registration_case/run-started" ]] || fail 'registration-stop: listener started after interrupted registration'
+if [ -s "$registration_case/config-pid" ]; then
+  kill -TERM "$(cat "$registration_case/config-pid")" 2>/dev/null || true
+fi
+
+rm -rf "$control_harness"
 
 # run_with_timeout must never block the caller past its own deadline, and must
 # never block past the wrapped command's actual completion when it finishes
