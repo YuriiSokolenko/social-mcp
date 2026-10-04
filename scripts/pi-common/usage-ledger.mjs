@@ -228,10 +228,14 @@ export function summarizeUsage(records) {
     const logicalProviderResponses = totals.providerResponses;
     const logicalProviderResponseMs = totals.providerResponseMs;
     const traced = emptyTotals();
+    let tracedLatencySamples = 0;
     for (const record of providerResponses.values()) {
       traced.providerResponses += 1;
       const responseMs = Number(record.responseMs);
-      if (Number.isFinite(responseMs) && responseMs >= 0) traced.providerResponseMs += responseMs;
+      if (Number.isFinite(responseMs) && responseMs >= 0) {
+        traced.providerResponseMs += responseMs;
+        tracedLatencySamples += 1;
+      }
     }
 
     // Preserve call-level logical attribution. The transport trace can prove that additional calls
@@ -247,11 +251,14 @@ export function summarizeUsage(records) {
       calls.set(key, supplemental);
     }
     totals.providerResponses = Math.max(logicalProviderResponses, traced.providerResponses);
-    // A complete trace is the best transport measurement; a partial trace must never lower latency
-    // already known from logical per-call records. max() avoids double counting while preserving
-    // the stronger lower bound from either source.
-    totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
-    if (traced.providerResponses < logicalProviderResponses) {
+    const traceCoversKnownResponses = traced.providerResponses >= logicalProviderResponses;
+    const traceLatencyComplete = tracedLatencySamples === traced.providerResponses;
+    if (traceCoversKnownResponses && traceLatencyComplete) {
+      // Complete trace coverage is the transport authority for aggregate provider latency.
+      totals.providerResponseMs = traced.providerResponseMs;
+    } else {
+      // Partial/untimed trace data must never lower latency already known from logical records.
+      totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
       unknown.push({
         call: 'provider',
         childSession: null,
