@@ -640,3 +640,33 @@ test('#469 targeted pytest state survives coding fork return to parent', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test('#469 targeted pytest passes accumulate across files until the next mutation', () => {
+  const env = { PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-multi-469' }) };
+  const changedFiles = ['src/game.py', 'tests/test_a.py', 'tests/test_b.py'];
+
+  recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_a.py'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
+  assert.throws(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    error => error?.requiredTargets?.length === 1 && error.requiredTargets[0] === 'tests/test_b.py',
+  );
+
+  const state = recordCodingBehavioralValidation({
+    scope: { targets: ['tests/test_b.py'] },
+    result: { status: 'pass', kind: 'pytest' },
+    env,
+  });
+  assert.deepEqual(state.targets, ['tests/test_a.py', 'tests/test_b.py']);
+  assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env }));
+
+  invalidateCodingBehavioralValidation(env);
+  assert.throws(
+    () => assertCodingBehavioralValidation({ changedFiles, env }),
+    error => error?.requiredTargets?.length === 2,
+  );
+});
