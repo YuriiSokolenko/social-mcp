@@ -2,6 +2,47 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const CODING_TARGETED_PYTEST_STATE_ENV = 'PI_CODING_TARGETED_PYTEST_STATE';
+export const CODING_SESSION_USED_ENV = 'PI_CODING_SESSION_USED';
+
+function validationLifecycleActive(env = process.env) {
+  return Boolean(
+    String(env.PI_CODING_SESSION ?? '').trim() ||
+    String(env[CODING_SESSION_USED_ENV] ?? '').trim() === 'true'
+  );
+}
+
+function validationStatePath(env = process.env) {
+  const explicit = String(env.PI_CODING_TARGETED_PYTEST_STATE_FILE ?? '').trim();
+  if (explicit) return explicit;
+  const ledger = String(env.PI_VALIDATION_LEDGER_FILE ?? '').trim();
+  return ledger ? `${ledger}.coding-targeted-pytest.json` : null;
+}
+
+function readValidationState(env = process.env) {
+  const target = validationStatePath(env);
+  if (target && fs.existsSync(target)) {
+    try {
+      return JSON.parse(fs.readFileSync(target, 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return JSON.parse(String(env[CODING_TARGETED_PYTEST_STATE_ENV] ?? ''));
+  } catch {
+    return null;
+  }
+}
+
+function writeValidationState(state, env = process.env) {
+  env[CODING_TARGETED_PYTEST_STATE_ENV] = JSON.stringify(state);
+  const target = validationStatePath(env);
+  if (!target) return;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temp = `${target}.tmp-${process.pid}`;
+  fs.writeFileSync(temp, `${JSON.stringify(state)}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temp, target);
+}
 
 function canonicalRepoPath(value) {
   const text = String(value ?? '').trim().replaceAll(/\\/g, '/');
@@ -30,9 +71,12 @@ export function requiredCodingPytestTargets(changedFiles) {
 }
 
 export function invalidateCodingBehavioralValidation(env = process.env) {
-  if (!String(env.PI_CODING_SESSION ?? '').trim()) return false;
-  const existed = Object.hasOwn(env, CODING_TARGETED_PYTEST_STATE_ENV);
+  if (!validationLifecycleActive(env)) return false;
+  const target = validationStatePath(env);
+  const existed = Object.hasOwn(env, CODING_TARGETED_PYTEST_STATE_ENV) ||
+    Boolean(target && fs.existsSync(target));
   delete env[CODING_TARGETED_PYTEST_STATE_ENV];
+  if (target) fs.rmSync(target, { force: true });
   return existed;
 }
 
@@ -41,14 +85,14 @@ export function recordCodingBehavioralValidation({
   result,
   env = process.env,
 } = {}) {
-  if (!String(env.PI_CODING_SESSION ?? '').trim()) return null;
+  if (!validationLifecycleActive(env)) return null;
   if (result?.status !== 'pass' || result?.kind !== 'pytest') return null;
   const targets = Array.isArray(scope?.targets)
     ? [...new Set(scope.targets.map(canonicalRepoPath).filter(Boolean))].sort()
     : [];
   if (!targets.length) return null;
   const state = { schema_version: 1, kind: 'pytest', targets };
-  env[CODING_TARGETED_PYTEST_STATE_ENV] = JSON.stringify(state);
+  writeValidationState(state, env);
   return state;
 }
 
@@ -56,16 +100,11 @@ export function assertCodingBehavioralValidation({
   changedFiles,
   env = process.env,
 } = {}) {
-  if (!String(env.PI_CODING_SESSION ?? '').trim()) return [];
+  if (!validationLifecycleActive(env)) return [];
   const required = requiredCodingPytestTargets(changedFiles);
   if (!required.length) return [];
 
-  let state = null;
-  try {
-    state = JSON.parse(String(env[CODING_TARGETED_PYTEST_STATE_ENV] ?? ''));
-  } catch {
-    state = null;
-  }
+  const state = readValidationState(env);
   const validated = new Set(
     state?.schema_version === 1 && state?.kind === 'pytest' && Array.isArray(state.targets)
       ? state.targets.map(canonicalRepoPath)
