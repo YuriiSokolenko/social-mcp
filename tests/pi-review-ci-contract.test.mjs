@@ -270,6 +270,23 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
   const exactLabels = (labels, expected) =>
     labels.length === expected.length && expected.every(label => labels.includes(label));
 
+  assert.equal(
+    exactLabels(runsOnSpecs('jobs:\n  wake:\n    runs-on: [self-hosted, n150, general, control]')[0].labels,
+      ['self-hosted', 'n150', 'control']),
+    false,
+    'an extra general label must not satisfy the dedicated control-runner contract',
+  );
+  assert.deepEqual(
+    runsOnSpecs('jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment')[0],
+    { labels: ['self-hosted', 'n150', 'general'], group: 'control-machines' },
+    'runner group names and comments must not be mistaken for control labels',
+  );
+  assert.deepEqual(
+    runsOnSpecs('jobs:\n  wake:\n    runs-on:\n      - self-hosted\n      - n150\n      - control')[0].labels,
+    ['self-hosted', 'n150', 'control'],
+    'multiline label lists must be parsed as labels',
+  );
+
   for (const name of fs.readdirSync(workflowDir).filter(name => name.endsWith('.yml'))) {
     const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
     const specs = runsOnSpecs(workflow);
