@@ -97,7 +97,7 @@ export const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
     large_mutation: { type: 'boolean' },
     reason: { type: 'string', minLength: 1, maxLength: 300 },
   },
-  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
+  required: ['steps', 'facts', 'complexity', 'evidence_budget', 'reason'],
   additionalProperties: true,
 });
 
