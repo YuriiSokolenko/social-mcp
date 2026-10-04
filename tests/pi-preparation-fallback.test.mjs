@@ -347,7 +347,7 @@ function runtimeScenario(mode) {
           assert.equal(steps, undefined);
           assert.equal(request.result.schema.properties.steps.items.maxLength, undefined);
           assert.equal(additionalProperties, true);
-          assert.deepEqual(required, ['steps', 'complexity', 'evidence_budget', 'reason']);
+          assert.deepEqual(required, ['steps', 'facts', 'complexity', 'evidence_budget', 'reason']);
           assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
           assert.match(request.task, /"value"/);
           assert.match(request.task, /large_mutation/);
