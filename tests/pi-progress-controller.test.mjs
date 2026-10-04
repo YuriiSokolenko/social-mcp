@@ -1391,3 +1391,55 @@ test('#469 stale unavailable capability attempts are not wired to the prose-only
   assert.match(source, /effectiveAttemptedTool = actionTurnAttemptedTool \|\| unavailableCapabilityAttemptedThisTurn/);
   assert.match(source, /RUNTIME EVIDENCE PERMIT CONSUMED/);
 });
+
+
+test('#426 verification permit requires obligation-eligible mutation progress', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      verificationTool: 'run_check',
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: false,
+    verificationEligible: false,
+    input: { path: 'scratch/noop.py' },
+  });
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+    'no-op mutation cannot manufacture a verification permit',
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: true,
+    verificationEligible: false,
+    input: { path: 'scratch/unrelated.py' },
+  });
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+    'unrelated mutation cannot manufacture a verification permit',
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: true,
+    verificationEligible: true,
+    input: { path: 'src/relevant.py' },
+  });
+  assert.equal(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }),
+    undefined,
+    'obligation-reducing mutation earns one focused verification permit',
+  );
+});
