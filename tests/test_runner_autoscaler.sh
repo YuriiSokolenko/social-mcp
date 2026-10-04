@@ -180,14 +180,14 @@ esac
 CONFIG
   chmod +x "$root/config.sh"
 
-  cat > "$root/bin/Runner.Listener" <<LISTENER
+  cat > "$root/bin/Runner.Listener" <<'LISTENER'
 #!/usr/bin/env node
 const fs = require('node:fs');
 const { spawn } = require('node:child_process');
-const version = '$version';
+const version = '__VERSION__';
 
 if (process.argv.includes('--version')) {
-  process.stdout.write(version + '\\n');
+  process.stdout.write(version + '\n');
   process.exit(0);
 }
 
@@ -202,11 +202,11 @@ if (/^[0-7]$/.test(mode)) {
   const code = Number(mode);
   if (code === 3 || code === 4) {
     const delay = Number(process.env.UPDATE_DELAY_MS || 20);
-    const child = [
+    const childSource = [
       "const fs=require('node:fs');",
       "setTimeout(()=>{fs.writeFileSync('update.finished','done');fs.writeFileSync(process.env.UPDATE_DONE,'done');process.exit(0);}," + delay + ");",
     ].join('');
-    spawn(process.execPath, ['-e', child], { stdio: 'ignore', env: process.env });
+    spawn(process.execPath, ['-e', childSource], { stdio: 'ignore', env: process.env });
   }
   process.exit(code);
 }
@@ -227,6 +227,7 @@ process.on('SIGINT', () => {
 });
 setInterval(() => {}, 1000);
 LISTENER
+  sed -i "s/__VERSION__/$version/" "$root/bin/Runner.Listener"
   chmod +x "$root/bin/Runner.Listener"
 }
 
