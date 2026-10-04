@@ -506,7 +506,7 @@ test('#470 runtime-side rejection restores the same one-action evidence permit',
   const state = controller({
     productiveProgress: {
       blockerTool: 'need_more_evidence',
-      initialEvidenceBudget: 0,
+      initialEvidenceBudget: 1,
       actionTools: ['edit', 'write', 'submit_result'],
       controlTools: [],
     },
