@@ -674,7 +674,6 @@ test('#470 changed coding submission keeps terminal outcomes reachable when prep
       } catch (error) {
         console.log('CHANGED_ERROR ' + error.message);
       }
-      await import('node:fs').then(fs => fs.writeFileSync(${JSON.stringify(path.join(work, 'other.py'))}, 'base\n'));
     `;
     const child = runProgram({
       dir: root,
@@ -694,7 +693,6 @@ test('#470 changed coding submission keeps terminal outcomes reachable when prep
     assert.equal(child.status, 0, child.stderr + child.stdout);
     assert.match(child.stdout, /PREPARED_OUTPUTS_REQUIRED/);
 
-    execFileSync('git', ['checkout', '--', 'other.py'], { cwd: work, stdio: 'ignore' });
     const blocked = runSuccessfulSubmit({
       modeEnv: {
         PI_CODING_SESSION: JSON.stringify({ sessionId: 'coding-470-blocked' }),
@@ -709,7 +707,7 @@ test('#470 changed coding submission keeps terminal outcomes reachable when prep
 });
 
 
-test('#469 fresh coding session hides terminal submission while prepared required outputs are absent', () => {
+test('#469 fresh coding session reports missing prepared outputs until they exist', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-readiness-'));
   try {
     const prepared = {
