@@ -534,7 +534,7 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
   assert.equal(attempts[1].structured, undefined, 'structured_output stays available on the retry');
   assert.equal(prepared.status, 'prepared');
   assert.deepEqual(prepared.repositoryFacts, ['The target is already resolved.']);
-  assert.deepEqual(prepared.plannerUsage, { input: 150, output: 15 }, 'all attempts are aggregated');
+  assert.deepEqual(prepared.plannerUsage, { input: 150, output: 15, turns: 3, toolCalls: 8 }, 'all attempts are aggregated');
   assert.equal(prepared.plannerEvidenceUsed, 6, 'retry cap=0 cannot erase evidence spent by the first attempt');
   assert.equal(prepared.plannerEvidenceCap, 6);
   const records = fs.readFileSync(metrics, 'utf8').trim().split('\n').map(line => JSON.parse(line));
