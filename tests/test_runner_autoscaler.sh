@@ -233,7 +233,7 @@ LISTENER
 
 start_control_case() {
   local case_name="$1" sequence="$2" api_mode="$3" registration_mode="${4:-complete}" config_mode="${5:-success}"
-  local runtime_version="${6:-2.337.0}" retry_seconds="${7:-0}"
+  local runtime_version="${6:-2.337.0}" retry_seconds="${7:-0}" update_delay_ms="${8:-20}"
   local case_dir="$control_harness/$case_name"
 
   mkdir -p "$case_dir/runner" "$case_dir/baseline" "$case_dir/bin"
@@ -279,7 +279,7 @@ CURL
     SIGNAL_FORWARDED="$case_dir/forwarded" \
     CHILD_FORWARDED="$case_dir/child-forwarded" \
     UPDATE_DONE="$case_dir/update-done" \
-    UPDATE_DELAY_MS=20 \
+    UPDATE_DELAY_MS="$update_delay_ms" \
     CONFIG_MODE="$config_mode" \
     CONFIG_LOG="$case_dir/config.log" \
     CONFIG_READY="$case_dir/config-ready" \
@@ -410,40 +410,8 @@ wait_control_exit registration-stop
 
 # TERM while wait_for_update is active waits for the in-flight update child
 # instead of tearing the container down immediately.
-start_control_case update-shutdown 3,wait error
-rm -f "$CASE_DIR/update-done"
-# Restart this case with a slower fake update so TERM lands inside update wait.
-stop_control_case update-shutdown
-: > "$CASE_DIR/listener-index"
-rm -f "$CASE_DIR/runner/update.finished" "$CASE_DIR/update-done"
-LISTENER_SEQUENCE="3,wait" \
-  LISTENER_INDEX_FILE="$CASE_DIR/listener-index" \
-  RUN_READY="$CASE_DIR/ready" \
-  SIGNAL_FORWARDED="$CASE_DIR/forwarded" \
-  CHILD_FORWARDED="$CASE_DIR/child-forwarded" \
-  UPDATE_DONE="$CASE_DIR/update-done" \
-  UPDATE_DELAY_MS=300 \
-  CONFIG_MODE=success \
-  CONFIG_LOG="$CASE_DIR/config.log" \
-  CONFIG_READY="$CASE_DIR/config-ready" \
-  CONFIG_PID_FILE="$CASE_DIR/config-pid" \
-  CONFIG_STOPPED="$CASE_DIR/config-stopped" \
-  PATH="$CASE_DIR/bin:$PATH" \
-  RUNNER_HOME="$CASE_DIR/runner" \
-  RUNNER_BASELINE_HOME="$CASE_DIR/baseline" \
-  ACTIONS_RUNNER_BASELINE_VERSION=2.337.0 \
-  GH_ADMIN_TOKEN=test-token \
-  GITHUB_REPOSITORY=example/repo \
-  CONTROL_RETRY_SECONDS=0 \
-  CONTROL_SHORT_RETRY_SECONDS=0 \
-  CONTROL_REPAIR_COOLDOWN_SECONDS=60 \
-  CONTROL_UPDATE_WAIT_SECONDS=2 \
-  CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS=2 \
-  CONTROL_CHILD_STOP_WAIT_SECONDS=2 \
-  bash "$repo_root/infra/github-runner-autoscaler/control-runner-entrypoint.sh" \
-  >"$CASE_DIR/stdout2" 2>"$CASE_DIR/stderr2" &
-control_pid=$!
-wait_for_text "$CASE_DIR/stderr2" 'waiting for update completion' || fail 'update-shutdown: update wait not entered'
+start_control_case update-shutdown 3,wait error complete success 2.337.0 0 300
+wait_for_text "$CASE_DIR/stderr" 'waiting for update completion' || fail 'update-shutdown: update wait not entered'
 kill -TERM "$control_pid"
 wait_control_exit update-shutdown
 wait_for_file "$CASE_DIR/update-done" || fail 'update-shutdown: in-flight update was not allowed to finish'
