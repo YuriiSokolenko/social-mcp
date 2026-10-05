@@ -35,6 +35,10 @@ function reviewFollowupMarker(head, verdict, runId, runAttempt) {
   return `<!-- pi-review:followup:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`;
 }
 
+function reviewStartMarker(prNumber, reviewedHead, runId, runAttempt) {
+  return `<!-- pi-review:start:${prNumber}:${reviewedHead}:${runId}:attempt:${runAttempt} -->`;
+}
+
 export function findReviewRunRecord(comments, prNumber, runId, runAttempt) {
   const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):attempt:(\d+):(default|laguna|qwen) -->/g;
   for (const item of comments) {
@@ -71,6 +75,22 @@ export async function recordReviewRun({
     `Independent review run ${runId} attempt ${runAttempt} started for HEAD ${reviewedHead}. This durable marker lets recovery reject obsolete PR heads.${link}\n\n${marker}`,
   );
   return { status: 'recorded', reviewedHead, model: safeModel };
+}
+
+export async function markReviewStarted({
+  prNumber, reviewedHead, runId, runAttempt,
+}, client = githubClient()) {
+  const { loadPullRequest, pages, comment } = client;
+  const pr = await loadPullRequest(prNumber);
+  if (pr.head.sha !== reviewedHead) return { status: 'stale' };
+
+  const comments = await pages(`/issues/${prNumber}/comments`);
+  const marker = reviewStartMarker(prNumber, reviewedHead, runId, runAttempt);
+  if (comments.some(item => String(item.body ?? '').includes(marker))) {
+    return { status: 'already-started' };
+  }
+  await comment(prNumber, `Independent review execution started.\n\n${marker}`);
+  return { status: 'started' };
 }
 
 export async function invalidateReview(prNumber, expectedHead = null, client = githubClient()) {
@@ -186,6 +206,13 @@ export async function recoverReviewFailure({
     }, client);
   }
 
+  if (outcome === 'cancelled') {
+    const startMarker = reviewStartMarker(prNumber, effectiveHead, runId, runAttempt);
+    if (!comments.some(item => String(item.body ?? '').includes(startMarker))) {
+      return { status: 'ignored', reason: 'cancelled-before-independent-start' };
+    }
+  }
+
   const labels = prLabelNames(pr);
   const clearVerdict = withoutReviewLabels(labels);
   if (labels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
@@ -236,41 +263,6 @@ export async function recoverReviewFailure({
   return { status: 'needs-human', reason: 'retry-exhausted' };
 }
 
-async function gateUnresolvedReviewFailure({
-  prNumber, runId, runAttempt, outcome, runUrl, reason,
-}, client = githubClient()) {
-  const { loadPullRequest, replaceLabels, pages, comment } = client;
-  const pr = await loadPullRequest(prNumber);
-  const labels = prLabelNames(pr);
-  const comments = await pages(`/issues/${prNumber}/comments`);
-  const currentVerdictPrefix = `<!-- pi-review:verdict:${pr.head.sha}:`;
-  if (comments.some(item => String(item.body ?? '').includes(currentVerdictPrefix))) {
-    return { status: 'current-verdict' };
-  }
-
-  const clearVerdict = withoutReviewLabels(labels);
-  const nextLabels = clearVerdict.includes(PIPELINE_LABELS.needsHuman)
-    ? clearVerdict
-    : [...clearVerdict, PIPELINE_LABELS.needsHuman];
-  if (
-    labels.includes(REVIEW_PASSED) ||
-    labels.includes(REVIEW_CHANGES_REQUESTED) ||
-    !labels.includes(PIPELINE_LABELS.needsHuman)
-  ) {
-    await replaceLabels(prNumber, nextLabels);
-  }
-
-  const marker = `<!-- pi-review:failure-unresolved:${prNumber}:${runId}:attempt:${runAttempt} -->`;
-  if (!comments.some(item => String(item.body ?? '').includes(marker))) {
-    const link = runUrl ? `\n\nRun: ${runUrl}` : '';
-    await comment(
-      prNumber,
-      `Independent review workflow ended with ${outcome}, but recovery could not prove the exact reviewed HEAD and model (${reason}). No automated verdict or retry was applied; human recovery is required.${link}\n\n${marker}`,
-    );
-  }
-  return { status: 'needs-human', reason };
-}
-
 export async function recoverReviewWorkflowRun({
   displayTitle, runId, runAttempt, outcome, runUrl,
 }, client = githubClient()) {
@@ -291,18 +283,12 @@ export async function recoverReviewWorkflowRun({
   }, client);
   if (recorded.status !== 'missing-run-head') return recorded;
 
-  if (outcome === 'cancelled') {
-    return { status: 'ignored', reason: 'cancelled-without-run-marker' };
-  }
-
-  return gateUnresolvedReviewFailure({
-    prNumber,
-    runId: normalizedRunId,
-    runAttempt: normalizedAttempt,
-    outcome,
-    runUrl,
-    reason: 'missing-run-marker',
-  }, client);
+  return {
+    status: 'ignored',
+    reason: outcome === 'cancelled'
+      ? 'cancelled-without-run-marker'
+      : 'review-not-started-without-run-marker',
+  };
 }
 
 async function main() {
@@ -342,6 +328,12 @@ async function main() {
     });
     return process.stdout.write(JSON.stringify(result));
   }
+  if (cmd === 'start-run') {
+    const result = await markReviewStarted({
+      prNumber, reviewedHead: a, runId: b, runAttempt: process.env.REVIEW_RUN_ATTEMPT,
+    });
+    return process.stdout.write(JSON.stringify(result));
+  }
   if (cmd === 'recover-failure') {
     const result = await recoverReviewFailure({
       prNumber, reviewedHead: a, runId: b, runAttempt: process.env.REVIEW_RUN_ATTEMPT,
@@ -350,6 +342,6 @@ async function main() {
     });
     return process.stdout.write(JSON.stringify(result));
   }
-  throw new Error('usage: review-state.mjs invalidate <pr> [expected-head] | apply <pr> <head> <verdict> <text-file> | dispatch <pr> <verdict> | record-run <pr> <head> <run-id> | recover-failure <pr> <head> <run-id> | recover-workflow-run');
+  throw new Error('usage: review-state.mjs invalidate <pr> [expected-head] | apply <pr> <head> <verdict> <text-file> | dispatch <pr> <verdict> | record-run <pr> <head> <run-id> | start-run <pr> <head> <run-id> | recover-failure <pr> <head> <run-id> | recover-workflow-run');
 }
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main().catch(e=>{console.error(e);process.exitCode=1;});
