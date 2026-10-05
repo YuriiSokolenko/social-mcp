@@ -1443,3 +1443,48 @@ test('#426 verification permit requires obligation-eligible mutation progress', 
     'obligation-reducing mutation earns one focused verification permit',
   );
 });
+
+
+test('#426 exact terminal-recovery verification permit bypasses only the matching run_check gate', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      verificationTool: 'run_check',
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const exact = { kind: 'pytest', targets: ['tests/test_required.py'] };
+  const unrelated = { kind: 'pytest', targets: ['tests/test_other.py'] };
+
+  assert.match(
+    state.checkToolCall('run_check', exact).reason,
+    /not yet available/,
+    'ordinary verification remains closed without a mutation permit',
+  );
+
+  assert.equal(state.armRecoveryVerification(exact), true);
+  assert.equal(state.recoveryVerificationArmed(), true);
+
+  assert.match(
+    state.checkToolCall('run_check', unrelated).reason,
+    /requires the exact authoritative verification action/,
+    'recovery does not open arbitrary run_check access',
+  );
+  assert.equal(state.recoveryVerificationArmed(), true, 'wrong input does not consume the exact permit');
+
+  assert.equal(
+    state.checkToolCall('run_check', exact),
+    undefined,
+    'the exact authoritative recovery check bypasses the ordinary mutation-scoped permit gate',
+  );
+  assert.equal(state.recoveryVerificationArmed(), false, 'the recovery permit is one-shot');
+  assert.match(
+    state.checkToolCall('run_check', exact).reason,
+    /not yet available/,
+    'ordinary verification policy resumes immediately after the recovery check is accepted',
+  );
+});
