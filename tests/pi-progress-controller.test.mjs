@@ -650,7 +650,13 @@ test('runtime preserves a large mutation budget through scope declaration, then 
   assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
   assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
   assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput[\s\S]*strictBlockerEvidence: consumedEvidence\?\.tool === canonicalToolName/);
-  assert.match(runtime, /return blocked;\s*\}[\s\S]{0,400}const evidenceConsumptionNotice = controller\.consumeEvidenceActionNotice\(\);[\s\S]{0,400}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
+  const blockedReturn = runtime.indexOf('return blocked;');
+  const evidenceNotice = runtime.indexOf('const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice()', blockedReturn);
+  const finishAttempt = runtime.indexOf('if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;', evidenceNotice);
+  assert.ok(
+    blockedReturn >= 0 && evidenceNotice > blockedReturn && finishAttempt > evidenceNotice,
+    'finish-tool attempt accounting happens only after blocked calls return and evidence ownership is captured',
+  );
   assert.match(planner, /evidence_budget/);
 });
 
@@ -1458,6 +1464,11 @@ test('#426 exact terminal-recovery verification permit bypasses only the matchin
   state.onTurnStart(0);
 
   const exact = { kind: 'pytest', targets: ['tests/test_required.py'] };
+  const exactWithEquivalentEmptyFields = {
+    kind: 'pytest',
+    targets: ['tests/test_required.py'],
+    paths: [],
+  };
   const unrelated = { kind: 'pytest', targets: ['tests/test_other.py'] };
 
   assert.match(
@@ -1477,9 +1488,9 @@ test('#426 exact terminal-recovery verification permit bypasses only the matchin
   assert.equal(state.recoveryVerificationArmed(), true, 'wrong input does not consume the exact permit');
 
   assert.equal(
-    state.checkToolCall('run_check', exact),
+    state.checkToolCall('run_check', exactWithEquivalentEmptyFields),
     undefined,
-    'the exact authoritative recovery check bypasses the ordinary mutation-scoped permit gate',
+    'the exact authoritative recovery check accepts semantically equivalent omitted/empty scope fields',
   );
   assert.equal(state.recoveryVerificationArmed(), false, 'the recovery permit is one-shot');
   assert.match(
