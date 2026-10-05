@@ -1074,8 +1074,29 @@ function runtimeScenario(mode) {
         assert.match(result.content[0].text, /do not rewrite completed prepared outputs/);
         assert.doesNotMatch(result.content[0].text, /You may call begin_coding_session once more/);
         assert.ok(active.includes('need_more_evidence'), 'parent retains a bounded evidence path for one concrete recovery inspection');
+        assert.ok(!active.includes('begin_coding_session'), 'parent cannot blindly launch a second fork while complete child outputs are protected');
+        assert.ok(!active.includes('write'), 'parent cannot blindly rewrite complete child outputs');
         assert.equal(sessionRequests.length, 1, 'recovery does not blindly launch another coding session');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const blindFork = await handlers.get('tool_call')({
+          toolName: 'begin_coding_session',
+          toolCallId: 'blind-recovery-fork-' + turn,
+          input: {},
+        }, ctx);
+        assert.equal(blindFork.block, true);
+        assert.match(blindFork.reason, /not currently exposed|capability lifecycle changed/);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+
+        await call('need_more_evidence', {
+          missing: 'Inspect the already-created source before deciding whether any parent-side mutation is required.',
+          reason: 'The child left complete prepared outputs; one bounded read is enough to recover exact state.',
+        });
+        const recovered = await call('read', { path: 'generated.py' });
+        assert.match(recovered.content[0].text, /REQUIRED_CONSTANT/);
+        assert.ok(active.includes('write'), 'a successful bounded recovery read releases the no-blind-rewrite guard');
         console.log('CODING_RECOVERY_RECEIPT_OK ' + JSON.stringify(result.details.recovery_receipt));
+        console.log('CODING_RECOVERY_BOUNDED_INSPECTION_OK');
       }
       if (mode === 'no-submit-parent-submit') {
         assert.notEqual(result.terminate, true);
@@ -1166,12 +1187,15 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
 });
 
-test('#481 an aborted coding session returns authoritative worktree recovery state to the parent', () => {
+test('#481 an aborted coding session returns authoritative state and bounded parent inspection', () => {
   const logs = runtimeScenario('no-submit-recovery');
   assert.match(logs, /"phase":"ended_without_submit".*"recoveryReceipt":\{/);
   assert.match(logs, /"infrastructure_code":"CHECK_ENV"/);
   assert.match(logs, /PI_CODING_RECOVERY_HANDOFF/);
+  assert.match(logs, /PI_CODING_RECOVERY_GUARD /);
+  assert.match(logs, /PI_CODING_RECOVERY_GUARD_RELEASED .*"reason":"bounded_evidence"/);
   assert.match(logs, /CODING_RECOVERY_RECEIPT_OK/);
+  assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
 });
 
 test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
