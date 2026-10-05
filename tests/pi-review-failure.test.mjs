@@ -14,11 +14,6 @@ function fakeClient({
   head = 'head-1',
   labels = ['pi:mr-created', 'review:passed'],
   dispatchError = null,
-  apiError = null,
-  workflowJobs = [{
-    name: 'review',
-    steps: [{ name: 'Run independent review', status: 'completed', conclusion: 'skipped' }],
-  }],
 } = {}) {
   const state = {
     pr: { number: 7, head: { sha: head }, labels: labels.map(name => ({ name })) },
@@ -30,10 +25,6 @@ function fakeClient({
     async loadPullRequest() { return structuredClone(state.pr); },
     async replaceLabels(_number, names) { state.pr.labels = names.map(name => ({ name })); },
     async pages() { return state.comments; },
-    async api() {
-      if (apiError) throw new Error(apiError);
-      return { jobs: structuredClone(workflowJobs) };
-    },
     async comment(_number, body) { state.comments.push({ body }); },
     async dispatchWorkflow(workflow, inputs) {
       state.dispatches.push({ workflow, inputs });
@@ -330,7 +321,7 @@ test('verdict recovery match requires the exact run and attempt marker', async (
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
 });
 
-test('whole-workflow failure before independent review retries the current head when no run marker exists', async () => {
+test('markerless whole-workflow failure fails closed without retrying an unproven head or model', async () => {
   const client = fakeClient();
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
@@ -340,15 +331,13 @@ test('whole-workflow failure before independent review retries the current head 
     runUrl: 'https://github.test/runs/504',
   }, client);
 
-  assert.deepEqual(result, { status: 'retry-dispatched' });
-  assert.deepEqual(client.state.dispatches, [{
-    workflow: 'pi-pr-review.yml',
-    inputs: { pr_number: '7', model: 'default' },
-  }]);
-  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
+  assert.deepEqual(result, { status: 'needs-human', reason: 'missing-run-marker' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'pi:needs-human']);
+  assert.match(client.state.comments.at(-1).body, /exact reviewed HEAD and model/);
 });
 
-test('cancellation before independent review is ignored without clearing verdicts or dispatching a retry', async () => {
+test('markerless cancellation is ignored without relying on cancelled-step API semantics', async () => {
   const client = fakeClient();
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
@@ -358,38 +347,31 @@ test('cancellation before independent review is ignored without clearing verdict
     runUrl: 'https://github.test/runs/511',
   }, client);
 
-  assert.deepEqual(result, { status: 'ignored', reason: 'cancelled-before-review' });
+  assert.deepEqual(result, { status: 'ignored', reason: 'cancelled-without-run-marker' });
   assert.deepEqual(client.state.dispatches, []);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
   assert.equal(client.state.comments.length, 0);
 });
 
-test('missing run marker after independent review started transfers recovery to a human', async () => {
-  const client = fakeClient({
-    workflowJobs: [{
-      name: 'review',
-      steps: [{ name: 'Run independent review', status: 'completed', conclusion: 'failure' }],
-    }],
-  });
+test('unresolved markerless failure clears stale review verdict before applying the human gate', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created', 'review:changes-requested'] });
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '509',
     runAttempt: 1,
-    outcome: 'failure',
+    outcome: 'timed_out',
     runUrl: 'https://github.test/runs/509',
   }, client);
 
-  assert.deepEqual(result, {
-    status: 'needs-human',
-    reason: 'missing-run-marker-after-independent-start',
-  });
+  assert.deepEqual(result, { status: 'needs-human', reason: 'missing-run-marker' });
   assert.deepEqual(client.state.dispatches, []);
-  assert.ok(client.state.pr.labels.some(label => label.name === 'pi:needs-human'));
-  assert.match(client.state.comments.at(-1).body, /could not prove which PR HEAD was reviewed/);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'pi:needs-human']);
 });
 
-test('workflow-run inspection failure fails closed to needs-human instead of silently stranding recovery', async () => {
-  const client = fakeClient({ apiError: 'jobs API unavailable' });
+test('markerless failure does not replace a proven verdict for the current PR head', async () => {
+  const client = fakeClient({ head: 'head-2', labels: ['pi:mr-created', 'review:passed'] });
+  client.state.comments.push({ body: '<!-- pi-review:verdict:head-2:PASS -->' });
+
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '510',
@@ -398,10 +380,10 @@ test('workflow-run inspection failure fails closed to needs-human instead of sil
     runUrl: 'https://github.test/runs/510',
   }, client);
 
-  assert.equal(result.status, 'needs-human');
-  assert.match(result.reason, /run-inspection-failed/);
+  assert.deepEqual(result, { status: 'current-verdict' });
   assert.deepEqual(client.state.dispatches, []);
-  assert.ok(client.state.pr.labels.some(label => label.name === 'pi:needs-human'));
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+  assert.equal(client.state.comments.length, 1);
 });
 
 test('review workflow and reconciler cover missing step outputs and whole-workflow terminal outcomes', () => {
