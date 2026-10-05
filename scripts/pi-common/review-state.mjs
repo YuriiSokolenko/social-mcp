@@ -21,44 +21,50 @@ async function replaceReviewLabels(prNumber, target = null, client = githubClien
  * schedules Reviewer: synchronize invalidates state only; normal ownership or
  * Reconciler recovery is responsible for the next run.
  */
-function reviewVerdictMarker(head, verdict, runId = null) {
-  return runId
-    ? `<!-- pi-review:verdict:${head}:${verdict}:run:${runId} -->`
+function reviewVerdictMarker(head, verdict, runId = null, runAttempt = null) {
+  return runId && runAttempt
+    ? `<!-- pi-review:verdict:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`
     : `<!-- pi-review:verdict:${head}:${verdict} -->`;
 }
 
-function reviewRunMarker(prNumber, reviewedHead, runId, model) {
-  return `<!-- pi-review:run:${prNumber}:${reviewedHead}:${runId}:${model} -->`;
+function reviewRunMarker(prNumber, reviewedHead, runId, runAttempt, model) {
+  return `<!-- pi-review:run:${prNumber}:${reviewedHead}:${runId}:attempt:${runAttempt}:${model} -->`;
 }
 
-export function findReviewRunRecord(comments, prNumber, runId) {
-  const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):(default|laguna|qwen) -->/g;
+export function findReviewRunRecord(comments, prNumber, runId, runAttempt) {
+  const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):attempt:(\d+):(default|laguna|qwen) -->/g;
   for (const item of comments) {
     const body = String(item.body ?? '');
     for (const match of body.matchAll(markerPattern)) {
-      if (Number(match[1]) === Number(prNumber) && match[3] === String(runId)) {
-        return { reviewedHead: match[2], model: match[4] };
+      if (
+        Number(match[1]) === Number(prNumber) &&
+        match[3] === String(runId) &&
+        Number(match[4]) === Number(runAttempt)
+      ) {
+        return { reviewedHead: match[2], model: match[5] };
       }
     }
   }
   return null;
 }
 
-export async function recordReviewRun({ prNumber, reviewedHead, runId, runUrl, model = 'default' }, client = githubClient()) {
+export async function recordReviewRun({
+  prNumber, reviewedHead, runId, runAttempt, runUrl, model = 'default',
+}, client = githubClient()) {
   const { loadPullRequest, pages, comment } = client;
   const pr = await loadPullRequest(prNumber);
   if (pr.head.sha !== reviewedHead) return { status: 'stale' };
 
   const safeModel = ['laguna', 'qwen'].includes(model) ? model : 'default';
   const comments = await pages(`/issues/${prNumber}/comments`);
-  const existing = findReviewRunRecord(comments, prNumber, runId);
+  const existing = findReviewRunRecord(comments, prNumber, runId, runAttempt);
   if (existing) return { status: 'already-recorded', ...existing };
 
-  const marker = reviewRunMarker(prNumber, reviewedHead, runId, safeModel);
+  const marker = reviewRunMarker(prNumber, reviewedHead, runId, runAttempt, safeModel);
   const link = runUrl ? `\n\nRun: ${runUrl}` : '';
   await comment(
     prNumber,
-    `Independent review run ${runId} started for HEAD ${reviewedHead}. This durable marker lets recovery reject obsolete PR heads.${link}\n\n${marker}`,
+    `Independent review run ${runId} attempt ${runAttempt} started for HEAD ${reviewedHead}. This durable marker lets recovery reject obsolete PR heads.${link}\n\n${marker}`,
   );
   return { status: 'recorded', reviewedHead, model: safeModel };
 }
@@ -89,7 +95,9 @@ export async function invalidateReview(prNumber, expectedHead = null, client = g
  * Human gate and HEAD are re-read immediately before mutation so a verdict
  * cannot race a human takeover or a synchronize event.
  */
-export async function applyReview({ prNumber, reviewedHead, verdict, text, runId = null }, client = githubClient()) {
+export async function applyReview({
+  prNumber, reviewedHead, verdict, text, runId = null, runAttempt = null,
+}, client = githubClient()) {
   const { loadPullRequest, replaceLabels, comment } = client;
   const pr = await loadPullRequest(prNumber);
   const currentLabels = prLabelNames(pr);
@@ -100,7 +108,7 @@ export async function applyReview({ prNumber, reviewedHead, verdict, text, runId
   }
   const target = verdict === 'PASS' ? REVIEW_PASSED : REVIEW_CHANGES_REQUESTED;
   await replaceLabels(prNumber, withReviewVerdict(currentLabels, target));
-  await comment(prNumber, `${text}\n\n${reviewVerdictMarker(reviewedHead, verdict, runId)}`);
+  await comment(prNumber, `${text}\n\n${reviewVerdictMarker(reviewedHead, verdict, runId, runAttempt)}`);
   return { status: 'applied', verdict };
 }
 
@@ -116,7 +124,9 @@ export async function dispatchAfterReview(prNumber, verdict) {
  * The first failed run is retried once; a repeated failure or a failed retry
  * request is transferred to a human. A run for an outdated PR head is ignored.
  */
-export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outcome, runUrl, model = 'default' }, client = githubClient()) {
+export async function recoverReviewFailure({
+  prNumber, reviewedHead, runId, runAttempt, outcome, runUrl, model = 'default',
+}, client = githubClient()) {
   const { loadPullRequest, replaceLabels, pages, comment, dispatchWorkflow } = client;
   if (!['failure', 'cancelled', 'timed_out'].includes(outcome)) {
     return { status: 'ignored', reason: 'non-infrastructure-outcome' };
@@ -127,17 +137,17 @@ export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outc
   let effectiveHead = reviewedHead;
   let effectiveModel = model;
   if (!effectiveHead) {
-    const record = findReviewRunRecord(comments, prNumber, runId);
+    const record = findReviewRunRecord(comments, prNumber, runId, runAttempt);
     if (!record) return { status: 'missing-run-head' };
     effectiveHead = record.reviewedHead;
     if (!['laguna', 'qwen'].includes(effectiveModel)) effectiveModel = record.model;
   }
   if (pr.head.sha !== effectiveHead) return { status: 'stale' };
-  const verdictRunPrefix = `<!-- pi-review:verdict:${effectiveHead}:`;
-  const verdictRunSuffix = `:run:${runId} -->`;
+  const passMarker = reviewVerdictMarker(effectiveHead, 'PASS', runId, runAttempt);
+  const changesMarker = reviewVerdictMarker(effectiveHead, 'CHANGES_REQUESTED', runId, runAttempt);
   if (comments.some(item => {
     const body = String(item.body ?? '');
-    return body.includes(verdictRunPrefix) && body.includes(verdictRunSuffix);
+    return body.includes(passMarker) || body.includes(changesMarker);
   })) {
     return { status: 'verdict-already-applied' };
   }
@@ -147,9 +157,9 @@ export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outc
   if (labels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
 
   const retryPrefix = `<!-- pi-review:failure-retry:${prNumber}:${effectiveHead}:`;
-  const retryMarker = `${retryPrefix}${runId} -->`;
-  const exhaustedMarker = `<!-- pi-review:failure-exhausted:${prNumber}:${effectiveHead}:${runId} -->`;
-  const failedRetryMarker = `<!-- pi-review:failure-retry-request-failed:${prNumber}:${effectiveHead}:${runId} -->`;
+  const retryMarker = `${retryPrefix}${runId}:attempt:${runAttempt} -->`;
+  const exhaustedMarker = `<!-- pi-review:failure-exhausted:${prNumber}:${effectiveHead}:${runId}:attempt:${runAttempt} -->`;
+  const failedRetryMarker = `<!-- pi-review:failure-retry-request-failed:${prNumber}:${effectiveHead}:${runId}:attempt:${runAttempt} -->`;
   const link = runUrl ? `\n\nRun: ${runUrl}` : '';
 
   const markHuman = async (marker, message) => {
@@ -192,13 +202,16 @@ export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outc
   return { status: 'needs-human', reason: 'retry-exhausted' };
 }
 
-export async function recoverReviewWorkflowRun({ displayTitle, runId, outcome, runUrl }, client = githubClient()) {
+export async function recoverReviewWorkflowRun({
+  displayTitle, runId, runAttempt, outcome, runUrl,
+}, client = githubClient()) {
   const match = /^🔬 Review PR #([1-9]\d*)\b/.exec(displayTitle ?? '');
   if (!match) return { status: 'ignored', reason: 'not-review-run' };
   return recoverReviewFailure({
     prNumber: Number(match[1]),
     reviewedHead: null,
     runId: String(runId),
+    runAttempt: Number(runAttempt),
     outcome,
     runUrl,
     model: 'default',
@@ -211,6 +224,7 @@ async function main() {
     const result = await recoverReviewWorkflowRun({
       displayTitle: process.env.REVIEW_RUN_TITLE,
       runId: process.env.REVIEW_RUN_ID,
+      runAttempt: process.env.REVIEW_RUN_ATTEMPT,
       outcome: process.env.REVIEW_OUTCOME,
       runUrl: process.env.REVIEW_RUN_URL,
     });
@@ -222,21 +236,21 @@ async function main() {
   if (cmd === 'apply') {
     const result = await applyReview({
       prNumber, reviewedHead: a, verdict: b, text: fs.readFileSync(c, 'utf8'),
-      runId: process.env.REVIEW_RUN_ID,
+      runId: process.env.REVIEW_RUN_ID, runAttempt: process.env.REVIEW_RUN_ATTEMPT,
     });
     return process.stdout.write(JSON.stringify(result));
   }
   if (cmd === 'dispatch') return dispatchAfterReview(prNumber, a);
   if (cmd === 'record-run') {
     const result = await recordReviewRun({
-      prNumber, reviewedHead: a, runId: b,
+      prNumber, reviewedHead: a, runId: b, runAttempt: process.env.REVIEW_RUN_ATTEMPT,
       runUrl: process.env.REVIEW_RUN_URL, model: process.env.REVIEW_MODEL,
     });
     return process.stdout.write(JSON.stringify(result));
   }
   if (cmd === 'recover-failure') {
     const result = await recoverReviewFailure({
-      prNumber, reviewedHead: a, runId: b,
+      prNumber, reviewedHead: a, runId: b, runAttempt: process.env.REVIEW_RUN_ATTEMPT,
       outcome: process.env.REVIEW_OUTCOME, runUrl: process.env.REVIEW_RUN_URL,
       model: process.env.REVIEW_MODEL,
     });
