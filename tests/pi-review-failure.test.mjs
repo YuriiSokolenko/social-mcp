@@ -336,7 +336,7 @@ test('whole-workflow failure before independent review retries the current head 
     displayTitle: '🔬 Review PR #7',
     runId: '504',
     runAttempt: 1,
-    outcome: 'cancelled',
+    outcome: 'failure',
     runUrl: 'https://github.test/runs/504',
   }, client);
 
@@ -346,6 +346,22 @@ test('whole-workflow failure before independent review retries the current head 
     inputs: { pr_number: '7', model: 'default' },
   }]);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
+});
+
+test('cancellation before independent review is ignored without clearing verdicts or dispatching a retry', async () => {
+  const client = fakeClient();
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '511',
+    runAttempt: 1,
+    outcome: 'cancelled',
+    runUrl: 'https://github.test/runs/511',
+  }, client);
+
+  assert.deepEqual(result, { status: 'ignored', reason: 'cancelled-before-review' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+  assert.equal(client.state.comments.length, 0);
 });
 
 test('missing run marker after independent review started transfers recovery to a human', async () => {
