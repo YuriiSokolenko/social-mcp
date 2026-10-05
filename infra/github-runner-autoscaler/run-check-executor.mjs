@@ -204,7 +204,7 @@ async function stageWorktree(runnerName, root, operation) {
   }
 }
 
-function safeCheckEnvironment(requested) {
+export function safeCheckEnvironment(requested) {
   if (!requested || typeof requested !== 'object' || Array.isArray(requested)) throw Object.assign(new Error('sandbox environment must be an object'), { code: 'CHECK_ENV' });
   const allowed = new Set([
     'PATH',
