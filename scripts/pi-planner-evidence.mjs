@@ -71,6 +71,16 @@ export default function (pi) {
     });
   }
 
+  if (outputOnly) {
+    pi.on('before_provider_request', (event) => {
+      const payload = event?.payload;
+      if (!payload || !Array.isArray(payload.tools)) return payload;
+      const tools = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === PLANNER_RESULT_TOOL);
+      if (!tools.length) return payload;
+      return { ...payload, tools, tool_choice: 'required' };
+    });
+  }
+
   pi.on('tool_call', async (event) => {
     if (outputOnly && event.toolName !== PLANNER_RESULT_TOOL) {
       console.log(`PI_PLANNER_EVIDENCE_BLOCKED ${JSON.stringify({ tool: event.toolName, used: 0, cap: 0, outputOnly: true })}`);
