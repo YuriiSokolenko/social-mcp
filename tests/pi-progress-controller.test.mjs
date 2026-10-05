@@ -1492,10 +1492,26 @@ test('#426 exact terminal-recovery verification permit bypasses only the matchin
     undefined,
     'the exact authoritative recovery check accepts semantically equivalent omitted/empty scope fields',
   );
-  assert.equal(state.recoveryVerificationArmed(), false, 'the recovery permit is one-shot');
+  assert.equal(
+    state.recoveryVerificationArmed(),
+    true,
+    'policy authorization alone does not consume recovery before runtime execution gates finish',
+  );
+  assert.equal(
+    state.commitRecoveryVerification(unrelated),
+    false,
+    'an unrelated action cannot commit the exact recovery permit',
+  );
+  assert.equal(state.recoveryVerificationArmed(), true);
+  assert.equal(
+    state.commitRecoveryVerification(exactWithEquivalentEmptyFields),
+    true,
+    'the runtime execution boundary commits the matching one-shot permit',
+  );
+  assert.equal(state.recoveryVerificationArmed(), false, 'the committed recovery permit is one-shot');
   assert.match(
     state.checkToolCall('run_check', exact).reason,
     /not yet available/,
-    'ordinary verification policy resumes immediately after the recovery check is accepted',
+    'ordinary verification policy resumes after the recovery execution is committed',
   );
 });
