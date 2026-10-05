@@ -112,6 +112,9 @@ jobs:
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.load.outputs.head_sha }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
 
       - name: Run independent review
