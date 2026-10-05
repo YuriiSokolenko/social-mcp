@@ -2338,6 +2338,11 @@ export default function (pi) {
       pendingBashValidationFingerprints.set(event.toolCallId, repositoryStateFingerprint(cwd));
     }
 
+    // Finish all setup that can still reject/throw before committing terminal recovery.
+    // In particular, structuredClone can fail on malformed synthetic/runtime inputs; such a
+    // failure must leave the exact validation permit and forced recovery directive intact.
+    const clonedCanonicalInput = structuredClone(canonicalInput);
+
     if (terminalRecoveryRequiredTool === event.toolName) {
       const plan = terminalRecoveryState?.plan ?? null;
       if (plan?.kind === 'exact_validation' && !controller.commitRecoveryVerification(canonicalInput)) {
@@ -2356,11 +2361,11 @@ export default function (pi) {
       terminalRecoveryRequiredTool = null;
       controller.clearRecoveryVerification();
       // Consume recovery only at the actual execution boundary, after controller policy,
-      // argument matching, containment, no-op and provenance setup have all succeeded.
+      // argument matching, containment, no-op, provenance and clone setup have all succeeded.
       terminalRecoveryState = null;
     }
 
-    pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
+    pendingToolInputs.set(event.toolCallId, clonedCanonicalInput);
     if (evidenceConsumptionNotice) {
       pendingEvidenceConsumptionNotices.set(event.toolCallId, evidenceConsumptionNotice);
     }
@@ -2368,7 +2373,7 @@ export default function (pi) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
         toolName: canonicalToolName,
-        input: structuredClone(canonicalInput),
+        input: clonedCanonicalInput,
         productiveState,
         repositoryStateBefore,
       });
