@@ -2,8 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Type } from 'typebox';
-
 import { repoSearch } from './pi-common/repo-search.mjs';
 
 // Loaded only inside the implementation-planner pi-subagents child via .pi/settings.json.
@@ -160,13 +158,18 @@ export function registerPlannerEvidenceTools(pi, {
     name: 'repo_search',
     label: 'Planner repository search',
     description: 'Read-only deterministic search over tracked files in the current planner worktree. Use when the exact path or text location is unknown.',
-    parameters: Type.Object({
-      kind: Type.Optional(Type.Union([Type.Literal('content'), Type.Literal('path')])),
-      query: Type.String({ minLength: 1, maxLength: 300 }),
-      pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
-      extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
-      maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
-    }),
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['content', 'path'] },
+        query: { type: 'string', minLength: 1, maxLength: 300 },
+        pathPrefix: { type: 'string', maxLength: 300 },
+        extensions: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 16 }, maxItems: 12 },
+        maxResults: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = repoSearchFn(ctx.cwd, params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
@@ -177,10 +180,15 @@ export function registerPlannerEvidenceTools(pi, {
     name: 'planner_code_graph',
     label: 'Planner code graph',
     description: 'Read-only bounded structural context for one concrete symbol/path in the current trusted Orbit index. Use for callers, references, implementations, dependencies, related tests, or blast-radius questions.',
-    parameters: Type.Object({
-      target: Type.String({ minLength: 1, maxLength: 400 }),
-      question: Type.String({ minLength: 1, maxLength: 400 }),
-    }),
+    parameters: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', minLength: 1, maxLength: 400 },
+        question: { type: 'string', minLength: 1, maxLength: 400 },
+      },
+      required: ['target', 'question'],
+      additionalProperties: false,
+    },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = await plannerCodeGraphFn(ctx.cwd, params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
