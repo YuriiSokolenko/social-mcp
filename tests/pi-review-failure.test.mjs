@@ -67,9 +67,9 @@ test('independent review failure clears stale verdict and dispatches one durable
   assert.deepEqual(result, { status: 'retry-dispatched' });
   assert.deepEqual(client.state.dispatches, [{ workflow: 'pi-pr-review.yml', inputs: { pr_number: '7', model: 'qwen' } }]);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
-  assert.match(client.state.comments[0].body, /infrastructure failure, not a code-review verdict/);
-  assert.match(client.state.comments[0].body, /pi-review:failure-retry:7:head-1:123/);
-  assert.match(client.state.comments[0].body, /https:\/\/github\.test\/runs\/123/);
+  assert.match(client.state.comments.at(-1).body, /infrastructure failure, not a code-review verdict/);
+  assert.match(client.state.comments.at(-1).body, /pi-review:failure-retry:7:head-1:123/);
+  assert.match(client.state.comments.at(-1).body, /https:\/\/github\.test\/runs\/123/);
 });
 
 test('repeated recovery is idempotent and does not dispatch another retry', async () => {
@@ -82,7 +82,7 @@ test('repeated recovery is idempotent and does not dispatch another retry', asyn
 
   assert.deepEqual(repeated, { status: 'retry-already-requested' });
   assert.equal(client.state.dispatches.length, 1);
-  assert.equal(client.state.comments.length, 1);
+  assert.equal(client.state.comments.length, 2);
 });
 
 test('a failed retry removes stale PASS and durably transfers the PR to human review', async () => {
@@ -113,9 +113,9 @@ test('failed retry dispatch transfers the PR to human review', async () => {
 
   assert.deepEqual(result, { status: 'needs-human', reason: 'retry-request-failed' });
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'pi:needs-human']);
-  assert.equal(client.state.comments.length, 2);
-  assert.match(client.state.comments[1].body, /bounded retry workflow could not be dispatched/);
-  assert.match(client.state.comments[1].body, /pi-review:failure-retry-request-failed:7:head-1:123/);
+  assert.equal(client.state.comments.length, 3);
+  assert.match(client.state.comments.at(-1).body, /bounded retry workflow could not be dispatched/);
+  assert.match(client.state.comments.at(-1).body, /pi-review:failure-retry-request-failed:7:head-1:123/);
 });
 
 test('failure from a stale review head is ignored', async () => {
@@ -415,6 +415,61 @@ test('failure after deterministic repair dispatch but before independent start d
   assert.deepEqual(result, { status: 'ignored', reason: 'review-failed-before-independent-start' });
   assert.deepEqual(client.state.dispatches, []);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:changes-requested']);
+});
+
+test('successful one-shot follow-up retry is not dispatched a third time when confirmation fails', async () => {
+  const client = fakeClient({
+    labels: ['pi:mr-created'],
+    dispatchFailures: 1,
+    commentErrorPattern: /was dispatched successfully/,
+  });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '521',
+    runAttempt: 1,
+    model: 'qwen',
+  }, client);
+  await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    verdict: 'PASS',
+    text: 'Looks good.',
+    runId: '521',
+    runAttempt: 1,
+  }, client);
+
+  await assert.rejects(
+    recoverReviewWorkflowRun({
+      displayTitle: '🔬 Review PR #7',
+      runId: '521',
+      runAttempt: 1,
+      outcome: 'failure',
+      runUrl: 'https://github.test/runs/521',
+    }, client),
+    /transient dispatch failure/,
+  );
+
+  const retried = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '521',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/521',
+  }, client);
+  assert.deepEqual(retried, { status: 'followup-dispatched-unconfirmed', verdict: 'PASS' });
+  assert.equal(client.state.dispatches.length, 2);
+  assert.ok(client.state.comments.some(item => /pi-review:followup-retry:head-1:PASS:run:521:attempt:1/.test(item.body)));
+
+  const third = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '521',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/521',
+  }, client);
+  assert.deepEqual(third, { status: 'followup-claimed', verdict: 'PASS' });
+  assert.equal(client.state.dispatches.length, 2);
 });
 
 test('successful follow-up dispatch is not retried when its confirmation comment fails', async () => {
