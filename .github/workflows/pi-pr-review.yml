@@ -35,7 +35,7 @@ jobs:
     outputs:
       independent_outcome: ${{ steps.independent.outcome }}
       head_sha: ${{ steps.load.outputs.head_sha }}
-      model: ${{ inputs.model || 'default' }}
+      model: ${{ steps.record.outputs.model }}
     env:
       PR: ${{ inputs.pr_number }}
       PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
@@ -61,8 +61,33 @@ jobs:
           echo "head_sha=$(jq -r '.head' "$CONTEXT")" >> "$GITHUB_OUTPUT"
           echo "REVIEW_CONTEXT=$CONTEXT" >> "$GITHUB_ENV"
 
-      - name: Create review worktree
+      - name: Record review run identity
+        id: record
         if: steps.load.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_MODEL: ${{ inputs.model || 'default' }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          MODEL="$REVIEW_MODEL"
+          if [ "$MODEL" = "default" ]; then
+            MODEL="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/.pi/default-model")"
+          fi
+          case "$MODEL" in
+            laguna|qwen) ;;
+            *) echo "Unsupported resolved reviewer model: $MODEL" >&2; exit 1 ;;
+          esac
+          RECORDED="$(REVIEW_MODEL="$MODEL" node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID")"
+          STATUS="$(jq -r '.status' <<<"$RECORDED")"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "model=$(jq -r '.model // empty' <<<"$RECORDED")" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "stale" ]; then
+            echo "PR #$PR changed before review setup; skipping this stale run"
+          fi
+
+      - name: Create review worktree
+        if: steps.load.outputs.skip != 'true' && contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         run: |
           JOB_DIR="$RUNNER_TEMP/agent-reviewer-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
@@ -70,12 +95,12 @@ jobs:
           git worktree add --detach "$JOB_DIR" "$HEAD_SHA"
 
       - name: Prepare environment
-        if: steps.load.outputs.skip != 'true'
+        if: steps.load.outputs.skip != 'true' && contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/prepare-environment.mjs" reviewer "$JOB_DIR"
 
       - name: Run deterministic review checks
         id: checks
-        if: steps.load.outputs.skip != 'true'
+        if: steps.load.outputs.skip != 'true' && contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         continue-on-error: true
         run: |
           cd "$JOB_DIR"
@@ -86,22 +111,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
-
-      - name: Record review run identity
-        id: record
-        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REVIEW_MODEL: ${{ inputs.model || 'default' }}
-          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
-          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          RECORDED="$(node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID")"
-          STATUS="$(jq -r '.status' <<<"$RECORDED")"
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-          if [ "$STATUS" = "stale" ]; then
-            echo "PR #$PR changed before independent review; skipping this stale run"
-          fi
 
       - name: Run independent review
         id: independent
@@ -182,7 +191,7 @@ jobs:
           PR: ${{ inputs.pr_number }}
           HEAD_SHA: ${{ needs.review.outputs.head_sha }}
           REVIEW_OUTCOME: ${{ needs.review.outputs.independent_outcome }}
-          REVIEW_MODEL: ${{ needs.review.outputs.model || inputs.model || 'default' }}
+          REVIEW_MODEL: ${{ needs.review.outputs.model }}
           REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
           REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" recover-failure "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
