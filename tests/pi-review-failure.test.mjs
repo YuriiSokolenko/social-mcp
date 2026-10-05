@@ -17,6 +17,7 @@ function fakeClient({
   dispatchError = null,
   dispatchFailures = 0,
   commentErrorPattern = null,
+  commentReturnsId = true,
 } = {}) {
   const state = {
     pr: { number: 7, head: { sha: head }, labels: labels.map(name => ({ name })) },
@@ -34,7 +35,7 @@ function fakeClient({
       if (commentErrorPattern && commentErrorPattern.test(body)) throw new Error('comment unavailable');
       const item = { id: state.nextCommentId++, body };
       state.comments.push(item);
-      return item;
+      return commentReturnsId ? item : {};
     },
     async dispatchWorkflow(workflow, inputs) {
       state.dispatches.push({ workflow, inputs });
@@ -394,6 +395,76 @@ test('failed claimed follow-up is retried by workflow-run recovery', async () =>
   assert.deepEqual(recovered, { status: 'followup-dispatched', verdict: 'PASS' });
   assert.equal(client.state.dispatches.length, 2);
   assert.match(client.state.comments.at(-1).body, /pi-review:followup:head-1:PASS:run:518:attempt:1/);
+});
+
+test('concurrent failed-follow-up recoveries dispatch only from the oldest retry claim', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created'], dispatchFailures: 1 });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '523',
+    runAttempt: 1,
+    model: 'qwen',
+  }, client);
+  await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    verdict: 'PASS',
+    text: 'Looks good.',
+    runId: '523',
+    runAttempt: 1,
+  }, client);
+
+  await assert.rejects(
+    recoverReviewWorkflowRun({
+      displayTitle: '🔬 Review PR #7',
+      runId: '523',
+      runAttempt: 1,
+      outcome: 'failure',
+      runUrl: 'https://github.test/runs/523',
+    }, client),
+    /transient dispatch failure/,
+  );
+
+  const originalComment = client.comment.bind(client);
+  const retryMarker = '<!-- pi-review:followup-retry:head-1:PASS:run:523:attempt:1 -->';
+  let injected = false;
+  client.comment = async (number, body) => {
+    if (!injected && String(body).includes(retryMarker)) {
+      injected = true;
+      await originalComment(number, `Competing follow-up retry claim.\n\n${retryMarker}`);
+    }
+    return originalComment(number, body);
+  };
+
+  const recovered = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '523',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/523',
+  }, client);
+
+  assert.deepEqual(recovered, { status: 'followup-claimed', verdict: 'PASS' });
+  assert.equal(client.state.dispatches.length, 1);
+  assert.equal(client.state.comments.filter(item => String(item.body).includes(retryMarker)).length, 2);
+});
+
+test('review retry claim fails closed when GitHub comment creation has no durable id', async () => {
+  const client = fakeClient({ commentReturnsId: false });
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '524', runAttempt: 1,
+  }, client);
+
+  await assert.rejects(
+    recoverReviewFailure({
+      ...failure,
+      runId: '524',
+      runAttempt: 1,
+    }, client),
+    /did not return a durable comment id/,
+  );
+  assert.deepEqual(client.state.dispatches, []);
 });
 
 test('human takeover blocks recovery follow-up dispatch even when a verdict marker exists', async () => {
