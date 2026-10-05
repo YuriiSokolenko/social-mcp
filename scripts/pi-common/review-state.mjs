@@ -25,6 +25,42 @@ function reviewVerdictMarker(head, verdict) {
   return `<!-- pi-review:verdict:${head}:${verdict} -->`;
 }
 
+function reviewRunMarker(prNumber, reviewedHead, runId, model) {
+  return `<!-- pi-review:run:${prNumber}:${reviewedHead}:${runId}:${model} -->`;
+}
+
+export function findReviewRunRecord(comments, prNumber, runId) {
+  const markerPattern = /<!-- pi-review:run:(\d+):([^:\\s]+):([^:\\s]+):(default|laguna|qwen) -->/g;
+  for (const item of comments) {
+    const body = String(item.body ?? '');
+    for (const match of body.matchAll(markerPattern)) {
+      if (Number(match[1]) === Number(prNumber) && match[3] === String(runId)) {
+        return { reviewedHead: match[2], model: match[4] };
+      }
+    }
+  }
+  return null;
+}
+
+export async function recordReviewRun({ prNumber, reviewedHead, runId, runUrl, model = 'default' }, client = githubClient()) {
+  const { loadPullRequest, pages, comment } = client;
+  const pr = await loadPullRequest(prNumber);
+  if (pr.head.sha !== reviewedHead) return { status: 'stale' };
+
+  const safeModel = ['laguna', 'qwen'].includes(model) ? model : 'default';
+  const comments = await pages(`/issues/${prNumber}/comments`);
+  const existing = findReviewRunRecord(comments, prNumber, runId);
+  if (existing) return { status: 'already-recorded', ...existing };
+
+  const marker = reviewRunMarker(prNumber, reviewedHead, runId, safeModel);
+  const link = runUrl ? `\n\nRun: ${runUrl}` : '';
+  await comment(
+    prNumber,
+    `Independent review run ${runId} started for HEAD ${reviewedHead}. This durable marker lets recovery reject obsolete PR heads.${link}\n\n${marker}`,
+  );
+  return { status: 'recorded', reviewedHead, model: safeModel };
+}
+
 export async function invalidateReview(prNumber, expectedHead = null, client = githubClient()) {
   const { loadPullRequest, replaceLabels, pages } = client;
   const pr = await loadPullRequest(prNumber);
@@ -80,18 +116,30 @@ export async function dispatchAfterReview(prNumber, verdict) {
  */
 export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outcome, runUrl, model = 'default' }, client = githubClient()) {
   const { loadPullRequest, replaceLabels, pages, comment, dispatchWorkflow } = client;
+  if (!['failure', 'cancelled', 'timed_out'].includes(outcome)) {
+    return { status: 'ignored', reason: 'non-infrastructure-outcome' };
+  }
+
   const pr = await loadPullRequest(prNumber);
-  if (pr.head.sha !== reviewedHead) return { status: 'stale' };
+  const comments = await pages(`/issues/${prNumber}/comments`);
+  let effectiveHead = reviewedHead;
+  let effectiveModel = model;
+  if (!effectiveHead) {
+    const record = findReviewRunRecord(comments, prNumber, runId);
+    if (!record) return { status: 'missing-run-head' };
+    effectiveHead = record.reviewedHead;
+    if (!['laguna', 'qwen'].includes(effectiveModel)) effectiveModel = record.model;
+  }
+  if (pr.head.sha !== effectiveHead) return { status: 'stale' };
 
   const labels = prLabelNames(pr);
   const clearVerdict = withoutReviewLabels(labels);
   if (labels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
 
-  const comments = await pages(`/issues/${prNumber}/comments`);
-  const retryPrefix = `<!-- pi-review:failure-retry:${prNumber}:${reviewedHead}:`;
+  const retryPrefix = `<!-- pi-review:failure-retry:${prNumber}:${effectiveHead}:`;
   const retryMarker = `${retryPrefix}${runId} -->`;
-  const exhaustedMarker = `<!-- pi-review:failure-exhausted:${prNumber}:${reviewedHead}:${runId} -->`;
-  const failedRetryMarker = `<!-- pi-review:failure-retry-request-failed:${prNumber}:${reviewedHead}:${runId} -->`;
+  const exhaustedMarker = `<!-- pi-review:failure-exhausted:${prNumber}:${effectiveHead}:${runId} -->`;
+  const failedRetryMarker = `<!-- pi-review:failure-retry-request-failed:${prNumber}:${effectiveHead}:${runId} -->`;
   const link = runUrl ? `\n\nRun: ${runUrl}` : '';
 
   const markHuman = async (marker, message) => {
@@ -114,12 +162,12 @@ export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outc
     // cannot leave the PR silent or carrying an earlier PASS verdict.
     await comment(
       prNumber,
-      `Independent review ended with ${outcome} for HEAD ${reviewedHead}. This is an infrastructure failure, not a code-review verdict. One automatic retry workflow was queued.${link}\n\n${retryMarker}`,
+      `Independent review ended with ${outcome} for HEAD ${effectiveHead}. This is an infrastructure failure, not a code-review verdict. One automatic retry workflow was queued.${link}\n\n${retryMarker}`,
     );
     try {
       await dispatchWorkflow(workflowFile('reviewer'), {
         pr_number: String(prNumber),
-        model: ['laguna', 'qwen'].includes(model) ? model : 'default',
+        model: ['laguna', 'qwen'].includes(effectiveModel) ? effectiveModel : 'default',
       });
       return { status: 'retry-dispatched' };
     } catch (error) {
@@ -134,8 +182,31 @@ export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outc
   return { status: 'needs-human', reason: 'retry-exhausted' };
 }
 
+export async function recoverReviewWorkflowRun({ displayTitle, runId, outcome, runUrl }, client = githubClient()) {
+  const match = /^🔬 Review PR #([1-9]\d*)\b/.exec(displayTitle ?? '');
+  if (!match) return { status: 'ignored', reason: 'not-review-run' };
+  return recoverReviewFailure({
+    prNumber: Number(match[1]),
+    reviewedHead: null,
+    runId: String(runId),
+    outcome,
+    runUrl,
+    model: 'default',
+  }, client);
+}
+
 async function main() {
   const [cmd, rawPr, a, b, c] = process.argv.slice(2);
+  if (cmd === 'recover-workflow-run') {
+    const result = await recoverReviewWorkflowRun({
+      displayTitle: process.env.REVIEW_RUN_TITLE,
+      runId: process.env.REVIEW_RUN_ID,
+      outcome: process.env.REVIEW_OUTCOME,
+      runUrl: process.env.REVIEW_RUN_URL,
+    });
+    return process.stdout.write(JSON.stringify(result));
+  }
+
   const prNumber = Number(rawPr);
   if (cmd === 'invalidate') return invalidateReview(prNumber, a);
   if (cmd === 'apply') {
@@ -143,6 +214,13 @@ async function main() {
     return process.stdout.write(JSON.stringify(result));
   }
   if (cmd === 'dispatch') return dispatchAfterReview(prNumber, a);
+  if (cmd === 'record-run') {
+    const result = await recordReviewRun({
+      prNumber, reviewedHead: a, runId: b,
+      runUrl: process.env.REVIEW_RUN_URL, model: process.env.REVIEW_MODEL,
+    });
+    return process.stdout.write(JSON.stringify(result));
+  }
   if (cmd === 'recover-failure') {
     const result = await recoverReviewFailure({
       prNumber, reviewedHead: a, runId: b,
@@ -151,6 +229,6 @@ async function main() {
     });
     return process.stdout.write(JSON.stringify(result));
   }
-  throw new Error('usage: review-state.mjs invalidate <pr> [expected-head] | apply <pr> <head> <verdict> <text-file> | dispatch <pr> <verdict> | recover-failure <pr> <head> <run-id>');
+  throw new Error('usage: review-state.mjs invalidate <pr> [expected-head] | apply <pr> <head> <verdict> <text-file> | dispatch <pr> <verdict> | record-run <pr> <head> <run-id> | recover-failure <pr> <head> <run-id> | recover-workflow-run');
 }
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main().catch(e=>{console.error(e);process.exitCode=1;});
