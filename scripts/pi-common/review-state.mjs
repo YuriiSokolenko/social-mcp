@@ -30,7 +30,7 @@ function reviewRunMarker(prNumber, reviewedHead, runId, model) {
 }
 
 export function findReviewRunRecord(comments, prNumber, runId) {
-  const markerPattern = /<!-- pi-review:run:(\d+):([^:\\s]+):([^:\\s]+):(default|laguna|qwen) -->/g;
+  const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):(default|laguna|qwen) -->/g;
   for (const item of comments) {
     const body = String(item.body ?? '');
     for (const match of body.matchAll(markerPattern)) {
