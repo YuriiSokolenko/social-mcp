@@ -102,7 +102,7 @@ test('accepted evidence markers report used/remaining without file contents', as
   ]);
 });
 
-test('planner evidence state records only bounded counters, never repository contents', async (t) => {
+test('planner evidence state starts with bounded counters and no invented facts', async (t) => {
   const stateFile = path.join(os.tmpdir(), `pi-planner-evidence-state-${process.pid}-${Date.now()}.json`);
   const previous = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = stateFile;
@@ -114,8 +114,47 @@ test('planner evidence state records only bounded counters, never repository con
   const child = childExtension(t, 6);
   await child.call('read');
   await child.call('grep');
-  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')), { used: 2, cap: 6 });
-  assert.doesNotMatch(fs.readFileSync(stateFile, 'utf8'), /path|content|result|transcript/i);
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')), { used: 2, cap: 6, facts: [] });
+  assert.doesNotMatch(fs.readFileSync(stateFile, 'utf8'), /content|result|transcript/i);
+});
+
+test('#481 successful evidence calls persist only bounded redacted retry facts', async (t) => {
+  const stateFile = path.join(os.tmpdir(), `pi-planner-evidence-facts-${process.pid}-${Date.now()}.json`);
+  const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  const previousState = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '6';
+  process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = stateFile;
+  t.after(() => {
+    fs.rmSync(stateFile, { force: true });
+    if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+    else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+    if (previousState === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+    else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousState;
+  });
+  const handlers = new Map();
+  t.mock.method(console, 'log', () => {});
+  plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
+
+  await handlers.get('tool_call')({
+    toolName: 'read',
+    toolCallId: 'evidence-1',
+    input: { path: 'src/net/transport.py' },
+  });
+  await handlers.get('tool_execution_end')({
+    toolName: 'read',
+    toolCallId: 'evidence-1',
+    isError: false,
+    result: { content: [{ type: 'text', text: 'def send_with_backoff(message):\n    return message\nAPI_KEY=sk-super-secret-credential-value' }] },
+  });
+
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(state.used, 1);
+  assert.equal(state.cap, 6);
+  assert.equal(state.facts.length, 1);
+  assert.ok(state.facts[0].length <= 200);
+  assert.match(state.facts[0], /read src\/net\/transport\.py: def send_with_backoff/);
+  assert.doesNotMatch(state.facts[0], /super-secret|sk-/);
+  assert.match(state.facts[0], /\[redacted credential\]|\[redacted\]/);
 });
 
 test('aborted planner cleanup prevents a late child from recreating the evidence sidecar', async (t) => {
@@ -327,6 +366,8 @@ test('planner prompt prefers targeted evidence and carries resolved facts forwar
     assert.match(task, /reserve at least one action for each existing file main must modify/);
     assert.match(task, /New-file-only work may use 0/);
     assert.match(task, /2048-token ceiling/);
+    assert.match(task, /exactly one top-level "value"/);
+    assert.match(task, /never wrap it again/);
     assert.doesNotMatch(task, /typically 1-3|1–3 actions is typical/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -620,6 +661,68 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
   assert.deepEqual(records[0].usage, { input: 150, output: 15, turns: 3, toolCalls: 8 });
 });
 
+
+test('#481 missing structured_output preserves first-attempt evidence in the output-only retry', async (t) => {
+  const { dir, env } = fixture(t, {
+    'src/net/transport.py': 'def send_with_backoff(message):\n    return message\n',
+  });
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  let attempts = 0;
+  const retryTasks = [];
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild(request) {
+      attempts += 1;
+      retryTasks.push(request.task);
+      const handlers = new Map();
+      plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
+      if (attempts === 1) {
+        await handlers.get('tool_call')({
+          toolName: 'read',
+          toolCallId: 'read-transport',
+          input: { path: 'src/net/transport.py' },
+        });
+        await handlers.get('tool_execution_end')({
+          toolName: 'read',
+          toolCallId: 'read-transport',
+          isError: false,
+          result: { content: [{ type: 'text', text: 'def send_with_backoff(message): return message' }] },
+        });
+        return {
+          status: 'failed',
+          error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.',
+          usage: { input: 100, output: 10, turns: 1, toolCalls: 1 },
+        };
+      }
+      assert.equal(process.env[PLANNER_OUTPUT_ONLY_ENV], 'true');
+      assert.equal(request.toolBudget.hard, 1);
+      assert.match(request.task, /PRESERVED EVIDENCE FROM ATTEMPT 1/);
+      assert.match(request.task, /1\/6 evidence actions consumed/);
+      assert.match(request.task, /send_with_backoff/);
+      assert.match(request.task, /do not call read, grep, find, or ls/);
+      return {
+        status: 'completed',
+        usage: { input: 40, output: 5, turns: 1, toolCalls: 1 },
+        result: { kind: 'structured', value: {
+          steps: ['Edit send_with_backoff'],
+          facts: ['src/net/transport.py contains send_with_backoff.'],
+          complexity: 'trivial',
+          evidence_budget: 1,
+          large_mutation: false,
+          reason: 'The target is known and main needs one current mutation anchor.',
+        } },
+      };
+    },
+  });
+
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(attempts, 2);
+  assert.equal(prepared.plannerEvidenceUsed, 1);
+  assert.deepEqual(prepared.repositoryFacts, ['src/net/transport.py contains send_with_backoff.']);
+  assert.match(retryTasks[1], /exactly one top-level "value"/);
+  assert.doesNotMatch(retryTasks[1], /"value"\s*:\s*\{\s*"value"\s*:/);
+});
 
 test('malformed pseudo-tool on output-only retry is classified explicitly and fails closed', async (t) => {
   const { dir, env } = fixture(t, {});
