@@ -103,6 +103,14 @@ const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 
 const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
+const DETERMINISTIC_TERMINAL_RECOVERY_KINDS = new Set([
+  'metadata',
+  'validation',
+  'prepared_outputs',
+  'conflict',
+  'file_set',
+  'file_set_cleanup',
+]);
 
 // Trust boundary: the coding session's agent definition, tool allowlist and extensions come
 // from THIS module's control checkout (the trusted harness), never from the issue worktree the
@@ -809,7 +817,7 @@ export default function (pi) {
       loopResult.reason === 'repeated_failed_strategy' &&
       loopResult.repeatedFailure === true &&
       loopResult.obligation?.key &&
-      loopResult.obligation?.kind &&
+      DETERMINISTIC_TERMINAL_RECOVERY_KINDS.has(loopResult.obligation?.kind) &&
       ['submit_result', 'submit_repair'].includes(loopResult.tool);
 
     if (terminalFailure && loopResult.action === 'steer') {
@@ -1018,7 +1026,7 @@ export default function (pi) {
         let tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
         if (terminalRecoveryRequiredTool) {
           const selected = tools.filter(tool =>
-            (tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
+            controllerToolName(tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
           );
           if (selected.length) {
             tools = selected;
@@ -2149,22 +2157,22 @@ export default function (pi) {
         block: true,
         reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} has an exact retry ready now; call retry_last_failed_check so the same kind+scope consumes this verification permit.`,
       };
-    } else if (
-      terminalRecoveryRequiredTool === event.toolName &&
+    if (!recoveryBlocked && event.toolName === RETRY_FAILED_CHECK_TOOL && failedCheckRecovery) {
+      canonicalInput = recoveryState.request;
+    }
+
+    const canonicalToolName = controllerToolName(event.toolName);
+    if (
+      !recoveryBlocked &&
+      terminalRecoveryRequiredTool === canonicalToolName &&
       terminalRecoveryState?.plan &&
-      !recoveryCallMatchesPlan(terminalRecoveryState.plan, event.toolName, event.input ?? {})
+      !recoveryCallMatchesPlan(terminalRecoveryState.plan, canonicalToolName, canonicalInput)
     ) {
       recoveryBlocked = {
         block: true,
         reason: `BLOCKED: ${event.toolName} did not execute. Terminal recovery requires the selected deterministic repair arguments; this call does not match the pending recovery plan.`,
       };
     }
-
-    if (!recoveryBlocked && event.toolName === RETRY_FAILED_CHECK_TOOL && failedCheckRecovery) {
-      canonicalInput = recoveryState.request;
-    }
-
-    const canonicalToolName = controllerToolName(event.toolName);
     const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput);
     if (blocked?.alreadySatisfied) {
       blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is single-shot and already completed; it did not execute. ${activeToolGuidance(activeToolNames)}`;
@@ -2201,7 +2209,7 @@ export default function (pi) {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
-      if (terminalRecoveryRequiredTool === event.toolName) {
+      if (terminalRecoveryRequiredTool === canonicalToolName) {
         // The selected recovery tool was emitted but rejected by local policy (for example,
         // wrong run_check arguments). Keep the exact recovery state armed for the next request.
         requireToolOnNextProviderRequest = true;
@@ -2216,7 +2224,7 @@ export default function (pi) {
       if (evidenceConsumptionNotice) {
         controller.restoreRuntimeBlockedEvidenceAction(evidenceConsumptionNotice);
       }
-      if (terminalRecoveryRequiredTool === event.toolName) {
+      if (terminalRecoveryRequiredTool === canonicalToolName) {
         // The provider satisfied tool_choice, but the runtime refused execution after the
         // controller gate. Keep the selected recovery armed and force it again next request.
         requireToolOnNextProviderRequest = true;
@@ -2343,7 +2351,7 @@ export default function (pi) {
     // failure must leave the exact validation permit and forced recovery directive intact.
     const clonedCanonicalInput = structuredClone(canonicalInput);
 
-    if (terminalRecoveryRequiredTool === event.toolName) {
+    if (terminalRecoveryRequiredTool === canonicalToolName) {
       const plan = terminalRecoveryState?.plan ?? null;
       if (plan?.kind === 'exact_validation' && !controller.commitRecoveryVerification(canonicalInput)) {
         restoreRuntimeBlockedEvidence();
