@@ -67,9 +67,11 @@ export function codingSessionRecoveryReceipt({
       }
     : null;
   const preparedComplete = outputs.source && outputs.test;
-  const remaining = validation && validation.status !== 'pass'
-    ? 'validation'
-    : preparedComplete ? 'terminal_submission' : 'prepared_outputs';
+  const remaining = !preparedComplete
+    ? 'prepared_outputs'
+    : (!validation || validation.status !== 'pass')
+      ? 'validation'
+      : 'terminal_submission';
 
   return {
     coding_session_status: 'aborted',
