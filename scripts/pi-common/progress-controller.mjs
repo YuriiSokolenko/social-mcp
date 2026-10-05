@@ -386,6 +386,14 @@ export class ProgressController {
     return armed;
   }
 
+  commitRecoveryVerification(input) {
+    if (!this.productiveVerificationTool || this.recoveryVerificationSignature == null) return false;
+    const signature = recoveryVerificationSignature(this.productiveVerificationTool, input ?? {});
+    if (signature !== this.recoveryVerificationSignature) return false;
+    this.recoveryVerificationSignature = null;
+    return true;
+  }
+
   armAutomaticLargeMutationBudget(enabled) {
     if (!this.largeMutationBudgetTool) {
       this.automaticLargeMutationBudgetArmed = false;
@@ -855,9 +863,7 @@ export class ProgressController {
       this.preComplexityEvidenceRemaining = Math.max(0, this.preComplexityEvidenceRemaining - 1);
     }
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
-    if (acceptedRecoveryVerificationCall) {
-      this.recoveryVerificationSignature = null;
-    } else if (acceptedVerificationCall) {
+    if (acceptedVerificationCall && !acceptedRecoveryVerificationCall) {
       this.verificationPermits -= 1;
       if (this.verificationPermits === 0) this.verificationState = 'exhausted';
     }
