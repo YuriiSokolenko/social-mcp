@@ -409,7 +409,8 @@ export default function (pi) {
       controller.evidenceUnlockAvailable() ||
       controller.productiveProgressState() === 'evidence_allowed';
     if (!evidenceWindowReachable) return false;
-    const inventory = (pi.getAllTools?.() ?? []).map(tool => typeof tool === 'string' ? tool : tool?.name);
+    const inventory = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name })))
+      .map(tool => typeof tool === 'string' ? tool : tool?.name);
     return inventory.includes('read');
   }
 
