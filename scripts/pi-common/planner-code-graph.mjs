@@ -85,7 +85,11 @@ export function assertFreshPlannerOrbitIndex(cwd, { runner = defaultRunner } = {
   }
 
   const rows = orbitRows(checkedRun(runner, 'orbit', ['list', '-F', 'json'], root, 'Orbit index inventory'));
-  const row = rows.find(item => item && canonicalPath(item.repo_path ?? '') === root);
+  const row = rows.find(item =>
+    typeof item?.repo_path === 'string' &&
+    item.repo_path.trim() &&
+    canonicalPath(item.repo_path) === root
+  );
   if (!row) {
     throw new Error('Planner code graph unavailable: current Planner worktree is not indexed by Orbit');
   }
