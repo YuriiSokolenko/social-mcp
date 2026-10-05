@@ -325,6 +325,98 @@ test('follow-up claim suppresses duplicate recovery dispatch', async () => {
   assert.deepEqual(client.state.dispatches, []);
 });
 
+test('failed claimed follow-up is retried by workflow-run recovery', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created'], dispatchFailures: 1 });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '518',
+    runAttempt: 1,
+    model: 'qwen',
+  }, client);
+  await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    verdict: 'PASS',
+    text: 'Looks good.',
+    runId: '518',
+    runAttempt: 1,
+  }, client);
+
+  await assert.rejects(
+    recoverReviewWorkflowRun({
+      displayTitle: '🔬 Review PR #7',
+      runId: '518',
+      runAttempt: 1,
+      outcome: 'failure',
+      runUrl: 'https://github.test/runs/518',
+    }, client),
+    /transient dispatch failure/,
+  );
+  assert.match(client.state.comments.at(-1).body, /pi-review:followup-failed:head-1:PASS:run:518:attempt:1/);
+
+  const recovered = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '518',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/518',
+  }, client);
+
+  assert.deepEqual(recovered, { status: 'followup-dispatched', verdict: 'PASS' });
+  assert.equal(client.state.dispatches.length, 2);
+  assert.match(client.state.comments.at(-1).body, /pi-review:followup:head-1:PASS:run:518:attempt:1/);
+});
+
+test('human takeover blocks recovery follow-up dispatch even when a verdict marker exists', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created', 'review:passed', 'pi:needs-human'] });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '519',
+    runAttempt: 1,
+    model: 'qwen',
+  }, client);
+  client.state.comments.push({
+    id: client.state.nextCommentId++,
+    body: '<!-- pi-review:verdict:head-1:PASS:run:519:attempt:1 -->',
+  });
+
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '519',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/519',
+  }, client);
+
+  assert.deepEqual(result, { status: 'human' });
+  assert.deepEqual(client.state.dispatches, []);
+});
+
+test('failure after deterministic repair dispatch but before independent start does not launch a reviewer', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created', 'review:changes-requested'] });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '520',
+    runAttempt: 1,
+    model: 'qwen',
+  }, client);
+
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '520',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/520',
+  }, client);
+
+  assert.deepEqual(result, { status: 'ignored', reason: 'review-failed-before-independent-start' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:changes-requested']);
+});
+
 test('successful follow-up dispatch is not retried when its confirmation comment fails', async () => {
   const client = fakeClient({
     labels: ['pi:mr-created'],
@@ -558,9 +650,10 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
 
   assert.match(review, /name: Record review run identity[\s\S]*?record-run "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
   assert.doesNotMatch(review, /needs\.review\.result/);
+  assert.doesNotMatch(review, /recover_failed_review:/);
   assert.match(
     review,
-    /recover_failed_review:[\s\S]*?if: always\(\) && contains\(fromJSON\('\["failure","cancelled"\]'\), needs\.review\.outputs\.independent_outcome\)/,
+    /name: Fail job after independent review infrastructure failure[\s\S]*?workflow_run recovery owns the bounded retry/,
   );
   assert.ok(
     review.indexOf('name: Load and guard PR') < review.indexOf('name: Record review run identity') &&
@@ -570,6 +663,8 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
   );
   assert.match(review, /id: record/);
   assert.match(review, /\.pi\/default-model/);
+  assert.match(review, /PI_MODEL_CHOICE: \$\{\{ inputs\.model \|\| 'default' \}\}/);
+  assert.doesNotMatch(review, /vars\.PI_MODEL/);
   assert.match(review, /echo "model=\$\(jq -r '\.model \/\/ empty'/);
   assert.match(review, /model: \$\{\{ steps\.record\.outputs\.model \}\}/);
   assert.match(review, /start-run "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
@@ -582,4 +677,7 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
   assert.match(reconcile, /REVIEW_RUN_ATTEMPT: \$\{\{ github\.event\.workflow_run\.run_attempt \}\}/);
   assert.match(review, /REVIEW_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(reconcile, /review-state\.mjs recover-workflow-run/);
+  const reconciler = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconciler, /labels\.has\(REVIEW_PASSED\)[\s\S]*?mergeGateRecoveryNeeded = true/);
+  assert.match(reconciler, /labels\.has\(REVIEW_CHANGES_REQUESTED\)[\s\S]*?workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
 });
