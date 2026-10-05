@@ -465,6 +465,16 @@ test('output-only retry hides evidence tools when the child supports active-tool
 
   await handlers.get('resources_discover')();
   assert.deepEqual(active, [PLANNER_RESULT_TOOL]);
+  const providerPayload = {
+    model: 'planner',
+    tools: [
+      { type: 'function', function: { name: 'read' } },
+      { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
+    ],
+  };
+  const constrained = handlers.get('before_provider_request')({ payload: providerPayload });
+  assert.equal(constrained.tool_choice, 'required');
+  assert.deepEqual(constrained.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL]);
   const blocked = await handlers.get('tool_call')({ toolName: 'find', input: {} });
   assert.equal(blocked.block, true);
   assert.match(blocked.reason, /output-only/);
