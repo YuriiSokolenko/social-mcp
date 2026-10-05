@@ -13,8 +13,8 @@ import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs'
 export const MAX_PLANNER_EVIDENCE_BUDGET = 6;
 
 const MAX_PLANNER_STEP_LENGTH = 240;
-const MAX_PLANNER_FACTS = 6;
-const MAX_PLANNER_FACT_LENGTH = 200;
+export const MAX_PLANNER_FACTS = 6;
+export const MAX_PLANNER_FACT_LENGTH = 200;
 
 // Planner evidence budget: how many read-only repository actions the planner itself may spend
 // while preparing the plan. Deliberately separate from the output `evidence_budget` above (the
@@ -63,16 +63,62 @@ export function createPlannerEvidenceGate(budget) {
   };
 }
 
-function readPlannerEvidenceUsed(file, cap) {
+function boundedPlannerFact(value) {
+  if (typeof value !== 'string') return null;
+  const fact = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return fact ? fact.slice(0, MAX_PLANNER_FACT_LENGTH).trim() : null;
+}
+
+function plannerResultText(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(plannerResultText).filter(Boolean).join(' ');
+  if (!value || typeof value !== 'object') return '';
+  if (typeof value.text === 'string') return value.text;
+  if (Array.isArray(value.content)) return plannerResultText(value.content);
+  return '';
+}
+
+function redactPlannerEvidence(value) {
+  return String(value ?? '')
+    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, '[redacted pem]')
+    .replace(/\b(?:gh[pousr]_|sk-)[A-Za-z0-9_-]{12,}\b/g, '[redacted credential]')
+    .replace(/((?:api[_-]?key|token|password|secret)\s*[:=]\s*)["']?[^,\s"']+["']?/gi, '$1[redacted]')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// A failed first planner attempt cannot transfer its model memory into a fresh output-only child.
+// Preserve only a tiny deterministic excerpt per successful evidence call: enough to retain the
+// target/symbol clue, never a raw tool transcript or unbounded repository contents.
+export function plannerEvidenceFact(toolName, input, result) {
+  if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) return null;
+  const observed = redactPlannerEvidence(plannerResultText(result));
+  if (!observed) return null;
+  const rawTarget = input?.path ?? input?.file ?? input?.query ?? input?.pattern ?? input?.glob ?? '';
+  const target = redactPlannerEvidence(rawTarget).slice(0, 80);
+  const prefix = `${toolName}${target ? ` ${target}` : ''}: `;
+  const room = Math.max(0, MAX_PLANNER_FACT_LENGTH - prefix.length);
+  return boundedPlannerFact(prefix + observed.slice(0, room));
+}
+
+export function readPlannerEvidenceState(file, cap = MAX_PLANNER_REPOSITORY_EVIDENCE) {
   if (!file) return null;
   try {
     const state = JSON.parse(fs.readFileSync(file, 'utf8'));
     const used = Number(state?.used);
     if (!Number.isSafeInteger(used) || used < 0) return null;
-    return Math.min(used, cap);
+    const facts = Array.isArray(state?.facts)
+      ? state.facts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS)
+      : [];
+    return { used: Math.min(used, cap), cap: Math.min(Number(state?.cap) || cap, cap), facts };
   } catch {
     return null;
   }
+}
+
+function readPlannerEvidenceUsed(file, cap) {
+  return readPlannerEvidenceState(file, cap)?.used ?? null;
 }
 
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
@@ -337,13 +383,27 @@ export function validateImplementationPreparation(value) {
   return { steps, facts, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
 }
 
-export function plannerTask(env = process.env, { repair = false, layoutHint = null, outputOnly = false } = {}) {
+export function plannerTask(env = process.env, {
+  repair = false,
+  layoutHint = null,
+  outputOnly = false,
+  retryFacts = [],
+  evidenceUsed = null,
+  repairError = null,
+} = {}) {
   const issue = implementerIssueContext(env);
   const layoutGuidance = layoutHint
     ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; test_target=${layoutHint.testTarget ?? 'unknown'}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat these resolved targets/directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
     : '';
+  const preservedFacts = retryFacts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS);
+  const retryContext = outputOnly
+    ? `\n\nPRESERVED EVIDENCE FROM ATTEMPT 1 (trusted bounded handoff; ${evidenceUsed == null ? 'unknown' : evidenceUsed}/${MAX_PLANNER_REPOSITORY_EVIDENCE} evidence actions consumed):\n${preservedFacts.length ? preservedFacts.map(fact => `- ${fact}`).join('\n') : '- No textual evidence snippet was recoverable.'}\nCarry every still-relevant preserved fact into the output facts array; do not ask main to rediscover it merely because this is a fresh retry child.`
+    : '';
+  const repairDetail = repair && repairError
+    ? ` Previous schema error: ${redactPlannerEvidence(repairError).slice(0, 500)}`
+    : '';
   const evidencePolicy = outputOnly
-    ? `EVIDENCE PHASE CLOSED. This retry is output-only: do not inspect the repository again and do not call read, grep, find, or ls. Use the issue plus the runtime facts already present in this prompt. Your only valid successful completion is structured_output.`
+    ? `EVIDENCE PHASE CLOSED. This retry is output-only: do not inspect the repository again and do not call read, grep, find, or ls. Use the issue plus the preserved runtime evidence below. Your only valid successful completion is structured_output.`
     : `Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue names an exact path/directory/symbol/test, your first evidence action must target that named location (or the authoritative nearest sibling supplied by the runtime). Broad find/ls/search is escalation only after a targeted location is missing, stale, contradictory, or leaves a concrete planning uncertainty unresolved. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.`;
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
@@ -358,9 +418,9 @@ Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository ev
 
 Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget (for example a substantial new module plus tests), not merely because complexity is nontrivial. Do not implement the task.
 
-The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Evidence remains closed; follow the exact output contract immediately below.` : ''}
+The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}${retryContext}${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Evidence remains closed; correct only the schema/envelope and return immediately.${repairDetail}` : ''}
 
-Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. reason must be one concise sentence <=300 characters.
+Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. The tool argument has exactly one top-level "value"; never wrap it again as { "value": { "value": ... } }. reason must be one concise sentence <=300 characters.
 
 Issue title:
 ${issue.title}
@@ -461,7 +521,15 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
             : schemaFailure ? 'structured_output_schema_failure'
               : 'planner_infrastructure_failure';
         if (retryable && attempt < retries) {
-          request.task = plannerTask(process.env, { repair: schemaFailure, layoutHint, outputOnly: true });
+          const evidenceState = readPlannerEvidenceState(evidenceStateFile, evidenceCap);
+          request.task = plannerTask(process.env, {
+            repair: schemaFailure,
+            layoutHint,
+            outputOnly: true,
+            retryFacts: evidenceState?.facts ?? [],
+            evidenceUsed: evidenceState?.used ?? null,
+            repairError: schemaFailure ? message : null,
+          });
         }
         console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
           agent: config.implementationPlannerAgent,
