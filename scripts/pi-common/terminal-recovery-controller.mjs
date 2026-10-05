@@ -45,6 +45,91 @@ function driftForPath(drift, target) {
   return (Array.isArray(drift) ? drift : []).find(item => item?.path === target) ?? null;
 }
 
+function sameStringSet(left, right) {
+  return JSON.stringify(uniqueStrings(left)) === JSON.stringify(uniqueStrings(right));
+}
+
+function sameJsonValue(left, right) {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+  if (
+    left && right &&
+    typeof left === 'object' &&
+    typeof right === 'object' &&
+    !Array.isArray(left) &&
+    !Array.isArray(right)
+  ) {
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    if (JSON.stringify(leftKeys) !== JSON.stringify(rightKeys)) return false;
+    return leftKeys.every(key => sameJsonValue(left[key], right[key]));
+  }
+  return Object.is(left, right);
+}
+
+function preservesPreviousTerminalInput(previousInput, input, mutableKeys = []) {
+  const mutable = new Set(mutableKeys);
+  return Object.entries(previousInput ?? {}).every(([key, value]) =>
+    mutable.has(key) || (Object.hasOwn(input ?? {}, key) && sameJsonValue(input[key], value))
+  );
+}
+
+/**
+ * A forced recovery tool is only progress when the call still represents the selected repair.
+ * Tool-surface narrowing alone is insufficient because a model can call the right tool with
+ * unrelated arguments.
+ */
+export function recoveryCallMatchesPlan(plan, toolName, input = {}) {
+  if (!plan || plan.status !== 'repair' || toolName !== plan.tool) return false;
+
+  if (plan.kind === 'exact_validation') {
+    const expected = plan.args ?? {};
+    return String(input.kind ?? '').trim() === String(expected.kind ?? '').trim() &&
+      String(input.profile ?? '').trim() === String(expected.profile ?? '').trim() &&
+      sameStringSet(input.paths, expected.paths) &&
+      sameStringSet(input.targets, expected.targets);
+  }
+
+  if (plan.kind === 'metadata_retry') {
+    const missing = uniqueStrings(plan.missingFields);
+    return preservesPreviousTerminalInput(plan.previousInput, input, missing) &&
+      missing.every(field => Object.hasOwn(input, field));
+  }
+
+  if (plan.kind === 'file_set_metadata_retry') {
+    return preservesPreviousTerminalInput(plan.previousInput, input, ['files']) &&
+      sameStringSet(input.files, plan.files);
+  }
+
+  if (plan.tool === 'read' || plan.tool === 'write') {
+    return typeof plan.target === 'string' &&
+      String(input.path ?? '').trim() === plan.target;
+  }
+
+  if (plan.tool === 'undo_mutation') {
+    return String(input.mutation_id ?? '') === String(plan.args?.mutation_id ?? '') &&
+      sameStringSet(input.expected_files, plan.args?.expected_files);
+  }
+
+  if (plan.tool === 'recover_worktree') {
+    return String(input.action ?? '') === String(plan.args?.action ?? '') &&
+      String(input.path ?? '').trim() === String(plan.args?.path ?? '').trim() &&
+      sameStringSet(input.expected_files, plan.args?.expected_files);
+  }
+
+  if (plan.tool === 'need_more_evidence') {
+    return String(input.missing ?? '').trim() === String(plan.args?.missing ?? '').trim();
+  }
+
+  if (plan.tool === 'begin_coding_session') {
+    return String(input.required_capability ?? '').trim() ===
+      String(plan.args?.required_capability ?? '').trim();
+  }
+
+  return true;
+}
+
 /**
  * Select one minimal, capability-valid next action for a repeated terminal failure.
  *
