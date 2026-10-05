@@ -72,3 +72,52 @@ test('#481 recovery receipt admits only runtime-derived accepted changed paths a
     remaining_terminal_obligation: 'validation',
   });
 });
+
+
+test('#481 recovery receipt keeps trusted child worktree and validation state compact', () => {
+  assert.deepEqual(
+    codingSessionRecoveryReceipt({
+      changedFiles: [
+        'src/social_mcp/diagnostics/smoke_connect_four.py',
+        'tests/test_smoke_connect_four.py',
+        'stray.tmp',
+      ],
+      acceptedScope: {
+        accepted: [
+          { path: 'src/social_mcp/diagnostics/smoke_connect_four.py', rationale: 'source' },
+          { path: 'tests/test_smoke_connect_four.py', rationale: 'test' },
+        ],
+      },
+      preparedOutputs: { source: true, test: true },
+      lastValidation: { kind: 'pytest', status: 'infra_error', infrastructure_code: 'CHECK_ENV' },
+    }),
+    {
+      coding_session_status: 'aborted',
+      changed_publishable_paths: [
+        'src/social_mcp/diagnostics/smoke_connect_four.py',
+        'tests/test_smoke_connect_four.py',
+      ],
+      prepared_outputs_present: { source: true, test: true },
+      last_validation: { kind: 'pytest', status: 'infra_error', infrastructure_code: 'CHECK_ENV' },
+      remaining_terminal_obligation: 'validation',
+    },
+  );
+});
+
+test('#481 complete prepared outputs without a passing validation still require validation', () => {
+  const missingValidation = codingSessionRecoveryReceipt({
+    changedFiles: ['src/a.py', 'tests/test_a.py'],
+    acceptedScope: { accepted: [{ path: 'src/a.py' }, { path: 'tests/test_a.py' }] },
+    preparedOutputs: { source: true, test: true },
+    lastValidation: null,
+  });
+  assert.equal(missingValidation.remaining_terminal_obligation, 'validation');
+
+  const passed = codingSessionRecoveryReceipt({
+    changedFiles: ['src/a.py', 'tests/test_a.py'],
+    acceptedScope: { accepted: [{ path: 'src/a.py' }, { path: 'tests/test_a.py' }] },
+    preparedOutputs: { source: true, test: true },
+    lastValidation: { kind: 'pytest', status: 'pass', infrastructure_code: null },
+  });
+  assert.equal(passed.remaining_terminal_obligation, 'terminal_submission');
+});

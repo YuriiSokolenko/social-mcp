@@ -374,6 +374,68 @@ export default function (pi) {
   // permit may restore it only in that case; unrelated removals stay removed.
   let verificationToolHiddenByPermitGate = false;
   let deterministicVerificationInfrastructure = null;
+  // After a fork returns with trusted publishable mutations, prevent a blind second fork or
+  // rewrite of those completed outputs. Release only after evidence inspects one protected path
+  // or authoritative validation settles; if neither route remains reachable, preserve the
+  // worktree and fail closed instead of reopening mutation/fork capabilities.
+  let codingRecoveryGuard = null;
+
+  function normalizedRecoveryEvidencePaths(input, cwd) {
+    const candidates = [
+      typeof input?.path === 'string' ? input.path : null,
+      ...(Array.isArray(input?.paths) ? input.paths : []),
+    ].filter(item => typeof item === 'string' && item.trim());
+    const root = path.resolve(cwd);
+    const normalized = [];
+    for (const candidate of candidates) {
+      const absolute = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(root, candidate);
+      const relative = path.relative(root, absolute);
+      if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) continue;
+      normalized.push(relative.split(path.sep).join('/'));
+    }
+    return [...new Set(normalized)];
+  }
+
+  function codingRecoveryEvidenceTouchesGuard(guard, input, cwd) {
+    if (!guard?.changed_publishable_paths?.length) return false;
+    const protectedPaths = new Set(
+      guard.changed_publishable_paths.map(item => String(item).split('\\').join('/')),
+    );
+    return normalizedRecoveryEvidencePaths(input, cwd).some(item => protectedPaths.has(item));
+  }
+
+  function codingRecoveryEvidenceAvailable() {
+    const evidenceWindowReachable =
+      controller.evidenceUnlockAvailable() ||
+      controller.productiveProgressState() === 'evidence_allowed';
+    if (!evidenceWindowReachable) return false;
+    const inventory = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name })))
+      .map(tool => typeof tool === 'string' ? tool : tool?.name);
+    return inventory.includes('read');
+  }
+
+  function codingRecoveryValidationAvailable() {
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    if (!verificationTool || deterministicVerificationInfrastructure) return false;
+    const capabilityOwned = Boolean(
+      pi.getActiveTools().includes(verificationTool) ||
+      verificationToolHiddenByPermitGate ||
+      unrestrictedActiveTools?.includes(verificationTool)
+    );
+    return capabilityOwned && Boolean(
+      controller.verificationPermitted() || controller.recoveryVerificationArmed()
+    );
+  }
+
+  function abortBlockedCodingRecovery(ctx, reason) {
+    const details = {
+      recovery_receipt: codingRecoveryGuard,
+      checkpoint: { worktree_preserved: true },
+    };
+    recordRuntimeAbort('PI_CODING_RECOVERY_BLOCKED', reason, details);
+    console.error(`PI_CODING_RECOVERY_BLOCKED ${JSON.stringify({ stage, reason, ...details })}`);
+    ctx.abort();
+  }
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -579,8 +641,17 @@ export default function (pi) {
         })}`);
       }
     }
+    const codingRecoveryBlocked = name => Boolean(
+      codingRecoveryGuard &&
+      (
+        CONTENT_MUTATION_TOOLS.has(name) ||
+        name === 'bash' ||
+        name === config.productiveProgress?.codingSessionTool
+      )
+    );
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
+      !codingRecoveryBlocked(name) &&
       (!verificationTool || name !== verificationTool || (verificationVisible && !recoveryRetryReady)) &&
       (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
@@ -1972,6 +2043,19 @@ export default function (pi) {
           });
           const submitted = outcome.successful_final_submission;
           const recoveryReceipt = submitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
+          if (
+            recoveryReceipt?.changed_publishable_paths?.length &&
+            recoveryReceipt.prepared_outputs_present?.source === true &&
+            recoveryReceipt.prepared_outputs_present?.test === true
+          ) {
+            codingRecoveryGuard = recoveryReceipt;
+            console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
+              stage,
+              sessionId,
+              changedPublishablePaths: recoveryReceipt.changed_publishable_paths,
+              remainingTerminalObligation: recoveryReceipt.remaining_terminal_obligation,
+            })}`);
+          }
           const incapable = incapableCodingSessionRecord({
             submitted,
             attemptedTools,
@@ -2733,6 +2817,38 @@ export default function (pi) {
       strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
       verificationEligible,
     });
+
+    if (codingRecoveryGuard) {
+      const validationStatus = event.result?.details?.status ?? null;
+      const informedByEvidence = Boolean(
+        consumedEvidence &&
+        !event.isError &&
+        codingRecoveryEvidenceTouchesGuard(codingRecoveryGuard, acceptedToolInput, ctx.cwd)
+      );
+      const informedByValidation =
+        canonicalToolName === 'run_check' &&
+        !event.isError &&
+        (validationStatus === 'pass' || validationStatus === 'fail');
+      const terminalSucceeded =
+        ['submit_result', 'submit_repair'].includes(canonicalToolName) &&
+        event.isError !== true;
+      const releaseReason = informedByEvidence
+        ? 'bounded_recovery_evidence'
+        : informedByValidation
+          ? `validation_${validationStatus}`
+          : terminalSucceeded
+            ? 'terminal_success'
+            : null;
+      if (releaseReason) {
+        console.info(`PI_CODING_RECOVERY_GUARD_RELEASED ${JSON.stringify({
+          stage,
+          reason: releaseReason,
+          changedPublishablePaths: codingRecoveryGuard.changed_publishable_paths,
+        })}`);
+        codingRecoveryGuard = null;
+      }
+    }
+
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
@@ -2797,6 +2913,17 @@ export default function (pi) {
         }));
         terminalRecoveryAttemptToolCallId = null;
       }
+    }
+
+    if (
+      codingRecoveryGuard &&
+      !codingRecoveryEvidenceAvailable() &&
+      !codingRecoveryValidationAvailable()
+    ) {
+      abortBlockedCodingRecovery(
+        ctx,
+        'Coding-session recovery guard has no safe remaining release path: bounded read evidence is exhausted or unavailable and authoritative validation is unavailable. Preserving recovered worktree mutations and refusing blind rewrite/re-fork recovery.',
+      );
     }
   });
 
