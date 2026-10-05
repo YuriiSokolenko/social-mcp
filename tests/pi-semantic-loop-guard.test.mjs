@@ -2024,3 +2024,173 @@ test('#426 runtime validation recovery passes the real ProgressController gate w
     fs.rmSync(preparedDir, { recursive: true, force: true });
   }
 });
+
+
+test('#426 runtime keeps selected conflict recovery armed after wrong read target', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'read'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'inactive';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+    const failure = {
+      content: [{ type: 'text', text:
+        'Latest dev conflicts with the implementation. Resolve these files and retry submit_result: src/conflict.py'
+      }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'conflict-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    const firstRequest = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'read', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(firstRequest.tools.map(tool => tool.function.name), ['read']);
+
+    const wrong = await handlers.get('tool_call')({
+      toolCallId: 'wrong-conflict-read',
+      toolName: 'read',
+      input: { path: 'src/other.py' },
+    }, ctx);
+    assert.equal(wrong.block, true);
+    assert.match(wrong.reason, /does not match the pending recovery plan/);
+
+    const secondRequest = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'read', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(
+      secondRequest.tools.map(tool => tool.function.name),
+      ['read'],
+      'wrong selected-tool arguments must not consume forced recovery state',
+    );
+    assert.equal(secondRequest.tool_choice, 'required');
+
+    assert.equal(await handlers.get('tool_call')({
+      toolCallId: 'correct-conflict-read',
+      toolName: 'read',
+      input: { path: 'src/conflict.py' },
+    }, ctx), undefined);
+    console.log('CONFLICT_RECOVERY_ARGUMENT_GATE_OK');
+  `);
+
+  assert.match(result.stdout, /CONFLICT_RECOVERY_ARGUMENT_GATE_OK/);
+  assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+});
+
+test('#426 exact recovery permit survives runtime setup failure after controller authorization', () => {
+  const preparedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-validation-recovery-commit-'));
+  const prepared = path.join(preparedDir, 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Submit and perform exact recovery validation'],
+    complexity: 'nontrivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'complete spec',
+    workspaceRoot: REPO_ROOT,
+    freshBaseCommit: '',
+    baseRef: 'origin/dev',
+    layoutHint: null,
+    plannerUsage: null,
+    plannerDurationMs: 1,
+  }));
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'commit-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+          ],
+        },
+      });
+
+      await assert.rejects(
+        handlers.get('tool_call')({
+          toolCallId: 'runtime-setup-failure',
+          toolName: 'run_check',
+          input: { ...exactAction, synthetic_uncloneable: () => true },
+        }, ctx),
+        /could not be cloned|DataCloneError/,
+      );
+
+      const retryRequest = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        retryRequest.tools.map(tool => tool.function.name),
+        ['run_check'],
+        'runtime setup failure after controller authorization keeps exact recovery forced',
+      );
+      assert.equal(retryRequest.tool_choice, 'required');
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'runtime-setup-retry',
+        toolName: 'run_check',
+        input: exactAction,
+      }, ctx), undefined);
+      console.log('EXACT_RECOVERY_COMMIT_BOUNDARY_OK');
+    `, {
+      PI_PREPARED_IMPLEMENTATION_FILE: prepared,
+    });
+
+    assert.match(result.stdout, /EXACT_RECOVERY_COMMIT_BOUNDARY_OK/);
+  } finally {
+    fs.rmSync(preparedDir, { recursive: true, force: true });
+  }
+});
