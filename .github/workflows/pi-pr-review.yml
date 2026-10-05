@@ -182,29 +182,10 @@ jobs:
           REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" PASS
 
-  recover_failed_review:
-    needs: review
-    if: always() && contains(fromJSON('["failure","cancelled"]'), needs.review.outputs.independent_outcome)
-    runs-on: [self-hosted, linux, x64, n150, general]
-    permissions:
-      actions: write
-      contents: read
-      issues: write
-      pull-requests: write
-    steps:
-      - name: Checkout trusted dev
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          ref: dev
-
-      - name: Persist failure and request bounded recovery
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ inputs.pr_number }}
-          HEAD_SHA: ${{ needs.review.outputs.head_sha }}
-          REVIEW_OUTCOME: ${{ needs.review.outputs.independent_outcome }}
-          REVIEW_MODEL: ${{ needs.review.outputs.model }}
-          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
-          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" recover-failure "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
+      - name: Fail job after independent review infrastructure failure
+        if: >-
+          always() &&
+          contains(fromJSON('["failure","cancelled"]'), steps.independent.outcome)
+        run: |
+          echo "Independent review ended with ${{ steps.independent.outcome }}; workflow_run recovery owns the bounded retry."
+          exit 1
