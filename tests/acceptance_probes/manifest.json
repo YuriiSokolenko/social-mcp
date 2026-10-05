@@ -28,7 +28,8 @@
       "status": "requirement",
       "target": "social_mcp.diagnostics.smoke_lru:LRUCache",
       "activation": "when-target-present",
-      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_lru"
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_lru",
+      "source_path": "src/social_mcp/diagnostics/smoke_lru.py"
     },
     "interval-numeric-domain": {
       "source": "issues #346/#401 and follow-up #368; original 'numeric' wording was ambiguous",
@@ -36,6 +37,7 @@
       "target": "social_mcp.diagnostics.smoke_intervals:merge_intervals",
       "activation": "when-target-present",
       "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_intervals",
+      "source_path": "src/social_mcp/diagnostics/smoke_intervals.py",
       "policy": "Reject bool and NaN; accept numbers.Real values (including Fraction) or Decimal bounds; ordered infinities are accepted. Cross-domain Decimal/float mixing is not asserted by this policy."
     }
   },
