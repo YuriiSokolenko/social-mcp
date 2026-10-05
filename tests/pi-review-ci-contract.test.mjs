@@ -1045,9 +1045,14 @@ test('repair preserves current dev behavior when a PR test is stale', () => {
 test('deterministic review failure routes directly to PR Fix instead of stopping the pipeline', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   assert.match(workflow, /name: Run deterministic review checks[\s\S]*?id: checks[\s\S]*?continue-on-error: true/);
-  assert.match(workflow, /name: Mark deterministic check failure for repair[\s\S]*?steps\.checks\.outcome == 'failure'[\s\S]*?review-state\.mjs" dispatch "\$PR" CHANGES_REQUESTED/);
+  assert.match(workflow, /name: Mark deterministic check failure for repair[\s\S]*?steps\.checks\.outcome == 'failure'[\s\S]*?HEAD_SHA: \$\{\{ steps\.load\.outputs\.head_sha \}\}[\s\S]*?REVIEW_RUN_ID: \$\{\{ github\.run_id \}\}[\s\S]*?REVIEW_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}[\s\S]*?review-state\.mjs" dispatch "\$PR" CHANGES_REQUESTED/);
   assert.match(workflow, /name: Run independent review\n\s+id: independent\n\s+if: >-[\s\S]*?steps\.checks\.outcome == 'success'[\s\S]*?steps\.record\.outputs\.status/);
   assert.match(workflow, /name: Apply review result\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success' && steps\.independent\.outcome == 'success'/);
+});
+
+test('trusted reviewer default model is a supported dispatch choice', () => {
+  const model = fs.readFileSync('.pi/default-model', 'utf8').trim();
+  assert.ok(['laguna', 'qwen'].includes(model), `unsupported .pi/default-model: ${model}`);
 });
 
 test('failed independent reviews persist recovery state, retry once, and retain the reviewer trace', () => {
