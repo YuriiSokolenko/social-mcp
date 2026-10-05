@@ -1985,7 +1985,11 @@ export default function (pi) {
           });
           const submitted = outcome.successful_final_submission;
           const recoveryReceipt = submitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
-          if (recoveryReceipt?.changed_publishable_paths?.length) {
+          if (
+            recoveryReceipt?.changed_publishable_paths?.length &&
+            recoveryReceipt.prepared_outputs_present?.source === true &&
+            recoveryReceipt.prepared_outputs_present?.test === true
+          ) {
             codingRecoveryGuard = recoveryReceipt;
             console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
               stage,
