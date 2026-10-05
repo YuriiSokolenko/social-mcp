@@ -1046,7 +1046,7 @@ test('deterministic review failure routes directly to PR Fix instead of stopping
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   assert.match(workflow, /name: Run deterministic review checks[\s\S]*?id: checks[\s\S]*?continue-on-error: true/);
   assert.match(workflow, /name: Mark deterministic check failure for repair[\s\S]*?steps\.checks\.outcome == 'failure'[\s\S]*?review-state\.mjs" dispatch "\$PR" CHANGES_REQUESTED/);
-  assert.match(workflow, /name: Run independent review\n\s+id: independent\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
+  assert.match(workflow, /name: Run independent review\n\s+id: independent\n\s+if: >-[\s\S]*?steps\.checks\.outcome == 'success'[\s\S]*?steps\.record\.outputs\.status/);
   assert.match(workflow, /name: Apply review result\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success' && steps\.independent\.outcome == 'success'/);
 });
 
@@ -1055,8 +1055,10 @@ test('failed independent reviews persist recovery state, retry once, and retain 
   const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
   assert.match(workflow, /id: independent[\s\S]*?continue-on-error: true/);
   assert.match(workflow, /name: Preserve reviewer trace\n\s+if: always\(\)[\s\S]*?actions\/upload-artifact@v4[\s\S]*?pi-review-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\.jsonl/);
-  assert.match(workflow, /recover_failed_review:[\s\S]*?if: >-[\s\S]*?always\(\)[\s\S]*?needs\.review\.outputs\.independent_outcome[\s\S]*?needs\.review\.result/);
+  assert.match(workflow, /recover_failed_review:[\s\S]*?if: always\(\) && contains\(fromJSON\('\["failure","cancelled"\]'\), needs\.review\.outputs\.independent_outcome\)/);
   assert.match(workflow, /recover-failure "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
+  assert.doesNotMatch(workflow, /needs\.review\.result/);
+  assert.match(workflow, /REVIEW_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(workflow, /actions: write/);
   assert.match(state, /pi-review:failure-retry:/);
   assert.match(state, /pi-review:failure-exhausted:/);
