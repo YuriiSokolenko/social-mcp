@@ -617,3 +617,31 @@ test('#426 selected recovery calls must match the deterministic repair arguments
     'metadata recovery cannot silently discard or rewrite prior terminal fields',
   );
 });
+
+
+test('#426 file-set metadata recovery is implementer-only; repair terminal has no file metadata contract', async () => {
+  const repairModule = await import('../scripts/pi-repair-result-tool.mjs');
+  const source = fs.readFileSync(
+    new URL('../scripts/pi-repair-result-tool.mjs', import.meta.url),
+    'utf8',
+  );
+
+  // submit_repair advertises and accepts an empty parameter object; it cannot carry a
+  // corrected files list. Its execute path only integrates latest dev and runs final checks.
+  assert.match(source, /parameters:\s*\{\s*type:\s*'object',\s*properties:\s*\{\},\s*additionalProperties:\s*false\s*\}/);
+  assert.match(source, /integrate\(\{[\s\S]*retry submit_repair/);
+  assert.match(source, /validate\(\{ enforceAcceptedScope: false \}\)/);
+  assert.doesNotMatch(source, /assertImplementerFileSet|missing files:|unexpected files:/);
+
+  let integrated = false;
+  let validated = false;
+  const result = await repairModule.runRepairSubmission({
+    integrate: () => { integrated = true; return { conflicts: [] }; },
+    validate: ({ enforceAcceptedScope }) => {
+      validated = enforceAcceptedScope === false;
+    },
+  });
+  assert.deepEqual(result, {});
+  assert.equal(integrated, true);
+  assert.equal(validated, true);
+});
