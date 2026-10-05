@@ -753,6 +753,7 @@ export default function (pi) {
   }
 
   function abortTerminalRecovery(loopResult, plan, metric, ctx) {
+    controller.clearRecoveryVerification();
     const reason = plan?.status === 'blocked'
       ? plan.reason
       : 'The same terminal obligation persisted after a deterministic repair was selected without obligation-reducing progress.';
@@ -798,7 +799,19 @@ export default function (pi) {
       ['submit_result', 'submit_repair'].includes(loopResult.tool);
 
     if (terminalFailure && loopResult.action === 'steer') {
-      const plan = terminalRecoveryPlan(loopResult, terminalInput, ctx);
+      let plan = terminalRecoveryPlan(loopResult, terminalInput, ctx);
+      controller.clearRecoveryVerification();
+      if (plan.status === 'repair' && plan.kind === 'exact_validation') {
+        if (!controller.armRecoveryVerification(plan.args)) {
+          plan = {
+            status: 'blocked',
+            obligationKey: plan.obligationKey,
+            obligationKind: plan.obligationKind,
+            reason: 'The exact validation recovery action is available as a runtime tool, but the progress controller has no verification tool configured for this stage.',
+            requiredTool: plan.tool,
+          };
+        }
+      }
       terminalRecoveryState = {
         obligationKey: loopResult.obligation.key,
         obligation: loopResult.obligation,
@@ -2016,6 +2029,10 @@ export default function (pi) {
       }));
       terminalRecoveryAttemptToolCallId = event.toolCallId ?? null;
       terminalRecoveryRequiredTool = null;
+      // The progress controller consumes an exact recovery-verification permit in checkToolCall.
+      // Non-validation repairs never arm one; clearing here is harmless and guarantees no stale
+      // recovery verification survives an attempted selected tool.
+      controller.clearRecoveryVerification();
       // The pending recovery directive has now been consumed by a concrete tool attempt.
       // A later repeated terminal failure will construct fresh recovery state from the
       // newest obligation/repository facts instead of compacting against stale history.
