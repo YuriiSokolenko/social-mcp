@@ -543,6 +543,11 @@ test('output-only retry hides evidence tools when the child supports active-tool
 
   await handlers.get('resources_discover')();
   assert.deepEqual(active, [PLANNER_RESULT_TOOL]);
+  const rewrittenPrompt = handlers.get('before_agent_start')({ systemPrompt: agentSource() });
+  assert.match(rewrittenPrompt.systemPrompt, /Only structured_output is available/);
+  for (const tool of PLANNER_EVIDENCE_TOOLS) {
+    assert.doesNotMatch(rewrittenPrompt.systemPrompt, new RegExp(`\\b${tool}\\b`));
+  }
   const providerPayload = {
     model: 'planner',
     tools: [
