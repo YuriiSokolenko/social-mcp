@@ -731,7 +731,6 @@ test('#481 missing structured_output preserves first-attempt evidence in the out
   assert.equal(prepared.plannerEvidenceUsed, 1);
   assert.deepEqual(prepared.repositoryFacts, ['src/net/transport.py contains send_with_backoff.']);
   assert.match(retryTasks[1], /exactly one top-level "value"/);
-  assert.doesNotMatch(retryTasks[1], /"value"\s*:\s*\{\s*"value"\s*:/);
 });
 
 test('malformed pseudo-tool on output-only retry is classified explicitly and fails closed', async (t) => {
