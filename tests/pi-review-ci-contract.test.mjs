@@ -1248,6 +1248,16 @@ test('implementer action-required aborts keep defensive execution-failure proven
     2,
     'accepted records are rendered through fixed trusted text rather than file content',
   );
+  assert.equal(
+    (workflow.match(/\.failure_code == "PI_TERMINAL_RECOVERY_BLOCKED"/g) ?? []).length,
+    4,
+    'both workflow consumers validate and branch on the known terminal-recovery blocked code',
+  );
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="Terminal recovery exhausted or could not select a capability-valid deterministic repair;/g) ?? []).length,
+    2,
+    'terminal-recovery blocked records also render through fixed trusted text',
+  );
   assert.doesNotMatch(workflow, /FAILURE_REASON="\$\(jq/);
   assert.doesNotMatch(workflow, /FAILURE_CODE="\$\(jq/);
   assert.doesNotMatch(workflow, /FAILURE_CLASS="\$\(jq/);

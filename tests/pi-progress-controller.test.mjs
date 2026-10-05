@@ -650,7 +650,13 @@ test('runtime preserves a large mutation budget through scope declaration, then 
   assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
   assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
   assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput[\s\S]*strictBlockerEvidence: consumedEvidence\?\.tool === canonicalToolName/);
-  assert.match(runtime, /return blocked;\s*\}[\s\S]{0,400}const evidenceConsumptionNotice = controller\.consumeEvidenceActionNotice\(\);[\s\S]{0,400}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
+  const blockedReturn = runtime.indexOf('return blocked;');
+  const evidenceNotice = runtime.indexOf('const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice()', blockedReturn);
+  const finishAttempt = runtime.indexOf('if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;', evidenceNotice);
+  assert.ok(
+    blockedReturn >= 0 && evidenceNotice > blockedReturn && finishAttempt > evidenceNotice,
+    'finish-tool attempt accounting happens only after blocked calls return and evidence ownership is captured',
+  );
   assert.match(planner, /evidence_budget/);
 });
 
@@ -1390,4 +1396,122 @@ test('#469 stale unavailable capability attempts are not wired to the prose-only
   assert.match(source, /unavailableCapabilityAttemptedThisTurn/);
   assert.match(source, /effectiveAttemptedTool = actionTurnAttemptedTool \|\| unavailableCapabilityAttemptedThisTurn/);
   assert.match(source, /RUNTIME EVIDENCE PERMIT CONSUMED/);
+});
+
+
+test('#426 verification permit requires obligation-eligible mutation progress', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      verificationTool: 'run_check',
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: false,
+    verificationEligible: false,
+    input: { path: 'scratch/noop.py' },
+  });
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+    'no-op mutation cannot manufacture a verification permit',
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: true,
+    verificationEligible: false,
+    input: { path: 'scratch/unrelated.py' },
+  });
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+    'unrelated mutation cannot manufacture a verification permit',
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: true,
+    verificationEligible: true,
+    input: { path: 'src/relevant.py' },
+  });
+  assert.equal(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }),
+    undefined,
+    'obligation-reducing mutation earns one focused verification permit',
+  );
+});
+
+
+test('#426 exact terminal-recovery verification permit bypasses only the matching run_check gate', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      verificationTool: 'run_check',
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const exact = { kind: 'pytest', targets: ['tests/test_required.py'] };
+  const exactWithEquivalentEmptyFields = {
+    kind: 'pytest',
+    targets: ['tests/test_required.py'],
+    paths: [],
+  };
+  const unrelated = { kind: 'pytest', targets: ['tests/test_other.py'] };
+
+  assert.match(
+    state.checkToolCall('run_check', exact).reason,
+    /not yet available/,
+    'ordinary verification remains closed without a mutation permit',
+  );
+
+  assert.equal(state.armRecoveryVerification(exact), true);
+  assert.equal(state.recoveryVerificationArmed(), true);
+
+  assert.match(
+    state.checkToolCall('run_check', unrelated).reason,
+    /requires the exact authoritative verification action/,
+    'recovery does not open arbitrary run_check access',
+  );
+  assert.equal(state.recoveryVerificationArmed(), true, 'wrong input does not consume the exact permit');
+
+  assert.equal(
+    state.checkToolCall('run_check', exactWithEquivalentEmptyFields),
+    undefined,
+    'the exact authoritative recovery check accepts semantically equivalent omitted/empty scope fields',
+  );
+  assert.equal(
+    state.recoveryVerificationArmed(),
+    true,
+    'policy authorization alone does not consume recovery before runtime execution gates finish',
+  );
+  assert.equal(
+    state.commitRecoveryVerification(unrelated),
+    false,
+    'an unrelated action cannot commit the exact recovery permit',
+  );
+  assert.equal(state.recoveryVerificationArmed(), true);
+  assert.equal(
+    state.commitRecoveryVerification(exactWithEquivalentEmptyFields),
+    true,
+    'the runtime execution boundary commits the matching one-shot permit',
+  );
+  assert.equal(state.recoveryVerificationArmed(), false, 'the committed recovery permit is one-shot');
+  assert.match(
+    state.checkToolCall('run_check', exact).reason,
+    /not yet available/,
+    'ordinary verification policy resumes after the recovery execution is committed',
+  );
 });
