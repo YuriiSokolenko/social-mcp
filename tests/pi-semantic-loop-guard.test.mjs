@@ -1768,3 +1768,55 @@ test('#426 consumed deterministic repair clears recovery compaction state', () =
   assert.match(result.stdout, /TERMINAL_RECOVERY_STATE_CLEARED_OK/);
   assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
 });
+
+
+test('#426 aggregate changed_files from unrelated mutation does not clear terminal obligation', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/a.js';
+
+  failedSubmit(guard, hint);
+  const key = guard.terminalObligation.key;
+
+  const mutation = observation(guard, {
+    tool: 'safe_edit',
+    input: { path: 'src/real.js', operation: 'replace' },
+    result: {
+      details: {
+        path: 'src/real.js',
+        changed_files: ['src/real.js', 'scratch/a.js'],
+      },
+    },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+    mutationChanged: true,
+    repositoryRoot: '/checkout',
+  });
+
+  assert.equal(mutation.classification, 'success_changed');
+  assert.equal(guard.terminalObligation.key, key, 'aggregate changed set cannot resolve the named blocker');
+
+  failedSubmit(guard, hint);
+  assert.equal(failedSubmit(guard, hint).action, 'steer', 'failure history remains tied to the unresolved obligation');
+});
+
+test('#426 absolute obligation path is resolved by exact relative target under repository root', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: /checkout/scratch/a.js';
+
+  failedSubmit(guard, hint);
+  failedSubmit(guard, hint);
+
+  const mutation = observation(guard, {
+    tool: 'safe_edit',
+    input: { path: 'scratch/a.js', operation: 'replace' },
+    result: { details: { path: 'scratch/a.js' } },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+    mutationChanged: true,
+    repositoryRoot: '/checkout',
+  });
+
+  assert.equal(mutation.tripped, false);
+  assert.equal(guard.terminalObligation, null);
+  assert.equal(failedSubmit(guard, hint).tripped, false, 'relevant repair resets the failure count');
+});
