@@ -269,10 +269,9 @@ function targetFamily(input) {
   return typeof value === 'string' ? value.slice(0, 1000) : '';
 }
 
-// A failed terminal submission is identified by its obligation (failure kind plus the exact
-// unexpected/missing/scratch paths it reports), not by its prose. Only those named lists are
-// parsed: the cleanup hint also echoes undo_mutation arguments and the intended expected_files,
-// which are not part of the blocker.
+// A failed terminal submission is identified by its unresolved obligation, not by prose.
+// Keep only trusted structured fields that determine the next repair. Cleanup hints may echo
+// expected_files or mutation ids; those are deliberately excluded from the fingerprint.
 const OBLIGATION_LISTS = Object.freeze([
   ['unexpected', /unexpected files: ([^;]*?)(?=;|\. |$)/],
   ['missing', /missing files: ([^;]*?)(?=;|\. |$)/],
@@ -283,37 +282,288 @@ function parsePathList(text) {
   return text.split(',').map(item => item.trim()).filter(Boolean);
 }
 
+function uniqueStrings(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .filter(item => typeof item === 'string' && item.trim())
+    .map(item => item.trim()))].sort();
+}
+
+function structuredSubmissionError(text) {
+  const parseObject = value => {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+  const exact = parseObject(text);
+  if (exact) return exact;
+  // Tool runtimes may prefix a thrown Error message (for example "Error: {...}").
+  // Recover only one bounded JSON object; prose outside it is not part of the obligation.
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  return start >= 0 && end > start ? parseObject(text.slice(start, end + 1)) : null;
+}
+
+const CONFLICT_OBLIGATION_PATTERNS = Object.freeze([
+  /Latest dev conflicts with the implementation\. Resolve these files and retry submit_result: ([^\n\r]+)/,
+  /PR conflicts with current dev\. Resolve these files and retry submit_repair: ([^\n\r]+)/,
+]);
+
+function structuredErrorStrings(value, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 2) return [];
+  const result = [];
+  for (const key of ['message', 'error', 'reason', 'summary']) {
+    const item = value[key];
+    if (typeof item === 'string' && item.trim()) result.push(item);
+    else if (item && typeof item === 'object') result.push(...structuredErrorStrings(item, depth + 1));
+  }
+  return result;
+}
+
+function conflictMessageCandidates(text) {
+  const parse = value => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  };
+  const decoded = [];
+  for (const candidate of [text, text.replace(/^Error:\s*/, '')]) {
+    const parsed = parse(candidate);
+    if (typeof parsed === 'string' && parsed.trim()) decoded.push(parsed);
+    else if (parsed && typeof parsed === 'object') decoded.push(...structuredErrorStrings(parsed));
+  }
+  if (!decoded.length) {
+    const parsedObject = structuredSubmissionError(text);
+    if (parsedObject) decoded.push(...structuredErrorStrings(parsedObject));
+  }
+  return uniqueStrings(decoded.length ? decoded : [text]);
+}
+
+function conflictObligation(text) {
+  // Prefer decoded structured strings so escaped newlines and JSON delimiters can never become
+  // part of a conflict path. Fall back to raw prose only when no structured wrapper is present.
+  const candidates = conflictMessageCandidates(text);
+  for (const candidate of candidates) {
+    const match = CONFLICT_OBLIGATION_PATTERNS
+      .map(pattern => pattern.exec(candidate))
+      .find(Boolean);
+    if (!match) continue;
+    const conflictPaths = uniqueStrings(parsePathList(match[1]));
+    if (!conflictPaths.length) continue;
+    return {
+      kind: 'conflict',
+      code: 'latest_dev_conflict',
+      paths: conflictPaths,
+      conflictPaths,
+      key: boundedStableHash({ code: 'latest_dev_conflict', conflict_paths: conflictPaths }),
+    };
+  }
+  return null;
+}
+
 export function submissionObligation(result) {
   const text = boundedResultText(result);
   const lists = {};
   for (const [name, pattern] of OBLIGATION_LISTS) {
     const match = pattern.exec(text);
-    if (match) lists[name] = [...new Set(parsePathList(match[1]))].sort();
+    if (match) lists[name] = uniqueStrings(parsePathList(match[1]));
   }
-  const paths = [...new Set(Object.values(lists).flat())].sort();
-  if (paths.length > 0) return { paths, key: boundedStableHash(lists) };
-  try {
-    const code = JSON.parse(text)?.code;
-    if (typeof code === 'string' && code) return { paths: [], key: boundedStableHash({ code }) };
-  } catch {
-    // Not a structured error; the caller falls back to generic error normalization.
+  const paths = uniqueStrings(Object.values(lists).flat());
+  if (paths.length > 0) {
+    return {
+      kind: lists.scratch?.length ? 'file_set_cleanup' : 'file_set',
+      code: 'implementer_file_set',
+      paths,
+      unexpected: lists.unexpected ?? [],
+      missing: lists.missing ?? [],
+      scratch: lists.scratch ?? [],
+      key: boundedStableHash(lists),
+    };
   }
-  return null;
+
+  const conflict = conflictObligation(text);
+  if (conflict) return conflict;
+
+  const parsed = structuredSubmissionError(text);
+  const code = typeof parsed?.code === 'string' ? parsed.code : '';
+  if (!code) return null;
+
+  if (code === 'missing_publication_fields') {
+    const missingFields = uniqueStrings(parsed.missing_fields);
+    return {
+      kind: 'metadata',
+      code,
+      paths: [],
+      missingFields,
+      key: boundedStableHash({ code, missing_fields: missingFields }),
+    };
+  }
+  if (code === 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED') {
+    const requiredTargets = uniqueStrings(parsed.required_targets);
+    const action = parsed.action && typeof parsed.action === 'object' && !Array.isArray(parsed.action)
+      ? {
+          kind: typeof parsed.action.kind === 'string' ? parsed.action.kind : null,
+          paths: uniqueStrings(parsed.action.paths),
+          targets: uniqueStrings(parsed.action.targets),
+          profile: typeof parsed.action.profile === 'string' ? parsed.action.profile : null,
+        }
+      : null;
+    return {
+      kind: 'validation',
+      code,
+      // Validation targets are not mutation obligations: an unrelated edit to a test path must
+      // not make the failed submission disappear. Only authoritative passing validation does.
+      paths: [],
+      requiredTargets,
+      action,
+      key: boundedStableHash({ code, required_targets: requiredTargets, action }),
+    };
+  }
+  if (code === 'PREPARED_OUTPUTS_REQUIRED') {
+    const missingOutputs = uniqueStrings(parsed.missing_outputs);
+    return {
+      kind: 'prepared_outputs',
+      code,
+      paths: missingOutputs,
+      missingOutputs,
+      key: boundedStableHash({ code, missing_outputs: missingOutputs }),
+    };
+  }
+
+  return {
+    kind: 'coded',
+    code,
+    paths: [],
+    key: boundedStableHash({ code }),
+  };
 }
 
-// The file a mutation acted on. Targeted recovery tools (undo_mutation, rollback_last_mutation,
-// recover_worktree) take no path argument, so the path comes from the runtime's result.
-function mutationTargetPath(input, result) {
+function passingValidationResult(result) {
+  if (result?.details?.status === 'pass') return true;
+  const text = explicitResultText(result);
+  if (!text) return false;
+  try {
+    return JSON.parse(text)?.status === 'pass';
+  } catch {
+    return false;
+  }
+}
+
+function exactValidationActionMatches(obligation, tool, input) {
+  if (tool !== 'run_check' || obligation?.kind !== 'validation' || !obligation.action) return false;
+  const expected = obligation.action;
+  // A targeted validation obligation is authoritative only when it names an exact run_check
+  // kind. An empty/malformed action must never be discharged by an unrelated passing check.
+  if (!expected.kind || input?.kind !== expected.kind) return false;
+  if (expected.profile && input?.profile !== expected.profile) return false;
+  const same = (left, right) =>
+    JSON.stringify(uniqueStrings(left)) === JSON.stringify(uniqueStrings(right));
+  if (expected.paths.length && !same(input?.paths, expected.paths)) return false;
+  if (expected.targets.length && !same(input?.targets, expected.targets)) return false;
+  return true;
+}
+
+function mutationResultPaths(input, result) {
+  // Explicit mutation input is the strongest target evidence. Aggregate result fields such as
+  // files/paths/changed_files often describe the whole worktree and must not be treated as files
+  // touched by this one mutation.
   const direct = targetFamily(input);
-  if (direct) return direct;
-  const fromDetails = result?.details?.path;
-  if (typeof fromDetails === 'string') return fromDetails;
+  if (direct) return [direct];
+
+  const candidates = [];
+  const collectSingularPath = value => {
+    if (typeof value === 'string' && value.trim()) candidates.push(value.trim());
+  };
+  collectSingularPath(result?.details?.path);
+  collectSingularPath(result?.path);
   try {
     const parsed = JSON.parse(explicitResultText(result) ?? '');
-    return typeof parsed?.path === 'string' ? parsed.path : '';
+    collectSingularPath(parsed?.path);
   } catch {
-    return '';
+    // Unstructured mutation result: no authoritative target beyond the fields above.
   }
+  return uniqueStrings(candidates);
+}
+
+function normalizedPath(value) {
+  return String(value ?? '')
+    .split(path.win32.sep).join('/')
+    .replace(/^\.\//, '')
+    .replace(/\/$/, '');
+}
+
+function canonicalAbsolutePath(value) {
+  let current = path.resolve(value);
+  const missingTail = [];
+  while (true) {
+    try {
+      const resolved = fs.realpathSync.native
+        ? fs.realpathSync.native(current)
+        : fs.realpathSync(current);
+      return path.join(resolved, ...missingTail.reverse());
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes(String(error?.code ?? ''))) {
+        return path.resolve(value);
+      }
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(value);
+      missingTail.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function targetMatchesObligationPath(target, obligationPath, repositoryRoot = null) {
+  let actual = normalizedPath(target);
+  let expected = normalizedPath(obligationPath);
+  if (!actual || !expected) return false;
+
+  if (repositoryRoot) {
+    const lexicalRoot = path.resolve(repositoryRoot);
+    const canonicalRoot = canonicalAbsolutePath(lexicalRoot);
+    const relativizeInsideRoot = value => {
+      if (!path.isAbsolute(value)) return normalizedPath(value);
+
+      const lexicalValue = path.resolve(value);
+      const canonicalValue = canonicalAbsolutePath(lexicalValue);
+      for (const [root, candidate] of [
+        [canonicalRoot, canonicalValue],
+        [lexicalRoot, lexicalValue],
+      ]) {
+        const relative = path.relative(root, candidate);
+        if (!relative || relative === '.') return '';
+        if (!relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) {
+          return normalizedPath(relative);
+        }
+      }
+      return null;
+    };
+    actual = relativizeInsideRoot(actual);
+    expected = relativizeInsideRoot(expected);
+    // When the repository root is known, path identity is repository-relative and exact.
+    // Canonicalize real filesystem roots first so macOS aliases such as /var and /private/var
+    // still identify the same worktree path without reviving unsafe suffix matching.
+    return Boolean(actual && expected && actual === expected);
+  }
+
+  if (actual === expected) return true;
+  const actualAbsolute = path.isAbsolute(actual);
+  const expectedAbsolute = path.isAbsolute(expected);
+  if (actualAbsolute && !expectedAbsolute) return actual.endsWith('/' + expected);
+  if (expectedAbsolute && !actualAbsolute) return expected.endsWith('/' + actual);
+  return false;
+}
+
+export function mutationResolvesSubmissionObligation(obligation, input, result, repositoryRoot = null) {
+  const paths = obligation?.paths ?? [];
+  const targets = mutationResultPaths(input, result);
+  return targets.some(target =>
+    paths.some(item => targetMatchesObligationPath(target, item, repositoryRoot))
+  );
 }
 
 function strategyFamily(tool, input, productiveState, errorClass) {
@@ -363,11 +613,6 @@ export class SemanticLoopGuard {
     if (recoveringFromSteer) this.observationWindow = [];
   }
 
-  _mutationTouchesObligation(target) {
-    const paths = this.terminalObligation?.paths ?? [];
-    return Boolean(target) && paths.some(item => target === item || target.endsWith('/' + item) || item.endsWith('/' + target));
-  }
-
   _markNovelRepositoryState() {
     this.steerOutstanding = false;
     this.failureWindow = [];
@@ -406,6 +651,7 @@ export class SemanticLoopGuard {
     repositoryStateBefore = null,
     repositoryStateAfter = null,
     mutationChanged = null,
+    repositoryRoot = null,
   }) {
     const base = {
       stage,
@@ -428,20 +674,46 @@ export class SemanticLoopGuard {
     }
 
     if (isError || blocked) {
-      const obligation = TERMINAL_TOOLS.has(tool) && !blocked ? submissionObligation(result) : null;
+      const terminalTool = TERMINAL_TOOLS.has(tool);
+      const obligation = terminalTool && !blocked ? submissionObligation(result) : null;
       const errorClass = obligation ? 'submission_' + obligation.key : normalizeErrorClass(result, blocked);
-      if (TERMINAL_TOOLS.has(tool)) this.terminalObligation = obligation ?? { paths: [], key: errorClass };
-      const family = strategyFamily(tool, TERMINAL_TOOLS.has(tool) ? {} : input, productiveState, errorClass);
+      if (terminalTool) {
+        if (obligation) {
+          this.terminalObligation = obligation;
+        } else if (!blocked || !this.terminalObligation) {
+          // A blocked retry cannot provide new terminal diagnostics. Preserve any already
+          // recognized obligation rather than replacing it with a generic blocked-call class.
+          this.terminalObligation = { paths: [], key: errorClass };
+        }
+      }
+      const family = strategyFamily(tool, terminalTool ? {} : input, productiveState, errorClass);
       this._push(this.failureWindow, family);
       const count = this._count(this.failureWindow, family);
       const classification = blocked ? 'blocked' : 'error';
-      const failed = { ...base, classification, errorClass };
+      const failed = {
+        ...base,
+        classification,
+        errorClass,
+        obligation: TERMINAL_TOOLS.has(tool) ? this.terminalObligation : null,
+      };
       if (count >= this.revisitThreshold) {
         return this._trip(failed, 'repeated_failed_strategy', 'failure_strategy', count, {
           repeatedFailure: true,
         });
       }
       return failed;
+    }
+
+    if (
+      this.terminalObligation?.kind === 'validation' &&
+      exactValidationActionMatches(this.terminalObligation, tool, input) &&
+      passingValidationResult(result)
+    ) {
+      this.terminalObligation = null;
+      this.steerOutstanding = false;
+      this.failureWindow = [];
+      this.observationWindow = [];
+      return { ...base, classification: 'success_obligation_resolved' };
     }
 
     if (MUTATION_TOOLS.has(tool)) {
@@ -478,7 +750,12 @@ export class SemanticLoopGuard {
         ? this._count(this.repositoryWindow, repositoryStateAfter)
         : 0;
 
-      const resolvesObligation = this._mutationTouchesObligation(mutationTargetPath(input, result));
+      const resolvesObligation = mutationResolvesSubmissionObligation(
+        this.terminalObligation,
+        input,
+        result,
+        repositoryRoot,
+      );
       if (changed && this.terminalObligation && resolvesObligation) {
         // A relevant fix resolves the blocker even when it restores an already-seen state
         // (undo of an accidental B back to A). Repository revisit tracking stays intact.

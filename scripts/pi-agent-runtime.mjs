@@ -55,10 +55,17 @@ import {
   SemanticLoopGuard,
   isSemanticMutationTool,
   loopGuardLimits,
+  mutationResolvesSubmissionObligation,
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import { classifyWorktreeDrift, recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
+import {
+  compactTerminalRecoveryPayload,
+  recoveryCallMatchesPlan,
+  selectTerminalRecovery,
+  terminalRecoveryGuidance,
+} from './pi-common/terminal-recovery-controller.mjs';
 import { captureWorktreeBaseline, observeWorktreeDrift, readWorktreeBaseline, readWorktreeObserved } from './pi-common/worktree-baseline.mjs';
 import { assertImplementerFileSet } from './pi-common/implementer-result.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
@@ -96,6 +103,14 @@ const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 
 const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
+const DETERMINISTIC_TERMINAL_RECOVERY_KINDS = new Set([
+  'metadata',
+  'validation',
+  'prepared_outputs',
+  'conflict',
+  'file_set',
+  'file_set_cleanup',
+]);
 
 // Trust boundary: the coding session's agent definition, tool allowlist and extensions come
 // from THIS module's control checkout (the trusted harness), never from the issue worktree the
@@ -337,6 +352,12 @@ export default function (pi) {
   let requireToolOnNextProviderRequest = false;
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
+  let terminalRecoveryState = null;
+  let terminalRecoveryRequiredTool = null;
+  let terminalRecoveryAttemptToolCallId = null;
+  // The payload that actually produced the current structured terminal obligation. Locally
+  // blocked retries have no terminal diagnostics and must never replace this publication base.
+  let lastTerminalFailureInput = null;
   let unrestrictedActiveTools = null;
   let unavailableToolAttempts = 0;
   let unavailableCapabilityAttemptedThisTurn = false;
@@ -462,9 +483,11 @@ export default function (pi) {
     // usable; only exact retry is disabled because its historical scope cannot
     // be reconstructed safely from an incomplete ledger.
     const verificationPermitted = controller.verificationPermitted();
+    const recoveryVerificationArmed = controller.recoveryVerificationArmed();
+    const verificationVisible = verificationPermitted || recoveryVerificationArmed;
     const currentWithPermittedVerification =
       verificationTool &&
-      verificationPermitted &&
+      verificationVisible &&
       verificationToolHiddenByPermitGate &&
       !current.includes(verificationTool)
         ? [...current, verificationTool]
@@ -511,7 +534,7 @@ export default function (pi) {
     }
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
-      (!verificationTool || name !== verificationTool || (verificationPermitted && !recoveryRetryReady)) &&
+      (!verificationTool || name !== verificationTool || (verificationVisible && !recoveryRetryReady)) &&
       (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
     const applySurface = (names, reason) => {
@@ -519,10 +542,10 @@ export default function (pi) {
         if (
           current.includes(verificationTool) &&
           !names.includes(verificationTool) &&
-          (!verificationPermitted || recoveryRetryReady)
+          (!verificationVisible || recoveryRetryReady)
         ) {
           verificationToolHiddenByPermitGate = true;
-        } else if (verificationPermitted && !recoveryRetryReady && names.includes(verificationTool)) {
+        } else if (verificationVisible && !recoveryRetryReady && names.includes(verificationTool)) {
           verificationToolHiddenByPermitGate = false;
         }
       }
@@ -539,9 +562,10 @@ export default function (pi) {
               'submit_repair',
             ]).has(name)
           )
-        : largeMutationBudgetActive
+        : largeMutationBudgetActive && !recoveryVerificationArmed
           // UX on top of the controller's own hard gate: while the elevated budget is active,
-          // don't even show tools this turn is not allowed to call.
+          // don't even show tools this turn is not allowed to call. Exact terminal recovery
+          // verification is a separate one-shot gate and temporarily supersedes this surface.
           ? elevatedMutationTurnToolNames(unrestrictedActiveTools, {
               blockerTool: controller.evidenceUnlockAvailable()
                 ? config.productiveProgress.blockerTool
@@ -555,7 +579,7 @@ export default function (pi) {
               : null,
             verificationTools: recoveryRetryReady
               ? [RETRY_FAILED_CHECK_TOOL]
-              : verificationPermitted
+              : verificationVisible
                 ? [config.productiveProgress.verificationTool].filter(Boolean)
                 : [],
           });
@@ -675,7 +699,103 @@ export default function (pi) {
     return guidance;
   }
 
-  async function handleLoopResult(loopResult, ctx) {
+  function terminalInputForLoop(tool, input) {
+    if (!['submit_result', 'submit_repair'].includes(tool)) return null;
+    return input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  }
+
+  function terminalRecoveryPlan(loopResult, terminalInput, ctx) {
+    let currentChangedFiles = [];
+    let drift = [];
+    let acceptedPaths = [];
+    let repositoryFactsAvailable = true;
+    try {
+      currentChangedFiles = worktreeChangedFiles(ctx.cwd, baseRef());
+      const evidence = driftEvidence(ctx.cwd);
+      acceptedPaths = [...evidence.acceptedPaths];
+      drift = classifyWorktreeDrift({
+        cwd: ctx.cwd,
+        changed: currentChangedFiles,
+        expectedFiles: Array.isArray(terminalInput?.files) ? terminalInput.files : [],
+        ...evidence,
+      });
+    } catch (error) {
+      repositoryFactsAvailable = false;
+      console.warn('PI_TERMINAL_RECOVERY_FACTS_FAILED ' + JSON.stringify({
+        stage,
+        obligationKey: loopResult.obligation?.key ?? null,
+        error: String(error?.message ?? error),
+      }));
+    }
+    let recoveryActiveTools = pi.getActiveTools();
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    if (
+      loopResult.obligation?.kind === 'validation' &&
+      verificationTool &&
+      verificationToolHiddenByPermitGate &&
+      !recoveryActiveTools.includes(verificationTool)
+    ) {
+      recoveryActiveTools = [...recoveryActiveTools, verificationTool];
+    }
+    return selectTerminalRecovery({
+      obligation: loopResult.obligation,
+      terminalInput,
+      activeToolNames: recoveryActiveTools,
+      currentChangedFiles,
+      drift,
+      acceptedPaths,
+      repositoryFactsAvailable,
+    });
+  }
+
+  function terminalObligationSummary(obligation) {
+    if (!obligation || typeof obligation !== 'object') return null;
+    const summary = {
+      key: obligation.key ?? null,
+      kind: obligation.kind ?? null,
+      code: obligation.code ?? null,
+    };
+    for (const key of ['paths', 'conflictPaths', 'missingFields', 'requiredTargets', 'missingOutputs']) {
+      if (!Array.isArray(obligation[key])) continue;
+      summary[key] = obligation[key].slice(0, 20);
+      if (obligation[key].length > 20) summary[key + 'Count'] = obligation[key].length;
+    }
+    return summary;
+  }
+
+  function terminalRecoveryPlanSummary(plan) {
+    if (!plan || typeof plan !== 'object') return null;
+    return {
+      status: plan.status ?? null,
+      obligationKey: plan.obligationKey ?? null,
+      obligationKind: plan.obligationKind ?? null,
+      kind: plan.kind ?? null,
+      tool: plan.tool ?? null,
+      target: plan.target ?? null,
+      requiredTool: plan.requiredTool ?? null,
+      reason: plan.reason ?? null,
+    };
+  }
+
+  function abortTerminalRecovery(loopResult, plan, metric, ctx) {
+    controller.clearRecoveryVerification();
+    const reason = plan?.status === 'blocked'
+      ? plan.reason
+      : 'The same terminal obligation persisted after a deterministic repair was selected without obligation-reducing progress.';
+    const details = {
+      unresolved_obligation: terminalObligationSummary(loopResult.obligation),
+      selected_repair: terminalRecoveryPlanSummary(plan),
+      checkpoint: {
+        repository_state: loopResult.repositoryState ?? null,
+        worktree_preserved: true,
+      },
+    };
+    recordRuntimeAbort('PI_TERMINAL_RECOVERY_BLOCKED', reason, details);
+    console.error('PI_TERMINAL_RECOVERY_BLOCKED ' + JSON.stringify({ ...metric, ...details, reason }));
+    ctx.abort();
+  }
+
+  async function handleLoopResult(loopResult, ctx, { terminalInput = null } = {}) {
     if (!loopResult?.tripped) return;
     const metric = {
       stage: loopResult.stage,
@@ -691,8 +811,83 @@ export default function (pi) {
       repeatedFailure: loopResult.repeatedFailure,
       returnedToSeenState: loopResult.returnedToSeenState,
       action: loopResult.action,
+      obligationKey: loopResult.obligation?.key ?? null,
+      obligationKind: loopResult.obligation?.kind ?? null,
     };
     console.log('PI_LOOP_GUARD ' + JSON.stringify(metric));
+
+    const terminalFailure =
+      loopResult.reason === 'repeated_failed_strategy' &&
+      loopResult.repeatedFailure === true &&
+      loopResult.obligation?.key &&
+      DETERMINISTIC_TERMINAL_RECOVERY_KINDS.has(loopResult.obligation?.kind) &&
+      ['submit_result', 'submit_repair'].includes(loopResult.tool);
+
+    if (terminalFailure && loopResult.action === 'steer') {
+      const retainedRecovery =
+        terminalRecoveryState?.obligationKey === loopResult.obligation.key
+          ? terminalRecoveryState
+          : null;
+      const recoveryTerminalInput =
+        retainedRecovery?.terminalInput ??
+        (
+          lastTerminalFailureInput?.obligationKey === loopResult.obligation.key
+            ? lastTerminalFailureInput.input
+            : terminalInput
+        );
+      let plan = retainedRecovery?.plan ?? terminalRecoveryPlan(loopResult, recoveryTerminalInput, ctx);
+      controller.clearRecoveryVerification();
+      if (plan.status === 'repair' && plan.kind === 'exact_validation') {
+        if (controller.largeMutationBudgetPending() || controller.largeMutationBudgetActive()) {
+          controller.resetLargeMutationBudget();
+          elevatedScopePreludeUsed = false;
+        }
+        if (!controller.armRecoveryVerification(plan.args)) {
+          plan = {
+            status: 'blocked',
+            obligationKey: plan.obligationKey,
+            obligationKind: plan.obligationKind,
+            reason: 'The exact validation recovery action is available as a runtime tool, but the progress controller has no verification tool configured for this stage.',
+            requiredTool: plan.tool,
+          };
+        }
+      }
+      terminalRecoveryState = {
+        obligationKey: loopResult.obligation.key,
+        obligation: loopResult.obligation,
+        plan,
+        // Preserve the payload that actually produced this obligation. A later locally-blocked
+        // retry has no terminal diagnostics and must never become the new metadata baseline.
+        terminalInput:
+          recoveryTerminalInput && typeof recoveryTerminalInput === 'object' && !Array.isArray(recoveryTerminalInput)
+            ? structuredClone(recoveryTerminalInput)
+            : recoveryTerminalInput,
+      };
+      if (plan.status === 'blocked') {
+        abortTerminalRecovery(loopResult, plan, metric, ctx);
+        return;
+      }
+      terminalRecoveryRequiredTool = plan.tool;
+      requireToolOnNextProviderRequest = true;
+      loopGuardSteeredThisTurn = true;
+      const guidance = terminalRecoveryGuidance(plan);
+      console.warn('PI_TERMINAL_RECOVERY_SELECTED ' + JSON.stringify({
+        ...metric,
+        plan: terminalRecoveryPlanSummary(plan),
+        activeTools: pi.getActiveTools(),
+      }));
+      await pi.sendUserMessage(guidance, { deliverAs: 'steer' });
+      return;
+    }
+
+    if (terminalFailure && loopResult.action === 'abort') {
+      const plan = terminalRecoveryState?.obligationKey === loopResult.obligation.key
+        ? terminalRecoveryState.plan
+        : terminalRecoveryPlan(loopResult, terminalInput, ctx);
+      abortTerminalRecovery(loopResult, plan, metric, ctx);
+      return;
+    }
+
     if (loopResult.action === 'steer') {
       loopGuardSteeredThisTurn = true;
       console.warn('PI_LOOP_GUARD_STEER ' + JSON.stringify(metric));
@@ -834,6 +1029,9 @@ export default function (pi) {
       syncActionToolSurface(productiveState);
 
       let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
+      if (terminalRecoveryState) {
+        patched = compactTerminalRecoveryPayload(patched, terminalRecoveryState);
+      }
       if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
         codingSessionLog('thinking_disabled', {
           side: 'fork',
@@ -845,8 +1043,33 @@ export default function (pi) {
 
       if (Array.isArray(patched?.tools)) {
         const active = new Set(pi.getActiveTools());
-        const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
-        if (tools.length !== patched.tools.length) patched = { ...patched, tools };
+        let tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
+        if (terminalRecoveryRequiredTool) {
+          const selected = tools.filter(tool =>
+            controllerToolName(tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
+          );
+          if (selected.length) {
+            tools = selected;
+            requireToolOnNextProviderRequest = true;
+            console.warn('PI_TERMINAL_RECOVERY_TOOL_SURFACE ' + JSON.stringify({
+              stage,
+              obligationKey: terminalRecoveryState?.obligationKey ?? null,
+              tool: terminalRecoveryRequiredTool,
+            }));
+          } else {
+            console.warn('PI_TERMINAL_RECOVERY_TOOL_DEFERRED ' + JSON.stringify({
+              stage,
+              obligationKey: terminalRecoveryState?.obligationKey ?? null,
+              tool: terminalRecoveryRequiredTool,
+            }));
+          }
+        }
+        if (
+          tools.length !== patched.tools.length ||
+          tools.some((tool, index) => tool !== patched.tools[index])
+        ) {
+          patched = { ...patched, tools };
+        }
 
         // pi resolves this turn's tool calls against the context captured with this payload, so
         // the payload's definitions are the executable surface of this request. A tool activated
@@ -1844,7 +2067,6 @@ export default function (pi) {
     // forcing must not remain stuck across the next provider request.
     const satisfiedProviderForcing = requireToolOnNextProviderRequest;
     if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
-
     // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
     // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
     // run_check for controller policy after visibility has been checked.
@@ -1903,8 +2125,11 @@ export default function (pi) {
           result: unavailable,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(event.toolName, event.input),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
@@ -1959,6 +2184,17 @@ export default function (pi) {
     }
 
     const canonicalToolName = controllerToolName(event.toolName);
+    if (
+      !recoveryBlocked &&
+      terminalRecoveryRequiredTool === canonicalToolName &&
+      terminalRecoveryState?.plan &&
+      !recoveryCallMatchesPlan(terminalRecoveryState.plan, canonicalToolName, canonicalInput)
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: `BLOCKED: ${event.toolName} did not execute. Terminal recovery requires the selected deterministic repair arguments; this call does not match the pending recovery plan.`,
+      };
+    }
     const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput);
     if (blocked?.alreadySatisfied) {
       blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is single-shot and already completed; it did not execute. ${activeToolGuidance(activeToolNames)}`;
@@ -1986,20 +2222,34 @@ export default function (pi) {
           result: blocked,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
         // A blocked tool has no tool_execution_end event, so classify it here.
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(canonicalToolName, canonicalInput),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
+      if (terminalRecoveryRequiredTool === canonicalToolName) {
+        // The selected recovery tool was emitted but rejected by local policy (for example,
+        // wrong run_check arguments). Keep the exact recovery state armed for the next request.
+        requireToolOnNextProviderRequest = true;
+      }
       return blocked;
     }
+
     // Capture the controller notice now, but publish it only for this exact toolCallId after
     // execution. Any later runtime-side block simply drops this local value.
     const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice();
     const restoreRuntimeBlockedEvidence = () => {
       if (evidenceConsumptionNotice) {
         controller.restoreRuntimeBlockedEvidenceAction(evidenceConsumptionNotice);
+      }
+      if (terminalRecoveryRequiredTool === canonicalToolName) {
+        // The provider satisfied tool_choice, but the runtime refused execution after the
+        // controller gate. Keep the selected recovery armed and force it again next request.
+        requireToolOnNextProviderRequest = true;
       }
     };
     try {
@@ -2036,11 +2286,15 @@ export default function (pi) {
           result: noOpBlocked,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(event.toolName, event.input),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
+      restoreRuntimeBlockedEvidence();
       return noOpBlocked;
     }
 
@@ -2061,6 +2315,7 @@ export default function (pi) {
         }
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
+        restoreRuntimeBlockedEvidence();
         return containmentBlocked;
       }
     }
@@ -2102,6 +2357,7 @@ export default function (pi) {
           tool: event.toolName,
           reason,
         }));
+        restoreRuntimeBlockedEvidence();
         return {
           block: true,
           reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
@@ -2111,7 +2367,35 @@ export default function (pi) {
     if (stage === 'implementer' && canonicalToolName === 'bash') {
       pendingBashValidationFingerprints.set(event.toolCallId, repositoryStateFingerprint(cwd));
     }
-    pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
+
+    // Finish all setup that can still reject/throw before committing terminal recovery.
+    // In particular, structuredClone can fail on malformed synthetic/runtime inputs; such a
+    // failure must leave the exact validation permit and forced recovery directive intact.
+    const clonedCanonicalInput = structuredClone(canonicalInput);
+
+    if (terminalRecoveryRequiredTool === canonicalToolName) {
+      const plan = terminalRecoveryState?.plan ?? null;
+      if (plan?.kind === 'exact_validation' && !controller.commitRecoveryVerification(canonicalInput)) {
+        restoreRuntimeBlockedEvidence();
+        return {
+          block: true,
+          reason: 'BLOCKED: exact terminal recovery verification was authorized but its one-shot permit could not be committed at the execution boundary.',
+        };
+      }
+      console.log('PI_TERMINAL_RECOVERY_TOOL_ATTEMPT ' + JSON.stringify({
+        stage,
+        obligationKey: terminalRecoveryState?.obligationKey ?? null,
+        tool: event.toolName,
+      }));
+      terminalRecoveryAttemptToolCallId = event.toolCallId ?? null;
+      terminalRecoveryRequiredTool = null;
+      controller.clearRecoveryVerification();
+      // Consume recovery only at the actual execution boundary, after controller policy,
+      // argument matching, containment, no-op, provenance and clone setup have all succeeded.
+      terminalRecoveryState = null;
+    }
+
+    pendingToolInputs.set(event.toolCallId, clonedCanonicalInput);
     if (evidenceConsumptionNotice) {
       pendingEvidenceConsumptionNotices.set(event.toolCallId, evidenceConsumptionNotice);
     }
@@ -2119,7 +2403,7 @@ export default function (pi) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
         toolName: canonicalToolName,
-        input: structuredClone(canonicalInput),
+        input: clonedCanonicalInput,
         productiveState,
         repositoryStateBefore,
       });
@@ -2340,10 +2624,26 @@ export default function (pi) {
       }
     }
     const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
+    const outstandingTerminalObligation = loopGuard?.terminalObligation ?? null;
+    const terminalObligationHasExactMutationPaths =
+      Array.isArray(outstandingTerminalObligation?.paths) &&
+      outstandingTerminalObligation.paths.length > 0;
+    const verificationEligible =
+      effectiveProgress &&
+      (
+        !terminalObligationHasExactMutationPaths ||
+        mutationResolvesSubmissionObligation(
+          outstandingTerminalObligation,
+          pendingLoopCall?.input ?? acceptedToolInput,
+          event.result,
+          ctx.cwd,
+        )
+      );
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
       madeProgress: effectiveProgress,
       input: acceptedToolInput,
       strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
+      verificationEligible,
     });
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
@@ -2383,10 +2683,32 @@ export default function (pi) {
         repositoryStateBefore: pendingLoopCall.repositoryStateBefore,
         repositoryStateAfter,
         mutationChanged,
+        repositoryRoot: ctx.cwd,
       });
       pendingLoopCalls.delete(event.toolCallId);
 
-      await handleLoopResult(loopResult, ctx);
+      if (['submit_result', 'submit_repair'].includes(pendingLoopCall.toolName)) {
+        if (!event.isError) {
+          lastTerminalFailureInput = null;
+        } else if (loopResult.obligation?.key && loopResult.classification === 'error') {
+          lastTerminalFailureInput = {
+            obligationKey: loopResult.obligation.key,
+            input: structuredClone(pendingLoopCall.input ?? {}),
+          };
+        }
+      }
+
+      await handleLoopResult(loopResult, ctx, {
+        terminalInput: terminalInputForLoop(pendingLoopCall.toolName, pendingLoopCall.input),
+      });
+      if (terminalRecoveryAttemptToolCallId === event.toolCallId) {
+        console.log('PI_TERMINAL_RECOVERY_TOOL_SETTLED ' + JSON.stringify({
+          stage,
+          tool: pendingLoopCall.toolName,
+          isError: event.isError === true,
+        }));
+        terminalRecoveryAttemptToolCallId = null;
+      }
     }
   });
 
