@@ -1055,7 +1055,7 @@ test('failed independent reviews persist recovery state, retry once, and retain 
   const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
   assert.match(workflow, /id: independent[\s\S]*?continue-on-error: true/);
   assert.match(workflow, /name: Preserve reviewer trace\n\s+if: always\(\)[\s\S]*?actions\/upload-artifact@v4[\s\S]*?pi-review-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\.jsonl/);
-  assert.match(workflow, /recover_failed_review:[\s\S]*?if: always\(\)[\s\S]*?needs\.review\.outputs\.independent_outcome/);
+  assert.match(workflow, /recover_failed_review:[\s\S]*?if: >-[\s\S]*?always\(\)[\s\S]*?needs\.review\.outputs\.independent_outcome[\s\S]*?needs\.review\.result/);
   assert.match(workflow, /recover-failure "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
   assert.match(workflow, /actions: write/);
   assert.match(state, /pi-review:failure-retry:/);
