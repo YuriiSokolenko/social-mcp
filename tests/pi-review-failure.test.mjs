@@ -552,6 +552,28 @@ test('human takeover blocks recovery follow-up dispatch even when a verdict mark
   assert.deepEqual(client.state.dispatches, []);
 });
 
+test('deterministic repair handoff is idempotent when run identity is available', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created'] });
+
+  const first = await dispatchAfterReview(7, 'CHANGES_REQUESTED', {
+    reviewedHead: 'head-1',
+    runId: '528',
+    runAttempt: 1,
+  }, client);
+  const repeated = await dispatchAfterReview(7, 'CHANGES_REQUESTED', {
+    reviewedHead: 'head-1',
+    runId: '528',
+    runAttempt: 1,
+  }, client);
+
+  assert.deepEqual(first, { status: 'followup-dispatched', verdict: 'CHANGES_REQUESTED' });
+  assert.deepEqual(repeated, { status: 'followup-already-dispatched', verdict: 'CHANGES_REQUESTED' });
+  assert.deepEqual(client.state.dispatches, [{
+    workflow: 'pi-pr-fix.yml',
+    inputs: { pr_number: '7' },
+  }]);
+});
+
 test('failure after deterministic repair dispatch but before independent start does not launch a reviewer', async () => {
   const client = fakeClient({ labels: ['pi:mr-created', 'review:changes-requested'] });
   await recordReviewRun({
