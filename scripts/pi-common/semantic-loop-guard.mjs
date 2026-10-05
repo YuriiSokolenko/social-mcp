@@ -507,11 +507,15 @@ function targetMatchesObligationPath(target, obligationPath, repositoryRoot = nu
       if (!path.isAbsolute(value)) return normalizedPath(value);
       const relative = path.relative(root, value);
       if (!relative || relative === '.') return '';
-      if (relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return normalizedPath(value);
+      if (relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return null;
       return normalizedPath(relative);
     };
     actual = relativizeInsideRoot(actual);
     expected = relativizeInsideRoot(expected);
+    // When the repository root is known, path identity is repository-relative and exact.
+    // An absolute path outside that root can never satisfy a repository obligation merely
+    // because it shares the same suffix (for example /tmp/other/src/a.js vs src/a.js).
+    return Boolean(actual && expected && actual === expected);
   }
 
   if (actual === expected) return true;
