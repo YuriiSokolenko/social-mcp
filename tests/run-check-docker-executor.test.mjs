@@ -10,7 +10,29 @@ import { createDockerSandboxBackend } from '../scripts/pi-common/run-check-docke
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.env.RUN_CHECK_HARNESS_ROOT = repoRoot;
 process.env.RUN_CHECK_SANDBOX_IMAGE = 'n150/run-check-sandbox:0.1.0-test';
-const { buildSandboxContainerArgs, verifySandboxContainerConfig, remapRunnerPaths, buildStagedRunCheckSpec } = await import('../infra/github-runner-autoscaler/run-check-executor.mjs');
+const { buildSandboxContainerArgs, verifySandboxContainerConfig, remapRunnerPaths, buildStagedRunCheckSpec, safeCheckEnvironment } = await import('../infra/github-runner-autoscaler/run-check-executor.mjs');
+
+test('sandbox environment permits only validated trusted acceptance module lists', () => {
+  const env = safeCheckEnvironment({
+    PATH: '/bin',
+    HOME: '/tmp',
+    TMPDIR: '/tmp',
+    PYTHONDONTWRITEBYTECODE: '1',
+    PYTHONIOENCODING: 'utf-8',
+    PI_TRUSTED_ACCEPTANCE_TARGETS: 'social_mcp.diagnostics.smoke_lru',
+    PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS: 'social_mcp.diagnostics.smoke_intervals',
+  });
+  assert.equal(env.PI_TRUSTED_ACCEPTANCE_TARGETS, 'social_mcp.diagnostics.smoke_lru');
+  assert.equal(env.PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS, 'social_mcp.diagnostics.smoke_intervals');
+  assert.throws(
+    () => safeCheckEnvironment({ PI_TRUSTED_ACCEPTANCE_TARGETS: 'social_mcp.ok;rm -rf /' }),
+    /invalid PI_TRUSTED_ACCEPTANCE_TARGETS value/,
+  );
+  assert.throws(
+    () => safeCheckEnvironment({ PI_ISSUE_CONTEXT: '/tmp/issue.json' }),
+    /unsupported check environment key: PI_ISSUE_CONTEXT/,
+  );
+});
 
 test('runner absolute paths remap to the same relative staged targets for supported path checks', () => {
   const root = '/home/runner/work/repo';
