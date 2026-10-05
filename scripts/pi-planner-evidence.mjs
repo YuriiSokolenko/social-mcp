@@ -46,7 +46,9 @@ function localCommand(command, args, cwd, execFile = execFileSync) {
 }
 
 function canonicalPath(value) {
-  const resolved = path.resolve(String(value ?? ''));
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const resolved = path.resolve(raw);
   try {
     return fs.realpathSync(resolved);
   } catch {
