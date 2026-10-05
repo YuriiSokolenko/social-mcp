@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   SemanticLoopGuard,
@@ -414,6 +416,44 @@ test('#426 mutation path matching is exact across relative and absolute reposito
     true,
     'a repository-relative mutation target resolves the same absolute obligation under the known root',
   );
+
+  const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-obligation-real-'));
+  const aliasRoot = realRoot + '-alias';
+  try {
+    fs.mkdirSync(path.join(realRoot, 'src'), { recursive: true });
+    fs.symlinkSync(realRoot, aliasRoot, 'dir');
+
+    const aliasObligation = submissionObligation(
+      `Implementer file-set mismatch: unexpected files: ${path.join(aliasRoot, 'src', 'missing.py')}`,
+    );
+    assert.equal(
+      mutationResolvesSubmissionObligation(
+        aliasObligation,
+        { path: path.join(realRoot, 'src', 'missing.py') },
+        { details: { path: path.join(realRoot, 'src', 'missing.py') } },
+        realRoot,
+      ),
+      true,
+      'realpath-equivalent absolute roots match exactly even when the target itself no longer exists',
+    );
+
+    const relativeThroughAliasRoot = submissionObligation(
+      'Implementer file-set mismatch: unexpected files: src/missing.py',
+    );
+    assert.equal(
+      mutationResolvesSubmissionObligation(
+        relativeThroughAliasRoot,
+        { path: path.join(realRoot, 'src', 'missing.py') },
+        { details: { path: path.join(realRoot, 'src', 'missing.py') } },
+        aliasRoot,
+      ),
+      true,
+      'a symlinked repository root and its canonical target share one repository-relative identity',
+    );
+  } finally {
+    fs.rmSync(aliasRoot, { force: true });
+    fs.rmSync(realRoot, { recursive: true, force: true });
+  }
 });
 
 
