@@ -119,7 +119,16 @@ jobs:
           steps.checks.outcome == 'success' &&
           contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          STARTED="$(node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" start-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID")"
+          START_STATUS="$(jq -r '.status' <<<"$STARTED")"
+          if [[ "$START_STATUS" != "started" && "$START_STATUS" != "already-started" ]]; then
+            echo "Independent review start rejected with status: $START_STATUS" >&2
+            exit 1
+          fi
           cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
           node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" reviewer --raw "$RAW"
