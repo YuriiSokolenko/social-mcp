@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 
-import { Type } from 'typebox';
 
 import { repoSearch } from './pi-common/repo-search.mjs';
 import {
@@ -57,6 +56,32 @@ function recordEvidenceState(gate, admission, { fact = null, env = process.env }
   }
 }
 
+export const PLANNER_REPO_SEARCH_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    kind: { type: 'string', enum: ['content', 'path'] },
+    query: { type: 'string', minLength: 1, maxLength: 300 },
+    pathPrefix: { type: 'string', maxLength: 300 },
+    extensions: {
+      type: 'array',
+      items: { type: 'string', minLength: 1, maxLength: 16 },
+      maxItems: 12,
+    },
+    maxResults: { type: 'integer', minimum: 1, maximum: 50 },
+  },
+  required: ['query'],
+});
+
+export const PLANNER_CODE_GRAPH_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    relation: { type: 'string', enum: [...PLANNER_CODE_GRAPH_RELATIONS] },
+    target: { type: 'string', minLength: 1, maxLength: 300 },
+    question: { type: 'string', minLength: 1, maxLength: 300 },
+  },
+  required: ['relation', 'target', 'question'],
+});
+
 function registerPlannerEvidenceTools(pi) {
   if (typeof pi.registerTool !== 'function') {
     throw new Error('Planner evidence extension requires trusted tool registration');
@@ -66,13 +91,7 @@ function registerPlannerEvidenceTools(pi) {
     name: 'repo_search',
     label: 'Repository search',
     description: 'Read-only deterministic search over tracked paths/content in the current Planner worktree. Use when the exact path or text location is unknown.',
-    parameters: Type.Object({
-      kind: Type.Optional(Type.Union([Type.Literal('content'), Type.Literal('path')])),
-      query: Type.String({ minLength: 1, maxLength: 300 }),
-      pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
-      extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
-      maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
-    }),
+    parameters: PLANNER_REPO_SEARCH_SCHEMA,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = repoSearch(ctx?.cwd ?? process.cwd(), params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
@@ -83,11 +102,7 @@ function registerPlannerEvidenceTools(pi) {
     name: 'planner_code_graph',
     label: 'Planner code graph',
     description: 'Read-only bounded relationship lookup in the fresh Orbit Local index for this Planner worktree. Use only for one concrete target/question about callers, references, implementations, dependencies, related tests, or blast radius.',
-    parameters: Type.Object({
-      relation: Type.Union(PLANNER_CODE_GRAPH_RELATIONS.map(relation => Type.Literal(relation))),
-      target: Type.String({ minLength: 1, maxLength: 300 }),
-      question: Type.String({ minLength: 1, maxLength: 300 }),
-    }),
+    parameters: PLANNER_CODE_GRAPH_SCHEMA,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = plannerCodeGraph(ctx?.cwd ?? process.cwd(), params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
