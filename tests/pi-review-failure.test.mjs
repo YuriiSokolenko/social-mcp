@@ -4,6 +4,7 @@ import fs from 'node:fs';
 
 import {
   applyReview,
+  dispatchAfterReview,
   invalidateReview,
   markReviewStarted,
   recordReviewRun,
@@ -276,6 +277,64 @@ test('whole-workflow recovery ignores a failed run recorded for an obsolete PR h
   assert.deepEqual(result, { status: 'stale' });
   assert.deepEqual(client.state.dispatches, []);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+});
+
+test('follow-up claim is not written when the pre-claim human-gate read fails', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created', 'review:passed'] });
+  client.loadPullRequest = async () => {
+    throw new Error('pull request API unavailable');
+  };
+
+  await assert.rejects(
+    dispatchAfterReview(7, 'PASS', {
+      reviewedHead: 'head-1',
+      runId: '525',
+      runAttempt: 1,
+    }, client),
+    /pull request API unavailable/,
+  );
+
+  assert.deepEqual(client.state.dispatches, []);
+  assert.equal(client.state.comments.length, 0);
+});
+
+test('late recovery does not dispatch a stale PASS after the current verdict changed', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created'] });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '526',
+    runAttempt: 1,
+    model: 'qwen',
+  }, client);
+  await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    verdict: 'PASS',
+    text: 'Run A passed.',
+    runId: '526',
+    runAttempt: 1,
+  }, client);
+  await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    verdict: 'CHANGES_REQUESTED',
+    text: 'Run B found changes.',
+    runId: '527',
+    runAttempt: 1,
+  }, client);
+
+  const recovered = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '526',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/526',
+  }, client);
+
+  assert.deepEqual(recovered, { status: 'superseded-verdict', verdict: 'PASS' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:changes-requested']);
 });
 
 test('whole-workflow recovery re-dispatches a missing PASS follow-up exactly once', async () => {
