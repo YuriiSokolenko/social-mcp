@@ -21,8 +21,10 @@ async function replaceReviewLabels(prNumber, target = null, client = githubClien
  * schedules Reviewer: synchronize invalidates state only; normal ownership or
  * Reconciler recovery is responsible for the next run.
  */
-function reviewVerdictMarker(head, verdict) {
-  return `<!-- pi-review:verdict:${head}:${verdict} -->`;
+function reviewVerdictMarker(head, verdict, runId = null) {
+  return runId
+    ? `<!-- pi-review:verdict:${head}:${verdict}:run:${runId} -->`
+    : `<!-- pi-review:verdict:${head}:${verdict} -->`;
 }
 
 function reviewRunMarker(prNumber, reviewedHead, runId, model) {
@@ -87,7 +89,7 @@ export async function invalidateReview(prNumber, expectedHead = null, client = g
  * Human gate and HEAD are re-read immediately before mutation so a verdict
  * cannot race a human takeover or a synchronize event.
  */
-export async function applyReview({ prNumber, reviewedHead, verdict, text }, client = githubClient()) {
+export async function applyReview({ prNumber, reviewedHead, verdict, text, runId = null }, client = githubClient()) {
   const { loadPullRequest, replaceLabels, comment } = client;
   const pr = await loadPullRequest(prNumber);
   const currentLabels = prLabelNames(pr);
@@ -98,7 +100,7 @@ export async function applyReview({ prNumber, reviewedHead, verdict, text }, cli
   }
   const target = verdict === 'PASS' ? REVIEW_PASSED : REVIEW_CHANGES_REQUESTED;
   await replaceLabels(prNumber, withReviewVerdict(currentLabels, target));
-  await comment(prNumber, `${text}\n\n${reviewVerdictMarker(reviewedHead, verdict)}`);
+  await comment(prNumber, `${text}\n\n${reviewVerdictMarker(reviewedHead, verdict, runId)}`);
   return { status: 'applied', verdict };
 }
 
@@ -131,6 +133,15 @@ export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outc
     if (!['laguna', 'qwen'].includes(effectiveModel)) effectiveModel = record.model;
   }
   if (pr.head.sha !== effectiveHead) return { status: 'stale' };
+  const runVerdictPattern = new RegExp(
+    `<!-- pi-review:verdict:${effectiveHead}:(?:PASS|CHANGES_REQUESTED):run:${String(runId).replace(/[.*+?^${}()|[\]\\]/g, '\\  if (pr.head.sha !== effectiveHead) return { status: 'stale' };
+
+  const labels = prLabelNames(pr);
+')} -->`,
+  );
+  if (comments.some(item => runVerdictPattern.test(String(item.body ?? '')))) {
+    return { status: 'verdict-already-applied' };
+  }
 
   const labels = prLabelNames(pr);
   const clearVerdict = withoutReviewLabels(labels);
@@ -210,7 +221,10 @@ async function main() {
   const prNumber = Number(rawPr);
   if (cmd === 'invalidate') return invalidateReview(prNumber, a);
   if (cmd === 'apply') {
-    const result = await applyReview({ prNumber, reviewedHead: a, verdict: b, text: fs.readFileSync(c, 'utf8') });
+    const result = await applyReview({
+      prNumber, reviewedHead: a, verdict: b, text: fs.readFileSync(c, 'utf8'),
+      runId: process.env.REVIEW_RUN_ID,
+    });
     return process.stdout.write(JSON.stringify(result));
   }
   if (cmd === 'dispatch') return dispatchAfterReview(prNumber, a);
