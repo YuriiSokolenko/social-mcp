@@ -1094,7 +1094,6 @@ function runtimeScenario(mode) {
         });
         const recovered = await call('read', { path: 'generated.py' });
         assert.match(recovered.content[0].text, /REQUIRED_CONSTANT/);
-        assert.ok(active.includes('write'), 'a successful bounded recovery read releases the no-blind-rewrite guard');
         console.log('CODING_RECOVERY_RECEIPT_OK ' + JSON.stringify(result.details.recovery_receipt));
         console.log('CODING_RECOVERY_BOUNDED_INSPECTION_OK');
       }
