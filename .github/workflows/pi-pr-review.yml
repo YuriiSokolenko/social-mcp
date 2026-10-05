@@ -61,6 +61,14 @@ jobs:
           echo "head_sha=$(jq -r '.head' "$CONTEXT")" >> "$GITHUB_OUTPUT"
           echo "REVIEW_CONTEXT=$CONTEXT" >> "$GITHUB_ENV"
 
+      - name: Record review run identity
+        if: steps.load.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_MODEL: ${{ inputs.model || 'default' }}
+          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
+
       - name: Create review worktree
         if: steps.load.outputs.skip != 'true'
         run: |
@@ -141,7 +149,12 @@ jobs:
 
   recover_failed_review:
     needs: review
-    if: always() && contains(fromJSON('["failure","cancelled"]'), needs.review.outputs.independent_outcome)
+    if: >-
+      always() &&
+      (
+        contains(fromJSON('["failure","cancelled"]'), needs.review.outputs.independent_outcome) ||
+        contains(fromJSON('["failure","cancelled"]'), needs.review.result)
+      )
     runs-on: [self-hosted, linux, x64, n150, general]
     permissions:
       actions: write
@@ -160,7 +173,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ inputs.pr_number }}
           HEAD_SHA: ${{ needs.review.outputs.head_sha }}
-          REVIEW_OUTCOME: ${{ needs.review.outputs.independent_outcome }}
-          REVIEW_MODEL: ${{ needs.review.outputs.model }}
+          REVIEW_OUTCOME: ${{ needs.review.outputs.independent_outcome || needs.review.result }}
+          REVIEW_MODEL: ${{ needs.review.outputs.model || inputs.model || 'default' }}
           REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" recover-failure "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
