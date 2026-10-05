@@ -160,7 +160,7 @@ export async function applyReview({
 export async function dispatchAfterReview(
   prNumber,
   verdict,
-  { reviewedHead = null, runId = null, runAttempt = null } = {},
+  { reviewedHead = null, runId = null, runAttempt = null, requireCurrentVerdict = false } = {},
   client = githubClient(),
 ) {
   const { dispatchWorkflow, loadPullRequest, pages, comment } = client;
@@ -174,9 +174,14 @@ export async function dispatchAfterReview(
     ? reviewFollowupClaimMarker(reviewedHead, verdict, runId, runAttempt)
     : null;
 
+  const expectedVerdictLabel = verdict === 'PASS' ? REVIEW_PASSED : REVIEW_CHANGES_REQUESTED;
   const beforeClaimPr = await loadPullRequest(prNumber);
-  if (prLabelNames(beforeClaimPr).includes(PIPELINE_LABELS.needsHuman)) {
+  const beforeClaimLabels = prLabelNames(beforeClaimPr);
+  if (beforeClaimLabels.includes(PIPELINE_LABELS.needsHuman)) {
     return { status: 'human' };
+  }
+  if (requireCurrentVerdict && !beforeClaimLabels.includes(expectedVerdictLabel)) {
+    return { status: 'superseded-verdict', verdict };
   }
 
   if (marker && claimMarker) {
@@ -229,8 +234,12 @@ export async function dispatchAfterReview(
       }
 
       const currentPr = await loadPullRequest(prNumber);
-      if (prLabelNames(currentPr).includes(PIPELINE_LABELS.needsHuman)) {
+      const currentLabels = prLabelNames(currentPr);
+      if (currentLabels.includes(PIPELINE_LABELS.needsHuman)) {
         return { status: 'human' };
+      }
+      if (requireCurrentVerdict && !currentLabels.includes(expectedVerdictLabel)) {
+        return { status: 'superseded-verdict', verdict };
       }
     } catch (error) {
       try {
@@ -328,6 +337,7 @@ export async function recoverReviewFailure({
       reviewedHead: effectiveHead,
       runId,
       runAttempt,
+      requireCurrentVerdict: true,
     }, client);
   }
 
@@ -460,6 +470,7 @@ async function main() {
       reviewedHead: process.env.HEAD_SHA,
       runId: process.env.REVIEW_RUN_ID,
       runAttempt: process.env.REVIEW_RUN_ATTEMPT,
+      requireCurrentVerdict: process.env.REVIEW_REQUIRE_CURRENT_VERDICT === 'true',
     });
     return process.stdout.write(JSON.stringify(result));
   }
