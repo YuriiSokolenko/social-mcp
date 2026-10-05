@@ -345,6 +345,7 @@ export default function (pi) {
   let loopGuardSteeredThisTurn = false;
   let terminalRecoveryState = null;
   let terminalRecoveryRequiredTool = null;
+  let terminalRecoveryAttemptToolCallId = null;
   let unrestrictedActiveTools = null;
   let unavailableToolAttempts = 0;
   let unavailableCapabilityAttemptedThisTurn = false;
@@ -759,6 +760,7 @@ export default function (pi) {
       loopResult.reason === 'repeated_failed_strategy' &&
       loopResult.repeatedFailure === true &&
       loopResult.obligation?.key &&
+      loopResult.obligation?.kind &&
       ['submit_result', 'submit_repair'].includes(loopResult.tool);
 
     if (terminalFailure && loopResult.action === 'steer') {
@@ -1978,7 +1980,12 @@ export default function (pi) {
         obligationKey: terminalRecoveryState?.obligationKey ?? null,
         tool: event.toolName,
       }));
+      terminalRecoveryAttemptToolCallId = event.toolCallId ?? null;
       terminalRecoveryRequiredTool = null;
+      // The pending recovery directive has now been consumed by a concrete tool attempt.
+      // A later repeated terminal failure will construct fresh recovery state from the
+      // newest obligation/repository facts instead of compacting against stale history.
+      terminalRecoveryState = null;
     }
 
     // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
@@ -2542,16 +2549,13 @@ export default function (pi) {
           ? pendingLoopCall.input
           : null,
       });
-      if (
-        terminalRecoveryState &&
-        !event.isError &&
-        terminalRecoveryState.obligationKey &&
-        ['undo_mutation', 'recover_worktree', 'write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'retry_last_failed_check'].includes(pendingLoopCall.toolName)
-      ) {
-        // Keep the compact obligation identity for history compaction, but never force the same
-        // repair tool again after it actually executed. A new repeated terminal failure will
-        // re-plan from fresh repository/capability state.
-        terminalRecoveryRequiredTool = null;
+      if (terminalRecoveryAttemptToolCallId === event.toolCallId) {
+        console.log('PI_TERMINAL_RECOVERY_TOOL_SETTLED ' + JSON.stringify({
+          stage,
+          tool: pendingLoopCall.toolName,
+          isError: event.isError === true,
+        }));
+        terminalRecoveryAttemptToolCallId = null;
       }
     }
   });
