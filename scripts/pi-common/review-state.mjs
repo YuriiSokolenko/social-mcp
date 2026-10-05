@@ -72,7 +72,7 @@ export async function recordReviewRun({
   const link = runUrl ? `\n\nRun: ${runUrl}` : '';
   await comment(
     prNumber,
-    `Independent review run ${runId} attempt ${runAttempt} started for HEAD ${reviewedHead}. This durable marker lets recovery reject obsolete PR heads.${link}\n\n${marker}`,
+    `Independent review run ${runId} attempt ${runAttempt} recorded for HEAD ${reviewedHead}. This durable marker lets recovery reject obsolete PR heads.${link}\n\n${marker}`,
   );
   return { status: 'recorded', reviewedHead, model: safeModel };
 }
