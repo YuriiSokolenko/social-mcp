@@ -375,9 +375,63 @@ export default function (pi) {
   let verificationToolHiddenByPermitGate = false;
   let deterministicVerificationInfrastructure = null;
   // After a fork returns with trusted publishable mutations, prevent a blind second fork or
-  // rewrite of those completed outputs. The guard is released only by fresh bounded evidence,
-  // a real validation verdict, or a terminal attempt that yields a concrete recovery diagnosis.
+  // rewrite of those completed outputs. Release only after evidence inspects one protected path
+  // or authoritative validation settles; if neither route remains reachable, preserve the
+  // worktree and fail closed instead of reopening mutation/fork capabilities.
   let codingRecoveryGuard = null;
+
+  function normalizedRecoveryEvidencePaths(input, cwd) {
+    const candidates = [
+      typeof input?.path === 'string' ? input.path : null,
+      ...(Array.isArray(input?.paths) ? input.paths : []),
+    ].filter(item => typeof item === 'string' && item.trim());
+    const root = path.resolve(cwd);
+    const normalized = [];
+    for (const candidate of candidates) {
+      const absolute = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(root, candidate);
+      const relative = path.relative(root, absolute);
+      if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) continue;
+      normalized.push(relative.split(path.sep).join('/'));
+    }
+    return [...new Set(normalized)];
+  }
+
+  function codingRecoveryEvidenceTouchesGuard(guard, input, cwd) {
+    if (!guard?.changed_publishable_paths?.length) return false;
+    const protectedPaths = new Set(
+      guard.changed_publishable_paths.map(item => String(item).split('\\').join('/')),
+    );
+    return normalizedRecoveryEvidencePaths(input, cwd).some(item => protectedPaths.has(item));
+  }
+
+  function codingRecoveryEvidenceAvailable() {
+    if (!controller.evidenceUnlockAvailable()) return false;
+    const inventory = (pi.getAllTools?.() ?? []).map(tool => typeof tool === 'string' ? tool : tool?.name);
+    return inventory.includes('read');
+  }
+
+  function codingRecoveryValidationAvailable() {
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    if (!verificationTool || deterministicVerificationInfrastructure) return false;
+    const capabilityOwned = Boolean(
+      pi.getActiveTools().includes(verificationTool) ||
+      verificationToolHiddenByPermitGate ||
+      unrestrictedActiveTools?.includes(verificationTool)
+    );
+    return capabilityOwned && Boolean(
+      controller.verificationPermitted() || controller.recoveryVerificationArmed()
+    );
+  }
+
+  function abortBlockedCodingRecovery(ctx, reason) {
+    const details = {
+      recovery_receipt: codingRecoveryGuard,
+      checkpoint: { worktree_preserved: true },
+    };
+    recordRuntimeAbort('PI_CODING_RECOVERY_BLOCKED', reason, details);
+    console.error(`PI_CODING_RECOVERY_BLOCKED ${JSON.stringify({ stage, reason, ...details })}`);
+    ctx.abort();
+  }
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -2762,22 +2816,29 @@ export default function (pi) {
 
     if (codingRecoveryGuard) {
       const validationStatus = event.result?.details?.status ?? null;
-      const informedByEvidence = Boolean(consumedEvidence && !event.isError);
+      const informedByEvidence = Boolean(
+        consumedEvidence &&
+        !event.isError &&
+        codingRecoveryEvidenceTouchesGuard(codingRecoveryGuard, acceptedToolInput, ctx.cwd)
+      );
       const informedByValidation =
         canonicalToolName === 'run_check' &&
         !event.isError &&
         (validationStatus === 'pass' || validationStatus === 'fail');
-      const informedByTerminalDiagnosis =
+      const terminalSucceeded =
         ['submit_result', 'submit_repair'].includes(canonicalToolName) &&
-        event.isError === true;
-      if (informedByEvidence || informedByValidation || informedByTerminalDiagnosis) {
+        event.isError !== true;
+      const releaseReason = informedByEvidence
+        ? 'bounded_recovery_evidence'
+        : informedByValidation
+          ? `validation_${validationStatus}`
+          : terminalSucceeded
+            ? 'terminal_success'
+            : null;
+      if (releaseReason) {
         console.info(`PI_CODING_RECOVERY_GUARD_RELEASED ${JSON.stringify({
           stage,
-          reason: informedByEvidence
-            ? 'bounded_evidence'
-            : informedByValidation
-              ? `validation_${validationStatus}`
-              : 'terminal_diagnosis',
+          reason: releaseReason,
           changedPublishablePaths: codingRecoveryGuard.changed_publishable_paths,
         })}`);
         codingRecoveryGuard = null;
@@ -2848,6 +2909,17 @@ export default function (pi) {
         }));
         terminalRecoveryAttemptToolCallId = null;
       }
+    }
+
+    if (
+      codingRecoveryGuard &&
+      !codingRecoveryEvidenceAvailable() &&
+      !codingRecoveryValidationAvailable()
+    ) {
+      abortBlockedCodingRecovery(
+        ctx,
+        'Coding-session recovery guard has no safe remaining release path: bounded read evidence is exhausted or unavailable and authoritative validation is unavailable. Preserving recovered worktree mutations and refusing blind rewrite/re-fork recovery.',
+      );
     }
   });
 
