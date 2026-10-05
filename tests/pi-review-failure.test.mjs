@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
-import { applyReview, invalidateReview, recoverReviewFailure } from '../scripts/pi-common/review-state.mjs';
+import {
+  applyReview,
+  invalidateReview,
+  recordReviewRun,
+  recoverReviewFailure,
+  recoverReviewWorkflowRun,
+} from '../scripts/pi-common/review-state.mjs';
 
 function fakeClient({ head = 'head-1', labels = ['pi:mr-created', 'review:passed'], dispatchError = null } = {}) {
   const state = {
@@ -123,4 +130,98 @@ test('invalidator from an older push cannot mutate a newer PR HEAD', async () =>
 
   assert.deepEqual(result, { status: 'stale-push' });
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+});
+
+
+test('whole-workflow cancellation resolves the durable run marker and retries the same head/model once', async () => {
+  const client = fakeClient();
+  const recorded = await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '501',
+    runUrl: 'https://github.test/runs/501',
+    model: 'qwen',
+  }, client);
+
+  assert.deepEqual(recorded, { status: 'recorded', reviewedHead: 'head-1', model: 'qwen' });
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '501',
+    outcome: 'cancelled',
+    runUrl: 'https://github.test/runs/501',
+  }, client);
+
+  assert.deepEqual(result, { status: 'retry-dispatched' });
+  assert.deepEqual(client.state.dispatches, [{
+    workflow: 'pi-pr-review.yml',
+    inputs: { pr_number: '7', model: 'qwen' },
+  }]);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
+  assert.match(client.state.comments.at(-1).body, /infrastructure failure, not a code-review verdict/);
+  assert.doesNotMatch(client.state.comments.at(-1).body, /PASS|CHANGES_REQUESTED/);
+});
+
+test('timeout-equivalent workflow conclusion is infrastructure failure and never a review verdict', async () => {
+  const client = fakeClient();
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '502',
+    model: 'default',
+  }, client);
+
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '502',
+    outcome: 'timed_out',
+    runUrl: 'https://github.test/runs/502',
+  }, client);
+
+  assert.deepEqual(result, { status: 'retry-dispatched' });
+  assert.equal(client.state.dispatches.length, 1);
+  assert.match(client.state.comments.at(-1).body, /ended with timed_out/);
+});
+
+test('whole-workflow recovery ignores a failed run recorded for an obsolete PR head', async () => {
+  const client = fakeClient({ head: 'head-2' });
+  client.state.comments.push({
+    body: 'Independent review run 503 started.\n\n<!-- pi-review:run:7:head-1:503:default -->',
+  });
+
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '503',
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/503',
+  }, client);
+
+  assert.deepEqual(result, { status: 'stale' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+});
+
+test('whole-workflow recovery fails closed when the run-to-head marker is unavailable', async () => {
+  const client = fakeClient();
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '504',
+    outcome: 'cancelled',
+    runUrl: 'https://github.test/runs/504',
+  }, client);
+
+  assert.deepEqual(result, { status: 'missing-run-head' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+});
+
+test('review workflow and reconciler cover missing step outputs and whole-workflow terminal outcomes', () => {
+  const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const reconcile = fs.readFileSync('.github/workflows/pi-reconcile.yml', 'utf8');
+
+  assert.match(review, /name: Record review run identity[\s\S]*?record-run "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
+  assert.match(review, /needs\.review\.result/);
+  assert.match(review, /needs\.review\.outputs\.independent_outcome \|\| needs\.review\.result/);
+  assert.match(reconcile, /workflow_run:[\s\S]*?workflows: \["Pi PR Review"\][\s\S]*?types: \[completed\]/);
+  assert.match(reconcile, /\["failure","cancelled","timed_out"\]/);
+  assert.match(reconcile, /review-state\.mjs recover-workflow-run/);
 });
