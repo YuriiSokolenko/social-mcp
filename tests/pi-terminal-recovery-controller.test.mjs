@@ -9,6 +9,7 @@ import {
 } from '../scripts/pi-common/semantic-loop-guard.mjs';
 import {
   compactTerminalRecoveryPayload,
+  recoveryCallMatchesPlan,
   selectTerminalRecovery,
   terminalRecoveryGuidance,
 } from '../scripts/pi-common/terminal-recovery-controller.mjs';
@@ -389,6 +390,16 @@ test('#426 mutation path matching is exact across relative and absolute reposito
     true,
     'an absolute runtime target normalizes to the exact repository-relative obligation',
   );
+  assert.equal(
+    mutationResolvesSubmissionObligation(
+      relativeObligation,
+      { path: '/tmp/other/src/a.py' },
+      { details: { path: '/tmp/other/src/a.py' } },
+      '/checkout',
+    ),
+    false,
+    'an absolute target outside the repository root cannot resolve a same-suffix repository obligation',
+  );
 
   const absoluteObligation = submissionObligation(
     'Implementer file-set mismatch: unexpected files: /checkout/src/a.py',
@@ -500,4 +511,69 @@ test('#426 metadata retries fail closed when the prior terminal payload is unava
   });
   assert.equal(fileSetPlan.status, 'blocked');
   assert.match(fileSetPlan.reason, /previous terminal submission payload is unavailable/);
+});
+
+
+test('#426 selected recovery calls must match the deterministic repair arguments', () => {
+  const conflict = submissionObligation(
+    'Latest dev conflicts with the implementation. Resolve these files and retry submit_result: src/conflict.py',
+  );
+  const conflictPlan = selectTerminalRecovery({
+    obligation: conflict,
+    activeToolNames: ['read', 'submit_result'],
+  });
+  assert.equal(conflictPlan.kind, 'inspect_conflict');
+  assert.equal(recoveryCallMatchesPlan(conflictPlan, 'read', { path: 'src/other.py' }), false);
+  assert.equal(recoveryCallMatchesPlan(conflictPlan, 'read', { path: 'src/conflict.py' }), true);
+
+  const validation = submissionObligation(JSON.stringify({
+    code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+    required_targets: ['tests/test_widget.py'],
+    action: { kind: 'pytest', targets: ['tests/test_widget.py'] },
+  }));
+  const validationPlan = selectTerminalRecovery({
+    obligation: validation,
+    activeToolNames: ['run_check'],
+  });
+  assert.equal(
+    recoveryCallMatchesPlan(validationPlan, 'run_check', {
+      kind: 'pytest',
+      targets: ['tests/test_widget.py'],
+    }),
+    true,
+  );
+  assert.equal(
+    recoveryCallMatchesPlan(validationPlan, 'run_check', {
+      kind: 'pytest',
+      targets: ['tests/test_other.py'],
+    }),
+    false,
+  );
+
+  const metadata = submissionObligation(JSON.stringify({
+    code: 'missing_publication_fields',
+    missing_fields: ['limitations'],
+  }));
+  const metadataPlan = selectTerminalRecovery({
+    obligation: metadata,
+    terminalInput: { title: 'Fix', summary: 'Summary' },
+    activeToolNames: ['submit_result'],
+  });
+  assert.equal(
+    recoveryCallMatchesPlan(metadataPlan, 'submit_result', {
+      title: 'Fix',
+      summary: 'Summary',
+      limitations: 'Known limitation',
+    }),
+    true,
+  );
+  assert.equal(
+    recoveryCallMatchesPlan(metadataPlan, 'submit_result', {
+      title: 'Different title',
+      summary: 'Summary',
+      limitations: 'Known limitation',
+    }),
+    false,
+    'metadata recovery cannot silently discard or rewrite prior terminal fields',
+  );
 });
