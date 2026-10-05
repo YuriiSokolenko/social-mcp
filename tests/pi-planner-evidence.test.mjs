@@ -17,6 +17,7 @@ import {
   discoverAdditivePythonLayout,
   normalizeImplementationPreparation,
   plannerEvidenceBudget,
+  plannerEvidenceFact,
   plannerTask,
   prepareImplementation,
   preparedImplementationBlock,
@@ -131,6 +132,12 @@ test('#483 planner_code_graph is worktree-scoped, bounded, local-only, and fails
     assert.ok(commands.every(call => call.cwd === dir));
     assert.ok(commands.every(call => call.telemetry === 'false'));
     assert.ok(!commands.some(call => call.args.includes('mcp') || call.args.includes('sql')));
+    const fact = plannerEvidenceFact('planner_code_graph', {
+      target: 'Definition:target',
+      question: 'Which callers form the implementation blast radius?',
+    }, { content: [{ type: 'text', text: JSON.stringify(result) }] });
+    assert.ok(fact.length <= 200);
+    assert.match(fact, /planner_code_graph Definition:target/);
 
     const staleExec = (command, args) => {
       if (command === 'git') return 'new-head\n';
@@ -572,6 +579,11 @@ test('output-only retry hides evidence tools when the child supports active-tool
   const blocked = await handlers.get('tool_call')({ toolName: 'find', input: {} });
   assert.equal(blocked.block, true);
   assert.match(blocked.reason, /output-only/);
+  for (const toolName of ['repo_search', 'planner_code_graph']) {
+    const newToolBlocked = await handlers.get('tool_call')({ toolName, input: {} });
+    assert.equal(newToolBlocked.block, true);
+    assert.match(newToolBlocked.reason, /output-only/);
+  }
   assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }), undefined);
 });
 
