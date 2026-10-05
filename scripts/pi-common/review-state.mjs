@@ -208,16 +208,30 @@ async function gateUnresolvedReviewFailure({
   const { loadPullRequest, replaceLabels, pages, comment } = client;
   const pr = await loadPullRequest(prNumber);
   const labels = prLabelNames(pr);
-  const marker = `<!-- pi-review:failure-unresolved:${prNumber}:${runId}:attempt:${runAttempt} -->`;
   const comments = await pages(`/issues/${prNumber}/comments`);
-  if (!labels.includes(PIPELINE_LABELS.needsHuman)) {
-    await replaceLabels(prNumber, [...labels, PIPELINE_LABELS.needsHuman]);
+  const currentVerdictPrefix = `<!-- pi-review:verdict:${pr.head.sha}:`;
+  if (comments.some(item => String(item.body ?? '').includes(currentVerdictPrefix))) {
+    return { status: 'current-verdict' };
   }
+
+  const clearVerdict = withoutReviewLabels(labels);
+  const nextLabels = clearVerdict.includes(PIPELINE_LABELS.needsHuman)
+    ? clearVerdict
+    : [...clearVerdict, PIPELINE_LABELS.needsHuman];
+  if (
+    labels.includes(REVIEW_PASSED) ||
+    labels.includes(REVIEW_CHANGES_REQUESTED) ||
+    !labels.includes(PIPELINE_LABELS.needsHuman)
+  ) {
+    await replaceLabels(prNumber, nextLabels);
+  }
+
+  const marker = `<!-- pi-review:failure-unresolved:${prNumber}:${runId}:attempt:${runAttempt} -->`;
   if (!comments.some(item => String(item.body ?? '').includes(marker))) {
     const link = runUrl ? `\n\nRun: ${runUrl}` : '';
     await comment(
       prNumber,
-      `Independent review workflow ended with ${outcome}, but recovery could not prove which PR HEAD was reviewed (${reason}). No automated verdict or retry was applied; human recovery is required.${link}\n\n${marker}`,
+      `Independent review workflow ended with ${outcome}, but recovery could not prove the exact reviewed HEAD and model (${reason}). No automated verdict or retry was applied; human recovery is required.${link}\n\n${marker}`,
     );
   }
   return { status: 'needs-human', reason };
@@ -243,60 +257,17 @@ export async function recoverReviewWorkflowRun({
   }, client);
   if (recorded.status !== 'missing-run-head') return recorded;
 
-  let jobs;
-  try {
-    const data = await client.api(
-      `/actions/runs/${normalizedRunId}/attempts/${normalizedAttempt}/jobs?per_page=100`,
-    );
-    jobs = data?.jobs ?? [];
-  } catch (error) {
-    return gateUnresolvedReviewFailure({
-      prNumber,
-      runId: normalizedRunId,
-      runAttempt: normalizedAttempt,
-      outcome,
-      runUrl,
-      reason: `run-inspection-failed: ${error.message}`,
-    }, client);
-  }
-
-  const reviewJob = jobs.find(job => job.name === 'review');
-  const independent = reviewJob?.steps?.find(step => step.name === 'Run independent review');
-  const independentStarted = Boolean(
-    independent &&
-    independent.status !== 'queued' &&
-    independent.conclusion !== 'skipped',
-  );
-  if (independentStarted) {
-    return gateUnresolvedReviewFailure({
-      prNumber,
-      runId: normalizedRunId,
-      runAttempt: normalizedAttempt,
-      outcome,
-      runUrl,
-      reason: 'missing-run-marker-after-independent-start',
-    }, client);
-  }
-
   if (outcome === 'cancelled') {
-    return { status: 'ignored', reason: 'cancelled-before-review' };
+    return { status: 'ignored', reason: 'cancelled-without-run-marker' };
   }
 
-  const pr = await client.loadPullRequest(prNumber);
-  const comments = await client.pages(`/issues/${prNumber}/comments`);
-  const currentVerdictPrefix = `<!-- pi-review:verdict:${pr.head.sha}:`;
-  if (comments.some(item => String(item.body ?? '').includes(currentVerdictPrefix))) {
-    return { status: 'current-verdict' };
-  }
-
-  return recoverReviewFailure({
+  return gateUnresolvedReviewFailure({
     prNumber,
-    reviewedHead: pr.head.sha,
     runId: normalizedRunId,
     runAttempt: normalizedAttempt,
     outcome,
     runUrl,
-    model: 'default',
+    reason: 'missing-run-marker',
   }, client);
 }
 
