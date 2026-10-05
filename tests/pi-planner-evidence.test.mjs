@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
+import { execFileSync } from 'node:child_process';
 
 import plannerEvidenceExtension from '../scripts/pi-planner-evidence.mjs';
 import {
@@ -373,6 +374,9 @@ test('unknown-path planning can resolve the implementation target with repo_sear
     'src/net/transport.py': 'export function sendWithBackoff(message) { return message; }\n',
     'tests/transport.test.js': 'test("send retry", () => {});\n',
   });
+  execFileSync('git', ['init'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['add', 'src/net/transport.py', 'tests/transport.test.js'], { cwd: dir, stdio: 'ignore' });
+
   const calls = [];
   const host = plannerHost({
     cwd: dir,
