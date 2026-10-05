@@ -2038,24 +2038,6 @@ export default function (pi) {
     // forcing must not remain stuck across the next provider request.
     const satisfiedProviderForcing = requireToolOnNextProviderRequest;
     if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
-    if (terminalRecoveryRequiredTool === event.toolName) {
-      console.log('PI_TERMINAL_RECOVERY_TOOL_ATTEMPT ' + JSON.stringify({
-        stage,
-        obligationKey: terminalRecoveryState?.obligationKey ?? null,
-        tool: event.toolName,
-      }));
-      terminalRecoveryAttemptToolCallId = event.toolCallId ?? null;
-      terminalRecoveryRequiredTool = null;
-      // The progress controller consumes an exact recovery-verification permit in checkToolCall.
-      // Non-validation repairs never arm one; clearing here is harmless and guarantees no stale
-      // recovery verification survives an attempted selected tool.
-      controller.clearRecoveryVerification();
-      // The pending recovery directive has now been consumed by a concrete tool attempt.
-      // A later repeated terminal failure will construct fresh recovery state from the
-      // newest obligation/repository facts instead of compacting against stale history.
-      terminalRecoveryState = null;
-    }
-
     // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
     // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
     // run_check for controller policy after visibility has been checked.
@@ -2209,8 +2191,30 @@ export default function (pi) {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
+      if (terminalRecoveryRequiredTool === event.toolName) {
+        // The selected recovery tool was emitted but rejected by local policy (for example,
+        // wrong run_check arguments). Keep the exact recovery state armed for the next request.
+        requireToolOnNextProviderRequest = true;
+      }
       return blocked;
     }
+
+    if (terminalRecoveryRequiredTool === event.toolName) {
+      console.log('PI_TERMINAL_RECOVERY_TOOL_ATTEMPT ' + JSON.stringify({
+        stage,
+        obligationKey: terminalRecoveryState?.obligationKey ?? null,
+        tool: event.toolName,
+      }));
+      terminalRecoveryAttemptToolCallId = event.toolCallId ?? null;
+      terminalRecoveryRequiredTool = null;
+      // Exact recovery verification is consumed atomically by ProgressController.checkToolCall.
+      // Clearing here handles non-validation repairs and is harmless after an accepted exact check.
+      controller.clearRecoveryVerification();
+      // Only an accepted selected tool consumes the pending recovery directive. A locally blocked
+      // attempt keeps the state above so the model can correct arguments instead of deadlocking.
+      terminalRecoveryState = null;
+    }
+
     // Capture the controller notice now, but publish it only for this exact toolCallId after
     // execution. Any later runtime-side block simply drops this local value.
     const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice();
