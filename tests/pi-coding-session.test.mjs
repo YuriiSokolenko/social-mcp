@@ -369,7 +369,7 @@ function runtimeScenario(mode) {
               diagnostics_count: 0,
               summary: 'unsupported check environment key: PI_TRUSTED_ACCEPTANCE_TARGETS',
               infrastructure: { component: 'sandbox', code: 'CHECK_ENV', command: 'trusted-run-check-executor' },
-            }) + '\n');
+            }) + '\\n');
             return { content: [{ type: 'text', text: JSON.stringify({ status: 'infra_error', infrastructure: { code: 'CHECK_ENV' } }) }] };
           }
           if (params?.kind === 'pytest') {
