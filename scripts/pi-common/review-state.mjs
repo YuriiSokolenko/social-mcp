@@ -133,13 +133,12 @@ export async function recoverReviewFailure({ prNumber, reviewedHead, runId, outc
     if (!['laguna', 'qwen'].includes(effectiveModel)) effectiveModel = record.model;
   }
   if (pr.head.sha !== effectiveHead) return { status: 'stale' };
-  const runVerdictPattern = new RegExp(
-    `<!-- pi-review:verdict:${effectiveHead}:(?:PASS|CHANGES_REQUESTED):run:${String(runId).replace(/[.*+?^${}()|[\]\\]/g, '\\  if (pr.head.sha !== effectiveHead) return { status: 'stale' };
-
-  const labels = prLabelNames(pr);
-')} -->`,
-  );
-  if (comments.some(item => runVerdictPattern.test(String(item.body ?? '')))) {
+  const verdictRunPrefix = `<!-- pi-review:verdict:${effectiveHead}:`;
+  const verdictRunSuffix = `:run:${runId} -->`;
+  if (comments.some(item => {
+    const body = String(item.body ?? '');
+    return body.includes(verdictRunPrefix) && body.includes(verdictRunSuffix);
+  })) {
     return { status: 'verdict-already-applied' };
   }
 
