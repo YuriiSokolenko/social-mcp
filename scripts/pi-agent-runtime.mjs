@@ -62,6 +62,7 @@ import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import { classifyWorktreeDrift, recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
 import {
   compactTerminalRecoveryPayload,
+  recoveryCallMatchesPlan,
   selectTerminalRecovery,
   terminalRecoveryGuidance,
 } from './pi-common/terminal-recovery-controller.mjs';
@@ -2148,6 +2149,15 @@ export default function (pi) {
         block: true,
         reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} has an exact retry ready now; call retry_last_failed_check so the same kind+scope consumes this verification permit.`,
       };
+    } else if (
+      terminalRecoveryRequiredTool === event.toolName &&
+      terminalRecoveryState?.plan &&
+      !recoveryCallMatchesPlan(terminalRecoveryState.plan, event.toolName, event.input ?? {})
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: `BLOCKED: ${event.toolName} did not execute. Terminal recovery requires the selected deterministic repair arguments; this call does not match the pending recovery plan.`,
+      };
     }
 
     if (!recoveryBlocked && event.toolName === RETRY_FAILED_CHECK_TOOL && failedCheckRecovery) {
@@ -2199,28 +2209,17 @@ export default function (pi) {
       return blocked;
     }
 
-    if (terminalRecoveryRequiredTool === event.toolName) {
-      console.log('PI_TERMINAL_RECOVERY_TOOL_ATTEMPT ' + JSON.stringify({
-        stage,
-        obligationKey: terminalRecoveryState?.obligationKey ?? null,
-        tool: event.toolName,
-      }));
-      terminalRecoveryAttemptToolCallId = event.toolCallId ?? null;
-      terminalRecoveryRequiredTool = null;
-      // Exact recovery verification is consumed atomically by ProgressController.checkToolCall.
-      // Clearing here handles non-validation repairs and is harmless after an accepted exact check.
-      controller.clearRecoveryVerification();
-      // Only an accepted selected tool consumes the pending recovery directive. A locally blocked
-      // attempt keeps the state above so the model can correct arguments instead of deadlocking.
-      terminalRecoveryState = null;
-    }
-
     // Capture the controller notice now, but publish it only for this exact toolCallId after
     // execution. Any later runtime-side block simply drops this local value.
     const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice();
     const restoreRuntimeBlockedEvidence = () => {
       if (evidenceConsumptionNotice) {
         controller.restoreRuntimeBlockedEvidenceAction(evidenceConsumptionNotice);
+      }
+      if (terminalRecoveryRequiredTool === event.toolName) {
+        // The provider satisfied tool_choice, but the runtime refused execution after the
+        // controller gate. Keep the selected recovery armed and force it again next request.
+        requireToolOnNextProviderRequest = true;
       }
     };
     try {
@@ -2265,6 +2264,7 @@ export default function (pi) {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
+      restoreRuntimeBlockedEvidence();
       return noOpBlocked;
     }
 
@@ -2285,6 +2285,7 @@ export default function (pi) {
         }
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
+        restoreRuntimeBlockedEvidence();
         return containmentBlocked;
       }
     }
@@ -2326,6 +2327,7 @@ export default function (pi) {
           tool: event.toolName,
           reason,
         }));
+        restoreRuntimeBlockedEvidence();
         return {
           block: true,
           reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
@@ -2335,6 +2337,29 @@ export default function (pi) {
     if (stage === 'implementer' && canonicalToolName === 'bash') {
       pendingBashValidationFingerprints.set(event.toolCallId, repositoryStateFingerprint(cwd));
     }
+
+    if (terminalRecoveryRequiredTool === event.toolName) {
+      const plan = terminalRecoveryState?.plan ?? null;
+      if (plan?.kind === 'exact_validation' && !controller.commitRecoveryVerification(canonicalInput)) {
+        restoreRuntimeBlockedEvidence();
+        return {
+          block: true,
+          reason: 'BLOCKED: exact terminal recovery verification was authorized but its one-shot permit could not be committed at the execution boundary.',
+        };
+      }
+      console.log('PI_TERMINAL_RECOVERY_TOOL_ATTEMPT ' + JSON.stringify({
+        stage,
+        obligationKey: terminalRecoveryState?.obligationKey ?? null,
+        tool: event.toolName,
+      }));
+      terminalRecoveryAttemptToolCallId = event.toolCallId ?? null;
+      terminalRecoveryRequiredTool = null;
+      controller.clearRecoveryVerification();
+      // Consume recovery only at the actual execution boundary, after controller policy,
+      // argument matching, containment, no-op and provenance setup have all succeeded.
+      terminalRecoveryState = null;
+    }
+
     pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
     if (evidenceConsumptionNotice) {
       pendingEvidenceConsumptionNotices.set(event.toolCallId, evidenceConsumptionNotice);
