@@ -15,18 +15,25 @@ function fakeClient({
   head = 'head-1',
   labels = ['pi:mr-created', 'review:passed'],
   dispatchError = null,
+  commentErrorPattern = null,
 } = {}) {
   const state = {
     pr: { number: 7, head: { sha: head }, labels: labels.map(name => ({ name })) },
     comments: [],
     dispatches: [],
+    nextCommentId: 1,
   };
   return {
     state,
     async loadPullRequest() { return structuredClone(state.pr); },
     async replaceLabels(_number, names) { state.pr.labels = names.map(name => ({ name })); },
     async pages() { return state.comments; },
-    async comment(_number, body) { state.comments.push({ body }); },
+    async comment(_number, body) {
+      if (commentErrorPattern && commentErrorPattern.test(body)) throw new Error('comment unavailable');
+      const item = { id: state.nextCommentId++, body };
+      state.comments.push(item);
+      return item;
+    },
     async dispatchWorkflow(workflow, inputs) {
       state.dispatches.push({ workflow, inputs });
       if (dispatchError) throw new Error(dispatchError);
@@ -41,6 +48,7 @@ const failure = {
   runAttempt: 1,
   outcome: 'failure',
   runUrl: 'https://github.test/runs/123',
+  model: 'qwen',
 };
 
 test('independent review failure clears stale verdict and dispatches one durable retry without issuing a verdict', async () => {
@@ -48,7 +56,7 @@ test('independent review failure clears stale verdict and dispatches one durable
   const result = await recoverReviewFailure(failure, client);
 
   assert.deepEqual(result, { status: 'retry-dispatched' });
-  assert.deepEqual(client.state.dispatches, [{ workflow: 'pi-pr-review.yml', inputs: { pr_number: '7', model: 'default' } }]);
+  assert.deepEqual(client.state.dispatches, [{ workflow: 'pi-pr-review.yml', inputs: { pr_number: '7', model: 'qwen' } }]);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
   assert.match(client.state.comments[0].body, /infrastructure failure, not a code-review verdict/);
   assert.match(client.state.comments[0].body, /pi-review:failure-retry:7:head-1:123/);
@@ -185,7 +193,7 @@ test('timeout-equivalent workflow conclusion is infrastructure failure and never
     reviewedHead: 'head-1',
     runId: '502',
     runAttempt: 1,
-    model: 'default',
+    model: 'qwen',
   }, client);
 
   const result = await recoverReviewWorkflowRun({
@@ -204,7 +212,7 @@ test('timeout-equivalent workflow conclusion is infrastructure failure and never
 test('whole-workflow recovery ignores a failed run recorded for an obsolete PR head', async () => {
   const client = fakeClient({ head: 'head-2' });
   client.state.comments.push({
-    body: 'Independent review run 503 attempt 1 started.\n\n<!-- pi-review:run:7:head-1:503:attempt:1:default -->',
+    body: 'Independent review run 503 attempt 1 started.\n\n<!-- pi-review:run:7:head-1:503:attempt:1:qwen -->',
   });
 
   const result = await recoverReviewWorkflowRun({
@@ -262,6 +270,120 @@ test('whole-workflow recovery re-dispatches a missing PASS follow-up exactly onc
   assert.equal(client.state.dispatches.length, 1);
 });
 
+test('follow-up claim suppresses duplicate recovery dispatch', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created'] });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '513',
+    runAttempt: 1,
+    model: 'qwen',
+  }, client);
+  await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    verdict: 'PASS',
+    text: 'Looks good.',
+    runId: '513',
+    runAttempt: 1,
+  }, client);
+  client.state.comments.push({
+    id: client.state.nextCommentId++,
+    body: 'claimed\n\n<!-- pi-review:followup-claim:head-1:PASS:run:513:attempt:1 -->',
+  });
+
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '513',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/513',
+  }, client);
+
+  assert.deepEqual(result, { status: 'followup-claimed', verdict: 'PASS' });
+  assert.deepEqual(client.state.dispatches, []);
+});
+
+test('successful follow-up dispatch is not retried when its confirmation comment fails', async () => {
+  const client = fakeClient({
+    labels: ['pi:mr-created'],
+    commentErrorPattern: /was dispatched successfully/,
+  });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '514',
+    runAttempt: 1,
+    model: 'qwen',
+  }, client);
+  await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    verdict: 'PASS',
+    text: 'Looks good.',
+    runId: '514',
+    runAttempt: 1,
+  }, client);
+
+  const first = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '514',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/514',
+  }, client);
+
+  assert.deepEqual(first, { status: 'followup-dispatched-unconfirmed', verdict: 'PASS' });
+  assert.equal(client.state.dispatches.length, 1);
+
+  const repeated = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '514',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/514',
+  }, client);
+  assert.deepEqual(repeated, { status: 'followup-claimed', verdict: 'PASS' });
+  assert.equal(client.state.dispatches.length, 1);
+});
+
+test('empty in-workflow model is recovered from the exact run marker', async () => {
+  const client = fakeClient();
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '515',
+    runAttempt: 1,
+    model: 'laguna',
+  }, client);
+
+  const result = await recoverReviewFailure({
+    ...failure,
+    runId: '515',
+    runAttempt: 1,
+    model: '',
+  }, client);
+
+  assert.deepEqual(result, { status: 'retry-dispatched' });
+  assert.deepEqual(client.state.dispatches, [{
+    workflow: 'pi-pr-review.yml',
+    inputs: { pr_number: '7', model: 'laguna' },
+  }]);
+});
+
+test('missing in-workflow model without a durable record never dispatches invalid default input', async () => {
+  const client = fakeClient();
+  const result = await recoverReviewFailure({
+    ...failure,
+    runId: '516',
+    runAttempt: 1,
+    model: '',
+  }, client);
+
+  assert.deepEqual(result, { status: 'missing-run-model' });
+  assert.deepEqual(client.state.dispatches, []);
+});
+
 test('re-run attempt on the same workflow run records and recovers the new PR head', async () => {
   const client = fakeClient();
   await recordReviewRun({
@@ -269,7 +391,7 @@ test('re-run attempt on the same workflow run records and recovers the new PR he
     reviewedHead: 'head-1',
     runId: '506',
     runAttempt: 1,
-    model: 'default',
+    model: 'qwen',
   }, client);
 
   client.state.pr.head.sha = 'head-2';
@@ -327,7 +449,7 @@ test('verdict recovery match requires the exact run and attempt marker', async (
     reviewedHead: 'head-1',
     runId: '508',
     runAttempt: 2,
-    model: 'default',
+    model: 'qwen',
   }, client);
   client.state.comments.push({
     body: '<!-- pi-review:verdict:head-1:PASS:run:999:attempt:1 --> unrelated :run:508:attempt:2 -->',
