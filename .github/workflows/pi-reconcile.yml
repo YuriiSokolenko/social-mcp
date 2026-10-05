@@ -22,6 +22,7 @@ jobs:
   recover_review_run:
     if: >-
       github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
       contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) &&
       contains(fromJSON('["failure","cancelled","timed_out"]'), github.event.workflow_run.conclusion)
     concurrency:
