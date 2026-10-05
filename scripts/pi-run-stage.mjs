@@ -32,8 +32,10 @@ export const TRUSTED_ACCEPTANCE_TARGETS_ENV = 'PI_TRUSTED_ACCEPTANCE_TARGETS';
 export const TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV = 'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS';
 
 function deferredAcceptanceContracts(env) {
-  const file = path.join(controlWorkspace(env), 'tests', 'acceptance_probes', 'manifest.json');
-  if (!fs.existsSync(file)) throw new Error(`Trusted acceptance manifest is missing: ${file}`);
+  const configuredFile = path.join(controlWorkspace(env), 'tests', 'acceptance_probes', 'manifest.json');
+  const moduleFile = path.join(path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'), 'tests', 'acceptance_probes', 'manifest.json');
+  const file = [configuredFile, moduleFile].find(candidate => fs.existsSync(candidate));
+  if (!file) throw new Error(`Trusted acceptance manifest is missing: ${configuredFile}`);
   let manifest;
   try {
     manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
