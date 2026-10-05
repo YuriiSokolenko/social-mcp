@@ -381,6 +381,10 @@ export async function recoverReviewFailure({
     await replaceLabels(prNumber, clearVerdict);
     // Persist the reason before queuing the retry, so a dispatch failure
     // cannot leave the PR silent or carrying an earlier PASS verdict.
+    // This marker is also the retry ownership claim. If the winning process dies
+    // after writing it but before workflow_dispatch, later direct recovery must
+    // not guess whether dispatch happened; the now-unreviewed PR is restarted by
+    // ordinary reconciliation after RECOVERY_GRACE_MS.
     const retryClaim = await comment(
       prNumber,
       `Independent review ended with ${outcome} for HEAD ${effectiveHead}. This is an infrastructure failure, not a code-review verdict. One automatic retry workflow was queued.${link}\n\n${retryMarker}`,
