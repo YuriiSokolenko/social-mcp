@@ -322,11 +322,31 @@ function structuredErrorStrings(value, depth = 0) {
   return result;
 }
 
+function conflictMessageCandidates(text) {
+  const parse = value => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  };
+  const decoded = [];
+  for (const candidate of [text, text.replace(/^Error:\s*/, '')]) {
+    const parsed = parse(candidate);
+    if (typeof parsed === 'string' && parsed.trim()) decoded.push(parsed);
+    else if (parsed && typeof parsed === 'object') decoded.push(...structuredErrorStrings(parsed));
+  }
+  if (!decoded.length) {
+    const parsedObject = structuredSubmissionError(text);
+    if (parsedObject) decoded.push(...structuredErrorStrings(parsedObject));
+  }
+  return uniqueStrings(decoded.length ? decoded : [text]);
+}
+
 function conflictObligation(text) {
-  const parsed = structuredSubmissionError(text);
   // Prefer decoded structured strings so escaped newlines and JSON delimiters can never become
   // part of a conflict path. Fall back to raw prose only when no structured wrapper is present.
-  const candidates = parsed ? structuredErrorStrings(parsed) : [text];
+  const candidates = conflictMessageCandidates(text);
   for (const candidate of candidates) {
     const match = CONFLICT_OBLIGATION_PATTERNS
       .map(pattern => pattern.exec(candidate))
