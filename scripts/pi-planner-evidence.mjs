@@ -1,4 +1,8 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { repoSearch } from './pi-common/repo-search.mjs';
 
 // Loaded only inside the implementation-planner pi-subagents child via .pi/settings.json.
 // Enforces the trusted planner evidence cap and read-only surface at tool-call time, so the
@@ -14,6 +18,10 @@ import {
   plannerEvidenceFact,
 } from './pi-common/implementation-planner.mjs';
 
+const PLANNER_GRAPH_MAX_CHARS = 16000;
+const PLANNER_GRAPH_COMMAND_TIMEOUT_MS = 5000;
+const execFileAsync = promisify(execFile);
+
 function plannerOutputOnly(env = process.env) {
   return env[PLANNER_OUTPUT_ONLY_ENV] === 'true';
 }
@@ -24,6 +32,168 @@ function evidenceBudget(env = process.env) {
     throw new Error(`${PLANNER_EVIDENCE_BUDGET_ENV} must be a non-negative integer`);
   }
   return value;
+}
+
+async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
+  const result = await execFileFn(command, args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: PLANNER_GRAPH_COMMAND_TIMEOUT_MS,
+    maxBuffer: 512 * 1024,
+    env: { ...process.env, ORBIT_TELEMETRY_ENABLED: 'false' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return typeof result === 'string' ? result : result?.stdout ?? '';
+}
+
+function canonicalPath(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const resolved = path.resolve(raw);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function graphFocusTerms(question) {
+  const raw = String(question ?? '').toLowerCase();
+  const terms = new Set(raw.match(/[a-z0-9_]{4,}/g) ?? []);
+  const expansions = [
+    [/call/, ['call', 'caller', 'callee']],
+    [/refer|usage|use/, ['reference', 'refer', 'usage', 'use']],
+    [/implement|definition/, ['implement', 'definition', 'override']],
+    [/depend|import/, ['depend', 'dependency', 'import']],
+    [/test|spec/, ['test', 'spec']],
+  ];
+  for (const [pattern, words] of expansions) {
+    if (pattern.test(raw)) for (const word of words) terms.add(word);
+  }
+  return [...terms].slice(0, 16);
+}
+
+function focusedGraphText(text, question) {
+  const value = String(text ?? '').trim();
+  const terms = graphFocusTerms(question);
+  if (!value || terms.length === 0) return value;
+  const lines = value.split(/\r?\n/);
+  const matched = lines.filter(line => {
+    const lower = line.toLowerCase();
+    return terms.some(term => lower.includes(term));
+  });
+  return matched.length > 0 ? matched.join('\n') : value;
+}
+
+function boundedGraphText(text) {
+  const value = String(text ?? '').trim();
+  if (value.length <= PLANNER_GRAPH_MAX_CHARS) return { text: value, truncated: false };
+  return {
+    text: `${value.slice(0, PLANNER_GRAPH_MAX_CHARS)}\n[planner_code_graph output truncated]`,
+    truncated: true,
+  };
+}
+
+export async function plannerCodeGraph(cwd, params, { execFile: execFileFn = execFileAsync } = {}) {
+  const target = String(params?.target ?? '').trim();
+  const question = String(params?.question ?? '').trim();
+  if (!target || target.length > 400 || target.startsWith('-') || /[\u0000-\u001f\u007f]/.test(target)) {
+    throw new Error('planner_code_graph target must be one concrete symbol/path target (1-400 printable characters)');
+  }
+  if (!question || question.length > 400 || /[\u0000-\u001f\u007f]/.test(question)) {
+    throw new Error('planner_code_graph question must be one concise planning question (1-400 printable characters)');
+  }
+
+  const root = canonicalPath(cwd);
+  let head;
+  let rows;
+  try {
+    head = String(await localCommand('git', ['rev-parse', 'HEAD'], cwd, execFileFn)).trim();
+    rows = JSON.parse(await localCommand('orbit', ['list', '-F', 'json'], cwd, execFileFn));
+  } catch (error) {
+    throw new Error(`planner_code_graph unavailable: ${String(error?.message ?? error).split('\n')[0]}`);
+  }
+
+  const worktreeRows = Array.isArray(rows)
+    ? rows.filter(row => canonicalPath(row?.repo_path) === root)
+    : [];
+  if (worktreeRows.length === 0) {
+    throw new Error('planner_code_graph unavailable: current worktree is not present in the Orbit index');
+  }
+  if (!head) {
+    throw new Error('planner_code_graph unavailable: current worktree HEAD is unavailable');
+  }
+  const headRows = worktreeRows.filter(row => String(row?.commit_sha ?? '') === head);
+  if (headRows.length === 0) {
+    throw new Error('planner_code_graph unavailable: Orbit index is stale for the current worktree HEAD');
+  }
+  const indexed = headRows.find(row => row?.status === 'indexed');
+  if (!indexed) {
+    throw new Error(`planner_code_graph unavailable: Orbit index status is ${String(headRows[0]?.status ?? 'unknown')}`);
+  }
+
+  let raw;
+  try {
+    raw = await localCommand('orbit', ['context', target], cwd, execFileFn);
+  } catch (error) {
+    throw new Error(`planner_code_graph query failed: ${String(error?.message ?? error).split('\n')[0]}`);
+  }
+  const focused = focusedGraphText(raw, question);
+  const bounded = boundedGraphText(focused);
+  return {
+    target,
+    question,
+    text: bounded.text,
+    truncated: bounded.truncated,
+  };
+}
+
+export function registerPlannerEvidenceTools(pi, {
+  repoSearchFn = repoSearch,
+  plannerCodeGraphFn = plannerCodeGraph,
+} = {}) {
+  if (typeof pi?.registerTool !== 'function') return;
+
+  pi.registerTool({
+    name: 'repo_search',
+    label: 'Planner repository search',
+    description: 'Read-only deterministic search over tracked files in the current planner worktree. Use when the exact path or text location is unknown.',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['content', 'path'] },
+        query: { type: 'string', minLength: 1, maxLength: 300 },
+        pathPrefix: { type: 'string', maxLength: 300 },
+        extensions: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 16 }, maxItems: 12 },
+        maxResults: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const result = repoSearchFn(ctx.cwd, params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  });
+
+  pi.registerTool({
+    name: 'planner_code_graph',
+    label: 'Planner code graph',
+    description: 'Read-only bounded structural context for one concrete symbol/path in the current trusted Orbit index. Use for callers, references, implementations, dependencies, related tests, or blast-radius questions.',
+    parameters: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', minLength: 1, maxLength: 400 },
+        question: { type: 'string', minLength: 1, maxLength: 400 },
+      },
+      required: ['target', 'question'],
+      additionalProperties: false,
+    },
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const result = await plannerCodeGraphFn(ctx.cwd, params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  });
 }
 
 function recordEvidenceState(gate, admission, { fact = null, env = process.env } = {}) {
@@ -49,6 +219,8 @@ function recordEvidenceState(gate, admission, { fact = null, env = process.env }
 }
 
 export default function (pi) {
+  registerPlannerEvidenceTools(pi);
+
   const outputOnly = plannerOutputOnly();
   const gate = createPlannerEvidenceGate(evidenceBudget());
   const pendingEvidence = new Map();
