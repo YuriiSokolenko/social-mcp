@@ -25,11 +25,14 @@ export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
 export const PLANNER_OUTPUT_ONLY_ENV = 'PI_PLANNER_OUTPUT_ONLY';
 
-// Smallest equivalent read-only surface that pi-subagents children expose reliably. The
-// extension-backed repo_search/LSP tools live in the parent runtime and are not available in the
-// isolated planner child, so the documented fallback allowlist is used. The agent definition's
-// `tools:` frontmatter must match this list exactly (pinned by a test).
-export const PLANNER_EVIDENCE_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls']);
+// The Planner gets the built-in read-only tools plus two trusted child-local extensions.
+// Keep this list, the agent frontmatter/prompt, runtime registration, and evidence gate in sync.
+export const PLANNER_BUILTIN_EVIDENCE_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls']);
+export const PLANNER_CUSTOM_EVIDENCE_TOOLS = Object.freeze(['repo_search', 'planner_code_graph']);
+export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
+  ...PLANNER_BUILTIN_EVIDENCE_TOOLS,
+  ...PLANNER_CUSTOM_EVIDENCE_TOOLS,
+]);
 // The structured-output call is the planner's result channel, never repository evidence.
 export const PLANNER_RESULT_TOOL = 'structured_output';
 
@@ -95,7 +98,7 @@ export function plannerEvidenceFact(toolName, input, result) {
   if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) return null;
   const observed = redactPlannerEvidence(plannerResultText(result));
   if (!observed) return null;
-  const rawTarget = input?.path ?? input?.file ?? input?.query ?? input?.pattern ?? input?.glob ?? '';
+  const rawTarget = input?.path ?? input?.file ?? input?.query ?? input?.target ?? input?.question ?? input?.pattern ?? input?.glob ?? '';
   const target = redactPlannerEvidence(rawTarget).slice(0, 80);
   const prefix = `${toolName}${target ? ` ${target}` : ''}: `;
   const room = Math.max(0, MAX_PLANNER_FACT_LENGTH - prefix.length);
@@ -403,8 +406,8 @@ export function plannerTask(env = process.env, {
     ? ` Previous schema error: ${redactPlannerEvidence(repairError).slice(0, 500)}`
     : '';
   const evidencePolicy = outputOnly
-    ? `EVIDENCE PHASE CLOSED. This retry is output-only: do not inspect the repository again and do not call read, grep, find, or ls. Use the issue plus the preserved runtime evidence below. Your only valid successful completion is structured_output.`
-    : `Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue names an exact path/directory/symbol/test, your first evidence action must target that named location (or the authoritative nearest sibling supplied by the runtime). Broad find/ls/search is escalation only after a targeted location is missing, stale, contradictory, or leaves a concrete planning uncertainty unresolved. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.`;
+    ? `EVIDENCE PHASE CLOSED. This retry exposes only structured_output. Do not inspect the repository again. Use the issue plus the preserved runtime evidence below and complete directly with structured_output.`
+    : `Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. Choose the narrowest source that resolves the concrete uncertainty: read a known path/range directly; use repo_search when the exact text/path location is unknown; use planner_code_graph when the uncertainty is relational (callers, references, implementations, dependencies, related tests, or blast radius); use grep/find/ls when they are naturally the most precise choice. If the issue names an exact path/directory/symbol/test, your first evidence action must target that named location (or the authoritative nearest sibling supplied by the runtime). Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.`;
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
 MANDATORY COMPLETION: a successful attempt ends only by calling structured_output. Never finish a planner attempt with prose. After the final evidence result, call structured_output immediately in the same provider lifecycle instead of spending a reasoning-only turn.
@@ -469,7 +472,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
   const applyEvidenceCap = attempt => {
     const cap = attempt === 0 ? evidenceCap : 0;
     // Backstop only: pi-subagents counts every child tool call (including structured_output
-    // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative cap is the child-side
+    // attempts) and, past `hard`, blocks further calls. The authoritative evidence cap is the child-side
     // gate (pi-planner-evidence.mjs); leave headroom for the result call and its schema retry.
     request.toolBudget = { hard: cap + 3 };
     // Output-only retry deliberately gets exactly one result call. If that structured_output call
