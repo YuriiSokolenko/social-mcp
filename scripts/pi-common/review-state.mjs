@@ -43,6 +43,10 @@ function reviewFollowupFailedMarker(head, verdict, runId, runAttempt) {
   return `<!-- pi-review:followup-failed:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`;
 }
 
+function reviewFollowupRetryMarker(head, verdict, runId, runAttempt) {
+  return `<!-- pi-review:followup-retry:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`;
+}
+
 function reviewStartMarker(prNumber, reviewedHead, runId, runAttempt) {
   return `<!-- pi-review:start:${prNumber}:${reviewedHead}:${runId}:attempt:${runAttempt} -->`;
 }
@@ -169,8 +173,10 @@ export async function dispatchAfterReview(
 
     const existingClaim = comments.find(item => String(item.body ?? '').includes(claimMarker));
     const failedMarker = reviewFollowupFailedMarker(reviewedHead, verdict, runId, runAttempt);
+    const retryMarker = reviewFollowupRetryMarker(reviewedHead, verdict, runId, runAttempt);
     const previousDispatchFailed = comments.some(item => String(item.body ?? '').includes(failedMarker));
-    if (existingClaim && !previousDispatchFailed) {
+    const retryClaimed = comments.some(item => String(item.body ?? '').includes(retryMarker));
+    if (existingClaim && (!previousDispatchFailed || retryClaimed)) {
       return { status: 'followup-claimed', verdict };
     }
 
@@ -188,6 +194,13 @@ export async function dispatchAfterReview(
       .sort((a, b) => Number(a.id) - Number(b.id));
     if (claim?.id && claims.length && Number(claims[0].id) !== Number(claim.id)) {
       return { status: 'followup-claimed', verdict };
+    }
+
+    if (existingClaim && previousDispatchFailed) {
+      await comment(
+        prNumber,
+        `Retrying the previously failed review follow-up dispatch once; further recovery is delegated to the ordinary PR reconciler.\n\n${retryMarker}`,
+      );
     }
   }
 
@@ -285,7 +298,6 @@ export async function recoverReviewFailure({
   // ignored above so operator cancellation before model work is respected.
 
   const clearVerdict = withoutReviewLabels(labels);
-  if (labels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
 
   const retryPrefix = `<!-- pi-review:failure-retry:${prNumber}:${effectiveHead}:`;
   const retryMarker = `${retryPrefix}${runId}:attempt:${runAttempt} -->`;
