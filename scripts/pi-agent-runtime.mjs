@@ -2157,6 +2157,8 @@ export default function (pi) {
         block: true,
         reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} has an exact retry ready now; call retry_last_failed_check so the same kind+scope consumes this verification permit.`,
       };
+    }
+
     if (!recoveryBlocked && event.toolName === RETRY_FAILED_CHECK_TOOL && failedCheckRecovery) {
       canonicalInput = recoveryState.request;
     }
