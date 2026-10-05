@@ -827,6 +827,41 @@ test('verdict recovery match requires the exact run and attempt marker', async (
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
 });
 
+test('a claimed review retry intentionally leaves an unreviewed PR for ordinary reconciliation if its winner dies before dispatch', async () => {
+  const client = fakeClient();
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '529', runAttempt: 1,
+  }, client);
+
+  const originalComment = client.comment.bind(client);
+  const retryMarker = '<!-- pi-review:failure-retry:7:head-1:529:attempt:1 -->';
+  client.comment = async (number, body) => {
+    const item = await originalComment(number, body);
+    if (String(body).includes(retryMarker)) {
+      throw new Error('runner died after durable retry claim');
+    }
+    return item;
+  };
+
+  await assert.rejects(
+    recoverReviewFailure({
+      ...failure,
+      runId: '529',
+      runAttempt: 1,
+    }, client),
+    /runner died after durable retry claim/,
+  );
+
+  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
+  assert.ok(client.state.comments.some(item => String(item.body).includes(retryMarker)));
+
+  const reconciler = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconciler, /const RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
+  assert.match(reconciler, /workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
+  assert.match(reconciler, /add: needsFix \? REVIEW_CHANGES_REQUESTED : 'unreviewed'/);
+});
+
 test('markerless whole-workflow failure is left to ordinary orphan reconciliation without mutating the PR', async () => {
   const client = fakeClient();
   const result = await recoverReviewWorkflowRun({
@@ -916,6 +951,8 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
   assert.match(review, /REVIEW_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(reconcile, /review-state\.mjs recover-workflow-run/);
   const reconciler = fs.readFileSync('scripts/pi-reconcile.mjs', 'utf8');
+  assert.match(reconciler, /const RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
   assert.match(reconciler, /labels\.has\(REVIEW_PASSED\)[\s\S]*?mergeGateRecoveryNeeded = true/);
-  assert.match(reconciler, /labels\.has\(REVIEW_CHANGES_REQUESTED\)[\s\S]*?workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
+  assert.match(reconciler, /const needsFix = labels\.has\(REVIEW_CHANGES_REQUESTED\);[\s\S]*?workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
+  assert.match(reconciler, /add: needsFix \? REVIEW_CHANGES_REQUESTED : 'unreviewed'/);
 });
