@@ -15,12 +15,14 @@ function fakeClient({
   head = 'head-1',
   labels = ['pi:mr-created', 'review:passed'],
   dispatchError = null,
+  dispatchFailures = 0,
   commentErrorPattern = null,
 } = {}) {
   const state = {
     pr: { number: 7, head: { sha: head }, labels: labels.map(name => ({ name })) },
     comments: [],
     dispatches: [],
+    dispatchFailuresRemaining: dispatchFailures,
     nextCommentId: 1,
   };
   return {
@@ -36,6 +38,10 @@ function fakeClient({
     },
     async dispatchWorkflow(workflow, inputs) {
       state.dispatches.push({ workflow, inputs });
+      if (state.dispatchFailuresRemaining > 0) {
+        state.dispatchFailuresRemaining -= 1;
+        throw new Error('transient dispatch failure');
+      }
       if (dispatchError) throw new Error(dispatchError);
     },
   };
@@ -53,6 +59,9 @@ const failure = {
 
 test('independent review failure clears stale verdict and dispatches one durable retry without issuing a verdict', async () => {
   const client = fakeClient();
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '123', runAttempt: 1,
+  }, client);
   const result = await recoverReviewFailure(failure, client);
 
   assert.deepEqual(result, { status: 'retry-dispatched' });
@@ -65,6 +74,9 @@ test('independent review failure clears stale verdict and dispatches one durable
 
 test('repeated recovery is idempotent and does not dispatch another retry', async () => {
   const client = fakeClient();
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '123', runAttempt: 1,
+  }, client);
   await recoverReviewFailure(failure, client);
   const repeated = await recoverReviewFailure(failure, client);
 
@@ -75,6 +87,9 @@ test('repeated recovery is idempotent and does not dispatch another retry', asyn
 
 test('a failed retry removes stale PASS and durably transfers the PR to human review', async () => {
   const client = fakeClient();
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '123', runAttempt: 1,
+  }, client);
   await recoverReviewFailure(failure, client);
   await markReviewStarted({
     prNumber: 7, reviewedHead: 'head-1', runId: '124', runAttempt: 1,
@@ -91,6 +106,9 @@ test('a failed retry removes stale PASS and durably transfers the PR to human re
 
 test('failed retry dispatch transfers the PR to human review', async () => {
   const client = fakeClient({ dispatchError: 'workflow dispatch unavailable' });
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '123', runAttempt: 1,
+  }, client);
   const result = await recoverReviewFailure(failure, client);
 
   assert.deepEqual(result, { status: 'needs-human', reason: 'retry-request-failed' });
@@ -194,6 +212,9 @@ test('timeout-equivalent workflow conclusion is infrastructure failure and never
     runId: '502',
     runAttempt: 1,
     model: 'qwen',
+  }, client);
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '502', runAttempt: 1,
   }, client);
 
   const result = await recoverReviewWorkflowRun({
@@ -356,6 +377,9 @@ test('empty in-workflow model is recovered from the exact run marker', async () 
     runAttempt: 1,
     model: 'laguna',
   }, client);
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '515', runAttempt: 1,
+  }, client);
 
   const result = await recoverReviewFailure({
     ...failure,
@@ -404,6 +428,9 @@ test('re-run attempt on the same workflow run records and recovers the new PR he
   }, client);
 
   assert.deepEqual(recorded, { status: 'recorded', reviewedHead: 'head-2', model: 'qwen' });
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-2', runId: '506', runAttempt: 2,
+  }, client);
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '506',
@@ -454,6 +481,9 @@ test('verdict recovery match requires the exact run and attempt marker', async (
   client.state.comments.push({
     body: '<!-- pi-review:verdict:head-1:PASS:run:999:attempt:1 --> unrelated :run:508:attempt:2 -->',
   });
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '508', runAttempt: 2,
+  }, client);
 
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
