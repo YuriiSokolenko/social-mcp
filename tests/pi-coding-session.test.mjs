@@ -456,7 +456,15 @@ function runtimeScenario(mode) {
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
         if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
-        respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
+        if (mode === 'no-submit-recovery') {
+          respond(request, {
+            status: 'failed',
+            error: 'PI_ACTION_REQUIRED_ABORT: simulated child abort after deterministic CHECK_ENV',
+            usage: { output: 9000 },
+          });
+        } else {
+          respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
+        }
       }
       bus.on('prompt-template:subagent:request', async request => {
         assert.notEqual(request.agent, 'implementation-planner', 'planning runs in the bootstrap session, never in the main one');
@@ -1162,6 +1170,7 @@ test('#481 an aborted coding session returns authoritative worktree recovery sta
   const logs = runtimeScenario('no-submit-recovery');
   assert.match(logs, /"phase":"ended_without_submit".*"recoveryReceipt":\{/);
   assert.match(logs, /"infrastructure_code":"CHECK_ENV"/);
+  assert.match(logs, /PI_CODING_RECOVERY_HANDOFF/);
   assert.match(logs, /CODING_RECOVERY_RECEIPT_OK/);
 });
 
