@@ -471,9 +471,11 @@ export default function (pi) {
     // usable; only exact retry is disabled because its historical scope cannot
     // be reconstructed safely from an incomplete ledger.
     const verificationPermitted = controller.verificationPermitted();
+    const recoveryVerificationArmed = controller.recoveryVerificationArmed();
+    const verificationVisible = verificationPermitted || recoveryVerificationArmed;
     const currentWithPermittedVerification =
       verificationTool &&
-      verificationPermitted &&
+      verificationVisible &&
       verificationToolHiddenByPermitGate &&
       !current.includes(verificationTool)
         ? [...current, verificationTool]
@@ -520,7 +522,7 @@ export default function (pi) {
     }
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
-      (!verificationTool || name !== verificationTool || (verificationPermitted && !recoveryRetryReady)) &&
+      (!verificationTool || name !== verificationTool || (verificationVisible && !recoveryRetryReady)) &&
       (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
     const applySurface = (names, reason) => {
@@ -528,10 +530,10 @@ export default function (pi) {
         if (
           current.includes(verificationTool) &&
           !names.includes(verificationTool) &&
-          (!verificationPermitted || recoveryRetryReady)
+          (!verificationVisible || recoveryRetryReady)
         ) {
           verificationToolHiddenByPermitGate = true;
-        } else if (verificationPermitted && !recoveryRetryReady && names.includes(verificationTool)) {
+        } else if (verificationVisible && !recoveryRetryReady && names.includes(verificationTool)) {
           verificationToolHiddenByPermitGate = false;
         }
       }
@@ -548,9 +550,10 @@ export default function (pi) {
               'submit_repair',
             ]).has(name)
           )
-        : largeMutationBudgetActive
+        : largeMutationBudgetActive && !recoveryVerificationArmed
           // UX on top of the controller's own hard gate: while the elevated budget is active,
-          // don't even show tools this turn is not allowed to call.
+          // don't even show tools this turn is not allowed to call. Exact terminal recovery
+          // verification is a separate one-shot gate and temporarily supersedes this surface.
           ? elevatedMutationTurnToolNames(unrestrictedActiveTools, {
               blockerTool: controller.evidenceUnlockAvailable()
                 ? config.productiveProgress.blockerTool
@@ -564,7 +567,7 @@ export default function (pi) {
               : null,
             verificationTools: recoveryRetryReady
               ? [RETRY_FAILED_CHECK_TOOL]
-              : verificationPermitted
+              : verificationVisible
                 ? [config.productiveProgress.verificationTool].filter(Boolean)
                 : [],
           });
@@ -802,6 +805,10 @@ export default function (pi) {
       let plan = terminalRecoveryPlan(loopResult, terminalInput, ctx);
       controller.clearRecoveryVerification();
       if (plan.status === 'repair' && plan.kind === 'exact_validation') {
+        if (controller.largeMutationBudgetPending() || controller.largeMutationBudgetActive()) {
+          controller.resetLargeMutationBudget();
+          elevatedScopePreludeUsed = false;
+        }
         if (!controller.armRecoveryVerification(plan.args)) {
           plan = {
             status: 'blocked',
