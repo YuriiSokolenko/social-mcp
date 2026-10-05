@@ -59,10 +59,21 @@ function requireCommentId(item, context) {
   return id;
 }
 
+const REVIEW_MARKER_AUTHOR = 'github-actions[bot]';
+
+function isTrustedReviewMarkerComment(item) {
+  return item?.user?.login === REVIEW_MARKER_AUTHOR;
+}
+
+function trustedReviewMarkerComments(comments) {
+  return comments.filter(isTrustedReviewMarkerComment);
+}
+
 
 export function findReviewRunRecord(comments, prNumber, runId, runAttempt) {
   const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):attempt:(\d+):(default|laguna|qwen) -->/g;
   for (const item of comments) {
+    if (!isTrustedReviewMarkerComment(item)) continue;
     const body = String(item.body ?? '');
     for (const match of body.matchAll(markerPattern)) {
       if (
@@ -105,7 +116,7 @@ export async function markReviewStarted({
   const pr = await loadPullRequest(prNumber);
   if (pr.head.sha !== reviewedHead) return { status: 'stale' };
 
-  const comments = await pages(`/issues/${prNumber}/comments`);
+  const comments = trustedReviewMarkerComments(await pages(`/issues/${prNumber}/comments`));
   const marker = reviewStartMarker(prNumber, reviewedHead, runId, runAttempt);
   if (comments.some(item => String(item.body ?? '').includes(marker))) {
     return { status: 'already-started' };
@@ -124,7 +135,7 @@ export async function invalidateReview(prNumber, expectedHead = null, client = g
   if (!hasVerdict) return { status: 'no-verdict' };
 
   if (expectedHead) {
-    const comments = await pages(`/issues/${prNumber}/comments`);
+    const comments = trustedReviewMarkerComments(await pages(`/issues/${prNumber}/comments`));
     const markerPrefix = `<!-- pi-review:verdict:${expectedHead}:`;
     if (comments.some(item => String(item.body ?? '').includes(markerPrefix))) {
       return { status: 'current-verdict' };
@@ -177,6 +188,9 @@ export async function dispatchAfterReview(
   const expectedVerdictLabel = verdict === 'PASS' ? REVIEW_PASSED : REVIEW_CHANGES_REQUESTED;
   const beforeClaimPr = await loadPullRequest(prNumber);
   const beforeClaimLabels = prLabelNames(beforeClaimPr);
+  if (reviewedHead && beforeClaimPr.head.sha !== reviewedHead) {
+    return { status: 'stale' };
+  }
   if (beforeClaimLabels.includes(PIPELINE_LABELS.needsHuman)) {
     return { status: 'human' };
   }
@@ -185,7 +199,7 @@ export async function dispatchAfterReview(
   }
 
   if (marker && claimMarker) {
-    let comments = await pages(`/issues/${prNumber}/comments`);
+    let comments = trustedReviewMarkerComments(await pages(`/issues/${prNumber}/comments`));
     if (comments.some(item => String(item.body ?? '').includes(marker))) {
       return { status: 'followup-already-dispatched', verdict };
     }
@@ -208,7 +222,7 @@ export async function dispatchAfterReview(
     try {
       // Re-read after claiming. Concurrent recoveries may both have observed no
       // claim; only the oldest durable claim is allowed to perform the dispatch.
-      comments = await pages(`/issues/${prNumber}/comments`);
+      comments = trustedReviewMarkerComments(await pages(`/issues/${prNumber}/comments`));
       const claims = comments
         .filter(item => String(item.body ?? '').includes(claimMarker))
         .filter(item => Number.isSafeInteger(Number(item.id)))
@@ -223,7 +237,7 @@ export async function dispatchAfterReview(
           `Retrying the previously failed review follow-up dispatch once; further recovery is delegated to the ordinary PR reconciler.\n\n${retryMarker}`,
         );
         const retryClaimId = requireCommentId(retryClaim, 'review follow-up retry claim');
-        comments = await pages(`/issues/${prNumber}/comments`);
+        comments = trustedReviewMarkerComments(await pages(`/issues/${prNumber}/comments`));
         const retryClaims = comments
           .filter(item => String(item.body ?? '').includes(retryMarker))
           .filter(item => Number.isSafeInteger(Number(item.id)))
@@ -235,6 +249,9 @@ export async function dispatchAfterReview(
 
       const currentPr = await loadPullRequest(prNumber);
       const currentLabels = prLabelNames(currentPr);
+      if (reviewedHead && currentPr.head.sha !== reviewedHead) {
+        return { status: 'stale' };
+      }
       if (currentLabels.includes(PIPELINE_LABELS.needsHuman)) {
         return { status: 'human' };
       }
@@ -301,7 +318,7 @@ export async function recoverReviewFailure({
   }
 
   const pr = await loadPullRequest(prNumber);
-  const comments = await pages(`/issues/${prNumber}/comments`);
+  const comments = trustedReviewMarkerComments(await pages(`/issues/${prNumber}/comments`));
   const record = findReviewRunRecord(comments, prNumber, runId, runAttempt);
   let effectiveHead = reviewedHead;
   let effectiveModel = model;
@@ -390,7 +407,7 @@ export async function recoverReviewFailure({
       `Independent review ended with ${outcome} for HEAD ${effectiveHead}. This is an infrastructure failure, not a code-review verdict. One automatic retry workflow was queued.${link}\n\n${retryMarker}`,
     );
     const retryClaimId = requireCommentId(retryClaim, 'review retry claim');
-    const refreshedComments = await pages(`/issues/${prNumber}/comments`);
+    const refreshedComments = trustedReviewMarkerComments(await pages(`/issues/${prNumber}/comments`));
     const matchingRetryClaims = refreshedComments
       .filter(item => String(item.body ?? '').includes(retryMarker))
       .filter(item => Number.isSafeInteger(Number(item.id)))
