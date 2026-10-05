@@ -202,16 +202,94 @@ export async function recoverReviewFailure({
   return { status: 'needs-human', reason: 'retry-exhausted' };
 }
 
+async function gateUnresolvedReviewFailure({
+  prNumber, runId, runAttempt, outcome, runUrl, reason,
+}, client = githubClient()) {
+  const { loadPullRequest, replaceLabels, pages, comment } = client;
+  const pr = await loadPullRequest(prNumber);
+  const labels = prLabelNames(pr);
+  const marker = `<!-- pi-review:failure-unresolved:${prNumber}:${runId}:attempt:${runAttempt} -->`;
+  const comments = await pages(`/issues/${prNumber}/comments`);
+  if (!labels.includes(PIPELINE_LABELS.needsHuman)) {
+    await replaceLabels(prNumber, [...labels, PIPELINE_LABELS.needsHuman]);
+  }
+  if (!comments.some(item => String(item.body ?? '').includes(marker))) {
+    const link = runUrl ? `\n\nRun: ${runUrl}` : '';
+    await comment(
+      prNumber,
+      `Independent review workflow ended with ${outcome}, but recovery could not prove which PR HEAD was reviewed (${reason}). No automated verdict or retry was applied; human recovery is required.${link}\n\n${marker}`,
+    );
+  }
+  return { status: 'needs-human', reason };
+}
+
 export async function recoverReviewWorkflowRun({
   displayTitle, runId, runAttempt, outcome, runUrl,
 }, client = githubClient()) {
   const match = /^🔬 Review PR #([1-9]\d*)\b/.exec(displayTitle ?? '');
   if (!match) return { status: 'ignored', reason: 'not-review-run' };
-  return recoverReviewFailure({
-    prNumber: Number(match[1]),
+  const prNumber = Number(match[1]);
+  const normalizedRunId = String(runId);
+  const normalizedAttempt = Number(runAttempt);
+
+  const recorded = await recoverReviewFailure({
+    prNumber,
     reviewedHead: null,
-    runId: String(runId),
-    runAttempt: Number(runAttempt),
+    runId: normalizedRunId,
+    runAttempt: normalizedAttempt,
+    outcome,
+    runUrl,
+    model: 'default',
+  }, client);
+  if (recorded.status !== 'missing-run-head') return recorded;
+
+  let jobs;
+  try {
+    const data = await client.api(
+      `/actions/runs/${normalizedRunId}/attempts/${normalizedAttempt}/jobs?per_page=100`,
+    );
+    jobs = data?.jobs ?? [];
+  } catch (error) {
+    return gateUnresolvedReviewFailure({
+      prNumber,
+      runId: normalizedRunId,
+      runAttempt: normalizedAttempt,
+      outcome,
+      runUrl,
+      reason: `run-inspection-failed: ${error.message}`,
+    }, client);
+  }
+
+  const reviewJob = jobs.find(job => job.name === 'review');
+  const independent = reviewJob?.steps?.find(step => step.name === 'Run independent review');
+  const independentStarted = Boolean(
+    independent &&
+    independent.status !== 'queued' &&
+    independent.conclusion !== 'skipped',
+  );
+  if (independentStarted) {
+    return gateUnresolvedReviewFailure({
+      prNumber,
+      runId: normalizedRunId,
+      runAttempt: normalizedAttempt,
+      outcome,
+      runUrl,
+      reason: 'missing-run-marker-after-independent-start',
+    }, client);
+  }
+
+  const pr = await client.loadPullRequest(prNumber);
+  const comments = await client.pages(`/issues/${prNumber}/comments`);
+  const currentVerdictPrefix = `<!-- pi-review:verdict:${pr.head.sha}:`;
+  if (comments.some(item => String(item.body ?? '').includes(currentVerdictPrefix))) {
+    return { status: 'current-verdict' };
+  }
+
+  return recoverReviewFailure({
+    prNumber,
+    reviewedHead: pr.head.sha,
+    runId: normalizedRunId,
+    runAttempt: normalizedAttempt,
     outcome,
     runUrl,
     model: 'default',
