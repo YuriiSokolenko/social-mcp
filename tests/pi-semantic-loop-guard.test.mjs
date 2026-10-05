@@ -1820,3 +1820,107 @@ test('#426 absolute obligation path is resolved by exact relative target under r
   assert.equal(guard.terminalObligation, null);
   assert.equal(failedSubmit(guard, hint).tripped, false, 'relevant repair resets the failure count');
 });
+
+
+test('#426 blocked terminal retries retain their submission payload for deterministic metadata recovery', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    let submitChecks = 0;
+    ProgressController.prototype.checkToolCall = function(toolName) {
+      if (toolName !== 'submit_result') return undefined;
+      submitChecks += 1;
+      if (submitChecks === 1) return undefined;
+      return { block: true, reason: 'synthetic terminal policy block' };
+    };
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'missing_publication_fields',
+        missing_fields: ['limitations'],
+      }) }],
+    };
+
+    const first = {
+      toolCallId: 'initial-submit',
+      toolName: 'submit_result',
+      input: { title: 'Initial', summary: 'Summary' },
+    };
+    assert.equal(await handlers.get('tool_call')(first, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...first, isError: true, result: failure }, ctx);
+
+    for (let index = 0; index < 3; index += 1) {
+      const blocked = {
+        toolCallId: 'blocked-submit-' + index,
+        toolName: 'submit_result',
+        input: { title: 'Blocked base', summary: 'Keep me' },
+      };
+      const outcome = await handlers.get('tool_call')(blocked, ctx);
+      assert.equal(outcome.block, true);
+    }
+
+    assert.equal(aborts, 0, 'recognized blocked terminal retry must remain recoverable');
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /deterministic metadata repair selected/);
+    assert.match(messages[0][0], /limitations/);
+    console.log('BLOCKED_TERMINAL_INPUT_RECOVERY_OK');
+  `);
+
+  assert.match(result.stdout, /BLOCKED_TERMINAL_INPUT_RECOVERY_OK/);
+  assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+  assert.doesNotMatch(result.stderr, /previous terminal submission payload is unavailable/);
+});
+
+test('#426 terminal recovery abort provenance omits large prior submission payloads', () => {
+  const failureFile = path.join(os.tmpdir(), `pi-terminal-bounded-abort-${process.pid}-${Date.now()}.json`);
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      const hugeMarker = 'BIG_INPUT_MARKER_' + 'x'.repeat(20000);
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'missing_publication_fields',
+          missing_fields: ['limitations'],
+        }) }],
+      };
+
+      for (let index = 0; index < 4; index += 1) {
+        const event = {
+          toolCallId: 'large-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: hugeMarker, summary: 'Summary' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      assert.equal(aborts, 1);
+      console.log('BOUNDED_TERMINAL_ABORT_OK');
+    `, { PI_RUNTIME_FAILURE_FILE: failureFile });
+
+    assert.match(result.stdout, /BOUNDED_TERMINAL_ABORT_OK/);
+    const checkpointText = fs.readFileSync(failureFile, 'utf8');
+    const checkpoint = JSON.parse(checkpointText);
+    assert.equal(checkpoint.failure_code, 'PI_TERMINAL_RECOVERY_BLOCKED');
+    assert.equal(checkpoint.selected_repair.kind, 'metadata_retry');
+    assert.equal('previousInput' in checkpoint.selected_repair, false);
+    assert.doesNotMatch(checkpointText, /BIG_INPUT_MARKER_/);
+    assert.ok(checkpointText.length < 5000, 'checkpoint stays bounded independently of submit payload size');
+    assert.doesNotMatch(result.stderr, /BIG_INPUT_MARKER_/);
+  } finally {
+    fs.rmSync(failureFile, { force: true });
+  }
+});
