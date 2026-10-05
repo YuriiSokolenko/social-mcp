@@ -8,6 +8,9 @@ on:
   pull_request:
     types: [closed]
     branches: [dev]
+  workflow_run:
+    workflows: ["Pi PR Review"]
+    types: [completed]
 
 permissions:
   actions: write
@@ -20,8 +23,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  recover_review_run:
+    if: github.event_name == 'workflow_run' && contains(fromJSON('["failure","cancelled","timed_out"]'), github.event.workflow_run.conclusion)
+    runs-on: [self-hosted, linux, x64, n150, general]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted dev
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Recover failed review workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+          REVIEW_RUN_ID: ${{ github.event.workflow_run.id }}
+          REVIEW_OUTCOME: ${{ github.event.workflow_run.conclusion }}
+          REVIEW_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: node scripts/pi-common/review-state.mjs recover-workflow-run
+
   reconcile:
-    if: github.event_name != 'pull_request' || (github.event.pull_request.merged == false && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'pi/issue-'))
+    if: github.event_name != 'workflow_run' && (github.event_name != 'pull_request' || (github.event.pull_request.merged == false && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'pi/issue-')))
     runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 5
     steps:
