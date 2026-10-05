@@ -1924,3 +1924,103 @@ test('#426 terminal recovery abort provenance omits large prior submission paylo
     fs.rmSync(failureFile, { force: true });
   }
 });
+
+
+test('#426 runtime validation recovery passes the real ProgressController gate without a mutation permit', () => {
+  const preparedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-validation-recovery-prepared-'));
+  const prepared = path.join(preparedDir, 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Submit and perform the exact recovery validation if requested'],
+    complexity: 'nontrivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'complete spec',
+    workspaceRoot: REPO_ROOT,
+    freshBaseCommit: '',
+    baseRef: 'origin/dev',
+    layoutHint: null,
+    plannerUsage: null,
+    plannerDurationMs: 1,
+  }));
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'validation-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(
+          await handlers.get('tool_call')(event, ctx),
+          undefined,
+          'submit_result remains executable in action_required',
+        );
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      assert.equal(aborts, 0);
+      assert.equal(messages.length, 1);
+      assert.match(messages[0][0], /deterministic exact_validation repair selected/);
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+            { type: 'function', function: { name: 'write', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        patched.tools.map(tool => tool.function.name),
+        ['run_check'],
+        'runtime-owned verification hiding is reversed only for the exact recovery turn',
+      );
+      assert.equal(patched.tool_choice, 'required');
+
+      const unrelated = await handlers.get('tool_call')({
+        toolCallId: 'wrong-validation-recovery',
+        toolName: 'run_check',
+        input: { kind: 'pytest', targets: ['tests/test_other.py'] },
+      }, ctx);
+      assert.equal(unrelated.block, true);
+      assert.match(unrelated.reason, /exact authoritative verification action/);
+
+      const exact = await handlers.get('tool_call')({
+        toolCallId: 'exact-validation-recovery',
+        toolName: 'run_check',
+        input: exactAction,
+      }, ctx);
+      assert.equal(exact, undefined, 'real ProgressController accepts the exact recovery validation');
+      assert.equal(aborts, 0);
+      console.log('EXACT_VALIDATION_RECOVERY_REAL_GATE_OK');
+    `, {
+      PI_PREPARED_IMPLEMENTATION_FILE: prepared,
+    });
+
+    assert.match(result.stdout, /EXACT_VALIDATION_RECOVERY_REAL_GATE_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_SURFACE/);
+  } finally {
+    fs.rmSync(preparedDir, { recursive: true, force: true });
+  }
+});
