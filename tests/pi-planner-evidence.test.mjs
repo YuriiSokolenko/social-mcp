@@ -11,6 +11,7 @@ import {
   PLANNER_EVIDENCE_BUDGET_ENV,
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
+  PLANNER_CUSTOM_EVIDENCE_TOOLS,
   PLANNER_OUTPUT_ONLY_ENV,
   PLANNER_RESULT_TOOL,
   createPlannerEvidenceGate,
@@ -27,14 +28,22 @@ import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 const FORBIDDEN_TOOLS = [
   'bash', 'write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'submit_result', 'begin_coding_session',
   'request_large_mutation_budget', 'need_more_evidence', 'subagent', 'web_search', 'web_fetch', 'github_comment',
-  'accept_mutation_scope', 'retry_last_failed_check',
+  'accept_mutation_scope', 'retry_last_failed_check', 'mcp', 'mcpScript', 'indexed_repo_search',
 ];
 
+function agentSource() {
+  return fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+}
+
 function agentTools() {
-  const source = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
-  const frontmatter = source.match(/^---\n([\s\S]*?)\n---/)[1];
+  const frontmatter = agentSource().match(/^---\n([\s\S]*?)\n---/)[1];
   const line = frontmatter.split('\n').find(entry => entry.startsWith('tools:'));
   return line.slice('tools:'.length).split(',').map(tool => tool.trim()).filter(Boolean);
+}
+
+function documentedEvidenceTools() {
+  const section = agentSource().match(/Available repository evidence:\n([\s\S]*?)\n\nChoose the narrowest useful evidence source:/)?.[1] ?? '';
+  return [...section.matchAll(/^- `([^\`]+)` —/gm)].map(match => match[1]);
 }
 
 // Drives the real child-side extension the way pi would: one awaited tool_call handler per call.
@@ -46,7 +55,7 @@ function childExtension(t, budget) {
     else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previous;
   });
   const handlers = [];
-  plannerEvidenceExtension({ on: (event, fn) => { if (event === 'tool_call') handlers.push(fn); } });
+  plannerEvidenceExtension({ registerTool: () => {}, on: (event, fn) => { if (event === 'tool_call') handlers.push(fn); } });
   assert.equal(handlers.length, 1);
   const log = t.mock.method(console, 'log', () => {});
   return {
@@ -55,15 +64,35 @@ function childExtension(t, budget) {
   };
 }
 
-test('the planner agent definition exposes exactly the read-only evidence tools', () => {
+test('the planner agent definition exposes and documents exactly the executable evidence tools', () => {
   assert.deepEqual(agentTools(), [...PLANNER_EVIDENCE_TOOLS]);
+  assert.deepEqual(documentedEvidenceTools(), [...PLANNER_EVIDENCE_TOOLS]);
   for (const forbidden of FORBIDDEN_TOOLS) assert.ok(!agentTools().includes(forbidden), `${forbidden} must not be a planner tool`);
+  const prompt = agentSource().replace(/^---[\s\S]*?---\n/, '');
+  assert.doesNotMatch(prompt, /\bLSP\b|Zoekt|Git Context|\bscout\b|\bsubagent\b|\bbash\b|generic MCP|mcpScript/);
   const gate = createPlannerEvidenceGate(MAX_PLANNER_REPOSITORY_EVIDENCE);
   for (const forbidden of FORBIDDEN_TOOLS) {
     const admission = gate.admit(forbidden);
     assert.equal(admission.allowed, false, `${forbidden} must be blocked at call time`);
     assert.equal(admission.used, 0, 'a blocked tool never consumes evidence budget');
   }
+});
+
+test('the planner child registers exactly the trusted custom evidence tools', (t) => {
+  const previous = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '0';
+  t.after(() => {
+    if (previous === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+    else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previous;
+  });
+  const registered = [];
+  plannerEvidenceExtension({
+    registerTool: tool => registered.push(tool.name),
+    on: () => {},
+  });
+  assert.deepEqual(registered, [...PLANNER_CUSTOM_EVIDENCE_TOOLS]);
+  assert.ok(!registered.includes('mcp'));
+  assert.ok(!registered.includes('mcpScript'));
 });
 
 test('the planner hard evidence cap is at most 6, configured in trusted stage config', () => {
@@ -94,11 +123,11 @@ test('a 7th evidence action is blocked and the cap cannot be extended', (t) => {
 
 test('accepted evidence markers report used/remaining without file contents', async (t) => {
   const child = childExtension(t, 6);
-  await child.call('read');
-  await child.call('grep');
+  await child.call('repo_search');
+  await child.call('planner_code_graph');
   assert.deepEqual(child.markers(), [
-    'PI_PLANNER_EVIDENCE {"tool":"read","used":1,"remaining":5}',
-    'PI_PLANNER_EVIDENCE {"tool":"grep","used":2,"remaining":4}',
+    'PI_PLANNER_EVIDENCE {"tool":"repo_search","used":1,"remaining":5}',
+    'PI_PLANNER_EVIDENCE {"tool":"planner_code_graph","used":2,"remaining":4}',
   ]);
 });
 
@@ -133,7 +162,7 @@ test('#481 successful evidence calls persist only bounded redacted retry facts',
   });
   const handlers = new Map();
   t.mock.method(console, 'log', () => {});
-  plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
+  plannerEvidenceExtension({ registerTool: () => {}, on: (event, fn) => handlers.set(event, fn) });
 
   await handlers.get('tool_call')({
     toolName: 'read',
@@ -175,7 +204,7 @@ test('aborted planner cleanup prevents a late child from recreating the evidence
         [PLANNER_EVIDENCE_STATE_FILE_ENV]: stateFile,
       };
       const handlers = [];
-      plannerEvidenceExtension({ on: (_event, fn) => handlers.push(fn) });
+      plannerEvidenceExtension({ registerTool: () => {}, on: (_event, fn) => handlers.push(fn) });
       controller.abort();
 
       // The real delegated child is a separate process and retains its inherited env after the
@@ -210,12 +239,12 @@ test('aborted planner cleanup prevents a late child from recreating the evidence
   assert.equal(fs.existsSync(stateFile), false, 'late child write cannot recreate an orphaned sidecar');
 });
 
-test('the gate counts every accepted call, so failed or empty results still consume the cap', () => {
+test('the gate counts failed or empty search/graph calls because admission consumes the shared cap', () => {
   const gate = createPlannerEvidenceGate(2);
   // The gate is admission-time: it cannot see (or be refunded by) a call's outcome.
-  assert.equal(gate.admit('read').allowed, true);
-  assert.equal(gate.admit('grep').allowed, true);
-  assert.equal(gate.admit('find').allowed, false);
+  assert.equal(gate.admit('repo_search').allowed, true);
+  assert.equal(gate.admit('planner_code_graph').allowed, true);
+  assert.equal(gate.admit('read').allowed, false);
 });
 
 test('the planner may stop early: structured output never needs the cap and is never blocked by it', async (t) => {
@@ -295,7 +324,7 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
       assert.equal(process.env[PLANNER_EVIDENCE_BUDGET_ENV], '6');
       assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048');
       const handlers = [];
-      plannerEvidenceExtension({ on: (_event, fn) => handlers.push(fn) });
+      plannerEvidenceExtension({ registerTool: () => {}, on: (_event, fn) => handlers.push(fn) });
       t.mock.method(console, 'log', () => {});
       assert.equal(await handlers[0]({ toolName: 'read', input: {} }), undefined);
       assert.equal(await handlers[0]({ toolName: 'read', input: {} }), undefined);
@@ -339,6 +368,49 @@ test('repository evidence turns an ambiguous issue into a plan for the real targ
   assert.doesNotMatch(host.requests[0].task, /Do not inspect the repository/);
 });
 
+test('unknown-path planning can resolve the implementation target with repo_search and no broad find', async (t) => {
+  const { dir, env } = fixture(t, {
+    'src/net/transport.py': 'export function sendWithBackoff(message) { return message; }\n',
+    'tests/transport.test.js': 'test("send retry", () => {});\n',
+  });
+  const calls = [];
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      const handlers = new Map();
+      const registered = new Map();
+      plannerEvidenceExtension({
+        registerTool: tool => registered.set(tool.name, tool),
+        on: (event, fn) => handlers.set(event, fn),
+      });
+      const input = { kind: 'content', query: 'sendWithBackoff', maxResults: 5 };
+      assert.equal(await handlers.get('tool_call')({ toolName: 'repo_search', toolCallId: 'search-1', input }), undefined);
+      calls.push('repo_search');
+      const result = await registered.get('repo_search').execute('search-1', input, undefined, undefined, { cwd: dir });
+      await handlers.get('tool_execution_end')({ toolName: 'repo_search', toolCallId: 'search-1', isError: false, result });
+      assert.match(result.content[0].text, /src\\/net\\/transport\.py/);
+      return {
+        status: 'completed',
+        usage: { input: 100, output: 20, turns: 1, toolCalls: 2 },
+        result: { kind: 'structured', value: {
+          steps: ['Update sendWithBackoff in src/net/transport.py and its focused retry test.'],
+          facts: ['repo_search resolved sendWithBackoff to src/net/transport.py without broad path discovery.'],
+          complexity: 'nontrivial',
+          evidence_budget: 1,
+          large_mutation: false,
+          reason: 'The target is resolved; main still needs the current mutation anchor.',
+        } },
+      };
+    },
+  });
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.deepEqual(calls, ['repo_search']);
+  assert.deepEqual(prepared.repositoryFacts, [
+    'repo_search resolved sendWithBackoff to src/net/transport.py without broad path discovery.',
+  ]);
+  assert.equal(prepared.plannerEvidenceUsed, 1);
+});
+
 test('planner observability preserves unknown evidenceUsed as null', () => {
   const bootstrap = fs.readFileSync('scripts/pi-implementer-bootstrap.mjs', 'utf8');
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
@@ -357,8 +429,9 @@ test('planner prompt prefers targeted evidence and carries resolved facts forwar
     }));
     const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
     assert.match(task, /first evidence action must target that named location/);
-    assert.match(task, /Broad find\/ls\/search is escalation only/);
-    assert.match(task, /missing, stale, contradictory/);
+    assert.match(task, /use repo_search when the exact text\/path location is unknown/);
+    assert.match(task, /use planner_code_graph when the uncertainty is relational/);
+    assert.match(task, /callers, references, implementations, dependencies, related tests, or blast radius/);
     assert.match(task, /Return facts as 0-6 concise repository-derived facts/);
     assert.match(task, /Never finish a planner attempt with prose/);
     assert.match(task, /ONLY the repository evidence main still needs/);
@@ -458,6 +531,7 @@ test('output-only retry hides evidence tools when the child supports active-tool
   let active = [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL];
   t.mock.method(console, 'log', () => {});
   plannerEvidenceExtension({
+    registerTool: () => {},
     on: (event, fn) => handlers.set(event, fn),
     getActiveTools: () => [...active],
     setActiveTools: tools => { active = [...tools]; },
@@ -469,6 +543,8 @@ test('output-only retry hides evidence tools when the child supports active-tool
     model: 'planner',
     tools: [
       { type: 'function', function: { name: 'read' } },
+      { type: 'function', function: { name: 'repo_search' } },
+      { type: 'function', function: { name: 'planner_code_graph' } },
       { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
     ],
   };
@@ -495,6 +571,7 @@ test('output-only retry keeps the call-time gate when active-tool narrowing is u
   const handlers = new Map();
   const warnings = t.mock.method(console, 'warn', () => {});
   plannerEvidenceExtension({
+    registerTool: () => {},
     on: (event, fn) => handlers.set(event, fn),
     getActiveTools: () => [...PLANNER_EVIDENCE_TOOLS],
     setActiveTools: () => assert.fail('surface narrowing must not run without structured_output'),
@@ -517,8 +594,9 @@ test('broad discovery stays available only as a justified targeted-evidence esca
   }));
   const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
   assert.ok(PLANNER_EVIDENCE_TOOLS.includes('find'), 'find remains available to the planner');
-  assert.match(task, /Broad find\/ls\/search is escalation only/);
-  assert.match(task, /missing, stale, contradictory/);
+  assert.ok(PLANNER_EVIDENCE_TOOLS.includes('repo_search'));
+  assert.match(task, /use repo_search when the exact text\/path location is unknown/);
+  assert.match(task, /use grep\/find\/ls when they are naturally the most precise choice/);
   const gate = createPlannerEvidenceGate(6);
   assert.equal(gate.admit('read').allowed, true, 'targeted evidence can run first');
   assert.equal(gate.admit('find').allowed, true, 'broad discovery is not globally prohibited after a concrete gap');
@@ -530,7 +608,7 @@ test('planner evidence sidecar distinguishes a real zero from unavailable state'
     cwd: dir,
     async driveChild() {
       const handlers = [];
-      plannerEvidenceExtension({ on: (_event, fn) => handlers.push(fn) });
+      plannerEvidenceExtension({ registerTool: () => {}, on: (_event, fn) => handlers.push(fn) });
       assert.equal(await handlers[0]({ toolName: 'structured_output', input: {} }), undefined);
       return {
         status: 'completed', usage: { output: 5 },
@@ -627,7 +705,7 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
     cwd: dir,
     async driveChild(request) {
       const handlers = [];
-      plannerEvidenceExtension({ on: (event, fn) => { if (event === 'tool_call') handlers.push(fn); } });
+      plannerEvidenceExtension({ registerTool: () => {}, on: (event, fn) => { if (event === 'tool_call') handlers.push(fn); } });
       const outputOnly = process.env[PLANNER_OUTPUT_ONLY_ENV] === 'true';
       const verdicts = [];
       if (!outputOnly) {
@@ -686,7 +764,7 @@ test('#481 missing structured_output preserves first-attempt evidence in the out
       attempts += 1;
       retryTasks.push(request.task);
       const handlers = new Map();
-      plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
+      plannerEvidenceExtension({ registerTool: () => {}, on: (event, fn) => handlers.set(event, fn) });
       if (attempts === 1) {
         await handlers.get('tool_call')({
           toolName: 'read',
@@ -710,7 +788,10 @@ test('#481 missing structured_output preserves first-attempt evidence in the out
       assert.match(request.task, /PRESERVED EVIDENCE FROM ATTEMPT 1/);
       assert.match(request.task, /1\/6 evidence actions consumed/);
       assert.match(request.task, /send_with_backoff/);
-      assert.match(request.task, /do not call read, grep, find, or ls/);
+      assert.match(request.task, /This retry exposes only structured_output/);
+      for (const tool of PLANNER_EVIDENCE_TOOLS) {
+        assert.doesNotMatch(request.task, new RegExp(`\\b${tool}\\b`), `output-only retry must not advertise ${tool}`);
+      }
       return {
         status: 'completed',
         usage: { input: 40, output: 5, turns: 1, toolCalls: 1 },
