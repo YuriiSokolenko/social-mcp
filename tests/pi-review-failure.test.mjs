@@ -76,9 +76,9 @@ test('a failed retry removes stale PASS and durably transfers the PR to human re
   assert.deepEqual(result, { status: 'needs-human', reason: 'retry-exhausted' });
   assert.equal(client.state.dispatches.length, 1);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'pi:needs-human']);
-  assert.match(client.state.comments[1].body, /after the single automatic retry/);
-  assert.match(client.state.comments[1].body, /No PASS or CHANGES_REQUESTED verdict/);
-  assert.match(client.state.comments[1].body, /pi-review:failure-exhausted:7:head-1:124/);
+  assert.match(client.state.comments.at(-1).body, /after the single automatic retry/);
+  assert.match(client.state.comments.at(-1).body, /No PASS or CHANGES_REQUESTED verdict/);
+  assert.match(client.state.comments.at(-1).body, /pi-review:failure-exhausted:7:head-1:124/);
 });
 
 test('failed retry dispatch transfers the PR to human review', async () => {
