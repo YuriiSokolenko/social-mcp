@@ -1,5 +1,13 @@
 import fs from 'node:fs';
 
+import { Type } from 'typebox';
+
+import { repoSearch } from './pi-common/repo-search.mjs';
+import {
+  PLANNER_CODE_GRAPH_RELATIONS,
+  plannerCodeGraph,
+} from './pi-common/planner-code-graph.mjs';
+
 // Loaded only inside the implementation-planner pi-subagents child via .pi/settings.json.
 // Enforces the trusted planner evidence cap and read-only surface at tool-call time, so the
 // planner cannot explore past its budget or call anything but the allowlisted evidence tools.
@@ -9,6 +17,7 @@ import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_OUTPUT_ONLY_ENV,
   PLANNER_RESULT_TOOL,
+  PLANNER_CUSTOM_EVIDENCE_TOOLS,
   MAX_PLANNER_FACTS,
   createPlannerEvidenceGate,
   plannerEvidenceFact,
@@ -48,7 +57,51 @@ function recordEvidenceState(gate, admission, { fact = null, env = process.env }
   }
 }
 
+function registerPlannerEvidenceTools(pi) {
+  if (typeof pi.registerTool !== 'function') {
+    throw new Error('Planner evidence extension requires trusted tool registration');
+  }
+
+  pi.registerTool({
+    name: 'repo_search',
+    label: 'Repository search',
+    description: 'Read-only deterministic search over tracked paths/content in the current Planner worktree. Use when the exact path or text location is unknown.',
+    parameters: Type.Object({
+      kind: Type.Optional(Type.Union([Type.Literal('content'), Type.Literal('path')])),
+      query: Type.String({ minLength: 1, maxLength: 300 }),
+      pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
+      extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
+      maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const result = repoSearch(ctx?.cwd ?? process.cwd(), params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  });
+
+  pi.registerTool({
+    name: 'planner_code_graph',
+    label: 'Planner code graph',
+    description: 'Read-only bounded relationship lookup in the fresh Orbit Local index for this Planner worktree. Use only for one concrete target/question about callers, references, implementations, dependencies, related tests, or blast radius.',
+    parameters: Type.Object({
+      relation: Type.Union(PLANNER_CODE_GRAPH_RELATIONS.map(relation => Type.Literal(relation))),
+      target: Type.String({ minLength: 1, maxLength: 300 }),
+      question: Type.String({ minLength: 1, maxLength: 300 }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const result = plannerCodeGraph(ctx?.cwd ?? process.cwd(), params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  });
+}
+
 export default function (pi) {
+  registerPlannerEvidenceTools(pi);
+  const registered = new Set(PLANNER_CUSTOM_EVIDENCE_TOOLS);
+  if (registered.size !== PLANNER_CUSTOM_EVIDENCE_TOOLS.length) {
+    throw new Error('Planner custom evidence tool contract contains duplicate names');
+  }
+
   const outputOnly = plannerOutputOnly();
   const gate = createPlannerEvidenceGate(evidenceBudget());
   const pendingEvidence = new Map();
