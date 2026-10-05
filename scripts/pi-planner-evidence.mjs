@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Type } from 'typebox';
 
 import { repoSearch } from './pi-common/repo-search.mjs';
@@ -21,6 +22,7 @@ import {
 
 const PLANNER_GRAPH_MAX_CHARS = 16000;
 const PLANNER_GRAPH_COMMAND_TIMEOUT_MS = 5000;
+const execFileAsync = promisify(execFile);
 
 function plannerOutputOnly(env = process.env) {
   return env[PLANNER_OUTPUT_ONLY_ENV] === 'true';
@@ -34,8 +36,8 @@ function evidenceBudget(env = process.env) {
   return value;
 }
 
-function localCommand(command, args, cwd, execFile = execFileSync) {
-  return execFile(command, args, {
+async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
+  const result = await execFileFn(command, args, {
     cwd,
     encoding: 'utf8',
     timeout: PLANNER_GRAPH_COMMAND_TIMEOUT_MS,
@@ -43,6 +45,7 @@ function localCommand(command, args, cwd, execFile = execFileSync) {
     env: { ...process.env, ORBIT_TELEMETRY_ENABLED: 'false' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  return typeof result === 'string' ? result : result?.stdout ?? '';
 }
 
 function canonicalPath(value) {
@@ -56,6 +59,34 @@ function canonicalPath(value) {
   }
 }
 
+function graphFocusTerms(question) {
+  const raw = String(question ?? '').toLowerCase();
+  const terms = new Set(raw.match(/[a-z0-9_]{4,}/g) ?? []);
+  const expansions = [
+    [/call/, ['call', 'caller', 'callee']],
+    [/refer|usage|use/, ['reference', 'refer', 'usage', 'use']],
+    [/implement|definition/, ['implement', 'definition', 'override']],
+    [/depend|import/, ['depend', 'dependency', 'import']],
+    [/test|spec/, ['test', 'spec']],
+  ];
+  for (const [pattern, words] of expansions) {
+    if (pattern.test(raw)) for (const word of words) terms.add(word);
+  }
+  return [...terms].slice(0, 16);
+}
+
+function focusedGraphText(text, question) {
+  const value = String(text ?? '').trim();
+  const terms = graphFocusTerms(question);
+  if (!value || terms.length === 0) return value;
+  const lines = value.split(/\r?\n/);
+  const matched = lines.filter(line => {
+    const lower = line.toLowerCase();
+    return terms.some(term => lower.includes(term));
+  });
+  return matched.length > 0 ? matched.join('\n') : value;
+}
+
 function boundedGraphText(text) {
   const value = String(text ?? '').trim();
   if (value.length <= PLANNER_GRAPH_MAX_CHARS) return { text: value, truncated: false };
@@ -65,7 +96,7 @@ function boundedGraphText(text) {
   };
 }
 
-export function plannerCodeGraph(cwd, params, { execFile = execFileSync } = {}) {
+export async function plannerCodeGraph(cwd, params, { execFile: execFileFn = execFileAsync } = {}) {
   const target = String(params?.target ?? '').trim();
   const question = String(params?.question ?? '').trim();
   if (!target || target.length > 400 || target.startsWith('-') || /[\u0000-\u001f\u007f]/.test(target)) {
@@ -79,32 +110,38 @@ export function plannerCodeGraph(cwd, params, { execFile = execFileSync } = {}) 
   let head;
   let rows;
   try {
-    head = String(localCommand('git', ['rev-parse', 'HEAD'], cwd, execFile)).trim();
-    rows = JSON.parse(localCommand('orbit', ['list', '-F', 'json'], cwd, execFile));
+    head = String(await localCommand('git', ['rev-parse', 'HEAD'], cwd, execFileFn)).trim();
+    rows = JSON.parse(await localCommand('orbit', ['list', '-F', 'json'], cwd, execFileFn));
   } catch (error) {
     throw new Error(`planner_code_graph unavailable: ${String(error?.message ?? error).split('\n')[0]}`);
   }
 
-  const indexed = Array.isArray(rows)
-    ? rows.find(row => canonicalPath(row?.repo_path) === root)
-    : null;
-  if (!indexed) {
+  const worktreeRows = Array.isArray(rows)
+    ? rows.filter(row => canonicalPath(row?.repo_path) === root)
+    : [];
+  if (worktreeRows.length === 0) {
     throw new Error('planner_code_graph unavailable: current worktree is not present in the Orbit index');
   }
-  if (indexed.status !== 'indexed') {
-    throw new Error(`planner_code_graph unavailable: Orbit index status is ${String(indexed.status ?? 'unknown')}`);
+  if (!head) {
+    throw new Error('planner_code_graph unavailable: current worktree HEAD is unavailable');
   }
-  if (!head || String(indexed.commit_sha ?? '') !== head) {
+  const headRows = worktreeRows.filter(row => String(row?.commit_sha ?? '') === head);
+  if (headRows.length === 0) {
     throw new Error('planner_code_graph unavailable: Orbit index is stale for the current worktree HEAD');
+  }
+  const indexed = headRows.find(row => row?.status === 'indexed');
+  if (!indexed) {
+    throw new Error(`planner_code_graph unavailable: Orbit index status is ${String(headRows[0]?.status ?? 'unknown')}`);
   }
 
   let raw;
   try {
-    raw = localCommand('orbit', ['context', target], cwd, execFile);
+    raw = await localCommand('orbit', ['context', target], cwd, execFileFn);
   } catch (error) {
     throw new Error(`planner_code_graph query failed: ${String(error?.message ?? error).split('\n')[0]}`);
   }
-  const bounded = boundedGraphText(raw);
+  const focused = focusedGraphText(raw, question);
+  const bounded = boundedGraphText(focused);
   return {
     target,
     question,
@@ -145,7 +182,7 @@ export function registerPlannerEvidenceTools(pi, {
       question: Type.String({ minLength: 1, maxLength: 400 }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = plannerCodeGraphFn(ctx.cwd, params);
+      const result = await plannerCodeGraphFn(ctx.cwd, params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
     },
   });
