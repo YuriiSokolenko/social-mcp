@@ -31,10 +31,18 @@ function fakeClient({
     state,
     async loadPullRequest() { return structuredClone(state.pr); },
     async replaceLabels(_number, names) { state.pr.labels = names.map(name => ({ name })); },
-    async pages() { return state.comments; },
+    async pages() {
+      return state.comments.map(item => item.user
+        ? item
+        : { ...item, user: { login: 'github-actions[bot]', type: 'Bot' } });
+    },
     async comment(_number, body) {
       if (commentErrorPattern && commentErrorPattern.test(body)) throw new Error('comment unavailable');
-      const item = { id: state.nextCommentId++, body };
+      const item = {
+        id: state.nextCommentId++,
+        body,
+        user: { login: 'github-actions[bot]', type: 'Bot' },
+      };
       state.comments.push(item);
       return commentReturnsId ? item : {};
     },
@@ -379,6 +387,50 @@ test('whole-workflow recovery re-dispatches a missing PASS follow-up exactly onc
   assert.equal(client.state.dispatches.length, 1);
 });
 
+test('human-authored review markers cannot suppress bot recovery', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created', 'review:passed'] });
+  client.state.comments.push({
+    id: client.state.nextCommentId++,
+    user: { login: 'reviewer-person', type: 'User' },
+    body: '<!-- pi-review:followup:head-1:PASS:run:530:attempt:1 -->',
+  });
+
+  const result = await dispatchAfterReview(7, 'PASS', {
+    reviewedHead: 'head-1',
+    runId: '530',
+    runAttempt: 1,
+    requireCurrentVerdict: true,
+  }, client);
+
+  assert.deepEqual(result, { status: 'followup-dispatched', verdict: 'PASS' });
+  assert.equal(client.state.dispatches.length, 1);
+  assert.ok(client.state.comments.some(item =>
+    item.user?.login === 'github-actions[bot]' &&
+    String(item.body).includes('pi-review:followup:head-1:PASS:run:530:attempt:1')));
+});
+
+test('human-authored retry marker cannot exhaust bot retry budget', async () => {
+  const client = fakeClient();
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '531', runAttempt: 1,
+  }, client);
+  client.state.comments.push({
+    id: client.state.nextCommentId++,
+    user: { login: 'reviewer-person', type: 'User' },
+    body: '<!-- pi-review:failure-retry:7:head-1:999:attempt:1 -->',
+  });
+
+  const result = await recoverReviewFailure({
+    ...failure,
+    runId: '531',
+    runAttempt: 1,
+  }, client);
+
+  assert.deepEqual(result, { status: 'retry-dispatched' });
+  assert.equal(client.state.dispatches.length, 1);
+  assert.ok(!client.state.pr.labels.some(label => label.name === 'pi:needs-human'));
+});
+
 test('follow-up claim suppresses duplicate recovery dispatch', async () => {
   const client = fakeClient({ labels: ['pi:mr-created'] });
   await recordReviewRun({
@@ -550,6 +602,20 @@ test('human takeover blocks recovery follow-up dispatch even when a verdict mark
 
   assert.deepEqual(result, { status: 'human' });
   assert.deepEqual(client.state.dispatches, []);
+});
+
+test('deterministic repair handoff refuses a stale reviewed head', async () => {
+  const client = fakeClient({ head: 'head-2', labels: ['pi:mr-created'] });
+
+  const result = await dispatchAfterReview(7, 'CHANGES_REQUESTED', {
+    reviewedHead: 'head-1',
+    runId: '532',
+    runAttempt: 1,
+  }, client);
+
+  assert.deepEqual(result, { status: 'stale' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.equal(client.state.comments.length, 0);
 });
 
 test('deterministic repair handoff is idempotent when run identity is available', async () => {
