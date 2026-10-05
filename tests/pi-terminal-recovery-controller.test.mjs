@@ -472,3 +472,32 @@ test('#426 malformed validation action cannot be discharged by an unrelated pass
   assert.equal(guard.terminalObligation.kind, 'validation');
   assert.deepEqual(guard.terminalObligation.requiredTargets, ['tests/test_required.py']);
 });
+
+
+test('#426 metadata retries fail closed when the prior terminal payload is unavailable', () => {
+  const metadata = submissionObligation(JSON.stringify({
+    code: 'missing_publication_fields',
+    missing_fields: ['limitations'],
+  }));
+  const metadataPlan = selectTerminalRecovery({
+    obligation: metadata,
+    terminalInput: null,
+    activeToolNames: ['submit_result'],
+  });
+  assert.equal(metadataPlan.status, 'blocked');
+  assert.match(metadataPlan.reason, /previous terminal submission payload is unavailable/);
+
+  const fileSet = submissionObligation(
+    'Implementer file-set mismatch: missing files: src/old.py; unexpected files: src/new.py',
+  );
+  const fileSetPlan = selectTerminalRecovery({
+    obligation: fileSet,
+    terminalInput: null,
+    activeToolNames: ['submit_result'],
+    currentChangedFiles: ['src/new.py'],
+    acceptedPaths: ['src/new.py'],
+    drift: [{ path: 'src/new.py', class: 'journaled', action: 'undo_mutation', mutation_id: 'm-task' }],
+  });
+  assert.equal(fileSetPlan.status, 'blocked');
+  assert.match(fileSetPlan.reason, /previous terminal submission payload is unavailable/);
+});
