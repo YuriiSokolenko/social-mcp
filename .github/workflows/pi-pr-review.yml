@@ -92,6 +92,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_MODEL: ${{ inputs.model || 'default' }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
           REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
 
@@ -120,6 +121,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           RESULT="$RUNNER_TEMP/review-result.json"
           VERDICT="$(jq -r '.verdict' "$RESULT")"
@@ -179,5 +181,6 @@ jobs:
           HEAD_SHA: ${{ needs.review.outputs.head_sha }}
           REVIEW_OUTCOME: ${{ needs.review.outputs.independent_outcome || needs.review.result }}
           REVIEW_MODEL: ${{ needs.review.outputs.model || inputs.model || 'default' }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
           REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" recover-failure "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
