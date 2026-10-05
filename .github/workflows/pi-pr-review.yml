@@ -88,17 +88,27 @@ jobs:
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
 
       - name: Record review run identity
+        id: record
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_MODEL: ${{ inputs.model || 'default' }}
           REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
           REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
+        run: |
+          RECORDED="$(node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID")"
+          STATUS="$(jq -r '.status' <<<"$RECORDED")"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "stale" ]; then
+            echo "PR #$PR changed before independent review; skipping this stale run"
+          fi
 
       - name: Run independent review
         id: independent
-        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
+        if: >-
+          steps.load.outputs.skip != 'true' &&
+          steps.checks.outcome == 'success' &&
+          contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         continue-on-error: true
         run: |
           cd "$JOB_DIR"
@@ -152,15 +162,7 @@ jobs:
 
   recover_failed_review:
     needs: review
-    if: >-
-      always() &&
-      (
-        contains(fromJSON('["failure","cancelled"]'), needs.review.outputs.independent_outcome) ||
-        (
-          needs.review.outputs.independent_outcome == '' &&
-          contains(fromJSON('["failure","cancelled"]'), needs.review.result)
-        )
-      )
+    if: always() && contains(fromJSON('["failure","cancelled"]'), needs.review.outputs.independent_outcome)
     runs-on: [self-hosted, linux, x64, n150, general]
     permissions:
       actions: write
