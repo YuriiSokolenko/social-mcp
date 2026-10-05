@@ -31,6 +31,10 @@ function reviewRunMarker(prNumber, reviewedHead, runId, runAttempt, model) {
   return `<!-- pi-review:run:${prNumber}:${reviewedHead}:${runId}:attempt:${runAttempt}:${model} -->`;
 }
 
+function reviewFollowupMarker(head, verdict, runId, runAttempt) {
+  return `<!-- pi-review:followup:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`;
+}
+
 export function findReviewRunRecord(comments, prNumber, runId, runAttempt) {
   const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):attempt:(\d+):(default|laguna|qwen) -->/g;
   for (const item of comments) {
@@ -112,11 +116,35 @@ export async function applyReview({
   return { status: 'applied', verdict };
 }
 
-export async function dispatchAfterReview(prNumber, verdict) {
-  const { dispatchWorkflow } = githubClient();
+export async function dispatchAfterReview(
+  prNumber,
+  verdict,
+  { reviewedHead = null, runId = null, runAttempt = null } = {},
+  client = githubClient(),
+) {
+  const { dispatchWorkflow, pages, comment } = client;
   const workflow = workflowFile(verdict === 'PASS' ? 'mergeGate' : 'repair');
   const inputs = verdict === 'PASS' ? undefined : { pr_number: String(prNumber) };
+  const hasDurableReviewIdentity = Boolean(reviewedHead && runId && runAttempt);
+  const marker = hasDurableReviewIdentity
+    ? reviewFollowupMarker(reviewedHead, verdict, runId, runAttempt)
+    : null;
+
+  if (marker) {
+    const comments = await pages(`/issues/${prNumber}/comments`);
+    if (comments.some(item => String(item.body ?? '').includes(marker))) {
+      return { status: 'followup-already-dispatched', verdict };
+    }
+  }
+
   await dispatchWorkflow(workflow, inputs);
+  if (marker) {
+    await comment(
+      prNumber,
+      `Review follow-up for ${verdict} was dispatched successfully.\n\n${marker}`,
+    );
+  }
+  return { status: 'followup-dispatched', verdict };
 }
 
 /**
@@ -145,11 +173,17 @@ export async function recoverReviewFailure({
   if (pr.head.sha !== effectiveHead) return { status: 'stale' };
   const passMarker = reviewVerdictMarker(effectiveHead, 'PASS', runId, runAttempt);
   const changesMarker = reviewVerdictMarker(effectiveHead, 'CHANGES_REQUESTED', runId, runAttempt);
-  if (comments.some(item => {
-    const body = String(item.body ?? '');
-    return body.includes(passMarker) || body.includes(changesMarker);
-  })) {
-    return { status: 'verdict-already-applied' };
+  const appliedVerdict = comments.some(item => String(item.body ?? '').includes(passMarker))
+    ? 'PASS'
+    : comments.some(item => String(item.body ?? '').includes(changesMarker))
+      ? 'CHANGES_REQUESTED'
+      : null;
+  if (appliedVerdict) {
+    return dispatchAfterReview(prNumber, appliedVerdict, {
+      reviewedHead: effectiveHead,
+      runId,
+      runAttempt,
+    }, client);
   }
 
   const labels = prLabelNames(pr);
@@ -293,7 +327,14 @@ async function main() {
     });
     return process.stdout.write(JSON.stringify(result));
   }
-  if (cmd === 'dispatch') return dispatchAfterReview(prNumber, a);
+  if (cmd === 'dispatch') {
+    const result = await dispatchAfterReview(prNumber, a, {
+      reviewedHead: process.env.HEAD_SHA,
+      runId: process.env.REVIEW_RUN_ID,
+      runAttempt: process.env.REVIEW_RUN_ATTEMPT,
+    });
+    return process.stdout.write(JSON.stringify(result));
+  }
   if (cmd === 'record-run') {
     const result = await recordReviewRun({
       prNumber, reviewedHead: a, runId: b, runAttempt: process.env.REVIEW_RUN_ATTEMPT,
