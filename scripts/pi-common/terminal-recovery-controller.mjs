@@ -54,7 +54,7 @@ function driftForPath(drift, target) {
  */
 export function selectTerminalRecovery({
   obligation,
-  terminalInput = {},
+  terminalInput = null,
   activeToolNames = [],
   currentChangedFiles = [],
   drift = [],
@@ -64,10 +64,18 @@ export function selectTerminalRecovery({
   if (!obligation?.key) return blocked(obligation, 'The failed terminal submission has no stable unresolved-obligation identity.');
 
   const active = activeSet(activeToolNames);
+  const hasTerminalInput =
+    terminalInput && typeof terminalInput === 'object' && !Array.isArray(terminalInput);
   const current = uniqueStrings(currentChangedFiles);
   const accepted = new Set(uniqueStrings(acceptedPaths));
 
   if (obligation.kind === 'metadata') {
+    if (!hasTerminalInput) {
+      return blocked(
+        obligation,
+        'The previous terminal submission payload is unavailable, so publication metadata cannot be retried without dropping fields.',
+      );
+    }
     if (!active.has('submit_result')) {
       return blocked(obligation, 'submit_result is not executable in the current capability snapshot.', {
         requiredTool: 'submit_result',
@@ -210,6 +218,12 @@ export function selectTerminalRecovery({
     }
 
     if (missing.length || acceptedUnexpected.length) {
+      if (!hasTerminalInput) {
+        return blocked(
+          obligation,
+          'The previous terminal submission payload is unavailable, so file-set metadata cannot be retried without dropping publication fields.',
+        );
+      }
       if (!active.has('submit_result')) {
         return blocked(obligation, 'The file-set obligation is metadata-only, but submit_result is not executable now.', {
           requiredTool: 'submit_result',
