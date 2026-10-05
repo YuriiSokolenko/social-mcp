@@ -307,24 +307,42 @@ function structuredSubmissionError(text) {
 }
 
 const CONFLICT_OBLIGATION_PATTERNS = Object.freeze([
-  /Latest dev conflicts with the implementation\. Resolve these files and retry submit_result: ([^\n]+)/,
-  /PR conflicts with current dev\. Resolve these files and retry submit_repair: ([^\n]+)/,
+  /Latest dev conflicts with the implementation\. Resolve these files and retry submit_result: ([^\n\r]+)/,
+  /PR conflicts with current dev\. Resolve these files and retry submit_repair: ([^\n\r]+)/,
 ]);
 
+function structuredErrorStrings(value, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 2) return [];
+  const result = [];
+  for (const key of ['message', 'error', 'reason', 'summary']) {
+    const item = value[key];
+    if (typeof item === 'string' && item.trim()) result.push(item);
+    else if (item && typeof item === 'object') result.push(...structuredErrorStrings(item, depth + 1));
+  }
+  return result;
+}
+
 function conflictObligation(text) {
-  const match = CONFLICT_OBLIGATION_PATTERNS
-    .map(pattern => pattern.exec(text))
-    .find(Boolean);
-  if (!match) return null;
-  const conflictPaths = uniqueStrings(parsePathList(match[1]));
-  if (!conflictPaths.length) return null;
-  return {
-    kind: 'conflict',
-    code: 'latest_dev_conflict',
-    paths: conflictPaths,
-    conflictPaths,
-    key: boundedStableHash({ code: 'latest_dev_conflict', conflict_paths: conflictPaths }),
-  };
+  const parsed = structuredSubmissionError(text);
+  // Prefer decoded structured strings so escaped newlines and JSON delimiters can never become
+  // part of a conflict path. Fall back to raw prose only when no structured wrapper is present.
+  const candidates = parsed ? structuredErrorStrings(parsed) : [text];
+  for (const candidate of candidates) {
+    const match = CONFLICT_OBLIGATION_PATTERNS
+      .map(pattern => pattern.exec(candidate))
+      .find(Boolean);
+    if (!match) continue;
+    const conflictPaths = uniqueStrings(parsePathList(match[1]));
+    if (!conflictPaths.length) continue;
+    return {
+      kind: 'conflict',
+      code: 'latest_dev_conflict',
+      paths: conflictPaths,
+      conflictPaths,
+      key: boundedStableHash({ code: 'latest_dev_conflict', conflict_paths: conflictPaths }),
+    };
+  }
+  return null;
 }
 
 export function submissionObligation(result) {
@@ -418,7 +436,9 @@ function passingValidationResult(result) {
 function exactValidationActionMatches(obligation, tool, input) {
   if (tool !== 'run_check' || obligation?.kind !== 'validation' || !obligation.action) return false;
   const expected = obligation.action;
-  if (expected.kind && input?.kind !== expected.kind) return false;
+  // A targeted validation obligation is authoritative only when it names an exact run_check
+  // kind. An empty/malformed action must never be discharged by an unrelated passing check.
+  if (!expected.kind || input?.kind !== expected.kind) return false;
   if (expected.profile && input?.profile !== expected.profile) return false;
   const same = (left, right) =>
     JSON.stringify(uniqueStrings(left)) === JSON.stringify(uniqueStrings(right));
@@ -443,41 +463,66 @@ function mutationTargetPath(input, result) {
 }
 
 function mutationResultPaths(input, result) {
+  // Explicit mutation input is the strongest target evidence. Aggregate result fields such as
+  // files/paths/changed_files often describe the whole worktree and must not be treated as files
+  // touched by this one mutation.
+  const direct = targetFamily(input);
+  if (direct) return [direct];
+
   const candidates = [];
-  const direct = mutationTargetPath(input, result);
-  if (direct) candidates.push(direct);
-  const collect = value => {
+  const collectSingularPath = value => {
     if (typeof value === 'string' && value.trim()) candidates.push(value.trim());
-    if (Array.isArray(value)) {
-      for (const item of value) if (typeof item === 'string' && item.trim()) candidates.push(item.trim());
-    }
   };
-  for (const source of [result?.details, result]) {
-    collect(source?.path);
-    collect(source?.paths);
-    collect(source?.files);
-    collect(source?.changed_files);
-  }
+  collectSingularPath(result?.details?.path);
+  collectSingularPath(result?.path);
   try {
     const parsed = JSON.parse(explicitResultText(result) ?? '');
-    collect(parsed?.path);
-    collect(parsed?.paths);
-    collect(parsed?.files);
-    collect(parsed?.changed_files);
+    collectSingularPath(parsed?.path);
   } catch {
-    // Unstructured mutation result: the direct target above remains authoritative.
+    // Unstructured mutation result: no authoritative target beyond the fields above.
   }
   return uniqueStrings(candidates);
 }
 
-function targetMatchesObligationPath(target, obligationPath) {
-  return target === obligationPath || target.endsWith('/' + obligationPath);
+function normalizedPath(value) {
+  return String(value ?? '')
+    .replaceAll('\\\\', '/')
+    .replace(/^\.\//, '')
+    .replace(/\/$/, '');
 }
 
-export function mutationResolvesSubmissionObligation(obligation, input, result) {
+function targetMatchesObligationPath(target, obligationPath, repositoryRoot = null) {
+  let actual = normalizedPath(target);
+  let expected = normalizedPath(obligationPath);
+  if (!actual || !expected) return false;
+
+  if (repositoryRoot) {
+    const root = path.resolve(repositoryRoot);
+    const relativizeInsideRoot = value => {
+      if (!path.isAbsolute(value)) return normalizedPath(value);
+      const relative = path.relative(root, value);
+      if (!relative || relative === '.') return '';
+      if (relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return normalizedPath(value);
+      return normalizedPath(relative);
+    };
+    actual = relativizeInsideRoot(actual);
+    expected = relativizeInsideRoot(expected);
+  }
+
+  if (actual === expected) return true;
+  const actualAbsolute = path.isAbsolute(actual);
+  const expectedAbsolute = path.isAbsolute(expected);
+  if (actualAbsolute && !expectedAbsolute) return actual.endsWith('/' + expected);
+  if (expectedAbsolute && !actualAbsolute) return expected.endsWith('/' + actual);
+  return false;
+}
+
+export function mutationResolvesSubmissionObligation(obligation, input, result, repositoryRoot = null) {
   const paths = obligation?.paths ?? [];
   const targets = mutationResultPaths(input, result);
-  return targets.some(target => paths.some(item => targetMatchesObligationPath(target, item)));
+  return targets.some(target =>
+    paths.some(item => targetMatchesObligationPath(target, item, repositoryRoot))
+  );
 }
 
 function strategyFamily(tool, input, productiveState, errorClass) {
@@ -565,6 +610,7 @@ export class SemanticLoopGuard {
     repositoryStateBefore = null,
     repositoryStateAfter = null,
     mutationChanged = null,
+    repositoryRoot = null,
   }) {
     const base = {
       stage,
@@ -654,7 +700,12 @@ export class SemanticLoopGuard {
         ? this._count(this.repositoryWindow, repositoryStateAfter)
         : 0;
 
-      const resolvesObligation = mutationResolvesSubmissionObligation(this.terminalObligation, input, result);
+      const resolvesObligation = mutationResolvesSubmissionObligation(
+        this.terminalObligation,
+        input,
+        result,
+        repositoryRoot,
+      );
       if (changed && this.terminalObligation && resolvesObligation) {
         // A relevant fix resolves the blocker even when it restores an already-seen state
         // (undo of an accidental B back to A). Repository revisit tracking stays intact.
