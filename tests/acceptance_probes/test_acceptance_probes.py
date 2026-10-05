@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
@@ -81,7 +82,7 @@ def _current_issue_requires(contract: dict) -> bool:
 def _git_ref_exists(ref: str) -> bool:
     try:
         result = subprocess.run(
-            ["git", "cat-file", "-e", f"{ref}^{commit}"],
+            ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -236,7 +237,7 @@ def test_pr_ci_fails_closed_when_trusted_baseline_parent_is_unavailable(monkeypa
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_REF", "refs/pull/477/merge")
-    monkeypatch.setattr(__import__(__name__), "_git_ref_exists", lambda _ref: False)
+    monkeypatch.setattr(sys.modules[__name__], "_git_ref_exists", lambda _ref: False)
 
     with pytest.raises(pytest.fail.Exception, match="PR baseline is unavailable"):
         _trusted_baseline_requires(CRITERIA["lru-capacity-integer"])
@@ -247,9 +248,9 @@ def test_pr_ci_reads_merge_parent_for_trusted_baseline(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_REF", "refs/pull/477/merge")
-    monkeypatch.setattr(__import__(__name__), "_git_ref_exists", lambda _ref: True)
+    monkeypatch.setattr(sys.modules[__name__], "_git_ref_exists", lambda _ref: True)
     monkeypatch.setattr(
-        __import__(__name__),
+        sys.modules[__name__],
         "_git_ref_contains",
         lambda ref, path: ref == "HEAD^1" and path == "src/social_mcp/diagnostics/smoke_lru.py",
     )
