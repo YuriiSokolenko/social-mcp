@@ -623,6 +623,9 @@ test('re-run attempt on the same workflow run records and recovers the new PR he
 
 test('second failed attempt of the same workflow run exhausts the single retry for that head', async () => {
   const client = fakeClient();
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '507', runAttempt: 1,
+  }, client);
   await recoverReviewFailure({
     ...failure,
     runId: '507',
