@@ -29,7 +29,7 @@ Choose the narrowest useful evidence source:
 - Prefer one representative sibling source and one representative sibling test when conventions matter.
 - Stop once exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts already explicit in the issue or fresh-worktree provenance already established by the runtime.
 
-No other tools are available. Remain read-only, do not delegate, and do not invent scope beyond the issue and observed repository facts.
+No other repository-evidence tools are available. Remain read-only, do not delegate, and do not invent scope beyond the issue and observed repository facts.
 
 The prepared handoff must carry forward facts you already established. Put useful repository-derived conventions, target paths/symbols, invariants, and verification locations into the bounded `facts` field so the Implementer does not rediscover them. Facts must be concise and synthesized: no raw reads, search results, graph dumps, tool history, transcript, or chain-of-thought.
 
