@@ -231,25 +231,27 @@ test('#426 compactor recognizes structured tool content instead of the message e
 });
 
 
-test('#426 multi-path coding-session result can resolve only the named terminal obligation', () => {
+test('#426 aggregate changed-file lists cannot masquerade as a mutation target', () => {
   const obligation = submissionObligation(
     'Implementer file-set mismatch: unexpected files: scratch/tmp.py',
   );
   assert.equal(
     mutationResolvesSubmissionObligation(
       obligation,
-      { reason: 'repair' },
+      { reason: 'unrelated coding work' },
       { details: { changed_files: ['src/real.py', 'scratch/tmp.py'] } },
     ),
-    true,
+    false,
+    'changed_files describes aggregate repository state, not the file touched by this mutation',
   );
   assert.equal(
     mutationResolvesSubmissionObligation(
       obligation,
-      { reason: 'unrelated work' },
-      { details: { changed_files: ['src/real.py'] } },
+      { reason: 'targeted recovery' },
+      { details: { path: 'scratch/tmp.py', changed_files: ['src/real.py', 'scratch/tmp.py'] } },
     ),
-    false,
+    true,
+    'a singular authoritative result.path can resolve the named obligation',
   );
 });
 
@@ -363,26 +365,43 @@ test('#426 file-set recovery fails closed when canonical repository facts are un
 });
 
 
-test('#426 basename-only mutation cannot resolve an exact-path terminal obligation', () => {
-  const obligation = submissionObligation(
+test('#426 mutation path matching is exact across relative and absolute repository paths', () => {
+  const relativeObligation = submissionObligation(
     'Implementer file-set mismatch: unexpected files: src/a.py',
   );
   assert.equal(
     mutationResolvesSubmissionObligation(
-      obligation,
+      relativeObligation,
       { path: 'a.py' },
       { details: { path: 'a.py' } },
+      '/checkout',
     ),
     false,
+    'basename-only relative targets cannot resolve a nested repository-relative obligation',
   );
   assert.equal(
     mutationResolvesSubmissionObligation(
-      obligation,
+      relativeObligation,
       { path: '/checkout/src/a.py' },
       { details: { path: '/checkout/src/a.py' } },
+      '/checkout',
     ),
     true,
-    'an absolute runtime path may suffix-match the exact repository-relative obligation',
+    'an absolute runtime target normalizes to the exact repository-relative obligation',
+  );
+
+  const absoluteObligation = submissionObligation(
+    'Implementer file-set mismatch: unexpected files: /checkout/src/a.py',
+  );
+  assert.equal(
+    mutationResolvesSubmissionObligation(
+      absoluteObligation,
+      { path: 'src/a.py' },
+      { details: { path: 'src/a.py' } },
+      '/checkout',
+    ),
+    true,
+    'a repository-relative mutation target resolves the same absolute obligation under the known root',
   );
 });
 
@@ -403,4 +422,53 @@ test('#426 submit_repair latest-dev conflict is a first-class conflict obligatio
     implementer.key,
     'equivalent latest-dev conflict obligations keep one stable identity across terminal tools',
   );
+});
+
+
+test('#426 wrapped conflict diagnostics preserve clean paths and stable obligation identity', () => {
+  const message = 'PR conflicts with current dev. Resolve these files and retry submit_repair: src/a.py, src/b.py\nextra diagnostic';
+  const expected = submissionObligation(
+    'PR conflicts with current dev. Resolve these files and retry submit_repair: src/a.py, src/b.py',
+  );
+  const wrapped = [
+    JSON.stringify({ message }),
+    'Error: ' + JSON.stringify({ error: message }),
+    JSON.stringify(message),
+    'Error: ' + JSON.stringify(message),
+  ];
+
+  for (const text of wrapped) {
+    const obligation = submissionObligation(text);
+    assert.equal(obligation.kind, 'conflict');
+    assert.deepEqual(obligation.conflictPaths, ['src/a.py', 'src/b.py']);
+    assert.equal(obligation.key, expected.key);
+  }
+});
+
+test('#426 malformed validation action cannot be discharged by an unrelated passing run_check', () => {
+  const guard = new SemanticLoopGuard();
+  const payload = {
+    code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+    required_targets: ['tests/test_required.py'],
+    action: {},
+  };
+
+  const failed = failedSubmit(guard, payload);
+  assert.equal(failed.classification, 'error');
+  assert.equal(guard.terminalObligation.kind, 'validation');
+
+  const unrelatedPass = guard.observe({
+    stage: 'implementer',
+    tool: 'run_check',
+    input: { kind: 'pytest', targets: ['tests/test_unrelated.py'] },
+    result: {
+      content: [{ type: 'text', text: JSON.stringify({ status: 'pass', summary: '1 passed' }) }],
+      details: { status: 'pass', summary: '1 passed' },
+    },
+    productiveState: 'action_required',
+  });
+
+  assert.notEqual(unrelatedPass.classification, 'success_obligation_resolved');
+  assert.equal(guard.terminalObligation.kind, 'validation');
+  assert.deepEqual(guard.terminalObligation.requiredTargets, ['tests/test_required.py']);
 });
