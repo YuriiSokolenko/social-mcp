@@ -405,7 +405,10 @@ export default function (pi) {
   }
 
   function codingRecoveryEvidenceAvailable() {
-    if (!controller.evidenceUnlockAvailable()) return false;
+    const evidenceWindowReachable =
+      controller.evidenceUnlockAvailable() ||
+      controller.productiveProgressState() === 'evidence_allowed';
+    if (!evidenceWindowReachable) return false;
     const inventory = (pi.getAllTools?.() ?? []).map(tool => typeof tool === 'string' ? tool : tool?.name);
     return inventory.includes('read');
   }
