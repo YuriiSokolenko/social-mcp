@@ -642,7 +642,7 @@ test('broad discovery stays available only as a justified targeted-evidence esca
   }));
   const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
   assert.ok(PLANNER_EVIDENCE_TOOLS.includes('find'), 'find remains available to the planner');
-  assert.match(task, /Broad find\/ls\/search is escalation only/);
+  assert.match(task, /prefer repo_search over broad find/);
   assert.match(task, /missing, stale, contradictory/);
   const gate = createPlannerEvidenceGate(6);
   assert.equal(gate.admit('read').allowed, true, 'targeted evidence can run first');
@@ -782,7 +782,7 @@ test('a structured-output retry cannot reset the evidence cap and usage is still
   assert.deepEqual(attempts.map(attempt => attempt.outputOnly), [false, true]);
   assert.deepEqual(attempts.map(attempt => attempt.hard), [9, 1], 'retry has room for structured_output only');
   assert.match(attempts[1].task, /EVIDENCE PHASE CLOSED/);
-  assert.match(attempts[1].task, /only valid successful completion is structured_output/);
+  assert.match(attempts[1].task, /only structured_output may be called/);
   assert.equal(attempts[1].structured, undefined, 'structured_output stays available on the retry');
   assert.equal(prepared.status, 'prepared');
   assert.deepEqual(prepared.repositoryFacts, ['The target is already resolved.']);
