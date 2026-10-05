@@ -821,7 +821,12 @@ export default function (pi) {
       ['submit_result', 'submit_repair'].includes(loopResult.tool);
 
     if (terminalFailure && loopResult.action === 'steer') {
-      let plan = terminalRecoveryPlan(loopResult, terminalInput, ctx);
+      const retainedRecovery =
+        terminalRecoveryState?.obligationKey === loopResult.obligation.key
+          ? terminalRecoveryState
+          : null;
+      const recoveryTerminalInput = retainedRecovery?.terminalInput ?? terminalInput;
+      let plan = retainedRecovery?.plan ?? terminalRecoveryPlan(loopResult, recoveryTerminalInput, ctx);
       controller.clearRecoveryVerification();
       if (plan.status === 'repair' && plan.kind === 'exact_validation') {
         if (controller.largeMutationBudgetPending() || controller.largeMutationBudgetActive()) {
@@ -842,6 +847,12 @@ export default function (pi) {
         obligationKey: loopResult.obligation.key,
         obligation: loopResult.obligation,
         plan,
+        // Preserve the payload that actually produced this obligation. A later locally-blocked
+        // retry has no terminal diagnostics and must never become the new metadata baseline.
+        terminalInput:
+          recoveryTerminalInput && typeof recoveryTerminalInput === 'object' && !Array.isArray(recoveryTerminalInput)
+            ? structuredClone(recoveryTerminalInput)
+            : recoveryTerminalInput,
       };
       if (plan.status === 'blocked') {
         abortTerminalRecovery(loopResult, plan, metric, ctx);
