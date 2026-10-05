@@ -385,3 +385,22 @@ test('#426 basename-only mutation cannot resolve an exact-path terminal obligati
     'an absolute runtime path may suffix-match the exact repository-relative obligation',
   );
 });
+
+
+test('#426 submit_repair latest-dev conflict is a first-class conflict obligation', () => {
+  const implementer = submissionObligation(
+    'Latest dev conflicts with the implementation. Resolve these files and retry submit_result: src/a.py, src/b.py',
+  );
+  const repair = submissionObligation(
+    'PR conflicts with current dev. Resolve these files and retry submit_repair: src/b.py, src/a.py',
+  );
+
+  assert.equal(repair.kind, 'conflict');
+  assert.equal(repair.code, 'latest_dev_conflict');
+  assert.deepEqual(repair.conflictPaths, ['src/a.py', 'src/b.py']);
+  assert.equal(
+    repair.key,
+    implementer.key,
+    'equivalent latest-dev conflict obligations keep one stable identity across terminal tools',
+  );
+});
