@@ -355,6 +355,9 @@ export default function (pi) {
   let terminalRecoveryState = null;
   let terminalRecoveryRequiredTool = null;
   let terminalRecoveryAttemptToolCallId = null;
+  // The payload that actually produced the current structured terminal obligation. Locally
+  // blocked retries have no terminal diagnostics and must never replace this publication base.
+  let lastTerminalFailureInput = null;
   let unrestrictedActiveTools = null;
   let unavailableToolAttempts = 0;
   let unavailableCapabilityAttemptedThisTurn = false;
@@ -825,7 +828,13 @@ export default function (pi) {
         terminalRecoveryState?.obligationKey === loopResult.obligation.key
           ? terminalRecoveryState
           : null;
-      const recoveryTerminalInput = retainedRecovery?.terminalInput ?? terminalInput;
+      const recoveryTerminalInput =
+        retainedRecovery?.terminalInput ??
+        (
+          lastTerminalFailureInput?.obligationKey === loopResult.obligation.key
+            ? lastTerminalFailureInput.input
+            : terminalInput
+        );
       let plan = retainedRecovery?.plan ?? terminalRecoveryPlan(loopResult, recoveryTerminalInput, ctx);
       controller.clearRecoveryVerification();
       if (plan.status === 'repair' && plan.kind === 'exact_validation') {
@@ -2677,6 +2686,17 @@ export default function (pi) {
         repositoryRoot: ctx.cwd,
       });
       pendingLoopCalls.delete(event.toolCallId);
+
+      if (['submit_result', 'submit_repair'].includes(pendingLoopCall.toolName)) {
+        if (!event.isError) {
+          lastTerminalFailureInput = null;
+        } else if (loopResult.obligation?.key && loopResult.classification === 'error') {
+          lastTerminalFailureInput = {
+            obligationKey: loopResult.obligation.key,
+            input: structuredClone(pendingLoopCall.input ?? {}),
+          };
+        }
+      }
 
       await handleLoopResult(loopResult, ctx, {
         terminalInput: terminalInputForLoop(pendingLoopCall.toolName, pendingLoopCall.input),
