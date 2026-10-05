@@ -127,6 +127,15 @@ wait_for_file() {
   return 1
 }
 
+wait_for_registration_cleanup() {
+  local runner_dir="$1"
+  for _ in {1..200}; do
+    [ ! -e "$runner_dir/.runner" ] && [ ! -e "$runner_dir/.credentials" ] && return 0
+    sleep 0.02
+  done
+  return 1
+}
+
 wait_control_exit() {
   local label="$1"
   for _ in {1..150}; do
@@ -383,7 +392,7 @@ grep -q 'incomplete control runner registration state' "$CASE_DIR/stderr" || fai
 # A failed first registration clears partial files before the retry sleep.
 start_control_case failed-registration wait healthy none fail 2.337.0 5
 wait_for_text "$CASE_DIR/stderr" 'registration failed status=9' || fail 'failed-registration: failure not observed'
-[[ ! -e "$CASE_DIR/runner/.runner" && ! -e "$CASE_DIR/runner/.credentials" ]] || fail 'failed registration left partial local state'
+wait_for_registration_cleanup "$CASE_DIR/runner" || fail 'failed registration left partial local state'
 stop_control_case failed-registration
 
 # A runtime older than the image baseline is replaced from the external

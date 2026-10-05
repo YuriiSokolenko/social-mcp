@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 
-import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
+import { DEFAULT_MODEL_BASE_URL, TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV, TRUSTED_ACCEPTANCE_TARGETS_ENV, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
 import { buildBootstrapInvocation, buildPiInvocation, runPiStage } from '../scripts/pi-common/pi-stage-backend.mjs';
@@ -67,6 +67,59 @@ function implementerStartup(t, extraEnv = {}) {
     ...extraEnv,
   });
 }
+
+test('implementer spec preserves issue context for authoritative final validation', (t) => {
+  const { spec } = implementerStartup(t);
+  assert.match(spec.environment.PI_ISSUE_CONTEXT, /issue\.json$/);
+  assert.equal(spec.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV], '');
+  assert.equal(spec.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV], '');
+
+  const repair = createValidationRepairSpec(spec, new Error('pytest failed'), 1);
+  assert.equal(repair.environment.PI_ISSUE_CONTEXT, spec.environment.PI_ISSUE_CONTEXT);
+  assert.equal(repair.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV], '');
+  assert.equal(repair.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV], '');
+});
+
+test('trusted acceptance state is derived from the manifest, issue marker, and start commit', (t) => {
+  const dir = temporaryDirectory(t, 'pi-trusted-acceptance-');
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Trusted Acceptance Test'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'trusted@example.invalid'], { cwd: dir });
+  mkdirSync(join(dir, 'src/social_mcp/diagnostics'), { recursive: true });
+  writeFileSync(join(dir, 'src/social_mcp/diagnostics/smoke_lru.py'), 'class LRUCache: pass\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+  const start = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+  const issueContext = join(dir, 'issue.json');
+  writeFileSync(issueContext, JSON.stringify({
+    number: 427,
+    title: 'Recreate deferred smoke targets',
+    body: 'trusted-acceptance-target: social_mcp.diagnostics.smoke_intervals\n',
+  }));
+
+  const { spec } = buildStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+  }, {
+    RUNNER_TEMP: dir,
+    GITHUB_WORKSPACE: process.cwd(),
+    PI_MODEL: 'model-x',
+    PI_PROVIDER: 'provider-x',
+    PI_MODEL_BASE_URL: 'http://model/v1',
+    ISSUE: '427',
+    PI_ISSUE_CONTEXT: issueContext,
+    PI_IMPLEMENTER_START_COMMIT: start,
+  });
+
+  assert.equal(spec.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV], 'social_mcp.diagnostics.smoke_intervals');
+  assert.equal(spec.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV], 'social_mcp.diagnostics.smoke_lru');
+
+  const repair = createValidationRepairSpec(spec, new Error('pytest failed'), 1);
+  assert.equal(repair.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV], spec.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV]);
+  assert.equal(repair.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV], spec.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV]);
+});
+
 
 test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => {
   const env = {

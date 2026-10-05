@@ -204,14 +204,34 @@ async function stageWorktree(runnerName, root, operation) {
   }
 }
 
-function safeCheckEnvironment(requested) {
+export function safeCheckEnvironment(requested) {
   if (!requested || typeof requested !== 'object' || Array.isArray(requested)) throw Object.assign(new Error('sandbox environment must be an object'), { code: 'CHECK_ENV' });
-  const allowed = new Set(['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'PYTHONPATH', 'PYTHONDONTWRITEBYTECODE', 'PYTHONIOENCODING']);
+  const allowed = new Set([
+    'PATH',
+    'HOME',
+    'TMPDIR',
+    'LANG',
+    'LC_ALL',
+    'PYTHONPATH',
+    'PYTHONDONTWRITEBYTECODE',
+    'PYTHONIOENCODING',
+    'PI_TRUSTED_ACCEPTANCE_TARGETS',
+    'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS',
+  ]);
   for (const key of Object.keys(requested)) if (!allowed.has(key)) throw Object.assign(new Error(`unsupported check environment key: ${key}`), { code: 'CHECK_ENV' });
   const output = { ...FIXED_ENV };
   for (const key of ['LANG', 'LC_ALL']) {
     if (requested[key] != null) {
       if (typeof requested[key] !== 'string' || !/^[A-Za-z0-9_.@-]{1,64}$/.test(requested[key])) throw Object.assign(new Error(`invalid ${key} value`), { code: 'CHECK_ENV' });
+      output[key] = requested[key];
+    }
+  }
+  const moduleList = /^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:,[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)*)?$/;
+  for (const key of ['PI_TRUSTED_ACCEPTANCE_TARGETS', 'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS']) {
+    if (requested[key] != null) {
+      if (typeof requested[key] !== 'string' || requested[key].length > 2000 || !moduleList.test(requested[key])) {
+        throw Object.assign(new Error(`invalid ${key} value`), { code: 'CHECK_ENV' });
+      }
       output[key] = requested[key];
     }
   }

@@ -210,7 +210,13 @@ test('Docker backend sends structured check fields only and strips runner secret
     });
     const result = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, {
       backend,
-      env: { PATH: '/bin', LANG: 'C.UTF-8', GITHUB_TOKEN: 'must-not-escape' },
+      env: {
+        PATH: '/bin',
+        LANG: 'C.UTF-8',
+        GITHUB_TOKEN: 'must-not-escape',
+        PI_TRUSTED_ACCEPTANCE_TARGETS: 'social_mcp.diagnostics.smoke_lru',
+        PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS: 'social_mcp.diagnostics.smoke_intervals',
+      },
     });
     assert.equal(result.status, 'pass');
     assert.equal(captured.url, 'http://127.0.0.1:17343/v1/run-check');
@@ -218,6 +224,8 @@ test('Docker backend sends structured check fields only and strips runner secret
     assert.deepEqual(captured.body.params, { kind: 'python_compile', paths: ['ok.py'] });
     assert.deepEqual(Object.keys(captured.body).sort(), ['env', 'params', 'root', 'runner_name', 'timeout_ms']);
     assert.equal(captured.body.env.GITHUB_TOKEN, undefined);
+    assert.equal(captured.body.env.PI_TRUSTED_ACCEPTANCE_TARGETS, 'social_mcp.diagnostics.smoke_lru');
+    assert.equal(captured.body.env.PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS, 'social_mcp.diagnostics.smoke_intervals');
     assert.equal(captured.body.docker_args, undefined);
     assert.equal(captured.body.mounts, undefined);
     assert.equal(captured.body.command, undefined);
