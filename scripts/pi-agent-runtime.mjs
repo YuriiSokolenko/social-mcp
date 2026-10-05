@@ -2046,6 +2046,7 @@ export default function (pi) {
           result: unavailable,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
         await handleLoopResult(loopResult, ctx).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
@@ -2129,6 +2130,7 @@ export default function (pi) {
           result: blocked,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
         // A blocked tool has no tool_execution_end event, so classify it here.
         await handleLoopResult(loopResult, ctx).catch(error => {
@@ -2179,6 +2181,7 @@ export default function (pi) {
           result: noOpBlocked,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
         await handleLoopResult(loopResult, ctx).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
@@ -2495,6 +2498,7 @@ export default function (pi) {
           outstandingTerminalObligation,
           pendingLoopCall?.input ?? acceptedToolInput,
           event.result,
+          ctx.cwd,
         )
       );
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
@@ -2541,6 +2545,7 @@ export default function (pi) {
         repositoryStateBefore: pendingLoopCall.repositoryStateBefore,
         repositoryStateAfter,
         mutationChanged,
+        repositoryRoot: ctx.cwd,
       });
       pendingLoopCalls.delete(event.toolCallId);
 
