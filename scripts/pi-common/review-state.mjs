@@ -154,7 +154,7 @@ export async function dispatchAfterReview(
   { reviewedHead = null, runId = null, runAttempt = null } = {},
   client = githubClient(),
 ) {
-  const { dispatchWorkflow, pages, comment } = client;
+  const { dispatchWorkflow, loadPullRequest, pages, comment } = client;
   const workflow = workflowFile(verdict === 'PASS' ? 'mergeGate' : 'repair');
   const inputs = verdict === 'PASS' ? undefined : { pr_number: String(prNumber) };
   const hasDurableReviewIdentity = Boolean(reviewedHead && runId && runAttempt);
@@ -202,6 +202,11 @@ export async function dispatchAfterReview(
         `Retrying the previously failed review follow-up dispatch once; further recovery is delegated to the ordinary PR reconciler.\n\n${retryMarker}`,
       );
     }
+  }
+
+  const currentPr = await loadPullRequest(prNumber);
+  if (prLabelNames(currentPr).includes(PIPELINE_LABELS.needsHuman)) {
+    return { status: 'human' };
   }
 
   try {
