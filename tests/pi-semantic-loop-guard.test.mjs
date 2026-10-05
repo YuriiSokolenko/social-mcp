@@ -1520,7 +1520,7 @@ test('#426 runtime selects submit_result metadata repair and constrains the next
   assert.match(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_SURFACE/);
 });
 
-test('#426 runtime checkpoints a genuinely unmapped terminal obligation instead of generic loop abort', () => {
+test('#426 runtime checkpoints a recognized but unavailable deterministic recovery instead of generic loop abort', () => {
   const failureFile = path.join(os.tmpdir(), `pi-terminal-recovery-blocked-${process.pid}-${Date.now()}.json`);
   try {
     const result = runRuntimeScenario(`
@@ -1534,8 +1534,9 @@ test('#426 runtime checkpoints a genuinely unmapped terminal obligation instead 
       const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
       const failure = {
         content: [{ type: 'text', text: JSON.stringify({
-          code: 'UNMAPPED_TERMINAL_REQUIREMENT',
-          detail: 'cannot infer a safe repair',
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: {},
         }) }],
       };
       for (let index = 0; index < 3; index += 1) {
@@ -1555,9 +1556,10 @@ test('#426 runtime checkpoints a genuinely unmapped terminal obligation instead 
 
     const checkpoint = JSON.parse(fs.readFileSync(failureFile, 'utf8'));
     assert.equal(checkpoint.failure_code, 'PI_TERMINAL_RECOVERY_BLOCKED');
-    assert.equal(checkpoint.unresolved_obligation.code, 'UNMAPPED_TERMINAL_REQUIREMENT');
+    assert.equal(checkpoint.unresolved_obligation.code, 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED');
+    assert.equal(checkpoint.unresolved_obligation.kind, 'validation');
     assert.equal(checkpoint.checkpoint.worktree_preserved, true);
-    assert.match(checkpoint.reason, /No deterministic repair mapping/);
+    assert.match(checkpoint.reason, /did not provide an authoritative check action/);
   } finally {
     fs.rmSync(failureFile, { force: true });
   }
