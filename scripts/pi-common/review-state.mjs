@@ -174,6 +174,11 @@ export async function dispatchAfterReview(
     ? reviewFollowupClaimMarker(reviewedHead, verdict, runId, runAttempt)
     : null;
 
+  const beforeClaimPr = await loadPullRequest(prNumber);
+  if (prLabelNames(beforeClaimPr).includes(PIPELINE_LABELS.needsHuman)) {
+    return { status: 'human' };
+  }
+
   if (marker && claimMarker) {
     let comments = await pages(`/issues/${prNumber}/comments`);
     if (comments.some(item => String(item.body ?? '').includes(marker))) {
@@ -195,37 +200,50 @@ export async function dispatchAfterReview(
     );
     const claimId = requireCommentId(claim, 'review follow-up claim');
 
-    // Re-read after claiming. Concurrent recoveries may both have observed no
-    // claim; only the oldest durable claim is allowed to perform the dispatch.
-    comments = await pages(`/issues/${prNumber}/comments`);
-    const claims = comments
-      .filter(item => String(item.body ?? '').includes(claimMarker))
-      .filter(item => Number.isSafeInteger(Number(item.id)))
-      .sort((a, b) => Number(a.id) - Number(b.id));
-    if (!claims.length || Number(claims[0].id) !== claimId) {
-      return { status: 'followup-claimed', verdict };
-    }
-
-    if (existingClaim && previousDispatchFailed) {
-      const retryClaim = await comment(
-        prNumber,
-        `Retrying the previously failed review follow-up dispatch once; further recovery is delegated to the ordinary PR reconciler.\n\n${retryMarker}`,
-      );
-      const retryClaimId = requireCommentId(retryClaim, 'review follow-up retry claim');
+    try {
+      // Re-read after claiming. Concurrent recoveries may both have observed no
+      // claim; only the oldest durable claim is allowed to perform the dispatch.
       comments = await pages(`/issues/${prNumber}/comments`);
-      const retryClaims = comments
-        .filter(item => String(item.body ?? '').includes(retryMarker))
+      const claims = comments
+        .filter(item => String(item.body ?? '').includes(claimMarker))
         .filter(item => Number.isSafeInteger(Number(item.id)))
         .sort((a, b) => Number(a.id) - Number(b.id));
-      if (!retryClaims.length || Number(retryClaims[0].id) !== retryClaimId) {
+      if (!claims.length || Number(claims[0].id) !== claimId) {
         return { status: 'followup-claimed', verdict };
       }
-    }
-  }
 
-  const currentPr = await loadPullRequest(prNumber);
-  if (prLabelNames(currentPr).includes(PIPELINE_LABELS.needsHuman)) {
-    return { status: 'human' };
+      if (existingClaim && previousDispatchFailed) {
+        const retryClaim = await comment(
+          prNumber,
+          `Retrying the previously failed review follow-up dispatch once; further recovery is delegated to the ordinary PR reconciler.\n\n${retryMarker}`,
+        );
+        const retryClaimId = requireCommentId(retryClaim, 'review follow-up retry claim');
+        comments = await pages(`/issues/${prNumber}/comments`);
+        const retryClaims = comments
+          .filter(item => String(item.body ?? '').includes(retryMarker))
+          .filter(item => Number.isSafeInteger(Number(item.id)))
+          .sort((a, b) => Number(a.id) - Number(b.id));
+        if (!retryClaims.length || Number(retryClaims[0].id) !== retryClaimId) {
+          return { status: 'followup-claimed', verdict };
+        }
+      }
+
+      const currentPr = await loadPullRequest(prNumber);
+      if (prLabelNames(currentPr).includes(PIPELINE_LABELS.needsHuman)) {
+        return { status: 'human' };
+      }
+    } catch (error) {
+      try {
+        await comment(
+          prNumber,
+          `Review follow-up preparation for ${verdict} failed before dispatch (${error.message}). Recovery may retry this claimed handoff.\n\n${failedMarker}`,
+        );
+      } catch {
+        // A runner death or a second GitHub API failure can still prevent
+        // failure bookkeeping. The verdict label remains the Reconciler fallback.
+      }
+      throw error;
+    }
   }
 
   try {
@@ -300,6 +318,12 @@ export async function recoverReviewFailure({
       ? 'CHANGES_REQUESTED'
       : null;
   if (appliedVerdict) {
+    const currentVerdictLabel = appliedVerdict === 'PASS'
+      ? REVIEW_PASSED
+      : REVIEW_CHANGES_REQUESTED;
+    if (!labels.includes(currentVerdictLabel)) {
+      return { status: 'superseded-verdict', verdict: appliedVerdict };
+    }
     return dispatchAfterReview(prNumber, appliedVerdict, {
       reviewedHead: effectiveHead,
       runId,
