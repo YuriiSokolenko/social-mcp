@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import {
   applyReview,
   invalidateReview,
+  markReviewStarted,
   recordReviewRun,
   recoverReviewFailure,
   recoverReviewWorkflowRun,
@@ -67,6 +68,9 @@ test('repeated recovery is idempotent and does not dispatch another retry', asyn
 test('a failed retry removes stale PASS and durably transfers the PR to human review', async () => {
   const client = fakeClient();
   await recoverReviewFailure(failure, client);
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '124', runAttempt: 1,
+  }, client);
   const result = await recoverReviewFailure({ ...failure, runId: '124', outcome: 'cancelled' }, client);
 
   assert.deepEqual(result, { status: 'needs-human', reason: 'retry-exhausted' });
@@ -150,6 +154,12 @@ test('whole-workflow cancellation resolves the durable run marker and retries th
   }, client);
 
   assert.deepEqual(recorded, { status: 'recorded', reviewedHead: 'head-1', model: 'qwen' });
+  await markReviewStarted({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '501',
+    runAttempt: 1,
+  }, client);
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '501',
@@ -210,14 +220,14 @@ test('whole-workflow recovery ignores a failed run recorded for an obsolete PR h
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
 });
 
-test('whole-workflow recovery does not erase a verdict already applied by that same run', async () => {
+test('whole-workflow recovery re-dispatches a missing PASS follow-up exactly once', async () => {
   const client = fakeClient({ labels: ['pi:mr-created'] });
   await recordReviewRun({
     prNumber: 7,
     reviewedHead: 'head-1',
     runId: '505',
     runAttempt: 1,
-    model: 'default',
+    model: 'qwen',
   }, client);
   await applyReview({
     prNumber: 7,
@@ -228,7 +238,7 @@ test('whole-workflow recovery does not erase a verdict already applied by that s
     runAttempt: 1,
   }, client);
 
-  const result = await recoverReviewWorkflowRun({
+  const first = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '505',
     runAttempt: 1,
@@ -236,9 +246,20 @@ test('whole-workflow recovery does not erase a verdict already applied by that s
     runUrl: 'https://github.test/runs/505',
   }, client);
 
-  assert.deepEqual(result, { status: 'verdict-already-applied' });
-  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(first, { status: 'followup-dispatched', verdict: 'PASS' });
+  assert.deepEqual(client.state.dispatches, [{ workflow: 'pi-auto-merge.yml', inputs: undefined }]);
+  assert.match(client.state.comments.at(-1).body, /pi-review:followup:head-1:PASS:run:505:attempt:1/);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+
+  const repeated = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '505',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/505',
+  }, client);
+  assert.deepEqual(repeated, { status: 'followup-already-dispatched', verdict: 'PASS' });
+  assert.equal(client.state.dispatches.length, 1);
 });
 
 test('re-run attempt on the same workflow run records and recovers the new PR head', async () => {
@@ -283,6 +304,9 @@ test('second failed attempt of the same workflow run exhausts the single retry f
     runId: '507',
     runAttempt: 1,
   }, client);
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '507', runAttempt: 2,
+  }, client);
   const result = await recoverReviewFailure({
     ...failure,
     runId: '507',
@@ -321,7 +345,7 @@ test('verdict recovery match requires the exact run and attempt marker', async (
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
 });
 
-test('markerless whole-workflow failure fails closed without retrying an unproven head or model', async () => {
+test('markerless whole-workflow failure is left to ordinary orphan reconciliation without mutating the PR', async () => {
   const client = fakeClient();
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
@@ -331,10 +355,10 @@ test('markerless whole-workflow failure fails closed without retrying an unprove
     runUrl: 'https://github.test/runs/504',
   }, client);
 
-  assert.deepEqual(result, { status: 'needs-human', reason: 'missing-run-marker' });
+  assert.deepEqual(result, { status: 'ignored', reason: 'review-not-started-without-run-marker' });
   assert.deepEqual(client.state.dispatches, []);
-  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'pi:needs-human']);
-  assert.match(client.state.comments.at(-1).body, /exact reviewed HEAD and model/);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+  assert.equal(client.state.comments.length, 0);
 });
 
 test('markerless cancellation is ignored without relying on cancelled-step API semantics', async () => {
@@ -353,37 +377,27 @@ test('markerless cancellation is ignored without relying on cancelled-step API s
   assert.equal(client.state.comments.length, 0);
 });
 
-test('unresolved markerless failure clears stale review verdict before applying the human gate', async () => {
-  const client = fakeClient({ labels: ['pi:mr-created', 'review:changes-requested'] });
-  const result = await recoverReviewWorkflowRun({
-    displayTitle: '🔬 Review PR #7',
-    runId: '509',
+test('identity-only cancellation before independent execution does not dispatch a retry', async () => {
+  const client = fakeClient();
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '512',
     runAttempt: 1,
-    outcome: 'timed_out',
-    runUrl: 'https://github.test/runs/509',
+    model: 'qwen',
   }, client);
-
-  assert.deepEqual(result, { status: 'needs-human', reason: 'missing-run-marker' });
-  assert.deepEqual(client.state.dispatches, []);
-  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'pi:needs-human']);
-});
-
-test('markerless failure does not replace a proven verdict for the current PR head', async () => {
-  const client = fakeClient({ head: 'head-2', labels: ['pi:mr-created', 'review:passed'] });
-  client.state.comments.push({ body: '<!-- pi-review:verdict:head-2:PASS -->' });
 
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
-    runId: '510',
+    runId: '512',
     runAttempt: 1,
-    outcome: 'failure',
-    runUrl: 'https://github.test/runs/510',
+    outcome: 'cancelled',
+    runUrl: 'https://github.test/runs/512',
   }, client);
 
-  assert.deepEqual(result, { status: 'current-verdict' });
+  assert.deepEqual(result, { status: 'ignored', reason: 'cancelled-before-independent-start' });
   assert.deepEqual(client.state.dispatches, []);
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
-  assert.equal(client.state.comments.length, 1);
 });
 
 test('review workflow and reconciler cover missing step outputs and whole-workflow terminal outcomes', () => {
@@ -397,13 +411,19 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
     /recover_failed_review:[\s\S]*?if: always\(\) && contains\(fromJSON\('\["failure","cancelled"\]'\), needs\.review\.outputs\.independent_outcome\)/,
   );
   assert.ok(
-    review.indexOf('name: Run deterministic review checks') < review.indexOf('name: Record review run identity') &&
-      review.indexOf('name: Record review run identity') < review.indexOf('name: Run independent review'),
-    'durable run identity must be recorded only after deterministic checks and before independent review',
+    review.indexOf('name: Load and guard PR') < review.indexOf('name: Record review run identity') &&
+      review.indexOf('name: Record review run identity') < review.indexOf('name: Create review worktree') &&
+      review.indexOf('name: Create review worktree') < review.indexOf('name: Run independent review'),
+    'durable run identity must be recorded immediately after the PR head is loaded and before review setup',
   );
   assert.match(review, /id: record/);
+  assert.match(review, /\.pi\/default-model/);
+  assert.match(review, /echo "model=\$\(jq -r '\.model \/\/ empty'/);
+  assert.match(review, /model: \$\{\{ steps\.record\.outputs\.model \}\}/);
+  assert.match(review, /start-run "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
   assert.match(review, /contains\(fromJSON\('\["recorded","already-recorded"\]'\), steps\.record\.outputs\.status\)/);
   assert.match(reconcile, /workflow_run:[\s\S]*?workflows: \["Pi PR Review"\][\s\S]*?types: \[completed\]/);
+  assert.match(reconcile, /github\.event\.workflow_run\.event == 'workflow_dispatch'/);
   assert.match(reconcile, /\["failure","cancelled","timed_out"\]/);
   assert.match(reconcile, /\["RUNNING","DRAINING"\]/);
   assert.match(reconcile, /group: \$\{\{ format\('pi-review-recovery-\{0\}-\{1\}', github\.event\.workflow_run\.id, github\.event\.workflow_run\.run_attempt\) \}\}/);
