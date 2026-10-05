@@ -104,26 +104,37 @@ test('#483 repo_search resolves an unknown path through the planner-only registe
   assert.match(result.content[0].text, /scripts\/pi-common\/repo-search\.mjs/);
 });
 
-test('#483 planner_code_graph is worktree-scoped, bounded, local-only, and fails closed when stale', () => {
+test('#483 planner_code_graph is worktree-scoped, bounded, question-focused, and fails closed when stale', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-graph-'));
   try {
     const commands = [];
-    const freshExec = (command, args, options) => {
+    const freshExec = async (command, args, options) => {
       commands.push({ command, args, cwd: options.cwd, telemetry: options.env.ORBIT_TELEMETRY_ENABLED });
-      if (command === 'git') return 'abc123\n';
+      if (command === 'git') return { stdout: 'abc123\n' };
       if (args[0] === 'list') {
-        return JSON.stringify([{ repo_path: dir, branch: 'issue/483', commit_sha: 'abc123', status: 'indexed' }]);
+        return { stdout: JSON.stringify([
+          { repo_path: dir, branch: 'old', commit_sha: 'old-head', status: 'indexed' },
+          { repo_path: dir, branch: 'issue/483', commit_sha: 'abc123', status: 'indexed' },
+        ]) };
       }
-      if (args[0] === 'context') return 'caller -> target\n'.repeat(3000);
+      if (args[0] === 'context') {
+        return { stdout: [
+          'caller alpha -> target',
+          'reference beta -> target',
+          'implementation gamma -> target',
+        ].join('\n').repeat(1200) };
+      }
       throw new Error('unexpected command');
     };
-    const result = plannerCodeGraph(dir, {
+    const callerResult = await plannerCodeGraph(dir, {
       target: 'Definition:target',
       question: 'Which callers form the implementation blast radius?',
     }, { execFile: freshExec });
-    assert.equal(result.truncated, true);
-    assert.ok(result.text.length <= 16100, 'graph response remains hard bounded');
-    assert.match(result.text, /output truncated/);
+    assert.equal(callerResult.truncated, true);
+    assert.ok(callerResult.text.length <= 16100, 'graph response remains hard bounded');
+    assert.match(callerResult.text, /caller alpha/);
+    assert.doesNotMatch(callerResult.text, /reference beta/);
+    assert.match(callerResult.text, /output truncated/);
     assert.deepEqual(commands.map(call => [call.command, call.args[0]]), [
       ['git', 'rev-parse'],
       ['orbit', 'list'],
@@ -132,21 +143,29 @@ test('#483 planner_code_graph is worktree-scoped, bounded, local-only, and fails
     assert.ok(commands.every(call => call.cwd === dir));
     assert.ok(commands.every(call => call.telemetry === 'false'));
     assert.ok(!commands.some(call => call.args.includes('mcp') || call.args.includes('sql')));
+
     const fact = plannerEvidenceFact('planner_code_graph', {
       target: 'Definition:target',
       question: 'Which callers form the implementation blast radius?',
-    }, { content: [{ type: 'text', text: JSON.stringify(result) }] });
+    }, { content: [{ type: 'text', text: JSON.stringify(callerResult) }] });
     assert.ok(fact.length <= 200);
     assert.match(fact, /planner_code_graph Definition:target/);
 
-    const staleExec = (command, args) => {
-      if (command === 'git') return 'new-head\n';
+    const referenceResult = await plannerCodeGraph(dir, {
+      target: 'Definition:target',
+      question: 'Which references use this symbol?',
+    }, { execFile: freshExec });
+    assert.match(referenceResult.text, /reference beta/);
+    assert.doesNotMatch(referenceResult.text, /caller alpha/);
+
+    const staleExec = async (command, args) => {
+      if (command === 'git') return { stdout: 'new-head\n' };
       if (args[0] === 'list') {
-        return JSON.stringify([{ repo_path: dir, branch: 'issue/483', commit_sha: 'old-head', status: 'indexed' }]);
+        return { stdout: JSON.stringify([{ repo_path: dir, branch: 'issue/483', commit_sha: 'old-head', status: 'indexed' }]) };
       }
       throw new Error('context must not run for stale index');
     };
-    assert.throws(
+    await assert.rejects(
       () => plannerCodeGraph(dir, { target: 'Definition:target', question: 'Who calls it?' }, { execFile: staleExec }),
       /index is stale/,
     );
