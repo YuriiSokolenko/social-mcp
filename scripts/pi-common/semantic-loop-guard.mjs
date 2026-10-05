@@ -496,25 +496,57 @@ function normalizedPath(value) {
     .replace(/\/$/, '');
 }
 
+function canonicalAbsolutePath(value) {
+  let current = path.resolve(value);
+  const missingTail = [];
+  while (true) {
+    try {
+      const resolved = fs.realpathSync.native
+        ? fs.realpathSync.native(current)
+        : fs.realpathSync(current);
+      return path.join(resolved, ...missingTail.reverse());
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes(String(error?.code ?? ''))) {
+        return path.resolve(value);
+      }
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(value);
+      missingTail.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
 function targetMatchesObligationPath(target, obligationPath, repositoryRoot = null) {
   let actual = normalizedPath(target);
   let expected = normalizedPath(obligationPath);
   if (!actual || !expected) return false;
 
   if (repositoryRoot) {
-    const root = path.resolve(repositoryRoot);
+    const lexicalRoot = path.resolve(repositoryRoot);
+    const canonicalRoot = canonicalAbsolutePath(lexicalRoot);
     const relativizeInsideRoot = value => {
       if (!path.isAbsolute(value)) return normalizedPath(value);
-      const relative = path.relative(root, value);
-      if (!relative || relative === '.') return '';
-      if (relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return null;
-      return normalizedPath(relative);
+
+      const lexicalValue = path.resolve(value);
+      const canonicalValue = canonicalAbsolutePath(lexicalValue);
+      for (const [root, candidate] of [
+        [canonicalRoot, canonicalValue],
+        [lexicalRoot, lexicalValue],
+      ]) {
+        const relative = path.relative(root, candidate);
+        if (!relative || relative === '.') return '';
+        if (!relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) {
+          return normalizedPath(relative);
+        }
+      }
+      return null;
     };
     actual = relativizeInsideRoot(actual);
     expected = relativizeInsideRoot(expected);
     // When the repository root is known, path identity is repository-relative and exact.
-    // An absolute path outside that root can never satisfy a repository obligation merely
-    // because it shares the same suffix (for example /tmp/other/src/a.js vs src/a.js).
+    // Canonicalize real filesystem roots first so macOS aliases such as /var and /private/var
+    // still identify the same worktree path without reviving unsafe suffix matching.
     return Boolean(actual && expected && actual === expected);
   }
 
