@@ -103,6 +103,7 @@ const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 
 const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
+const DETERMINISTIC_RUN_CHECK_INFRASTRUCTURE_CODES = new Set(['CHECK_ENV', 'CHECK_ENV_CONTRACT']);
 const DETERMINISTIC_TERMINAL_RECOVERY_KINDS = new Set([
   'metadata',
   'validation',
@@ -372,6 +373,7 @@ export default function (pi) {
   // surface (permit exhaustion or exact-retry substitution). A later valid
   // permit may restore it only in that case; unrelated removals stay removed.
   let verificationToolHiddenByPermitGate = false;
+  let deterministicVerificationInfrastructure = null;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -512,6 +514,7 @@ export default function (pi) {
       productiveActionRequired &&
       failedCheckRecovery &&
       !recoveryLedgerCorrupted &&
+      !deterministicVerificationInfrastructure &&
       controller.verificationPermitted()
     );
 
@@ -527,7 +530,8 @@ export default function (pi) {
     // be reconstructed safely from an incomplete ledger.
     const verificationPermitted = controller.verificationPermitted();
     const recoveryVerificationArmed = controller.recoveryVerificationArmed();
-    const verificationVisible = verificationPermitted || recoveryVerificationArmed;
+    const verificationVisible = !deterministicVerificationInfrastructure
+      && (verificationPermitted || recoveryVerificationArmed);
     const currentWithPermittedVerification =
       verificationTool &&
       verificationVisible &&
@@ -980,6 +984,9 @@ export default function (pi) {
   function verificationLifecycleGuidance() {
     const verificationTool = config.productiveProgress?.verificationTool;
     if (!verificationTool) return finalValidationGuidance();
+    if (deterministicVerificationInfrastructure) {
+      return `run_check is disabled for the rest of this process after deterministic infrastructure failure ${deterministicVerificationInfrastructure.code}. Do not mutate merely to re-arm verification and do not retry or seek a shell workaround. Preserve the current worktree for trusted recovery. ${finalValidationGuidance()}`;
+    }
     const state = controller.verificationLifecycleState();
     const lifecycle = state === 'available'
       ? `${verificationTool} is available once for the current mutation state.`
@@ -1427,6 +1434,25 @@ export default function (pi) {
       });
       if (retry) {
         console.info(`PI_RUN_CHECK_RETRY ${JSON.stringify({ stage, kind: result.kind, scope, status: result.status })}`);
+      }
+      const deterministicInfrastructureCode = result.status === 'infra_error'
+        ? result.infrastructure?.code ?? null
+        : null;
+      if (
+        DETERMINISTIC_RUN_CHECK_INFRASTRUCTURE_CODES.has(deterministicInfrastructureCode) &&
+        !deterministicVerificationInfrastructure
+      ) {
+        deterministicVerificationInfrastructure = {
+          code: deterministicInfrastructureCode,
+          kind: result.kind,
+          scope,
+          summary: result.summary,
+        };
+        console.error(`PI_RUN_CHECK_DETERMINISTIC_INFRA ${JSON.stringify({
+          stage,
+          ...deterministicVerificationInfrastructure,
+          action: 'verification_disabled_for_process',
+        })}`);
       }
       // Re-read recovery state after appending the result. Emit retry guidance
       // only when this exact failed record became the active deterministic
@@ -2214,6 +2240,14 @@ export default function (pi) {
       recoveryBlocked = {
         block: true,
         reason: 'BLOCKED: retry_last_failed_check is not available in the current action state. Continue with the visible tools; the exact retry is exposed only when recovery is actionable.',
+      };
+    } else if (
+      deterministicVerificationInfrastructure &&
+      CONTENT_MUTATION_TOOLS.has(event.toolName)
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: `BLOCKED: deterministic run_check infrastructure failure ${deterministicVerificationInfrastructure.code} already made local verification unavailable. Preserve the current worktree; do not mutate merely to re-arm validation or work around the trusted sandbox.`,
       };
     } else if (recoveryRetryReady && event.toolName === 'run_check') {
       recoveryBlocked = {
