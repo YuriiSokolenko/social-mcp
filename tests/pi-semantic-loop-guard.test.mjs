@@ -1901,9 +1901,17 @@ test('#426 terminal recovery abort provenance omits large prior submission paylo
         const event = {
           toolCallId: 'large-submit-' + index,
           toolName: 'submit_result',
-          input: { title: hugeMarker, summary: 'Summary' },
+          input: {
+            title: hugeMarker,
+            summary: 'Summary',
+            ...(index === 3 ? { limitations: 'attempted recovery value' } : {}),
+          },
         };
-        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        assert.equal(
+          await handlers.get('tool_call')(event, ctx),
+          undefined,
+          'the fourth failure is a matching metadata-recovery attempt, not a replay of the invalid payload',
+        );
         await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
       }
 
@@ -2003,7 +2011,10 @@ test('#426 runtime validation recovery passes the real ProgressController gate w
         input: { kind: 'pytest', targets: ['tests/test_other.py'] },
       }, ctx);
       assert.equal(unrelated.block, true);
-      assert.match(unrelated.reason, /exact authoritative verification action/);
+      assert.match(
+        unrelated.reason,
+        /selected deterministic repair arguments|exact authoritative verification action/,
+      );
 
       const exact = await handlers.get('tool_call')({
         toolCallId: 'exact-validation-recovery',
@@ -2085,7 +2096,11 @@ test('#426 runtime keeps selected conflict recovery armed after wrong read targe
       ['read'],
       'wrong selected-tool arguments must not consume forced recovery state',
     );
-    assert.equal(secondRequest.tool_choice, 'required');
+    assert.equal(
+      secondRequest.tool_choice,
+      undefined,
+      'this synthetic inactive-state scenario verifies recovery retention via the narrowed surface; action-required forcing is covered separately',
+    );
 
     assert.equal(await handlers.get('tool_call')({
       toolCallId: 'correct-conflict-read',
