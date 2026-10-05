@@ -10,7 +10,16 @@ import {
   recoverReviewWorkflowRun,
 } from '../scripts/pi-common/review-state.mjs';
 
-function fakeClient({ head = 'head-1', labels = ['pi:mr-created', 'review:passed'], dispatchError = null } = {}) {
+function fakeClient({
+  head = 'head-1',
+  labels = ['pi:mr-created', 'review:passed'],
+  dispatchError = null,
+  apiError = null,
+  workflowJobs = [{
+    name: 'review',
+    steps: [{ name: 'Run independent review', status: 'completed', conclusion: 'skipped' }],
+  }],
+} = {}) {
   const state = {
     pr: { number: 7, head: { sha: head }, labels: labels.map(name => ({ name })) },
     comments: [],
@@ -21,6 +30,10 @@ function fakeClient({ head = 'head-1', labels = ['pi:mr-created', 'review:passed
     async loadPullRequest() { return structuredClone(state.pr); },
     async replaceLabels(_number, names) { state.pr.labels = names.map(name => ({ name })); },
     async pages() { return state.comments; },
+    async api() {
+      if (apiError) throw new Error(apiError);
+      return { jobs: structuredClone(workflowJobs) };
+    },
     async comment(_number, body) { state.comments.push({ body }); },
     async dispatchWorkflow(workflow, inputs) {
       state.dispatches.push({ workflow, inputs });
@@ -317,7 +330,7 @@ test('verdict recovery match requires the exact run and attempt marker', async (
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
 });
 
-test('whole-workflow recovery fails closed when the run-to-head marker is unavailable', async () => {
+test('whole-workflow failure before independent review retries the current head when no run marker exists', async () => {
   const client = fakeClient();
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
@@ -327,9 +340,52 @@ test('whole-workflow recovery fails closed when the run-to-head marker is unavai
     runUrl: 'https://github.test/runs/504',
   }, client);
 
-  assert.deepEqual(result, { status: 'missing-run-head' });
+  assert.deepEqual(result, { status: 'retry-dispatched' });
+  assert.deepEqual(client.state.dispatches, [{
+    workflow: 'pi-pr-review.yml',
+    inputs: { pr_number: '7', model: 'default' },
+  }]);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
+});
+
+test('missing run marker after independent review started transfers recovery to a human', async () => {
+  const client = fakeClient({
+    workflowJobs: [{
+      name: 'review',
+      steps: [{ name: 'Run independent review', status: 'completed', conclusion: 'failure' }],
+    }],
+  });
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '509',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/509',
+  }, client);
+
+  assert.deepEqual(result, {
+    status: 'needs-human',
+    reason: 'missing-run-marker-after-independent-start',
+  });
   assert.deepEqual(client.state.dispatches, []);
-  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+  assert.ok(client.state.pr.labels.some(label => label.name === 'pi:needs-human'));
+  assert.match(client.state.comments.at(-1).body, /could not prove which PR HEAD was reviewed/);
+});
+
+test('workflow-run inspection failure fails closed to needs-human instead of silently stranding recovery', async () => {
+  const client = fakeClient({ apiError: 'jobs API unavailable' });
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '510',
+    runAttempt: 1,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/510',
+  }, client);
+
+  assert.equal(result.status, 'needs-human');
+  assert.match(result.reason, /run-inspection-failed/);
+  assert.deepEqual(client.state.dispatches, []);
+  assert.ok(client.state.pr.labels.some(label => label.name === 'pi:needs-human'));
 });
 
 test('review workflow and reconciler cover missing step outputs and whole-workflow terminal outcomes', () => {
@@ -337,14 +393,18 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
   const reconcile = fs.readFileSync('.github/workflows/pi-reconcile.yml', 'utf8');
 
   assert.match(review, /name: Record review run identity[\s\S]*?record-run "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
-  assert.match(review, /needs\.review\.result/);
-  assert.match(review, /needs\.review\.outputs\.independent_outcome == ''/);
-  assert.match(review, /needs\.review\.outputs\.independent_outcome \|\| needs\.review\.result/);
+  assert.doesNotMatch(review, /needs\.review\.result/);
+  assert.match(
+    review,
+    /recover_failed_review:[\s\S]*?if: always\(\) && contains\(fromJSON\('\["failure","cancelled"\]'\), needs\.review\.outputs\.independent_outcome\)/,
+  );
   assert.ok(
     review.indexOf('name: Run deterministic review checks') < review.indexOf('name: Record review run identity') &&
       review.indexOf('name: Record review run identity') < review.indexOf('name: Run independent review'),
     'durable run identity must be recorded only after deterministic checks and before independent review',
   );
+  assert.match(review, /id: record/);
+  assert.match(review, /contains\(fromJSON\('\["recorded","already-recorded"\]'\), steps\.record\.outputs\.status\)/);
   assert.match(reconcile, /workflow_run:[\s\S]*?workflows: \["Pi PR Review"\][\s\S]*?types: \[completed\]/);
   assert.match(reconcile, /\["failure","cancelled","timed_out"\]/);
   assert.match(reconcile, /\["RUNNING","DRAINING"\]/);
