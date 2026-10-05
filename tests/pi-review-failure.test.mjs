@@ -33,6 +33,7 @@ const failure = {
   prNumber: 7,
   reviewedHead: 'head-1',
   runId: '123',
+  runAttempt: 1,
   outcome: 'failure',
   runUrl: 'https://github.test/runs/123',
 };
@@ -139,6 +140,7 @@ test('whole-workflow cancellation resolves the durable run marker and retries th
     prNumber: 7,
     reviewedHead: 'head-1',
     runId: '501',
+    runAttempt: 1,
     runUrl: 'https://github.test/runs/501',
     model: 'qwen',
   }, client);
@@ -147,6 +149,7 @@ test('whole-workflow cancellation resolves the durable run marker and retries th
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '501',
+    runAttempt: 1,
     outcome: 'cancelled',
     runUrl: 'https://github.test/runs/501',
   }, client);
@@ -167,12 +170,14 @@ test('timeout-equivalent workflow conclusion is infrastructure failure and never
     prNumber: 7,
     reviewedHead: 'head-1',
     runId: '502',
+    runAttempt: 1,
     model: 'default',
   }, client);
 
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '502',
+    runAttempt: 1,
     outcome: 'timed_out',
     runUrl: 'https://github.test/runs/502',
   }, client);
@@ -185,12 +190,13 @@ test('timeout-equivalent workflow conclusion is infrastructure failure and never
 test('whole-workflow recovery ignores a failed run recorded for an obsolete PR head', async () => {
   const client = fakeClient({ head: 'head-2' });
   client.state.comments.push({
-    body: 'Independent review run 503 started.\n\n<!-- pi-review:run:7:head-1:503:default -->',
+    body: 'Independent review run 503 attempt 1 started.\n\n<!-- pi-review:run:7:head-1:503:attempt:1:default -->',
   });
 
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '503',
+    runAttempt: 1,
     outcome: 'failure',
     runUrl: 'https://github.test/runs/503',
   }, client);
@@ -206,6 +212,7 @@ test('whole-workflow recovery does not erase a verdict already applied by that s
     prNumber: 7,
     reviewedHead: 'head-1',
     runId: '505',
+    runAttempt: 1,
     model: 'default',
   }, client);
   await applyReview({
@@ -214,11 +221,13 @@ test('whole-workflow recovery does not erase a verdict already applied by that s
     verdict: 'PASS',
     text: 'Looks good.',
     runId: '505',
+    runAttempt: 1,
   }, client);
 
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '505',
+    runAttempt: 1,
     outcome: 'failure',
     runUrl: 'https://github.test/runs/505',
   }, client);
@@ -228,11 +237,92 @@ test('whole-workflow recovery does not erase a verdict already applied by that s
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
 });
 
+test('re-run attempt on the same workflow run records and recovers the new PR head', async () => {
+  const client = fakeClient();
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '506',
+    runAttempt: 1,
+    model: 'default',
+  }, client);
+
+  client.state.pr.head.sha = 'head-2';
+  const recorded = await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-2',
+    runId: '506',
+    runAttempt: 2,
+    model: 'qwen',
+  }, client);
+
+  assert.deepEqual(recorded, { status: 'recorded', reviewedHead: 'head-2', model: 'qwen' });
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '506',
+    runAttempt: 2,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/506',
+  }, client);
+
+  assert.deepEqual(result, { status: 'retry-dispatched' });
+  assert.deepEqual(client.state.dispatches, [{
+    workflow: 'pi-pr-review.yml',
+    inputs: { pr_number: '7', model: 'qwen' },
+  }]);
+});
+
+test('second failed attempt of the same workflow run exhausts the single retry for that head', async () => {
+  const client = fakeClient();
+  await recoverReviewFailure({
+    ...failure,
+    runId: '507',
+    runAttempt: 1,
+  }, client);
+  const result = await recoverReviewFailure({
+    ...failure,
+    runId: '507',
+    runAttempt: 2,
+    outcome: 'cancelled',
+  }, client);
+
+  assert.deepEqual(result, { status: 'needs-human', reason: 'retry-exhausted' });
+  assert.equal(client.state.dispatches.length, 1);
+  assert.ok(client.state.pr.labels.some(label => label.name === 'pi:needs-human'));
+  assert.match(client.state.comments.at(-1).body, /507:attempt:2/);
+});
+
+test('verdict recovery match requires the exact run and attempt marker', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created', 'review:passed'] });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '508',
+    runAttempt: 2,
+    model: 'default',
+  }, client);
+  client.state.comments.push({
+    body: '<!-- pi-review:verdict:head-1:PASS:run:999:attempt:1 --> unrelated :run:508:attempt:2 -->',
+  });
+
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '508',
+    runAttempt: 2,
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/508',
+  }, client);
+
+  assert.deepEqual(result, { status: 'retry-dispatched' });
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created']);
+});
+
 test('whole-workflow recovery fails closed when the run-to-head marker is unavailable', async () => {
   const client = fakeClient();
   const result = await recoverReviewWorkflowRun({
     displayTitle: '🔬 Review PR #7',
     runId: '504',
+    runAttempt: 1,
     outcome: 'cancelled',
     runUrl: 'https://github.test/runs/504',
   }, client);
@@ -257,5 +347,9 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
   );
   assert.match(reconcile, /workflow_run:[\s\S]*?workflows: \["Pi PR Review"\][\s\S]*?types: \[completed\]/);
   assert.match(reconcile, /\["failure","cancelled","timed_out"\]/);
+  assert.match(reconcile, /\["RUNNING","DRAINING"\]/);
+  assert.match(reconcile, /group: \$\{\{ format\('pi-review-recovery-\{0\}-\{1\}', github\.event\.workflow_run\.id, github\.event\.workflow_run\.run_attempt\) \}\}/);
+  assert.match(reconcile, /REVIEW_RUN_ATTEMPT: \$\{\{ github\.event\.workflow_run\.run_attempt \}\}/);
+  assert.match(review, /REVIEW_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(reconcile, /review-state\.mjs recover-workflow-run/);
 });
