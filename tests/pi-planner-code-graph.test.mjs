@@ -80,10 +80,12 @@ test('planner graph fails closed when the Orbit index is stale or unavailable', 
     /current Planner worktree is not indexed/,
   );
 
-  const unavailable = (_command, _args) => ({ status: null, stdout: '', stderr: '', error: Object.assign(new Error('spawn orbit ENOENT'), { code: 'ENOENT' }) });
+  const unavailable = (command) => command === 'git'
+    ? { status: 0, stdout: 'abcdef1234567890\n', stderr: '' }
+    : { status: null, stdout: '', stderr: '', error: Object.assign(new Error('spawn orbit ENOENT'), { code: 'ENOENT' }) };
   assert.throws(
     () => assertFreshPlannerOrbitIndex(cwd, { runner: unavailable }),
-    /not installed/,
+    /orbit is not installed/,
   );
 });
 
