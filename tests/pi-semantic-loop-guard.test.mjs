@@ -1692,6 +1692,56 @@ test('#426 generic repeated terminal failures keep legacy steer-then-abort behav
   assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
 });
 
+test('#426 structured coded terminal failures keep legacy steer-then-abort behavior', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'REMOTE_CANDIDATE_REJECTED',
+        message: 'transient or model-fixable structured submission error',
+      }) }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'coded-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    assert.equal(aborts, 0, 'catch-all coded errors must not become deterministic blocked recovery');
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /current strategy is cycling/);
+
+    const fourth = {
+      toolCallId: 'coded-submit-3',
+      toolName: 'submit_result',
+      input: { summary: 'done' },
+    };
+    assert.equal(await handlers.get('tool_call')(fourth, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...fourth, isError: true, result: failure }, ctx);
+
+    assert.equal(aborts, 1, 'coded fallback retains the generic steer-then-abort lifecycle');
+    console.log('CODED_TERMINAL_STEER_THEN_ABORT_OK');
+  `);
+
+  assert.match(result.stdout, /CODED_TERMINAL_STEER_THEN_ABORT_OK/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_STEER/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
+  assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+});
+
 test('#426 consumed deterministic repair clears recovery compaction state', () => {
   const result = runRuntimeScenario(`
     activeTools = ['submit_result', 'write'];
@@ -2112,6 +2162,94 @@ test('#426 runtime keeps selected conflict recovery armed after wrong read targe
 
   assert.match(result.stdout, /CONFLICT_RECOVERY_ARGUMENT_GATE_OK/);
   assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+});
+
+test('#426 terminal exact validation accepts the visible retry_last_failed_check alias', () => {
+  const ledgerFile = path.join(os.tmpdir(), `pi-terminal-alias-ledger-${process.pid}-${Date.now()}.jsonl`);
+  fs.writeFileSync(ledgerFile, JSON.stringify({
+    run_id: 'terminal-alias-run',
+    attempt_id: 'primary',
+    stage: 'implementer',
+    backend: 'pi',
+    source: 'run_check',
+    kind: 'pytest',
+    scope: { targets: ['tests/test_required.py'] },
+    status: 'fail',
+  }) + '\n');
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      ProgressController.prototype.verificationPermitted = () => true;
+      const originalCommit = ProgressController.prototype.commitRecoveryVerification;
+      let recoveryCommits = 0;
+      ProgressController.prototype.commitRecoveryVerification = function(input) {
+        const committed = originalCommit.call(this, input);
+        if (committed) recoveryCommits += 1;
+        return committed;
+      };
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'alias-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+            { type: 'function', function: { name: 'retry_last_failed_check', parameters: {} } },
+            { type: 'function', function: { name: 'write', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        patched.tools.map(tool => tool.function.name),
+        ['retry_last_failed_check'],
+        'provider-facing retry alias satisfies the canonical run_check recovery requirement',
+      );
+      assert.equal(patched.tool_choice, 'required');
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'alias-terminal-recovery',
+        toolName: 'retry_last_failed_check',
+        input: {},
+      }, ctx), undefined);
+      assert.equal(recoveryCommits, 1, 'retry alias commits the canonical exact-validation permit');
+      console.log('TERMINAL_RECOVERY_RETRY_ALIAS_OK');
+    `, {
+      PI_VALIDATION_LEDGER_FILE: ledgerFile,
+      PI_VALIDATION_RUN_ID: 'terminal-alias-run',
+    });
+
+    assert.match(result.stdout, /TERMINAL_RECOVERY_RETRY_ALIAS_OK/);
+    assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+    assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_DEFERRED/);
+  } finally {
+    fs.rmSync(ledgerFile, { force: true });
+  }
 });
 
 test('#426 exact recovery permit survives runtime setup failure after controller authorization', () => {
