@@ -78,7 +78,7 @@ import {
   assertSuccessfulTerminalReceipt,
   invalidateTerminalReceipt,
 } from './pi-common/terminal-receipt.mjs';
-import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
+import { codingSessionRecoveryReceipt, normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
 import {
   TRUSTED_RECOVERY_TOOLS,
   consumeUnavailableCapabilityAttempts,
@@ -437,6 +437,49 @@ export default function (pi) {
       cwd: process.cwd(),
       resumed: resumedImplementer,
       validationRepair,
+    });
+  }
+
+  function preparedOutputPresence(cwd) {
+    const prepared = readPreparedImplementation(process.env.PI_PREPARED_IMPLEMENTATION_FILE);
+    const required = new Set(requiredPreparedOutputPaths(prepared));
+    const source = required.has(prepared?.layoutHint?.sourceTarget)
+      && fs.existsSync(path.resolve(cwd, prepared.layoutHint.sourceTarget));
+    const test = required.has(prepared?.layoutHint?.testTarget)
+      && fs.existsSync(path.resolve(cwd, prepared.layoutHint.testTarget));
+    return { source, test };
+  }
+
+  function latestCodingValidation() {
+    const { records, corrupted } = readValidationLedger(process.env.PI_VALIDATION_LEDGER_FILE);
+    if (corrupted) {
+      return { kind: null, status: 'infra_error', infrastructure_code: 'VALIDATION_LEDGER_CORRUPT' };
+    }
+    const record = [...records].reverse().find(item =>
+      item?.source === 'run_check' &&
+      item?.stage === 'implementer' &&
+      item?.run_id === validationRunId()
+    );
+    if (!record) return null;
+    return {
+      kind: record.kind ?? null,
+      status: record.status ?? null,
+      infrastructure_code: record.infrastructure?.code ?? null,
+    };
+  }
+
+  function trustedCodingRecoveryReceipt(cwd) {
+    let changedFiles = [];
+    try {
+      changedFiles = worktreeChangedFiles(cwd, baseRef());
+    } catch (error) {
+      console.warn(`PI_CODING_RECOVERY_CHANGED_FILES_UNAVAILABLE ${JSON.stringify({ error: String(error?.message ?? error) })}`);
+    }
+    return codingSessionRecoveryReceipt({
+      changedFiles,
+      acceptedScope: mutationScopeReceipt(cwd, process.env),
+      preparedOutputs: preparedOutputPresence(cwd),
+      lastValidation: latestCodingValidation(),
     });
   }
 
@@ -1902,6 +1945,7 @@ export default function (pi) {
             receiptError,
           });
           const submitted = outcome.successful_final_submission;
+          const recoveryReceipt = submitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
           const incapable = incapableCodingSessionRecord({
             submitted,
             attemptedTools,
@@ -1920,6 +1964,7 @@ export default function (pi) {
             durationMs: Date.now() - startedAt,
             usage: delegationUsage,
             ...outcome,
+            ...(recoveryReceipt ? { recoveryReceipt } : {}),
             ...(incapable ? { unreachableCapabilities: incapable.unreachable } : {}),
           });
           if (submitted) {
@@ -1936,17 +1981,15 @@ export default function (pi) {
               terminate: true,
             };
           }
-          const remaining = maxSessions - sessionsStarted;
           const activeToolNames = pi.getActiveTools();
           const terminalStatus = activeToolNames.includes('submit_result')
             ? 'Coding session ended without submit_result'
             : 'Coding session ended without a terminal result';
-          const continuation =
-            remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
-              ? `You may call ${codingSessionTool} once more (${remaining} left). `
-              : '';
           const terminalDiagnostic = sessionError ?? receiptError;
-          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          const recoveryGuidance = recoveryReceipt
+            ? ` Trusted recovery receipt: ${JSON.stringify(recoveryReceipt)} Resume from these existing worktree mutations; do not rewrite completed prepared outputs. If one concrete fact must be inspected, use the bounded evidence path exposed by the parent rather than restarting a coding session from memory.`
+            : '';
+          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}.${recoveryGuidance} ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
           // A real session/delegation error is still terminal for this tool call.
           // A stale/invalid receipt is recoverable: return control so the parent
           // can submit the current tree again instead of converting consistency
@@ -1954,7 +1997,7 @@ export default function (pi) {
           if (sessionError) throw new Error(message);
           return {
             content: [{ type: 'text', text: message }],
-            details: { ...base, ...outcome, submitted: false },
+            details: { ...base, ...outcome, submitted: false, recovery_receipt: recoveryReceipt },
           };
         },
       });
