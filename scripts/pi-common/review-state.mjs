@@ -328,10 +328,22 @@ export async function recoverReviewFailure({
     await replaceLabels(prNumber, clearVerdict);
     // Persist the reason before queuing the retry, so a dispatch failure
     // cannot leave the PR silent or carrying an earlier PASS verdict.
-    await comment(
+    const retryClaim = await comment(
       prNumber,
       `Independent review ended with ${outcome} for HEAD ${effectiveHead}. This is an infrastructure failure, not a code-review verdict. One automatic retry workflow was queued.${link}\n\n${retryMarker}`,
     );
+    const refreshedComments = await pages(`/issues/${prNumber}/comments`);
+    const matchingRetryClaims = refreshedComments
+      .filter(item => String(item.body ?? '').includes(retryMarker))
+      .filter(item => Number.isSafeInteger(Number(item.id)))
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    if (
+      retryClaim?.id &&
+      matchingRetryClaims.length &&
+      Number(matchingRetryClaims[0].id) !== Number(retryClaim.id)
+    ) {
+      return { status: 'retry-already-requested' };
+    }
     try {
       await dispatchWorkflow(workflowFile('reviewer'), {
         pr_number: String(prNumber),
