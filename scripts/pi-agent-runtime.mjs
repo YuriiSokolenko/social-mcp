@@ -715,10 +715,20 @@ export default function (pi) {
         error: String(error?.message ?? error),
       }));
     }
+    let recoveryActiveTools = pi.getActiveTools();
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    if (
+      loopResult.obligation?.kind === 'validation' &&
+      verificationTool &&
+      verificationToolHiddenByPermitGate &&
+      !recoveryActiveTools.includes(verificationTool)
+    ) {
+      recoveryActiveTools = [...recoveryActiveTools, verificationTool];
+    }
     return selectTerminalRecovery({
       obligation: loopResult.obligation,
       terminalInput,
-      activeToolNames: pi.getActiveTools(),
+      activeToolNames: recoveryActiveTools,
       currentChangedFiles,
       drift,
       acceptedPaths,
