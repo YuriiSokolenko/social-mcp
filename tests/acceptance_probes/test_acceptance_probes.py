@@ -78,6 +78,19 @@ def _current_issue_requires(contract: dict) -> bool:
     return bool(marker and marker in {line.strip() for line in str(context.get("body", "")).splitlines()})
 
 
+def _git_ref_exists(ref: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "-e", f"{ref}^{commit}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
 def _git_ref_contains(ref: str, source_path: str) -> bool:
     try:
         result = subprocess.run(
@@ -103,6 +116,8 @@ def _trusted_baseline_requires(contract: dict) -> bool:
         and os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
         and str(os.environ.get("GITHUB_REF", "")).startswith("refs/pull/")
     ):
+        if not _git_ref_exists("HEAD^1"):
+            pytest.fail("trusted acceptance PR baseline is unavailable: HEAD^1")
         return _git_ref_contains("HEAD^1", source_path)
     return False
 
@@ -214,6 +229,32 @@ def test_malformed_explicit_issue_context_fails_closed(tmp_path, monkeypatch) ->
 
     with pytest.raises(pytest.fail.Exception, match="issue context is unreadable"):
         _current_issue_requires(CRITERIA["lru-capacity-integer"])
+
+
+def test_pr_ci_fails_closed_when_trusted_baseline_parent_is_unavailable(monkeypatch) -> None:
+    monkeypatch.delenv(TRUSTED_BASELINE_TARGETS_ENV, raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_REF", "refs/pull/477/merge")
+    monkeypatch.setattr(__import__(__name__), "_git_ref_exists", lambda _ref: False)
+
+    with pytest.raises(pytest.fail.Exception, match="PR baseline is unavailable"):
+        _trusted_baseline_requires(CRITERIA["lru-capacity-integer"])
+
+
+def test_pr_ci_reads_merge_parent_for_trusted_baseline(monkeypatch) -> None:
+    monkeypatch.delenv(TRUSTED_BASELINE_TARGETS_ENV, raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_REF", "refs/pull/477/merge")
+    monkeypatch.setattr(__import__(__name__), "_git_ref_exists", lambda _ref: True)
+    monkeypatch.setattr(
+        __import__(__name__),
+        "_git_ref_contains",
+        lambda ref, path: ref == "HEAD^1" and path == "src/social_mcp/diagnostics/smoke_lru.py",
+    )
+
+    assert _trusted_baseline_requires(CRITERIA["lru-capacity-integer"])
 
 
 def test_missing_parent_package_is_treated_as_absent() -> None:
