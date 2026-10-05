@@ -374,6 +374,10 @@ export default function (pi) {
   // permit may restore it only in that case; unrelated removals stay removed.
   let verificationToolHiddenByPermitGate = false;
   let deterministicVerificationInfrastructure = null;
+  // After a fork returns with trusted publishable mutations, prevent a blind second fork or
+  // rewrite of those completed outputs. The guard is released only by fresh bounded evidence,
+  // a real validation verdict, or a terminal attempt that yields a concrete recovery diagnosis.
+  let codingRecoveryGuard = null;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -579,8 +583,17 @@ export default function (pi) {
         })}`);
       }
     }
+    const codingRecoveryBlocked = name => Boolean(
+      codingRecoveryGuard &&
+      (
+        CONTENT_MUTATION_TOOLS.has(name) ||
+        name === 'bash' ||
+        name === config.productiveProgress?.codingSessionTool
+      )
+    );
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
+      !codingRecoveryBlocked(name) &&
       (!verificationTool || name !== verificationTool || (verificationVisible && !recoveryRetryReady)) &&
       (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
@@ -1972,6 +1985,15 @@ export default function (pi) {
           });
           const submitted = outcome.successful_final_submission;
           const recoveryReceipt = submitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
+          if (recoveryReceipt?.changed_publishable_paths?.length) {
+            codingRecoveryGuard = recoveryReceipt;
+            console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
+              stage,
+              sessionId,
+              changedPublishablePaths: recoveryReceipt.changed_publishable_paths,
+              remainingTerminalObligation: recoveryReceipt.remaining_terminal_obligation,
+            })}`);
+          }
           const incapable = incapableCodingSessionRecord({
             submitted,
             attemptedTools,
@@ -2733,6 +2755,31 @@ export default function (pi) {
       strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
       verificationEligible,
     });
+
+    if (codingRecoveryGuard) {
+      const validationStatus = event.result?.details?.status ?? null;
+      const informedByEvidence = Boolean(consumedEvidence && !event.isError);
+      const informedByValidation =
+        canonicalToolName === 'run_check' &&
+        !event.isError &&
+        (validationStatus === 'pass' || validationStatus === 'fail');
+      const informedByTerminalDiagnosis =
+        ['submit_result', 'submit_repair'].includes(canonicalToolName) &&
+        event.isError === true;
+      if (informedByEvidence || informedByValidation || informedByTerminalDiagnosis) {
+        console.info(`PI_CODING_RECOVERY_GUARD_RELEASED ${JSON.stringify({
+          stage,
+          reason: informedByEvidence
+            ? 'bounded_evidence'
+            : informedByValidation
+              ? `validation_${validationStatus}`
+              : 'terminal_diagnosis',
+          changedPublishablePaths: codingRecoveryGuard.changed_publishable_paths,
+        })}`);
+        codingRecoveryGuard = null;
+      }
+    }
+
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
