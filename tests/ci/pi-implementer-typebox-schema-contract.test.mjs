@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const RESULT_TOOL_URL = new URL('../../scripts/pi-implementer-result-tool.mjs', import.meta.url).href;
+const PLANNER_EVIDENCE_URL = new URL('../../scripts/pi-planner-evidence.mjs', import.meta.url).href;
 const TYPEBOX_PACKAGE_ROOT = process.env.PI_TYPEBOX_PACKAGE_ROOT;
 
 if (!TYPEBOX_PACKAGE_ROOT) {
@@ -97,6 +98,68 @@ test('registered submit_result schema matches the real Pi TypeBox transport cont
         ...process.env,
         PI_RESUME_ACTIVE: 'false',
         PI_VALIDATION_REPAIR: 'false',
+      },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test('Planner custom tool schemas compile with the real Pi TypeBox validator contract', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-real-typebox-'));
+  try {
+    const loader = writeTypeboxLoader(dir);
+    const program = `
+      import assert from 'node:assert/strict';
+      const { Compile } = await import('typebox/compile');
+      const { default: plannerEvidenceExtension } = await import(${JSON.stringify(PLANNER_EVIDENCE_URL)});
+
+      const tools = [];
+      plannerEvidenceExtension({
+        registerTool(tool) { tools.push(tool); },
+        on() {},
+      });
+
+      const byName = new Map(tools.map(tool => [tool.name, tool]));
+      assert.deepEqual([...byName.keys()].sort(), ['planner_code_graph', 'repo_search']);
+
+      const search = Compile(byName.get('repo_search').parameters);
+      assert.equal(search.Check({ query: 'sendWithBackoff' }), true);
+      assert.equal(search.Check({ query: '' }), false);
+      assert.equal(search.Check({ query: 'x', maxResults: 51 }), false);
+
+      const graph = Compile(byName.get('planner_code_graph').parameters);
+      assert.equal(graph.Check({
+        relation: 'callers',
+        target: 'sendWithBackoff',
+        question: 'Which callers are affected?',
+      }), true);
+      assert.equal(graph.Check({
+        relation: 'arbitrary_sql',
+        target: 'sendWithBackoff',
+        question: 'Run anything',
+      }), false);
+      assert.equal(graph.Check({
+        relation: 'callers',
+        target: 'sendWithBackoff',
+      }), false);
+    `;
+    const bootstrap = `
+      import { register } from 'node:module';
+      import { pathToFileURL } from 'node:url';
+      register(pathToFileURL(${JSON.stringify(loader)}), import.meta.url);
+      ${program}
+    `;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', bootstrap], {
+      cwd: PROJECT_ROOT,
+      encoding: 'utf8',
+      timeout: 15000,
+      env: {
+        ...process.env,
+        PI_PLANNER_EVIDENCE_BUDGET: '6',
+        PI_PLANNER_OUTPUT_ONLY: 'false',
       },
     });
     assert.equal(child.status, 0, child.stderr + child.stdout);
