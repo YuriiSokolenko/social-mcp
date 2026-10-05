@@ -684,6 +684,11 @@ export default function (pi) {
     return guidance;
   }
 
+  function terminalInputForLoop(tool, input) {
+    if (!['submit_result', 'submit_repair'].includes(tool)) return null;
+    return input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  }
+
   function terminalRecoveryPlan(loopResult, terminalInput, ctx) {
     let currentChangedFiles = [];
     let drift = [];
@@ -718,13 +723,42 @@ export default function (pi) {
     });
   }
 
+  function terminalObligationSummary(obligation) {
+    if (!obligation || typeof obligation !== 'object') return null;
+    const summary = {
+      key: obligation.key ?? null,
+      kind: obligation.kind ?? null,
+      code: obligation.code ?? null,
+    };
+    for (const key of ['paths', 'conflictPaths', 'missingFields', 'requiredTargets', 'missingOutputs']) {
+      if (!Array.isArray(obligation[key])) continue;
+      summary[key] = obligation[key].slice(0, 20);
+      if (obligation[key].length > 20) summary[key + 'Count'] = obligation[key].length;
+    }
+    return summary;
+  }
+
+  function terminalRecoveryPlanSummary(plan) {
+    if (!plan || typeof plan !== 'object') return null;
+    return {
+      status: plan.status ?? null,
+      obligationKey: plan.obligationKey ?? null,
+      obligationKind: plan.obligationKind ?? null,
+      kind: plan.kind ?? null,
+      tool: plan.tool ?? null,
+      target: plan.target ?? null,
+      requiredTool: plan.requiredTool ?? null,
+      reason: plan.reason ?? null,
+    };
+  }
+
   function abortTerminalRecovery(loopResult, plan, metric, ctx) {
     const reason = plan?.status === 'blocked'
       ? plan.reason
       : 'The same terminal obligation persisted after a deterministic repair was selected without obligation-reducing progress.';
     const details = {
-      unresolved_obligation: loopResult.obligation ?? null,
-      selected_repair: plan ?? null,
+      unresolved_obligation: terminalObligationSummary(loopResult.obligation),
+      selected_repair: terminalRecoveryPlanSummary(plan),
       checkpoint: {
         repository_state: loopResult.repositoryState ?? null,
         worktree_preserved: true,
@@ -780,7 +814,7 @@ export default function (pi) {
       const guidance = terminalRecoveryGuidance(plan);
       console.warn('PI_TERMINAL_RECOVERY_SELECTED ' + JSON.stringify({
         ...metric,
-        plan,
+        plan: terminalRecoveryPlanSummary(plan),
         activeTools: pi.getActiveTools(),
       }));
       await pi.sendUserMessage(guidance, { deliverAs: 'steer' });
@@ -2048,7 +2082,9 @@ export default function (pi) {
           productiveState,
           repositoryRoot: ctx.cwd,
         });
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(event.toolName, event.input),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
@@ -2133,7 +2169,9 @@ export default function (pi) {
           repositoryRoot: ctx.cwd,
         });
         // A blocked tool has no tool_execution_end event, so classify it here.
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(canonicalToolName, canonicalInput),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
@@ -2183,7 +2221,9 @@ export default function (pi) {
           productiveState,
           repositoryRoot: ctx.cwd,
         });
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(event.toolName, event.input),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
@@ -2550,9 +2590,7 @@ export default function (pi) {
       pendingLoopCalls.delete(event.toolCallId);
 
       await handleLoopResult(loopResult, ctx, {
-        terminalInput: ['submit_result', 'submit_repair'].includes(pendingLoopCall.toolName)
-          ? pendingLoopCall.input
-          : null,
+        terminalInput: terminalInputForLoop(pendingLoopCall.toolName, pendingLoopCall.input),
       });
       if (terminalRecoveryAttemptToolCallId === event.toolCallId) {
         console.log('PI_TERMINAL_RECOVERY_TOOL_SETTLED ' + JSON.stringify({
