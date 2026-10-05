@@ -4,13 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runCheck } from '../scripts/pi-common/run-check.mjs';
+import { RUN_CHECK_ENV_CONTRACT, runCheck, sandboxPreflight } from '../scripts/pi-common/run-check.mjs';
 import { createDockerSandboxBackend } from '../scripts/pi-common/run-check-docker-backend.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.env.RUN_CHECK_HARNESS_ROOT = repoRoot;
 process.env.RUN_CHECK_SANDBOX_IMAGE = 'n150/run-check-sandbox:0.1.0-test';
-const { buildSandboxContainerArgs, verifySandboxContainerConfig, remapRunnerPaths, buildStagedRunCheckSpec, safeCheckEnvironment } = await import('../infra/github-runner-autoscaler/run-check-executor.mjs');
+const { assertCheckEnvironmentContract, buildSandboxContainerArgs, verifySandboxContainerConfig, remapRunnerPaths, buildStagedRunCheckSpec, safeCheckEnvironment } = await import('../infra/github-runner-autoscaler/run-check-executor.mjs');
 
 test('sandbox environment permits only validated trusted acceptance module lists', () => {
   const env = safeCheckEnvironment({
@@ -32,6 +32,63 @@ test('sandbox environment permits only validated trusted acceptance module lists
     () => safeCheckEnvironment({ PI_ISSUE_CONTEXT: '/tmp/issue.json' }),
     /unsupported check environment key: PI_ISSUE_CONTEXT/,
   );
+});
+
+test('#481 producer and trusted executor share one versioned environment contract', async () => {
+  assert.equal(assertCheckEnvironmentContract(RUN_CHECK_ENV_CONTRACT), true);
+  assert.throws(
+    () => assertCheckEnvironmentContract({ version: RUN_CHECK_ENV_CONTRACT.version, keys: RUN_CHECK_ENV_CONTRACT.keys.filter(key => key !== 'PI_TRUSTED_ACCEPTANCE_TARGETS') }),
+    error => error.code === 'CHECK_ENV_CONTRACT',
+  );
+
+  let captured = null;
+  const result = await sandboxPreflight({
+    env: {
+      PI_TRUSTED_ACCEPTANCE_TARGETS: 'social_mcp.diagnostics.smoke_lru',
+      PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS: 'social_mcp.diagnostics.smoke_intervals',
+    },
+    backend: {
+      async preflight(args) {
+        captured = args;
+        return { ok: true, duration_ms: 1 };
+      },
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(captured.envContract, RUN_CHECK_ENV_CONTRACT);
+  assert.equal(captured.env.PI_TRUSTED_ACCEPTANCE_TARGETS, 'social_mcp.diagnostics.smoke_lru');
+  assert.equal(captured.env.PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS, 'social_mcp.diagnostics.smoke_intervals');
+});
+
+test('#481 Docker preflight fails closed when a stale executor does not echo the environment contract', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const backend = createDockerSandboxBackend({ RUN_CHECK_EXECUTOR_TOKEN: 'test-token', RUNNER_NAME: 'test-runner' });
+  const args = {
+    root: '/tmp/preflight',
+    env: { PATH: '/bin', HOME: '/tmp', TMPDIR: '/tmp', PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' },
+    envContract: RUN_CHECK_ENV_CONTRACT,
+    timeoutMs: 1000,
+  };
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, duration_ms: 1 }), { status: 200 });
+  const stale = await backend.preflight(args);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.status, 'infra_error');
+  assert.equal(stale.infrastructure.code, 'CHECK_ENV_CONTRACT');
+
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    assert.deepEqual(body.env_contract, RUN_CHECK_ENV_CONTRACT);
+    assert.equal(body.env.PI_TRUSTED_ACCEPTANCE_TARGETS, undefined);
+    return new Response(JSON.stringify({
+      ok: true,
+      duration_ms: 1,
+      environment_contract: RUN_CHECK_ENV_CONTRACT,
+    }), { status: 200 });
+  };
+  const current = await backend.preflight(args);
+  assert.equal(current.ok, true);
 });
 
 test('runner absolute paths remap to the same relative staged targets for supported path checks', () => {
