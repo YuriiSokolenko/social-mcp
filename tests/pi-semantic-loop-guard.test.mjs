@@ -1643,3 +1643,128 @@ test('#426 runtime maps repeated journaled file-set failure to targeted undo', (
     fs.rmSync(journalFile, { force: true });
   }
 });
+
+
+test('#426 generic repeated terminal failures keep legacy steer-then-abort behavior', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: 'generic remote submit failed without structured recovery metadata' }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'generic-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    assert.equal(aborts, 0, 'first repeated generic failure trip must steer, not abort');
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /current strategy is cycling/);
+
+    const fourth = {
+      toolCallId: 'generic-submit-3',
+      toolName: 'submit_result',
+      input: { summary: 'done' },
+    };
+    assert.equal(await handlers.get('tool_call')(fourth, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...fourth, isError: true, result: failure }, ctx);
+
+    assert.equal(aborts, 1, 'next repeated generic trip keeps the pre-#478 abort behavior');
+    console.log('GENERIC_TERMINAL_STEER_THEN_ABORT_OK');
+  `);
+
+  assert.match(result.stdout, /GENERIC_TERMINAL_STEER_THEN_ABORT_OK/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_STEER/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
+  assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+});
+
+test('#426 consumed deterministic repair clears recovery compaction state', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+    const errorText = JSON.stringify({
+      code: 'missing_publication_fields',
+      missing_fields: ['limitations'],
+    });
+    const failure = { content: [{ type: 'text', text: errorText }] };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'metadata-submit-' + index,
+        toolName: 'submit_result',
+        input: { title: 'Fix', summary: 'Summary' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    const forced = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'write', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(forced.tools.map(tool => tool.function.name), ['submit_result']);
+
+    const repairCall = {
+      toolCallId: 'metadata-repair-attempt',
+      toolName: 'submit_result',
+      input: {
+        title: 'Fix',
+        summary: 'Summary',
+        limitations: 'none',
+      },
+    };
+    assert.equal(await handlers.get('tool_call')(repairCall, ctx), undefined);
+
+    const history = [
+      { role: 'assistant', tool_calls: [{ id: 'old-a', function: { name: 'submit_result', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'old-a', content: errorText },
+      { role: 'assistant', tool_calls: [{ id: 'old-b', function: { name: 'submit_result', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'old-b', content: errorText },
+    ];
+    const afterAttempt = handlers.get('before_provider_request')({
+      payload: {
+        messages: history,
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'write', parameters: {} } },
+        ],
+      },
+    });
+
+    assert.equal(
+      afterAttempt.messages[1].content,
+      errorText,
+      'consumed recovery state no longer compacts later requests',
+    );
+    assert.equal(afterAttempt.messages[3].content, errorText);
+    console.log('TERMINAL_RECOVERY_STATE_CLEARED_OK');
+  `);
+
+  assert.match(result.stdout, /TERMINAL_RECOVERY_STATE_CLEARED_OK/);
+  assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+});
