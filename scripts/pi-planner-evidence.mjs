@@ -159,4 +159,14 @@ export default function (pi) {
     recordEvidenceState(gate, pending.admission, { fact });
     console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
   });
+
+  if (outputOnly) {
+    // Replace the normal agent prompt for the retry so the provider is not told that repository
+    // evidence tools exist after the lifecycle has closed them.
+    pi.on('before_agent_start', () => ({
+      systemPrompt: `You are the Social MCP implementation planner on an output-only retry.
+
+Repository evidence is closed. Only structured_output is available. Do not inspect the repository or attempt any other tool. Use the issue plus preserved facts from the retry task, correct only the result envelope/schema, and call structured_output immediately. Return no prose.`,
+    }));
+  }
 }
