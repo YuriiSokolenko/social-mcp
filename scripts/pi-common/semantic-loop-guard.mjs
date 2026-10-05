@@ -467,21 +467,6 @@ function exactValidationActionMatches(obligation, tool, input) {
   return true;
 }
 
-// The file a mutation acted on. Targeted recovery tools (undo_mutation, rollback_last_mutation,
-// recover_worktree) take no path argument, so the path comes from the runtime's result.
-function mutationTargetPath(input, result) {
-  const direct = targetFamily(input);
-  if (direct) return direct;
-  const fromDetails = result?.details?.path;
-  if (typeof fromDetails === 'string') return fromDetails;
-  try {
-    const parsed = JSON.parse(explicitResultText(result) ?? '');
-    return typeof parsed?.path === 'string' ? parsed.path : '';
-  } catch {
-    return '';
-  }
-}
-
 function mutationResultPaths(input, result) {
   // Explicit mutation input is the strongest target evidence. Aggregate result fields such as
   // files/paths/changed_files often describe the whole worktree and must not be treated as files
@@ -653,10 +638,19 @@ export class SemanticLoopGuard {
     }
 
     if (isError || blocked) {
-      const obligation = TERMINAL_TOOLS.has(tool) && !blocked ? submissionObligation(result) : null;
+      const terminalTool = TERMINAL_TOOLS.has(tool);
+      const obligation = terminalTool && !blocked ? submissionObligation(result) : null;
       const errorClass = obligation ? 'submission_' + obligation.key : normalizeErrorClass(result, blocked);
-      if (TERMINAL_TOOLS.has(tool)) this.terminalObligation = obligation ?? { paths: [], key: errorClass };
-      const family = strategyFamily(tool, TERMINAL_TOOLS.has(tool) ? {} : input, productiveState, errorClass);
+      if (terminalTool) {
+        if (obligation) {
+          this.terminalObligation = obligation;
+        } else if (!blocked || !this.terminalObligation) {
+          // A blocked retry cannot provide new terminal diagnostics. Preserve any already
+          // recognized obligation rather than replacing it with a generic blocked-call class.
+          this.terminalObligation = { paths: [], key: errorClass };
+        }
+      }
+      const family = strategyFamily(tool, terminalTool ? {} : input, productiveState, errorClass);
       this._push(this.failureWindow, family);
       const count = this._count(this.failureWindow, family);
       const classification = blocked ? 'blocked' : 'error';
