@@ -61,14 +61,6 @@ jobs:
           echo "head_sha=$(jq -r '.head' "$CONTEXT")" >> "$GITHUB_OUTPUT"
           echo "REVIEW_CONTEXT=$CONTEXT" >> "$GITHUB_ENV"
 
-      - name: Record review run identity
-        if: steps.load.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REVIEW_MODEL: ${{ inputs.model || 'default' }}
-          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
-
       - name: Create review worktree
         if: steps.load.outputs.skip != 'true'
         run: |
@@ -95,6 +87,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
 
+      - name: Record review run identity
+        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_MODEL: ${{ inputs.model || 'default' }}
+          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
+
       - name: Run independent review
         id: independent
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
@@ -119,6 +119,7 @@ jobs:
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success' && steps.independent.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
         run: |
           RESULT="$RUNNER_TEMP/review-result.json"
           VERDICT="$(jq -r '.verdict' "$RESULT")"
@@ -153,7 +154,10 @@ jobs:
       always() &&
       (
         contains(fromJSON('["failure","cancelled"]'), needs.review.outputs.independent_outcome) ||
-        contains(fromJSON('["failure","cancelled"]'), needs.review.result)
+        (
+          needs.review.outputs.independent_outcome == '' &&
+          contains(fromJSON('["failure","cancelled"]'), needs.review.result)
+        )
       )
     runs-on: [self-hosted, linux, x64, n150, general]
     permissions:
