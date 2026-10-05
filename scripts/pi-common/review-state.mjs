@@ -35,6 +35,10 @@ function reviewFollowupMarker(head, verdict, runId, runAttempt) {
   return `<!-- pi-review:followup:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`;
 }
 
+function reviewFollowupClaimMarker(head, verdict, runId, runAttempt) {
+  return `<!-- pi-review:followup-claim:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`;
+}
+
 function reviewStartMarker(prNumber, reviewedHead, runId, runAttempt) {
   return `<!-- pi-review:start:${prNumber}:${reviewedHead}:${runId}:attempt:${runAttempt} -->`;
 }
@@ -149,20 +153,50 @@ export async function dispatchAfterReview(
   const marker = hasDurableReviewIdentity
     ? reviewFollowupMarker(reviewedHead, verdict, runId, runAttempt)
     : null;
+  const claimMarker = hasDurableReviewIdentity
+    ? reviewFollowupClaimMarker(reviewedHead, verdict, runId, runAttempt)
+    : null;
 
-  if (marker) {
-    const comments = await pages(`/issues/${prNumber}/comments`);
+  if (marker && claimMarker) {
+    let comments = await pages(`/issues/${prNumber}/comments`);
     if (comments.some(item => String(item.body ?? '').includes(marker))) {
       return { status: 'followup-already-dispatched', verdict };
+    }
+
+    const existingClaim = comments.find(item => String(item.body ?? '').includes(claimMarker));
+    if (existingClaim) {
+      return { status: 'followup-claimed', verdict };
+    }
+
+    const claim = await comment(
+      prNumber,
+      `Review follow-up for ${verdict} claimed for dispatch. If this handoff is interrupted, ordinary PR reconciliation owns recovery.\n\n${claimMarker}`,
+    );
+
+    // Re-read after claiming. Concurrent recoveries may both have observed no
+    // claim; only the oldest durable claim is allowed to perform the dispatch.
+    comments = await pages(`/issues/${prNumber}/comments`);
+    const claims = comments
+      .filter(item => String(item.body ?? '').includes(claimMarker))
+      .filter(item => Number.isSafeInteger(Number(item.id)))
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    if (claim?.id && claims.length && Number(claims[0].id) !== Number(claim.id)) {
+      return { status: 'followup-claimed', verdict };
     }
   }
 
   await dispatchWorkflow(workflow, inputs);
   if (marker) {
-    await comment(
-      prNumber,
-      `Review follow-up for ${verdict} was dispatched successfully.\n\n${marker}`,
-    );
+    try {
+      await comment(
+        prNumber,
+        `Review follow-up for ${verdict} was dispatched successfully.\n\n${marker}`,
+      );
+    } catch {
+      // Dispatch already succeeded. Do not turn a bookkeeping-comment failure
+      // into a failed review that can dispatch the same follow-up again.
+      return { status: 'followup-dispatched-unconfirmed', verdict };
+    }
   }
   return { status: 'followup-dispatched', verdict };
 }
@@ -182,13 +216,18 @@ export async function recoverReviewFailure({
 
   const pr = await loadPullRequest(prNumber);
   const comments = await pages(`/issues/${prNumber}/comments`);
+  const record = findReviewRunRecord(comments, prNumber, runId, runAttempt);
   let effectiveHead = reviewedHead;
   let effectiveModel = model;
   if (!effectiveHead) {
-    const record = findReviewRunRecord(comments, prNumber, runId, runAttempt);
     if (!record) return { status: 'missing-run-head' };
     effectiveHead = record.reviewedHead;
-    if (!['laguna', 'qwen'].includes(effectiveModel)) effectiveModel = record.model;
+  }
+  if (!['laguna', 'qwen'].includes(effectiveModel)) {
+    if (!record || !['laguna', 'qwen'].includes(record.model)) {
+      return { status: 'missing-run-model' };
+    }
+    effectiveModel = record.model;
   }
   if (pr.head.sha !== effectiveHead) return { status: 'stale' };
   const passMarker = reviewVerdictMarker(effectiveHead, 'PASS', runId, runAttempt);
@@ -207,6 +246,10 @@ export async function recoverReviewFailure({
   }
 
   if (outcome === 'cancelled') {
+    // #391 intentionally treats a cancellation after independent review has
+    // actually started as recoverable infrastructure failure, including a
+    // controlled/manual mid-flight cancellation. Pre-start cancellations are
+    // ignored below so operator cancellation before model work is respected.
     const startMarker = reviewStartMarker(prNumber, effectiveHead, runId, runAttempt);
     if (!comments.some(item => String(item.body ?? '').includes(startMarker))) {
       return { status: 'ignored', reason: 'cancelled-before-independent-start' };
@@ -248,7 +291,7 @@ export async function recoverReviewFailure({
     try {
       await dispatchWorkflow(workflowFile('reviewer'), {
         pr_number: String(prNumber),
-        model: ['laguna', 'qwen'].includes(effectiveModel) ? effectiveModel : 'default',
+        model: effectiveModel,
       });
       return { status: 'retry-dispatched' };
     } catch (error) {
@@ -281,7 +324,7 @@ export async function recoverReviewWorkflowRun({
     runUrl,
     model: 'default',
   }, client);
-  if (recorded.status !== 'missing-run-head') return recorded;
+  if (!['missing-run-head', 'missing-run-model'].includes(recorded.status)) return recorded;
 
   return {
     status: 'ignored',
