@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 
-import plannerEvidenceExtension from '../scripts/pi-planner-evidence.mjs';
+import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTools } from '../scripts/pi-planner-evidence.mjs';
 import {
   MAX_PLANNER_REPOSITORY_EVIDENCE,
   PLANNER_EVIDENCE_BUDGET_ENV,
@@ -63,6 +63,100 @@ test('the planner agent definition exposes exactly the read-only evidence tools'
     const admission = gate.admit(forbidden);
     assert.equal(admission.allowed, false, `${forbidden} must be blocked at call time`);
     assert.equal(admission.used, 0, 'a blocked tool never consumes evidence budget');
+  }
+});
+
+test('#483 planner documentation and custom runtime registration stay synchronized', async () => {
+  const source = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  assert.deepEqual(agentTools(), [...PLANNER_EVIDENCE_TOOLS]);
+  assert.doesNotMatch(source, /\b(?:LSP|Zoekt|Git Context|scout|subagent|bash|mcpScript)\b/i);
+  assert.match(source, /repo_search —/);
+  assert.match(source, /planner_code_graph —/);
+  assert.match(source, /only `structured_output` is available/);
+
+  const registered = [];
+  registerPlannerEvidenceTools({ registerTool: tool => registered.push(tool) });
+  assert.deepEqual(registered.map(tool => tool.name), ['repo_search', 'planner_code_graph']);
+  assert.ok(!registered.some(tool => ['mcp', 'mcpScript'].includes(tool.name)));
+});
+
+test('#483 repo_search resolves an unknown path through the planner-only registered tool', async () => {
+  const registered = [];
+  const calls = [];
+  registerPlannerEvidenceTools(
+    { registerTool: tool => registered.push(tool) },
+    {
+      repoSearchFn(cwd, params) {
+        calls.push({ cwd, params });
+        return {
+          kind: 'content',
+          query: params.query,
+          matches: [{ path: 'scripts/pi-common/repo-search.mjs', line: 1, text: 'export function repoSearch' }],
+          truncated: false,
+        };
+      },
+    },
+  );
+  const tool = registered.find(item => item.name === 'repo_search');
+  const result = await tool.execute('repo-1', { query: 'repoSearch' }, null, null, { cwd: '/issue-worktree' });
+  assert.deepEqual(calls, [{ cwd: '/issue-worktree', params: { query: 'repoSearch' } }]);
+  assert.match(result.content[0].text, /scripts\/pi-common\/repo-search\.mjs/);
+});
+
+test('#483 planner_code_graph is worktree-scoped, bounded, local-only, and fails closed when stale', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-graph-'));
+  try {
+    const commands = [];
+    const freshExec = (command, args, options) => {
+      commands.push({ command, args, cwd: options.cwd, telemetry: options.env.ORBIT_TELEMETRY_ENABLED });
+      if (command === 'git') return 'abc123\n';
+      if (args[0] === 'list') {
+        return JSON.stringify([{ repo_path: dir, branch: 'issue/483', commit_sha: 'abc123', status: 'indexed' }]);
+      }
+      if (args[0] === 'context') return 'caller -> target\n'.repeat(3000);
+      throw new Error('unexpected command');
+    };
+    const result = plannerCodeGraph(dir, {
+      target: 'Definition:target',
+      question: 'Which callers form the implementation blast radius?',
+    }, { execFile: freshExec });
+    assert.equal(result.truncated, true);
+    assert.ok(result.text.length <= 16100, 'graph response remains hard bounded');
+    assert.match(result.text, /output truncated/);
+    assert.deepEqual(commands.map(call => [call.command, call.args[0]]), [
+      ['git', 'rev-parse'],
+      ['orbit', 'list'],
+      ['orbit', 'context'],
+    ]);
+    assert.ok(commands.every(call => call.cwd === dir));
+    assert.ok(commands.every(call => call.telemetry === 'false'));
+    assert.ok(!commands.some(call => call.args.includes('mcp') || call.args.includes('sql')));
+
+    const staleExec = (command, args) => {
+      if (command === 'git') return 'new-head\n';
+      if (args[0] === 'list') {
+        return JSON.stringify([{ repo_path: dir, branch: 'issue/483', commit_sha: 'old-head', status: 'indexed' }]);
+      }
+      throw new Error('context must not run for stale index');
+    };
+    assert.throws(
+      () => plannerCodeGraph(dir, { target: 'Definition:target', question: 'Who calls it?' }, { execFile: staleExec }),
+      /index is stale/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('#483 new search and graph tools share the same six-call planner evidence cap', async (t) => {
+  const child = childExtension(t, 6);
+  for (const tool of ['repo_search', 'planner_code_graph', 'read', 'grep', 'find', 'ls']) {
+    assert.equal(await child.call(tool), undefined);
+  }
+  for (const tool of ['repo_search', 'planner_code_graph']) {
+    const blocked = await child.call(tool);
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /exhausted/);
   }
 });
 
@@ -357,7 +451,7 @@ test('planner prompt prefers targeted evidence and carries resolved facts forwar
     }));
     const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
     assert.match(task, /first evidence action must target that named location/);
-    assert.match(task, /Broad find\/ls\/search is escalation only/);
+    assert.match(task, /prefer repo_search over broad find/);
     assert.match(task, /missing, stale, contradictory/);
     assert.match(task, /Return facts as 0-6 concise repository-derived facts/);
     assert.match(task, /Never finish a planner attempt with prose/);
@@ -710,7 +804,7 @@ test('#481 missing structured_output preserves first-attempt evidence in the out
       assert.match(request.task, /PRESERVED EVIDENCE FROM ATTEMPT 1/);
       assert.match(request.task, /1\/6 evidence actions consumed/);
       assert.match(request.task, /send_with_backoff/);
-      assert.match(request.task, /do not call read, grep, find, or ls/);
+      assert.match(request.task, /only structured_output may be called/);
       return {
         status: 'completed',
         usage: { input: 40, output: 5, turns: 1, toolCalls: 1 },
