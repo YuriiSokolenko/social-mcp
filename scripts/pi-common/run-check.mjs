@@ -33,7 +33,13 @@ const MAX_TIMEOUT_SECONDS = 600;
 const PREFLIGHT_TIMEOUT_MS = 15000;
 
 // Only these variables reach a check subprocess: never the caller's token/secret environment.
-const ENV_ALLOWLIST = ['PATH', 'LANG', 'LC_ALL'];
+const ENV_ALLOWLIST = [
+  'PATH',
+  'LANG',
+  'LC_ALL',
+  'PI_TRUSTED_ACCEPTANCE_TARGETS',
+  'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS',
+];
 
 // Compiles in memory so a focused check never writes __pycache__ into the worktree.
 const PYTHON_COMPILE_SCRIPT = [
