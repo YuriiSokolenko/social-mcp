@@ -19,7 +19,7 @@ Available repository evidence:
 - find — locate files by path/name pattern.
 - ls — inspect a known directory.
 - repo_search — deterministic tracked-repository search when the exact location is unknown.
-- planner_code_graph — query bounded relationships for one concrete symbol/path in the current trusted code-graph index.
+- planner_code_graph — query bounded Orbit-backed relationships for one concrete symbol/path in the current trusted code-graph index.
 
 Choose the narrowest useful evidence source:
 - If the issue names an exact path, directory, symbol, or test, your first evidence call must target that named location or the authoritative nearest sibling named by the runtime.
