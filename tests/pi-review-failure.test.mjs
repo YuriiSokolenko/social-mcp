@@ -200,6 +200,34 @@ test('whole-workflow recovery ignores a failed run recorded for an obsolete PR h
   assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
 });
 
+test('whole-workflow recovery does not erase a verdict already applied by that same run', async () => {
+  const client = fakeClient({ labels: ['pi:mr-created'] });
+  await recordReviewRun({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    runId: '505',
+    model: 'default',
+  }, client);
+  await applyReview({
+    prNumber: 7,
+    reviewedHead: 'head-1',
+    verdict: 'PASS',
+    text: 'Looks good.',
+    runId: '505',
+  }, client);
+
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7',
+    runId: '505',
+    outcome: 'failure',
+    runUrl: 'https://github.test/runs/505',
+  }, client);
+
+  assert.deepEqual(result, { status: 'verdict-already-applied' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.deepEqual(client.state.pr.labels.map(label => label.name), ['pi:mr-created', 'review:passed']);
+});
+
 test('whole-workflow recovery fails closed when the run-to-head marker is unavailable', async () => {
   const client = fakeClient();
   const result = await recoverReviewWorkflowRun({
@@ -220,7 +248,13 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
 
   assert.match(review, /name: Record review run identity[\s\S]*?record-run "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
   assert.match(review, /needs\.review\.result/);
+  assert.match(review, /needs\.review\.outputs\.independent_outcome == ''/);
   assert.match(review, /needs\.review\.outputs\.independent_outcome \|\| needs\.review\.result/);
+  assert.ok(
+    review.indexOf('name: Run deterministic review checks') < review.indexOf('name: Record review run identity') &&
+      review.indexOf('name: Record review run identity') < review.indexOf('name: Run independent review'),
+    'durable run identity must be recorded only after deterministic checks and before independent review',
+  );
   assert.match(reconcile, /workflow_run:[\s\S]*?workflows: \["Pi PR Review"\][\s\S]*?types: \[completed\]/);
   assert.match(reconcile, /\["failure","cancelled","timed_out"\]/);
   assert.match(reconcile, /review-state\.mjs recover-workflow-run/);
