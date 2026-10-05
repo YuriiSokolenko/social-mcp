@@ -20,6 +20,7 @@ import {
   discoverAdditivePythonLayout,
   normalizeImplementationPreparation,
   plannerEvidenceBudget,
+  plannerEvidenceFact,
   plannerTask,
   prepareImplementation,
   preparedImplementationBlock,
@@ -131,6 +132,39 @@ test('accepted evidence markers report used/remaining without file contents', as
     'PI_PLANNER_EVIDENCE {"tool":"repo_search","used":1,"remaining":5}',
     'PI_PLANNER_EVIDENCE {"tool":"planner_code_graph","used":2,"remaining":4}',
   ]);
+});
+
+test('search and graph retry sidecars retain bounded clues without raw result payloads', () => {
+  const search = plannerEvidenceFact(
+    'repo_search',
+    { query: 'sendWithBackoff' },
+    {
+      details: {
+        matches: [{ path: 'src/net/transport.py', line: 42, text: 'RAW_SEARCH_PAYLOAD_MARKER' }],
+        truncated: true,
+      },
+      content: [{ type: 'text', text: '{"matches":[{"text":"RAW_SEARCH_PAYLOAD_MARKER"}]}' }],
+    },
+  );
+  assert.match(search, /Repository lookup for sendWithBackoff: matched src\/net\/transport\.py:42/);
+  assert.match(search, /additional matches omitted/);
+  assert.doesNotMatch(search, /RAW_SEARCH_PAYLOAD_MARKER|repo_search/);
+
+  const graph = plannerEvidenceFact(
+    'planner_code_graph',
+    { relation: 'callers', target: 'sendWithBackoff', question: 'Who calls it?' },
+    {
+      details: {
+        indexed_commit: 'abcdef1234567890',
+        context: 'RAW_GRAPH_PAYLOAD_MARKER callers: deliverBatch',
+      },
+      content: [{ type: 'text', text: 'RAW_GRAPH_PAYLOAD_MARKER callers: deliverBatch' }],
+    },
+  );
+  assert.match(graph, /Relationship lookup for sendWithBackoff \(callers\)/);
+  assert.match(graph, /fresh current-worktree index at abcdef123456/);
+  assert.doesNotMatch(graph, /RAW_GRAPH_PAYLOAD_MARKER|planner_code_graph|deliverBatch/);
+  assert.ok(graph.length <= 200);
 });
 
 test('planner evidence state starts with bounded counters and no invented facts', async (t) => {
@@ -868,6 +902,7 @@ test('#481 missing structured_output preserves first-attempt evidence in the out
       assert.match(request.task, /PRESERVED EVIDENCE FROM ATTEMPT 1/);
       assert.match(request.task, /1\/6 evidence actions consumed/);
       assert.match(request.task, /send_with_backoff/);
+      assert.match(request.task, /Use these bounded clues to reconstruct the structured answer/);
       assert.match(request.task, /This retry exposes only structured_output/);
       for (const tool of PLANNER_EVIDENCE_TOOLS) {
         assert.doesNotMatch(request.task, new RegExp(`\\b${tool}\\b`), `output-only retry must not advertise ${tool}`);
