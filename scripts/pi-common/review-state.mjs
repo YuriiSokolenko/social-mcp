@@ -51,6 +51,15 @@ function reviewStartMarker(prNumber, reviewedHead, runId, runAttempt) {
   return `<!-- pi-review:start:${prNumber}:${reviewedHead}:${runId}:attempt:${runAttempt} -->`;
 }
 
+function requireCommentId(item, context) {
+  const id = Number(item?.id);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    throw new Error(`${context}: GitHub comment creation did not return a durable comment id`);
+  }
+  return id;
+}
+
+
 export function findReviewRunRecord(comments, prNumber, runId, runAttempt) {
   const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):attempt:(\d+):(default|laguna|qwen) -->/g;
   for (const item of comments) {
@@ -184,6 +193,7 @@ export async function dispatchAfterReview(
       prNumber,
       `Review follow-up for ${verdict} claimed for dispatch. If this handoff is interrupted, ordinary PR reconciliation owns recovery.\n\n${claimMarker}`,
     );
+    const claimId = requireCommentId(claim, 'review follow-up claim');
 
     // Re-read after claiming. Concurrent recoveries may both have observed no
     // claim; only the oldest durable claim is allowed to perform the dispatch.
@@ -192,15 +202,24 @@ export async function dispatchAfterReview(
       .filter(item => String(item.body ?? '').includes(claimMarker))
       .filter(item => Number.isSafeInteger(Number(item.id)))
       .sort((a, b) => Number(a.id) - Number(b.id));
-    if (claim?.id && claims.length && Number(claims[0].id) !== Number(claim.id)) {
+    if (!claims.length || Number(claims[0].id) !== claimId) {
       return { status: 'followup-claimed', verdict };
     }
 
     if (existingClaim && previousDispatchFailed) {
-      await comment(
+      const retryClaim = await comment(
         prNumber,
         `Retrying the previously failed review follow-up dispatch once; further recovery is delegated to the ordinary PR reconciler.\n\n${retryMarker}`,
       );
+      const retryClaimId = requireCommentId(retryClaim, 'review follow-up retry claim');
+      comments = await pages(`/issues/${prNumber}/comments`);
+      const retryClaims = comments
+        .filter(item => String(item.body ?? '').includes(retryMarker))
+        .filter(item => Number.isSafeInteger(Number(item.id)))
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      if (!retryClaims.length || Number(retryClaims[0].id) !== retryClaimId) {
+        return { status: 'followup-claimed', verdict };
+      }
     }
   }
 
@@ -332,15 +351,15 @@ export async function recoverReviewFailure({
       prNumber,
       `Independent review ended with ${outcome} for HEAD ${effectiveHead}. This is an infrastructure failure, not a code-review verdict. One automatic retry workflow was queued.${link}\n\n${retryMarker}`,
     );
+    const retryClaimId = requireCommentId(retryClaim, 'review retry claim');
     const refreshedComments = await pages(`/issues/${prNumber}/comments`);
     const matchingRetryClaims = refreshedComments
       .filter(item => String(item.body ?? '').includes(retryMarker))
       .filter(item => Number.isSafeInteger(Number(item.id)))
       .sort((a, b) => Number(a.id) - Number(b.id));
     if (
-      retryClaim?.id &&
-      matchingRetryClaims.length &&
-      Number(matchingRetryClaims[0].id) !== Number(retryClaim.id)
+      !matchingRetryClaims.length ||
+      Number(matchingRetryClaims[0].id) !== retryClaimId
     ) {
       return { status: 'retry-already-requested' };
     }
