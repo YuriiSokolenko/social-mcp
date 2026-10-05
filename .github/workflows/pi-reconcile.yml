@@ -18,13 +18,15 @@ permissions:
   issues: write
   pull-requests: read
 
-concurrency:
-  group: pi-pipeline-reconciler
-  cancel-in-progress: false
-
 jobs:
   recover_review_run:
-    if: github.event_name == 'workflow_run' && contains(fromJSON('["failure","cancelled","timed_out"]'), github.event.workflow_run.conclusion)
+    if: >-
+      github.event_name == 'workflow_run' &&
+      contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE) &&
+      contains(fromJSON('["failure","cancelled","timed_out"]'), github.event.workflow_run.conclusion)
+    concurrency:
+      group: ${{ format('pi-review-recovery-{0}-{1}', github.event.workflow_run.id, github.event.workflow_run.run_attempt) }}
+      cancel-in-progress: false
     runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 5
     steps:
@@ -39,12 +41,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REVIEW_RUN_TITLE: ${{ github.event.workflow_run.display_title }}
           REVIEW_RUN_ID: ${{ github.event.workflow_run.id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           REVIEW_OUTCOME: ${{ github.event.workflow_run.conclusion }}
           REVIEW_RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: node scripts/pi-common/review-state.mjs recover-workflow-run
 
   reconcile:
     if: github.event_name != 'workflow_run' && (github.event_name != 'pull_request' || (github.event.pull_request.merged == false && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'pi/issue-')))
+    concurrency:
+      group: pi-pipeline-reconciler
+      cancel-in-progress: false
     runs-on: [self-hosted, linux, x64, n150, general]
     timeout-minutes: 5
     steps:
