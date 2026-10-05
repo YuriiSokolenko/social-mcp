@@ -2020,7 +2020,18 @@ export default function (pi) {
           // A stale/invalid receipt is recoverable: return control so the parent
           // can submit the current tree again instead of converting consistency
           // drift into an execution failure.
-          if (sessionError) throw new Error(message);
+          const recoverableSessionAbort = Boolean(
+            sessionError &&
+            recoveryReceipt?.changed_publishable_paths?.length > 0
+          );
+          if (sessionError && !recoverableSessionAbort) throw new Error(message);
+          if (recoverableSessionAbort) {
+            console.warn(`PI_CODING_RECOVERY_HANDOFF ${JSON.stringify({
+              sessionId,
+              error: String(sessionError?.message ?? sessionError),
+              recoveryReceipt,
+            })}`);
+          }
           return {
             content: [{ type: 'text', text: message }],
             details: { ...base, ...outcome, submitted: false, recovery_receipt: recoveryReceipt },
