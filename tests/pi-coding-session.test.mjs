@@ -158,13 +158,33 @@ function runtimeScenario(mode) {
     const work = path.join(dir, 'work');
     const terminal = path.join(dir, 'terminal.json');
     const preparedFile = path.join(dir, 'prepared-implementation.json');
-    const preparedBase = { version: 1, workspaceRoot: dir, freshBaseCommit: '', baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 1 };
+    const preparedBase = {
+      version: 1,
+      workspaceRoot: dir,
+      freshBaseCommit: '',
+      baseRef: 'origin/dev',
+      layoutHint: mode === 'no-submit-recovery'
+        ? {
+            sourceRoot: '.',
+            sourceDirectory: '.',
+            sourceTarget: 'generated.py',
+            sourceConvention: null,
+            testDirectory: '.',
+            testTarget: 'test_generated.py',
+            testTargetRequired: true,
+            testConvention: null,
+          }
+        : null,
+      plannerUsage: null,
+      plannerDurationMs: 1,
+    };
     fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
       ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
       : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: false, reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
+    const validationLedger = path.join(dir, 'validation.jsonl');
     const remote = path.join(dir, 'remote.git');
     execFileSync('git', ['init', '--bare', '-q', remote]);
     fs.mkdirSync(work);
@@ -333,6 +353,25 @@ function runtimeScenario(mode) {
         }
         // Executors stubbed; the runtime's gates around them are real.
         childTools.get('run_check').execute = async (_toolCallId, params) => {
+          if (mode === 'no-submit-recovery' && params?.kind === 'pytest') {
+            fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
+              seq: 0,
+              timestamp: new Date().toISOString(),
+              kind: 'pytest',
+              scope: { targets: params.targets },
+              status: 'infra_error',
+              exit_code: null,
+              source: 'run_check',
+              stage: 'implementer',
+              backend: 'pi',
+              run_id: process.env.PI_VALIDATION_RUN_ID,
+              attempt_id: 'primary',
+              diagnostics_count: 0,
+              summary: 'unsupported check environment key: PI_TRUSTED_ACCEPTANCE_TARGETS',
+              infrastructure: { component: 'sandbox', code: 'CHECK_ENV', command: 'trusted-run-check-executor' },
+            }) + '\\n');
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'infra_error', infrastructure: { code: 'CHECK_ENV' } }) }] };
+          }
           if (params?.kind === 'pytest') {
             recordCodingBehavioralValidation({
               scope: { targets: params.targets },
@@ -416,8 +455,16 @@ function runtimeScenario(mode) {
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
-        if (!['no-submit', 'no-submit-parent-submit'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
-        respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
+        if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
+        if (mode === 'no-submit-recovery') {
+          respond(request, {
+            status: 'failed',
+            error: 'PI_ACTION_REQUIRED_ABORT: simulated child abort after deterministic CHECK_ENV',
+            usage: { output: 9000 },
+          });
+        } else {
+          respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
+        }
       }
       bus.on('prompt-template:subagent:request', async request => {
         assert.notEqual(request.agent, 'implementation-planner', 'planning runs in the bootstrap session, never in the main one');
@@ -1014,6 +1061,22 @@ function runtimeScenario(mode) {
         // must honor the run-wide terminal marker instead of restarting the parent.
         assert.equal(handlers.get('agent_before_settle')(), undefined, 'no submit nudge after the fork submitted');
       }
+      if (mode === 'no-submit-recovery') {
+        assert.notEqual(result.terminate, true);
+        assert.deepEqual(result.details.recovery_receipt, {
+          coding_session_status: 'aborted',
+          changed_publishable_paths: ['generated.py', 'test_generated.py'],
+          prepared_outputs_present: { source: true, test: true },
+          last_validation: { kind: 'pytest', status: 'infra_error', infrastructure_code: 'CHECK_ENV' },
+          remaining_terminal_obligation: 'validation',
+        });
+        assert.match(result.content[0].text, /Trusted recovery receipt/);
+        assert.match(result.content[0].text, /do not rewrite completed prepared outputs/);
+        assert.doesNotMatch(result.content[0].text, /You may call begin_coding_session once more/);
+        assert.ok(active.includes('need_more_evidence'), 'parent retains a bounded evidence path for one concrete recovery inspection');
+        assert.equal(sessionRequests.length, 1, 'recovery does not blindly launch another coding session');
+        console.log('CODING_RECOVERY_RECEIPT_OK ' + JSON.stringify(result.details.recovery_receipt));
+      }
       if (mode === 'no-submit-parent-submit') {
         assert.notEqual(result.terminate, true);
         assert.match(result.content[0].text, /ended without submit_result/);
@@ -1059,6 +1122,7 @@ function runtimeScenario(mode) {
         PI_IMPLEMENTER_RESULT_FILE: resultFile, PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
         PI_PREPARED_IMPLEMENTATION_FILE: preparedFile,
+        PI_VALIDATION_LEDGER_FILE: validationLedger, PI_VALIDATION_RUN_ID: 'issue-481-run',
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure,
         PI_METRICS_FILE: path.join(dir, 'metrics.jsonl'), PI_ISSUE: '7', PI_PHASE: 'implementation' },
     });
@@ -1100,6 +1164,14 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   const logs = runtimeScenario('no-submit');
   assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
+});
+
+test('#481 an aborted coding session returns authoritative worktree recovery state to the parent', () => {
+  const logs = runtimeScenario('no-submit-recovery');
+  assert.match(logs, /"phase":"ended_without_submit".*"recoveryReceipt":\{/);
+  assert.match(logs, /"infrastructure_code":"CHECK_ENV"/);
+  assert.match(logs, /PI_CODING_RECOVERY_HANDOFF/);
+  assert.match(logs, /CODING_RECOVERY_RECEIPT_OK/);
 });
 
 test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {

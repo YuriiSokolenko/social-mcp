@@ -32,3 +32,50 @@ export function normalizeCodingSessionOutcome({
     receipt_error: receiptDiagnostic,
   };
 }
+
+
+function normalizedPaths(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .filter(item => typeof item === 'string' && item.trim())
+    .map(item => item.trim()))].sort();
+}
+
+/**
+ * Trusted child->parent continuation contract. Inputs are runtime-derived state only:
+ * git changed paths, the accepted-scope receipt, prepared-output presence, and the
+ * authoritative validation ledger. No model prose is admitted into this receipt.
+ */
+export function codingSessionRecoveryReceipt({
+  changedFiles = [],
+  acceptedScope = null,
+  preparedOutputs = null,
+  lastValidation = null,
+} = {}) {
+  const accepted = new Set(normalizedPaths(acceptedScope?.accepted?.map(entry => entry?.path)));
+  const changedPublishablePaths = normalizedPaths(changedFiles).filter(file => accepted.has(file));
+  const outputs = {
+    source: preparedOutputs?.source === true,
+    test: preparedOutputs?.test === true,
+  };
+  const validation = lastValidation && typeof lastValidation === 'object'
+    ? {
+        kind: typeof lastValidation.kind === 'string' ? lastValidation.kind : null,
+        status: typeof lastValidation.status === 'string' ? lastValidation.status : null,
+        infrastructure_code: typeof lastValidation.infrastructure_code === 'string'
+          ? lastValidation.infrastructure_code
+          : null,
+      }
+    : null;
+  const preparedComplete = outputs.source && outputs.test;
+  const remaining = validation && validation.status !== 'pass'
+    ? 'validation'
+    : preparedComplete ? 'terminal_submission' : 'prepared_outputs';
+
+  return {
+    coding_session_status: 'aborted',
+    changed_publishable_paths: changedPublishablePaths,
+    prepared_outputs_present: outputs,
+    last_validation: validation,
+    remaining_terminal_obligation: remaining,
+  };
+}

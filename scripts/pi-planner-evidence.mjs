@@ -9,7 +9,9 @@ import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_OUTPUT_ONLY_ENV,
   PLANNER_RESULT_TOOL,
+  MAX_PLANNER_FACTS,
   createPlannerEvidenceGate,
+  plannerEvidenceFact,
 } from './pi-common/implementation-planner.mjs';
 
 function plannerOutputOnly(env = process.env) {
@@ -24,7 +26,7 @@ function evidenceBudget(env = process.env) {
   return value;
 }
 
-function recordEvidenceState(gate, admission, env = process.env) {
+function recordEvidenceState(gate, admission, { fact = null, env = process.env } = {}) {
   const file = env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   if (!file) return;
   try {
@@ -32,9 +34,14 @@ function recordEvidenceState(gate, admission, env = process.env) {
     try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first attempt / inaccessible prior state */ }
     const previousUsed = Number.isSafeInteger(previous?.used) && previous.used >= 0 ? previous.used : 0;
     const previousCap = Number.isSafeInteger(previous?.cap) && previous.cap >= 0 ? previous.cap : 0;
+    const previousFacts = Array.isArray(previous?.facts)
+      ? previous.facts.filter(item => typeof item === 'string' && item.trim()).slice(0, MAX_PLANNER_FACTS)
+      : [];
+    const facts = [...previousFacts];
+    if (fact && !facts.includes(fact) && facts.length < MAX_PLANNER_FACTS) facts.push(fact);
     // The same sidecar spans structured-output retries. A retry receives cap=0 and must never
-    // erase evidence already spent by the first attempt.
-    const state = { used: Math.max(previousUsed, admission.used), cap: Math.max(previousCap, gate.cap) };
+    // erase evidence or bounded facts already captured by the first attempt.
+    const state = { used: Math.max(previousUsed, admission.used), cap: Math.max(previousCap, gate.cap), facts };
     fs.writeFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   } catch (error) {
     console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);
@@ -44,6 +51,7 @@ function recordEvidenceState(gate, admission, env = process.env) {
 export default function (pi) {
   const outputOnly = plannerOutputOnly();
   const gate = createPlannerEvidenceGate(evidenceBudget());
+  const pendingEvidence = new Map();
   // Write an explicit zero before any evidence call. If the child cannot see/write the
   // parent's sidecar path, the parent reports evidenceUsed=null rather than a false zero.
   recordEvidenceState(gate, { used: 0 });
@@ -63,6 +71,16 @@ export default function (pi) {
     });
   }
 
+  if (outputOnly) {
+    pi.on('before_provider_request', (event) => {
+      const payload = event?.payload;
+      if (!payload || !Array.isArray(payload.tools)) return payload;
+      const tools = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === PLANNER_RESULT_TOOL);
+      if (!tools.length) return payload;
+      return { ...payload, tools, tool_choice: 'required' };
+    });
+  }
+
   pi.on('tool_call', async (event) => {
     if (outputOnly && event.toolName !== PLANNER_RESULT_TOOL) {
       console.log(`PI_PLANNER_EVIDENCE_BLOCKED ${JSON.stringify({ tool: event.toolName, used: 0, cap: 0, outputOnly: true })}`);
@@ -71,10 +89,21 @@ export default function (pi) {
     const admission = gate.admit(event.toolName);
     if (admission.evidence && admission.allowed) {
       recordEvidenceState(gate, admission);
+      if (event.toolCallId) pendingEvidence.set(event.toolCallId, { toolName: event.toolName, input: structuredClone(event.input ?? {}), admission });
       console.log(`PI_PLANNER_EVIDENCE ${JSON.stringify({ tool: event.toolName, used: admission.used, remaining: admission.remaining })}`);
     }
     if (admission.allowed) return undefined;
     console.log(`PI_PLANNER_EVIDENCE_BLOCKED ${JSON.stringify({ tool: event.toolName, used: admission.used, cap: gate.cap })}`);
     return { block: true, reason: admission.reason };
+  });
+
+  pi.on('tool_execution_end', async (event) => {
+    const pending = event.toolCallId ? pendingEvidence.get(event.toolCallId) : null;
+    if (event.toolCallId) pendingEvidence.delete(event.toolCallId);
+    if (!pending || event.isError) return;
+    const fact = plannerEvidenceFact(pending.toolName, pending.input, event.result);
+    if (!fact) return;
+    recordEvidenceState(gate, pending.admission, { fact });
+    console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
   });
 }

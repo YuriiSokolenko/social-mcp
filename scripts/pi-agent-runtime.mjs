@@ -78,7 +78,7 @@ import {
   assertSuccessfulTerminalReceipt,
   invalidateTerminalReceipt,
 } from './pi-common/terminal-receipt.mjs';
-import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
+import { codingSessionRecoveryReceipt, normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
 import {
   TRUSTED_RECOVERY_TOOLS,
   consumeUnavailableCapabilityAttempts,
@@ -103,6 +103,7 @@ const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 
 const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
+const DETERMINISTIC_RUN_CHECK_INFRASTRUCTURE_CODES = new Set(['CHECK_ENV', 'CHECK_ENV_CONTRACT']);
 const DETERMINISTIC_TERMINAL_RECOVERY_KINDS = new Set([
   'metadata',
   'validation',
@@ -372,6 +373,7 @@ export default function (pi) {
   // surface (permit exhaustion or exact-retry substitution). A later valid
   // permit may restore it only in that case; unrelated removals stay removed.
   let verificationToolHiddenByPermitGate = false;
+  let deterministicVerificationInfrastructure = null;
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -440,6 +442,49 @@ export default function (pi) {
     });
   }
 
+  function preparedOutputPresence(cwd) {
+    const prepared = readPreparedImplementation(process.env.PI_PREPARED_IMPLEMENTATION_FILE);
+    const required = new Set(requiredPreparedOutputPaths(prepared));
+    const source = required.has(prepared?.layoutHint?.sourceTarget)
+      && fs.existsSync(path.resolve(cwd, prepared.layoutHint.sourceTarget));
+    const test = required.has(prepared?.layoutHint?.testTarget)
+      && fs.existsSync(path.resolve(cwd, prepared.layoutHint.testTarget));
+    return { source, test };
+  }
+
+  function latestCodingValidation() {
+    const { records, corrupted } = readValidationLedger(process.env.PI_VALIDATION_LEDGER_FILE);
+    if (corrupted) {
+      return { kind: null, status: 'infra_error', infrastructure_code: 'VALIDATION_LEDGER_CORRUPT' };
+    }
+    const record = [...records].reverse().find(item =>
+      item?.source === 'run_check' &&
+      item?.stage === 'implementer' &&
+      item?.run_id === validationRunId()
+    );
+    if (!record) return null;
+    return {
+      kind: record.kind ?? null,
+      status: record.status ?? null,
+      infrastructure_code: record.infrastructure?.code ?? null,
+    };
+  }
+
+  function trustedCodingRecoveryReceipt(cwd) {
+    let changedFiles = [];
+    try {
+      changedFiles = worktreeChangedFiles(cwd, baseRef());
+    } catch (error) {
+      console.warn(`PI_CODING_RECOVERY_CHANGED_FILES_UNAVAILABLE ${JSON.stringify({ error: String(error?.message ?? error) })}`);
+    }
+    return codingSessionRecoveryReceipt({
+      changedFiles,
+      acceptedScope: mutationScopeReceipt(cwd, process.env),
+      preparedOutputs: preparedOutputPresence(cwd),
+      lastValidation: latestCodingValidation(),
+    });
+  }
+
   function setSurface(names, reason) {
     pi.setActiveTools(names);
     const actual = pi.getActiveTools();
@@ -469,6 +514,7 @@ export default function (pi) {
       productiveActionRequired &&
       failedCheckRecovery &&
       !recoveryLedgerCorrupted &&
+      !deterministicVerificationInfrastructure &&
       controller.verificationPermitted()
     );
 
@@ -484,7 +530,8 @@ export default function (pi) {
     // be reconstructed safely from an incomplete ledger.
     const verificationPermitted = controller.verificationPermitted();
     const recoveryVerificationArmed = controller.recoveryVerificationArmed();
-    const verificationVisible = verificationPermitted || recoveryVerificationArmed;
+    const verificationVisible = !deterministicVerificationInfrastructure
+      && (verificationPermitted || recoveryVerificationArmed);
     const currentWithPermittedVerification =
       verificationTool &&
       verificationVisible &&
@@ -937,6 +984,9 @@ export default function (pi) {
   function verificationLifecycleGuidance() {
     const verificationTool = config.productiveProgress?.verificationTool;
     if (!verificationTool) return finalValidationGuidance();
+    if (deterministicVerificationInfrastructure) {
+      return `run_check is disabled for the rest of this process after deterministic infrastructure failure ${deterministicVerificationInfrastructure.code}. Do not mutate merely to re-arm verification and do not retry or seek a shell workaround. Preserve the current worktree for trusted recovery. ${finalValidationGuidance()}`;
+    }
     const state = controller.verificationLifecycleState();
     const lifecycle = state === 'available'
       ? `${verificationTool} is available once for the current mutation state.`
@@ -1384,6 +1434,25 @@ export default function (pi) {
       });
       if (retry) {
         console.info(`PI_RUN_CHECK_RETRY ${JSON.stringify({ stage, kind: result.kind, scope, status: result.status })}`);
+      }
+      const deterministicInfrastructureCode = result.status === 'infra_error'
+        ? result.infrastructure?.code ?? null
+        : null;
+      if (
+        DETERMINISTIC_RUN_CHECK_INFRASTRUCTURE_CODES.has(deterministicInfrastructureCode) &&
+        !deterministicVerificationInfrastructure
+      ) {
+        deterministicVerificationInfrastructure = {
+          code: deterministicInfrastructureCode,
+          kind: result.kind,
+          scope,
+          summary: result.summary,
+        };
+        console.error(`PI_RUN_CHECK_DETERMINISTIC_INFRA ${JSON.stringify({
+          stage,
+          ...deterministicVerificationInfrastructure,
+          action: 'verification_disabled_for_process',
+        })}`);
       }
       // Re-read recovery state after appending the result. Emit retry guidance
       // only when this exact failed record became the active deterministic
@@ -1902,6 +1971,7 @@ export default function (pi) {
             receiptError,
           });
           const submitted = outcome.successful_final_submission;
+          const recoveryReceipt = submitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
           const incapable = incapableCodingSessionRecord({
             submitted,
             attemptedTools,
@@ -1920,6 +1990,7 @@ export default function (pi) {
             durationMs: Date.now() - startedAt,
             usage: delegationUsage,
             ...outcome,
+            ...(recoveryReceipt ? { recoveryReceipt } : {}),
             ...(incapable ? { unreachableCapabilities: incapable.unreachable } : {}),
           });
           if (submitted) {
@@ -1936,25 +2007,34 @@ export default function (pi) {
               terminate: true,
             };
           }
-          const remaining = maxSessions - sessionsStarted;
           const activeToolNames = pi.getActiveTools();
           const terminalStatus = activeToolNames.includes('submit_result')
             ? 'Coding session ended without submit_result'
             : 'Coding session ended without a terminal result';
-          const continuation =
-            remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
-              ? `You may call ${codingSessionTool} once more (${remaining} left). `
-              : '';
           const terminalDiagnostic = sessionError ?? receiptError;
-          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          const recoveryGuidance = recoveryReceipt
+            ? ` Trusted recovery receipt: ${JSON.stringify(recoveryReceipt)} Resume from these existing worktree mutations; do not rewrite completed prepared outputs. If one concrete fact must be inspected, use the bounded evidence path exposed by the parent rather than restarting a coding session from memory.`
+            : '';
+          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}.${recoveryGuidance} ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
           // A real session/delegation error is still terminal for this tool call.
           // A stale/invalid receipt is recoverable: return control so the parent
           // can submit the current tree again instead of converting consistency
           // drift into an execution failure.
-          if (sessionError) throw new Error(message);
+          const recoverableSessionAbort = Boolean(
+            sessionError &&
+            recoveryReceipt?.changed_publishable_paths?.length > 0
+          );
+          if (sessionError && !recoverableSessionAbort) throw new Error(message);
+          if (recoverableSessionAbort) {
+            console.warn(`PI_CODING_RECOVERY_HANDOFF ${JSON.stringify({
+              sessionId,
+              error: String(sessionError?.message ?? sessionError),
+              recoveryReceipt,
+            })}`);
+          }
           return {
             content: [{ type: 'text', text: message }],
-            details: { ...base, ...outcome, submitted: false },
+            details: { ...base, ...outcome, submitted: false, recovery_receipt: recoveryReceipt },
           };
         },
       });
@@ -2171,6 +2251,14 @@ export default function (pi) {
       recoveryBlocked = {
         block: true,
         reason: 'BLOCKED: retry_last_failed_check is not available in the current action state. Continue with the visible tools; the exact retry is exposed only when recovery is actionable.',
+      };
+    } else if (
+      deterministicVerificationInfrastructure &&
+      CONTENT_MUTATION_TOOLS.has(event.toolName)
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: `BLOCKED: deterministic run_check infrastructure failure ${deterministicVerificationInfrastructure.code} already made local verification unavailable. Preserve the current worktree; do not mutate merely to re-arm validation or work around the trusted sandbox.`,
       };
     } else if (recoveryRetryReady && event.toolName === 'run_check') {
       recoveryBlocked = {

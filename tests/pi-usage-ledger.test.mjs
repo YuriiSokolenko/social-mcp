@@ -437,3 +437,43 @@ test('#469 provider response sequences may restart in a new proxy session withou
   assert.equal(supplemental.providerResponses, 2);
   assert.equal(supplemental.providerResponseMs, 0);
 });
+
+
+test('#481 exact completed responses beat inflated child roll-up turns while cancellation stays unknown', () => {
+  const records = [];
+  for (let response = 1; response <= 20; response += 1) {
+    records.push({ call: 'main', response, usage: u(1, 1) });
+  }
+  records.push({
+    call: 'planner', scope: 'session', childSession: 'planner-481', status: 'completed',
+    usage: u(1, 1, 2, { turns: 1, durationMs: 100 }),
+  });
+  for (const [session, status] of [['coding-a', 'completed'], ['coding-b', 'cancelled']]) {
+    for (let response = 1; response <= 25; response += 1) {
+      records.push(child(session, response, u(1, 1)));
+    }
+    records.push({
+      call: 'coding', scope: 'session', childSession: session, status,
+      usage: u(25, 25, 50, { turns: 26, durationMs: 1000 }),
+    });
+  }
+  for (let response = 1; response <= 71; response += 1) {
+    records.push({
+      call: 'provider',
+      provider_response: true,
+      record_type: 'provider_response',
+      provider_session: 'issue-481-trace',
+      response,
+      responseMs: 100,
+    });
+  }
+
+  const ledger = summarizeUsage(records);
+  assert.equal(ledger.totals.providerResponses, 71, 'aggregate turns never inflate 71 exact completed provider responses');
+  assert.equal(ledger.calls.get('coding').providerResponses, 50, '25 exact responses from each coding child stay authoritative');
+  assert.equal(ledger.complete, false, 'one cancelled/in-flight request remains an explicit unknown');
+  assert.ok(ledger.unknown.some(entry =>
+    entry.childSession === 'coding-b' && entry.reason === 'cancelled_request_usage_unavailable'
+  ));
+  assert.ok(!ledger.unknown.some(entry => entry.reason === 'provider_trace_incomplete'));
+});

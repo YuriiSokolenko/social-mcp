@@ -30,7 +30,11 @@ const FIXED_ENV = {
 };
 const HARNESS_ROOT = process.env.RUN_CHECK_HARNESS_ROOT || '/opt/social-mcp';
 process.env.AGENT_HARNESS_CONFIG ||= path.join(HARNESS_ROOT, '.agent-harness.json');
-const { buildRunCheckSpec, normalizeRunCheckPaths } = await import(pathToFileURL(path.join(HARNESS_ROOT, 'scripts/pi-common/run-check.mjs')));
+const {
+  RUN_CHECK_ENV_CONTRACT,
+  buildRunCheckSpec,
+  normalizeRunCheckPaths,
+} = await import(pathToFileURL(path.join(HARNESS_ROOT, 'scripts/pi-common/run-check.mjs')));
 
 const runCommand = (args, { timeoutMs = 30000, maxOutputBytes = 4 * 1024 * 1024 } = {}) => new Promise((resolve, reject) => {
   const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' } });
@@ -206,18 +210,7 @@ async function stageWorktree(runnerName, root, operation) {
 
 export function safeCheckEnvironment(requested) {
   if (!requested || typeof requested !== 'object' || Array.isArray(requested)) throw Object.assign(new Error('sandbox environment must be an object'), { code: 'CHECK_ENV' });
-  const allowed = new Set([
-    'PATH',
-    'HOME',
-    'TMPDIR',
-    'LANG',
-    'LC_ALL',
-    'PYTHONPATH',
-    'PYTHONDONTWRITEBYTECODE',
-    'PYTHONIOENCODING',
-    'PI_TRUSTED_ACCEPTANCE_TARGETS',
-    'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS',
-  ]);
+  const allowed = new Set(RUN_CHECK_ENV_CONTRACT.keys);
   for (const key of Object.keys(requested)) if (!allowed.has(key)) throw Object.assign(new Error(`unsupported check environment key: ${key}`), { code: 'CHECK_ENV' });
   const output = { ...FIXED_ENV };
   for (const key of ['LANG', 'LC_ALL']) {
@@ -236,6 +229,19 @@ export function safeCheckEnvironment(requested) {
     }
   }
   return output;
+}
+
+export function assertCheckEnvironmentContract(contract) {
+  const expected = RUN_CHECK_ENV_CONTRACT;
+  const actualKeys = Array.isArray(contract?.keys) ? [...contract.keys].sort() : null;
+  const expectedKeys = [...expected.keys].sort();
+  const matches = contract?.version === expected.version
+    && actualKeys?.length === expectedKeys.length
+    && expectedKeys.every((key, index) => key === actualKeys[index]);
+  if (!matches) {
+    throw Object.assign(new Error('run_check environment contract does not match the trusted executor'), { code: 'CHECK_ENV_CONTRACT' });
+  }
+  return true;
 }
 
 function containerArgs({ name, subpath, env, command, args, timeoutMs }) {
@@ -288,7 +294,7 @@ async function runSandbox({ runnerName, root, operation, params, requestedEnv, t
   try {
     const image = await imageMetadata();
     stageInfo = await stageWorktree(runnerName, root, operation);
-    const env = operation === 'preflight' ? FIXED_ENV : safeCheckEnvironment(requestedEnv);
+    const env = safeCheckEnvironment(requestedEnv);
     const sandboxRoot = '/workspace';
     const stagedParams = operation === 'preflight'
       ? { kind: 'python_compile', paths: [`${stageInfo.canonicalRoot}/.pi-run-check-preflight.py`] }
@@ -384,9 +390,16 @@ async function handle(request, authorization, pathname) {
     docker_socket_absent: !(runner.Mounts || []).some(mount => /(?:^|\/)var\/run\/docker\.sock$/.test(mount.Destination || '') || /docker\.sock/.test(mount.Source || '')),
   };
   if (pathname === '/v1/preflight') {
+    assertCheckEnvironmentContract(request.env_contract);
     const root = await canonicalWorkspace(runner.Name.replace(/^\//, ''), request.root, 'preflight');
-    const result = await runSandbox({ runnerName: runner.Name.replace(/^\//, ''), root, operation: 'preflight', timeoutMs: 15000 });
-    return { ...result, pi_runner: runnerEvidence };
+    const result = await runSandbox({
+      runnerName: runner.Name.replace(/^\//, ''),
+      root,
+      operation: 'preflight',
+      requestedEnv: request.env,
+      timeoutMs: 15000,
+    });
+    return { ...result, environment_contract: RUN_CHECK_ENV_CONTRACT, pi_runner: runnerEvidence };
   }
   const root = await canonicalWorkspace(runner.Name.replace(/^\//, ''), request.root, 'run-check');
   if (!Number.isInteger(request.timeout_ms) || request.timeout_ms < 1 || request.timeout_ms > 600000) throw Object.assign(new Error('invalid check timeout'), { code: 'CHECK_TIMEOUT' });

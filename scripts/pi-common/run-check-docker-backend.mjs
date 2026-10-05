@@ -4,6 +4,13 @@ function infra(code, message, command = 'trusted-run-check-executor') {
   return { component: 'sandbox', code, command, message };
 }
 
+function sameEnvironmentContract(expected, actual) {
+  if (!expected || !actual || expected.version !== actual.version) return false;
+  if (!Array.isArray(expected.keys) || !Array.isArray(actual.keys)) return false;
+  return expected.keys.length === actual.keys.length
+    && [...expected.keys].sort().every((key, index) => key === [...actual.keys].sort()[index]);
+}
+
 async function requestExecutor(env, payload, timeoutMs) {
   const base = env.PI_RUN_CHECK_EXECUTOR_URL || DEFAULT_EXECUTOR_URL;
   const token = env.RUN_CHECK_EXECUTOR_TOKEN;
@@ -51,12 +58,26 @@ export function createDockerSandboxBackend(env = process.env) {
       }
     },
 
-    async preflight({ root, timeoutMs }) {
+    async preflight({ root, env: cleanEnv, envContract, timeoutMs }) {
       try {
         const result = await requestExecutor(env, {
           operation: 'preflight',
-          body: { root },
+          body: { root, env: cleanEnv, env_contract: envContract },
         }, timeoutMs + 30000);
+        if (!sameEnvironmentContract(envContract, result.environment_contract)) {
+          return {
+            ok: false,
+            status: 'infra_error',
+            summary: 'INFRASTRUCTURE ERROR: trusted run_check executor environment contract does not match the runtime',
+            infrastructure: {
+              component: 'sandbox',
+              code: 'CHECK_ENV_CONTRACT',
+              command: 'trusted-run-check-executor',
+              message: 'trusted run_check executor environment contract does not match the runtime',
+            },
+            diagnostics: [], stdout_tail: '', stderr_tail: '', truncated: false,
+          };
+        }
         return result;
       } catch (error) {
         return {

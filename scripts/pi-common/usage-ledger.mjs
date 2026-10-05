@@ -81,11 +81,11 @@ function add(target, usage, responseMs, {
 }
 
 function supplementProviderRollup(target, sum, usage, responseMs = 0) {
-  const reportedTurns = Math.max(0, providerTurns(usage) - (sum.syntheticResponses ?? 0));
-  const turns = Math.max(sum.providerResponses, reportedTurns);
-  target.providerResponses += turns - sum.providerResponses;
-  // Delegated roll-up timing may arrive either as usage.durationMs or as the aggregate tool's
-  // responseMs. Both are lifecycle measurements, never provider-only response time.
+  // Once exact per-response records exist for a child session, their provider count is
+  // authoritative. Aggregate usage.turns is a lifecycle roll-up and may include a cancelled or
+  // otherwise unsettled request; it must never invent extra completed provider responses.
+  // Roll-up token vectors are still reconciled below, and lifecycle timing remains useful.
+  void sum;
   target.delegatedLifecycleMs += rollupLifecycleDurationMs(usage, responseMs);
 }
 
