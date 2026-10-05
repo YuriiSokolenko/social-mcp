@@ -161,12 +161,16 @@ jobs:
         if: steps.load.outputs.skip != 'true' && (env.VERDICT == 'CHANGES_REQUESTED')
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
 
       - name: Wake merge gate after PASS
         if: steps.load.outputs.skip != 'true' && (env.VERDICT == 'PASS')
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" PASS
 
   recover_failed_review:
