@@ -393,7 +393,7 @@ test('unknown-path planning can resolve the implementation target with repo_sear
       calls.push('repo_search');
       const result = await registered.get('repo_search').execute('search-1', input, undefined, undefined, { cwd: dir });
       await handlers.get('tool_execution_end')({ toolName: 'repo_search', toolCallId: 'search-1', isError: false, result });
-      assert.match(result.content[0].text, /src\\/net\\/transport\.py/);
+      assert.match(result.content[0].text, /src\/net\/transport\.py/);
       return {
         status: 'completed',
         usage: { input: 100, output: 20, turns: 1, toolCalls: 2 },
