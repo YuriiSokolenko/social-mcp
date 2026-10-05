@@ -25,11 +25,17 @@ export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
 export const PLANNER_OUTPUT_ONLY_ENV = 'PI_PLANNER_OUTPUT_ONLY';
 
-// Smallest equivalent read-only surface that pi-subagents children expose reliably. The
-// extension-backed repo_search/LSP tools live in the parent runtime and are not available in the
-// isolated planner child, so the documented fallback allowlist is used. The agent definition's
-// `tools:` frontmatter must match this list exactly (pinned by a test).
-export const PLANNER_EVIDENCE_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls']);
+// Trusted read-only surface exposed inside the isolated implementation-planner child.
+// repo_search and planner_code_graph are registered by pi-planner-evidence.mjs in that same child;
+// the agent frontmatter, runtime registration and call-time gate are contract-tested together.
+export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
+  'read',
+  'grep',
+  'find',
+  'ls',
+  'repo_search',
+  'planner_code_graph',
+]);
 // The structured-output call is the planner's result channel, never repository evidence.
 export const PLANNER_RESULT_TOOL = 'structured_output';
 
@@ -403,8 +409,8 @@ export function plannerTask(env = process.env, {
     ? ` Previous schema error: ${redactPlannerEvidence(repairError).slice(0, 500)}`
     : '';
   const evidencePolicy = outputOnly
-    ? `EVIDENCE PHASE CLOSED. This retry is output-only: do not inspect the repository again and do not call read, grep, find, or ls. Use the issue plus the preserved runtime evidence below. Your only valid successful completion is structured_output.`
-    : `Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue names an exact path/directory/symbol/test, your first evidence action must target that named location (or the authoritative nearest sibling supplied by the runtime). Broad find/ls/search is escalation only after a targeted location is missing, stale, contradictory, or leaves a concrete planning uncertainty unresolved. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.`;
+    ? `EVIDENCE PHASE CLOSED. This retry is output-only: repository evidence is unavailable and only structured_output may be called. Use the issue plus the preserved runtime evidence below.`
+    : `Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue names an exact path/directory/symbol/test, your first evidence action must target that named location (or the authoritative nearest sibling supplied by the runtime). If exact text/path location is unknown, prefer repo_search over broad find or repository-wide grep. If the uncertainty is relational (callers, references, implementations, dependencies, blast radius, or related tests), prefer planner_code_graph with one concrete target and planning question. Use find/grep when they are the narrowest query. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.`;
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
 MANDATORY COMPLETION: a successful attempt ends only by calling structured_output. Never finish a planner attempt with prose. After the final evidence result, call structured_output immediately in the same provider lifecycle instead of spending a reasoning-only turn.
