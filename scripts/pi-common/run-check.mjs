@@ -32,7 +32,24 @@ const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_TIMEOUT_SECONDS = 600;
 const PREFLIGHT_TIMEOUT_MS = 15000;
 
-// Only these variables reach a check subprocess: never the caller's token/secret environment.
+// Versioned producer/executor handshake. Preflight must prove that the deployed trusted executor
+// accepts exactly this request-side environment vocabulary before any model work begins.
+export const RUN_CHECK_ENV_CONTRACT = Object.freeze({
+  version: 1,
+  keys: Object.freeze([
+    'HOME',
+    'LANG',
+    'LC_ALL',
+    'PATH',
+    'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS',
+    'PI_TRUSTED_ACCEPTANCE_TARGETS',
+    'PYTHONDONTWRITEBYTECODE',
+    'PYTHONIOENCODING',
+    'TMPDIR',
+  ]),
+});
+
+// Only optional caller values from this contract are copied; fixed keys below are runtime-owned.
 const ENV_ALLOWLIST = [
   'PATH',
   'LANG',
@@ -507,7 +524,12 @@ export async function sandboxPreflight(options = {}) {
       : selectSandboxBackend(env));
     if (!backend) return fail({ component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}` });
     if (backend.preflight) {
-      const result = await backend.preflight({ root: probeRoot, env: checkEnv(env), timeoutMs });
+      const result = await backend.preflight({
+        root: probeRoot,
+        env: checkEnv(env),
+        envContract: RUN_CHECK_ENV_CONTRACT,
+        timeoutMs,
+      });
       if (result?.ok) return result;
       const summary = String(result?.summary || 'The trusted sandbox preflight failed');
       return {
