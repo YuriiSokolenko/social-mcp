@@ -91,16 +91,50 @@ function redactPlannerEvidence(value) {
     .trim();
 }
 
+function plannerSearchRetryFact(input, result) {
+  const query = redactPlannerEvidence(input?.query).slice(0, 80);
+  const matches = Array.isArray(result?.details?.matches) ? result.details.matches : [];
+  const locations = matches.slice(0, 3).flatMap(match => {
+    if (typeof match?.path !== 'string' || !match.path.trim()) return [];
+    const relative = redactPlannerEvidence(match.path).slice(0, 100);
+    const line = Number.isSafeInteger(match.line) && match.line > 0 ? `:${match.line}` : '';
+    return [`${relative}${line}`];
+  });
+  const suffix = result?.details?.truncated ? '; additional matches omitted' : '';
+  return boundedPlannerFact(
+    `Repository lookup${query ? ` for ${query}` : ''}: ${locations.length ? `matched ${locations.join(', ')}` : 'no matches'}${suffix}`
+  );
+}
+
+function plannerGraphRetryFact(input, result) {
+  const target = redactPlannerEvidence(input?.target).slice(0, 80);
+  const relation = PLANNER_CODE_GRAPH_RELATIONS_FOR_FACTS.has(input?.relation) ? input.relation : 'relationship';
+  const indexedCommit = typeof result?.details?.indexed_commit === 'string'
+    ? redactPlannerEvidence(result.details.indexed_commit).slice(0, 12)
+    : '';
+  return boundedPlannerFact(
+    `Relationship lookup${target ? ` for ${target}` : ''} (${relation}) completed on the fresh current-worktree index${indexedCommit ? ` at ${indexedCommit}` : ''}; result payload is not retained across retry.`
+  );
+}
+
+const PLANNER_CODE_GRAPH_RELATIONS_FOR_FACTS = new Set([
+  'callers', 'callees', 'references', 'implementations',
+  'dependencies', 'dependents', 'related_tests', 'blast_radius',
+]);
+
 // A failed first planner attempt cannot transfer its model memory into a fresh output-only child.
-// Preserve only a tiny deterministic excerpt per successful evidence call: enough to retain the
-// target/symbol clue, never a raw tool transcript or unbounded repository contents.
+// Preserve only bounded, capability-neutral retry clues. Search/graph payloads are summarized from
+// structured metadata and are never copied into the sidecar as raw JSON, source text, or graph dumps.
 export function plannerEvidenceFact(toolName, input, result) {
   if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) return null;
+  if (toolName === 'repo_search') return plannerSearchRetryFact(input, result);
+  if (toolName === 'planner_code_graph') return plannerGraphRetryFact(input, result);
+
   const observed = redactPlannerEvidence(plannerResultText(result));
   if (!observed) return null;
-  const rawTarget = input?.path ?? input?.file ?? input?.query ?? input?.target ?? input?.question ?? input?.pattern ?? input?.glob ?? '';
+  const rawTarget = input?.path ?? input?.file ?? input?.query ?? input?.pattern ?? input?.glob ?? '';
   const target = redactPlannerEvidence(rawTarget).slice(0, 80);
-  const prefix = `${toolName}${target ? ` ${target}` : ''}: `;
+  const prefix = `Repository evidence${target ? ` for ${target}` : ''}: `;
   const room = Math.max(0, MAX_PLANNER_FACT_LENGTH - prefix.length);
   return boundedPlannerFact(prefix + observed.slice(0, room));
 }
@@ -400,7 +434,7 @@ export function plannerTask(env = process.env, {
     : '';
   const preservedFacts = retryFacts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS);
   const retryContext = outputOnly
-    ? `\n\nPRESERVED EVIDENCE FROM ATTEMPT 1 (trusted bounded handoff; ${evidenceUsed == null ? 'unknown' : evidenceUsed}/${MAX_PLANNER_REPOSITORY_EVIDENCE} evidence actions consumed):\n${preservedFacts.length ? preservedFacts.map(fact => `- ${fact}`).join('\n') : '- No textual evidence snippet was recoverable.'}\nCarry every still-relevant preserved fact into the output facts array; do not ask main to rediscover it merely because this is a fresh retry child.`
+    ? `\n\nPRESERVED EVIDENCE FROM ATTEMPT 1 (trusted bounded handoff; ${evidenceUsed == null ? 'unknown' : evidenceUsed}/${MAX_PLANNER_REPOSITORY_EVIDENCE} evidence actions consumed):\n${preservedFacts.length ? preservedFacts.map(fact => `- ${fact}`).join('\n') : '- No bounded evidence clue was recoverable.'}\nUse these bounded clues to reconstruct the structured answer. Carry only synthesized repository facts into the output facts array; never copy retry metadata or evidence payloads verbatim, and do not ask main to rediscover a fact that is still safely resolved.`
     : '';
   const repairDetail = repair && repairError
     ? ` Previous schema error: ${redactPlannerEvidence(repairError).slice(0, 500)}`
