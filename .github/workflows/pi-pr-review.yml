@@ -39,7 +39,7 @@ jobs:
     env:
       PR: ${{ inputs.pr_number }}
       # Reviewer model selection is dispatch-input driven. "default" is resolved
-      # from trusted .pi/default-model by pi-run-stage.mjs; repo vars are not selectors here.
+      # from trusted .pi/default-model by the shared stage runner; repo vars are not selectors here.
       PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
     steps:
       - name: Checkout trusted control repository
