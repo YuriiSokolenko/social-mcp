@@ -101,7 +101,7 @@ export function plannerEvidenceFact(toolName, input, result) {
   if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) return null;
   const observed = redactPlannerEvidence(plannerResultText(result));
   if (!observed) return null;
-  const rawTarget = input?.path ?? input?.file ?? input?.query ?? input?.pattern ?? input?.glob ?? '';
+  const rawTarget = input?.path ?? input?.file ?? input?.query ?? input?.target ?? input?.pattern ?? input?.glob ?? '';
   const target = redactPlannerEvidence(rawTarget).slice(0, 80);
   const prefix = `${toolName}${target ? ` ${target}` : ''}: `;
   const room = Math.max(0, MAX_PLANNER_FACT_LENGTH - prefix.length);
