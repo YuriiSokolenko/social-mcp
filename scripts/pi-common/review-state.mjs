@@ -278,6 +278,10 @@ export async function recoverReviewWorkflowRun({
     }, client);
   }
 
+  if (outcome === 'cancelled') {
+    return { status: 'ignored', reason: 'cancelled-before-review' };
+  }
+
   const pr = await client.loadPullRequest(prNumber);
   const comments = await client.pages(`/issues/${prNumber}/comments`);
   const currentVerdictPrefix = `<!-- pi-review:verdict:${pr.head.sha}:`;
