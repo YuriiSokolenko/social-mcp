@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { execFileSync } from 'node:child_process';
 
 import plannerEvidenceExtension from '../scripts/pi-planner-evidence.mjs';
+import { plannerCodeGraph } from '../scripts/pi-common/planner-code-graph.mjs';
 import {
   MAX_PLANNER_REPOSITORY_EVIDENCE,
   PLANNER_EVIDENCE_BUDGET_ENV,
@@ -415,6 +416,74 @@ test('unknown-path planning can resolve the implementation target with repo_sear
   assert.equal(prepared.plannerEvidenceUsed, 1);
 });
 
+test('relationship planning uses Orbit evidence and carries only a bounded blast-radius fact into PreparedImplementation', async (t) => {
+  const { dir, env } = fixture(t, {
+    'src/net/transport.py': 'def send_with_backoff(message): return message\n',
+  });
+  const rawMarker = 'RAW_GRAPH_DUMP_MARKER_SHOULD_NOT_CROSS_HANDOFF';
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      const handlers = new Map();
+      plannerEvidenceExtension({
+        registerTool: () => {},
+        on: (event, fn) => handlers.set(event, fn),
+      });
+      const input = {
+        relation: 'callers',
+        target: 'send_with_backoff',
+        question: 'Which callers and focused tests are in the blast radius?',
+      };
+      assert.equal(await handlers.get('tool_call')({
+        toolName: 'planner_code_graph',
+        toolCallId: 'graph-1',
+        input,
+      }), undefined);
+
+      const graph = plannerCodeGraph(dir, input, {
+        runner: (command, args) => {
+          if (command === 'git') return { status: 0, stdout: 'abcdef1234567890\n', stderr: '' };
+          if (command === 'orbit' && args[0] === 'list') {
+            return { status: 0, stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'abcdef1234567890', status: 'indexed' }]), stderr: '' };
+          }
+          if (command === 'orbit' && args[0] === 'context') {
+            return { status: 0, stdout: `Callers: deliver_batch, retry_worker\nTests: tests/test_transport.py\n${rawMarker}`, stderr: '' };
+          }
+          return { status: 1, stdout: '', stderr: 'unexpected command' };
+        },
+      });
+      const toolResult = { content: [{ type: 'text', text: JSON.stringify(graph) }], details: graph };
+      await handlers.get('tool_execution_end')({
+        toolName: 'planner_code_graph',
+        toolCallId: 'graph-1',
+        isError: false,
+        result: toolResult,
+      });
+
+      return {
+        status: 'completed',
+        usage: { input: 120, output: 30, turns: 1, toolCalls: 2 },
+        result: { kind: 'structured', value: {
+          steps: ['Update send_with_backoff while preserving deliver_batch and retry_worker callers; extend the focused transport test.'],
+          facts: ['send_with_backoff blast radius includes deliver_batch, retry_worker, and tests/test_transport.py.'],
+          complexity: 'nontrivial',
+          evidence_budget: 1,
+          large_mutation: false,
+          reason: 'Orbit resolved the relational blast radius; main only needs the current mutation anchor.',
+        } },
+      };
+    },
+  });
+
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.plannerEvidenceUsed, 1);
+  assert.equal(prepared.repositoryFacts.length, 1);
+  assert.ok(prepared.repositoryFacts[0].length <= 200);
+  assert.match(prepared.repositoryFacts[0], /deliver_batch.*retry_worker/);
+  assert.doesNotMatch(JSON.stringify(prepared), new RegExp(rawMarker));
+  assert.match(preparedImplementationBlock(prepared), /blast radius includes deliver_batch/);
+});
+
 test('planner observability preserves unknown evidenceUsed as null', () => {
   const bootstrap = fs.readFileSync('scripts/pi-implementer-bootstrap.mjs', 'utf8');
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
@@ -560,9 +629,11 @@ test('output-only retry hides evidence tools when the child supports active-tool
   const constrained = handlers.get('before_provider_request')({ payload: providerPayload });
   assert.equal(constrained.tool_choice, 'required');
   assert.deepEqual(constrained.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL]);
-  const blocked = await handlers.get('tool_call')({ toolName: 'find', input: {} });
-  assert.equal(blocked.block, true);
-  assert.match(blocked.reason, /output-only/);
+  for (const toolName of ['find', 'repo_search', 'planner_code_graph']) {
+    const blocked = await handlers.get('tool_call')({ toolName, input: {} });
+    assert.equal(blocked.block, true, `${toolName} must stay closed on output-only retry`);
+    assert.match(blocked.reason, /output-only/);
+  }
   assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }), undefined);
 });
 
