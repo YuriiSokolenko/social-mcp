@@ -102,24 +102,6 @@ function recoveryVerificationSignature(toolName, input) {
   return toolCallSignature(toolName, normalized);
 }
 
-function recoveryVerificationSignature(toolName, input) {
-  const normalized = {};
-  const kind = typeof input?.kind === 'string' ? input.kind.trim() : '';
-  const profile = typeof input?.profile === 'string' ? input.profile.trim() : '';
-  const normalizeList = value => [...new Set(
-    (Array.isArray(value) ? value : [])
-      .filter(item => typeof item === 'string' && item.trim())
-      .map(item => item.trim()),
-  )].sort();
-  const paths = normalizeList(input?.paths);
-  const targets = normalizeList(input?.targets);
-  if (kind) normalized.kind = kind;
-  if (profile) normalized.profile = profile;
-  if (paths.length) normalized.paths = paths;
-  if (targets.length) normalized.targets = targets;
-  return toolCallSignature(toolName, normalized);
-}
-
 export function validateSingleEvidenceRequest(input = {}) {
   const missing = typeof input.missing === 'string' ? input.missing.trim() : '';
   if (!missing) return { ok: false, reason: 'need_more_evidence requires one concrete missing fact.' };
