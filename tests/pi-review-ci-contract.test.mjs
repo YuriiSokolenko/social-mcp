@@ -1069,6 +1069,8 @@ test('failed independent reviews persist recovery state, retry once, and retain 
   assert.match(workflow, /REVIEW_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(workflow, /actions: write/);
   assert.match(state, /pi-review:failure-retry:/);
+  assert.match(state, /REVIEW_MARKER_AUTHOR = 'github-actions\[bot\]'/);
+  assert.match(state, /isTrustedReviewMarkerComment/);
   assert.match(state, /pi-review:failure-exhausted:/);
   assert.match(state, /pi:needs-human/);
   assert.match(state, /dispatchWorkflow\('pi-pr-review\.yml'/);
