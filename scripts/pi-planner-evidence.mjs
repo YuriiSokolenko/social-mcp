@@ -1,4 +1,9 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { Type } from 'typebox';
+
+import { repoSearch } from './pi-common/repo-search.mjs';
 
 // Loaded only inside the implementation-planner pi-subagents child via .pi/settings.json.
 // Enforces the trusted planner evidence cap and read-only surface at tool-call time, so the
@@ -14,6 +19,9 @@ import {
   plannerEvidenceFact,
 } from './pi-common/implementation-planner.mjs';
 
+const PLANNER_GRAPH_MAX_CHARS = 16000;
+const PLANNER_GRAPH_COMMAND_TIMEOUT_MS = 5000;
+
 function plannerOutputOnly(env = process.env) {
   return env[PLANNER_OUTPUT_ONLY_ENV] === 'true';
 }
@@ -24,6 +32,121 @@ function evidenceBudget(env = process.env) {
     throw new Error(`${PLANNER_EVIDENCE_BUDGET_ENV} must be a non-negative integer`);
   }
   return value;
+}
+
+function localCommand(command, args, cwd, execFile = execFileSync) {
+  return execFile(command, args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: PLANNER_GRAPH_COMMAND_TIMEOUT_MS,
+    maxBuffer: 512 * 1024,
+    env: { ...process.env, ORBIT_TELEMETRY_ENABLED: 'false' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function canonicalPath(value) {
+  const resolved = path.resolve(String(value ?? ''));
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function boundedGraphText(text) {
+  const value = String(text ?? '').trim();
+  if (value.length <= PLANNER_GRAPH_MAX_CHARS) return { text: value, truncated: false };
+  return {
+    text: `${value.slice(0, PLANNER_GRAPH_MAX_CHARS)}\n[planner_code_graph output truncated]`,
+    truncated: true,
+  };
+}
+
+export function plannerCodeGraph(cwd, params, { execFile = execFileSync } = {}) {
+  const target = String(params?.target ?? '').trim();
+  const question = String(params?.question ?? '').trim();
+  if (!target || target.length > 400 || target.startsWith('-') || /[\u0000-\u001f\u007f]/.test(target)) {
+    throw new Error('planner_code_graph target must be one concrete symbol/path target (1-400 printable characters)');
+  }
+  if (!question || question.length > 400 || /[\u0000-\u001f\u007f]/.test(question)) {
+    throw new Error('planner_code_graph question must be one concise planning question (1-400 printable characters)');
+  }
+
+  const root = canonicalPath(cwd);
+  let head;
+  let rows;
+  try {
+    head = String(localCommand('git', ['rev-parse', 'HEAD'], cwd, execFile)).trim();
+    rows = JSON.parse(localCommand('orbit', ['list', '-F', 'json'], cwd, execFile));
+  } catch (error) {
+    throw new Error(`planner_code_graph unavailable: ${String(error?.message ?? error).split('\n')[0]}`);
+  }
+
+  const indexed = Array.isArray(rows)
+    ? rows.find(row => canonicalPath(row?.repo_path) === root)
+    : null;
+  if (!indexed) {
+    throw new Error('planner_code_graph unavailable: current worktree is not present in the Orbit index');
+  }
+  if (indexed.status !== 'indexed') {
+    throw new Error(`planner_code_graph unavailable: Orbit index status is ${String(indexed.status ?? 'unknown')}`);
+  }
+  if (!head || String(indexed.commit_sha ?? '') !== head) {
+    throw new Error('planner_code_graph unavailable: Orbit index is stale for the current worktree HEAD');
+  }
+
+  let raw;
+  try {
+    raw = localCommand('orbit', ['context', target], cwd, execFile);
+  } catch (error) {
+    throw new Error(`planner_code_graph query failed: ${String(error?.message ?? error).split('\n')[0]}`);
+  }
+  const bounded = boundedGraphText(raw);
+  return {
+    target,
+    question,
+    text: bounded.text,
+    truncated: bounded.truncated,
+  };
+}
+
+export function registerPlannerEvidenceTools(pi, {
+  repoSearchFn = repoSearch,
+  plannerCodeGraphFn = plannerCodeGraph,
+} = {}) {
+  if (typeof pi?.registerTool !== 'function') return;
+
+  pi.registerTool({
+    name: 'repo_search',
+    label: 'Planner repository search',
+    description: 'Read-only deterministic search over tracked files in the current planner worktree. Use when the exact path or text location is unknown.',
+    parameters: Type.Object({
+      kind: Type.Optional(Type.Union([Type.Literal('content'), Type.Literal('path')])),
+      query: Type.String({ minLength: 1, maxLength: 300 }),
+      pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
+      extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
+      maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const result = repoSearchFn(ctx.cwd, params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  });
+
+  pi.registerTool({
+    name: 'planner_code_graph',
+    label: 'Planner code graph',
+    description: 'Read-only bounded structural context for one concrete symbol/path in the current trusted Orbit index. Use for callers, references, implementations, dependencies, related tests, or blast-radius questions.',
+    parameters: Type.Object({
+      target: Type.String({ minLength: 1, maxLength: 400 }),
+      question: Type.String({ minLength: 1, maxLength: 400 }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const result = plannerCodeGraphFn(ctx.cwd, params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  });
 }
 
 function recordEvidenceState(gate, admission, { fact = null, env = process.env } = {}) {
@@ -49,6 +172,8 @@ function recordEvidenceState(gate, admission, { fact = null, env = process.env }
 }
 
 export default function (pi) {
+  registerPlannerEvidenceTools(pi);
+
   const outputOnly = plannerOutputOnly();
   const gate = createPlannerEvidenceGate(evidenceBudget());
   const pendingEvidence = new Map();
