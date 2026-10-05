@@ -1878,12 +1878,11 @@ test('#426 blocked terminal retries retain their submission payload for determin
   const result = runRuntimeScenario(`
     activeTools = ['submit_result', 'write'];
     const { ProgressController } = await import(CONTROLLER_URL);
-    let submitChecks = 0;
-    ProgressController.prototype.checkToolCall = function(toolName) {
-      if (toolName !== 'submit_result') return undefined;
-      submitChecks += 1;
-      if (submitChecks === 1) return undefined;
-      return { block: true, reason: 'synthetic terminal policy block' };
+    ProgressController.prototype.checkToolCall = function(toolName, input) {
+      if (toolName === 'submit_result' && input?.title === 'Blocked base') {
+        return { block: true, reason: 'synthetic terminal policy block' };
+      }
+      return undefined;
     };
     ProgressController.prototype.productiveProgressState = () => 'action_required';
     const { default: install } = await import(RUNTIME_URL);
@@ -1920,6 +1919,17 @@ test('#426 blocked terminal retries retain their submission payload for determin
     assert.equal(messages.length, 1);
     assert.match(messages[0][0], /deterministic metadata repair selected/);
     assert.match(messages[0][0], /limitations/);
+
+    const preserved = await handlers.get('tool_call')({
+      toolCallId: 'preserved-terminal-base',
+      toolName: 'submit_result',
+      input: { title: 'Initial', summary: 'Summary', limitations: 'none' },
+    }, ctx);
+    assert.equal(
+      preserved,
+      undefined,
+      'blocked retries cannot replace the publication baseline from the terminal call that produced the obligation',
+    );
     console.log('BLOCKED_TERMINAL_INPUT_RECOVERY_OK');
   `);
 
