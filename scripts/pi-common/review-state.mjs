@@ -39,6 +39,10 @@ function reviewFollowupClaimMarker(head, verdict, runId, runAttempt) {
   return `<!-- pi-review:followup-claim:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`;
 }
 
+function reviewFollowupFailedMarker(head, verdict, runId, runAttempt) {
+  return `<!-- pi-review:followup-failed:${head}:${verdict}:run:${runId}:attempt:${runAttempt} -->`;
+}
+
 function reviewStartMarker(prNumber, reviewedHead, runId, runAttempt) {
   return `<!-- pi-review:start:${prNumber}:${reviewedHead}:${runId}:attempt:${runAttempt} -->`;
 }
@@ -164,11 +168,13 @@ export async function dispatchAfterReview(
     }
 
     const existingClaim = comments.find(item => String(item.body ?? '').includes(claimMarker));
-    if (existingClaim) {
+    const failedMarker = reviewFollowupFailedMarker(reviewedHead, verdict, runId, runAttempt);
+    const previousDispatchFailed = comments.some(item => String(item.body ?? '').includes(failedMarker));
+    if (existingClaim && !previousDispatchFailed) {
       return { status: 'followup-claimed', verdict };
     }
 
-    const claim = await comment(
+    const claim = existingClaim ?? await comment(
       prNumber,
       `Review follow-up for ${verdict} claimed for dispatch. If this handoff is interrupted, ordinary PR reconciliation owns recovery.\n\n${claimMarker}`,
     );
@@ -185,7 +191,23 @@ export async function dispatchAfterReview(
     }
   }
 
-  await dispatchWorkflow(workflow, inputs);
+  try {
+    await dispatchWorkflow(workflow, inputs);
+  } catch (error) {
+    if (hasDurableReviewIdentity) {
+      const failedMarker = reviewFollowupFailedMarker(reviewedHead, verdict, runId, runAttempt);
+      try {
+        await comment(
+          prNumber,
+          `Review follow-up dispatch for ${verdict} failed (${error.message}). Workflow-run recovery may retry this claimed handoff.\n\n${failedMarker}`,
+        );
+      } catch {
+        // The verdict label remains durable. If even failure bookkeeping is
+        // unavailable, the ordinary PR reconciler is the final recovery path.
+      }
+    }
+    throw error;
+  }
   if (marker) {
     try {
       await comment(
@@ -230,6 +252,9 @@ export async function recoverReviewFailure({
     effectiveModel = record.model;
   }
   if (pr.head.sha !== effectiveHead) return { status: 'stale' };
+  const labels = prLabelNames(pr);
+  if (labels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
+
   const passMarker = reviewVerdictMarker(effectiveHead, 'PASS', runId, runAttempt);
   const changesMarker = reviewVerdictMarker(effectiveHead, 'CHANGES_REQUESTED', runId, runAttempt);
   const appliedVerdict = comments.some(item => String(item.body ?? '').includes(passMarker))
@@ -245,18 +270,20 @@ export async function recoverReviewFailure({
     }, client);
   }
 
-  if (outcome === 'cancelled') {
-    // #391 intentionally treats a cancellation after independent review has
-    // actually started as recoverable infrastructure failure, including a
-    // controlled/manual mid-flight cancellation. Pre-start cancellations are
-    // ignored below so operator cancellation before model work is respected.
-    const startMarker = reviewStartMarker(prNumber, effectiveHead, runId, runAttempt);
-    if (!comments.some(item => String(item.body ?? '').includes(startMarker))) {
-      return { status: 'ignored', reason: 'cancelled-before-independent-start' };
-    }
+  const startMarker = reviewStartMarker(prNumber, effectiveHead, runId, runAttempt);
+  if (!comments.some(item => String(item.body ?? '').includes(startMarker))) {
+    return {
+      status: 'ignored',
+      reason: outcome === 'cancelled'
+        ? 'cancelled-before-independent-start'
+        : 'review-failed-before-independent-start',
+    };
   }
+  // #391 intentionally treats a cancellation after independent review has
+  // actually started as recoverable infrastructure failure, including a
+  // controlled/manual mid-flight cancellation. Pre-start cancellations are
+  // ignored above so operator cancellation before model work is respected.
 
-  const labels = prLabelNames(pr);
   const clearVerdict = withoutReviewLabels(labels);
   if (labels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
 
