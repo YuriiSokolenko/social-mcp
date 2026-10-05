@@ -241,6 +241,10 @@ export class ProgressController {
     this.productiveVerificationTool = this.productiveProgress?.verificationTool ?? null;
     this.verificationPermits = 0;
     this.verificationState = this.productiveVerificationTool ? 'not_yet_available' : null;
+    // Terminal recovery may require one exact authoritative verification even after the
+    // ordinary mutation-scoped verification permit was consumed. Keep this separate from
+    // verificationPermits so recovery cannot reopen arbitrary run_check access.
+    this.recoveryVerificationSignature = null;
     this.productiveInitialEvidenceBudget = positiveInteger(
       Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
       'productiveProgress.initialEvidenceBudget',
@@ -346,6 +350,22 @@ export class ProgressController {
 
   verificationLifecycleState() {
     return this.verificationState;
+  }
+
+  armRecoveryVerification(input) {
+    if (!this.productiveVerificationTool) return false;
+    this.recoveryVerificationSignature = toolCallSignature(this.productiveVerificationTool, input ?? {});
+    return true;
+  }
+
+  recoveryVerificationArmed() {
+    return this.recoveryVerificationSignature != null;
+  }
+
+  clearRecoveryVerification() {
+    const armed = this.recoveryVerificationSignature != null;
+    this.recoveryVerificationSignature = null;
+    return armed;
   }
 
   armAutomaticLargeMutationBudget(enabled) {
@@ -520,6 +540,11 @@ export class ProgressController {
   }
 
   checkToolCall(toolName, input) {
+    const recoveryVerificationCall =
+      Boolean(this.productiveVerificationTool) &&
+      toolName === this.productiveVerificationTool &&
+      this.recoveryVerificationSignature === toolCallSignature(toolName, input ?? {});
+
     if (!this.requiredFirstReadDone) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const allowed = toolName === 'read' &&
@@ -536,7 +561,13 @@ export class ProgressController {
     // the real guarantee; the runtime's tool-surface restriction is UX on top of it, not a
     // substitute for it.
     const elevatedEvidenceUnlock = Boolean(this.productiveBlockerTool && toolName === this.productiveBlockerTool);
-    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !ELEVATED_MUTATION_TURN_TOOLS.has(toolName) && !elevatedEvidenceUnlock) {
+    if (
+      this.largeMutationBudgetTool &&
+      this.largeMutationBudgetState === 'active' &&
+      !ELEVATED_MUTATION_TURN_TOOLS.has(toolName) &&
+      !elevatedEvidenceUnlock &&
+      !recoveryVerificationCall
+    ) {
       const blockerGuidance = this.productiveBlockerTool ? `, or ${this.productiveBlockerTool} for one concrete missing fact` : '';
       return {
         block: true,
@@ -569,6 +600,7 @@ export class ProgressController {
     const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
     let acceptedVerificationCall = false;
+    let acceptedRecoveryVerificationCall = false;
 
     const preComplexityEvidenceTool =
       this.requireComplexity &&
@@ -698,7 +730,14 @@ export class ProgressController {
             },
           };
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
-          if (this.verificationPermits > 0) {
+          if (recoveryVerificationCall) {
+            acceptedRecoveryVerificationCall = true;
+          } else if (this.recoveryVerificationSignature) {
+            return {
+              block: true,
+              reason: `BLOCKED: terminal recovery requires the exact authoritative verification action; this ${toolName} input does not match it.`,
+            };
+          } else if (this.verificationPermits > 0) {
             acceptedVerificationCall = true;
           } else {
             return {
@@ -724,7 +763,14 @@ export class ProgressController {
           };
         }
         if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
-          if (this.verificationPermits > 0) {
+          if (recoveryVerificationCall) {
+            acceptedRecoveryVerificationCall = true;
+          } else if (this.recoveryVerificationSignature) {
+            return {
+              block: true,
+              reason: `BLOCKED: terminal recovery requires the exact authoritative verification action; this ${toolName} input does not match it.`,
+            };
+          } else if (this.verificationPermits > 0) {
             acceptedVerificationCall = true;
           } else {
             return {
@@ -759,7 +805,12 @@ export class ProgressController {
       }
     }
 
-    if (this.absoluteTurn >= this.turnLimit && !finishTool && !pendingComplexityTransition) {
+    if (
+      this.absoluteTurn >= this.turnLimit &&
+      !finishTool &&
+      !pendingComplexityTransition &&
+      !acceptedRecoveryVerificationCall
+    ) {
       return {
         block: true,
         reason: `BLOCKED: ${toolName} did not execute. Global execution limit reached (${this.turnLimit} turns). Exploration is closed; use only the pending preparation/classification action or terminal submit tool to finish.`,
@@ -767,19 +818,28 @@ export class ProgressController {
     }
 
     const signature = toolCallSignature(toolName, input);
-    if (signature === this.lastSignature) this.repeatCount += 1;
-    else {
+    if (acceptedRecoveryVerificationCall) {
+      // The terminal obligation itself is fresh authoritative reason to retry this exact check.
+      // Do not let the ordinary consecutive-call guard veto the one recovery permit.
       this.lastSignature = signature;
       this.repeatCount = 1;
-    }
-    if (this.repeatCount > this.repeatThreshold) {
-      return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
+    } else {
+      if (signature === this.lastSignature) this.repeatCount += 1;
+      else {
+        this.lastSignature = signature;
+        this.repeatCount = 1;
+      }
+      if (this.repeatCount > this.repeatThreshold) {
+        return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
+      }
     }
     if (preComplexityEvidenceTool && this.preComplexityEvidenceRemaining != null) {
       this.preComplexityEvidenceRemaining = Math.max(0, this.preComplexityEvidenceRemaining - 1);
     }
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
-    if (acceptedVerificationCall) {
+    if (acceptedRecoveryVerificationCall) {
+      this.recoveryVerificationSignature = null;
+    } else if (acceptedVerificationCall) {
       this.verificationPermits -= 1;
       if (this.verificationPermits === 0) this.verificationState = 'exhausted';
     }
