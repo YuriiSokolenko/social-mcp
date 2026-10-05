@@ -486,7 +486,7 @@ function mutationResultPaths(input, result) {
 
 function normalizedPath(value) {
   return String(value ?? '')
-    .replaceAll('\\\\', '/')
+    .split(path.win32.sep).join('/')
     .replace(/^\.\//, '')
     .replace(/\/$/, '');
 }
