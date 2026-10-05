@@ -85,6 +85,34 @@ test('repeated recovery is idempotent and does not dispatch another retry', asyn
   assert.equal(client.state.comments.length, 2);
 });
 
+test('concurrent recovery claims for the same run dispatch only from the oldest retry claim', async () => {
+  const client = fakeClient();
+  await markReviewStarted({
+    prNumber: 7, reviewedHead: 'head-1', runId: '522', runAttempt: 1,
+  }, client);
+
+  const originalComment = client.comment.bind(client);
+  const marker = '<!-- pi-review:failure-retry:7:head-1:522:attempt:1 -->';
+  let injected = false;
+  client.comment = async (number, body) => {
+    if (!injected && String(body).includes(marker)) {
+      injected = true;
+      await originalComment(number, `Competing recovery claim.\n\n${marker}`);
+    }
+    return originalComment(number, body);
+  };
+
+  const result = await recoverReviewFailure({
+    ...failure,
+    runId: '522',
+    runAttempt: 1,
+  }, client);
+
+  assert.deepEqual(result, { status: 'retry-already-requested' });
+  assert.deepEqual(client.state.dispatches, []);
+  assert.equal(client.state.comments.filter(item => String(item.body).includes(marker)).length, 2);
+});
+
 test('a failed retry removes stale PASS and durably transfers the PR to human review', async () => {
   const client = fakeClient();
   await markReviewStarted({
