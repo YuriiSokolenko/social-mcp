@@ -306,8 +306,15 @@ function structuredSubmissionError(text) {
   return start >= 0 && end > start ? parseObject(text.slice(start, end + 1)) : null;
 }
 
+const CONFLICT_OBLIGATION_PATTERNS = Object.freeze([
+  /Latest dev conflicts with the implementation\. Resolve these files and retry submit_result: ([^\n]+)/,
+  /PR conflicts with current dev\. Resolve these files and retry submit_repair: ([^\n]+)/,
+]);
+
 function conflictObligation(text) {
-  const match = /Latest dev conflicts with the implementation\. Resolve these files and retry submit_result: ([^\n]+)/.exec(text);
+  const match = CONFLICT_OBLIGATION_PATTERNS
+    .map(pattern => pattern.exec(text))
+    .find(Boolean);
   if (!match) return null;
   const conflictPaths = uniqueStrings(parsePathList(match[1]));
   if (!conflictPaths.length) return null;
