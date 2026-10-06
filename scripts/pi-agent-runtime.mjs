@@ -4027,6 +4027,28 @@ export default function (pi) {
       return undefined;
     }
 
+    if (
+      event.message?.stopReason === 'error' &&
+      stage === 'implementer' &&
+      codingSessionArgumentCorrectionPending &&
+      status == null &&
+      !forcedRequestErrored
+    ) {
+      // Pi reports a schema-rejected tool call as a local synthetic error turn after the
+      // provider response that contained the invalid call. No provider request occurred for
+      // this turn, so it must not consume the elevated provider-retry allowance or the active
+      // one-shot large-mutation grant. The bounded correction remains armed for the next real
+      // provider request.
+      requireToolOnNextProviderRequest = true;
+      console.warn(`PI_CODING_SESSION_ARGUMENT_VALIDATION_TURN ${JSON.stringify({
+        stage,
+        action: 'ignored_for_provider_retry',
+        correction: codingSessionArgumentCorrectionCount,
+        largeMutationBudget: controller.largeMutationBudgetState,
+      })}`);
+      return undefined;
+    }
+
     if (event.message?.stopReason === 'error' && stage === 'implementer' && controller.largeMutationBudgetActive()) {
       if (retryableProviderErrorStatus(status)) {
         largeMutationActionRetryCount += 1;
