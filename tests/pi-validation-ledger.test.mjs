@@ -10,6 +10,7 @@ import {
   resolveRunArtifactId,
   resolveValidationRunId,
   normalizeScope,
+  validationScopeCovers,
   reconcile,
   latestUnresolvedRunCheckFailure,
   runCheckRequestForRecord,
@@ -131,6 +132,59 @@ test('normalizeScope treats an absolute in-worktree path and the equivalent rela
   const absolute = normalizeScope({ kind: 'python_compile', paths: [`${cwd}/arkanoid.py`] }, cwd);
   const relative = normalizeScope({ kind: 'python_compile', paths: ['arkanoid.py'] }, cwd);
   assert.deepEqual(absolute, relative);
+});
+
+test('#503 validationScopeCovers proves only conservative same-kind scope coverage', () => {
+  assert.equal(
+    validationScopeCovers('pytest', { whole_repo: true }, { targets: ['tests/test_a.py::test_case'] }),
+    true,
+    'whole-repo covers a narrower pytest target',
+  );
+  assert.equal(
+    validationScopeCovers('pytest', { targets: ['tests/test_a.py'] }, { whole_repo: true }),
+    false,
+    'a focused target never covers whole-repo',
+  );
+  assert.equal(
+    validationScopeCovers('pytest', { targets: ['tests/test_a.py'] }, { targets: ['tests/test_a.py::test_case'] }),
+    true,
+    'a pytest file target covers its node-id target',
+  );
+  assert.equal(
+    validationScopeCovers('pytest', { targets: ['tests'] }, { targets: ['tests/test_a.py'] }),
+    false,
+    'directory-like pytest targets are not inferred to cover files',
+  );
+
+  for (const kind of ['ruff', 'python_compile']) {
+    assert.equal(
+      validationScopeCovers(
+        kind,
+        { paths: ['src/a.py', 'src/b.py'] },
+        { paths: ['src/a.py'] },
+      ),
+      true,
+      `${kind} path supersets cover exact path subsets`,
+    );
+    assert.equal(
+      validationScopeCovers(
+        kind,
+        { paths: ['src'] },
+        { paths: ['src/a.py'] },
+      ),
+      false,
+      `${kind} directories are not inferred to cover files`,
+    );
+    assert.equal(
+      validationScopeCovers(
+        kind,
+        { paths: ['src/a.py'] },
+        { whole_repo: true },
+      ),
+      false,
+      `${kind} focused paths do not cover whole-repo`,
+    );
+  }
 });
 
 test('a passing focused check plus a completed final-checks pipeline yields VERIFIED', () => {
