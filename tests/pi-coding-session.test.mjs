@@ -664,14 +664,17 @@ function runtimeScenario(mode) {
           const repairPayload = {
             model: 'm',
             messages: [],
+            max_completion_tokens: 16384,
             tools: childActive.map(name => ({ type: 'function', function: { name } })),
           };
           const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
           const repairTools = repairRequest.tools.map(tool => tool.function?.name ?? tool.name);
           assert.equal(repairRequest.tool_choice, 'required', 'failed validation requires one concrete repair action');
           assert.equal(repairRequest.chat_template_kwargs.enable_thinking, true, 'first request after authoritative failure gets bounded repair reasoning');
+          assert.equal(repairRequest.max_completion_tokens, 4096, 'repair reasoning has a small output ceiling');
           const repairFollowup = providerPatch({ payload: repairPayload }, childCtx);
           assert.equal(repairFollowup.chat_template_kwargs.enable_thinking, false, 'repair reasoning is one request, not always-on');
+          assert.equal(repairFollowup.max_completion_tokens, 16384, 'low-overhead follow-up keeps the coding payload budget');
           assert.ok(repairTools.includes('read'), 'bounded repair read is provider-visible');
           assert.ok(!repairTools.includes('repo_search'), 'repair does not reopen repository discovery');
           assert.ok(!repairTools.includes('need_more_evidence'), 'repair does not spend the generic evidence unlock');
@@ -716,10 +719,12 @@ function runtimeScenario(mode) {
           const repairPayload = {
             model: 'm',
             messages: [],
+            max_completion_tokens: 16384,
             tools: childActive.map(name => ({ type: 'function', function: { name } })),
           };
           const firstRepairRequest = providerPatch({ payload: repairPayload }, childCtx);
           assert.equal(firstRepairRequest.chat_template_kwargs.enable_thinking, true, 'syntax failure gets one repair reasoning request');
+          assert.equal(firstRepairRequest.max_completion_tokens, 4096, 'syntax repair reasoning is bounded');
           const firstRewrite = await childCall('write', {
             path: 'test_generated.py',
             content: testSource + '# syntax-corruption full replacement\\n',
@@ -729,6 +734,7 @@ function runtimeScenario(mode) {
           await settleRepairRetry('syntax-shrunk');
           const secondRepairRequest = providerPatch({ payload: repairPayload }, childCtx);
           assert.equal(secondRepairRequest.chat_template_kwargs.enable_thinking, true, 'new authoritative failure re-arms one bounded repair reasoning request');
+          assert.equal(secondRepairRequest.max_completion_tokens, 4096, 're-armed repair reasoning stays bounded');
           const secondRewrite = await childCall('write', {
             path: 'test_generated.py',
             content: testSource + '# repeated full replacement\\n',
@@ -807,6 +813,7 @@ function runtimeScenario(mode) {
           const repairPayload = {
             model: 'm',
             messages: [],
+            max_completion_tokens: 16384,
             tools: childActive.map(name => ({ type: 'function', function: { name } })),
           };
           const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
