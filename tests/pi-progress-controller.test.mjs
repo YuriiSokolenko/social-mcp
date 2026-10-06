@@ -669,7 +669,9 @@ test('runtime action-forces the elevated large-mutation request and preserves on
   assert.match(runtime, /LARGE_MUTATION_ACTION_RETRY_LIMIT = 1/);
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET/);
   assert.match(runtime, /PI_LARGE_MUTATION_TOOL_CHOICE_ARMED/);
-  assert.match(runtime, /source: repairActionForced \? 'coding_repair' : largeMutationActionForced \? 'large_mutation'/);
+  assert.match(runtime, /source: repairActionForced/);
+  assert.match(runtime, /'coding_session_argument_correction'/);
+  assert.match(runtime, /largeMutationActionForced[\s\S]*?'large_mutation'/);
   assert.match(runtime, /PI_LARGE_MUTATION_ACTION_REQUIRED/);
   assert.match(runtime, /PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED/);
   assert.match(runtime, /PI_LARGE_MUTATION_TRUNCATION_RETRY_EXHAUSTED/);
