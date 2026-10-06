@@ -601,34 +601,41 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-nonconvergent') {
-          await settleSyntheticDifferentScopePass();
-          await childCall('write', {
-            path: 'test_generated.py',
-            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round 1\\n',
-          });
-          assert.ok(childActive.includes('retry_last_failed_check'));
-          await settleRepairRetry('shrunk');
-          assert.equal(childAborts, 0, 'a strict reduction resets the non-improving count');
-
-          await settleSyntheticDifferentScopePass();
-          await childCall('write', {
-            path: 'test_generated.py',
-            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round 2\\n',
-          });
-          assert.ok(childActive.includes('retry_last_failed_check'));
-          await settleRepairRetry('initial');
-          assert.equal(childAborts, 0, 'expanding back to a seen failure set is non-improving but still below the bound');
-
-          await settleSyntheticDifferentScopePass();
-          await childCall('write', {
-            path: 'test_generated.py',
-            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round 3\\n',
-          });
-          assert.ok(childActive.includes('retry_last_failed_check'));
-          await settleRepairRetry('shrunk');
-          assert.equal(childAborts, 1, 'returning to the prior best set is not a new strict reduction and reaches the bound');
+          const flipFlop = [
+            ['shrunk', 'a strict reduction resets the non-improving count'],
+            ['initial', 'expanding back to a seen failure set is non-improving but still below the bound'],
+            ['shrunk', 'returning to the prior best set is not a new strict reduction'],
+            ['initial', 'another expansion remains bounded but does not yet abort'],
+            ['shrunk', 'the fifth non-improving failure reaches the bounded repair ceiling'],
+          ];
+          for (let index = 0; index < flipFlop.length; index++) {
+            await settleSyntheticDifferentScopePass();
+            await childCall('write', {
+              path: 'test_generated.py',
+              content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round ' + (index + 1) + '\\n',
+            });
+            assert.ok(childActive.includes('retry_last_failed_check'));
+            await settleRepairRetry(flipFlop[index][0]);
+            assert.equal(
+              childAborts,
+              index === flipFlop.length - 1 ? 1 : 0,
+              flipFlop[index][1],
+            );
+          }
           console.log('CODING_REPAIR_NONCONVERGENT_OK');
           return respond(request, { status: 'failed', error: 'PI_CODING_VALIDATION_NON_CONVERGENT', usage: { output: 5000 } });
+        }
+
+        if (mode === 'repair-volatile-message') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# volatile diagnostic retry\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('volatile-b');
+          assert.equal(childAborts, 0, 'volatile diagnostic values stay one semantic failure identity');
+          console.log('CODING_REPAIR_VOLATILE_MESSAGE_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after volatile identity proof', usage: { output: 3000 } });
         }
 
         if (mode === 'repair-pass-reset') {
