@@ -1698,31 +1698,33 @@ test('#481 recovery guard fails closed after unrelated evidence when validation 
   assert.match(logs, /CODING_RECOVERY_FAIL_CLOSED_OK/);
 });
 
-test('#499/#506 failing pytest keeps bounded evidence but localizes repair and bounds thinking', () => {
+test('#499/#506 repair reads precede bounded reasoning and broad edits cannot bypass localization', () => {
   const logs = runtimeScenario('repair-evidence');
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
+  assert.match(logs, /PI_CODING_REPAIR_TOOL_SURFACE .*"phase":"evidence".*"tools":\["read"\]/);
+  assert.match(logs, /PI_CODING_SESSION .*"phase":"thinking_policy".*"policy":"repair_evidence_low_overhead".*"enableThinking":false/);
   assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
-  assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"unchanged_helper.py".*"readsRemaining":0.*"evidenceBudgetIndependent":true/);
   assert.doesNotMatch(logs, /PI_CODING_REPAIR_READ .*"path":"link-source.py"/);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
-  assert.match(logs, /PI_CODING_SESSION .*"phase":"thinking_policy".*"policy":"repair_reasoning_once".*"enableThinking":true/);
-  assert.match(logs, /PI_CODING_SESSION .*"phase":"thinking_policy".*"policy":"repair_followup_low_overhead".*"enableThinking":false/);
-  assert.match(logs, /PI_CODING_REPAIR_WRITE_GUARD .*"status":"blocked".*"path":"test_generated.py"/);
+  assert.match(logs, /PI_CODING_REPAIR_TOOL_SURFACE .*"phase":"reasoning_mutation"/);
+  assert.match(logs, /PI_CODING_SESSION .*"phase":"thinking_policy".*"policy":"repair_reasoning_once".*"enableThinking":true.*"maxTokens":4096/);
+  assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"shape":"whole_file_rewrite".*"status":"blocked"/);
+  assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"shape":"broad_edit".*"status":"blocked"/);
   assert.match(logs, /PI_MUTATION .*"tool":"safe_edit".*"shape":"targeted_edit".*"repairPhase":true/);
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
   assert.match(logs, /CODING_REPAIR_EVIDENCE_OK/);
 });
 
-test('#506 syntax-corruption permits one full rewrite, but shrinking failures do not reset the rewrite bound', () => {
+test('#506 one syntax broad mutation is shared across write/safe_edit/edit and repeated bypass attempts fail closed', () => {
   const logs = runtimeScenario('repair-rewrite-limit');
-  assert.match(logs, /PI_CODING_REPAIR_STATE .*"rewriteEligiblePaths":\["test_generated.py"\]/);
-  assert.match(logs, /PI_CODING_REPAIR_REWRITE .*"status":"consumed".*"path":"test_generated.py".*"rewriteCount":1.*"limit":1/);
-  assert.match(logs, /PI_MUTATION .*"tool":"write".*"shape":"whole_file_rewrite".*"repairPhase":true.*"wholeFileRewriteCount":1/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"rewriteEligiblePaths":\["test_generated.py"\].*"broadMutationLimit":1/);
+  assert.match(logs, /PI_MUTATION .*"tool":"write".*"shape":"whole_file_rewrite".*"repairPhase":true.*"broadMutationCount":1.*"wholeFileRewriteCount":1/);
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
-  assert.match(logs, /PI_CODING_REPAIR_WRITE_GUARD .*"status":"limit_abort".*"rewriteCount":1.*"limit":1/);
-  assert.match(logs, /PI_CODING_REPAIR_REWRITE_LIMIT .*"worktree_preserved":true/);
-  assert.match(logs, /CODING_REPAIR_REWRITE_LIMIT_OK/);
+  assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"shape":"whole_file_rewrite".*"status":"blocked".*"broadCount":1/);
+  assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"shape":"broad_edit".*"blockedAttempts":2/);
+  assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"shape":"broad_edit".*"status":"limit_abort".*"blockedAttempts":3/);
+  assert.match(logs, /PI_CODING_REPAIR_BROAD_MUTATION_LIMIT .*"worktree_preserved":true/);
+  assert.match(logs, /CODING_REPAIR_BROAD_MUTATION_LIMIT_OK/);
 });
 test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failure flip-flops', () => {
   const logs = runtimeScenario('repair-nonconvergent');
