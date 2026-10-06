@@ -108,6 +108,7 @@ const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 const CODING_REPAIR_READ_LIMIT = 2;
 const CODING_REPAIR_IMPORT_PATH_LIMIT = 8;
 const CODING_REPAIR_WHOLE_REWRITE_LIMIT = 1;
+const CODING_REPAIR_REASONING_MAX_TOKENS = 4096;
 const CODING_REPAIR_BROAD_EDIT_LINE_LIMIT = 80;
 const CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT = 12000;
 // Five non-improving failures leaves room for bounded diagnostic phase changes
@@ -164,9 +165,9 @@ export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS
 }
 
 // Laguna (llama-server, openai-completions) reasons by default once tools are present, and pi's
-// "off" level sends no reasoning field for this provider's compat. The coding session therefore
-// disables thinking on every provider request itself; chat_template_kwargs.enable_thinking=false
-// is honored by the Laguna chat template (live probe: 0 reasoning chars, immediate tool call).
+// "off" level sends no reasoning field for this provider's compat. The runtime therefore owns
+// the provider wire policy: normal/creation requests stay off, while the first request after an
+// authoritative validation failure may opt into bounded reasoning before returning to low overhead.
 export function applyCodingThinkingPolicy(payload, { enableThinking = false } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.messages)) return payload;
   return {
@@ -815,6 +816,7 @@ export default function (pi) {
       rewriteEligiblePaths: codingValidationRepair.rewriteEligiblePaths,
       wholeFileRewriteLimit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
       thinkingPolicy: 'one_reasoning_request_per_validation_failure',
+      reasoningMaxTokens: CODING_REPAIR_REASONING_MAX_TOKENS,
     })}`);
     // The next response must take a concrete repair step. Because bounded read is now part of
     // the repair surface, provider-level required tool choice cannot force a blind mutation.
@@ -1650,6 +1652,19 @@ export default function (pi) {
       let patched = codingSession
         ? applyCodingThinkingPolicy(event.payload, { enableThinking: repairThinkingRequest })
         : event.payload;
+      if (repairThinkingRequest) {
+        if (Number.isFinite(Number(patched.max_completion_tokens))) {
+          patched = {
+            ...patched,
+            max_completion_tokens: Math.min(Number(patched.max_completion_tokens), CODING_REPAIR_REASONING_MAX_TOKENS),
+          };
+        } else if (Number.isFinite(Number(patched.max_tokens))) {
+          patched = {
+            ...patched,
+            max_tokens: Math.min(Number(patched.max_tokens), CODING_REPAIR_REASONING_MAX_TOKENS),
+          };
+        }
+      }
       if (terminalRecoveryState) {
         patched = compactTerminalRecoveryPayload(patched, terminalRecoveryState);
       }
