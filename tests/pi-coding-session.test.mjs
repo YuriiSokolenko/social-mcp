@@ -228,7 +228,7 @@ function runtimeScenario(mode) {
     };
     fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
       ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
-      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], repositoryFacts: ['Planner fact marker'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort'].includes(mode), reason: 'One lookup' }));
+      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], repositoryFacts: ['Planner fact marker'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-recovery', 'large-mutation-coding-argument-retry-abort'].includes(mode), reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
@@ -255,7 +255,7 @@ function runtimeScenario(mode) {
       const terminalReceiptUrl = ${JSON.stringify(new URL('../scripts/pi-common/terminal-receipt.mjs', import.meta.url).href)};
       const implementerResultUrl = ${JSON.stringify(new URL('../scripts/pi-common/implementer-result.mjs', import.meta.url).href)};
       const codingValidationUrl = ${JSON.stringify(new URL('../scripts/pi-common/coding-session-validation.mjs', import.meta.url).href)};
-      const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
+      const { default: runtime, providerErrorStatus, codingSessionArgumentValidation } = await import(runtimeUrl);
       const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile } = await import(terminalReceiptUrl);
       const { writeImplementerResult } = await import(implementerResultUrl);
       const { assertCodingBehavioralValidation, recordCodingBehavioralValidation } = await import(codingValidationUrl);
@@ -296,7 +296,7 @@ function runtimeScenario(mode) {
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
       persist({ type: 'message', message: { role: 'assistant', content: 'PARENT_TRANSCRIPT_ONLY_MARKER' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'scope-prelude-cap'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-retry-abort', 'scope-prelude-cap'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -1339,7 +1339,7 @@ function runtimeScenario(mode) {
         process.exit(0);
       }
 
-      if (['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort'].includes(mode)) {
+      if (['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-recovery', 'large-mutation-coding-argument-retry-abort'].includes(mode)) {
         assert.equal(caps.at(-1), 16384, 'planner largeMutation=true applies the one-shot 16K ceiling after evidence closes');
 
         const largeProviderRequest = () => {
@@ -1380,6 +1380,81 @@ function runtimeScenario(mode) {
           await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
           return { blocked: null, event, result };
         };
+
+        if (mode === 'large-mutation-coding-argument-recovery' || mode === 'large-mutation-coding-argument-retry-abort') {
+          assert.equal(codingSessionArgumentValidation({ handoff: 'x'.repeat(1200) }), null, 'exactly 1200 characters remains valid');
+          const oversized = codingSessionArgumentValidation({ handoff: 'x'.repeat(1201) });
+          assert.deepEqual(oversized.errors, ['handoff: must not have more than 1200 characters']);
+          assert.match(oversized.diagnostic, /Validation failed for tool "begin_coding_session":/);
+          console.log('CODING_SESSION_ARGUMENT_BOUNDARY_OK');
+
+          const invalidTurn = () => ({
+            stopReason: 'stop',
+            content: [{
+              type: 'toolCall',
+              name: 'begin_coding_session',
+              arguments: { reason: 'Need the isolated coding child', handoff: 'x'.repeat(1201) },
+            }],
+            usage: { input: 20, output: 128, totalTokens: 148 },
+          });
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const firstRequest = largeProviderRequest();
+          assert.ok(firstRequest.tools.some(tool => (tool.function?.name ?? tool.name) === 'begin_coding_session'));
+          await handlers.get('turn_end')({ turnIndex: turn++, message: invalidTurn() }, ctx);
+          assert.equal(aborts, 0, 'the first invalid launch is recoverable');
+          assert.equal(fs.existsSync(runtimeFailure), false, 'recoverable validation does not publish terminal runtime failure metadata');
+          assert.equal(caps.at(-1), 16384, 'invalid launch preserves the elevated ceiling');
+          assert.match(steers.at(-1), /handoff: must not have more than 1200 characters/);
+          assert.match(steers.at(-1), /only new concrete facts or implementation decisions/);
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const correctionRequest = handlers.get('before_provider_request')({
+            payload: {
+              model: 'm',
+              messages: [],
+              max_completion_tokens: 16384,
+              tools: active.map(name => ({ type: 'function', function: { name } })),
+            },
+          }, ctx);
+          assert.equal(correctionRequest.tool_choice, 'required', 'the correction remains action-forced');
+          assert.deepEqual(
+            correctionRequest.tools.map(tool => tool.function?.name ?? tool.name),
+            ['begin_coding_session'],
+            'the correction request exposes only the launch action and cannot reopen exploration',
+          );
+          assert.equal(correctionRequest.max_completion_tokens, 16384, 'the correction keeps the original elevated grant');
+
+          if (mode === 'large-mutation-coding-argument-retry-abort') {
+            await handlers.get('turn_end')({ turnIndex: turn++, message: invalidTurn() }, ctx);
+            assert.equal(aborts, 1, 'a second invalid launch exhausts the bounded correction');
+            const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+            assert.equal(failure.failure_class, 'model_execution_abort');
+            assert.equal(failure.failure_code, 'PI_CODING_SESSION_ARGUMENT_RETRY_EXHAUSTED');
+            assert.equal(failure.retry_limit, 1);
+            assert.equal(failure.attempts, 2);
+            assert.equal(failure.checkpoint.worktree_preserved, true);
+            console.log('CODING_SESSION_ARGUMENT_RETRY_ABORT_OK');
+            process.exit(0);
+          }
+
+          const corrected = await executeElevated(
+            'begin_coding_session',
+            { reason: 'Need the isolated coding child', handoff: 'x'.repeat(1200) },
+            'corrected-coding-session',
+          );
+          assert.equal(corrected.blocked, null);
+          await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: { stopReason: 'stop', usage: { input: 20, output: 96, totalTokens: 116 } },
+          }, ctx);
+          assert.equal(aborts, 0, 'the corrected launch completes normally');
+          assert.equal(sessionRequests.length, 1, 'the corrected launch starts exactly one coding child');
+          assert.equal(sessionRequests[0].maxTokens, '16384', 'the child keeps the normal coding-session ceiling');
+          assert.equal(fs.existsSync(runtimeFailure), false, 'no false large-mutation abort is emitted after correction');
+          console.log('CODING_SESSION_ARGUMENT_CORRECTION_OK');
+          process.exit(0);
+        }
 
         if (mode === 'large-mutation-prose-abort') {
           handlers.get('turn_start')({ turnIndex: turn });
@@ -2251,6 +2326,41 @@ test('#512 planner-armed 16K request is mutation-only, action-forced, and writes
   assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"scope_prelude".*"preserved":true/);
   assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"consumed".*"successfulFinishTool":true/);
   assert.match(logs, /LARGE_MUTATION_AUTO_FORCE_OK/);
+});
+
+test('#523 oversized coding-session handoff gets one forced correction without consuming the 16K grant', () => {
+  const logs = runtimeScenario('large-mutation-coding-argument-recovery');
+  assert.match(logs, /CODING_SESSION_ARGUMENT_BOUNDARY_OK/);
+  assert.match(logs, /PI_CODING_SESSION_ARGUMENT_CORRECTION .*"correction":1.*"largeMutationBudget":"active"/);
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"coding_session_argument_correction".*"preserved":true/);
+  assert.match(logs, /PI_CODING_SESSION_ARGUMENT_TOOL_SURFACE .*"tools":\["begin_coding_session"\]/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"source":"coding_session_argument_correction"/);
+  assert.match(logs, /PI_CODING_SESSION_ARGUMENT_CORRECTED/);
+  assert.match(logs, /CODING_SESSION_ARGUMENT_CORRECTION_OK/);
+  assert.doesNotMatch(logs, /PI_LARGE_MUTATION_ACTION_REQUIRED/);
+  assert.doesNotMatch(logs, /runtime_failure_metadata_invalid/);
+});
+
+test('#523 repeated invalid coding-session handoff aborts deterministically with preserved checkpoint', () => {
+  const logs = runtimeScenario('large-mutation-coding-argument-retry-abort');
+  assert.equal((logs.match(/PI_CODING_SESSION_ARGUMENT_CORRECTION /g) ?? []).length, 1);
+  assert.match(logs, /PI_CODING_SESSION_ARGUMENT_RETRY_EXHAUSTED .*"attempts":2.*"retryLimit":1.*"worktree_preserved":true/);
+  assert.match(logs, /CODING_SESSION_ARGUMENT_RETRY_ABORT_OK/);
+  assert.doesNotMatch(logs, /PI_LARGE_MUTATION_ACTION_REQUIRED/);
+});
+
+test('#523 issue-agent accepts runtime-owned model abort codes and preserves their code and reason', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const modelAbortPredicate = '(.failure_code | test("^PI_[A-Z0-9_]+$"))';
+  const preserveClass = 'FAILURE_CLASS="$(jq -r \'.failure_class\' "$PI_RUNTIME_FAILURE_FILE")"';
+  const preserveCode = 'FAILURE_CODE="$(jq -r \'.failure_code\' "$PI_RUNTIME_FAILURE_FILE")"';
+  const preserveReason = 'FAILURE_REASON="$(jq -r \'.reason\' "$PI_RUNTIME_FAILURE_FILE")"';
+  assert.equal(workflow.split(modelAbortPredicate).length - 1, 2, 'both publication failure paths share the runtime-owned model-abort predicate');
+  assert.equal(workflow.split(preserveClass).length - 1, 2);
+  assert.equal(workflow.split(preserveCode).length - 1, 2);
+  assert.equal(workflow.split(preserveReason).length - 1, 2);
+  assert.doesNotMatch(workflow, /\.failure_code == "PI_ACTION_REQUIRED_ABORT" or \.failure_code == "PI_TERMINAL_RECOVERY_BLOCKED"/);
+  assert.match(workflow, /runtime_failure_metadata_invalid/, 'malformed or unsupported metadata still has a fail-closed classification');
 });
 
 test('#512 completed prose-only elevated response aborts without spending another 16K turn', () => {
