@@ -1848,7 +1848,9 @@ function runtimeScenario(mode) {
       const expectError = { cancel: /aborted/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', {
         reason: 'Implement generated.py and its test',
-        handoff: '  Current evidence established REQUIRED_CONSTANT = "abc123". café 🚀  ',
+        handoff: mode === 'handoff-truncation'
+          ? 'Current evidence established REQUIRED_CONSTANT = "abc123". ' + 'a'.repeat(1140) + '🚀tail'
+          : '  Current evidence established REQUIRED_CONSTANT = "abc123". café 🚀  ',
       }, { expectError });
       if (mode === 'malformed-contract') {
         assert.equal(aborts, 0);
@@ -2051,6 +2053,12 @@ test('2K parent -> begin_coding_session -> isolated 16K coding child writes code
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"shape":"creation"[^\n]*"changed":true/g)?.length, 2, 'initial large creation stays direct and is classified separately from repair rewrites');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_BUDGET|mutation-writer|PI_MUTATION_TURN/);
+});
+
+test('parent handoff truncation is code-point safe, bounded and re-trimmed', () => {
+  const logs = runtimeScenario('handoff-truncation');
+  assert.match(logs, /"phase":"started"[^\n]*"parentHandoffBytes":1203/);
+  assert.doesNotMatch(logs, /🚀tail|Current evidence established REQUIRED_CONSTANT/);
 });
 
 test('a valid blocked child terminal result propagates as blocked, never implementation success', () => {
