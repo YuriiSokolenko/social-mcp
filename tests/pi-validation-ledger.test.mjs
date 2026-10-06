@@ -226,7 +226,7 @@ test('an unrelated broad pytest pass does not satisfy a failed/infra-error focus
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.BLOCKED_INFRA);
 });
 
-test('#342 recovery keeps the exact failed pytest scope pending across a broader pass until that scope passes', () => {
+test('#503 a provably broader same-kind pytest pass resolves a narrower failed scope', () => {
   const failed = focused({
     kind: 'pytest',
     scope: { targets: ['tests/test_feature.py::test_exact_case'] },
@@ -239,21 +239,24 @@ test('#342 recovery keeps the exact failed pytest scope pending across a broader
   });
   const records = [failed, broaderPass];
 
-  assert.equal(computeVerificationState(records), VERIFICATION_STATES.FAILED);
-  assert.equal(latestUnresolvedRunCheckFailure(records), failed);
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.PENDING);
+  assert.equal(latestUnresolvedRunCheckFailure(records), null);
   assert.deepEqual(runCheckRequestForRecord(failed), {
     kind: 'pytest',
     targets: ['tests/test_feature.py::test_exact_case'],
   });
+  assert.equal(reconcile(records).some(record => record.status === 'fail'), false);
 
-  const exactPass = focused({
+  const unrelatedPass = focused({
     kind: 'pytest',
-    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    scope: { targets: ['tests/test_other.py'] },
     status: 'pass',
   });
-  records.push(exactPass);
-  assert.equal(latestUnresolvedRunCheckFailure(records), null);
-  assert.equal(reconcile(records).find(record => record.scope.targets?.includes('tests/test_feature.py::test_exact_case'))?.status, 'pass');
+  assert.equal(
+    latestUnresolvedRunCheckFailure([failed, unrelatedPass]),
+    failed,
+    'an unrelated same-kind pass must not resolve the failed scope',
+  );
 });
 
 test('exact-scope timeout, invalid, and infra_error stop forced retry but remain fail-closed verification', () => {
@@ -318,8 +321,8 @@ test('multiple failed scopes remain independently recoverable within one workflo
   records.push(secondPass);
   assert.equal(
     latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
-    firstFailure,
-    'resolving one scope exposes the remaining exact failure instead of dropping it',
+    null,
+    'the broader feature-file pass already resolved the first narrow failure',
   );
 });
 
