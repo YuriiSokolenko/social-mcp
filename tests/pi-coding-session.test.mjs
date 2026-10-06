@@ -185,7 +185,7 @@ function runtimeScenario(mode) {
     };
     fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
       ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
-      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: false, reason: 'One lookup' }));
+      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-action-retry-abort'].includes(mode), reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
@@ -252,7 +252,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end', 'large-mutation-prose-abort', 'large-mutation-action-retry-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -1281,19 +1281,35 @@ function runtimeScenario(mode) {
         process.exit(0);
       }
 
-      if (mode === 'elevated-evidence-write') {
-        await call('accept_mutation_scope', {
-          paths: ['same-turn-large.py'],
-          disposition: 'publishable',
-          rationale: 'Regression fixture for elevated evidence followed by a real mutation in one response.',
-        });
-        await call('request_large_mutation_budget', { reason: 'exercise same-turn evidence plus mutation' });
-        assert.equal(caps.at(-1), 16384, 'manual elevated grant applies to the next response');
+      if (['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-action-retry-abort'].includes(mode)) {
+        assert.equal(caps.at(-1), 16384, 'planner largeMutation=true applies the one-shot 16K ceiling after evidence closes');
 
-        handlers.get('turn_start')({ turnIndex: turn });
-        const sameTurnCall = async (name, input) => {
-          const event = { toolName: name, toolCallId: 'same-turn-' + name + '-' + turn, input };
-          assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name + ' was blocked in elevated response');
+        const largeProviderRequest = () => {
+          const request = handlers.get('before_provider_request')({
+            payload: {
+              model: 'm',
+              messages: [],
+              max_completion_tokens: 16384,
+              tools: active.map(name => ({ type: 'function', function: { name } })),
+            },
+          }, ctx);
+          const names = request.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.equal(request.max_completion_tokens, 16384, 'the direct large payload keeps the full ceiling');
+          assert.equal(request.tool_choice, 'required', 'every active 16K request is provider action-forced');
+          assert.ok(names.includes('write'), 'direct file creation remains exposed');
+          assert.ok(names.includes('accept_mutation_scope'), 'new publishable paths can still be authorized');
+          assert.ok(names.includes('submit_result'), 'terminal resolution remains exposed');
+          assert.ok(!names.includes('read'), 'ordinary evidence is excluded from the elevated request');
+          assert.ok(!names.includes('need_more_evidence'), 'evidence unlock cannot consume the elevated request');
+          assert.ok(!names.includes('run_check'), 'verification cannot consume the elevated request');
+          assert.ok(!names.includes('repo_search'), 'repository exploration cannot consume the elevated request');
+          return request;
+        };
+
+        const executeElevated = async (name, input, id) => {
+          const event = { toolName: name, toolCallId: id, input };
+          const blocked = await handlers.get('tool_call')(event, ctx);
+          if (blocked) return { blocked, event };
           let result;
           if (tools.has(name)) {
             result = await tools.get(name).execute(event.toolCallId, input, signal.signal, null, ctx);
@@ -1304,24 +1320,98 @@ function runtimeScenario(mode) {
             result = { content: [{ type: 'text', text: 'ok' }] };
           }
           await handlers.get('tool_execution_end')({ ...event, isError: false, result }, ctx);
-          return result;
+          return { blocked: null, event, result };
         };
 
-        await sameTurnCall('need_more_evidence', {
-          missing: 'one final implementation fact',
-          reason: 'exercise bounded evidence unlock inside the elevated response',
-        });
-        await sameTurnCall('write', { path: 'same-turn-large.py', content: 'VALUE = 1\\n' });
-        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 1000 } } }, ctx);
+        if (mode === 'large-mutation-prose-abort') {
+          handlers.get('turn_start')({ turnIndex: turn });
+          largeProviderRequest();
+          await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: { stopReason: 'length', usage: { input: 20, output: 16384, totalTokens: 16404 } },
+          }, ctx);
+          assert.equal(aborts, 1, 'a prose-only elevated response fails closed immediately');
+          assert.equal(caps.filter(value => value === 16384).length, 1, 'no second elevated turn is granted after prose');
+          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+          assert.equal(failure.failure_code, 'PI_LARGE_MUTATION_ACTION_REQUIRED');
+          assert.equal(failure.checkpoint.worktree_preserved, true);
+          console.log('LARGE_MUTATION_PROSE_ABORT_OK');
+          process.exit(0);
+        }
+
+        if (mode === 'large-mutation-action-retry-abort') {
+          handlers.get('turn_start')({ turnIndex: turn });
+          largeProviderRequest();
+          const first = await executeElevated(
+            'write',
+            { path: 'unaccepted-large.py', content: 'VALUE = 1\\n' },
+            'large-failed-1',
+          );
+          assert.equal(first.blocked?.block, true, 'unaccepted large mutation is rejected locally');
+          assert.match(first.blocked.reason, /scope|accept_mutation_scope/i);
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 128 } } }, ctx);
+          assert.equal(aborts, 0, 'the first failed required action preserves one bounded retry');
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          largeProviderRequest();
+          const second = await executeElevated(
+            'write',
+            { path: 'unaccepted-large.py', content: 'VALUE = 2\\n' },
+            'large-failed-2',
+          );
+          assert.equal(second.blocked?.block, true, 'the bounded retry is still subject to scope policy');
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 128 } } }, ctx);
+          assert.equal(aborts, 1, 'a second failed elevated action exhausts the bounded retry');
+          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+          assert.equal(failure.failure_code, 'PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED');
+          assert.equal(failure.checkpoint.worktree_preserved, true);
+          console.log('LARGE_MUTATION_ACTION_RETRY_ABORT_OK');
+          process.exit(0);
+        }
 
         handlers.get('turn_start')({ turnIndex: turn });
-        const regrant = await handlers.get('tool_call')({
-          toolName: 'request_large_mutation_budget',
-          toolCallId: 'regrant-' + turn,
-          input: { reason: 'prove the prior one-shot grant was consumed' },
+        largeProviderRequest();
+        const scope = await executeElevated(
+          'accept_mutation_scope',
+          {
+            paths: ['large_generated.py'],
+            disposition: 'publishable',
+            rationale: 'The issue requires one large generated module.',
+          },
+          'large-scope',
+        );
+        assert.equal(scope.blocked, null);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 64 } } }, ctx);
+        assert.equal(caps.at(-1), 16384, 'one successful scope prelude preserves the elevated ceiling');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        largeProviderRequest();
+        const largeContent = Array.from({ length: 400 }, (_, index) => 'VALUE_' + index + ' = ' + index + '\\n').join('');
+        const write = await executeElevated(
+          'write',
+          { path: 'large_generated.py', content: largeContent },
+          'large-write',
+        );
+        assert.equal(write.blocked, null);
+        await handlers.get('turn_end')({
+          turnIndex: turn++,
+          message: { usage: { input: 50, output: 16000, totalTokens: 16050 } },
         }, ctx);
-        assert.equal(regrant, undefined, 'same-turn evidence + mutation consumes the prior elevated grant instead of leaking it');
-        console.log('ELEVATED_EVIDENCE_WRITE_CONSUMED_OK');
+        assert.equal(fs.readFileSync(cwd + '/large_generated.py', 'utf8'), largeContent, 'the complete large payload is written in one call');
+        assert.equal(fs.readFileSync(cwd + '/large_generated.py', 'utf8').trim().split('\\n').length, 400, 'the initial file is not truncated');
+        assert.equal(caps.at(-1), 2048, 'successful mutation consumes the one-shot grant and returns to the normal action cap');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const normal = handlers.get('before_provider_request')({
+          payload: {
+            model: 'm',
+            messages: [],
+            max_completion_tokens: 2048,
+            tools: active.map(name => ({ type: 'function', function: { name } })),
+          },
+        }, ctx);
+        assert.equal(normal.tool_choice, undefined, 'ordinary post-grant 2K turns are not globally action-forced');
+        console.log('LARGE_MUTATION_AUTO_FORCE_OK');
         process.exit(0);
       }
 
@@ -1976,10 +2066,33 @@ test('parent submit inherits accepted scope from a coding-session fork that ende
   assert.match(logs, /PARENT_SUBMIT_AFTER_FORK_OK/);
 });
 
-test('same elevated response may request bounded evidence then mutate without leaking the one-shot budget', () => {
-  const logs = runtimeScenario('elevated-evidence-write');
-  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"consumed".*"attemptedFinishTool":true/);
-  assert.match(logs, /ELEVATED_EVIDENCE_WRITE_CONSUMED_OK/);
+test('#512 planner-armed 16K request is mutation-only, action-forced, and writes the full initial file', () => {
+  const logs = runtimeScenario('large-mutation-auto-force');
+  assert.match(logs, /PI_PLAN .*"largeMutation":true.*"largeMutationArmed":true/);
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"auto_pending"/);
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"granted".*"maxTokens":16384/);
+  assert.match(logs, /PI_LARGE_MUTATION_TOOL_CHOICE_ARMED/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"source":"large_mutation"/);
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"scope_prelude".*"preserved":true/);
+  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"consumed".*"successfulFinishTool":true/);
+  assert.match(logs, /LARGE_MUTATION_AUTO_FORCE_OK/);
+});
+
+test('#512 prose-only elevated completion aborts without spending another 16K turn', () => {
+  const logs = runtimeScenario('large-mutation-prose-abort');
+  assert.match(logs, /PI_LARGE_MUTATION_TOOL_CHOICE_ARMED/);
+  assert.match(logs, /PI_LARGE_MUTATION_ACTION_REQUIRED .*"worktree_preserved":true/);
+  assert.equal((logs.match(/PI_LARGE_MUTATION_BUDGET .*"phase":"granted"/g) ?? []).length, 1);
+  assert.doesNotMatch(logs, /PI_LARGE_MUTATION_ACTION_RETRY/);
+  assert.match(logs, /LARGE_MUTATION_PROSE_ABORT_OK/);
+});
+
+test('#512 failed elevated actions get exactly one required retry before deterministic abort', () => {
+  const logs = runtimeScenario('large-mutation-action-retry-abort');
+  assert.equal((logs.match(/PI_LARGE_MUTATION_ACTION_RETRY /g) ?? []).length, 1, 'only one failed-action retry is permitted');
+  assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"source":"large_mutation"/g) ?? []).length >= 2, 'both elevated requests are provider action-forced');
+  assert.match(logs, /PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED .*"retryLimit":1.*"worktree_preserved":true/);
+  assert.match(logs, /LARGE_MUTATION_ACTION_RETRY_ABORT_OK/);
 });
 
 test('one elevated mutation grant permits at most one scope-only prelude', () => {
