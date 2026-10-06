@@ -746,6 +746,8 @@ export default function (pi) {
           clearedHistoryKeys: cleared,
           previousNonImprovingFailures,
         })}`);
+        codingRepairRewriteCounts.clear();
+        codingRepairMutationShapeCounts.clear();
         codingValidationRepair = null;
       }
       return false;
@@ -776,6 +778,7 @@ export default function (pi) {
 
     const scope = codingRepairScope(input, result, ctx.cwd);
     const informedByDiagnostics = Array.isArray(result.diagnostics) && result.diagnostics.length > 0;
+    const rewriteEligiblePaths = codingRepairRewriteEligiblePaths(result, ctx.cwd);
     codingValidationRepair = {
       status: 'fail',
       kind: identity.kind,
@@ -792,6 +795,8 @@ export default function (pi) {
       evidenceGateReleased: !informedByDiagnostics && scope.paths.length === 0,
       paths: scope.paths,
       diagnosticLines: scope.diagnosticLines,
+      rewriteEligiblePaths,
+      thinkingRequestUsed: false,
     };
 
     console.warn(`PI_CODING_REPAIR_STATE ${JSON.stringify({
@@ -807,6 +812,9 @@ export default function (pi) {
       informedByDiagnostics: codingValidationRepair.informedByDiagnostics,
       readRequiredBeforeMutation: codingValidationRepair.readRequiredBeforeMutation,
       evidenceGateReleased: codingValidationRepair.evidenceGateReleased,
+      rewriteEligiblePaths: codingValidationRepair.rewriteEligiblePaths,
+      wholeFileRewriteLimit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
+      thinkingPolicy: 'one_reasoning_request_per_validation_failure',
     })}`);
     // The next response must take a concrete repair step. Because bounded read is now part of
     // the repair surface, provider-level required tool choice cannot force a blind mutation.
@@ -836,7 +844,7 @@ export default function (pi) {
       ? `You may read only these repair-relevant failing/changed/import paths before the next repair: ${codingValidationRepair.paths.join(', ')}.`
       : 'No trusted bounded repair path is available, so the read-before-mutation evidence gate is released rather than dead-ending the repair state.';
     await pi.sendUserMessage(
-      `RUNTIME REPAIR EVIDENCE: validation failed. ${evidenceGuidance} ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. When a bounded read route exists, a semantic repair mutation without structured diagnostics must use it first. Repair convergence is tracked per kind+scope; a same-kind passing scope clears a failed scope only when coverage is provable, and only a strict reduction below the best failure set resets the non-improving counter.`,
+      `RUNTIME REPAIR EVIDENCE: validation failed. ${evidenceGuidance} ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. Prefer structural_edit, safe_edit, or a bounded edit that directly addresses the current diagnostics. A whole-file write of an existing path is blocked unless authoritative syntax/parse diagnostics justify one bounded replacement, and shrinking/changing failures do not reset that rewrite bound. When a bounded read route exists, a semantic repair mutation without structured diagnostics must use it first. Repair convergence is tracked per kind+scope; a same-kind passing scope clears a failed scope only when coverage is provable, and only a strict reduction below the best failure set resets the non-improving counter.`,
       { deliverAs: 'steer' },
     );
     return false;
