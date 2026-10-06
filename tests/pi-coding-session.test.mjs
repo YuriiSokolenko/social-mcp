@@ -1451,22 +1451,32 @@ test('#481 recovery guard fails closed after unrelated evidence when validation 
   assert.match(logs, /CODING_RECOVERY_FAIL_CLOSED_OK/);
 });
 
-test('#499 failing pytest exposes bounded repair evidence and changing failure sets keep converging', () => {
+test('#499 failing pytest exposes bounded repair evidence and strict failure-set reduction remains repairable', () => {
   const logs = runtimeScenario('repair-evidence');
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
   assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
-  assert.ok((logs.match(/PI_CODING_REPAIR_STATE .*"equivalentFailures":1/g) ?? []).length >= 2);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
   assert.match(logs, /CODING_REPAIR_EVIDENCE_OK/);
 });
 
-test('#499 equivalent pytest failures are bounded despite whole-file rewrites', () => {
+test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failure flip-flops', () => {
   const logs = runtimeScenario('repair-nonconvergent');
-  assert.match(logs, /PI_CODING_REPAIR_STATE .*"equivalentFailures":2/);
-  assert.match(logs, /PI_CODING_REPAIR_STATE .*"equivalentFailures":3/);
-  assert.match(logs, /PI_CODING_VALIDATION_NON_CONVERGENT .*"worktree_preserved":true/);
+  assert.ok((logs.match(/PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/g) ?? []).length >= 1);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"strictReduction":false/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":3.*"strictReduction":false/);
+  assert.match(logs, /PI_CODING_VALIDATION_NON_CONVERGENT .*"seen_signatures":2.*"worktree_preserved":true/);
   assert.match(logs, /CODING_REPAIR_NONCONVERGENT_OK/);
+});
+
+test('#499 only a pass for the same kind+scope clears convergence history', () => {
+  const logs = runtimeScenario('repair-pass-reset');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"cleared".*"reason":"validation_pass_same_scope"/);
+  const postReset = logs.slice(logs.indexOf('validation_pass_same_scope'));
+  assert.match(postReset, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1/);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_PASS_RESET_OK/);
 });
 
 test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
