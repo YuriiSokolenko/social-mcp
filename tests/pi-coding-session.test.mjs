@@ -833,13 +833,14 @@ function runtimeScenario(mode) {
           await settleRepairRetry('malformed-shrunk');
           assert.equal(childAborts, 0);
 
-          await childCall('safe_edit', {
+          const broadEdit = await childCall('safe_edit', {
             path: 'test_generated.py',
             operation: 'replace',
             start_line: 1,
             end_line: 5,
             text: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# regenerated through safe_edit',
           });
+          assert.equal(broadEdit.block, true, 'near-full safe_edit is recognized by requested mutation span before execution');
           assert.equal(childAborts, 1, 'near-full safe_edit cannot bypass the broad mutation bound');
           assert.equal(fs.readFileSync(cwd + '/test_generated.py', 'utf8'), firstRewriteContent, 'broad edit is rolled back to the last useful checkpoint');
           console.log('CODING_REPAIR_BROAD_EDIT_LIMIT_OK');
@@ -1743,7 +1744,8 @@ test('#506 systemic repair allows one whole-file rewrite, preserves its counter 
 
 test('#506 broad safe_edit cannot bypass the repair regeneration limit', () => {
   const logs = runtimeScenario('repair-broad-edit-limit');
-  assert.match(logs, /PI_CODING_REPAIR_ABORT .*"mutation_shape":"broad_edit".*"broad_mutation_count":1.*"worktree_preserved":true.*"reverted":true/);
+  assert.match(logs, /PI_CODING_REPAIR_BROAD_REWRITE_LIMIT .*"mutation_shape":"broad_edit".*"broad_mutation_count":1.*"worktree_preserved":true/);
+  assert.match(logs, /PI_CODING_REPAIR_ABORT .*"mutation_shape":"broad_edit".*"broad_mutation_count":1.*"worktree_preserved":true/);
   assert.match(logs, /CODING_REPAIR_BROAD_EDIT_LIMIT_OK/);
 });
 
