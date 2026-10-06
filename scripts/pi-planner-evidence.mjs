@@ -235,9 +235,38 @@ export default function (pi) {
   let resultSubmitted = false;
   let resultCallPending = false;
   let resultSucceeded = false;
+  let initialResultReserved = false;
+  let outputOnlyResultReserved = false;
   const blockedResultCallIds = new Set();
+  // Capture raw argument deltas before Pi's streaming JSON parser reduces them to objects.
+  // Completed message records then reserve per-call admission slots before schema validation.
+  let streamedResultArguments = new Map();
+  const observedResultCalls = [];
   const gate = createPlannerEvidenceGate(evidenceBudget());
   const pendingEvidence = new Map();
+
+  function reservePlannerResultCall({ id = null, rawArguments, message = null } = {}) {
+    resultAttempts += 1;
+    let allowed;
+    if (outputOnly) {
+      allowed = !outputOnlyResultReserved;
+      outputOnlyResultReserved = true;
+    } else if (repairActive) {
+      allowed = !repairAttempted;
+      if (allowed) repairAttempted = true;
+    } else {
+      allowed = !initialResultReserved;
+      initialResultReserved = true;
+    }
+    const siblingOfAdmittedCall = !allowed && observedResultCalls.some(call => call.allowed && message && call.message === message);
+    const call = { id, rawArguments, allowed, siblingOfAdmittedCall, message, toolCallSeen: false, toolResultSeen: false };
+    observedResultCalls.push(call);
+    resultSubmitted = true;
+    console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, repair: repairActive, source: message ? 'pre_validation_message' : 'runtime' })}`);
+    if (allowed) recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
+    return call;
+  }
+
   // Write an explicit zero before any evidence call. If the child cannot see/write the
   // parent's sidecar path, the parent reports evidenceUsed=null rather than a false zero.
   recordEvidenceState(gate, { used: 0 });
@@ -272,36 +301,34 @@ export default function (pi) {
 
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName === PLANNER_RESULT_TOOL) {
-      resultAttempts += 1;
+      let observed = observedResultCalls.find(call => !call.toolCallSeen && event.toolCallId && call.id === event.toolCallId);
+      if (!observed) observed = observedResultCalls.find(call => !call.toolCallSeen && !call.id);
+      if (observed) observed.toolCallSeen = true;
+      else {
+        observed = reservePlannerResultCall({ id: event.toolCallId ?? null });
+        observed.toolCallSeen = true;
+      }
       resultSubmitted = true;
       resultCallPending = true;
-      if (outputOnly && resultAttempts > 1) {
-        if (!resultSucceeded) {
+      if (!observed.allowed) {
+        if (outputOnly && !resultSucceeded) {
           const diagnostic = 'Output-only Planner recovery attempted structured_output more than once.';
           recordPlannerResultState({ resultAttempts, repairStatus: 'failed', repairDiagnostic: diagnostic, repairKind: 'output_only_attempt_limit' });
         }
-        const eventName = resultSucceeded ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
-        console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: 0, reason: 'output_only_second_result_blocked' })}`);
+        const eventName = resultSucceeded || observed.siblingOfAdmittedCall ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
+        console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: repairAttempted ? 1 : 0, reason: 'result_attempt_limit' })}`);
         if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
-        if (!resultSucceeded) ctx?.abort?.();
-        return { block: true, reason: 'Output-only Planner recovery allows exactly one structured_output call.' };
+        // Rejecting a sibling call must not abort the same provider response's first admitted
+        // result call. A rejected repair result itself aborts in tool_result; an extra repair call
+        // is only blocked, preserving the existing single-repair lifecycle.
+        if (!resultSucceeded && !observed.siblingOfAdmittedCall && !repairActive) ctx?.abort?.();
+        const reason = outputOnly
+          ? 'Output-only Planner recovery allows exactly one structured_output call.'
+          : repairActive
+            ? 'Planner result repair is limited to one structured_output attempt; stop now.'
+            : 'Planner allows one initial structured_output call before repair.';
+        return { block: true, reason };
       }
-      if (!repairActive && !outputOnly && resultAttempts > 1) {
-        const eventName = resultSucceeded ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
-        console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: 0, reason: 'first_attempt_second_result_blocked' })}`);
-        if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
-        if (!resultSucceeded) ctx?.abort?.();
-        return { block: true, reason: 'Planner allows one initial structured_output call before repair.' };
-      }
-      if (repairActive && repairAttempted) {
-        const eventName = resultSucceeded ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
-        console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: 1, reason: 'second_result_call_blocked' })}`);
-        if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
-        return { block: true, reason: 'Planner result repair is limited to one structured_output attempt; stop now.' };
-      }
-      if (repairActive) repairAttempted = true;
-      console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, repair: repairActive })}`);
-      recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
       return undefined;
     }
     if (resultSubmitted) {
@@ -322,23 +349,70 @@ export default function (pi) {
     return { block: true, reason: admission.reason };
   });
 
+  pi.on('message_start', (event) => {
+    if (event?.message?.role === 'assistant') streamedResultArguments = new Map();
+  });
+
+  // Keep the provider's original JSON deltas. `toolCall.arguments` on the completed assistant
+  // message is best-effort parsed JSON, which loses the source text for incomplete arguments.
+  pi.on('message_update', (event) => {
+    const update = event?.assistantMessageEvent;
+    if (update?.type !== 'toolcall_delta') return;
+    const block = update.partial?.content?.[update.contentIndex];
+    if (block?.type !== 'toolCall' || block.name !== PLANNER_RESULT_TOOL) return;
+    const key = block.id || `index:${update.contentIndex}`;
+    streamedResultArguments.set(key, (streamedResultArguments.get(key) ?? '') + String(update.delta ?? ''));
+  });
+
+  // The completed assistant message arrives before Pi validates or executes tool arguments.
+  // Reserve admission per call so a second sibling cannot make the first call look like a retry.
+  pi.on('message_end', async (event) => {
+    const message = event?.message;
+    if (message?.role !== 'assistant' || !Array.isArray(message.content)) return;
+    if (message.stopReason === 'error' || message.stopReason === 'aborted') return;
+    for (const block of message.content) {
+      if (block?.type !== 'toolCall' || block.name !== PLANNER_RESULT_TOOL) continue;
+      const id = typeof block.id === 'string' && block.id ? block.id : null;
+      if (observedResultCalls.some(call => call.id && call.id === id)) continue;
+      const key = id || `index:${message.content.indexOf(block)}`;
+      const rawArguments = streamedResultArguments.has(key)
+        ? streamedResultArguments.get(key)
+        : Object.hasOwn(block, 'arguments') ? block.arguments : undefined;
+      reservePlannerResultCall({ id, rawArguments, message });
+      resultSubmitted = true;
+      resultCallPending = true;
+    }
+    streamedResultArguments = new Map();
+  });
+
   pi.on('tool_result', async (event, ctx) => {
     if (event?.toolName !== PLANNER_RESULT_TOOL) return undefined;
     if (event.toolCallId && blockedResultCallIds.delete(event.toolCallId)) {
       resultCallPending = false;
       return undefined;
     }
+    let observed = observedResultCalls.find(call => !call.toolResultSeen && event.toolCallId && call.id === event.toolCallId);
+    if (!observed && event.toolCallId) observed = observedResultCalls.find(call => !call.toolResultSeen && !call.id);
+    if (!observed) observed = observedResultCalls.find(call => !call.toolResultSeen && call.toolCallSeen);
+    if (observed) {
+      observed.toolResultSeen = true;
+      if (!observed.allowed) return undefined;
+    }
     if (resultSucceeded) return undefined;
     resultSubmitted = true;
-    if (resultCallPending) resultCallPending = false;
+    if (observed || resultCallPending) resultCallPending = false;
     else {
-      resultAttempts += 1;
+      observed = reservePlannerResultCall({ id: event.toolCallId ?? null });
       console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, repair: repairActive, source: 'tool_result_without_tool_call' })}`);
       recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
     }
     if (event.isError) {
-      const diagnostic = safeDiagnostic(event);
-      const repairKind = /(?:unexpected end|unterminated|incomplete|invalid json|json parse|parse error)/i.test(diagnostic)
+      const rawArguments = observed?.rawArguments;
+      const diagnostic = plannerRepairDiagnostic(rawArguments, event);
+      const rawArgumentsMalformed = typeof rawArguments === 'string' && (() => {
+        try { JSON.parse(rawArguments); return false; } catch { return true; }
+      })();
+      const repairKind = rawArgumentsMalformed || /(?:unexpected end|unterminated|incomplete|invalid json|json parse|parse error)/i.test(diagnostic)
         ? 'malformed_arguments'
         : 'schema_rejection';
       if (!repairActive && !outputOnly) {
@@ -373,19 +447,34 @@ export default function (pi) {
   });
 }
 
-function safeDiagnostic(event) {
+function safeDiagnostic(event, maxLength = 400) {
   const pieces = [];
   for (const value of [event?.details, event?.content]) {
     if (typeof value === 'string') pieces.push(value);
     else if (Array.isArray(value)) pieces.push(value.map(item => typeof item?.text === 'string' ? item.text : '').filter(Boolean).join(' '));
     else if (value && typeof value === 'object') pieces.push(JSON.stringify(value));
   }
-  const diagnostic = pieces.join(' ').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return (diagnostic || 'The tool arguments failed schema validation; preserve the existing plan and facts.')
+  return sanitizeDiagnosticText(pieces.join(' '), maxLength)
+    || 'The tool arguments failed schema validation; preserve the existing plan and facts.';
+}
+
+function plannerRepairDiagnostic(rawArguments, event) {
+  // Reserve space for both channels. Put Pi's actionable validation error first, and bound the
+  // argument preview independently so a large but valid JSON object cannot erase the error.
+  const validation = safeDiagnostic(event, 220);
+  const argumentText = typeof rawArguments === 'string'
+    ? rawArguments
+    : rawArguments === undefined ? '' : JSON.stringify(rawArguments);
+  const argumentPreview = argumentText ? sanitizeDiagnosticText(argumentText, 150) : '';
+  return `${validation}${argumentPreview ? ` | arguments preview: ${argumentPreview}` : ''}`.slice(0, 400);
+}
+
+function sanitizeDiagnosticText(value, maxLength) {
+  return String(value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
     .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, '[redacted pem]')
     .replace(/\b(?:gh[pousr]_|sk-)[A-Za-z0-9_-]{12,}\b/g, '[redacted credential]')
     .replace(/((?:api[_-]?key|token|password|secret)\s*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,\s]+)/gi, '$1[redacted]')
-    .slice(0, 400);
+    .slice(0, maxLength);
 }
 
 function recordPlannerResultState({ resultAttempts, repairStatus, repairDiagnostic = null, repairKind = null }) {
