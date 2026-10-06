@@ -85,6 +85,15 @@ jobs:
           cd "$JOB_DIR"
           node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" repair
 
+      - name: Upload sanitized runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-diagnostics-repair-${{ inputs.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-diagnostics-repair-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Verify and publish repair
         id: publish
         if: steps.load.outputs.skip != 'true'
@@ -100,4 +109,3 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/repair-publication.mjs" review "$PR"
-

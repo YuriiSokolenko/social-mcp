@@ -67,3 +67,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-dispatcher.mjs" apply "$RUNNER_TEMP/pi-dispatcher-result.jsonl"
+
+      - name: Upload sanitized runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-diagnostics-dispatcher-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-diagnostics-dispatcher-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 7

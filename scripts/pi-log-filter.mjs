@@ -2,6 +2,7 @@
 
 import readline from "node:readline";
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import { appendDiagnostic } from "./pi-common/diagnostics-artifact.mjs";
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const tty = process.stdout.isTTY || Boolean(process.env.GITHUB_ACTIONS);
@@ -51,6 +52,12 @@ const call = process.env.PI_CALL ?? "main";
 const summaryFile = process.env.GITHUB_STEP_SUMMARY;
 const activityFile = process.env.PI_ACTIVITY_FILE;
 const runtimeFailureFile = process.env.PI_RUNTIME_FAILURE_FILE;
+const diagnosticsFile = process.env.PI_DIAGNOSTICS_FILE;
+let diagnosticNumber = 0;
+const ARGS_DISPLAY_CHARS = 4000;
+const RESULT_DISPLAY_CHARS = 8000;
+let lastRelevantTool = "none";
+let lastRelevantCheck = "none";
 
 function runtimeFailureSignature() {
   if (!runtimeFailureFile || !existsSync(runtimeFailureFile)) return null;
@@ -110,13 +117,19 @@ function redact(value, key = "") {
     return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redact(v, k)]));
   }
   if (typeof value === "string") {
-    return value
+    let sanitized = value
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
       .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
       .replace(/::add-mask::[^\r\n]*/gi, "::add-mask::[REDACTED]")
-      .replace(/\b([A-Za-z_][A-Za-z0-9_-]*)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/g, (match, name, quote, separator) =>
+      .replace(/\b([A-Za-z_][A-Za-z0-9_-]*)(["']?)\s*([=:])\s*(?:"[^"]*"|'[^']*'|[^\s&,;]+)/g, (match, name, quote, separator) =>
         sensitiveKey.test(name) ? `${name}${quote}${separator}[REDACTED]` : match)
       .replace(/\b(gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g, "[REDACTED]");
+    const knownSecrets = Object.entries(process.env)
+      .filter(([name, secret]) => sensitiveKey.test(name) && typeof secret === "string" && secret.length > 0)
+      .map(([, secret]) => secret)
+      .sort((left, right) => right.length - left.length);
+    for (const secret of knownSecrets) sanitized = sanitized.replaceAll(secret, "[REDACTED]");
+    return sanitized;
   }
   return value;
 }
@@ -178,7 +191,7 @@ function closeGroup() {
 function startGroup(title, color = C.blue) {
   closeGroup();
   if (process.env.GITHUB_ACTIONS) {
-    console.log("::group::" + oneLine(title, 130));
+    console.log("::group::" + oneLine(`[PI][${phase}/${call}] ${title}`, 160));
     openGroup = true;
   } else {
     console.log(color + C.bold + title + C.reset);
@@ -260,7 +273,7 @@ function usageSummary(usage) {
 function heading(icon, text, color = C.cyan) {
   closeGroup();
   ensureNewline();
-  console.log(color + C.bold + icon + " " + text + C.reset);
+  console.log(color + C.bold + `[PI][${phase}/${call}] ` + icon + " " + text + C.reset);
 }
 
 function oneLine(value, limit = 110) {
@@ -273,7 +286,50 @@ function detailLines(text, color = C.dim) {
   for (const line of String(text).split(/\r\n|\r|\n/)) console.log("  " + color + line + C.reset);
 }
 
+function nextDiagnosticId(kind) {
+  const safe = value => String(value).replace(/[^A-Za-z0-9_-]/g, "_");
+  return `${kind}-${process.pid}-${safe(phase)}-${safe(call)}-${++diagnosticNumber}`;
+}
+
+function checkSummary(result) {
+  let check = result?.details;
+  if (!check || typeof check !== "object" || typeof check.status !== "string") {
+    try { check = JSON.parse(String(extractResultText(result))); }
+    catch { return null; }
+  }
+  if (!check || typeof check !== "object" || typeof check.status !== "string" || typeof check.kind !== "string") return null;
+  const failures = Array.isArray(check.diagnostics) ? check.diagnostics.length : 0;
+  const exit = check.exit_code == null ? "unknown" : check.exit_code;
+  const elapsed = Number.isFinite(check.duration_ms) ? duration(check.duration_ms) : "unknown";
+  const note = typeof check.summary === "string" ? ` summary=${oneLine(check.summary, 110)}` : "";
+  return `[PI][check] ${check.kind} ${check.status} exit=${exit} failures=${failures} duration=${elapsed}${note}`;
+}
+
 function printToolDetails(title, args, result, isError) {
+  const safeArgs = args == null ? null : stringify(args, Number.MAX_SAFE_INTEGER);
+  const completeOutput = result == null ? null : String(extractResultText(result));
+  const needsArtifact = isError || (safeArgs?.length ?? 0) > ARGS_DISPLAY_CHARS || (completeOutput?.length ?? 0) > RESULT_DISPLAY_CHARS;
+  const diagnosticId = needsArtifact ? nextDiagnosticId("event") : null;
+  const hasArtifact = needsArtifact && appendDiagnostic(diagnosticsFile, {
+    id: diagnosticId,
+    at: new Date().toISOString(),
+    phase,
+    call,
+    type: isError ? "tool_failure" : "truncated_tool_detail",
+    title,
+    arguments: args ?? null,
+    result: result ?? null,
+  });
+  if (typeof result?.details?.kind === "string" || title.startsWith("run_check") || title.startsWith("retry_last_failed_check")) {
+    const summary = checkSummary(result);
+    if (summary) {
+      console.log((/ (?:fail|timeout|infra_error) /.test(summary) ? C.red : C.cyan) + summary + C.reset);
+      const check = result?.details;
+      if (check?.kind && check?.status) lastRelevantCheck = `${check.kind}:${check.status}`;
+      else lastRelevantCheck = summary.match(/^\[PI\]\[check\] (\S+ \S+)/)?.[1]?.replace(" ", ":") ?? lastRelevantCheck;
+    }
+  }
+  lastRelevantTool = title;
   // GitHub's raw log only folds one level deep, so a tool call gets a single
   // group (or, with nothing to show, a single plain line) titled with
   // everything useful for scanning without expanding it.
@@ -281,21 +337,51 @@ function printToolDetails(title, args, result, isError) {
     heading(isError ? "✗" : "✓", title, isError ? C.red : C.green);
     return;
   }
-  startGroup((isError ? "✗ " : "✓ ") + title, isError ? C.red : C.green);
+  if (isError) heading("✗", title, C.red);
+  else startGroup("✓ " + title, C.green);
   try {
     if (args != null) {
       console.log(C.dim + "Arguments:" + C.reset);
-      detailLines(stringify(args, 16000), C.magenta);
+      detailLines(truncate(safeArgs, ARGS_DISPLAY_CHARS), C.magenta);
+      if (safeArgs.length > ARGS_DISPLAY_CHARS) detailLines(`[PI][details] truncated ${safeArgs.length} -> ${ARGS_DISPLAY_CHARS} chars; full sanitized event ${diagnosticId} in ${hasArtifact ? diagnosticsFile.split(/[\\/]/).at(-1) : "diagnostic artifact unavailable"}`);
     }
     if (result != null) {
-      const output = truncate(String(extractResultText(result)), 32000);
+      const output = truncate(completeOutput, RESULT_DISPLAY_CHARS);
       if (output.trim()) {
         console.log(C.dim + "Result:" + C.reset);
         detailLines(output, isError ? C.red : C.dim);
+        if (completeOutput.length > RESULT_DISPLAY_CHARS) detailLines(`[PI][details] truncated ${completeOutput.length} -> ${RESULT_DISPLAY_CHARS} chars; full sanitized event ${diagnosticId} in ${hasArtifact ? diagnosticsFile.split(/[\\/]/).at(-1) : "diagnostic artifact unavailable"}`);
       }
     }
   } finally {
-    closeGroup();
+    if (!isError) closeGroup();
+  }
+}
+
+function reportFailureDiagnostic(runStatus) {
+  let failure;
+  try {
+    failure = runtimeFailureFile && existsSync(runtimeFailureFile)
+      ? JSON.parse(readFileSync(runtimeFailureFile, "utf8"))
+      : { stage: phase, failure_code: "RUNTIME_FAILURE_METADATA_UNAVAILABLE", checkpoint: {} };
+    const id = nextDiagnosticId("runtime-failure");
+    const stored = appendDiagnostic(diagnosticsFile, { id, at: new Date().toISOString(), phase, call, type: "runtime_failure", failure });
+    const lifecycle = `${failure.stage ?? phase}/${call}`;
+    const category = oneLine(failure.failure_code ?? failure.code ?? failure.reason ?? "runtime_failure_metadata_unavailable", 100);
+    const finalStatus = String(failure.failure_code ?? "").includes("BLOCKED") ? "blocked"
+      : String(failure.failure_code ?? "").includes("CANCEL") ? "cancelled"
+        : failure.failure_code === "RUNTIME_FAILURE_METADATA_UNAVAILABLE" ? runStatus
+          : "failed";
+    const preserved = failure.checkpoint?.worktree_preserved === true ? "true" : failure.checkpoint?.worktree_preserved === false ? "false" : "unknown";
+    const detail = stored ? `${diagnosticsFile.split(/[\\/]/).at(-1)}#${id}` : "unavailable";
+    const usage = measuredResponses ? usageSummary(totals) : "tokens unavailable";
+    const failureSummary = `[PI][failure] lifecycle=${lifecycle} status=${finalStatus} category=${category} last_tool=${oneLine(lastRelevantTool, 100)} last_check=${lastRelevantCheck} worktree_preserved=${preserved} usage="${usage}" diagnostics=${detail}`;
+    console.log(C.red + failureSummary + C.reset);
+  } catch {
+    const id = nextDiagnosticId("runtime-failure");
+    const stored = appendDiagnostic(diagnosticsFile, { id, at: new Date().toISOString(), phase, call, type: "runtime_failure_metadata_invalid" });
+    const usage = measuredResponses ? usageSummary(totals) : "tokens unavailable";
+    console.log(C.red + `[PI][failure] lifecycle=${phase}/${call} status=failed category=RUNTIME_FAILURE_METADATA_INVALID last_tool=${oneLine(lastRelevantTool, 100)} last_check=${lastRelevantCheck} worktree_preserved=unknown usage="${usage}" diagnostics=${stored ? `${diagnosticsFile.split(/[\\/]/).at(-1)}#${id}` : "unavailable"}` + C.reset);
   }
 }
 
@@ -321,7 +407,10 @@ function reportFinal(status) {
   const elapsed = Date.now() - sessionStarted;
   heading(status === "completed" ? "■" : "◼", `Agent ${status} · ${duration(elapsed)}`, status === "completed" ? C.green : C.yellow);
   console.log(C.gray + `Model totals (${measuredResponses} responses): ${measuredResponses ? usageSummary(totals) : "tokens unavailable"} · response time ${duration(totalResponseMs)} · tools ${toolCount}` + C.reset);
-  if (status !== "completed") console.log(C.yellow + "Only completed model responses are counted." + C.reset);
+  if (status !== "completed") {
+    console.log(C.yellow + "Only completed model responses are counted." + C.reset);
+    reportFailureDiagnostic(status);
+  }
   buildJobSummary(status);
 }
 
@@ -530,6 +619,7 @@ for await (const line of rl) {
       const summaryRecord = { name, hint, args: event.args, isError: false, result: undefined, ms: null };
       getCurrentTurn().tools.push(summaryRecord);
       activeTools.set(event.toolCallId, { name, args: event.args, at: Date.now(), summaryRecord });
+      lastRelevantTool = name;
       recordActivity("tool_start", { tool: name });
       toolCount += 1;
       heading("🔧", name + (hint ? " · " + oneLine(hint) : ""), C.magenta);
@@ -576,8 +666,14 @@ for await (const line of rl) {
     case "auto_retry_start": heading("↻", "Automatic retry", C.yellow); break;
     case "auto_retry_end": heading("✓", "Retry finished", C.green); break;
     case "extension_error":
-      heading("✗", "Extension error", C.red);
-      console.log(C.red + stringify(event, 4000) + C.reset);
+      {
+        const fullEvent = stringify(event, Number.MAX_SAFE_INTEGER);
+        const id = nextDiagnosticId("extension-error");
+        const stored = appendDiagnostic(diagnosticsFile, { id, at: new Date().toISOString(), phase, call, type: "extension_error", event });
+        heading("✗", "Extension error", C.red);
+        detailLines(truncate(fullEvent, 4000), C.red);
+        if (fullEvent.length > 4000) detailLines(`[PI][details] truncated ${fullEvent.length} -> 4000 chars; full sanitized event ${id} in ${stored ? diagnosticsFile.split(/[\\/]/).at(-1) : "diagnostic artifact unavailable"}`);
+      }
       break;
     case "agent_end": {
       closeGroup();

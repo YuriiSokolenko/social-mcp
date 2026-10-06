@@ -152,6 +152,7 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
   assert.equal(spec.environment.PI_PHASE, 'dispatcher');
   assert.equal(spec.environment.PI_VALIDATION_RUN_ID, '123-2');
   assert.equal(spec.environment.PI_ISSUE, '42');
+  assert.equal(spec.environment.PI_DIAGNOSTICS_FILE, '/tmp/runner/pi-diagnostics-dispatcher-123-2.jsonl');
   assert.equal(spec.environment.PI_BASH_TIMEOUT_SECONDS, '600');
   assert.equal(spec.artifacts.terminalResultPath, '/tmp/runner/pi-terminal-123-2');
   assert.equal(spec.artifacts.metricsPath, '/tmp/runner/pi-usage-123-2.jsonl');

@@ -24,6 +24,7 @@ export default function (pi) {
     try {
       const prepared = await prepareImplementation(pi, ctx, config, undefined);
       writePreparedImplementation(file, prepared);
+      console.log(`[PI][planner] completed status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence=${prepared.plannerEvidenceUsed ?? 'unknown'}/${prepared.plannerEvidenceCap ?? config.implementationPlannerEvidenceBudget} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${prepared.plannerUsage?.input ?? 'unknown'} out=${prepared.plannerUsage?.output ?? 'unknown'}`);
       console.log(`PI_BOOTSTRAP ${JSON.stringify({
         phase: 'planner_completed',
         status: prepared.status,
@@ -37,6 +38,7 @@ export default function (pi) {
       })}`);
     } catch (error) {
       // No artifact is written: the runner treats a missing artifact as a bootstrap failure.
+      console.warn(`[PI][planner] completed status=failed reason=${String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 160)}`);
       console.warn(`PI_BOOTSTRAP ${JSON.stringify({ phase: 'failed', error: String(error?.message ?? error) })}`);
       fs.rmSync(file, { force: true });
     } finally {

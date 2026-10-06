@@ -237,6 +237,7 @@ function loadPreparedImplementation(env = process.env) {
 function logPreparedImplementation(prepared, applied) {
   const stage = 'implementer';
   const usage = prepared.plannerUsage ?? null;
+  console.log(`[PI][planner] prepared status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence=${prepared.plannerEvidenceUsed ?? 'unknown'}/${prepared.plannerEvidenceCap ?? 'unknown'} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${usage?.input ?? 'unknown'} out=${usage?.output ?? 'unknown'}`);
   if (prepared.status === 'fallback') {
     console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
       stage,
@@ -285,6 +286,13 @@ function logPreparedImplementation(prepared, applied) {
 
 function codingSessionLog(phase, fields) {
   const line = `PI_CODING_SESSION ${JSON.stringify({ phase, ...fields })}`;
+  const summaryFields = ['side', 'agent', 'tool', 'status', 'durationMs', 'reason']
+    .filter(key => fields[key] != null)
+    .map(key => `${key}=${String(fields[key]).replace(/\s+/g, ' ').slice(0, 100)}`)
+    .join(' ');
+  const readable = `[PI][coding] phase=${phase}${summaryFields ? ` ${summaryFields}` : ''}`;
+  if (['failed', 'rejected', 'cancelled', 'blocked', 'ended_without_submit'].includes(phase)) console.warn(readable);
+  else console.log(readable);
   if (['failed', 'rejected', 'cancelled'].includes(phase)) console.warn(line);
   else console.log(line);
 }
@@ -738,6 +746,7 @@ export default function (pi) {
   function recordRuntimeAbort(failureCode, reason, details = {}) {
     const record = {
       ...details,
+      checkpoint: details.checkpoint ?? { repository_state: null, worktree_preserved: true },
       schema_version: 1,
       stage,
       failure_class: 'model_execution_abort',
@@ -933,6 +942,15 @@ export default function (pi) {
       obligationKind: loopResult.obligation?.kind ?? null,
     };
     console.log('PI_LOOP_GUARD ' + JSON.stringify(metric));
+    if (loopResult.repeatedFailure === true) {
+      console.warn(`[PI][recovery] equivalent_failure ${JSON.stringify({
+        stage: loopResult.stage,
+        signature: loopResult.errorClass ?? loopResult.fingerprintClass ?? null,
+        count: loopResult.revisitCount ?? null,
+        action: loopResult.action,
+        tool: loopResult.tool,
+      })}`);
+    }
 
     const terminalFailure =
       loopResult.reason === 'repeated_failed_strategy' &&
@@ -1525,6 +1543,7 @@ export default function (pi) {
       });
       if (retry) {
         console.info(`PI_RUN_CHECK_RETRY ${JSON.stringify({ stage, kind: result.kind, scope, status: result.status })}`);
+        console.info(`[PI][recovery] check_retry ${JSON.stringify({ stage, kind: result.kind, status: result.status, duration_ms: result.duration_ms })}`);
       }
       const deterministicInfrastructureCode = result.status === 'infra_error'
         ? result.infrastructure?.code ?? null
