@@ -532,6 +532,9 @@ export default function (pi) {
       diagnosticLines: codingValidationRepair.diagnosticLines,
       informedByDiagnostics: codingValidationRepair.informedByDiagnostics,
     })}`);
+    // The next response must take a concrete repair step. Because bounded read is now part of
+    // the repair surface, provider-level required tool choice cannot force a blind mutation.
+    requireToolOnNextProviderRequest = true;
 
     if (equivalentFailures >= CODING_EQUIVALENT_FAILURE_LIMIT) {
       const reason = `Authoritative validation returned the same failing signature ${equivalentFailures} times without failure-set improvement. Refusing further blind rewrites.`;
