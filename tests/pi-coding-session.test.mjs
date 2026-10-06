@@ -477,6 +477,20 @@ function runtimeScenario(mode) {
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 3000 } } }, childCtx);
           return result;
         };
+        const settleRepairRetry = async variant => {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const event = { toolName: 'retry_last_failed_check', toolCallId: 'repair-retry-' + turn, input: {} };
+          const blocked = await childHandlers.get('tool_call')(event, childCtx);
+          assert.equal(blocked, undefined, 'exact retry passes the real runtime gate');
+          const result = repairFailure(variant);
+          appendRepairFailure({ targets: ['test_generated.py'] }, result);
+          await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            details: result,
+          } }, childCtx);
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 800 } } }, childCtx);
+          return result;
+        };
         if (mode === 'blocked') {
           await childCall('submit_result', { blocked_reason: 'A required behavior conflicts with a stated constraint.' });
           respond(request, { status: 'completed', result: { kind: 'text', value: 'blocked' }, usage: { output: 100 } });
