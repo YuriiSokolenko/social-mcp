@@ -1838,16 +1838,13 @@ function runtimeScenario(mode) {
         process.exit(0);
       }
       assert.ok(caps.filter(cap => cap !== 32000).every(cap => cap === 2048), 'parent stays at 2048: ' + caps);
-      if (mode === 'no-session') assert.equal(sessionRequests.length, 0, 'no fresh-prompt fallback');
-      else {
-        assert.equal(sessionRequests.length, 1);
-        assert.equal(sessionRequests[0].maxTokens, '16384');
-        assert.equal(sessionRequests[0].spec.maxTokens, 16384);
-        assert.doesNotMatch(sessionRequests[0].task, /abc123/, 'the constant is NOT handed over in the request');
-      }
-      if (['flow', 'fallback', 'restored', 'tampered', 'containment', 'no-submit', 'no-submit-parent-submit'].includes(mode)) {
+      assert.equal(sessionRequests.length, 1);
+      assert.equal(sessionRequests[0].maxTokens, '16384');
+      assert.equal(sessionRequests[0].spec.maxTokens, 16384);
+      assert.match(sessionRequests[0].task, /abc123/, 'new execution evidence is carried by the compact handoff');
+      if (['flow', 'fallback', 'restored', 'tampered', 'containment', 'no-session', 'no-submit', 'no-submit-parent-submit'].includes(mode)) {
         assert.ok(childCaps.length > 0 && childCaps.every(cap => cap === 16384), 'every coding-session response is 16384: ' + childCaps);
-        assert.match(fs.readFileSync(cwd + '/generated.py', 'utf8'), /REQUIRED_CONSTANT = "abc123"/, 'the fork used context the request never carried');
+        assert.match(fs.readFileSync(cwd + '/generated.py', 'utf8'), /REQUIRED_CONSTANT = "abc123"/, 'the coding child used the compact handoff without parent transcript inheritance');
         assert.equal(fs.readFileSync(cwd + '/generated.py', 'utf8').split('\\n')[1], 'HELP = "q: quit\\\\nr: restart"');
         assert.ok(fs.existsSync(cwd + '/test_generated.py'), 'the session wrote tests too');
       }
