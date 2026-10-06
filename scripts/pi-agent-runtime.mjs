@@ -25,6 +25,7 @@ import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
   appendCheckRecord,
+  groupKey,
   latestUnresolvedRunCheckFailure,
   normalizeScope,
   readValidationLedger,
@@ -103,6 +104,10 @@ const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 
 const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
+const CODING_REPAIR_READ_LIMIT = 2;
+// Five non-improving failures leaves room for bounded diagnostic phase changes
+// (for example collection/import -> assertions) without allowing an endless repair loop.
+const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
 const DETERMINISTIC_RUN_CHECK_INFRASTRUCTURE_CODES = new Set(['CHECK_ENV', 'CHECK_ENV_CONTRACT']);
 const DETERMINISTIC_TERMINAL_RECOVERY_KINDS = new Set([
   'metadata',
@@ -126,7 +131,7 @@ const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing y
 
 The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
 
-Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime; never invent helper names such as read_for_input. In action-required state, normal read may be hidden: if one concrete missing fact prevents the next safe action, call need_more_evidence with that missing fact and reason, then use the single evidence action the runtime exposes. Otherwise mutate, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime; never invent helper names such as read_for_input. In action-required state, normal read may be hidden: if one concrete missing fact prevents the next safe action, call need_more_evidence with that missing fact and reason, then use the single evidence action the runtime exposes. After a failing run_check, the runtime may expose bounded repair read access only for the failing/changed paths; use it when current fixture/source state is needed before the next repair, and do not broaden that into repository discovery. Tests must prefer public behavior and public APIs; do not mutate private/internal implementation state merely to manufacture fixture state unless the task explicitly requires internal-state testing. Otherwise mutate, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
 
 export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
   return {
@@ -387,6 +392,249 @@ export default function (pi) {
   // or authoritative validation settles; if neither route remains reachable, preserve the
   // worktree and fail closed instead of reopening mutation/fork capabilities.
   let codingRecoveryGuard = null;
+
+  // Ordinary validation repair inside a still-live coding-session fork is intentionally separate
+  // from codingRecoveryGuard, which protects parent-side recovery only after the fork has ended.
+  // A failed focused check opens a tiny read-only window over the authoritative failure scope and
+  // changed publishable files, without touching the Planner/main evidence budget.
+  let codingValidationRepair = null;
+  const codingValidationRepairHistory = new Map();
+  const pendingCodingRepairReads = new Map();
+
+  function normalizedCodingRepairPath(value, cwd) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const file = value.split('::')[0];
+    const root = path.resolve(cwd);
+    const absolute = path.isAbsolute(file) ? path.resolve(file) : path.resolve(root, file);
+    const relative = path.relative(root, absolute);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+    return relative.split(path.sep).join('/');
+  }
+
+  function normalizeCodingRepairDiagnosticText(value) {
+    return String(value ?? '')
+      .trim()
+      // Diagnostic text often embeds ephemeral paths, addresses and measured values.
+      // Keep the semantic wording while removing those volatile tokens from convergence identity.
+      .replace(/\b0x[0-9a-f]+\b/gi, '<hex>')
+      .replace(/\b[0-9a-f]{12,}\b/gi, '<hex>')
+      .replace(/[A-Za-z]:\\(?:[^\\\s"'():]+\\)+[^\\\s"'():]*/g, '<path>')
+      .replace(/\/(?:[^/\s"'():]+\/)+[^/\s"'():]*/g, '<path>')
+      .replace(/(^|[^\w])[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?:ns|us|µs|ms|s|bytes?|kb|mb|gb)?(?=$|[^\w])/gi, '$1<number>')
+      .replace(/\s+/g, ' ');
+  }
+
+  function codingRepairFailureSet(result, cwd) {
+    const diagnostics = (Array.isArray(result?.diagnostics) ? result.diagnostics : [])
+      .map(item => ({
+        file: normalizedCodingRepairPath(item?.file, cwd),
+        code: typeof item?.code === 'string' ? item.code : null,
+        message: normalizeCodingRepairDiagnosticText(item?.message),
+      }))
+      .filter(item => item.file || item.code || item.message)
+      .map(item => JSON.stringify(item))
+      .sort();
+    return diagnostics.length
+      ? [...new Set(diagnostics)]
+      : [JSON.stringify({ summary: normalizeCodingRepairDiagnosticText(result?.summary ?? 'check failed') })];
+  }
+
+  function codingRepairIdentity(input, result, cwd) {
+    const kind = typeof result?.kind === 'string' && result.kind
+      ? result.kind
+      : typeof input?.kind === 'string' && input.kind
+        ? input.kind
+        : 'unknown';
+    const scope = normalizeScope(input ?? {}, cwd);
+    const failures = codingRepairFailureSet(result, cwd);
+    return {
+      kind,
+      scope,
+      key: groupKey(kind, scope),
+      failures,
+      signature: JSON.stringify({ kind, scope, failures }),
+    };
+  }
+
+  function strictFailureSetReduction(current, best) {
+    if (!Array.isArray(best) || current.length >= best.length) return false;
+    const bestSet = new Set(best);
+    return current.every(item => bestSet.has(item));
+  }
+
+  function codingRepairScope(input, result, cwd) {
+    const paths = new Set();
+    const diagnosticLines = {};
+    const add = value => {
+      const normalized = normalizedCodingRepairPath(value, cwd);
+      if (normalized) paths.add(normalized);
+      return normalized;
+    };
+
+    for (const value of input?.paths ?? []) add(value);
+    for (const value of input?.targets ?? []) add(value);
+    for (const diagnostic of result?.diagnostics ?? []) {
+      const normalized = add(diagnostic?.file);
+      const line = Number(diagnostic?.line);
+      if (normalized && Number.isSafeInteger(line) && line > 0) {
+        const lines = diagnosticLines[normalized] ?? [];
+        if (!lines.includes(line) && lines.length < 8) lines.push(line);
+        diagnosticLines[normalized] = lines;
+      }
+    }
+
+    try {
+      const changed = new Set(
+        worktreeChangedFiles(cwd, baseRef())
+          .map(item => normalizedCodingRepairPath(item, cwd))
+          .filter(Boolean),
+      );
+      const accepted = mutationScopeReceipt(cwd, process.env).accepted ?? [];
+      for (const item of accepted) {
+        const normalized = normalizedCodingRepairPath(item?.path, cwd);
+        if (normalized && changed.has(normalized)) paths.add(normalized);
+      }
+    } catch (error) {
+      console.warn(`PI_CODING_REPAIR_SCOPE_WARN ${JSON.stringify({
+        stage,
+        error: String(error?.message ?? error),
+      })}`);
+    }
+
+    return {
+      paths: [...paths].sort().slice(0, 40),
+      diagnosticLines,
+    };
+  }
+
+  function codingRepairWindowActive() {
+    return Boolean(codingSession && codingValidationRepair?.status === 'fail');
+  }
+
+  function codingRepairReadAvailable() {
+    return Boolean(
+      codingRepairWindowActive() &&
+      codingValidationRepair.readsRemaining > 0 &&
+      controller.productiveProgressState() === 'action_required'
+    );
+  }
+
+  function codingRepairReadPolicy(input, cwd) {
+    if (!codingRepairReadAvailable()) return null;
+    const requested = normalizedCodingRepairPath(input?.path, cwd);
+    if (!requested || !codingValidationRepair.paths.includes(requested)) {
+      return {
+        block: true,
+        reason: `BLOCKED: repair read is limited to the authoritative failing/changed paths: ${codingValidationRepair.paths.join(', ') || '(none)'}. Broad repository discovery remains closed.`,
+      };
+    }
+    return {
+      allowed: true,
+      path: requested,
+      diagnosticLines: codingValidationRepair.diagnosticLines?.[requested] ?? [],
+    };
+  }
+
+  async function observeCodingValidationRepair(input, result, ctx) {
+    if (!codingSession || !result || typeof result !== 'object') return false;
+    const status = result.status ?? null;
+    const identity = codingRepairIdentity(input, result, ctx.cwd);
+
+    if (status === 'pass') {
+      const previous = codingValidationRepairHistory.get(identity.key) ?? null;
+      if (previous) codingValidationRepairHistory.delete(identity.key);
+      if (codingValidationRepair?.key === identity.key) {
+        console.info(`PI_CODING_REPAIR_STATE ${JSON.stringify({
+          stage,
+          status: 'cleared',
+          reason: 'validation_pass_same_scope',
+          key: identity.key,
+          previousNonImprovingFailures: previous?.nonImprovingFailures ?? null,
+        })}`);
+        codingValidationRepair = null;
+      }
+      return false;
+    }
+    // A pass/timeout/invalid/infra result for another kind+scope must not erase an unresolved
+    // pytest repair streak. Only a pass for the exact same kind+scope resolves that history.
+    if (status !== 'fail') return false;
+
+    const previous = codingValidationRepairHistory.get(identity.key) ?? null;
+    const strictReduction = Boolean(
+      previous &&
+      strictFailureSetReduction(identity.failures, previous.bestFailureSet),
+    );
+    const nonImprovingFailures = previous == null || strictReduction
+      ? 1
+      : previous.nonImprovingFailures + 1;
+    const bestFailureSet = previous == null || strictReduction
+      ? identity.failures
+      : previous.bestFailureSet;
+    const seenSignatures = new Set(previous?.seenSignatures ?? []);
+    seenSignatures.add(identity.signature);
+    codingValidationRepairHistory.set(identity.key, {
+      bestFailureSet,
+      nonImprovingFailures,
+      seenSignatures: [...seenSignatures].slice(-20),
+    });
+
+    const scope = codingRepairScope(input, result, ctx.cwd);
+    codingValidationRepair = {
+      status: 'fail',
+      key: identity.key,
+      signature: identity.signature,
+      nonImprovingFailures,
+      strictReduction,
+      bestFailureSet,
+      readsRemaining: CODING_REPAIR_READ_LIMIT,
+      readObserved: false,
+      informedByDiagnostics: Array.isArray(result.diagnostics) && result.diagnostics.length > 0,
+      paths: scope.paths,
+      diagnosticLines: scope.diagnosticLines,
+    };
+
+    console.warn(`PI_CODING_REPAIR_STATE ${JSON.stringify({
+      stage,
+      status: 'fail',
+      key: identity.key,
+      nonImprovingFailures,
+      strictReduction,
+      seenSignatures: seenSignatures.size,
+      limit: CODING_EQUIVALENT_FAILURE_LIMIT,
+      paths: codingValidationRepair.paths,
+      diagnosticLines: codingValidationRepair.diagnosticLines,
+      informedByDiagnostics: codingValidationRepair.informedByDiagnostics,
+    })}`);
+    // The next response must take a concrete repair step. Because bounded read is now part of
+    // the repair surface, provider-level required tool choice cannot force a blind mutation.
+    requireToolOnNextProviderRequest = true;
+
+    if (nonImprovingFailures >= CODING_EQUIVALENT_FAILURE_LIMIT) {
+      const reason = `Authoritative validation produced ${nonImprovingFailures} failures for the same kind+scope without a new strict reduction of the best failure set. Refusing further blind rewrites.`;
+      const details = {
+        validation_key: identity.key,
+        validation_signature: identity.signature,
+        non_improving_failures: nonImprovingFailures,
+        seen_signatures: seenSignatures.size,
+        limit: CODING_EQUIVALENT_FAILURE_LIMIT,
+        repair_paths: codingValidationRepair.paths,
+        checkpoint: { worktree_preserved: true },
+      };
+      recordRuntimeAbort('PI_CODING_VALIDATION_NON_CONVERGENT', reason, details);
+      console.error(`PI_CODING_VALIDATION_NON_CONVERGENT ${JSON.stringify({ stage, reason, ...details })}`);
+      await ctx.abort();
+      return true;
+    }
+
+    const neighborhoods = Object.entries(codingValidationRepair.diagnosticLines)
+      .map(([file, lines]) => `${file}:${lines.join(',')}`)
+      .join('; ');
+    await pi.sendUserMessage(
+      `RUNTIME REPAIR EVIDENCE: validation failed. You may read only these repair-relevant paths before the next repair: ${codingValidationRepair.paths.join(', ') || '(none)'}. ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. A semantic repair mutation must be informed by the diagnostics above or by one of these bounded reads. Repair convergence is tracked per exact kind+scope; only a pass of that same scope clears its history, and only a strict reduction below the best failure set resets the non-improving counter.`,
+      { deliverAs: 'steer' },
+    );
+    return false;
+  }
 
   function normalizedRecoveryEvidencePaths(input, cwd) {
     const candidates = [
@@ -657,9 +905,14 @@ export default function (pi) {
         name === config.productiveProgress?.codingSessionTool
       )
     );
+    const codingRepairBlocked = name => Boolean(
+      codingRepairWindowActive() &&
+      name === config.productiveProgress?.blockerTool
+    );
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
       !codingRecoveryBlocked(name) &&
+      !codingRepairBlocked(name) &&
       (!verificationTool || name !== verificationTool || (verificationVisible && !recoveryRetryReady)) &&
       (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
@@ -709,7 +962,10 @@ export default function (pi) {
                 ? [config.productiveProgress.verificationTool].filter(Boolean)
                 : [],
           });
-      applySurface(visible(restricted), 'restricted');
+      const repairAwareRestricted = codingRepairReadAvailable() && unrestrictedActiveTools.includes('read')
+        ? unrestrictedActiveTools.filter(name => name === 'read' || restricted.includes(name))
+        : restricted;
+      applySurface(visible(repairAwareRestricted), codingRepairReadAvailable() ? 'repair_evidence' : 'restricted');
       return;
     }
 
@@ -2361,6 +2617,9 @@ export default function (pi) {
     );
     let recoveryBlocked = null;
     let canonicalInput = event.input ?? {};
+    const repairReadPolicy = event.toolName === 'read'
+      ? codingRepairReadPolicy(canonicalInput, ctx.cwd)
+      : null;
     if (
       event.toolName === ACCEPT_MUTATION_SCOPE_TOOL &&
       controller.largeMutationBudgetActive() &&
@@ -2401,6 +2660,18 @@ export default function (pi) {
         block: true,
         reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} has an exact retry ready now; call retry_last_failed_check so the same kind+scope consumes this verification permit.`,
       };
+    } else if (repairReadPolicy?.block) {
+      recoveryBlocked = repairReadPolicy;
+    } else if (
+      codingRepairWindowActive() &&
+      CONTENT_MUTATION_TOOLS.has(event.toolName) &&
+      !codingValidationRepair.informedByDiagnostics &&
+      !codingValidationRepair.readObserved
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: the failed validation did not provide structured diagnostics. Read one repair-relevant failing/changed path first so the next mutation is evidence-driven.',
+      };
     }
 
     if (!recoveryBlocked && event.toolName === RETRY_FAILED_CHECK_TOOL && failedCheckRecovery) {
@@ -2419,7 +2690,10 @@ export default function (pi) {
         reason: `BLOCKED: ${event.toolName} did not execute. Terminal recovery requires the selected deterministic repair arguments; this call does not match the pending recovery plan.`,
       };
     }
-    const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput);
+    const repairReadAccepted = repairReadPolicy?.allowed === true;
+    const blocked = recoveryBlocked ?? (repairReadAccepted
+      ? undefined
+      : controller.checkToolCall(canonicalToolName, canonicalInput));
     if (blocked?.alreadySatisfied) {
       blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is single-shot and already completed; it did not execute. ${activeToolGuidance(activeToolNames)}`;
     }
@@ -2620,6 +2894,12 @@ export default function (pi) {
     }
 
     pendingToolInputs.set(event.toolCallId, clonedCanonicalInput);
+    if (repairReadAccepted) {
+      pendingCodingRepairReads.set(event.toolCallId, {
+        path: repairReadPolicy.path,
+        diagnosticLines: repairReadPolicy.diagnosticLines,
+      });
+    }
     if (evidenceConsumptionNotice) {
       pendingEvidenceConsumptionNotices.set(event.toolCallId, evidenceConsumptionNotice);
     }
@@ -2644,6 +2924,8 @@ export default function (pi) {
   pi.on('tool_execution_end', async (event, ctx) => {
     const consumedEvidence = pendingEvidenceConsumptionNotices.get(event.toolCallId) ?? null;
     pendingEvidenceConsumptionNotices.delete(event.toolCallId);
+    const codingRepairRead = pendingCodingRepairReads.get(event.toolCallId) ?? null;
+    pendingCodingRepairReads.delete(event.toolCallId);
     const bashValidationFingerprintBefore = pendingBashValidationFingerprints.get(event.toolCallId) ?? null;
     pendingBashValidationFingerprints.delete(event.toolCallId);
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
@@ -2848,6 +3130,17 @@ export default function (pi) {
       }
     }
     const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
+    if (codingRepairRead && codingValidationRepair && !event.isError) {
+      codingValidationRepair.readsRemaining = Math.max(0, codingValidationRepair.readsRemaining - 1);
+      codingValidationRepair.readObserved = true;
+      console.info(`PI_CODING_REPAIR_READ ${JSON.stringify({
+        stage,
+        path: codingRepairRead.path,
+        diagnosticLines: codingRepairRead.diagnosticLines,
+        readsRemaining: codingValidationRepair.readsRemaining,
+        evidenceBudgetIndependent: true,
+      })}`);
+    }
     const outstandingTerminalObligation = loopGuard?.terminalObligation ?? null;
     const terminalObligationHasExactMutationPaths =
       Array.isArray(outstandingTerminalObligation?.paths) &&
@@ -2900,6 +3193,11 @@ export default function (pi) {
         codingRecoveryGuard = null;
       }
     }
+
+    const codingValidationAbort = canonicalToolName === 'run_check' && !event.isError
+      ? await observeCodingValidationRepair(acceptedToolInput, event.result?.details ?? null, ctx)
+      : false;
+    if (codingValidationAbort) return;
 
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {

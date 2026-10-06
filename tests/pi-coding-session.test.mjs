@@ -33,6 +33,9 @@ test('coding-session guidance uses only exposed tools and routes missing evidenc
   assert.match(runtime, /if one concrete missing fact prevents the next safe action, call need_more_evidence/);
   assert.match(runtime, /action-required: read is not exposed now/);
   assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
+  assert.match(runtime, /bounded repair read access only for the failing\/changed paths/);
+  assert.match(runtime, /Tests must prefer public behavior and public APIs/);
+  assert.match(runtime, /do not mutate private\/internal implementation state merely to manufacture fixture state/);
 });
 
 test('#470 evidence-consumed notices are correlated to the exact tool call', () => {
@@ -287,7 +290,11 @@ function runtimeScenario(mode) {
         assert.deepEqual(definition.extensions, [controlScripts + '/pi-bash-timeout.mjs', controlScripts + '/pi-agent-runtime.mjs', controlScripts + '/pi-implementer-result-tool.mjs']);
         const inherited = fs.readFileSync(sessionFile, 'utf8').trim().split('\\n').map(line => JSON.parse(line));
         const childTools = new Map(); const childHandlers = new Map();
-        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (mode !== 'tool-contract') throw new Error('fork aborted'); },
+        let childAborts = 0;
+        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
+          if (!['tool-contract', 'repair-nonconvergent'].includes(mode)) throw new Error('fork aborted');
+          childAborts += 1;
+        },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
@@ -352,7 +359,68 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'nested executor unavailable', usage: { input: 50, output: 5, totalTokens: 55 } });
         }
         // Executors stubbed; the runtime's gates around them are real.
+        const repairFailure = variant => {
+          const volatile = variant === 'volatile-a' || variant === 'volatile-b';
+          const volatileMessage = variant === 'volatile-b'
+            ? 'test_constant: mismatch at /tmp/pytest-987/result.txt after 84.75ms address 0xdeadbeef'
+            : 'test_constant: mismatch at /tmp/pytest-123/result.txt after 12.50ms address 0xabc123';
+          return {
+            status: 'fail',
+            kind: 'pytest',
+            exit_code: 1,
+            duration_ms: 7,
+            summary: variant === 'shrunk' || volatile ? '1 failed' : '2 failed',
+            diagnostics: volatile
+              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+              : variant === 'shrunk'
+                ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
+                : [
+                    { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
+                    { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
+                  ],
+            stdout_tail: '',
+            stderr_tail: '',
+            truncated: false,
+          };
+        };
+        const repairPass = () => ({
+          status: 'pass',
+          kind: 'pytest',
+          exit_code: 0,
+          duration_ms: 5,
+          summary: '1 passed',
+          diagnostics: [],
+          stdout_tail: '',
+          stderr_tail: '',
+          truncated: false,
+        });
+        const appendRepairRecord = (params, result) => {
+          const records = fs.existsSync(process.env.PI_VALIDATION_LEDGER_FILE)
+            ? fs.readFileSync(process.env.PI_VALIDATION_LEDGER_FILE, 'utf8').split('\\n').filter(Boolean)
+            : [];
+          fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
+            seq: records.length,
+            timestamp: new Date().toISOString(),
+            kind: result.kind,
+            scope: result.kind === 'pytest' ? { targets: params.targets } : { paths: params.paths },
+            status: result.status,
+            exit_code: result.exit_code,
+            source: 'run_check',
+            stage: 'implementer',
+            backend: 'pi',
+            run_id: process.env.PI_VALIDATION_RUN_ID,
+            attempt_id: 'primary',
+            diagnostics_count: result.diagnostics.length,
+            summary: result.summary,
+            infrastructure: null,
+          }) + '\\n');
+        };
         childTools.get('run_check').execute = async (_toolCallId, params) => {
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message'].includes(mode) && params?.kind === 'pytest') {
+            const result = repairFailure(mode === 'repair-volatile-message' ? 'volatile-a' : 'initial');
+            appendRepairRecord(params, result);
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+          }
           if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode) && params?.kind === 'pytest') {
             fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
               seq: 0,
@@ -428,6 +496,45 @@ function runtimeScenario(mode) {
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 3000 } } }, childCtx);
           return result;
         };
+        const settleRepairRetry = async variant => {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const event = { toolName: 'retry_last_failed_check', toolCallId: 'repair-retry-' + turn, input: {} };
+          const blocked = await childHandlers.get('tool_call')(event, childCtx);
+          assert.equal(blocked, undefined, 'exact retry passes the real runtime gate');
+          const result = variant === 'pass' ? repairPass() : repairFailure(variant);
+          appendRepairRecord({ targets: ['test_generated.py'] }, result);
+          await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            details: result,
+          } }, childCtx);
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 800 } } }, childCtx);
+          return result;
+        };
+        const settleSyntheticDifferentScopePass = async () => {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const event = {
+            toolName: 'run_check',
+            toolCallId: 'different-scope-pass-' + turn,
+            input: { kind: 'python_compile', paths: ['generated.py'] },
+          };
+          const result = {
+            status: 'pass',
+            kind: 'python_compile',
+            exit_code: 0,
+            duration_ms: 2,
+            summary: 'Compiled cleanly',
+            diagnostics: [],
+            stdout_tail: '',
+            stderr_tail: '',
+            truncated: false,
+          };
+          appendRepairRecord({ paths: ['generated.py'] }, result);
+          await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            details: result,
+          } }, childCtx);
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
+        };
         if (mode === 'blocked') {
           await childCall('submit_result', { blocked_reason: 'A required behavior conflicts with a stated constraint.' });
           respond(request, { status: 'completed', result: { kind: 'text', value: 'blocked' }, usage: { output: 100 } });
@@ -463,6 +570,93 @@ function runtimeScenario(mode) {
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+        if (mode === 'repair-evidence') {
+          const repairPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
+          const repairTools = repairRequest.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.equal(repairRequest.tool_choice, 'required', 'failed validation requires one concrete repair action');
+          assert.ok(repairTools.includes('read'), 'bounded repair read is provider-visible');
+          assert.ok(!repairTools.includes('repo_search'), 'repair does not reopen repository discovery');
+          assert.ok(!repairTools.includes('need_more_evidence'), 'repair does not spend the generic evidence unlock');
+
+          const unrelated = await childCall('read', { path: 'README.md' });
+          assert.equal(unrelated.block, true);
+          assert.match(unrelated.reason, /repair read is limited to the authoritative failing\\/changed paths/);
+          const boundedRead = await childCall('read', { path: 'test_generated.py' });
+          assert.equal(boundedRead.block, undefined, 'failing test file can be read directly');
+
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# targeted repair\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'), 'targeted repair re-enables exact retry');
+          await settleRepairRetry('shrunk');
+          assert.equal(childAborts, 0, 'a shrinking failure set remains repairable');
+          console.log('CODING_REPAIR_EVIDENCE_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after shrinking repair proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-nonconvergent') {
+          const flipFlop = [
+            ['shrunk', 'a strict reduction resets the non-improving count'],
+            ['initial', 'expanding back to a seen failure set is non-improving but still below the bound'],
+            ['shrunk', 'returning to the prior best set is not a new strict reduction'],
+            ['initial', 'another expansion remains bounded but does not yet abort'],
+            ['shrunk', 'the fifth non-improving failure reaches the bounded repair ceiling'],
+          ];
+          for (let index = 0; index < flipFlop.length; index++) {
+            await settleSyntheticDifferentScopePass();
+            await childCall('write', {
+              path: 'test_generated.py',
+              content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round ' + (index + 1) + '\\n',
+            });
+            assert.ok(childActive.includes('retry_last_failed_check'));
+            await settleRepairRetry(flipFlop[index][0]);
+            assert.equal(
+              childAborts,
+              index === flipFlop.length - 1 ? 1 : 0,
+              flipFlop[index][1],
+            );
+          }
+          console.log('CODING_REPAIR_NONCONVERGENT_OK');
+          return respond(request, { status: 'failed', error: 'PI_CODING_VALIDATION_NON_CONVERGENT', usage: { output: 5000 } });
+        }
+
+        if (mode === 'repair-volatile-message') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# volatile diagnostic retry\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('volatile-b');
+          assert.equal(childAborts, 0, 'volatile diagnostic values stay one semantic failure identity');
+          console.log('CODING_REPAIR_VOLATILE_MESSAGE_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after volatile identity proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-pass-reset') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# pass reset\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('pass');
+          assert.equal(childAborts, 0);
+
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# fail again after same-scope pass\\n',
+          });
+          await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+          assert.equal(childAborts, 0, 'same-scope pass clears prior convergence history');
+          console.log('CODING_REPAIR_PASS_RESET_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after same-scope reset proof', usage: { output: 3000 } });
+        }
+
         if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
         if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) {
           respond(request, {
@@ -1271,6 +1465,42 @@ test('#481 recovery guard fails closed after unrelated evidence when validation 
   assert.doesNotMatch(logs, /PI_CODING_RECOVERY_GUARD_RELEASED/);
   assert.match(logs, /PI_CODING_RECOVERY_BLOCKED/);
   assert.match(logs, /CODING_RECOVERY_FAIL_CLOSED_OK/);
+});
+
+test('#499 failing pytest exposes bounded repair evidence and strict failure-set reduction remains repairable', () => {
+  const logs = runtimeScenario('repair-evidence');
+  assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
+  assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_EVIDENCE_OK/);
+});
+
+test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failure flip-flops', () => {
+  const logs = runtimeScenario('repair-nonconvergent');
+  assert.ok((logs.match(/PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/g) ?? []).length >= 1);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"strictReduction":false/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":4.*"strictReduction":false/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":5.*"strictReduction":false.*"limit":5/);
+  assert.match(logs, /PI_CODING_VALIDATION_NON_CONVERGENT .*"seen_signatures":2.*"limit":5.*"worktree_preserved":true/);
+  assert.match(logs, /CODING_REPAIR_NONCONVERGENT_OK/);
+});
+
+test('#499 volatile diagnostic values keep one semantic failure identity', () => {
+  const logs = runtimeScenario('repair-volatile-message');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"strictReduction":false.*"seenSignatures":1/);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_VOLATILE_MESSAGE_OK/);
+});
+
+test('#499 only a pass for the same kind+scope clears convergence history', () => {
+  const logs = runtimeScenario('repair-pass-reset');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"cleared".*"reason":"validation_pass_same_scope"/);
+  const postReset = logs.slice(logs.indexOf('validation_pass_same_scope'));
+  assert.match(postReset, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1/);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_PASS_RESET_OK/);
 });
 
 test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
