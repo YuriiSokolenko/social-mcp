@@ -33,6 +33,7 @@
     "scripts/pi-common/ruff-spec.mjs",
     "scripts/pi-common/run-check-docker-backend.mjs",
     "scripts/pi-common/run-check.mjs",
+    "scripts/pi-common/runtime-failure.mjs",
     "scripts/pi-common/stage-config.mjs",
     "scripts/pi-common/stage-run-contract.mjs",
     "scripts/pi-common/stage-validation-recovery.mjs",

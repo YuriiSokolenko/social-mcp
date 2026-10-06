@@ -81,6 +81,7 @@ import {
   invalidateTerminalReceipt,
 } from './pi-common/terminal-receipt.mjs';
 import { codingSessionRecoveryReceipt, normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
+import { runtimeFailureClassForCode } from './pi-common/runtime-failure.mjs';
 import {
   TRUSTED_RECOVERY_TOOLS,
   consumeUnavailableCapabilityAttempts,
@@ -114,6 +115,7 @@ const CODING_REPAIR_REASONING_MAX_TOKENS = 4096;
 const CODING_REPAIR_BROAD_EDIT_LINE_LIMIT = 80;
 const CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT = 12000;
 const CODING_SESSION_HANDOFF_MAX_LENGTH = 1200;
+const CODING_SESSION_ARGUMENT_CORRECTION_LIMIT = 1;
 const LARGE_MUTATION_ACTION_RETRY_LIMIT = 1;
 // Five non-improving failures leaves room for bounded diagnostic phase changes
 // (for example collection/import -> assertions) without allowing an endless repair loop.
@@ -280,6 +282,53 @@ function codingPreparedState(prepared) {
 function normalizedCodingSessionHandoff(value) {
   const trimmed = String(value ?? '').trim();
   return Array.from(trimmed).slice(0, CODING_SESSION_HANDOFF_MAX_LENGTH).join('').trimEnd();
+}
+
+export function codingSessionArgumentValidation(input) {
+  const errors = [];
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    errors.push('arguments: must be an object');
+  } else {
+    const optionalString = (field, maxLength) => {
+      if (!Object.prototype.hasOwnProperty.call(input, field)) return;
+      if (typeof input[field] !== 'string') {
+        errors.push(`${field}: must be a string`);
+        return;
+      }
+      if (Array.from(input[field]).length > maxLength) {
+        errors.push(`${field}: must not have more than ${maxLength} characters`);
+      }
+    };
+    optionalString('reason', 300);
+    optionalString('handoff', CODING_SESSION_HANDOFF_MAX_LENGTH);
+    optionalString('required_capability', 100);
+  }
+  if (errors.length === 0) return null;
+  return {
+    errors,
+    diagnostic: `Validation failed for tool "begin_coding_session":\n  - ${errors.join('\n  - ')}`,
+  };
+}
+
+function codingSessionArgumentFailure(message, toolName, executableTools) {
+  if (!toolName || !Array.isArray(executableTools) || !executableTools.includes(toolName)) return null;
+  const toolCall = Array.isArray(message?.content)
+    ? message.content.find(part => part?.type === 'toolCall' && part?.name === toolName)
+    : null;
+  if (!toolCall) return null;
+
+  let input = toolCall.arguments ?? toolCall.input ?? toolCall.parameters;
+  if (typeof input === 'string') {
+    try {
+      input = JSON.parse(input);
+    } catch {
+      return {
+        errors: ['arguments: must be a valid JSON object'],
+        diagnostic: 'Validation failed for tool "begin_coding_session":\n  - arguments: must be a valid JSON object',
+      };
+    }
+  }
+  return codingSessionArgumentValidation(input);
 }
 
 function codingSessionTask(ctx, handoff, codingTools, env = process.env) {
@@ -1035,6 +1084,8 @@ export default function (pi) {
   let elevatedTurnSuccessfulScopePrelude = false;
   let elevatedScopePreludeUsed = false;
   let largeMutationActionRetryCount = 0;
+  let codingSessionArgumentCorrectionCount = 0;
+  let codingSessionArgumentCorrectionPending = false;
 
   function validationRunId() {
     return resolveValidationRunId(process.env);
@@ -1333,16 +1384,25 @@ export default function (pi) {
   }
 
   function recordRuntimeAbort(failureCode, reason, details = {}) {
+    const canonicalFailureClass = runtimeFailureClassForCode(failureCode);
+    const requestedFailureClass = details.failure_class ?? 'model_execution_abort';
     const record = {
       ...details,
       checkpoint: details.checkpoint ?? { repository_state: null, worktree_preserved: true },
       schema_version: 1,
       stage,
-      failure_class: 'model_execution_abort',
+      failure_class: canonicalFailureClass ?? requestedFailureClass,
       failure_code: failureCode,
       reason,
     };
-    if (details.failure_class === 'infrastructure') record.failure_class = 'infrastructure';
+    if (!canonicalFailureClass || canonicalFailureClass !== requestedFailureClass) {
+      console.error(`PI_RUNTIME_FAILURE_CLASSIFICATION_DRIFT ${JSON.stringify({
+        stage,
+        failureCode,
+        canonicalFailureClass,
+        requestedFailureClass,
+      })}`);
+    }
     // A coding-session fork is recoverable by its parent Implementer. Keep its abort in logs,
     // but never let a nested fork leave job-level failure provenance behind.
     if (codingSession) {
@@ -1830,6 +1890,20 @@ export default function (pi) {
       if (Array.isArray(patched?.tools)) {
         const active = new Set(pi.getActiveTools());
         let tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
+        const codingSessionToolName = config.productiveProgress?.codingSessionTool;
+        const codingSessionArgumentCorrectionRequest = Boolean(
+          !codingSession &&
+          codingSessionArgumentCorrectionPending &&
+          codingSessionToolName
+        );
+        if (codingSessionArgumentCorrectionRequest) {
+          tools = tools.filter(tool => (tool.function?.name ?? tool.name) === codingSessionToolName);
+          console.warn(`PI_CODING_SESSION_ARGUMENT_TOOL_SURFACE ${JSON.stringify({
+            stage,
+            tool: codingSessionToolName,
+            tools: tools.map(tool => tool.function?.name ?? tool.name),
+          })}`);
+        }
         if (!terminalRecoveryRequiredTool && repairReadGateOpen) {
           tools = tools.filter(tool => (tool.function?.name ?? tool.name) === 'read');
           console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({ stage, phase: 'evidence', tools: tools.map(tool => tool.function?.name ?? tool.name) })}`);
@@ -1906,6 +1980,15 @@ export default function (pi) {
             activeTools: executableTools,
           })}`);
         }
+        if (codingSessionArgumentCorrectionRequest && executableTools.includes(codingSessionToolName)) {
+          requireToolOnNextProviderRequest = true;
+          console.warn(`PI_CODING_SESSION_ARGUMENT_TOOL_CHOICE_ARMED ${JSON.stringify({
+            stage,
+            request: providerCapabilitySnapshot.request,
+            tool: codingSessionToolName,
+            correction: codingSessionArgumentCorrectionCount,
+          })}`);
+        }
         if (!terminalRecoveryRequiredTool && controller.largeMutationBudgetActive()) {
           requireToolOnNextProviderRequest = true;
           console.warn(`PI_LARGE_MUTATION_TOOL_CHOICE_ARMED ${JSON.stringify({
@@ -1948,12 +2031,16 @@ export default function (pi) {
           codingRepairProviderRequestInFlight &&
           codingRepairProviderRequestInFlight.request === providerCapabilitySnapshot?.request
         );
+        const codingSessionArgumentCorrectionForced = Boolean(
+          codingSessionArgumentCorrectionPending &&
+          providerCapabilitySnapshot?.executableTools?.includes(config.productiveProgress?.codingSessionTool)
+        );
         const largeMutationActionForced = Boolean(
           stage === 'implementer' &&
           controller.largeMutationBudgetActive() &&
           providerCapabilitySnapshot?.request != null
         );
-        if (!repairActionForced && !largeMutationActionForced && productiveState !== 'action_required') {
+        if (!repairActionForced && !codingSessionArgumentCorrectionForced && !largeMutationActionForced && productiveState !== 'action_required') {
           requireToolOnNextProviderRequest = false;
           console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
         } else {
@@ -1980,7 +2067,13 @@ export default function (pi) {
               mode: 'required',
               request: providerCapabilitySnapshot?.request ?? null,
               activeTools: providerCapabilitySnapshot?.executableTools ?? pi.getActiveTools(),
-              source: repairActionForced ? 'coding_repair' : largeMutationActionForced ? 'large_mutation' : 'productive_action',
+              source: repairActionForced
+                ? 'coding_repair'
+                : codingSessionArgumentCorrectionForced
+                  ? 'coding_session_argument_correction'
+                  : largeMutationActionForced
+                    ? 'large_mutation'
+                    : 'productive_action',
             })}`);
             patched = constrained;
           }
@@ -3080,6 +3173,17 @@ export default function (pi) {
       }
       return unavailable;
     }
+    if (
+      codingSessionArgumentCorrectionPending &&
+      event.toolName === config.productiveProgress?.codingSessionTool
+    ) {
+      codingSessionArgumentCorrectionPending = false;
+      console.info(`PI_CODING_SESSION_ARGUMENT_CORRECTED ${JSON.stringify({
+        stage,
+        tool: event.toolName,
+        correction: codingSessionArgumentCorrectionCount,
+      })}`);
+    }
     const recoveryState = failedCheckRecoveryState();
     const failedCheckRecovery = recoveryState.failure;
     const recoveryRetryReady = Boolean(
@@ -3448,6 +3552,10 @@ export default function (pi) {
     }
   });
   pi.on('tool_execution_end', async (event, ctx) => {
+    if (event.toolName === config.productiveProgress?.codingSessionTool) {
+      codingSessionArgumentCorrectionCount = 0;
+      codingSessionArgumentCorrectionPending = false;
+    }
     const consumedEvidence = pendingEvidenceConsumptionNotices.get(event.toolCallId) ?? null;
     pendingEvidenceConsumptionNotices.delete(event.toolCallId);
     const codingRepairRead = pendingCodingRepairReads.get(event.toolCallId) ?? null;
@@ -3929,6 +4037,28 @@ export default function (pi) {
       return undefined;
     }
 
+    if (
+      event.message?.stopReason === 'error' &&
+      stage === 'implementer' &&
+      codingSessionArgumentCorrectionPending &&
+      status == null &&
+      !forcedRequestErrored
+    ) {
+      // Pi reports a schema-rejected tool call as a local synthetic error turn after the
+      // provider response that contained the invalid call. No provider request occurred for
+      // this turn, so it must not consume the elevated provider-retry allowance or the active
+      // one-shot large-mutation grant. The bounded correction remains armed for the next real
+      // provider request.
+      requireToolOnNextProviderRequest = true;
+      console.warn(`PI_CODING_SESSION_ARGUMENT_VALIDATION_TURN ${JSON.stringify({
+        stage,
+        action: 'ignored_for_provider_retry',
+        correction: codingSessionArgumentCorrectionCount,
+        largeMutationBudget: controller.largeMutationBudgetState,
+      })}`);
+      return undefined;
+    }
+
     if (event.message?.stopReason === 'error' && stage === 'implementer' && controller.largeMutationBudgetActive()) {
       if (retryableProviderErrorStatus(status)) {
         largeMutationActionRetryCount += 1;
@@ -4013,6 +4143,62 @@ export default function (pi) {
       return undefined;
     }
 
+    const codingSessionToolName = config.productiveProgress?.codingSessionTool;
+    const codingSessionArgumentFailureState =
+      stage === 'implementer'
+        ? codingSessionArgumentFailure(
+            event.message,
+            codingSessionToolName,
+            providerCapabilitySnapshot?.executableTools ?? [],
+          )
+        : null;
+    if (codingSessionArgumentFailureState) {
+      actionTurnAttemptedTool = true;
+      const repeatedInvalidLaunch =
+        codingSessionArgumentCorrectionPending ||
+        codingSessionArgumentCorrectionCount >= CODING_SESSION_ARGUMENT_CORRECTION_LIMIT;
+      codingSessionArgumentCorrectionCount += 1;
+      if (repeatedInvalidLaunch) {
+        const reason = `coding-session launch arguments remained invalid after ${CODING_SESSION_ARGUMENT_CORRECTION_LIMIT} bounded correction turn: ${codingSessionArgumentFailureState.errors.join('; ')}`;
+        controller.resetLargeMutationBudget();
+        elevatedScopePreludeUsed = false;
+        codingSessionArgumentCorrectionPending = false;
+        recordRuntimeAbort('PI_CODING_SESSION_ARGUMENT_RETRY_EXHAUSTED', reason, {
+          tool: codingSessionToolName,
+          attempts: codingSessionArgumentCorrectionCount,
+          retry_limit: CODING_SESSION_ARGUMENT_CORRECTION_LIMIT,
+          validation_errors: codingSessionArgumentFailureState.errors,
+          checkpoint: { worktree_preserved: true },
+        });
+        console.error(`PI_CODING_SESSION_ARGUMENT_RETRY_EXHAUSTED ${JSON.stringify({
+          stage,
+          tool: codingSessionToolName,
+          attempts: codingSessionArgumentCorrectionCount,
+          retryLimit: CODING_SESSION_ARGUMENT_CORRECTION_LIMIT,
+          validationErrors: codingSessionArgumentFailureState.errors,
+          checkpoint: { worktree_preserved: true },
+        })}`);
+        ctx.abort();
+        return undefined;
+      }
+
+      codingSessionArgumentCorrectionPending = true;
+      requireToolOnNextProviderRequest = true;
+      console.warn(`PI_CODING_SESSION_ARGUMENT_CORRECTION ${JSON.stringify({
+        stage,
+        tool: codingSessionToolName,
+        correction: codingSessionArgumentCorrectionCount,
+        correctionLimit: CODING_SESSION_ARGUMENT_CORRECTION_LIMIT,
+        validationErrors: codingSessionArgumentFailureState.errors,
+        largeMutationBudget: controller.largeMutationBudgetState,
+        checkpoint: { worktree_preserved: true },
+      })}`);
+      await pi.sendUserMessage(
+        `RUNTIME CODING SESSION ARGUMENT CORRECTION: ${codingSessionArgumentFailureState.diagnostic}. Retry ${codingSessionToolName} once now. Keep handoff <= ${CODING_SESSION_HANDOFF_MAX_LENGTH} characters and include only new concrete facts or implementation decisions not already present in the issue, PreparedImplementation, or runtime state. Do not read, inspect, or reopen repository exploration.`,
+        { deliverAs: 'steer' },
+      );
+    }
+
     const outputTokens = Number(event.message?.usage?.output || 0);
     if (codingSession && !codingFirstResponseLogged) {
       codingFirstResponseLogged = true;
@@ -4064,6 +4250,7 @@ export default function (pi) {
     // one bounded elevated retry. Genuine completed prose/no-action still fails closed immediately.
     let preserveElevatedAfterScopePrelude = false;
     let preserveElevatedAfterFailedAction = false;
+    let preserveElevatedAfterArgumentCorrection = false;
     const elevatedResponseHitCeiling = Boolean(
       event.message?.stopReason === 'length' || responseHitOutputCeiling
     );
@@ -4088,6 +4275,15 @@ export default function (pi) {
           stage,
           phase: 'scope_prelude',
           preserved: true,
+          outputTokens,
+        })}`);
+      } else if (codingSessionArgumentFailureState && codingSessionArgumentCorrectionPending) {
+        preserveElevatedAfterArgumentCorrection = true;
+        console.warn(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'coding_session_argument_correction',
+          preserved: true,
+          correction: codingSessionArgumentCorrectionCount,
           outputTokens,
         })}`);
       } else if (elevatedTurnObservedActionTool || elevatedResponseHitCeiling) {
@@ -4279,11 +4475,13 @@ export default function (pi) {
     // apply the elevated ceiling to exactly the upcoming response.
     const largeMutationBudgetGrantedThisTurn =
       stage === 'implementer' && controller.largeMutationBudgetPending();
-    if (preserveElevatedAfterScopePrelude || preserveElevatedAfterFailedAction) {
+    if (preserveElevatedAfterScopePrelude || preserveElevatedAfterFailedAction || preserveElevatedAfterArgumentCorrection) {
       targetActionCap = controller.largeMutationBudgetMaxTokens;
       budgetReason = preserveElevatedAfterScopePrelude
         ? 'large_mutation_scope_prelude'
-        : 'large_mutation_action_retry';
+        : preserveElevatedAfterArgumentCorrection
+          ? 'large_mutation_coding_session_argument_correction'
+          : 'large_mutation_action_retry';
     } else if (largeMutationBudgetGrantedThisTurn) {
       targetActionCap = controller.largeMutationBudgetMaxTokens;
       budgetReason = 'large_mutation_elevated';
@@ -4305,7 +4503,12 @@ export default function (pi) {
       await applyBudget(next.level, ctx);
     }
 
-    if (runtimeActionRequired && !controller.turnMadeProgress && !loopGuardSteeredThisTurn) {
+    if (
+      runtimeActionRequired &&
+      !controller.turnMadeProgress &&
+      !loopGuardSteeredThisTurn &&
+      !codingSessionArgumentCorrectionPending
+    ) {
       const activeToolNames = pi.getActiveTools();
       const currentToolGuidance = activeToolGuidance(activeToolNames);
       const semantics = taskSpecificToolGuidance(activeToolNames, {

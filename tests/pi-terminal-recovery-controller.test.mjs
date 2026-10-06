@@ -261,17 +261,23 @@ test('#426 aggregate changed-file lists cannot masquerade as a mutation target',
 
 test('#426 workflow preserves terminal recovery blocked provenance for needs-human routing', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
+  const classifier = fs.readFileSync('scripts/pi-common/runtime-failure.mjs', 'utf8');
   assert.equal(
-    (workflow.match(/PI_TERMINAL_RECOVERY_BLOCKED/g) ?? []).length,
-    6,
-    'both no-change and changed-work failure paths validate, classify and report terminal recovery blocked',
+    (classifier.match(/'PI_TERMINAL_RECOVERY_BLOCKED'/g) ?? []).length,
+    1,
+    'terminal recovery blocked is recognized once in the canonical runtime-failure registry',
   );
   assert.equal(
-    (workflow.match(/FAILURE_REASON="Terminal recovery exhausted or could not select a capability-valid deterministic repair;/g) ?? []).length,
+    (workflow.match(/runtime-failure\.mjs" classify "\$PI_RUNTIME_FAILURE_FILE"/g) ?? []).length,
     2,
-    'both workflow failure paths map the blocked code to fixed trusted guidance',
+    'both no-change and changed-work failure paths use the canonical classifier',
   );
-  assert.doesNotMatch(workflow, /FAILURE_REASON="\$\(jq/);
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="\$\(jq -r '\.reason' <<<"\$CLASSIFIED_RUNTIME_FAILURE"\)"/g) ?? []).length,
+    2,
+    'both workflow failure paths preserve the validated runtime reason',
+  );
+  assert.doesNotMatch(workflow, /jq -r '\.reason' "\$PI_RUNTIME_FAILURE_FILE"/);
   assert.match(workflow, /pi-transition\.mjs" issue needs-human/);
 });
 
