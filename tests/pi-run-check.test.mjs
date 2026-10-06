@@ -266,14 +266,38 @@ test('output is bounded deterministically and secrets are not inherited', async 
   assert.ok(result.diagnostics.length <= 20);
 });
 
-test('output beyond four MiB retains the final failure, not the first chunk', async () => {
+test('output beyond four MiB keeps a bounded failure tail and the complete artifact', async () => {
   const dir = worktree({ 'tests/test_big.py': '' });
-  const big = fakeBin(dir, 'pytest-huge', 'head -c 4500000 /dev/zero | tr "\\000" x\nprintf "\\nFINAL_TRACEBACK\\n"\nexit 1');
-  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, directOptions({ bins: { pytest: big } }));
+  const diagnosticsFile = path.join(dir, 'diagnostics.jsonl');
+  const big = fakeBin(dir, 'pytest-huge', 'echo FIRST_DIAGNOSTIC\nhead -c 4500000 /dev/zero | tr "\\000" x\nprintf "\\nFINAL_TRACEBACK\\n"\nexit 1');
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, directOptions({
+    bins: { pytest: big },
+    env: { ...process.env, PI_DIAGNOSTICS_FILE: diagnosticsFile },
+  }));
   assert.equal(result.status, 'fail');
   assert.equal(result.truncated, true);
   assert.match(result.stdout_tail, /FINAL_TRACEBACK/);
   assert.ok(result.stdout_tail.length <= 3000);
+  const artifact = fs.readFileSync(diagnosticsFile, 'utf8');
+  assert.match(artifact, /FIRST_DIAGNOSTIC/);
+  assert.match(artifact, /FINAL_TRACEBACK/);
+});
+
+test('failed check writes complete sanitized output to the diagnostics artifact', async () => {
+  const dir = worktree({ 'tests/test_big.py': '' });
+  const diagnosticsFile = path.join(dir, 'diagnostics.jsonl');
+  const payload = 'complete-check-detail-'.repeat(400);
+  const failing = fakeBin(dir, 'pytest-diagnostic', `printf '%s\\n' '${payload}'\nprintf 'api_key=syntheticCheckSecret123\\n' >&2\nexit 1`);
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, directOptions({
+    bins: { pytest: failing },
+    env: { ...process.env, PI_DIAGNOSTICS_FILE: diagnosticsFile },
+  }));
+  assert.equal(result.status, 'fail');
+  assert.match(result.diagnostic_ref, /diagnostics\.jsonl#check-/);
+  const artifact = fs.readFileSync(diagnosticsFile, 'utf8');
+  assert.match(artifact, /complete-check-detail-/);
+  assert.match(artifact, /api_key=\[REDACTED\]/);
+  assert.doesNotMatch(artifact, /syntheticCheckSecret123/);
 });
 
 test('check subprocess cannot use the network or read home credentials', { skip: !hasRealSandbox }, async () => {

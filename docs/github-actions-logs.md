@@ -1,0 +1,21 @@
+# GitHub Actions diagnostics
+
+Pi's model and runtime event stream is rendered by `scripts/pi-log-filter.mjs`. Focused check output is built in `scripts/pi-common/run-check.mjs`; stage failures are persisted by `scripts/pi-agent-runtime.mjs` and uploaded by the Pi issue and PR repair workflows.
+
+## Investigation of information loss
+
+| Source | Cause | Handling |
+| --- | --- | --- |
+| Model and tool detail | The log filter caps streamed turn text (24,000 chars), Job Summary turn fields (20,000 chars), tool arguments/results (16,000/32,000 chars), and final text (12,000 chars). These are deliberate UI bounds; before this change, the full tool event had no complete sanitized diagnostic copy. | Tool events are appended as sanitized JSONL records. Oversized tool detail states its displayed and complete lengths and points to the event record. Model trace artifacts remain the source for provider exchanges. |
+| Nested runtime output | GitHub `::group::` output is folded and only reliably navigable one level deep. The log filter used groups for response and tool detail, which could hide the primary error. | Tool failures now print their heading and bounded details outside a group. Successful detail remains grouped. Prefixes carry stage/call context. |
+| `run_check` output | The result intentionally returned only 3,000-character stdout/stderr tails, and the subprocess collector discarded bytes beyond 4 MiB. This was the largest source of irrecoverable check diagnostics. | The subprocess spools complete stdout/stderr to temporary files while retaining bounded in-memory tails. Failing, timed-out, and truncated checks append complete sanitized output to the diagnostics artifact and return its event reference. |
+| Secret handling | Key-based masking, bearer/private-key/token masking in the log filter is intentional and must remain in place. | Diagnostic artifact serialization applies equivalent redaction, including exact values of secret-named environment variables, before writing. Artifact-write failures are best-effort and do not change check outcomes. |
+| Multiline data | Pretty-printed JSON and subprocess output naturally span lines; lines are prefixed in the console and machine markers remain single-line JSON. | Keep the concise event header visible, then show bounded labeled details. The artifact stores full structured JSONL records. |
+| ANSI and carriage returns | Pi stream rendering handles `\r`, `\n`, and `\r\n`; color codes are emitted only for tty/GitHub rendering. The check collector receives subprocess bytes and does not interpret terminal control sequences. | No semantic change to captured process output. |
+| Shell and provider formatting | Shell pipelines can omit or transform data before it reaches Pi; provider errors and raw request/response bodies are owned by the existing model trace proxy. | Run-check spooling begins at the child stdout/stderr boundary. Provider request/response preservation remains in the raw model trace artifact; secrets there retain existing redaction. |
+
+## Artifact lookup
+
+Open `pi-diagnostics-<stage>-<run-id>-<attempt>.jsonl` from the workflow's sanitized runtime diagnostics artifact. Console references use `filename#event-id`. Each JSONL record has an event type, stage/call, timestamp, and sanitized details. Existing `PI_*` and usage marker contracts are unchanged. The original model trace artifact remains uploaded separately.
+
+The console summaries use `[PI][phase/call]` prefixes. A failed tool's summary is outside a collapsed group, and oversized arguments/results report their displayed and complete lengths plus the diagnostic event reference.

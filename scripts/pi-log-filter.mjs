@@ -2,6 +2,7 @@
 
 import readline from "node:readline";
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import { appendDiagnostic } from "./pi-common/diagnostics-artifact.mjs";
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const tty = process.stdout.isTTY || Boolean(process.env.GITHUB_ACTIONS);
@@ -51,6 +52,8 @@ const call = process.env.PI_CALL ?? "main";
 const summaryFile = process.env.GITHUB_STEP_SUMMARY;
 const activityFile = process.env.PI_ACTIVITY_FILE;
 const runtimeFailureFile = process.env.PI_RUNTIME_FAILURE_FILE;
+const diagnosticsFile = process.env.PI_DIAGNOSTICS_FILE;
+let diagnosticNumber = 0;
 
 function runtimeFailureSignature() {
   if (!runtimeFailureFile || !existsSync(runtimeFailureFile)) return null;
@@ -178,7 +181,7 @@ function closeGroup() {
 function startGroup(title, color = C.blue) {
   closeGroup();
   if (process.env.GITHUB_ACTIONS) {
-    console.log("::group::" + oneLine(title, 130));
+    console.log("::group::" + oneLine(`[PI][${phase}/${call}] ${title}`, 160));
     openGroup = true;
   } else {
     console.log(color + C.bold + title + C.reset);
@@ -260,7 +263,7 @@ function usageSummary(usage) {
 function heading(icon, text, color = C.cyan) {
   closeGroup();
   ensureNewline();
-  console.log(color + C.bold + icon + " " + text + C.reset);
+  console.log(color + C.bold + `[PI][${phase}/${call}] ` + icon + " " + text + C.reset);
 }
 
 function oneLine(value, limit = 110) {
@@ -274,6 +277,17 @@ function detailLines(text, color = C.dim) {
 }
 
 function printToolDetails(title, args, result, isError) {
+  const diagnosticId = `event-${++diagnosticNumber}`;
+  const hasArtifact = appendDiagnostic(diagnosticsFile, {
+    id: diagnosticId,
+    at: new Date().toISOString(),
+    phase,
+    call,
+    type: isError ? "tool_failure" : "tool_result",
+    title,
+    arguments: args ?? null,
+    result: result ?? null,
+  });
   // GitHub's raw log only folds one level deep, so a tool call gets a single
   // group (or, with nothing to show, a single plain line) titled with
   // everything useful for scanning without expanding it.
@@ -281,21 +295,40 @@ function printToolDetails(title, args, result, isError) {
     heading(isError ? "✗" : "✓", title, isError ? C.red : C.green);
     return;
   }
-  startGroup((isError ? "✗ " : "✓ ") + title, isError ? C.red : C.green);
+  if (isError) heading("✗", title, C.red);
+  else startGroup("✓ " + title, C.green);
   try {
     if (args != null) {
       console.log(C.dim + "Arguments:" + C.reset);
-      detailLines(stringify(args, 16000), C.magenta);
+      const fullArgs = stringify(args, Number.MAX_SAFE_INTEGER);
+      detailLines(truncate(fullArgs, 16000), C.magenta);
+      if (fullArgs.length > 16000) detailLines(`[PI][details] truncated ${fullArgs.length} -> 16000 chars; full sanitized event ${diagnosticId} in ${hasArtifact ? diagnosticsFile.split(/[\\/]/).at(-1) : "diagnostic artifact unavailable"}`);
     }
     if (result != null) {
-      const output = truncate(String(extractResultText(result)), 32000);
+      const completeOutput = String(extractResultText(result));
+      const output = truncate(completeOutput, 32000);
       if (output.trim()) {
         console.log(C.dim + "Result:" + C.reset);
         detailLines(output, isError ? C.red : C.dim);
+        if (completeOutput.length > 32000) detailLines(`[PI][details] truncated ${completeOutput.length} -> 32000 chars; full sanitized event ${diagnosticId} in ${hasArtifact ? diagnosticsFile.split(/[\\/]/).at(-1) : "diagnostic artifact unavailable"}`);
       }
     }
   } finally {
-    closeGroup();
+    if (!isError) closeGroup();
+  }
+}
+
+function reportFailureDiagnostic() {
+  if (!runtimeFailureFile || !existsSync(runtimeFailureFile)) return;
+  try {
+    const failure = JSON.parse(readFileSync(runtimeFailureFile, "utf8"));
+    const id = `runtime-failure-${++diagnosticNumber}`;
+    const stored = appendDiagnostic(diagnosticsFile, { id, at: new Date().toISOString(), phase, call, type: "runtime_failure", failure });
+    const category = oneLine(failure.failure_code ?? failure.code ?? failure.reason ?? "unknown_failure", 100);
+    const detail = stored ? ` · complete sanitized details ${diagnosticsFile.split(/[\\/]/).at(-1)}#${id}` : " · diagnostic artifact unavailable";
+    heading("✗", `final status=failed category=${category}${detail}`, C.red);
+  } catch {
+    heading("✗", "final status=failed category=runtime_failure_details_unavailable", C.red);
   }
 }
 
@@ -321,7 +354,10 @@ function reportFinal(status) {
   const elapsed = Date.now() - sessionStarted;
   heading(status === "completed" ? "■" : "◼", `Agent ${status} · ${duration(elapsed)}`, status === "completed" ? C.green : C.yellow);
   console.log(C.gray + `Model totals (${measuredResponses} responses): ${measuredResponses ? usageSummary(totals) : "tokens unavailable"} · response time ${duration(totalResponseMs)} · tools ${toolCount}` + C.reset);
-  if (status !== "completed") console.log(C.yellow + "Only completed model responses are counted." + C.reset);
+  if (status !== "completed") {
+    console.log(C.yellow + "Only completed model responses are counted." + C.reset);
+    reportFailureDiagnostic();
+  }
   buildJobSummary(status);
 }
 
@@ -576,6 +612,7 @@ for await (const line of rl) {
     case "auto_retry_start": heading("↻", "Automatic retry", C.yellow); break;
     case "auto_retry_end": heading("✓", "Retry finished", C.green); break;
     case "extension_error":
+      appendDiagnostic(diagnosticsFile, { id: `event-${++diagnosticNumber}`, at: new Date().toISOString(), phase, call, type: "extension_error", event });
       heading("✗", "Extension error", C.red);
       console.log(C.red + stringify(event, 4000) + C.reset);
       break;

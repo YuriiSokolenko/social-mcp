@@ -47,13 +47,31 @@ test("keeps thinking, response and tool details in separate groups with visible 
     { type: "tool_execution_end", toolName: "bash", toolCallId: "test", result: { content: [{ type: "text", text: "2 passed" }] } },
     { type: "agent_end", messages: [] },
   ], { PI_ISSUE: "51", PI_PHASE: "implementation" });
-  assert.match(output, /::group::💭 Thinking[\s\S]*Checking tests[\s\S]*::endgroup::/);
-  assert.match(output, /::group::📝 Response[\s\S]*Found a fix[\s\S]*::endgroup::/);
-  assert.match(output, /::group::✓ bash · \$ pytest tests\/ · [\d.]+ (ms|s)[\s\S]*2 passed[\s\S]*::endgroup::/);
+  assert.match(output, /::group::\[PI\]\[implementation\/main\] 💭 Thinking[\s\S]*Checking tests[\s\S]*::endgroup::/);
+  assert.match(output, /::group::\[PI\]\[implementation\/main\] 📝 Response[\s\S]*Found a fix[\s\S]*::endgroup::/);
+  assert.match(output, /::group::\[PI\]\[implementation\/main\] ✓ bash · \$ pytest tests\/ · [\d.]+ (ms|s)[\s\S]*2 passed[\s\S]*::endgroup::/);
   assert.equal((output.match(/::group::/g) ?? []).length, 3);
   assert.match(output, /Model #1 · .*UTC/);
   assert.match(output, /Model totals \(1 responses\): .*total 15/);
   assert.match(output, /PI_METRIC \{"issue":51,"phase":"implementation"/);
+});
+
+test('failed tool diagnostics stay visible and the complete sanitized event is retained by reference', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-diagnostics-'));
+  const file = join(dir, 'diagnostics.jsonl');
+  const detail = 'validation detail '.repeat(2200);
+  const output = render([
+    { type: 'tool_execution_start', toolName: 'run_check', toolCallId: 'bad-check', args: { kind: 'pytest' } },
+    { type: 'tool_execution_end', toolName: 'run_check', toolCallId: 'bad-check', isError: true, result: { content: [{ type: 'text', text: `api_key=syntheticToolSecret123\nopaque=syntheticEnvSecret123\n${detail}` }] } },
+  ], { PI_DIAGNOSTICS_FILE: file, PI_PHASE: 'implementer', PI_CALL: 'main', GH_TOKEN: 'syntheticEnvSecret123' });
+  assert.match(output, /\[PI\]\[implementer\/main\] ✗ run_check/);
+  assert.doesNotMatch(output, /::group::✗ run_check/);
+  assert.match(output, /truncated [0-9]+ -> 32000 chars/);
+  const artifact = readFileSync(file, 'utf8');
+  assert.match(artifact, /api_key=\[REDACTED\]/);
+  assert.match(artifact, /opaque=\[REDACTED\]/);
+  assert.match(artifact, /validation detail/);
+  assert.doesNotMatch(artifact, /syntheticToolSecret123|syntheticEnvSecret123/);
 });
 
 test("records finalized subagent tool usage as separate PI_METRIC rows", () => {

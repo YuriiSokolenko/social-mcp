@@ -6,6 +6,7 @@ import { ruffArgs } from './ruff-spec.mjs';
 import { duplicatePackageRootDiagnostics } from './package-root-check.mjs';
 import { expandCommand, projectConfig } from './project-config.mjs';
 import { createDockerSandboxBackend } from './run-check-docker-backend.mjs';
+import { appendDiagnostic } from './diagnostics-artifact.mjs';
 
 /**
  * Backend-neutral focused verification for agents that have no unrestricted
@@ -276,6 +277,9 @@ function execute({ command, args, cwd, env, timeoutMs }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const chunks = { stdout: [], stderr: [] };
+    const fullOutputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-run-check-output-'));
+    const fullOutputPaths = { stdout: path.join(fullOutputDir, 'stdout'), stderr: path.join(fullOutputDir, 'stderr') };
+    let fullOutputCaptureFailed = false;
     const sizes = { stdout: 0, stderr: 0 };
     let dropped = false;
     let timedOut = false;
@@ -283,6 +287,8 @@ function execute({ command, args, cwd, env, timeoutMs }) {
 
     const child = spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const collect = (name) => (data) => {
+      try { fs.appendFileSync(fullOutputPaths[name], data); }
+      catch { fullOutputCaptureFailed = true; }
       chunks[name].push(data);
       sizes[name] += data.length;
       while (sizes[name] > CAPTURE_LIMIT_BYTES) {
@@ -307,15 +313,26 @@ function execute({ command, args, cwd, env, timeoutMs }) {
       settled = true;
       clearTimeout(timer);
       killTree(); // reap any grandchildren that outlived the direct child
+      const readFullOutput = name => {
+        try { return fs.existsSync(fullOutputPaths[name]) ? fs.readFileSync(fullOutputPaths[name], 'utf8') : ''; }
+        catch {
+          fullOutputCaptureFailed = true;
+          return Buffer.concat(chunks[name]).toString('utf8');
+        }
+      };
+      const fullStdout = readFullOutput('stdout');
+      const fullStderr = readFullOutput('stderr');
       resolve({
         exitCode,
         timedOut,
-        dropped,
+        dropped: dropped || fullOutputCaptureFailed,
+        outputCaptureFailed: fullOutputCaptureFailed,
         spawnError,
         durationMs: Date.now() - started,
-        stdout: Buffer.concat(chunks.stdout).toString('utf8'),
-        stderr: Buffer.concat(chunks.stderr).toString('utf8'),
+        stdout: fullStdout,
+        stderr: fullStderr,
       });
+      fs.rmSync(fullOutputDir, { recursive: true, force: true });
     };
     child.once('error', error => finish(null, error));
     child.once('close', code => finish(code, null));
@@ -479,11 +496,29 @@ export async function runCheck(root, params, options = {}) {
     stdout_tail: stdoutTail.text,
     stderr_tail: stderrTail.text,
     truncated,
+    ...(run.outputCaptureFailed ? { output_capture_failed: true } : {}),
     ...(run.image ? { sandbox_image: run.image } : {}),
     ...(run.image_id ? { sandbox_image_id: run.image_id } : {}),
     ...(run.sandbox_security ? { sandbox_security: run.sandbox_security } : {}),
     ...(run.container_removed !== undefined ? { sandbox_container_removed: run.container_removed } : {}),
   };
+
+  const checkDiagnosticId = `check-${process.pid}-${Date.now()}`;
+  const diagnosticStored = (truncated || run.exitCode !== 0 || run.timedOut) && appendDiagnostic(env.PI_DIAGNOSTICS_FILE, {
+    id: checkDiagnosticId,
+    at: new Date().toISOString(),
+    type: 'run_check',
+    kind,
+    profile: request.profile ?? null,
+    status: run.timedOut ? 'timeout' : run.exitCode === 0 ? 'pass' : 'fail',
+    exit_code: run.exitCode,
+    duration_ms: run.durationMs,
+    stdout: run.stdout,
+    stderr: run.stderr,
+    capture_incomplete: Boolean(run.outputCaptureFailed),
+  });
+  if (diagnosticStored) base.diagnostic_ref = `${path.basename(env.PI_DIAGNOSTICS_FILE)}#${checkDiagnosticId}`;
+  else if (truncated || run.exitCode !== 0 || run.timedOut) base.diagnostic_artifact_failed = true;
 
   if (run.timedOut) {
     return { status: 'timeout', ...base, summary: `Timed out after ${Math.round(timeoutMs / 1000)}s; process tree killed`, diagnostics: [] };

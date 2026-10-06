@@ -257,6 +257,7 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
     PI_BASH_TIMEOUT_SECONDS: env.PI_BASH_TIMEOUT_SECONDS ?? String(config.bashTimeoutSeconds),
     PI_TERMINAL_RESULT_FILE: env.PI_TERMINAL_RESULT_FILE ?? path.join(runnerTemp, `pi-terminal-${suffix}`),
     PI_METRICS_FILE: env.PI_METRICS_FILE ?? path.join(runnerTemp, `pi-usage-${suffix}.jsonl`),
+    PI_DIAGNOSTICS_FILE: env.PI_DIAGNOSTICS_FILE ?? path.join(runnerTemp, `pi-diagnostics-${stage}-${suffix}.jsonl`),
     PI_MODEL_TRACE_FILE: env.PI_MODEL_TRACE_FILE ?? path.join(runnerTemp, `pi-model-trace-${stage}-${suffix}.jsonl`),
   };
 
@@ -323,6 +324,7 @@ export async function runStage(options, env = process.env) {
   console.log(`PI_MODEL_ENDPOINT backend=${backend} provider=${spec.model.provider} base_url=${spec.model.baseUrl}`);
 
   writeGithubEnv(env, 'PI_METRICS_FILE', spec.artifacts.metricsPath);
+  writeGithubEnv(env, 'PI_DIAGNOSTICS_FILE', spec.environment.PI_DIAGNOSTICS_FILE);
   writeGithubEnv(env, 'PI_MODEL_TRACE_FILE', spec.environment.PI_MODEL_TRACE_FILE);
   writeGithubEnv(env, 'PI_TERMINAL_RESULT_FILE', spec.artifacts.terminalResultPath);
   writeGithubEnv(env, 'PI_VALIDATION_RUN_ID', spec.environment.PI_VALIDATION_RUN_ID);
