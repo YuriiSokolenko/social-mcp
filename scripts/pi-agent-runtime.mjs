@@ -1657,10 +1657,18 @@ export default function (pi) {
       const productiveState = syncProductiveState();
       syncActionToolSurface(productiveState);
 
+      const repairReadGateOpen = Boolean(
+        codingSession &&
+        codingRepairWindowActive() &&
+        codingValidationRepair.readRequiredBeforeMutation &&
+        !codingValidationRepair.readObserved &&
+        codingRepairReadAvailable()
+      );
       const repairThinkingRequest = Boolean(
         codingSession &&
         codingRepairWindowActive() &&
-        codingValidationRepair.thinkingRequestUsed !== true
+        codingValidationRepair.thinkingRequestUsed !== true &&
+        !repairReadGateOpen
       );
       if (repairThinkingRequest) codingValidationRepair.thinkingRequestUsed = true;
       let patched = codingSession
@@ -1677,6 +1685,13 @@ export default function (pi) {
             ...patched,
             max_tokens: Math.min(patched.max_tokens, CODING_REPAIR_REASONING_MAX_TOKENS),
           };
+        } else if (Number.isFinite(patched.max_output_tokens)) {
+          patched = {
+            ...patched,
+            max_output_tokens: Math.min(patched.max_output_tokens, CODING_REPAIR_REASONING_MAX_TOKENS),
+          };
+        } else {
+          patched = { ...patched, max_completion_tokens: CODING_REPAIR_REASONING_MAX_TOKENS };
         }
       }
       if (terminalRecoveryState) {
@@ -1688,9 +1703,11 @@ export default function (pi) {
           sessionId: codingSession.sessionId,
           policy: repairThinkingRequest
             ? 'repair_reasoning_once'
-            : codingRepairWindowActive()
-              ? 'repair_followup_low_overhead'
-              : 'normal_low_overhead',
+            : repairReadGateOpen
+              ? 'repair_evidence_low_overhead'
+              : codingRepairWindowActive()
+                ? 'repair_followup_low_overhead'
+                : 'normal_low_overhead',
           validationKey: codingValidationRepair?.key ?? null,
           enableThinking: patched.chat_template_kwargs.enable_thinking,
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
@@ -1700,6 +1717,13 @@ export default function (pi) {
       if (Array.isArray(patched?.tools)) {
         const active = new Set(pi.getActiveTools());
         let tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
+        if (!terminalRecoveryRequiredTool && repairReadGateOpen) {
+          tools = tools.filter(tool => (tool.function?.name ?? tool.name) === 'read');
+          console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({ stage, phase: 'evidence', tools: tools.map(tool => tool.function?.name ?? tool.name) })}`);
+        } else if (!terminalRecoveryRequiredTool && repairThinkingRequest) {
+          tools = tools.filter(tool => (tool.function?.name ?? tool.name) !== 'read');
+          console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({ stage, phase: 'reasoning_mutation', tools: tools.map(tool => tool.function?.name ?? tool.name) })}`);
+        }
         if (terminalRecoveryRequiredTool) {
           const selected = tools.filter(tool =>
             controllerToolName(tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
@@ -2876,8 +2900,8 @@ export default function (pi) {
     const repairReadPolicy = event.toolName === 'read'
       ? codingRepairReadPolicy(canonicalInput, ctx.cwd)
       : null;
-    const repairWritePolicy = event.toolName === 'write'
-      ? codingRepairWritePolicy(canonicalInput, ctx.cwd)
+    const repairMutationPolicy = CONTENT_MUTATION_TOOLS.has(event.toolName)
+      ? codingRepairMutationPolicy(event.toolName, canonicalInput, ctx.cwd)
       : null;
     if (
       event.toolName === ACCEPT_MUTATION_SCOPE_TOOL &&
@@ -2921,8 +2945,8 @@ export default function (pi) {
       };
     } else if (repairReadPolicy?.block) {
       recoveryBlocked = repairReadPolicy;
-    } else if (repairWritePolicy?.block) {
-      recoveryBlocked = repairWritePolicy;
+    } else if (repairMutationPolicy?.block) {
+      recoveryBlocked = repairMutationPolicy;
     } else if (
       codingRepairWindowActive() &&
       CONTENT_MUTATION_TOOLS.has(event.toolName) &&
@@ -2931,7 +2955,7 @@ export default function (pi) {
     ) {
       recoveryBlocked = {
         block: true,
-        reason: 'BLOCKED: the failed validation did not provide structured diagnostics. Read one repair-relevant failing/changed path first so the next mutation is evidence-driven.',
+        reason: 'BLOCKED: read one repair-relevant failing/changed path before mutation so the bounded reasoning request can decide the localized repair with current evidence.',
       };
     }
 
@@ -2970,25 +2994,35 @@ export default function (pi) {
       actionTurnAttemptedTool = true;
     }
     if (blocked) {
-      if (repairWritePolicy?.block) {
-        console.warn(`PI_CODING_REPAIR_WRITE_GUARD ${JSON.stringify({
+      if (repairMutationPolicy?.block) {
+        const attemptKey = `${repairMutationPolicy.path}\0broad_blocked`;
+        const blockedAttempts = (codingRepairBlockedMutationAttempts.get(attemptKey) ?? 0) + 1;
+        codingRepairBlockedMutationAttempts.set(attemptKey, blockedAttempts);
+        const abort = blockedAttempts >= CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT;
+        console.warn(`PI_CODING_REPAIR_MUTATION_GUARD ${JSON.stringify({
           stage,
-          status: repairWritePolicy.abort ? 'limit_abort' : 'blocked',
-          path: repairWritePolicy.path,
-          rewriteCount: repairWritePolicy.rewriteCount,
-          limit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
-          reason: repairWritePolicy.reason,
+          status: abort ? 'limit_abort' : 'blocked',
+          path: repairMutationPolicy.path,
+          shape: repairMutationPolicy.shape,
+          broadCount: repairMutationPolicy.broadCount,
+          broadLimit: CODING_REPAIR_BROAD_MUTATION_LIMIT,
+          blockedAttempts,
+          blockedAttemptLimit: CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT,
+          reason: repairMutationPolicy.reason,
         })}`);
-        if (repairWritePolicy.abort) {
+        if (abort) {
           const details = {
-            path: repairWritePolicy.path,
-            rewrite_count: repairWritePolicy.rewriteCount,
-            limit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
+            path: repairMutationPolicy.path,
+            shape: repairMutationPolicy.shape,
+            broad_count: repairMutationPolicy.broadCount,
+            broad_limit: CODING_REPAIR_BROAD_MUTATION_LIMIT,
+            blocked_attempts: blockedAttempts,
+            blocked_attempt_limit: CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT,
             validation_key: codingValidationRepair?.key ?? null,
             checkpoint: { worktree_preserved: true },
           };
-          recordRuntimeAbort('PI_CODING_REPAIR_REWRITE_LIMIT', repairWritePolicy.reason, details);
-          console.error(`PI_CODING_REPAIR_REWRITE_LIMIT ${JSON.stringify({ stage, reason: repairWritePolicy.reason, ...details })}`);
+          recordRuntimeAbort('PI_CODING_REPAIR_BROAD_MUTATION_LIMIT', repairMutationPolicy.reason, details);
+          console.error(`PI_CODING_REPAIR_BROAD_MUTATION_LIMIT ${JSON.stringify({ stage, reason: repairMutationPolicy.reason, ...details })}`);
           await ctx.abort();
           return blocked;
         }
@@ -3102,19 +3136,6 @@ export default function (pi) {
       }
     }
 
-    if (repairWritePolicy?.allowRewrite) {
-      const nextRewriteCount = repairWritePolicy.rewriteCount + 1;
-      codingRepairRewriteCounts.set(repairWritePolicy.path, nextRewriteCount);
-      console.warn(`PI_CODING_REPAIR_REWRITE ${JSON.stringify({
-        stage,
-        status: 'consumed',
-        path: repairWritePolicy.path,
-        reason: repairWritePolicy.reason,
-        rewriteCount: nextRewriteCount,
-        limit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
-        validationKey: codingValidationRepair?.key ?? null,
-      })}`);
-    }
 
     if (stage === 'implementer' && RECEIPT_INVALIDATING_TOOLS.has(event.toolName)) {
       invalidateTerminalReceipt(process.env);
