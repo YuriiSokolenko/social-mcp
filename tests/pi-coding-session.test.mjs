@@ -1385,6 +1385,24 @@ test('#481 recovery guard fails closed after unrelated evidence when validation 
   assert.match(logs, /CODING_RECOVERY_FAIL_CLOSED_OK/);
 });
 
+test('#499 failing pytest exposes bounded repair evidence and changing failure sets keep converging', () => {
+  const logs = runtimeScenario('repair-evidence');
+  assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
+  assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
+  assert.ok((logs.match(/PI_CODING_REPAIR_STATE .*"equivalentFailures":1/g) ?? []).length >= 2);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_EVIDENCE_OK/);
+});
+
+test('#499 equivalent pytest failures are bounded despite whole-file rewrites', () => {
+  const logs = runtimeScenario('repair-nonconvergent');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"equivalentFailures":2/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"equivalentFailures":3/);
+  assert.match(logs, /PI_CODING_VALIDATION_NON_CONVERGENT .*"worktree_preserved":true/);
+  assert.match(logs, /CODING_REPAIR_NONCONVERGENT_OK/);
+});
+
 test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
   const logs = runtimeScenario('no-submit-parent-submit');
   assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
