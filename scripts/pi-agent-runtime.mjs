@@ -81,6 +81,7 @@ import {
   invalidateTerminalReceipt,
 } from './pi-common/terminal-receipt.mjs';
 import { codingSessionRecoveryReceipt, normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
+import { runtimeFailureClassForCode } from './pi-common/runtime-failure.mjs';
 import {
   TRUSTED_RECOVERY_TOOLS,
   consumeUnavailableCapabilityAttempts,
@@ -1383,16 +1384,25 @@ export default function (pi) {
   }
 
   function recordRuntimeAbort(failureCode, reason, details = {}) {
+    const canonicalFailureClass = runtimeFailureClassForCode(failureCode);
+    const requestedFailureClass = details.failure_class ?? 'model_execution_abort';
     const record = {
       ...details,
       checkpoint: details.checkpoint ?? { repository_state: null, worktree_preserved: true },
       schema_version: 1,
       stage,
-      failure_class: 'model_execution_abort',
+      failure_class: canonicalFailureClass ?? requestedFailureClass,
       failure_code: failureCode,
       reason,
     };
-    if (details.failure_class === 'infrastructure') record.failure_class = 'infrastructure';
+    if (!canonicalFailureClass || canonicalFailureClass !== requestedFailureClass) {
+      console.error(`PI_RUNTIME_FAILURE_CLASSIFICATION_DRIFT ${JSON.stringify({
+        stage,
+        failureCode,
+        canonicalFailureClass,
+        requestedFailureClass,
+      })}`);
+    }
     // A coding-session fork is recoverable by its parent Implementer. Keep its abort in logs,
     // but never let a nested fork leave job-level failure provenance behind.
     if (codingSession) {
