@@ -18,12 +18,12 @@ Structured-output serialization contract — read this before using repository e
 ```json
 {
   "value": {
-    "steps": ["Update the target module.", "Add focused tests."],
-    "facts": ["The target follows the existing repository convention."],
+    "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."],
+    "facts": ["Both implementation targets are new files."],
     "complexity": "nontrivial",
     "evidence_budget": 0,
     "large_mutation": false,
-    "reason": "The target and repository conventions are already resolved."
+    "reason": "Both mutation targets are new files, so no current-file anchor is needed."
   }
 }
 ```
