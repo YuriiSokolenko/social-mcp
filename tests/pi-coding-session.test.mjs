@@ -526,6 +526,35 @@ function runtimeScenario(mode) {
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
         await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+        if (mode === 'repair-evidence') {
+          const repairPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
+          const repairTools = repairRequest.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.equal(repairRequest.tool_choice, 'required', 'failed validation requires one concrete repair action');
+          assert.ok(repairTools.includes('read'), 'bounded repair read is provider-visible');
+          assert.ok(!repairTools.includes('repo_search'), 'repair does not reopen repository discovery');
+          assert.ok(!repairTools.includes('need_more_evidence'), 'repair does not spend the generic evidence unlock');
+
+          const unrelated = await childCall('read', { path: 'README.md' });
+          assert.equal(unrelated.block, true);
+          assert.match(unrelated.reason, /repair read is limited to the authoritative failing\/changed paths/);
+          const boundedRead = await childCall('read', { path: 'test_generated.py' });
+          assert.equal(boundedRead.block, undefined, 'failing test file can be read directly');
+
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# targeted repair\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'), 'targeted repair re-enables exact retry');
+          await settleRepairRetry('shrunk');
+          assert.equal(childAborts, 0, 'a shrinking failure set remains repairable');
+          console.log('CODING_REPAIR_EVIDENCE_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after shrinking repair proof', usage: { output: 3000 } });
+        }
         if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
         if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) {
           respond(request, {
