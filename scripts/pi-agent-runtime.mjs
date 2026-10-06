@@ -105,7 +105,9 @@ const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 const CODING_REPAIR_READ_LIMIT = 2;
-const CODING_EQUIVALENT_FAILURE_LIMIT = 3;
+// Five non-improving failures leaves room for bounded diagnostic phase changes
+// (for example collection/import -> assertions) without allowing an endless repair loop.
+const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
 const DETERMINISTIC_RUN_CHECK_INFRASTRUCTURE_CODES = new Set(['CHECK_ENV', 'CHECK_ENV_CONTRACT']);
 const DETERMINISTIC_TERMINAL_RECOVERY_KINDS = new Set([
   'metadata',
@@ -401,19 +403,32 @@ export default function (pi) {
     return relative.split(path.sep).join('/');
   }
 
+  function normalizeCodingRepairDiagnosticText(value) {
+    return String(value ?? '')
+      .trim()
+      // Diagnostic text often embeds ephemeral paths, addresses and measured values.
+      // Keep the semantic wording while removing those volatile tokens from convergence identity.
+      .replace(/\b0x[0-9a-f]+\b/gi, '<hex>')
+      .replace(/\b[0-9a-f]{12,}\b/gi, '<hex>')
+      .replace(/[A-Za-z]:\\(?:[^\\\s"'():]+\\)+[^\\\s"'():]*/g, '<path>')
+      .replace(/\/(?:[^/\s"'():]+\/)+[^/\s"'():]*/g, '<path>')
+      .replace(/(^|[^\w])[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?=$|[^\w])/gi, '$1<number>')
+      .replace(/\s+/g, ' ');
+  }
+
   function codingRepairFailureSet(result, cwd) {
     const diagnostics = (Array.isArray(result?.diagnostics) ? result.diagnostics : [])
       .map(item => ({
         file: normalizedCodingRepairPath(item?.file, cwd),
         code: typeof item?.code === 'string' ? item.code : null,
-        message: typeof item?.message === 'string' ? item.message.trim() : '',
+        message: normalizeCodingRepairDiagnosticText(item?.message),
       }))
       .filter(item => item.file || item.code || item.message)
       .map(item => JSON.stringify(item))
       .sort();
     return diagnostics.length
       ? [...new Set(diagnostics)]
-      : [JSON.stringify({ summary: String(result?.summary ?? 'check failed').trim() })];
+      : [JSON.stringify({ summary: normalizeCodingRepairDiagnosticText(result?.summary ?? 'check failed') })];
   }
 
   function codingRepairIdentity(input, result, cwd) {
