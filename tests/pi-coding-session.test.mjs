@@ -357,7 +357,28 @@ function runtimeScenario(mode) {
         assert.ok(firstRequestTools.includes('need_more_evidence'), 'bounded evidence transition remains reachable');
         assert.ok(!firstRequestTools.includes('read'), 'inherited parent read intent is not advertised on the first request');
         assert.ok(!firstRequestTools.includes('bash'), 'forbidden cleanup shell is not advertised on the first request');
-        if (mode === 'incapable-repeat' || mode === 'incapable-transition') {
+        if (mode === 'handoff-missing' || mode === 'handoff-malformed') {
+        if (mode === 'handoff-missing') {
+          delete process.env.PI_ISSUE_CONTEXT;
+        } else {
+          fs.writeFileSync(process.env.PI_ISSUE_CONTEXT, '{broken json');
+        }
+        await assert.rejects(
+          () => tools.get('begin_coding_session').execute('handoff-unavailable', {
+            reason: 'Implement generated.py and its test',
+          }, signal.signal, null, ctx),
+          error => {
+            assert.equal(error.code, 'handoff_unavailable');
+            assert.match(error.message, /Implement with direct edits/);
+            return true;
+          },
+        );
+        assert.equal(sessionRequests.length, 0, 'handoff failure rejects before launching the coding child');
+        console.log('HANDOFF_UNAVAILABLE_OK');
+        process.exit(0);
+      }
+
+      if (mode === 'incapable-repeat' || mode === 'incapable-transition') {
           // #396/#399: the fork was launched for cleanup that needs raw bash. The model omits
           // required_capability; the trusted surface still blocks bash inside the fork.
           childHandlers.get('turn_start')({ turnIndex: 0 });
@@ -2306,6 +2327,14 @@ test('a deliberately non-compliant second prose-only turn still aborts with dura
   const logs = runtimeScenario('action-prose-abort');
   assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
   assert.match(logs, /RUNTIME_FAILURE_RECORD .*"failure_class":"model_execution_abort".*"failure_code":"PI_ACTION_REQUIRED_ABORT"/);
+});
+
+test('coding handoff failures reject with a coded reason before child launch', () => {
+  for (const mode of ['handoff-missing', 'handoff-malformed']) {
+    const logs = runtimeScenario(mode);
+    assert.match(logs, /"phase":"rejected".*"reason":"handoff_unavailable"/);
+    assert.match(logs, /HANDOFF_UNAVAILABLE_OK/);
+  }
 });
 
 test('cancellation and drafting loops fail closed while coding no longer requires a persisted parent session', () => {
