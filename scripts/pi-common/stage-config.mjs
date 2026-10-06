@@ -16,10 +16,11 @@ function loadPromptFile(relativePath, env = process.env) {
 const IMPLEMENTER_CODING_CONTRACT_HEADING = '## Coding-session contract';
 
 function markdownSection(text, heading) {
-  const start = text.indexOf(heading);
+  const lines = text.split('\n');
+  const start = lines.findIndex(line => line.trimEnd() === heading);
   if (start < 0) throw new Error(`Missing model-facing contract section: ${heading}`);
-  const next = text.indexOf('\n## ', start + heading.length);
-  return text.slice(start, next < 0 ? text.length : next).trim();
+  const next = lines.findIndex((line, index) => index > start && /^##(?:[ \t]+|$)/.test(line));
+  return lines.slice(start, next < 0 ? lines.length : next).join('\n').trim();
 }
 
 function withoutMarkdownSection(text, heading) {
