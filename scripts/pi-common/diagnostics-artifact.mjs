@@ -13,11 +13,11 @@ export function sanitizeDiagnostic(value, key = '') {
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[REDACTED PRIVATE KEY]')
     .replace(/::add-mask::[^\r\n]*/gi, '::add-mask::[REDACTED]')
-    .replace(/\b([A-Za-z_][A-Za-z0-9_-]*)(["']?)\s*([=:])\s*["']?([^\s&,;"']+)/g, (match, name, quote, separator) =>
+    .replace(/\b([A-Za-z_][A-Za-z0-9_-]*)(["']?)\s*([=:])\s*(?:"[^"]*"|'[^']*'|[^\s&,;]+)/g, (match, name, quote, separator) =>
       secretKey.test(name) ? `${name}${quote}${separator}[REDACTED]` : match)
     .replace(/\b(gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g, '[REDACTED]');
   const knownSecrets = Object.entries(process.env)
-    .filter(([name, secret]) => secretKey.test(name) && typeof secret === 'string' && secret.length >= 5)
+    .filter(([name, secret]) => secretKey.test(name) && typeof secret === 'string' && secret.length > 0)
     .map(([, secret]) => secret)
     .sort((left, right) => right.length - left.length);
   for (const secret of knownSecrets) sanitized = sanitized.replaceAll(secret, '[REDACTED]');

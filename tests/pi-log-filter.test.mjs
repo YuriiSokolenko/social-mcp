@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, existsSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -62,16 +62,120 @@ test('failed tool diagnostics stay visible and the complete sanitized event is r
   const detail = 'validation detail '.repeat(2200);
   const output = render([
     { type: 'tool_execution_start', toolName: 'run_check', toolCallId: 'bad-check', args: { kind: 'pytest' } },
-    { type: 'tool_execution_end', toolName: 'run_check', toolCallId: 'bad-check', isError: true, result: { content: [{ type: 'text', text: `api_key=syntheticToolSecret123\nopaque=syntheticEnvSecret123\n${detail}` }] } },
-  ], { PI_DIAGNOSTICS_FILE: file, PI_PHASE: 'implementer', PI_CALL: 'main', GH_TOKEN: 'syntheticEnvSecret123' });
+    { type: 'tool_execution_end', toolName: 'run_check', toolCallId: 'bad-check', isError: true, result: { content: [{ type: 'text', text: `api_key=syntheticToolSecret123\nopaque=abcd\n${detail}` }] } },
+  ], { PI_DIAGNOSTICS_FILE: file, PI_PHASE: 'implementer', PI_CALL: 'main', GH_TOKEN: 'abcd' });
   assert.match(output, /\[PI\]\[implementer\/main\] ✗ run_check/);
   assert.doesNotMatch(output, /::group::✗ run_check/);
-  assert.match(output, /truncated [0-9]+ -> 32000 chars/);
+  assert.match(output, /truncated [0-9]+ -> 8000 chars/);
   const artifact = readFileSync(file, 'utf8');
   assert.match(artifact, /api_key=\[REDACTED\]/);
   assert.match(artifact, /opaque=\[REDACTED\]/);
   assert.match(artifact, /validation detail/);
-  assert.doesNotMatch(artifact, /syntheticToolSecret123|syntheticEnvSecret123/);
+  assert.doesNotMatch(artifact, /syntheticToolSecret123|opaque=abcd/);
+  assert.match(output, /api_key=\[REDACTED\]/);
+  assert.match(output, /opaque=\[REDACTED\]/);
+});
+
+test('malformed tool arguments remain visible and are retained only on failure', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-malformed-'));
+  const file = join(dir, 'diagnostics.jsonl');
+  const output = render([
+    { type: 'tool_execution_start', toolName: 'edit', toolCallId: 'bad-args', args: { path: 'src/a.js', oldText: 'password: "two words"', input_token: 'syntheticSensitiveValue123' } },
+    { type: 'tool_execution_end', toolName: 'edit', toolCallId: 'bad-args', isError: true, result: { content: [{ type: 'text', text: 'Malformed tool arguments: expected a string' }] } },
+  ], { PI_DIAGNOSTICS_FILE: file });
+  const artifact = readFileSync(file, 'utf8');
+  assert.match(output, /Malformed tool arguments/);
+  assert.match(artifact, /Malformed tool arguments/);
+  assert.match(artifact, /password:\s*\[REDACTED\]/);
+  assert.match(artifact, /input_token.*\[REDACTED\]/);
+  assert.doesNotMatch(output + artifact, /two words|syntheticSensitiveValue123/);
+});
+
+test('nested stage/call streams have stable distinct lifecycle prefixes', () => {
+  const main = render([{ type: 'agent_start' }], { PI_PHASE: 'implementer', PI_CALL: 'main' });
+  const coding = render([{ type: 'agent_start' }], { PI_PHASE: 'implementer', PI_CALL: 'coding' });
+  assert.match(main, /\[PI\]\[implementer\/main\] ▶ Agent started/);
+  assert.match(coding, /\[PI\]\[implementer\/coding\] ▶ Agent started/);
+});
+
+test('final failure summary carries lifecycle, latest check, checkpoint and usage', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-final-failure-'));
+  const failureFile = join(dir, 'failure.json');
+  const diagnosticsFile = join(dir, 'diagnostics.jsonl');
+  writeFileSync(failureFile, JSON.stringify({
+    stage: 'implementer', failure_code: 'PI_TERMINAL_RECOVERY_BLOCKED',
+    checkpoint: { worktree_preserved: true },
+  }));
+  const output = render([
+    { type: 'turn_start' },
+    { type: 'message_end', message: { role: 'assistant', content: [], usage: { input: 120, output: 30, totalTokens: 150 } } },
+    { type: 'tool_execution_start', toolName: 'run_check', toolCallId: 'check', args: { kind: 'pytest' } },
+    { type: 'tool_execution_end', toolName: 'run_check', toolCallId: 'check', result: { details: {
+      kind: 'pytest', status: 'fail', exit_code: 1, duration_ms: 8200,
+      summary: '5 failures', diagnostics: [{}, {}, {}, {}, {}],
+    }, content: [{ type: 'text', text: JSON.stringify({ status: 'fail', kind: 'pytest' }) }] } },
+  ], { PI_PHASE: 'implementer', PI_CALL: 'main', PI_RUNTIME_FAILURE_FILE: failureFile, PI_DIAGNOSTICS_FILE: diagnosticsFile });
+  assert.match(output, /\[PI\]\[check\] pytest fail exit=1 failures=5 duration=8\.2 s/);
+  assert.match(output, /\[PI\]\[failure\] lifecycle=implementer\/main status=blocked category=PI_TERMINAL_RECOVERY_BLOCKED/);
+  assert.match(output, /last_check=pytest:fail worktree_preserved=true usage="in 120 · out 30 · cache read 0 · cache write 0 · total 150" diagnostics=diagnostics\.jsonl#runtime-failure-/);
+});
+
+test('interrupted run still ends with a failure summary when runtime metadata is missing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-missing-failure-'));
+  const diagnosticsFile = join(dir, 'diagnostics.jsonl');
+  const output = render([
+    { type: 'tool_execution_start', toolName: 'run_check', toolCallId: 'check', args: { kind: 'pytest' } },
+    { type: 'tool_execution_end', toolName: 'run_check', toolCallId: 'check', result: { details: {
+      kind: 'pytest', status: 'timeout', exit_code: null, duration_ms: 120000, diagnostics: [],
+    }, content: [{ type: 'text', text: 'timeout' }] } },
+  ], { PI_PHASE: 'implementer', PI_CALL: 'main', PI_DIAGNOSTICS_FILE: diagnosticsFile });
+  assert.match(output, /\[PI\]\[failure\] lifecycle=implementer\/main status=interrupted category=RUNTIME_FAILURE_METADATA_UNAVAILABLE/);
+  assert.match(output, /last_tool=run_check.*last_check=pytest:timeout worktree_preserved=unknown/);
+  assert.match(readFileSync(diagnosticsFile, 'utf8'), /RUNTIME_FAILURE_METADATA_UNAVAILABLE/);
+});
+
+test('diagnostic artifact write failure does not mask the failed tool result', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-artifact-error-'));
+  const invalidPath = join(dir, 'is-a-directory');
+  mkdirSync(invalidPath);
+  const output = render([
+    { type: 'tool_execution_end', toolName: 'edit', toolCallId: 'fail', isError: true, result: { content: [{ type: 'text', text: 'original tool failure' }] } },
+  ], { PI_DIAGNOSTICS_FILE: invalidPath });
+  assert.match(output, /original tool failure/);
+});
+
+test('short successful tool calls do not write full payloads to diagnostics', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-success-'));
+  const file = join(dir, 'diagnostics.jsonl');
+  const output = render([
+    { type: 'tool_execution_start', toolName: 'read', toolCallId: 'read-1', args: { path: 'README.md' } },
+    { type: 'tool_execution_end', toolName: 'read', toolCallId: 'read-1', result: { content: [{ type: 'text', text: 'short source' }] } },
+    { type: 'agent_end', messages: [] },
+  ], { PI_DIAGNOSTICS_FILE: file });
+  assert.match(output, /short source/);
+  assert.equal(existsSync(file), false);
+});
+
+test('run-check marker lines remain valid JSON for existing parsers', () => {
+  const output = render([
+    { type: 'turn_start' },
+    { type: 'message_end', message: { role: 'assistant', content: [], usage: { input: 2, output: 1 } } },
+  ], { PI_ISSUE: '500', PI_PHASE: 'implementer' });
+  const marker = output.split('\n').find(line => line.startsWith('PI_METRIC '));
+  assert.ok(marker);
+  assert.equal(JSON.parse(marker.slice('PI_METRIC '.length)).issue, 500);
+});
+
+test('every workflow that runs a Pi stage uploads its stage diagnostics file', () => {
+  const paths = [
+    ['pi-issue-agent.yml', 'implementer'], ['pi-pr-fix.yml', 'repair'],
+    ['pi-triage.yml', 'triage'], ['pi-dispatcher.yml', 'dispatcher'],
+    ['pi-architect.yml', 'architect'], ['pi-pr-review.yml', 'reviewer'],
+  ];
+  for (const [file, stage] of paths) {
+    const workflow = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
+    assert.match(workflow, new RegExp(`pi-diagnostics-${stage}-.*github\\.run_id`), `${file} uploads ${stage} diagnostics`);
+  }
 });
 
 test("records finalized subagent tool usage as separate PI_METRIC rows", () => {

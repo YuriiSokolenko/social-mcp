@@ -29,6 +29,7 @@ const MAX_DIAGNOSTICS = 20;
 const MAX_MESSAGE_CHARS = 400;
 const TAIL_CHARS = 3000;
 const CAPTURE_LIMIT_BYTES = 4 * 1024 * 1024;
+const OUTPUT_SPOOL_LIMIT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_TIMEOUT_SECONDS = 600;
 const PREFLIGHT_TIMEOUT_MS = 15000;
@@ -277,9 +278,17 @@ function execute({ command, args, cwd, env, timeoutMs }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const chunks = { stdout: [], stderr: [] };
-    const fullOutputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-run-check-output-'));
-    const fullOutputPaths = { stdout: path.join(fullOutputDir, 'stdout'), stderr: path.join(fullOutputDir, 'stderr') };
+    let fullOutputDir = null;
+    let fullOutputPaths = null;
+    try {
+      fullOutputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-run-check-output-'));
+      fullOutputPaths = { stdout: path.join(fullOutputDir, 'stdout'), stderr: path.join(fullOutputDir, 'stderr') };
+    } catch { /* The bounded in-memory tails remain available if spooling cannot start. */ }
     let fullOutputCaptureFailed = false;
+    const captureFailedByStream = { stdout: false, stderr: false };
+    const spooledBytes = { stdout: 0, stderr: 0 };
+    const totalBytes = { stdout: 0, stderr: 0 };
+    const spoolTruncated = { stdout: false, stderr: false };
     const sizes = { stdout: 0, stderr: 0 };
     let dropped = false;
     let timedOut = false;
@@ -287,8 +296,22 @@ function execute({ command, args, cwd, env, timeoutMs }) {
 
     const child = spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const collect = (name) => (data) => {
-      try { fs.appendFileSync(fullOutputPaths[name], data); }
-      catch { fullOutputCaptureFailed = true; }
+      totalBytes[name] += data.length;
+      const remaining = Math.max(0, OUTPUT_SPOOL_LIMIT_BYTES - spooledBytes[name]);
+      const spoolChunk = data.subarray(0, remaining);
+      if (data.length > remaining) spoolTruncated[name] = true;
+      if (spoolChunk.length && fullOutputPaths) {
+        try {
+          fs.appendFileSync(fullOutputPaths[name], spoolChunk);
+          spooledBytes[name] += spoolChunk.length;
+        } catch {
+          fullOutputCaptureFailed = true;
+          captureFailedByStream[name] = true;
+        }
+      } else if (spoolChunk.length) {
+        fullOutputCaptureFailed = true;
+        captureFailedByStream[name] = true;
+      }
       chunks[name].push(data);
       sizes[name] += data.length;
       while (sizes[name] > CAPTURE_LIMIT_BYTES) {
@@ -314,9 +337,23 @@ function execute({ command, args, cwd, env, timeoutMs }) {
       clearTimeout(timer);
       killTree(); // reap any grandchildren that outlived the direct child
       const readFullOutput = name => {
-        try { return fs.existsSync(fullOutputPaths[name]) ? fs.readFileSync(fullOutputPaths[name], 'utf8') : ''; }
+        try {
+          const prefix = fullOutputPaths && fs.existsSync(fullOutputPaths[name])
+            ? fs.readFileSync(fullOutputPaths[name], 'utf8')
+            : '';
+          if (captureFailedByStream[name] && totalBytes[name] > 0) {
+            const tail = Buffer.concat(chunks[name]).toString('utf8');
+            return `${prefix}\n[complete output spool unavailable; retained bounded tail follows]\n${tail}`;
+          }
+          if (spoolTruncated[name]) {
+            const tail = Buffer.concat(chunks[name]).toString('utf8');
+            return `${prefix}\n[output spool truncated after ${OUTPUT_SPOOL_LIMIT_BYTES} bytes; omitted ${totalBytes[name] - OUTPUT_SPOOL_LIMIT_BYTES} bytes]\n${tail}`;
+          }
+          return prefix;
+        }
         catch {
           fullOutputCaptureFailed = true;
+          captureFailedByStream[name] = true;
           return Buffer.concat(chunks[name]).toString('utf8');
         }
       };
@@ -325,14 +362,19 @@ function execute({ command, args, cwd, env, timeoutMs }) {
       resolve({
         exitCode,
         timedOut,
-        dropped: dropped || fullOutputCaptureFailed,
+        dropped: dropped || fullOutputCaptureFailed || Object.values(spoolTruncated).some(Boolean),
         outputCaptureFailed: fullOutputCaptureFailed,
+        outputSpoolTruncated: Object.values(spoolTruncated).some(Boolean),
+        outputSpoolOmittedBytes: Object.fromEntries(Object.keys(spoolTruncated).map(name => [name, Math.max(0, totalBytes[name] - OUTPUT_SPOOL_LIMIT_BYTES)])),
         spawnError,
         durationMs: Date.now() - started,
         stdout: fullStdout,
         stderr: fullStderr,
       });
-      fs.rmSync(fullOutputDir, { recursive: true, force: true });
+      if (fullOutputDir) {
+        try { fs.rmSync(fullOutputDir, { recursive: true, force: true }); }
+        catch { /* Temporary diagnostic cleanup is best-effort. */ }
+      }
     };
     child.once('error', error => finish(null, error));
     child.once('close', code => finish(code, null));
@@ -497,6 +539,10 @@ export async function runCheck(root, params, options = {}) {
     stderr_tail: stderrTail.text,
     truncated,
     ...(run.outputCaptureFailed ? { output_capture_failed: true } : {}),
+    ...(run.outputSpoolTruncated ? {
+      output_spool_truncated: true,
+      output_spool_omitted_bytes: run.outputSpoolOmittedBytes,
+    } : {}),
     ...(run.image ? { sandbox_image: run.image } : {}),
     ...(run.image_id ? { sandbox_image_id: run.image_id } : {}),
     ...(run.sandbox_security ? { sandbox_security: run.sandbox_security } : {}),
@@ -516,6 +562,8 @@ export async function runCheck(root, params, options = {}) {
     stdout: run.stdout,
     stderr: run.stderr,
     capture_incomplete: Boolean(run.outputCaptureFailed),
+    spool_truncated: Boolean(run.outputSpoolTruncated),
+    spool_omitted_bytes: run.outputSpoolOmittedBytes,
   });
   if (diagnosticStored) base.diagnostic_ref = `${path.basename(env.PI_DIAGNOSTICS_FILE)}#${checkDiagnosticId}`;
   else if (truncated || run.exitCode !== 0 || run.timedOut) base.diagnostic_artifact_failed = true;

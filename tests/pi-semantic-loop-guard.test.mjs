@@ -1517,6 +1517,7 @@ test('#426 runtime selects submit_result metadata repair and constrains the next
   `);
   assert.match(result.stdout, /TERMINAL_RECOVERY_METADATA_RUNTIME_OK/);
   assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+  assert.match(result.stderr, /\[PI\]\[recovery\] equivalent_failure .*"count":3.*"action":"steer"/);
   assert.match(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_SURFACE/);
 });
 

@@ -283,6 +283,51 @@ test('output beyond four MiB keeps a bounded failure tail and the complete artif
   assert.match(artifact, /FINAL_TRACEBACK/);
 });
 
+test('output beyond the spool cap is bounded and reports omitted bytes explicitly', async () => {
+  const dir = worktree({ 'tests/test_huge.py': '' });
+  const diagnosticsFile = path.join(dir, 'diagnostics.jsonl');
+  const huge = fakeBin(dir, 'pytest-spool-cap', 'echo FIRST_SPOOL_DIAGNOSTIC\nhead -c 34000000 /dev/zero | tr "\\000" x\nprintf "\\nFINAL_SPOOL_TRACEBACK\\n"\nexit 1');
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_huge.py'] }, directOptions({
+    bins: { pytest: huge },
+    env: { ...process.env, PI_DIAGNOSTICS_FILE: diagnosticsFile },
+  }));
+  assert.equal(result.status, 'fail');
+  assert.equal(result.output_spool_truncated, true);
+  assert.ok(result.output_spool_omitted_bytes.stdout > 0);
+  const artifact = fs.readFileSync(diagnosticsFile, 'utf8');
+  assert.match(artifact, /FIRST_SPOOL_DIAGNOSTIC/);
+  assert.match(artifact, /FINAL_SPOOL_TRACEBACK/);
+  assert.match(artifact, /"spool_truncated":true/);
+});
+
+test('spool setup failure falls back to bounded output without masking the check result', async () => {
+  const dir = worktree({ 'tests/test_spool.py': '' });
+  const fail = fakeBin(dir, 'pytest-spool-setup-fail', 'echo CHECK_FAILURE >&2\nexit 1');
+  const originalMkdtempSync = fs.mkdtempSync;
+  fs.mkdtempSync = () => { throw new Error('temporary directory unavailable'); };
+  try {
+    const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_spool.py'] }, directOptions({ bins: { pytest: fail } }));
+    assert.equal(result.status, 'fail');
+    assert.equal(result.output_capture_failed, true);
+    assert.match(result.stderr_tail, /CHECK_FAILURE/);
+  } finally {
+    fs.mkdtempSync = originalMkdtempSync;
+  }
+});
+
+test('diagnostic artifact write failure does not change check status', async () => {
+  const dir = worktree({ 'tests/test_artifact.py': '' });
+  const fail = fakeBin(dir, 'pytest-artifact-fail', 'echo ORIGINAL_FAILURE >&2\nexit 1');
+  const artifactDirectory = path.join(dir, 'diagnostics');
+  fs.mkdirSync(artifactDirectory);
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_artifact.py'] }, directOptions({
+    bins: { pytest: fail }, env: { ...process.env, PI_DIAGNOSTICS_FILE: artifactDirectory },
+  }));
+  assert.equal(result.status, 'fail');
+  assert.equal(result.diagnostic_artifact_failed, true);
+  assert.match(result.stderr_tail, /ORIGINAL_FAILURE/);
+});
+
 test('failed check writes complete sanitized output to the diagnostics artifact', async () => {
   const dir = worktree({ 'tests/test_big.py': '' });
   const diagnosticsFile = path.join(dir, 'diagnostics.jsonl');
@@ -436,6 +481,7 @@ test('focused-check tools live in the dedicated sandbox image, not the agent ima
   assert.match(source, /FROM python:3\.12/);
   assert.match(source, /USER 1001:1001/);
   assert.doesNotMatch(fs.readFileSync(new URL('../infra/github-runner-autoscaler/worker.Dockerfile', import.meta.url), 'utf8'), /bubblewrap/);
+  assert.match(fs.readFileSync(new URL('../infra/github-runner-autoscaler/manager.Dockerfile', import.meta.url), 'utf8'), /COPY scripts\/pi-common\/diagnostics-artifact\.mjs \/opt\/social-mcp\/scripts\/pi-common\/diagnostics-artifact\.mjs/);
 });
 
 test('failed check returns usable diagnostics even when output is unparsed', async () => {
