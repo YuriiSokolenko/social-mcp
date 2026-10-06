@@ -1746,6 +1746,12 @@ export default function (pi) {
           enableThinking: patched.chat_template_kwargs?.enable_thinking === true,
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
         })}`);
+        // Reasoning is a one-request decision budget per authoritative failure. Reads or other
+        // deterministic follow-up requests stay on the normal low-overhead path until validation
+        // fails again and opens a new repair decision.
+        if (thinkingPhase === 'repair_reasoning' && codingValidationRepair) {
+          codingValidationRepair.reasoningPending = false;
+        }
       }
 
       if (Array.isArray(patched?.tools)) {
