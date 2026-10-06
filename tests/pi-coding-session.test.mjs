@@ -1850,7 +1850,9 @@ function runtimeScenario(mode) {
         reason: 'Implement generated.py and its test',
         handoff: mode === 'handoff-truncation'
           ? 'Current evidence established REQUIRED_CONSTANT = "abc123". ' + 'a'.repeat(1140) + '🚀tail'
-          : '  Current evidence established REQUIRED_CONSTANT = "abc123". café 🚀  ',
+          : mode === 'handoff-trailing-space-truncation'
+            ? 'Current evidence established REQUIRED_CONSTANT = "abc123". ' + 'a'.repeat(1140) + ' tail'
+            : '  Current evidence established REQUIRED_CONSTANT = "abc123". café 🚀  ',
       }, { expectError });
       if (mode === 'malformed-contract') {
         assert.equal(aborts, 0);
@@ -2056,9 +2058,13 @@ test('2K parent -> begin_coding_session -> isolated 16K coding child writes code
 });
 
 test('parent handoff truncation is code-point safe, bounded and re-trimmed', () => {
-  const logs = runtimeScenario('handoff-truncation');
-  assert.match(logs, /"phase":"started"[^\n]*"parentHandoffBytes":1203/);
-  assert.doesNotMatch(logs, /🚀tail|Current evidence established REQUIRED_CONSTANT/);
+  const unicodeLogs = runtimeScenario('handoff-truncation');
+  assert.match(unicodeLogs, /"phase":"started"[^\n]*"parentHandoffBytes":1203/);
+  assert.doesNotMatch(unicodeLogs, /🚀tail|Current evidence established REQUIRED_CONSTANT/);
+
+  const trailingSpaceLogs = runtimeScenario('handoff-trailing-space-truncation');
+  assert.match(trailingSpaceLogs, /"phase":"started"[^\n]*"parentHandoffBytes":1199/);
+  assert.doesNotMatch(trailingSpaceLogs, / tail|Current evidence established REQUIRED_CONSTANT/);
 });
 
 test('a valid blocked child terminal result propagates as blocked, never implementation success', () => {
