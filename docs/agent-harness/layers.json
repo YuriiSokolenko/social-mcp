@@ -9,6 +9,7 @@
     "scripts/pi-common/automation-control.mjs",
     "scripts/pi-common/candidate-revision.mjs",
     "scripts/pi-common/control-plane-policy.mjs",
+    "scripts/pi-common/diagnostics-artifact.mjs",
     "scripts/pi-common/finalize-product-tree.mjs",
     "scripts/pi-common/git.mjs",
     "scripts/pi-common/github-api.mjs",
