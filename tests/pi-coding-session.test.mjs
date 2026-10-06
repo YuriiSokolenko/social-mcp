@@ -1085,7 +1085,8 @@ function runtimeScenario(mode) {
         assert.match(request.task, /<prepared_implementation>/);
         assert.match(request.task, /<parent_execution_handoff>/);
         assert.match(request.task, /<runtime_state>/);
-        assert.equal(request.task.match(/Planner fact marker/g)?.length, 1, 'prepared repository facts are handed off exactly once');
+        if (mode === 'fallback') assert.doesNotMatch(request.task, /Planner fact marker/);
+        else assert.equal(request.task.match(/Planner fact marker/g)?.length, 1, 'prepared repository facts are handed off exactly once');
         assert.doesNotMatch(request.task, /## Startup|Available delegated agents|Repository access routing|PARENT_TRANSCRIPT_ONLY_MARKER/);
         sessionRequests.push({ task: request.task, maxTokens: process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, spec: JSON.parse(process.env.PI_CODING_SESSION) });
         if (mode === 'cancel') { signal.abort(); return; }
