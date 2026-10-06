@@ -27,6 +27,26 @@ const TYPEBOX_STUB_LOADER = `export async function resolve(specifier, context, n
   return nextResolve(specifier, context);
 }`;
 
+test('coding-session guidance uses only exposed tools and routes missing evidence through need_more_evidence', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /never invent helper names such as read_for_input/);
+  assert.match(runtime, /if one concrete missing fact prevents the next safe action, call need_more_evidence/);
+  assert.match(runtime, /action-required: read is not exposed now/);
+  assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
+  assert.match(runtime, /bounded repair read access only for the failing\/changed paths/);
+  assert.match(runtime, /Tests must prefer public behavior and public APIs/);
+  assert.match(runtime, /do not mutate private\/internal implementation state merely to manufacture fixture state/);
+});
+
+test('#470 evidence-consumed notices are correlated to the exact tool call', () => {
+  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.set\(event\.toolCallId, evidenceConsumptionNotice\)/);
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.get\(event\.toolCallId\)/);
+  assert.match(runtime, /pendingEvidenceConsumptionNotices\.delete\(event\.toolCallId\)/);
+  assert.doesNotMatch(runtime, /const consumedEvidence = controller\.consumeEvidenceActionNotice\(\);/);
+});
+
+
 test('every file mutation target must be physically inside the worktree', () => {
   const dir = tempDir();
   const outside = tempDir();
@@ -53,22 +73,17 @@ test('every file mutation target must be physically inside the worktree', () => 
   }
 });
 
-test('the coding session starts only after preparation and once evidence is complete', () => {
+test('the coding session starts only once evidence is complete, never from an unprepared controller', () => {
   const unprepared = new ProgressController(stageConfig('implementer'), {});
   assert.equal(unprepared.checkToolCall('begin_coding_session', {}).block, true, 'preparation cannot be skipped');
 
   const exploring = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(exploring.checkToolCall('prepare_implementation', {}), undefined);
-  exploring.setComplexity('nontrivial');
-  exploring.setEvidenceBudget(2);
-  exploring.onToolExecutionEnd('prepare_implementation', false);
+  exploring.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 2, largeMutation: false, reason: 'test' });
   assert.equal(exploring.productiveProgressState(), 'evidence_allowed');
   assert.match(exploring.checkToolCall('begin_coding_session', {}).reason, /only once evidence is complete/, 'no 16K during exploration');
 
   const ready = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(ready.checkToolCall('prepare_implementation', {}), undefined);
-  ready.enterPreparationFallback();
-  ready.onToolExecutionEnd('prepare_implementation', false);
+  ready.applyPreparedImplementation({ status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' });
   assert.match(ready.checkToolCall('begin_coding_session', {}).reason, /only once evidence is complete/);
   for (let i = 0; i < PREPARATION_FALLBACK_EVIDENCE_BUDGET; i++) {
     assert.equal(ready.checkToolCall('read', { path: 'fallback-evidence-' + i }), undefined);
@@ -123,7 +138,7 @@ test('the coding session is the same Implementer runtime, defined only in truste
     assert.ok(progress.codingSessionTools.includes(tool), tool);
   }
   assert.ok(!progress.codingSessionTools.includes('bash'), 'raw shell is not a coding-session cleanup capability');
-  for (const tool of ['begin_coding_session', 'request_large_mutation_budget', 'subagent', 'subagents_enable', 'prepare_implementation', 'grep', 'find', 'ls']) {
+  for (const tool of ['begin_coding_session', 'request_large_mutation_budget', 'subagent', 'subagents_enable', 'grep', 'find', 'ls']) {
     assert.ok(!progress.codingSessionTools.includes(tool), tool);
   }
 });
@@ -145,15 +160,42 @@ function runtimeScenario(mode) {
     const scenario = path.join(dir, 'scenario.mjs');
     const work = path.join(dir, 'work');
     const terminal = path.join(dir, 'terminal.json');
+    const preparedFile = path.join(dir, 'prepared-implementation.json');
+    const preparedBase = {
+      version: 1,
+      workspaceRoot: dir,
+      freshBaseCommit: '',
+      baseRef: 'origin/dev',
+      layoutHint: ['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)
+        ? {
+            sourceRoot: '.',
+            sourceDirectory: '.',
+            sourceTarget: 'generated.py',
+            sourceConvention: null,
+            testDirectory: '.',
+            testTarget: 'test_generated.py',
+            testTargetRequired: true,
+            testConvention: null,
+          }
+        : null,
+      plannerUsage: null,
+      plannerDurationMs: 1,
+    };
+    fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
+      ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
+      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: false, reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
+    const validationLedger = path.join(dir, 'validation.jsonl');
     const remote = path.join(dir, 'remote.git');
     execFileSync('git', ['init', '--bare', '-q', remote]);
     fs.mkdirSync(work);
     execFileSync('git', ['init', '-q', work]);
     execFileSync('git', ['-C', work, 'config', 'user.name', 'Coding Session Test']);
     execFileSync('git', ['-C', work, 'config', 'user.email', 'coding@example.invalid']);
+    fs.writeFileSync(path.join(work, 'unchanged_helper.py'), 'HELPER = 1\n');
+    execFileSync('git', ['-C', work, 'add', 'unchanged_helper.py']);
     execFileSync('git', ['-C', work, 'commit', '--allow-empty', '-qm', 'base']);
     execFileSync('git', ['-C', work, 'remote', 'add', 'origin', remote]);
     execFileSync('git', ['-C', work, 'push', '-q', 'origin', 'HEAD:refs/heads/dev']);
@@ -167,9 +209,11 @@ function runtimeScenario(mode) {
       const runtimeUrl = ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
       const terminalReceiptUrl = ${JSON.stringify(new URL('../scripts/pi-common/terminal-receipt.mjs', import.meta.url).href)};
       const implementerResultUrl = ${JSON.stringify(new URL('../scripts/pi-common/implementer-result.mjs', import.meta.url).href)};
+      const codingValidationUrl = ${JSON.stringify(new URL('../scripts/pi-common/coding-session-validation.mjs', import.meta.url).href)};
       const { default: runtime, providerErrorStatus } = await import(runtimeUrl);
       const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile } = await import(terminalReceiptUrl);
       const { writeImplementerResult } = await import(implementerResultUrl);
+      const { assertCodingBehavioralValidation, recordCodingBehavioralValidation } = await import(codingValidationUrl);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 {"error":"bad request"}' }), 400);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400 status code (no body)' }), 400);
@@ -202,11 +246,11 @@ function runtimeScenario(mode) {
       const registered = new Map();
       let aborts = 0;
       let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence',
-        'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'prepare_implementation'];
+        'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'subagents_enable'];
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -248,7 +292,11 @@ function runtimeScenario(mode) {
         assert.deepEqual(definition.extensions, [controlScripts + '/pi-bash-timeout.mjs', controlScripts + '/pi-agent-runtime.mjs', controlScripts + '/pi-implementer-result-tool.mjs']);
         const inherited = fs.readFileSync(sessionFile, 'utf8').trim().split('\\n').map(line => JSON.parse(line));
         const childTools = new Map(); const childHandlers = new Map();
-        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (mode !== 'tool-contract') throw new Error('fork aborted'); },
+        let childAborts = 0;
+        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
+          if (!['tool-contract', 'repair-nonconvergent'].includes(mode)) throw new Error('fork aborted');
+          childAborts += 1;
+        },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
@@ -313,15 +361,144 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'nested executor unavailable', usage: { input: 50, output: 5, totalTokens: 55 } });
         }
         // Executors stubbed; the runtime's gates around them are real.
-        childTools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
+        const repairFailure = variant => {
+          const volatile = variant === 'volatile-a' || variant === 'volatile-b';
+          const semanticNumber = variant === 'semantic-42' || variant === 'semantic-43';
+          const volatileMessage = variant === 'volatile-b'
+            ? 'test_constant: mismatch at /tmp/pytest-987/result.txt after 84.75ms address 0xdeadbeef'
+            : 'test_constant: mismatch at /tmp/pytest-123/result.txt after 12.50ms address 0xabc123';
+          let diagnostics = volatile
+            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+            : semanticNumber
+              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected ' + (variant === 'semantic-43' ? '43' : '42') }]
+              : variant === 'shrunk'
+                ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
+                : [
+                    { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
+                    { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
+                  ];
+          if (mode === 'repair-evidence' && variant === 'initial') {
+            diagnostics = [...diagnostics, {
+              file: 'link-source.py',
+              line: 1,
+              column: null,
+              code: 'AssertionError',
+              message: 'symlinked source diagnostic',
+            }];
+          }
+          return {
+            status: 'fail',
+            kind: 'pytest',
+            exit_code: 1,
+            duration_ms: 7,
+            summary: variant === 'shrunk' || volatile || semanticNumber ? '1 failed' : '2 failed',
+            diagnostics,
+            stdout_tail: '',
+            stderr_tail: '',
+            truncated: false,
+          };
+        };
+        const repairPass = () => ({
+          status: 'pass',
+          kind: 'pytest',
+          exit_code: 0,
+          duration_ms: 5,
+          summary: '1 passed',
+          diagnostics: [],
+          stdout_tail: '',
+          stderr_tail: '',
+          truncated: false,
+        });
+        const appendRepairRecord = (params, result) => {
+          const records = fs.existsSync(process.env.PI_VALIDATION_LEDGER_FILE)
+            ? fs.readFileSync(process.env.PI_VALIDATION_LEDGER_FILE, 'utf8').split('\\n').filter(Boolean)
+            : [];
+          fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
+            seq: records.length,
+            timestamp: new Date().toISOString(),
+            kind: result.kind,
+            scope: result.kind === 'pytest'
+              ? { targets: params.targets }
+              : result.kind === 'profile'
+                ? { profile: params.profile }
+                : { paths: params.paths },
+            status: result.status,
+            exit_code: result.exit_code,
+            source: 'run_check',
+            stage: 'implementer',
+            backend: 'pi',
+            run_id: process.env.PI_VALIDATION_RUN_ID,
+            attempt_id: 'primary',
+            diagnostics_count: result.diagnostics.length,
+            summary: result.summary,
+            infrastructure: null,
+          }) + '\\n');
+        };
+        childTools.get('run_check').execute = async (_toolCallId, params) => {
+          if (mode === 'repair-empty-scope' && params?.kind === 'profile') {
+            const result = {
+              status: 'fail',
+              kind: 'profile',
+              exit_code: 1,
+              duration_ms: 3,
+              summary: 'profile failed without structured diagnostics',
+              diagnostics: [],
+              stdout_tail: '',
+              stderr_tail: '',
+              truncated: false,
+            };
+            appendRepairRecord(params, result);
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+          }
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details'].includes(mode) && params?.kind === 'pytest') {
+            const variant = mode === 'repair-volatile-message'
+              ? 'volatile-a'
+              : mode === 'repair-semantic-number'
+                ? 'semantic-42'
+                : 'initial';
+            const result = repairFailure(variant);
+            appendRepairRecord(params, result);
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+          }
+          if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode) && params?.kind === 'pytest') {
+            fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
+              seq: 0,
+              timestamp: new Date().toISOString(),
+              kind: 'pytest',
+              scope: { targets: params.targets },
+              status: 'infra_error',
+              exit_code: null,
+              source: 'run_check',
+              stage: 'implementer',
+              backend: 'pi',
+              run_id: process.env.PI_VALIDATION_RUN_ID,
+              attempt_id: 'primary',
+              diagnostics_count: 0,
+              summary: 'unsupported check environment key: PI_TRUSTED_ACCEPTANCE_TARGETS',
+              infrastructure: { component: 'sandbox', code: 'CHECK_ENV', command: 'trusted-run-check-executor' },
+            }) + '\\n');
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'infra_error', infrastructure: { code: 'CHECK_ENV' } }) }] };
+          }
+          if (params?.kind === 'pytest') {
+            recordCodingBehavioralValidation({
+              scope: { targets: params.targets },
+              result: { status: 'pass', kind: 'pytest' },
+              env: process.env,
+            });
+          }
+          return { content: [{ type: 'text', text: 'check passed' }] };
+        };
         childTools.get('submit_result').execute = async () => {
-          writeImplementerResult(resultFile, {
-            title: 't',
-            summary: 's',
-            changes: ['c'],
-            files: ['generated.py', 'test_generated.py'],
-            security_notes: 'n',
-            limitations: 'n',
+          writeImplementerResult(resultFile, mode === 'blocked' ? {
+            title: 'Blocked task',
+            summary: 'The issue cannot be implemented under the supplied constraints.',
+            outcome: 'blocked',
+            changes: [],
+            files: [],
+            blocked_reason: 'A required behavior conflicts with a stated constraint.',
+          } : {
+            title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'],
+            security_notes: 'n', limitations: 'n',
           });
           const receiptEnv = { ...process.env, PI_TERMINAL_RESULT_FILE: terminal };
           writeTerminalReceiptFile(
@@ -354,10 +531,77 @@ function runtimeScenario(mode) {
             if (childTools.has(name)) result = await childTools.get(name).execute(event.toolCallId, input, null, null, childCtx);
             else { if (name === 'write') fs.writeFileSync(cwd + '/' + input.path, input.content); result = { content: [{ type: 'text', text: 'ok' }] }; }
           } catch (error) { isError = true; result = { content: [{ type: 'text', text: String(error.message) }] }; }
+          if (
+            mode === 'repair-iserror-details' &&
+            name === 'run_check' &&
+            input?.kind === 'pytest' &&
+            result?.details?.status === 'fail'
+          ) {
+            isError = true;
+          }
           await childHandlers.get('tool_execution_end')({ ...event, isError, result }, childCtx);
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 3000 } } }, childCtx);
           return result;
         };
+        const settleRepairRetry = async variant => {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const event = { toolName: 'retry_last_failed_check', toolCallId: 'repair-retry-' + turn, input: {} };
+          const blocked = await childHandlers.get('tool_call')(event, childCtx);
+          assert.equal(blocked, undefined, 'exact retry passes the real runtime gate');
+          const result = variant === 'pass' ? repairPass() : repairFailure(variant);
+          appendRepairRecord({ targets: ['test_generated.py'] }, result);
+          await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            details: result,
+          } }, childCtx);
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 800 } } }, childCtx);
+          return result;
+        };
+        const settleSyntheticDifferentScopePass = async () => {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const event = {
+            toolName: 'run_check',
+            toolCallId: 'different-scope-pass-' + turn,
+            input: { kind: 'python_compile', paths: ['generated.py'] },
+          };
+          const result = {
+            status: 'pass',
+            kind: 'python_compile',
+            exit_code: 0,
+            duration_ms: 2,
+            summary: 'Compiled cleanly',
+            diagnostics: [],
+            stdout_tail: '',
+            stderr_tail: '',
+            truncated: false,
+          };
+          appendRepairRecord({ paths: ['generated.py'] }, result);
+          await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            details: result,
+          } }, childCtx);
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
+        };
+        const settleSyntheticBroaderScopePass = async () => {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const event = {
+            toolName: 'run_check',
+            toolCallId: 'broader-scope-pass-' + turn,
+            input: { kind: 'pytest', targets: ['test_generated.py', 'test_other.py'] },
+          };
+          const result = repairPass();
+          appendRepairRecord(event.input, result);
+          await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            details: result,
+          } }, childCtx);
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
+        };
+        if (mode === 'blocked') {
+          await childCall('submit_result', { blocked_reason: 'A required behavior conflicts with a stated constraint.' });
+          respond(request, { status: 'completed', result: { kind: 'text', value: 'blocked' }, usage: { output: 100 } });
+          return;
+        }
         // The forked "model": its knowledge comes from the inherited transcript + task only.
         const transcript = inherited.flatMap(entry => Array.isArray(entry.message?.content)
           ? entry.message.content.map(part => part?.text ?? '') : [String(entry.message?.content ?? '')]).join('\\n');
@@ -386,17 +630,173 @@ function runtimeScenario(mode) {
           assert.equal(providerPatch({ payload: actionPayload }, childCtx).tool_choice, undefined, 'child tool call clears forcing');
         }
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
-        await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
-        await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
-        if (!['no-submit', 'no-submit-parent-submit'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
-        respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
+        const testSource = mode === 'repair-evidence'
+          ? 'from generated import REQUIRED_CONSTANT\\nfrom unchanged_helper import HELPER\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n'
+          : 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n';
+        await childCall('write', { path: 'test_generated.py', content: testSource });
+        if (mode === 'repair-evidence') {
+          const outside = cwd + '/../repair-outside-' + process.pid + '.py';
+          fs.writeFileSync(outside, 'OUTSIDE = true\\n');
+          fs.symlinkSync(outside, cwd + '/link-source.py');
+        }
+        if (mode === 'repair-empty-scope') {
+          const hiddenGit = cwd + '/.git-hidden-repair-empty';
+          fs.renameSync(cwd + '/.git', hiddenGit);
+          try {
+            await childCall('run_check', { kind: 'profile', profile: 'repair-empty' });
+          } finally {
+            fs.renameSync(hiddenGit, cwd + '/.git');
+          }
+        } else {
+          await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+        }
+        if (mode === 'repair-evidence') {
+          const repairPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
+          const repairTools = repairRequest.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.equal(repairRequest.tool_choice, 'required', 'failed validation requires one concrete repair action');
+          assert.ok(repairTools.includes('read'), 'bounded repair read is provider-visible');
+          assert.ok(!repairTools.includes('repo_search'), 'repair does not reopen repository discovery');
+          assert.ok(!repairTools.includes('need_more_evidence'), 'repair does not spend the generic evidence unlock');
+
+          const unrelated = await childCall('read', { path: 'README.md' });
+          assert.equal(unrelated.block, true);
+          assert.match(unrelated.reason, /repair read is limited to the authoritative failing\\/changed paths/);
+
+          const symlinkEscape = await childCall('read', { path: 'link-source.py' });
+          assert.equal(symlinkEscape.block, true, 'diagnostic symlink escaping the worktree is never authorized');
+          assert.ok(!symlinkEscape.reason.includes('link-source.py'), 'symlink escape is removed from the trusted repair path set');
+
+          const boundedRead = await childCall('read', { path: 'test_generated.py' });
+          assert.equal(boundedRead.block, undefined, 'failing test file can be read directly');
+          const importedRead = await childCall('read', { path: 'unchanged_helper.py' });
+          assert.equal(importedRead.block, undefined, 'one-hop imported unchanged source is admitted as bounded repair evidence');
+          const exhaustedRead = await childCall('read', { path: 'generated.py' });
+          assert.equal(exhaustedRead.block, true, 'repair read allowance remains bounded after readsRemaining is exhausted');
+
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# targeted repair\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'), 'targeted repair re-enables exact retry');
+          await settleRepairRetry('shrunk');
+          assert.equal(childAborts, 0, 'a shrinking failure set remains repairable');
+          console.log('CODING_REPAIR_EVIDENCE_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after shrinking repair proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-nonconvergent') {
+          const flipFlop = [
+            ['shrunk', 'a strict reduction resets the non-improving count'],
+            ['initial', 'expanding back to a seen failure set is non-improving but still below the bound'],
+            ['shrunk', 'returning to the prior best set is not a new strict reduction'],
+            ['initial', 'another expansion remains bounded but does not yet abort'],
+            ['shrunk', 'the fifth non-improving failure reaches the bounded repair ceiling'],
+          ];
+          for (let index = 0; index < flipFlop.length; index++) {
+            await settleSyntheticDifferentScopePass();
+            await childCall('write', {
+              path: 'test_generated.py',
+              content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round ' + (index + 1) + '\\n',
+            });
+            assert.ok(childActive.includes('retry_last_failed_check'));
+            await settleRepairRetry(flipFlop[index][0]);
+            assert.equal(
+              childAborts,
+              index === flipFlop.length - 1 ? 1 : 0,
+              flipFlop[index][1],
+            );
+          }
+          console.log('CODING_REPAIR_NONCONVERGENT_OK');
+          return respond(request, { status: 'failed', error: 'PI_CODING_VALIDATION_NON_CONVERGENT', usage: { output: 5000 } });
+        }
+
+        if (mode === 'repair-volatile-message') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# volatile diagnostic retry\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('volatile-b');
+          assert.equal(childAborts, 0, 'volatile diagnostic values stay one semantic failure identity');
+          console.log('CODING_REPAIR_VOLATILE_MESSAGE_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after volatile identity proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-semantic-number') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# semantic number retry\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('semantic-43');
+          assert.equal(childAborts, 0);
+          console.log('CODING_REPAIR_SEMANTIC_NUMBER_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after semantic-number identity proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-iserror-details') {
+          assert.ok(childActive.includes('read'), 'structured fail details open repair evidence even when transport marks the tool errored');
+          const readAfterErroredFail = await childCall('read', { path: 'test_generated.py' });
+          assert.equal(readAfterErroredFail.block, undefined);
+          console.log('CODING_REPAIR_ISERROR_DETAILS_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after isError repair proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-empty-scope') {
+          const repairPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
+          const repairTools = repairRequest.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.ok(!repairTools.includes('read'), 'an empty trusted repair scope does not expose a read that can only dead-end');
+          const repairWrite = await childCall('write', {
+            path: 'test_generated.py',
+            content: testSource + '# repair without bounded evidence path\\n',
+          });
+          assert.equal(repairWrite.block, undefined, 'empty repair evidence releases the read-before-mutation gate');
+          console.log('CODING_REPAIR_EMPTY_SCOPE_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after empty-scope recovery proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-pass-reset') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# pass reset\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleSyntheticBroaderScopePass();
+          assert.equal(childAborts, 0);
+
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# fail again after covering pass\\n',
+          });
+          await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+          assert.equal(childAborts, 0, 'provably covering same-kind pass clears prior convergence history');
+          console.log('CODING_REPAIR_PASS_RESET_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after covering-scope reset proof', usage: { output: 3000 } });
+        }
+
+        if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
+        if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) {
+          respond(request, {
+            status: 'failed',
+            error: 'PI_ACTION_REQUIRED_ABORT: simulated child abort after deterministic CHECK_ENV',
+            usage: { output: 9000 },
+          });
+        } else {
+          respond(request, { status: 'completed', result: { kind: 'text', value: 'done' }, usage: { output: 9000 } });
+        }
       }
       bus.on('prompt-template:subagent:request', async request => {
-        if (request.agent === 'implementation-planner') {
-          return respond(request, mode === 'fallback'
-            ? { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' }
-            : { status: 'completed', result: { kind: 'structured', value: { steps: ['Create generated.py'], complexity: 'nontrivial', evidence_budget: 1, reason: 'One lookup' } } });
-        }
+        assert.notEqual(request.agent, 'implementation-planner', 'planning runs in the bootstrap session, never in the main one');
         assert.equal(request.agent, 'implementer-coding-session');
         assert.equal(request.context, 'fork', 'same-context fork, not a fresh prompt');
         assert.deepEqual(request.result, { kind: 'text' });
@@ -415,6 +815,49 @@ function runtimeScenario(mode) {
       parentResultTool(pi);
       assert.equal(handlers.has('before_provider_request'), true, 'the parent installs the provider constraint hook');
       assert.equal(handlers.has('turn_end'), true, 'the parent installs provider error recovery on the authoritative turn boundary');
+      if (mode === 'bash-error-mutates' || mode === 'bash-error-unknown') {
+        process.env.PI_CODING_SESSION_USED = 'true';
+        const changedFiles = ['src/game.py', 'tests/test_game.py'];
+        recordCodingBehavioralValidation({
+          scope: { targets: ['tests/test_game.py'] },
+          result: { status: 'pass', kind: 'pytest' },
+          env: process.env,
+          cwd,
+        });
+        assert.doesNotThrow(() => assertCodingBehavioralValidation({ changedFiles, env: process.env }));
+
+        handlers.get('turn_start')({ turnIndex: 0 });
+        const bashEvent = {
+          toolName: 'bash',
+          toolCallId: 'failed-bash-validation',
+          input: { command: 'git status --short -- generated.py' },
+        };
+        assert.equal(await handlers.get('tool_call')(bashEvent, ctx), undefined, 'bounded bash reaches execution');
+        let hiddenGit = null;
+        if (mode === 'bash-error-mutates') {
+          fs.writeFileSync(cwd + '/bash-mutated.txt', 'changed\\n');
+        } else {
+          hiddenGit = cwd + '/.git-hidden-for-test';
+          fs.renameSync(cwd + '/.git', hiddenGit);
+        }
+        try {
+          await handlers.get('tool_execution_end')({
+            ...bashEvent,
+            isError: true,
+            result: { content: [{ type: 'text', text: 'command failed after execution' }] },
+          }, ctx);
+        } finally {
+          if (hiddenGit && fs.existsSync(hiddenGit)) fs.renameSync(hiddenGit, cwd + '/.git');
+        }
+        assert.throws(
+          () => assertCodingBehavioralValidation({ changedFiles, env: process.env }),
+          /TARGETED_BEHAVIORAL_VALIDATION_REQUIRED/,
+          'failed bash must invalidate stale pytest evidence when the worktree changed or fingerprint is unknown',
+        );
+        console.log(mode === 'bash-error-mutates' ? 'FAILED_BASH_MUTATION_INVALIDATED' : 'FAILED_BASH_UNKNOWN_INVALIDATED');
+        process.exit(0);
+      }
+
       if (mode === 'parent-contract' || mode === 'parent-contract-reverse') {
         const resultEvent = { toolCallId: 'missing-bash', toolName: 'bash', isError: true, content: [{ type: 'text', text: 'Tool bash not found' }] };
         const executionEvent = { ...resultEvent, result: { content: resultEvent.content } };
@@ -524,7 +967,8 @@ function runtimeScenario(mode) {
       }
 
       if (mode !== 'restored') {
-        await call('prepare_implementation');
+        // Born prepared from the bootstrap artifact: no preparation tool call exists.
+        assert.equal(tools.has('prepare_implementation'), false);
         if (mode !== 'fallback') {
           const early = await handlers.get('tool_call')({ toolName: 'begin_coding_session', toolCallId: 'early', input: {} }, ctx);
           assert.match(early.reason, /only once evidence is complete/, 'no 16K during exploration');
@@ -544,6 +988,47 @@ function runtimeScenario(mode) {
       }
       fs.rmSync(cwd + '/config.py');
       for (let i = 1; i < fallbackEvidenceBudget; i++) fs.rmSync(cwd + '/fallback-layout-' + i + '.txt', { force: true });
+
+      if (mode === 'evidence-missing-executor') {
+        await call('need_more_evidence', {
+          missing: 'Exact import anchor required for the next edit.',
+          reason: 'One source lookup is required before mutating.',
+        });
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const providerPayload = {
+          model: 'm',
+          messages: [],
+          tools: active.map(name => ({ type: 'function', function: { name } })),
+        };
+        const request = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+        assert.ok(request.tools.some(tool => tool.function.name === 'read'), 'the unlocked evidence request advertises read');
+
+        const failedRead = { toolName: 'read', toolCallId: 'missing-evidence-read', input: { path: 'src/missing.py' } };
+        assert.equal(await handlers.get('tool_call')(failedRead, ctx), undefined, 'evidence read is accepted before executor failure');
+        await handlers.get('tool_execution_end')({
+          ...failedRead,
+          isError: true,
+          result: { content: [{ type: 'text', text: 'Tool read not found' }] },
+        }, ctx);
+        assert.equal(aborts, 1, 'advertised missing executor remains an infrastructure abort');
+
+        handlers.get('turn_start')({ turnIndex: turn + 1 });
+        const retryPayload = {
+          model: 'm',
+          messages: [],
+          tools: active.map(name => ({ type: 'function', function: { name } })),
+        };
+        const retryRequest = handlers.get('before_provider_request')({ payload: retryPayload }, ctx);
+        assert.ok(retryRequest.tools.some(tool => tool.function.name === 'read'), 'runtime restored the same evidence permit after executor rejection');
+        assert.equal(
+          await handlers.get('tool_call')({ toolName: 'read', toolCallId: 'retry-evidence-read', input: { path: 'src/missing.py' } }, ctx),
+          undefined,
+          'restored evidence action is executable without a second need_more_evidence call',
+        );
+        console.log('EVIDENCE_MISSING_EXECUTOR_PERMIT_RESTORED');
+        process.exit(0);
+      }
 
       if (mode === 'elevated-evidence-write') {
         await call('accept_mutation_scope', {
@@ -682,9 +1167,15 @@ function runtimeScenario(mode) {
         assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
 
         if (mode === 'action-repeat-abort') {
+          // One genuine completion of a one-shot control transition, in its own turn, so its repeat is a no-op.
+          handlers.get('turn_start')({ turnIndex: turn });
+          const firstEnable = { toolName: 'subagents_enable', toolCallId: 'first-' + turn, input: {} };
+          assert.equal(await handlers.get('tool_call')(firstEnable, ctx), undefined);
+          await handlers.get('tool_execution_end')({ ...firstEnable, isError: false, result: { content: [{ type: 'text', text: 'ok' }] } }, ctx);
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
           handlers.get('turn_start')({ turnIndex: turn });
           const repeated = await handlers.get('tool_call')({
-            toolName: 'prepare_implementation',
+            toolName: 'subagents_enable',
             toolCallId: 'repeat-' + turn,
             input: {},
           }, ctx);
@@ -693,24 +1184,74 @@ function runtimeScenario(mode) {
           const afterRepeat = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
           assert.equal(afterRepeat.tool_choice, undefined, 'an emitted tool call consumes provider forcing even when it is a no-op');
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-          assert.equal(aborts, 1, 'already-satisfied repeat still counts as no productive action and trips the watchdog');
+          assert.equal(aborts, 0, 'one no-op repeat is a single strike');
+          handlers.get('turn_start')({ turnIndex: turn });
+          const again = await handlers.get('tool_call')({ toolName: 'subagents_enable', toolCallId: 'repeat-again-' + turn, input: {} }, ctx);
+          assert.equal(again.block, true);
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 1, 'repeated already-satisfied calls still count as no productive action and trip the watchdog');
           process.exit(0);
         }
 
         if (mode === 'action-hidden-abort') {
-          handlers.get('turn_start')({ turnIndex: turn });
-          const hidden = await handlers.get('tool_call')({
-            toolName: 'read',
-            toolCallId: 'hidden-' + turn,
-            input: { path: 'config.py' },
-          }, ctx);
-          assert.equal(hidden.block, true);
-          assert.match(hidden.reason, /not currently exposed/);
-          assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
-          const afterHidden = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-          assert.equal(afterHidden.tool_choice, undefined, 'hidden provider-emitted tool clears transport forcing');
-          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-          assert.equal(aborts, 1, 'hidden tool remains non-progress and trips the second-strike watchdog');
+          // #469 exact lifecycle: one blocker opens one evidence action, then both read and
+          // repeated need_more_evidence disappear until productive progress occurs.
+          fs.writeFileSync(cwd + '/evidence.txt', 'exact import anchor\\n');
+          await call('need_more_evidence', {
+            missing: 'Read evidence.txt to obtain the exact import anchor needed for the edit.',
+            reason: 'The exact import anchor is the only unresolved implementation fact.',
+          });
+          await call('read', { path: 'evidence.txt' });
+          fs.rmSync(cwd + '/evidence.txt');
+
+          const consumedSteer = steers.findLast(text => /RUNTIME EVIDENCE PERMIT CONSUMED/.test(text));
+          assert.ok(consumedSteer, 'runtime emits an explicit consumed-permit steer');
+          assert.ok(consumedSteer.includes('read/search evidence and repeated need_more_evidence are unavailable'));
+          assert.ok(!active.includes('read'), 'read is removed after the single evidence action');
+          assert.ok(!active.includes('need_more_evidence'), 'blocker is removed until productive progress');
+
+          const staleAttempts = [
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+            {
+              toolName: 'need_more_evidence',
+              input: {
+                missing: 'Read evidence.txt for another fact.',
+                reason: 'Attempt a second evidence unlock without productive progress.',
+              },
+              kind: 'stale',
+            },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+          ];
+          for (let index = 0; index < staleAttempts.length; index += 1) {
+            const attempt = staleAttempts[index];
+            handlers.get('turn_start')({ turnIndex: turn });
+            const hidden = await handlers.get('tool_call')({
+              toolName: attempt.toolName,
+              input: attempt.input,
+              toolCallId: 'hidden-' + attempt.toolName + '-' + turn,
+            }, ctx);
+            assert.equal(hidden.block, true);
+            if (attempt.kind === 'unavailable') {
+              assert.match(hidden.reason, /not currently exposed/);
+            } else {
+              assert.match(hidden.reason, /capability lifecycle changed/);
+              assert.match(hidden.reason, /Do not retry the stale call/);
+            }
+            assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
+            await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+            assert.equal(
+              aborts,
+              index === staleAttempts.length - 1 ? 1 : 0,
+              'stale lifecycle races reset the strike streak; only two later genuine unavailable turns abort',
+            );
+          }
+
+          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+          assert.equal(failure.failure_class, 'model_execution_abort');
+          assert.equal(failure.failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
+          assert.ok(failure.reason.includes('unavailable capability'));
+          console.log('UNAVAILABLE_CAPABILITY_FAILURE ' + JSON.stringify(failure));
           process.exit(0);
         }
 
@@ -825,6 +1366,19 @@ function runtimeScenario(mode) {
       }
       assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048', 'parent child-budget mirror restored');
       assert.ok(!process.env.PI_CODING_SESSION, 'coding-session mode is scoped to the fork');
+      if (sessionRequests.length) {
+        assert.equal(process.env.PI_CODING_SESSION_USED, 'true', 'parent retains the durable coding-lifecycle validation marker');
+      }
+      if (mode === 'blocked') {
+        assert.equal(result.terminate, true, 'a valid blocked terminal receipt ends the parent coding action');
+        assert.equal(result.details.outcome, 'blocked');
+        assert.equal(result.details.successful_final_submission, false);
+        assert.match(result.content[0].text, /blocked outcome/);
+        assert.match(result.content[0].text, /implementation was not completed/);
+        assert.doesNotMatch(result.content[0].text, /work is done/i);
+        assert.match(fs.readFileSync(resultFile, 'utf8'), /"outcome": "blocked"/);
+        process.exit(0);
+      }
       assert.ok(caps.filter(cap => cap !== 32000).every(cap => cap === 2048), 'parent stays at 2048: ' + caps);
       if (mode === 'no-session') assert.equal(sessionRequests.length, 0, 'no fresh-prompt fallback');
       else {
@@ -845,6 +1399,83 @@ function runtimeScenario(mode) {
         // Smoke #285: the parent's own submit flag is false (the fork submitted), so the nudge
         // must honor the run-wide terminal marker instead of restarting the parent.
         assert.equal(handlers.get('agent_before_settle')(), undefined, 'no submit nudge after the fork submitted');
+      }
+      if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) {
+        assert.notEqual(result.terminate, true);
+        assert.deepEqual(result.details.recovery_receipt, {
+          coding_session_status: 'aborted',
+          changed_publishable_paths: ['generated.py', 'test_generated.py'],
+          prepared_outputs_present: { source: true, test: true },
+          last_validation: { kind: 'pytest', status: 'infra_error', infrastructure_code: 'CHECK_ENV' },
+          remaining_terminal_obligation: 'validation',
+        });
+        assert.match(result.content[0].text, /Trusted recovery receipt/);
+        assert.match(result.content[0].text, /do not rewrite completed prepared outputs/);
+        assert.doesNotMatch(result.content[0].text, /You may call begin_coding_session once more/);
+        assert.ok(active.includes('need_more_evidence'), 'parent retains a bounded evidence path for one concrete recovery inspection');
+        assert.ok(!active.includes('begin_coding_session'), 'parent cannot blindly launch a second fork while complete child outputs are protected');
+        assert.ok(!active.includes('write'), 'parent cannot blindly rewrite complete child outputs');
+        assert.equal(sessionRequests.length, 1, 'recovery does not blindly launch another coding session');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const genericSubmit = {
+          toolName: 'submit_result',
+          toolCallId: 'generic-recovery-submit-' + turn,
+          input: {
+            title: 'Recovered child work',
+            summary: 'Attempt publication without new evidence.',
+            changes: ['Keep existing recovered source and test.'],
+            files: ['generated.py', 'test_generated.py'],
+            security_notes: 'No security impact.',
+            limitations: 'Validation infrastructure is unavailable.',
+          },
+        };
+        assert.equal(await handlers.get('tool_call')(genericSubmit, ctx), undefined);
+        await handlers.get('tool_execution_end')({
+          ...genericSubmit,
+          isError: true,
+          result: { content: [{ type: 'text', text: 'transient terminal submission failure' }] },
+        }, ctx);
+        assert.ok(!active.includes('begin_coding_session'), 'generic terminal errors do not release the recovery guard');
+        assert.ok(!active.includes('write'), 'generic terminal errors do not reopen blind mutation');
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const blindFork = await handlers.get('tool_call')({
+          toolName: 'begin_coding_session',
+          toolCallId: 'blind-recovery-fork-' + turn,
+          input: {},
+        }, ctx);
+        assert.equal(blindFork.block, true);
+        assert.match(blindFork.reason, /not currently exposed|capability lifecycle changed/);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+
+        if (mode === 'no-submit-recovery-dead-end') {
+          active = active.filter(name => name !== 'run_check');
+          pi.setActiveTools(active);
+          await call('need_more_evidence', {
+            missing: 'Inspect the recovered implementation before deciding whether any rewrite is required.',
+            reason: 'Exercise the single recovery evidence permit with validation unavailable.',
+          });
+          await call('read', { path: 'README.md' });
+          assert.equal(aborts, 1, 'unrelated evidence plus unavailable validation fails closed instead of reopening mutation');
+          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+          assert.equal(failure.failure_code, 'PI_CODING_RECOVERY_BLOCKED');
+          assert.equal(failure.checkpoint.worktree_preserved, true);
+          assert.ok(!active.includes('begin_coding_session'));
+          assert.ok(!active.includes('write'));
+          console.log('CODING_RECOVERY_FAIL_CLOSED_OK ' + JSON.stringify(failure));
+          process.exit(0);
+        }
+
+        await call('need_more_evidence', {
+          missing: 'Inspect the already-created source before deciding whether any parent-side mutation is required.',
+          reason: 'The child left complete prepared outputs; one bounded read is enough to recover exact state.',
+        });
+        const recovered = await call('read', { path: 'generated.py' });
+        assert.match(recovered.content[0].text, /REQUIRED_CONSTANT/);
+        console.log('CODING_RECOVERY_RECEIPT_OK ' + JSON.stringify(result.details.recovery_receipt));
+        console.log('CODING_RECOVERY_BOUNDED_INSPECTION_OK');
       }
       if (mode === 'no-submit-parent-submit') {
         assert.notEqual(result.terminate, true);
@@ -890,6 +1521,8 @@ function runtimeScenario(mode) {
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context, PI_TERMINAL_RESULT_FILE: terminal,
         PI_IMPLEMENTER_RESULT_FILE: resultFile, PI_ACCEPTED_MUTATION_SCOPE_FILE: scopeFile,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
+        PI_PREPARED_IMPLEMENTATION_FILE: preparedFile,
+        PI_VALIDATION_LEDGER_FILE: validationLedger, PI_VALIDATION_RUN_ID: 'issue-481-run',
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048', PI_CODING_SESSION: '', PI_RUNTIME_FAILURE_FILE: runtimeFailure,
         PI_METRICS_FILE: path.join(dir, 'metrics.jsonl'), PI_ISSUE: '7', PI_PHASE: 'implementation' },
     });
@@ -906,6 +1539,7 @@ function runtimeScenario(mode) {
 test('2K parent -> begin_coding_session -> 16K same-context fork writes code + tests, checks, submits; parent ends', () => {
   const logs = runtimeScenario('flow');
   assert.match(logs, /PI_CODING_SESSION \{"phase":"agent_registered".*"source":"runtime","thinking":"off"/);
+  assert.match(logs, /\[PI\]\[coding\] phase=agent_registered/);
   assert.match(logs, /"phase":"requested".*"parentMaxTokens":2048,"codingMaxTokens":16384/);
   assert.match(logs, /"phase":"started".*"context":"fork","agent":"implementer-coding-session"/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
@@ -915,6 +1549,13 @@ test('2K parent -> begin_coding_session -> 16K same-context fork writes code + t
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"changed":true/g)?.length, 2, 'several files in one session');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_BUDGET|mutation-writer|PI_MUTATION_TURN/);
+});
+
+test('a valid blocked child terminal result propagates as blocked, never implementation success', () => {
+  const logs = runtimeScenario('blocked');
+  assert.match(logs, /"phase":"blocked"/);
+  assert.match(logs, /PI_CODING_SESSION .*"outcome":"blocked"/);
+  assert.doesNotMatch(logs, /Coding session completed the implementation/);
 });
 
 test('coding session works after PREPARATION_FALLBACK and on a resumed implementer', () => {
@@ -931,6 +1572,83 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   const logs = runtimeScenario('no-submit');
   assert.match(logs, /"phase":"ended_without_submit".*"submitted":false/);
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
+});
+
+test('#481 an aborted coding session returns authoritative state and bounded parent inspection', () => {
+  const logs = runtimeScenario('no-submit-recovery');
+  assert.match(logs, /"phase":"ended_without_submit".*"recoveryReceipt":\{/);
+  assert.match(logs, /"infrastructure_code":"CHECK_ENV"/);
+  assert.match(logs, /PI_CODING_RECOVERY_HANDOFF/);
+  assert.match(logs, /PI_CODING_RECOVERY_GUARD /);
+  assert.match(logs, /PI_CODING_RECOVERY_GUARD_RELEASED .*"reason":"bounded_recovery_evidence"/);
+  assert.doesNotMatch(logs, /"reason":"terminal_diagnosis"/);
+  assert.match(logs, /CODING_RECOVERY_RECEIPT_OK/);
+  assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
+});
+
+test('#481 recovery guard fails closed after unrelated evidence when validation is unavailable', () => {
+  const logs = runtimeScenario('no-submit-recovery-dead-end');
+  assert.match(logs, /PI_CODING_RECOVERY_GUARD /);
+  assert.doesNotMatch(logs, /PI_CODING_RECOVERY_GUARD_RELEASED/);
+  assert.match(logs, /PI_CODING_RECOVERY_BLOCKED/);
+  assert.match(logs, /CODING_RECOVERY_FAIL_CLOSED_OK/);
+});
+
+test('#499 failing pytest exposes bounded repair evidence and strict failure-set reduction remains repairable', () => {
+  const logs = runtimeScenario('repair-evidence');
+  assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
+  assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
+  assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"unchanged_helper.py".*"readsRemaining":0.*"evidenceBudgetIndependent":true/);
+  assert.doesNotMatch(logs, /PI_CODING_REPAIR_READ .*"path":"link-source.py"/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_EVIDENCE_OK/);
+});
+
+test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failure flip-flops', () => {
+  const logs = runtimeScenario('repair-nonconvergent');
+  assert.ok((logs.match(/PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/g) ?? []).length >= 1);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"strictReduction":false/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":4.*"strictReduction":false/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":5.*"strictReduction":false.*"limit":5/);
+  assert.match(logs, /PI_CODING_VALIDATION_NON_CONVERGENT .*"seen_signatures":2.*"limit":5.*"worktree_preserved":true/);
+  assert.match(logs, /CODING_REPAIR_NONCONVERGENT_OK/);
+});
+
+test('#499 volatile diagnostic values keep one semantic failure identity', () => {
+  const logs = runtimeScenario('repair-volatile-message');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"strictReduction":false.*"seenSignatures":1/);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_VOLATILE_MESSAGE_OK/);
+});
+
+test('#503 a provably covering same-kind pass clears narrower coding repair history', () => {
+  const logs = runtimeScenario('repair-pass-reset');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"cleared".*"reason":"validation_pass_covering_scope"/);
+  const postReset = logs.slice(logs.indexOf('validation_pass_covering_scope'));
+  assert.match(postReset, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1/);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_PASS_RESET_OK/);
+});
+
+test('#503 semantic diagnostic numbers remain distinct repair identities', () => {
+  const logs = runtimeScenario('repair-semantic-number');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"seenSignatures":2/);
+  assert.match(logs, /CODING_REPAIR_SEMANTIC_NUMBER_OK/);
+});
+
+test('#503 structured run_check failure details are observed even when isError is true', () => {
+  const logs = runtimeScenario('repair-iserror-details');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"fail"/);
+  assert.match(logs, /CODING_REPAIR_ISERROR_DETAILS_OK/);
+});
+
+test('#503 empty trusted repair scope releases the evidence gate instead of dead-ending', () => {
+  const logs = runtimeScenario('repair-empty-scope');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"evidenceGateReleased":true/);
+  assert.doesNotMatch(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
+  assert.match(logs, /CODING_REPAIR_EMPTY_SCOPE_OK/);
 });
 
 test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
@@ -974,11 +1692,25 @@ test('an already-completed repeated tool call clears forcing but still fails clo
   assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
-test('a hidden provider-emitted tool clears forcing but remains non-progress and aborts on the watchdog', () => {
+test('#470 missing evidence executor restores the permit through the real runtime hooks', () => {
+  const logs = runtimeScenario('evidence-missing-executor');
+  const failureLine = logs.split('\n').find(line => line.startsWith('PI_RUNTIME_FAILURE '));
+  assert.ok(failureLine, 'runtime contract failure is recorded');
+  const failure = JSON.parse(failureLine.slice('PI_RUNTIME_FAILURE '.length));
+  assert.equal(failure.failure_code, 'PI_TOOL_CONTRACT_FAILURE');
+  assert.equal(failure.tool, 'read');
+  assert.match(logs, /EVIDENCE_MISSING_EXECUTOR_PERMIT_RESTORED/);
+});
+
+
+test('#469 evidence unlock is single-use; stale lifecycle races reset strikes before genuine unavailable calls can abort', () => {
   const logs = runtimeScenario('action-hidden-abort');
+  assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"read".*"unavailable":true/);
-  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+  assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"need_more_evidence"/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable capability turn/);
+  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
 test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
@@ -1082,6 +1814,14 @@ test('#425 a second coding attempt after recovery keeps both sessions attributed
 
 test('coding-session allowlist is derived from the executable registry, including hidden tools', () => {
   runtimeScenario('narrow-registry');
+});
+
+test('#470 failed bash invalidates pytest evidence when it changed the worktree', () => {
+  assert.match(runtimeScenario('bash-error-mutates'), /FAILED_BASH_MUTATION_INVALIDATED/);
+});
+
+test('#470 failed bash invalidates pytest evidence when repository fingerprint is unknown', () => {
+  assert.match(runtimeScenario('bash-error-unknown'), /FAILED_BASH_UNKNOWN_INVALIDATED/);
 });
 
 test('#399 executor-unavailable bash tool result aborts the parent as infrastructure immediately', () => {

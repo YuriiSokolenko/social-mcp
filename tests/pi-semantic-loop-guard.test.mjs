@@ -1343,6 +1343,12 @@ test('runtime mock does not treat unknown repository state as a no-op', () => {
 });
 
 test('runtime mock classifies blocked tool calls without tool_execution_end', () => {
+  // Born prepared with zero evidence budget: the session starts action-required, so a read is blocked.
+  const prepared = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-prepared-')), 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1, status: 'prepared', plan: ['Write the file'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false,
+    reason: 'complete spec', workspaceRoot: '/work', freshBaseCommit: '', baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 1,
+  }));
   const result = runRuntimeScenario(`
     const { default: install } = await import(RUNTIME_URL);
     install(pi);
@@ -1356,7 +1362,9 @@ test('runtime mock classifies blocked tool calls without tool_execution_end', ()
   `, {
     PI_LOOP_GUARD_WINDOW: '2',
     PI_LOOP_GUARD_THRESHOLD: '1',
+    PI_PREPARED_IMPLEMENTATION_FILE: prepared,
   });
+  fs.rmSync(path.dirname(prepared), { recursive: true, force: true });
   assert.match(result.stdout, /BLOCKED_LOOP_INTEGRATION_OK/);
 });
 
@@ -1453,4 +1461,902 @@ test('control scenario read semantic lookup source edit verify submit completes 
     observation(guard, { tool: 'submit_result', result: { ok: true } }),
   ];
   assert.equal(results.some(result => result.tripped), false);
+});
+
+
+test('#426 runtime selects submit_result metadata repair and constrains the next provider surface', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+    let aborts = 0;
+    const ctx = { cwd: "/tmp", abort: () => { aborts += 1; } };
+    // Use the real checkout for trusted git facts while keeping this test mutation-free.
+    ctx.cwd = process.env.GITHUB_WORKSPACE;
+
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'missing_publication_fields',
+        missing_fields: ['limitations', 'security_notes'],
+      }) }],
+    };
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'submit-' + index,
+        toolName: 'submit_result',
+        input: { title: 'Fix', summary: 'Summary' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    assert.equal(aborts, 0);
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /RUNTIME TERMINAL RECOVERY/);
+    assert.match(messages[0][0], /missing publication fields/);
+
+    const patched = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'write', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(
+      patched.tools.map(tool => tool.function.name),
+      ['submit_result'],
+      'deterministic recovery tool is the only executable provider tool for the retry',
+    );
+    assert.equal(patched.tool_choice, 'required');
+    console.log('TERMINAL_RECOVERY_METADATA_RUNTIME_OK');
+  `);
+  assert.match(result.stdout, /TERMINAL_RECOVERY_METADATA_RUNTIME_OK/);
+  assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+  assert.match(result.stderr, /\[PI\]\[recovery\] equivalent_failure .*"count":3.*"action":"steer"/);
+  assert.match(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_SURFACE/);
+});
+
+test('#426 runtime checkpoints a recognized but unavailable deterministic recovery instead of generic loop abort', () => {
+  const failureFile = path.join(os.tmpdir(), `pi-terminal-recovery-blocked-${process.pid}-${Date.now()}.json`);
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: {},
+        }) }],
+      };
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'submit-blocked-' + index,
+          toolName: 'submit_result',
+          input: { summary: 'done' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+      assert.equal(aborts, 1);
+      console.log('TERMINAL_RECOVERY_BLOCKED_RUNTIME_OK');
+    `, { PI_RUNTIME_FAILURE_FILE: failureFile });
+    assert.match(result.stdout, /TERMINAL_RECOVERY_BLOCKED_RUNTIME_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+
+    const checkpoint = JSON.parse(fs.readFileSync(failureFile, 'utf8'));
+    assert.equal(checkpoint.failure_code, 'PI_TERMINAL_RECOVERY_BLOCKED');
+    assert.equal(checkpoint.unresolved_obligation.code, 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED');
+    assert.equal(checkpoint.unresolved_obligation.kind, 'validation');
+    assert.equal(checkpoint.checkpoint.worktree_preserved, true);
+    assert.match(checkpoint.reason, /did not provide an authoritative check action/);
+  } finally {
+    fs.rmSync(failureFile, { force: true });
+  }
+});
+
+
+test('#426 runtime maps repeated journaled file-set failure to targeted undo', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-cleanup-runtime-'));
+  const journalFile = path.join(os.tmpdir(), `pi-terminal-cleanup-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src/a.js'), 'export const a = 1;\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'undo_mutation', 'recover_worktree'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const journal = await import(JOURNAL_URL);
+      const snapshots = await import(SNAPSHOT_URL);
+      const { default: install } = await import(RUNTIME_URL);
+
+      const repo = ${JSON.stringify(repo)};
+      const before = snapshots.captureMutationSnapshot(repo, 'scratch/a.js');
+      fs.mkdirSync(path.join(repo, 'scratch'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'scratch/a.js'), 'temporary\\n');
+      const after = snapshots.captureMutationSnapshot(repo, 'scratch/a.js');
+      const entry = journal.recordSuccessfulMutation({
+        cwd: repo,
+        before,
+        after,
+        tool: 'write',
+        disposition: 'temporary',
+        env: process.env,
+      });
+
+      install(pi);
+      let aborts = 0;
+      const ctx = { cwd: repo, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: 'Implementer file-set mismatch: unexpected files: scratch/a.js' }],
+      };
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'submit-cleanup-' + index,
+          toolName: 'submit_result',
+          input: { summary: 'done', files: ['src/a.js'] },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      assert.equal(aborts, 0);
+      assert.equal(messages.length, 1);
+      assert.match(messages[0][0], /deterministic targeted_cleanup repair selected/);
+      assert.match(messages[0][0], new RegExp(entry.id));
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'undo_mutation', parameters: {} } },
+            { type: 'function', function: { name: 'recover_worktree', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(patched.tools.map(tool => tool.function.name), ['undo_mutation']);
+      assert.equal(patched.tool_choice, 'required');
+      console.log('TERMINAL_RECOVERY_TARGETED_UNDO_RUNTIME_OK');
+    `, { PI_MUTATION_JOURNAL_FILE: journalFile });
+
+    assert.match(result.stdout, /TERMINAL_RECOVERY_TARGETED_UNDO_RUNTIME_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+  }
+});
+
+
+test('#426 generic repeated terminal failures keep legacy steer-then-abort behavior', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: 'generic remote submit failed without structured recovery metadata' }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'generic-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    assert.equal(aborts, 0, 'first repeated generic failure trip must steer, not abort');
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /current strategy is cycling/);
+
+    const fourth = {
+      toolCallId: 'generic-submit-3',
+      toolName: 'submit_result',
+      input: { summary: 'done' },
+    };
+    assert.equal(await handlers.get('tool_call')(fourth, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...fourth, isError: true, result: failure }, ctx);
+
+    assert.equal(aborts, 1, 'next repeated generic trip keeps the pre-#478 abort behavior');
+    console.log('GENERIC_TERMINAL_STEER_THEN_ABORT_OK');
+  `);
+
+  assert.match(result.stdout, /GENERIC_TERMINAL_STEER_THEN_ABORT_OK/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_STEER/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
+  assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+});
+
+test('#426 structured coded terminal failures keep legacy steer-then-abort behavior', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'REMOTE_CANDIDATE_REJECTED',
+        message: 'transient or model-fixable structured submission error',
+      }) }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'coded-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    assert.equal(aborts, 0, 'catch-all coded errors must not become deterministic blocked recovery');
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /current strategy is cycling/);
+
+    const fourth = {
+      toolCallId: 'coded-submit-3',
+      toolName: 'submit_result',
+      input: { summary: 'done' },
+    };
+    assert.equal(await handlers.get('tool_call')(fourth, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...fourth, isError: true, result: failure }, ctx);
+
+    assert.equal(aborts, 1, 'coded fallback retains the generic steer-then-abort lifecycle');
+    console.log('CODED_TERMINAL_STEER_THEN_ABORT_OK');
+  `);
+
+  assert.match(result.stdout, /CODED_TERMINAL_STEER_THEN_ABORT_OK/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_STEER/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
+  assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+});
+
+test('#426 consumed deterministic repair clears recovery compaction state', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+    const errorText = JSON.stringify({
+      code: 'missing_publication_fields',
+      missing_fields: ['limitations'],
+    });
+    const failure = { content: [{ type: 'text', text: errorText }] };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'metadata-submit-' + index,
+        toolName: 'submit_result',
+        input: { title: 'Fix', summary: 'Summary' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    const forced = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'write', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(forced.tools.map(tool => tool.function.name), ['submit_result']);
+
+    const repairCall = {
+      toolCallId: 'metadata-repair-attempt',
+      toolName: 'submit_result',
+      input: {
+        title: 'Fix',
+        summary: 'Summary',
+        limitations: 'none',
+      },
+    };
+    assert.equal(await handlers.get('tool_call')(repairCall, ctx), undefined);
+
+    const history = [
+      { role: 'assistant', tool_calls: [{ id: 'old-a', function: { name: 'submit_result', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'old-a', content: errorText },
+      { role: 'assistant', tool_calls: [{ id: 'old-b', function: { name: 'submit_result', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'old-b', content: errorText },
+    ];
+    const afterAttempt = handlers.get('before_provider_request')({
+      payload: {
+        messages: history,
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'write', parameters: {} } },
+        ],
+      },
+    });
+
+    assert.equal(
+      afterAttempt.messages[1].content,
+      errorText,
+      'consumed recovery state no longer compacts later requests',
+    );
+    assert.equal(afterAttempt.messages[3].content, errorText);
+    console.log('TERMINAL_RECOVERY_STATE_CLEARED_OK');
+  `);
+
+  assert.match(result.stdout, /TERMINAL_RECOVERY_STATE_CLEARED_OK/);
+  assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+});
+
+
+test('#426 aggregate changed_files from unrelated mutation does not clear terminal obligation', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/a.js';
+
+  failedSubmit(guard, hint);
+  const key = guard.terminalObligation.key;
+
+  const mutation = observation(guard, {
+    tool: 'safe_edit',
+    input: { path: 'src/real.js', operation: 'replace' },
+    result: {
+      details: {
+        path: 'src/real.js',
+        changed_files: ['src/real.js', 'scratch/a.js'],
+      },
+    },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+    mutationChanged: true,
+    repositoryRoot: '/checkout',
+  });
+
+  assert.equal(mutation.classification, 'success_changed');
+  assert.equal(guard.terminalObligation.key, key, 'aggregate changed set cannot resolve the named blocker');
+
+  failedSubmit(guard, hint);
+  assert.equal(failedSubmit(guard, hint).action, 'steer', 'failure history remains tied to the unresolved obligation');
+});
+
+test('#426 absolute obligation path is resolved by exact relative target under repository root', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: /checkout/scratch/a.js';
+
+  failedSubmit(guard, hint);
+  failedSubmit(guard, hint);
+
+  const mutation = observation(guard, {
+    tool: 'safe_edit',
+    input: { path: 'scratch/a.js', operation: 'replace' },
+    result: { details: { path: 'scratch/a.js' } },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+    mutationChanged: true,
+    repositoryRoot: '/checkout',
+  });
+
+  assert.equal(mutation.tripped, false);
+  assert.equal(guard.terminalObligation, null);
+  assert.equal(failedSubmit(guard, hint).tripped, false, 'relevant repair resets the failure count');
+});
+
+
+test('#426 blocked terminal retries retain their submission payload for deterministic metadata recovery', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = function(toolName, input) {
+      if (toolName === 'submit_result' && input?.title === 'Blocked base') {
+        return { block: true, reason: 'synthetic terminal policy block' };
+      }
+      return undefined;
+    };
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'missing_publication_fields',
+        missing_fields: ['limitations'],
+      }) }],
+    };
+
+    const first = {
+      toolCallId: 'initial-submit',
+      toolName: 'submit_result',
+      input: { title: 'Initial', summary: 'Summary' },
+    };
+    assert.equal(await handlers.get('tool_call')(first, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...first, isError: true, result: failure }, ctx);
+
+    for (let index = 0; index < 3; index += 1) {
+      const blocked = {
+        toolCallId: 'blocked-submit-' + index,
+        toolName: 'submit_result',
+        input: { title: 'Blocked base', summary: 'Keep me' },
+      };
+      const outcome = await handlers.get('tool_call')(blocked, ctx);
+      assert.equal(outcome.block, true);
+    }
+
+    assert.equal(aborts, 0, 'recognized blocked terminal retry must remain recoverable');
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /deterministic metadata repair selected/);
+    assert.match(messages[0][0], /limitations/);
+
+    const preserved = await handlers.get('tool_call')({
+      toolCallId: 'preserved-terminal-base',
+      toolName: 'submit_result',
+      input: { title: 'Initial', summary: 'Summary', limitations: 'none' },
+    }, ctx);
+    assert.equal(
+      preserved,
+      undefined,
+      'blocked retries cannot replace the publication baseline from the terminal call that produced the obligation',
+    );
+    console.log('BLOCKED_TERMINAL_INPUT_RECOVERY_OK');
+  `);
+
+  assert.match(result.stdout, /BLOCKED_TERMINAL_INPUT_RECOVERY_OK/);
+  assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+  assert.doesNotMatch(result.stderr, /previous terminal submission payload is unavailable/);
+});
+
+test('#426 terminal recovery abort provenance omits large prior submission payloads', () => {
+  const failureFile = path.join(os.tmpdir(), `pi-terminal-bounded-abort-${process.pid}-${Date.now()}.json`);
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      const hugeMarker = 'BIG_INPUT_MARKER_' + 'x'.repeat(20000);
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'missing_publication_fields',
+          missing_fields: ['limitations'],
+        }) }],
+      };
+
+      for (let index = 0; index < 4; index += 1) {
+        const event = {
+          toolCallId: 'large-submit-' + index,
+          toolName: 'submit_result',
+          input: {
+            title: hugeMarker,
+            summary: 'Summary',
+            ...(index === 3 ? { limitations: 'attempted recovery value' } : {}),
+          },
+        };
+        assert.equal(
+          await handlers.get('tool_call')(event, ctx),
+          undefined,
+          'the fourth failure is a matching metadata-recovery attempt, not a replay of the invalid payload',
+        );
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      assert.equal(aborts, 1);
+      console.log('BOUNDED_TERMINAL_ABORT_OK');
+    `, { PI_RUNTIME_FAILURE_FILE: failureFile });
+
+    assert.match(result.stdout, /BOUNDED_TERMINAL_ABORT_OK/);
+    const checkpointText = fs.readFileSync(failureFile, 'utf8');
+    const checkpoint = JSON.parse(checkpointText);
+    assert.equal(checkpoint.failure_code, 'PI_TERMINAL_RECOVERY_BLOCKED');
+    assert.equal(checkpoint.selected_repair.kind, 'metadata_retry');
+    assert.equal('previousInput' in checkpoint.selected_repair, false);
+    assert.doesNotMatch(checkpointText, /BIG_INPUT_MARKER_/);
+    assert.ok(checkpointText.length < 5000, 'checkpoint stays bounded independently of submit payload size');
+    assert.doesNotMatch(result.stderr, /BIG_INPUT_MARKER_/);
+  } finally {
+    fs.rmSync(failureFile, { force: true });
+  }
+});
+
+
+test('#426 runtime validation recovery passes the real ProgressController gate without a mutation permit', () => {
+  const preparedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-validation-recovery-prepared-'));
+  const prepared = path.join(preparedDir, 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Submit and perform the exact recovery validation if requested'],
+    complexity: 'nontrivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'complete spec',
+    workspaceRoot: REPO_ROOT,
+    freshBaseCommit: '',
+    baseRef: 'origin/dev',
+    layoutHint: null,
+    plannerUsage: null,
+    plannerDurationMs: 1,
+  }));
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'validation-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(
+          await handlers.get('tool_call')(event, ctx),
+          undefined,
+          'submit_result remains executable in action_required',
+        );
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      assert.equal(aborts, 0);
+      assert.equal(messages.length, 1);
+      assert.match(messages[0][0], /deterministic exact_validation repair selected/);
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+            { type: 'function', function: { name: 'write', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        patched.tools.map(tool => tool.function.name),
+        ['run_check'],
+        'runtime-owned verification hiding is reversed only for the exact recovery turn',
+      );
+      assert.equal(patched.tool_choice, 'required');
+
+      const unrelated = await handlers.get('tool_call')({
+        toolCallId: 'wrong-validation-recovery',
+        toolName: 'run_check',
+        input: { kind: 'pytest', targets: ['tests/test_other.py'] },
+      }, ctx);
+      assert.equal(unrelated.block, true);
+      assert.match(
+        unrelated.reason,
+        /selected deterministic repair arguments|exact authoritative verification action/,
+      );
+
+      const exact = await handlers.get('tool_call')({
+        toolCallId: 'exact-validation-recovery',
+        toolName: 'run_check',
+        input: exactAction,
+      }, ctx);
+      assert.equal(exact, undefined, 'real ProgressController accepts the exact recovery validation');
+      assert.equal(aborts, 0);
+      console.log('EXACT_VALIDATION_RECOVERY_REAL_GATE_OK');
+    `, {
+      PI_PREPARED_IMPLEMENTATION_FILE: prepared,
+    });
+
+    assert.match(result.stdout, /EXACT_VALIDATION_RECOVERY_REAL_GATE_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_SURFACE/);
+  } finally {
+    fs.rmSync(preparedDir, { recursive: true, force: true });
+  }
+});
+
+
+test('#426 runtime keeps selected conflict recovery armed after wrong read target', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'read'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'inactive';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+    const failure = {
+      content: [{ type: 'text', text:
+        'Latest dev conflicts with the implementation. Resolve these files and retry submit_result: src/conflict.py'
+      }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'conflict-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    const firstRequest = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'read', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(firstRequest.tools.map(tool => tool.function.name), ['read']);
+
+    const wrong = await handlers.get('tool_call')({
+      toolCallId: 'wrong-conflict-read',
+      toolName: 'read',
+      input: { path: 'src/other.py' },
+    }, ctx);
+    assert.equal(wrong.block, true);
+    assert.match(wrong.reason, /does not match the pending recovery plan/);
+
+    const secondRequest = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'read', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(
+      secondRequest.tools.map(tool => tool.function.name),
+      ['read'],
+      'wrong selected-tool arguments must not consume forced recovery state',
+    );
+    assert.equal(
+      secondRequest.tool_choice,
+      undefined,
+      'this synthetic inactive-state scenario verifies recovery retention via the narrowed surface; action-required forcing is covered separately',
+    );
+
+    assert.equal(await handlers.get('tool_call')({
+      toolCallId: 'correct-conflict-read',
+      toolName: 'read',
+      input: { path: 'src/conflict.py' },
+    }, ctx), undefined);
+    console.log('CONFLICT_RECOVERY_ARGUMENT_GATE_OK');
+  `);
+
+  assert.match(result.stdout, /CONFLICT_RECOVERY_ARGUMENT_GATE_OK/);
+  assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+});
+
+test('#426 terminal exact validation accepts the visible retry_last_failed_check alias', () => {
+  const ledgerFile = path.join(os.tmpdir(), `pi-terminal-alias-ledger-${process.pid}-${Date.now()}.jsonl`);
+  fs.writeFileSync(ledgerFile, JSON.stringify({
+    run_id: 'terminal-alias-run',
+    attempt_id: 'primary',
+    stage: 'implementer',
+    backend: 'pi',
+    source: 'run_check',
+    kind: 'pytest',
+    scope: { targets: ['tests/test_required.py'] },
+    status: 'fail',
+  }) + '\n');
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      ProgressController.prototype.verificationPermitted = () => true;
+      const originalCommit = ProgressController.prototype.commitRecoveryVerification;
+      let recoveryCommits = 0;
+      ProgressController.prototype.commitRecoveryVerification = function(input) {
+        const committed = originalCommit.call(this, input);
+        if (committed) recoveryCommits += 1;
+        return committed;
+      };
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'alias-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+            { type: 'function', function: { name: 'retry_last_failed_check', parameters: {} } },
+            { type: 'function', function: { name: 'write', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        patched.tools.map(tool => tool.function.name),
+        ['retry_last_failed_check'],
+        'provider-facing retry alias satisfies the canonical run_check recovery requirement',
+      );
+      assert.equal(patched.tool_choice, 'required');
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'alias-terminal-recovery',
+        toolName: 'retry_last_failed_check',
+        input: {},
+      }, ctx), undefined);
+      assert.equal(recoveryCommits, 1, 'retry alias commits the canonical exact-validation permit');
+      console.log('TERMINAL_RECOVERY_RETRY_ALIAS_OK');
+    `, {
+      PI_VALIDATION_LEDGER_FILE: ledgerFile,
+      PI_VALIDATION_RUN_ID: 'terminal-alias-run',
+    });
+
+    assert.match(result.stdout, /TERMINAL_RECOVERY_RETRY_ALIAS_OK/);
+    assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+    assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_DEFERRED/);
+  } finally {
+    fs.rmSync(ledgerFile, { force: true });
+  }
+});
+
+test('#426 exact recovery permit survives runtime setup failure after controller authorization', () => {
+  const preparedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-validation-recovery-commit-'));
+  const prepared = path.join(preparedDir, 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Submit and perform exact recovery validation'],
+    complexity: 'nontrivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'complete spec',
+    workspaceRoot: REPO_ROOT,
+    freshBaseCommit: '',
+    baseRef: 'origin/dev',
+    layoutHint: null,
+    plannerUsage: null,
+    plannerDurationMs: 1,
+  }));
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'commit-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+          ],
+        },
+      });
+
+      await assert.rejects(
+        handlers.get('tool_call')({
+          toolCallId: 'runtime-setup-failure',
+          toolName: 'run_check',
+          input: { ...exactAction, synthetic_uncloneable: () => true },
+        }, ctx),
+        /could not be cloned|DataCloneError/,
+      );
+
+      const retryRequest = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        retryRequest.tools.map(tool => tool.function.name),
+        ['run_check'],
+        'runtime setup failure after controller authorization keeps exact recovery forced',
+      );
+      assert.equal(retryRequest.tool_choice, 'required');
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'runtime-setup-retry',
+        toolName: 'run_check',
+        input: exactAction,
+      }, ctx), undefined);
+      console.log('EXACT_RECOVERY_COMMIT_BOUNDARY_OK');
+    `, {
+      PI_PREPARED_IMPLEMENTATION_FILE: prepared,
+    });
+
+    assert.match(result.stdout, /EXACT_RECOVERY_COMMIT_BOUNDARY_OK/);
+  } finally {
+    fs.rmSync(preparedDir, { recursive: true, force: true });
+  }
 });

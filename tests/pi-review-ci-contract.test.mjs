@@ -57,6 +57,7 @@ test('control-plane scripts always execute from trusted dev checkout', () => {
     'pi-issue-agent.yml',
     'pi-pr-fix.yml',
     'pi-pr-review.yml',
+    'pi-review-invalidate.yml',
     'pi-reconcile.yml',
     'pi-triage.yml',
     'pi-usage.yml',
@@ -182,11 +183,252 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.match(terminalWake, /types: \[completed\]/);
   assert.match(terminalWake, /workflow_run\.event == 'pull_request'/);
   assert.match(terminalWake, /workflow_run\.head_repository\.full_name == github\.repository/);
+  assert.match(terminalWake, /runs-on: \[self-hosted, n150, control\]/);
+  assert.doesNotMatch(terminalWake, /runs-on: \[self-hosted[^\n]*n150[^\n]*general/);
+  assert.match(
+    terminalWake,
+    /concurrency:\n\s+group: ci-terminal-wake-\$\{\{ github\.event\.workflow_run\.id \}\}\n\s+cancel-in-progress: false/,
+  );
+  assert.doesNotMatch(terminalWake, /workflow_run\.conclusion/);
   assert.match(terminalWake, /ref: dev/);
   assert.match(terminalWake, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
   assert.doesNotMatch(terminalWake, /workflow_run\.head_sha|workflow_run\.pull_requests/);
   assert.doesNotMatch(terminalWake, /workflows: \["CI Terminal Wake"\]/);
   assert.doesNotMatch(ci, /contains\(github\.event\.head_commit\.message/);
+});
+
+test('dedicated control runner label is reserved for terminal-wake orchestration', () => {
+  const workflowDir = '.github/workflows';
+
+  const stripComment = (value) => value.replace(/\s+#.*$/, '').trim();
+  const normalizeLabel = (value) => value.trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+  const simpleScalar = /^[a-z0-9_.-]+$/i;
+
+  const parseList = (value) => {
+    const clean = stripComment(value).trim();
+    if (!clean.startsWith('[') || !clean.endsWith(']')) return null;
+    const labels = clean.slice(1, -1).split(',').map(normalizeLabel).filter(Boolean);
+    return labels.every(label => simpleScalar.test(label)) ? labels : null;
+  };
+
+  const runsOnSpecs = (workflow) => {
+    const lines = workflow.split('\n');
+    const specs = [];
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const match = /^(\s*)runs-on:\s*(.*)$/.exec(lines[i]);
+      if (!match) continue;
+
+      const baseIndent = match[1].length;
+      const inline = stripComment(match[2]);
+      if (inline) {
+        if (inline.includes('${{')) {
+          specs.push({ parsed: false, labels: [], group: null, raw: inline });
+          continue;
+        }
+
+        const list = parseList(inline);
+        if (list) {
+          specs.push({ parsed: true, labels: list, group: null, raw: inline });
+          continue;
+        }
+
+        const scalar = normalizeLabel(inline);
+        specs.push({
+          parsed: simpleScalar.test(scalar),
+          labels: simpleScalar.test(scalar) ? [scalar] : [],
+          group: null,
+          raw: inline,
+        });
+        continue;
+      }
+
+      const blockLines = [];
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const line = lines[j];
+        if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+        const indent = /^(\s*)/.exec(line)[1].length;
+        if (indent <= baseIndent) break;
+        blockLines.push(stripComment(line.trim()));
+      }
+
+      if (blockLines.some(line => line.includes('${{'))) {
+        specs.push({ parsed: false, labels: [], group: null, raw: blockLines.join(' ') });
+        continue;
+      }
+
+      let parsed = true;
+      let group = null;
+      const labels = [];
+      let sawStructuredKey = false;
+
+      for (let j = 0; j < blockLines.length; j += 1) {
+        const line = blockLines[j];
+        const groupMatch = /^group:\s*(.+)$/.exec(line);
+        if (groupMatch) {
+          sawStructuredKey = true;
+          const value = normalizeLabel(groupMatch[1]);
+          if (!simpleScalar.test(value)) parsed = false;
+          else group = value;
+          continue;
+        }
+
+        const labelsMatch = /^labels:\s*(.*)$/.exec(line);
+        if (labelsMatch) {
+          sawStructuredKey = true;
+          const value = labelsMatch[1].trim();
+          if (value) {
+            const inlineLabels = parseList(value);
+            if (inlineLabels) labels.push(...inlineLabels);
+            else {
+              const scalar = normalizeLabel(value);
+              if (!simpleScalar.test(scalar)) parsed = false;
+              else labels.push(scalar);
+            }
+            continue;
+          }
+
+          let k = j + 1;
+          for (; k < blockLines.length && /^-\s+/.test(blockLines[k]); k += 1) {
+            const label = normalizeLabel(blockLines[k].replace(/^-\s+/, ''));
+            if (!simpleScalar.test(label)) parsed = false;
+            else labels.push(label);
+          }
+          j = k - 1;
+          continue;
+        }
+
+        if (!sawStructuredKey && /^-\s+/.test(line)) {
+          const label = normalizeLabel(line.replace(/^-\s+/, ''));
+          if (!simpleScalar.test(label)) parsed = false;
+          else labels.push(label);
+          continue;
+        }
+
+        parsed = false;
+      }
+
+      if (labels.length === 0 && group === null) parsed = false;
+      specs.push({ parsed, labels, group, raw: blockLines.join(' ') });
+    }
+
+    return specs;
+  };
+
+  const exactLabels = (labels, expected) =>
+    labels.length === expected.length && expected.every(label => labels.includes(label));
+
+  const controlRunnerLabels = new Set(['self-hosted', 'linux', 'x64', 'n150', 'control']);
+  const canMatchControlRunner = (spec) =>
+    spec.parsed &&
+    spec.group === null &&
+    spec.labels.length > 0 &&
+    spec.labels.every(label => controlRunnerLabels.has(label));
+
+  const assertWorkflowIsolation = (name, workflow, terminalWake = false) => {
+    for (const line of workflow.split('\n')) {
+      const code = stripComment(line);
+      if (!/runs-on\s*:/.test(code) && !/["']runs-on["']\s*:/.test(code)) continue;
+      assert.match(
+        code,
+        /^\s*runs-on:\s*/,
+        `${name}: runs-on must use the canonical unquoted block/scalar key form`,
+      );
+    }
+
+    const specs = runsOnSpecs(workflow);
+    for (const spec of specs) {
+      assert.equal(
+        spec.parsed,
+        true,
+        `${name}: runs-on must be statically parseable; dynamic or unknown forms are forbidden`,
+      );
+    }
+
+    if (terminalWake) {
+      assert.ok(
+        specs.length > 0 &&
+          specs.every(spec => spec.group === null && exactLabels(spec.labels, ['self-hosted', 'n150', 'control'])),
+        `${name}: terminal wake must target exactly self-hosted,n150,control with no runner group`,
+      );
+      return;
+    }
+
+    for (const spec of specs) {
+      assert.ok(
+        !spec.labels.includes('control'),
+        `${name}: control label must stay reserved for terminal-wake orchestration`,
+      );
+      assert.equal(
+        canMatchControlRunner(spec),
+        false,
+        `${name}: runs-on labels must not be satisfiable by the dedicated control runner`,
+      );
+    }
+  };
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'dynamic-fixture.yml',
+      'jobs:\n  unsafe:\n    runs-on: [self-hosted, ${{ matrix.pool }}]',
+    ),
+    /statically parseable/,
+    'dynamic runs-on expressions must fail through the same validator used for real workflows',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'quoted-key-fixture.yaml',
+      'jobs:\n  unsafe:\n    "runs-on": [self-hosted, n150]',
+    ),
+    /canonical unquoted/,
+    'quoted runs-on keys must fail closed instead of bypassing parsing',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'flow-map-fixture.yaml',
+      'jobs: { unsafe: { runs-on: [self-hosted, n150] } }',
+    ),
+    /canonical unquoted/,
+    'flow-map runs-on forms must fail closed instead of bypassing parsing',
+  );
+
+  assert.throws(
+    () => assertWorkflowIsolation(
+      'case-fixture.yml',
+      'jobs:\n  unsafe:\n    runs-on: [self-hosted, Linux, X64, n150]',
+    ),
+    /must not be satisfiable/,
+    'label matching must be case-insensitive like GitHub',
+  );
+
+  const groupWithComment = runsOnSpecs(
+    'jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment',
+  )[0];
+  assert.deepEqual(
+    { parsed: groupWithComment.parsed, labels: groupWithComment.labels, group: groupWithComment.group },
+    { parsed: true, labels: ['self-hosted', 'n150', 'general'], group: 'control-machines' },
+    'runner group names and comments must not be mistaken for control labels',
+  );
+
+  const workflowNames = fs.readdirSync(workflowDir).filter(name => /\.ya?ml$/.test(name));
+  for (const name of workflowNames) {
+    const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
+    assertWorkflowIsolation(
+      name,
+      workflow,
+      name === 'ci-terminal-wake.yml' || name === 'ci-terminal-wake.yaml',
+    );
+  }
+
+  for (const name of ['ci.yml', 'pi-auto-merge.yml']) {
+    const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
+    assert.ok(
+      runsOnSpecs(workflow).some(spec => spec.labels.includes('n150') && spec.labels.includes('general')),
+      `${name}: heavy/general work must stay on n150/general`,
+    );
+  }
 });
 
 test('pi:needs-human on a PR stops review, repair, and merge automation', () => {
@@ -326,15 +568,21 @@ test('reconciler gives normal PR handoffs a grace period before recovery dispatc
 });
 
 
-test('PR head changes invalidate verdict without creating a second review scheduler', () => {
+test('Pi issue branch pushes invalidate verdict without creating a second review scheduler', () => {
   const review = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
+  const invalidate = fs.readFileSync('.github/workflows/pi-review-invalidate.yml', 'utf8');
+  const usage = fs.readFileSync('.github/workflows/pi-usage.yml', 'utf8');
   const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
-  assert.match(review, /pull_request:[\s\S]*types: \[synchronize\]/);
-  assert.match(review, /review-state\.mjs" invalidate/);
-  assert.match(state, /replaceReviewLabels\(prNumber\)/);
+  assert.doesNotMatch(review, /pull_request:[\s\S]*types: \[synchronize\]/);
   assert.match(review, /review:\n    if: github\.event_name == 'workflow_dispatch'/);
-  const invalidate = review.slice(review.indexOf('  invalidate:'), review.indexOf('  review:'));
-  assert.doesNotMatch(invalidate, /dispatch/);
+  assert.match(invalidate, /push:[\s\S]*branches:[\s\S]*'pi\/issue-\*'/);
+  assert.match(invalidate, /runs-on: ubuntu-latest/);
+  assert.match(invalidate, /gh pr list[\s\S]*--head "\$GITHUB_REF_NAME"[\s\S]*--base dev/);
+  assert.match(invalidate, /review-state\.mjs" invalidate "\$PR" "\$GITHUB_SHA"/);
+  assert.match(state, /pi-review:verdict:/);
+  assert.match(state, /status: 'current-verdict'/);
+  assert.doesNotMatch(invalidate, /dispatchWorkflow|pi-pr-review\.yml/);
+  assert.doesNotMatch(usage, /PR Review Invalidate/);
   assert.doesNotMatch(review, /Restart review after PR head changed/);
 });
 
@@ -477,12 +725,14 @@ test('every model-driven Pi workflow delegates model execution to one stage runn
 
 test('selected subagents inherit the main response ceiling through a child-only extension', () => {
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
-  for (const name of ['scout', 'implementation-planner']) {
-    assert.deepEqual(
-      settings.subagents.agentOverrides[name].subagentOnlyExtensions,
-      ['./scripts/pi-subagent-response-budget.mjs'],
-    );
-  }
+  assert.deepEqual(
+    settings.subagents.agentOverrides.scout.subagentOnlyExtensions,
+    ['./scripts/pi-subagent-response-budget.mjs'],
+  );
+  assert.deepEqual(
+    settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions,
+    ['./scripts/pi-subagent-response-budget.mjs', './scripts/pi-planner-evidence.mjs'],
+  );
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const child = readScript('scripts/pi-subagent-response-budget.mjs', 'utf8');
   assert.match(runtime, /PI_SUBAGENT_RESPONSE_MAX_TOKENS/);
@@ -598,40 +848,43 @@ test('fresh implementer uses one planner/classifier result while restored and re
   const runner = readScript('scripts/pi-run-stage.mjs', 'utf8');
   const backend = readScript('scripts/pi-common/pi-stage-backend.mjs', 'utf8');
 
-  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 768[\s\S]*preComplexityAllowedTools: \['prepare_implementation'\]/);
+  assert.match(config, /implementer:[\s\S]*implementationPlannerAgent: 'implementation-planner'[\s\S]*implementationPlannerMaxTokens: 2048[\s\S]*implementationPlannerTimeoutMs: 900000/);
+  assert.doesNotMatch(config, /prepare_implementation/);
   assert.doesNotMatch(config, /complexityClassifierAgent|complexityClassifierTimeoutMs/);
   assert.match(config, /initialEvidenceBudgetByComplexity:[\s\S]*trivial: 2[\s\S]*nontrivial: 6/);
   assert.match(config, /delegatedTools: \['grep', 'find', 'ls'\]/);
   assert.doesNotMatch(config, /directReadMaxLines|directReadCalls/);
   assert.match(config, /implementer:[\s\S]*boundedDirectBash: true/);
 
-  assert.match(agent, /### Restored work[\s\S]*Call `submit_result` with no arguments immediately[\s\S]*Do \*\*not\*\* call `prepare_implementation`/);
+  assert.match(agent, /### Restored work[\s\S]*Call `submit_result` with no arguments immediately[\s\S]*Do \*\*not\*\* inspect repository files/);
+  assert.doesNotMatch(agent, /prepare_implementation/);
   assert.match(agent, /role overlay follows the shared agent contract in the initial prompt/i);
   assert.match(config, /shared_agent_contract[\s\S]*role_contract[\s\S]*trusted_context/);
   assert.match(agent, /Do not pass `already_satisfied` for restored work/);
   assert.match(agent, /zero diff[\s\S]*records the issue as already satisfied automatically/);
-  assert.match(agent, /### Fresh work[\s\S]*Call `prepare_implementation` exactly once/);
+  assert.match(agent, /### Fresh work[\s\S]*runtime has already prepared the top-level implementation plan before this session started/);
   assert.match(agent, /Task classification alone never requires delegation/);
   assert.match(agent, /2 actions for trivial[\s\S]*6 for nontrivial/);
   assert.match(agent, /submit_result[\s\S]*records that the agent considers the implementation complete/);
   assert.match(agent, /shared stage harness runs the authoritative checks/);
   assert.doesNotMatch(agent, /trivial_repo_lookup|RepoMap|repo map orientation|complexity-classifier/);
 
-  assert.match(runtime, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
-  assert.match(runtime, /enum: \['trivial', 'nontrivial'\]/);
-  assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
+  const bootstrapPlanner = readScript('scripts/pi-common/implementation-planner.mjs', 'utf8');
+  assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
+  assert.match(bootstrapPlanner, /enum: \['trivial', 'nontrivial'\]/);
+  assert.match(runtime, /controller\.applyPreparedImplementation\(preparedImplementation\)/);
+  assert.doesNotMatch(runtime, /prepare_implementation/);
   assert.doesNotMatch(runtime, /trivial_repo_lookup|trivialRepoLookup|runStructuredComplexityClassifier|complexityClassifierAgent/);
   assert.match(runtime, /directActionImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /validationRepair[\s\S]*PI_VALIDATION_REPAIR/);
-  assert.match(runtime, /freshBaseCommit/);
-  assert.match(runtime, /freshWorktreeIsLatestDev/);
-  assert.match(runtime, /lspWorkspaceRoot/);
+  assert.match(bootstrapPlanner, /freshBaseCommit/);
+  assert.match(bootstrapPlanner, /LSP workspace root:/);
   assert.match(runtime, /name: 'structural_edit'/);
   assert.match(runtime, /structuralEdit\(ctx\.cwd, params\)/);
   assert.match(runtime, /name: 'safe_edit'/);
   assert.match(runtime, /name: 'repo_search'/);
   assert.match(runtime, /repoSearch\(ctx\.cwd, params\)/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
+  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 2048[\s\S]*request\.toolBudget = \{ hard: cap \+ 3 \}/);
   assert.match(readScript('scripts/pi-common/structured-subagent.mjs', 'utf8'), /result: schema \? \{ kind: 'structured', schema \} : \{ kind: 'text' \}/);
 
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);
@@ -661,7 +914,7 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_start_server'));
   assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_find_symbol'));
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_find_symbol'));
-  assert.match(implementer, /call `lsp_start_server` once[\s\S]*exact absolute workspace root supplied by `prepare_implementation`[\s\S]*then call `lsp_find_symbol`/i);
+  assert.match(implementer, /call `lsp_start_server` once[\s\S]*exact absolute workspace root supplied in the prepared state[\s\S]*then call `lsp_find_symbol`/i);
   assert.match(implementer, /Do not call `lsp_server_status` first/i);
   assert.match(implementer, /cold-start call is control-plane setup, not evidence/i);
   assert.match(implementer, /Do not use it before LSP merely to rediscover an already-named source symbol/i);
@@ -792,9 +1045,16 @@ test('repair preserves current dev behavior when a PR test is stale', () => {
 test('deterministic review failure routes directly to PR Fix instead of stopping the pipeline', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   assert.match(workflow, /name: Run deterministic review checks[\s\S]*?id: checks[\s\S]*?continue-on-error: true/);
-  assert.match(workflow, /name: Mark deterministic check failure for repair[\s\S]*?steps\.checks\.outcome == 'failure'[\s\S]*?review-state\.mjs" dispatch "\$PR" CHANGES_REQUESTED/);
-  assert.match(workflow, /name: Run independent review\n\s+id: independent\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success'/);
+  assert.match(workflow, /name: Mark deterministic check failure for repair[\s\S]*?steps\.checks\.outcome == 'failure'[\s\S]*?HEAD_SHA: \$\{\{ steps\.load\.outputs\.head_sha \}\}[\s\S]*?REVIEW_RUN_ID: \$\{\{ github\.run_id \}\}[\s\S]*?REVIEW_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}[\s\S]*?review-state\.mjs" dispatch "\$PR" CHANGES_REQUESTED/);
+  assert.match(workflow, /name: Run independent review\n\s+id: independent\n\s+if: >-[\s\S]*?steps\.checks\.outcome == 'success'[\s\S]*?steps\.record\.outputs\.status/);
   assert.match(workflow, /name: Apply review result\n\s+if: steps\.load\.outputs\.skip != 'true' && steps\.checks\.outcome == 'success' && steps\.independent\.outcome == 'success'/);
+  assert.match(workflow, /name: Start PR Fix after changes requested[\s\S]*?REVIEW_REQUIRE_CURRENT_VERDICT: "true"[\s\S]*?dispatch "\$PR" CHANGES_REQUESTED/);
+  assert.match(workflow, /name: Wake merge gate after PASS[\s\S]*?REVIEW_REQUIRE_CURRENT_VERDICT: "true"[\s\S]*?dispatch "\$PR" PASS/);
+});
+
+test('trusted reviewer default model is a supported dispatch choice', () => {
+  const model = fs.readFileSync('.pi/default-model', 'utf8').trim();
+  assert.ok(['laguna', 'qwen'].includes(model), `unsupported .pi/default-model: ${model}`);
 });
 
 test('failed independent reviews persist recovery state, retry once, and retain the reviewer trace', () => {
@@ -802,10 +1062,15 @@ test('failed independent reviews persist recovery state, retry once, and retain 
   const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
   assert.match(workflow, /id: independent[\s\S]*?continue-on-error: true/);
   assert.match(workflow, /name: Preserve reviewer trace\n\s+if: always\(\)[\s\S]*?actions\/upload-artifact@v4[\s\S]*?pi-review-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\.jsonl/);
-  assert.match(workflow, /recover_failed_review:[\s\S]*?if: always\(\)[\s\S]*?needs\.review\.outputs\.independent_outcome/);
-  assert.match(workflow, /recover-failure "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
+  assert.doesNotMatch(workflow, /recover_failed_review:/);
+  assert.match(workflow, /name: Fail job after independent review infrastructure failure[\s\S]*?workflow_run recovery owns the bounded retry/);
+  assert.doesNotMatch(workflow, /recover-failure "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);
+  assert.doesNotMatch(workflow, /needs\.review\.result/);
+  assert.match(workflow, /REVIEW_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(workflow, /actions: write/);
   assert.match(state, /pi-review:failure-retry:/);
+  assert.match(state, /REVIEW_MARKER_AUTHOR = 'github-actions\[bot\]'/);
+  assert.match(state, /isTrustedReviewMarkerComment/);
   assert.match(state, /pi-review:failure-exhausted:/);
   assert.match(state, /pi:needs-human/);
   assert.match(state, /dispatchWorkflow\('pi-pr-review\.yml'/);
@@ -994,6 +1259,26 @@ test('implementer action-required aborts keep defensive execution-failure proven
     (workflow.match(/FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"/g) ?? []).length,
     2,
     'accepted records are rendered through fixed trusted text rather than file content',
+  );
+  assert.equal(
+    (workflow.match(/\.failure_code == "PI_RUN_CHECK_PREFLIGHT_FAILED"/g) ?? []).length,
+    4,
+    'both workflow consumers validate and map the preflight infrastructure failure',
+  );
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="Run-check preflight failed: \$\(jq -r '\.reason' "\$PI_RUNTIME_FAILURE_FILE"\)"/g) ?? []).length,
+    2,
+    'the preflight failure mapping preserves its exact diagnostic in both workflow consumers',
+  );
+  assert.equal(
+    (workflow.match(/\.failure_code == "PI_TERMINAL_RECOVERY_BLOCKED"/g) ?? []).length,
+    4,
+    'both workflow consumers validate and branch on the known terminal-recovery blocked code',
+  );
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="Terminal recovery exhausted or could not select a capability-valid deterministic repair;/g) ?? []).length,
+    2,
+    'terminal-recovery blocked records also render through fixed trusted text',
   );
   assert.doesNotMatch(workflow, /FAILURE_REASON="\$\(jq/);
   assert.doesNotMatch(workflow, /FAILURE_CODE="\$\(jq/);

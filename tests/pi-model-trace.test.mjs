@@ -247,3 +247,39 @@ test('Implementer workflow uploads the stage-named temporary trace after failed 
   assert.match(docs, /Streaming\/SSE responses are stored as the complete raw response text/);
   assert.doesNotMatch(proxySource, /console\.(?:log|info|warn|error)\s*\(/);
 });
+
+
+test('#469 model trace emits one timing callback per real provider exchange', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-model-trace-metrics-'));
+  const tracePath = join(dir, 'trace.jsonl');
+  const observed = [];
+  const upstream = http.createServer((_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end('{"ok":true}');
+  });
+  const targetBaseUrl = await listen(upstream);
+  const proxy = await startModelTraceProxy({
+    targetBaseUrl,
+    tracePath,
+    stage: 'implementer',
+    issue: '469',
+    onExchange: metric => observed.push(metric),
+  });
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      const response = await fetch(`${proxy.baseUrl}/chat/completions`, { method: 'POST', body: '{}' });
+      assert.equal(response.status, 200);
+      await response.text();
+    }
+  } finally {
+    await proxy.close();
+    await new Promise(resolve => upstream.close(resolve));
+  }
+  assert.deepEqual(observed.map(item => item.sequence), [1, 2, 3]);
+  assert.ok(observed.every(item => typeof item.traceSession === 'string' && item.traceSession.length > 0));
+  assert.equal(new Set(observed.map(item => item.traceSession)).size, 1, 'one proxy shares one provider session id');
+  assert.ok(observed.every(item => item.requestMethod === 'POST'));
+  assert.ok(observed.every(item => item.requestPath === '/v1/chat/completions'));
+  assert.ok(observed.every(item => item.status === 200 && item.elapsedMs >= 0 && item.transportError === false));
+  rmSync(dir, { recursive: true, force: true });
+});

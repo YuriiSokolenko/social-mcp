@@ -7,31 +7,44 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController } from '../scripts/pi-common/progress-controller.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
+// Bootstrap resolves preparation before the main session exists, so the controller is born prepared.
 function fallbackController() {
   const state = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.enterPreparationFallback();
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' });
   return state;
 }
 
-test('fallback satisfies preparation without fabricating complexity or permitting skipped preparation', () => {
-  const skipped = new ProgressController(stageConfig('implementer'), {});
-  assert.throws(() => skipped.enterPreparationFallback(), /attempted, unresolved/);
-  for (const tool of ['write', 'edit', 'safe_edit', 'request_large_mutation_budget', 'run_check', 'read']) {
-    assert.equal(skipped.checkToolCall(tool, {}).block, true, tool);
+function preparedController({ evidenceBudget, largeMutation = false, complexity = 'nontrivial' }) {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  state.applyPreparedImplementation({
+    status: 'prepared', plan: ['step'], complexity, evidenceBudget, largeMutation, reason: 'because',
+  });
+  return state;
+}
+
+test('fallback satisfies preparation without fabricating complexity, and an unprepared controller fails closed', () => {
+  const unprepared = new ProgressController(stageConfig('implementer'), {});
+  for (const tool of ['write', 'edit', 'safe_edit', 'request_large_mutation_budget', 'run_check', 'read', 'prepare_implementation']) {
+    assert.equal(unprepared.checkToolCall(tool, {}).block, true, tool);
   }
   const state = fallbackController();
   assert.equal(state.preparationState, 'PREPARATION_FALLBACK');
   assert.equal(state.preparationSatisfied(), true);
   assert.equal(state.complexityRecorded(), false);
   assert.equal(state.complexity, null);
-  assert.match(state.checkToolCall('prepare_implementation', {}).reason, /single-shot/);
   state.onTurnStart(10);
   assert.equal(state.preComplexityActionRequired(), false);
   assert.equal(state.currentMaxTokens(), 2048);
   assert.equal(state.largeMutationBudgetState, 'idle');
-  assert.throws(() => state.enterPreparationFallback(), /attempted, unresolved/);
+});
+
+test('the Implementer stage no longer defines a preparation tool or pre-complexity transition', () => {
+  const config = stageConfig('implementer');
+  assert.deepEqual(config.preComplexityAllowedTools ?? [], []);
+  assert.deepEqual(config.preComplexityTransitionTools ?? [], []);
+  assert.deepEqual(config.singleUseTools ?? [], []);
+  assert.equal(config.productiveProgress.activationTool, undefined);
+  assert.equal(config.implementationPlannerTimeoutMs, 900000, 'bootstrap planner hard maximum is 15 minutes');
 });
 
 test('fallback grants the bounded evidence window and closes it on exhaustion or mutation', () => {
@@ -76,12 +89,8 @@ test('fallback grants the bounded evidence window and closes it on exhaustion or
 });
 
 test('automatic large mutation budget waits for evidence completion and remains one-shot', () => {
-  const state = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(1);
-  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  const state = preparedController({ evidenceBudget: 1, largeMutation: true });
+  assert.equal(state.automaticLargeMutationBudgetArmed, true);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false);
   assert.equal(state.largeMutationBudgetState, 'idle');
@@ -101,12 +110,7 @@ test('automatic large mutation budget waits for evidence completion and remains 
 });
 
 test('automatic large mutation intent is discarded by a direct mutation before activation', () => {
-  const state = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(2);
-  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  const state = preparedController({ evidenceBudget: 2, largeMutation: true });
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
 
   assert.equal(state.checkToolCall('safe_edit', { path: 'src/example.py' }), undefined);
@@ -116,25 +120,16 @@ test('automatic large mutation intent is discarded by a direct mutation before a
   assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false, 'stale planner intent must not grant a later action');
 });
 
-test('zero-evidence automatic large mutation becomes pending immediately after preparation', () => {
-  const state = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(0);
-  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
-  state.onToolExecutionEnd('prepare_implementation', false);
+test('zero-evidence automatic large mutation is pending from the first main request', () => {
+  const state = preparedController({ evidenceBudget: 0, largeMutation: true });
   assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('read', { path: 'src/example.py' }).block, true, 'zero evidence starts action-required');
   assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true);
   assert.equal(state.largeMutationBudgetPending(), true);
 });
 
 test('explicit large mutation request clears any planner-owned armed intent', () => {
-  const state = new ProgressController(stageConfig('implementer'), {});
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(1);
-  assert.equal(state.armAutomaticLargeMutationBudget(true), true);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  const state = preparedController({ evidenceBudget: 1, largeMutation: true });
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
 
   assert.equal(state.checkToolCall('read', { path: 'src/example.py' }), undefined);
@@ -145,6 +140,17 @@ test('explicit large mutation request clears any planner-owned armed intent', ()
   state.onToolExecutionEnd('request_large_mutation_budget', false);
   assert.equal(state.automaticLargeMutationBudgetArmed, false);
   assert.equal(state.largeMutationBudgetPending(), true);
+});
+
+test('a positive planner evidence_budget starts evidence_allowed with exactly that many attempts', () => {
+  const state = preparedController({ evidenceBudget: 2 });
+  assert.equal(state.complexity, 'nontrivial');
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'a' }), undefined);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'b' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('read', { path: 'c' }).block, true);
 });
 
 test('fallback preserves one-shot mutation budget and post-window evidence escape hatch', () => {
@@ -232,6 +238,9 @@ function runtimeScenario(mode) {
       import fs from 'node:fs';
       import { EventEmitter } from 'node:events';
       const { default: runtime } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
+      const { default: bootstrap } = await import(${JSON.stringify(new URL('../scripts/pi-implementer-bootstrap.mjs', import.meta.url).href)});
+      const planner = await import(${JSON.stringify(new URL('../scripts/pi-common/implementation-planner.mjs', import.meta.url).href)});
+      const { stageConfig } = await import(${JSON.stringify(new URL('../scripts/pi-common/stage-config.mjs', import.meta.url).href)});
       const mode = ${JSON.stringify(mode)};
       const fallbackEvidenceBudget = ${PREPARATION_FALLBACK_EVIDENCE_BUDGET};
       const bus = new EventEmitter();
@@ -239,11 +248,14 @@ function runtimeScenario(mode) {
       const handlers = new Map();
       const messages = [];
       const caps = [];
-      let active = ['read', 'write', 'edit', 'safe_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence', 'request_large_mutation_budget', 'prepare_implementation'];
+      let active = ['read', 'write', 'edit', 'safe_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence', 'request_large_mutation_budget'];
       let attempts = 0;
       let aborts = 0;
+      let shutdowns = 0;
       const ctx = { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 32000 },
-        sessionManager: { getSessionId: () => 'parent' }, abort: () => { aborts++; } };
+        sessionManager: { getSessionId: () => 'parent' }, abort: () => { aborts++; }, shutdown: () => { shutdowns++; } };
+      const bootstrapCtx = { ...ctx, sessionManager: { getSessionId: () => 'bootstrap-session' } };
+      const artifactFile = process.env.PI_PREPARED_IMPLEMENTATION_FILE;
       const signal = new AbortController();
       const pi = {
         events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) },
@@ -263,7 +275,7 @@ function runtimeScenario(mode) {
           assert.ok(request.task.includes('nearest_source_convention=src/demo_pkg/diagnostics/smoke_chunks.py'));
           assert.ok(request.task.includes('test_directory=tests/diagnostics'));
           assert.ok(request.task.includes('nearest_test_convention=tests/diagnostics/test_smoke_chunks.py'));
-          assert.match(request.task, /at most one targeted convention read/);
+          assert.ok(request.task.includes('inspect only the nearest relevant sibling source/test'));
           assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/);
         } else if (mode === 'non-additive-target') {
           assert.match(request.task, /Adjust existing parser/);
@@ -276,8 +288,10 @@ function runtimeScenario(mode) {
           assert.match(request.task, /Example task/);
           assert.match(request.task, /Implement example.py/);
         }
-        assert.equal(request.timeoutMs, 45000, '#397/#399/#401 bounded planner deadline');
-        assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '768');
+        assert.equal(request.ownerRunId, 'bootstrap-session', 'planner is hosted by the bootstrap session, never the main one');
+        if (attempts === 1) assert.ok(request.timeoutMs <= 900000 && request.timeoutMs > 890000, '15 minute hard planner deadline');
+        else assert.ok(request.timeoutMs <= 900000 && request.timeoutMs > 0, 'retry only gets the remaining deadline');
+        assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048');
         if (mode === 'abort') { signal.abort(); return; }
         const good = mode === 'layout-aware'
           ? {
@@ -306,10 +320,16 @@ function runtimeScenario(mode) {
         let reply;
         if (mode === 'envelope-retry') {
           if (attempts === 1) assert.doesNotMatch(request.task, /REPAIR/);
-          else assert.match(request.task, /REPAIR[\\s\\S]*\\{ "value": \\{ "steps"/);
+          else {
+            const repairAt = request.task.indexOf('REPAIR: the previous structured_output envelope was rejected');
+            const contractAt = request.task.indexOf('Output contract: call structured_output with exactly { "value": { "steps"');
+            assert.ok(repairAt >= 0, 'retry prompt carries repair guidance');
+            assert.ok(contractAt > repairAt, 'repair guidance immediately precedes the exact output contract');
+          }
           reply = attempts === 2 ? { status: 'completed', result: { kind: 'structured', value: good } } : { status: 'failed', error: schemaError };
         } else if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
         else if (mode === 'timeout') reply = { status: 'failed', error: 'Subagent timed out after 120000ms.' };
+        else if (mode === 'deadline-timeout') reply = { status: 'timed_out', error: 'planner exceeded its deadline' };
         else if (mode === 'bad-output-schema') reply = { status: 'failed', error: 'invalid outputSchema: unsupported keyword' };
         else if (mode === 'overlong') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' } } };
         else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
@@ -331,14 +351,43 @@ function runtimeScenario(mode) {
           assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
           assert.match(request.task, /"value"/);
           assert.match(request.task, /large_mutation/);
-          assert.match(request.task, /new module plus its test implementation/);
+          assert.match(request.task, /substantial new module plus tests/);
           assert.match(request.task, /240 characters/);
         }
         bus.emit('prompt-template:subagent:response', {
           requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, ...reply,
         });
       });
-      runtime(pi);
+      const mainPi = pi;
+      let artifact = null;
+      if (mode === 'abort') {
+        const config = stageConfig('implementer');
+        await assert.rejects(planner.prepareImplementation(pi, bootstrapCtx, config, signal.signal), /aborted/);
+        assert.equal(attempts, 1);
+        process.exit(0);
+      }
+      if (mode !== 'restored') {
+        // Session A: separate bootstrap session hosts the planner and shuts down before any model turn.
+        const bootstrapHandlers = new Map();
+        process.env.PI_IMPLEMENTER_BOOTSTRAP = 'true';
+        bootstrap({ ...pi, on: (name, fn) => bootstrapHandlers.set(name, fn) });
+        await bootstrapHandlers.get('resources_discover')({}, bootstrapCtx);
+        delete process.env.PI_IMPLEMENTER_BOOTSTRAP;
+        assert.equal(shutdowns, 1, 'bootstrap session shuts itself down');
+        artifact = planner.readPreparedImplementation(artifactFile);
+        assert.ok(artifact, 'bootstrap wrote the PreparedImplementation artifact');
+        // Hard context boundary: only the normalized artifact crosses, never planner transcript/retries.
+        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceUsed', 'plannerEvidenceCap', 'plannerProviderTurns', 'failureClass'];
+        assert.deepEqual(Object.keys(artifact).filter(key => !allowed.includes(key)), []);
+      } else {
+        assert.equal(fs.existsSync(artifactFile), false, 'restored work never runs fresh planner bootstrap');
+      }
+      const attemptsBeforeMain = attempts;
+      runtime(mainPi);
+      assert.equal(attempts, attemptsBeforeMain, 'main runtime never invokes the planner');
+      assert.equal(tools.has('prepare_implementation'), false, 'no model-visible preparation tool');
+      assert.equal(tools.has('declare_task_complexity'), false);
+      assert.equal(active.includes('prepare_implementation'), false);
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
       async function call(name, input = {}) {
@@ -356,40 +405,36 @@ function runtimeScenario(mode) {
         return result;
       }
       if (mode === 'restored') {
-        assert.equal(tools.has('prepare_implementation'), false);
         await call('submit_result');
         assert.equal(attempts, 0);
       } else if (mode === 'invalid-context') {
-        const prepared = await call('prepare_implementation');
         assert.equal(attempts, 0);
-        assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
-        assert.match(prepared.details.reason, /JSON|Unexpected end/);
+        assert.equal(artifact.status, 'fallback');
+        assert.match(artifact.reason, /JSON|Unexpected end/);
+        await call('read', { path: 'example.py' });
         assert.ok(active.includes('write'));
-      } else if (mode === 'abort') {
-        await assert.rejects(call('prepare_implementation'), /aborted/);
-        assert.equal(attempts, 1);
-        const blocked = await handlers.get('tool_call')({ toolName: 'write', input: {} }, ctx);
-        assert.equal(blocked.block, true);
       } else {
-        const prepared = await call('prepare_implementation');
-        const oneAttempt = ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'invalid-large-mutation', 'timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
+        // The first main-session request is born prepared: no tool call exists to obtain the plan.
+        const block = planner.preparedImplementationBlock(artifact, { largeMutationArmed: artifact.status === 'prepared' && artifact.largeMutation });
+        const prepared = { details: artifact, text: block };
+        assert.doesNotMatch(block, /prepare_implementation|REPAIR|structured_output/);
+        assert.match(block, /Runtime-prepared implementation state/);
+        const oneAttempt = ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'invalid-large-mutation', 'timeout', 'deadline-timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
         assert.equal(attempts, oneAttempt ? 1 : 2);
-        const repeated = await handlers.get('tool_call')({ toolName: 'prepare_implementation', input: {} }, ctx);
-        assert.match(repeated.reason, /single-shot/);
-        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'bad-output-schema', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)) {
-          assert.equal(prepared.details.preparationState, 'PREPARATION_FALLBACK');
-          assert.equal(prepared.details.complexity, null);
-          assert.equal(prepared.details.evidenceBudget, fallbackEvidenceBudget);
-          assert.equal('plan' in prepared.details, false);
-          assert.match(prepared.content[0].text, /Do not repeat preparation/);
-          assert.ok(prepared.content[0].text.includes('canonical source/test layout is not already clear'));
-          assert.ok(prepared.content[0].text.includes('guidance, not a mutation gate'));
-          assert.ok(prepared.content[0].text.includes('up to ' + fallbackEvidenceBudget + ' repository evidence attempts'));
-          assert.ok(prepared.content[0].text.includes('every accepted non-control evidence action consumes one attempt'));
-          assert.ok(prepared.content[0].text.includes('even if it fails or returns no useful result'));
-          assert.ok(prepared.content[0].text.includes('coding-session action becomes valid only after the evidence window is closed'));
-          assert.ok(prepared.content[0].text.includes('Focused verification becomes available only after a successful mutation'));
-          assert.match(prepared.content[0].text, /CURRENTLY EXPOSED TOOLS \\(authoritative\\):/);
+        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'deadline-timeout', 'bad-output-schema', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)) {
+          assert.equal(artifact.status, 'fallback');
+          assert.equal(artifact.failureClass, mode === 'deadline-timeout' ? 'planner_deadline_timeout' : 'preparation_infrastructure_failure');
+          assert.equal('plan' in artifact, false);
+          assert.equal('complexity' in artifact, false);
+          assert.match(block, /PREPARATION_FALLBACK/);
+          assert.match(block, /nothing to prepare or retry/);
+          assert.ok(block.includes('canonical source/test layout is not already clear'));
+          assert.ok(block.includes('guidance, not a mutation gate'));
+          assert.ok(block.includes('up to ' + fallbackEvidenceBudget + ' repository evidence attempts'));
+          assert.ok(block.includes('every accepted non-control evidence action consumes one attempt'));
+          assert.ok(block.includes('even if it fails or returns no useful result'));
+          assert.ok(block.includes('coding-session action becomes valid only after the evidence window is closed'));
+          assert.ok(block.includes('Focused verification becomes available only after a successful mutation'));
           assert.ok(!caps.includes(16384), 'fallback alone must not grant large response');
           assert.ok(active.includes('read'));
           assert.ok(active.includes('request_large_mutation_budget'));
@@ -438,12 +483,15 @@ function runtimeScenario(mode) {
               sourceTarget: 'src/demo_pkg/diagnostics/smoke_widget.py',
               sourceConvention: 'src/demo_pkg/diagnostics/smoke_chunks.py',
               testDirectory: 'tests/diagnostics',
+              testTarget: 'tests/diagnostics/test_smoke_widget.py',
+              testTargetRequired: false,
               testConvention: 'tests/diagnostics/test_smoke_chunks.py',
             });
-            assert.match(prepared.content[0].text, /Repository layout hint: source root src/);
-            assert.match(prepared.content[0].text, /Prefer one targeted convention read if needed/);
-            assert.match(prepared.content[0].text, /do not broad-search or re-prove the fresh-worktree provenance/);
-            assert.match(prepared.content[0].text, /Fresh worktree provenance:/);
+            assert.match(prepared.text, /Repository layout hint: source root src/);
+            assert.match(prepared.text, /Prefer one targeted convention read if needed/);
+            assert.match(prepared.text, /do not broad-search or re-prove the fresh-worktree provenance/);
+            assert.match(prepared.text, /Fresh worktree base: latest fetched/);
+            assert.match(prepared.text, /Large mutation: auto-arm one-shot/);
             assert.ok(active.includes('read'));
             await call('read', { path: 'src/demo_pkg/diagnostics/smoke_chunks.py' });
             assert.equal(caps.at(-1), 16384, 'new module plus tests is elevated after its evidence read');
@@ -467,7 +515,7 @@ function runtimeScenario(mode) {
             assert.equal(caps.at(-1), 2048);
           } else if (mode === 'non-additive-target') {
             assert.equal(prepared.details.layoutHint, null);
-            assert.doesNotMatch(prepared.content[0].text, /Repository layout hint:/);
+            assert.doesNotMatch(prepared.text, /Repository layout hint:/);
             assert.equal(prepared.details.evidenceBudget, 2);
             assert.equal(prepared.details.largeMutation, false);
             assert.equal(prepared.details.complexity, 'nontrivial');
@@ -489,6 +537,7 @@ function runtimeScenario(mode) {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 15000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: context,
         PI_RESUME_ACTIVE: mode === 'restored' ? 'true' : 'false', PI_VALIDATION_REPAIR: 'false',
+        PI_PREPARED_IMPLEMENTATION_FILE: path.join(dir, 'prepared-implementation.json'),
         PI_ACCEPTED_MUTATION_SCOPE_STATE: "{\"schema_version\":1,\"accepted\":[{\"path\":\"example.py\",\"rationale\":\"Runtime preparation fixture writes the simulated implementation target.\"},{\"path\":\"config.py\",\"rationale\":\"Small-edit preparation fixture mutates the known config target.\"}],\"temporary\":[],\"baseline\":[]}",
         PI_SUBAGENT_RESPONSE_MAX_TOKENS: '2048' },
     });
@@ -585,3 +634,21 @@ for (const [mode, pattern] of [['timeout', /timed out after 120000ms/], ['bad-ou
     assert.match(logs, /PI_PREPARATION_FALLBACK/);
   });
 }
+
+test('planner hard deadline falls back with a distinct, logged failure class', () => {
+  const logs = runtimeScenario('deadline-timeout');
+  assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_deadline_timeout"/);
+  assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
+});
+
+test('bootstrap completes and the prepared state is applied before the main session runs', () => {
+  const logs = runtimeScenario('success');
+  const completed = logs.indexOf('"phase":"planner_completed"');
+  const applied = logs.indexOf('"phase":"prepared_state_applied"');
+  assert.ok(completed >= 0 && applied > completed, 'planner bootstrap completed BEFORE prepared state applied to the main session');
+  assert.match(logs, /PI_PLAN .*"evidenceBudget":2/);
+  assert.match(logs, /\[PI\]\[planner\] prepared status=prepared/);
+  assert.match(logs, /PI_COMPLEXITY .*"complexity":"nontrivial"/);
+  assert.match(logs, /"beforeFirstProviderRequest":true/);
+});

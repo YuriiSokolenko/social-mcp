@@ -1,0 +1,46 @@
+name: PR Review Invalidate
+run-name: "♻️ Invalidate review · ${{ github.ref_name }}"
+
+on:
+  push:
+    branches:
+      - 'pi/issue-*'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: pr-review-invalidate-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  invalidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout trusted dev
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: dev
+
+      - name: Find open PR and invalidate stale review verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --head "$GITHUB_REF_NAME" \
+            --base dev \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -z "$PR" ]; then
+            echo "No open dev PR for $GITHUB_REF_NAME; nothing to invalidate"
+            exit 0
+          fi
+          node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" invalidate "$PR" "$GITHUB_SHA"

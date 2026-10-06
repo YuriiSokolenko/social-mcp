@@ -85,3 +85,12 @@ jobs:
       - name: Summarize Pi usage
         if: always()
         run: node "$GITHUB_WORKSPACE/scripts/pi-usage-summary.mjs"
+
+      - name: Upload sanitized runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-diagnostics-architect-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-diagnostics-architect-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 7

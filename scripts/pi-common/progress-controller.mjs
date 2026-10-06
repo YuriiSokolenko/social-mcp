@@ -84,6 +84,35 @@ export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
 }
 
+function recoveryVerificationSignature(toolName, input) {
+  const normalized = {};
+  const kind = typeof input?.kind === 'string' ? input.kind.trim() : '';
+  const profile = typeof input?.profile === 'string' ? input.profile.trim() : '';
+  const normalizeList = value => [...new Set(
+    (Array.isArray(value) ? value : [])
+      .filter(item => typeof item === 'string' && item.trim())
+      .map(item => item.trim()),
+  )].sort();
+  const paths = normalizeList(input?.paths);
+  const targets = normalizeList(input?.targets);
+  if (kind) normalized.kind = kind;
+  if (profile) normalized.profile = profile;
+  if (paths.length) normalized.paths = paths;
+  if (targets.length) normalized.targets = targets;
+  return toolCallSignature(toolName, normalized);
+}
+
+export function validateSingleEvidenceRequest(input = {}) {
+  const missing = typeof input.missing === 'string' ? input.missing.trim() : '';
+  if (!missing) return { ok: false, reason: 'need_more_evidence requires one concrete missing fact.' };
+
+  // Natural-language fact counting is not reliable: punctuation, conjunctions, words such as
+  // "plus", and multi-path comparisons all have legitimate single-fact uses. The enforceable
+  // boundary is therefore operational, not lexical: one blocker invocation opens exactly one
+  // evidence tool call, after which the controller returns to action_required.
+  return { ok: true };
+}
+
 const TRUNCATED_TOOL_CALL_PATTERN = /output token limit|arguments may be truncated/i;
 
 export function classifyTruncatedToolCall({ toolName, isError, text }) {
@@ -215,14 +244,11 @@ export class ProgressController {
     this.boundedDirectBash = config.boundedDirectBash === true;
     this.singleUseTools = new Set(config.singleUseTools ?? []);
     this.usedSingleUseTools = new Set();
-    this.transitions = new SessionTransitions({
-      preparationTool: config.productiveProgress?.activationTool ?? null,
-    });
+    this.transitions = new SessionTransitions();
     this.lastAlreadySatisfied = null;
 
     this.productiveProgress = config.productiveProgress ?? null;
     this.productiveState = this.productiveProgress?.startState ?? 'inactive';
-    this.productiveActivationTool = this.productiveProgress?.activationTool ?? null;
     this.productiveActivationReadSuffix = this.productiveProgress?.activationReadSuffix ?? null;
     this.productiveBlockerTool = this.productiveProgress?.blockerTool ?? null;
     this.productiveActionTools = new Set(this.productiveProgress?.actionTools ?? []);
@@ -233,6 +259,10 @@ export class ProgressController {
     this.productiveVerificationTool = this.productiveProgress?.verificationTool ?? null;
     this.verificationPermits = 0;
     this.verificationState = this.productiveVerificationTool ? 'not_yet_available' : null;
+    // Terminal recovery may require one exact authoritative verification even after the
+    // ordinary mutation-scoped verification permit was consumed. Keep this separate from
+    // verificationPermits so recovery cannot reopen arbitrary run_check access.
+    this.recoveryVerificationSignature = null;
     this.productiveInitialEvidenceBudget = positiveInteger(
       Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
       'productiveProgress.initialEvidenceBudget',
@@ -257,6 +287,10 @@ export class ProgressController {
     // produce tool_execution_end(isError=true) in Pi core, so execution-end rollback must
     // never infer ownership from tool name alone.
     this.pendingEvidenceUnlock = null;
+    // Distinguish the one-action escape hatch opened by need_more_evidence from the
+    // planner/bootstrap evidence window, which may legitimately contain several actions.
+    this.blockerEvidenceWindowActive = false;
+    this.pendingEvidenceConsumptionNotice = null;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
     this.requireLspStartBeforeFindSymbol = config.requireLspStartBeforeFindSymbol === true;
@@ -336,6 +370,30 @@ export class ProgressController {
     return this.verificationState;
   }
 
+  armRecoveryVerification(input) {
+    if (!this.productiveVerificationTool) return false;
+    this.recoveryVerificationSignature = recoveryVerificationSignature(this.productiveVerificationTool, input ?? {});
+    return true;
+  }
+
+  recoveryVerificationArmed() {
+    return this.recoveryVerificationSignature != null;
+  }
+
+  clearRecoveryVerification() {
+    const armed = this.recoveryVerificationSignature != null;
+    this.recoveryVerificationSignature = null;
+    return armed;
+  }
+
+  commitRecoveryVerification(input) {
+    if (!this.productiveVerificationTool || this.recoveryVerificationSignature == null) return false;
+    const signature = recoveryVerificationSignature(this.productiveVerificationTool, input ?? {});
+    if (signature !== this.recoveryVerificationSignature) return false;
+    this.recoveryVerificationSignature = null;
+    return true;
+  }
+
   armAutomaticLargeMutationBudget(enabled) {
     if (!this.largeMutationBudgetTool) {
       this.automaticLargeMutationBudgetArmed = false;
@@ -408,6 +466,24 @@ export class ProgressController {
     );
   }
 
+  consumeEvidenceActionNotice() {
+    const notice = this.pendingEvidenceConsumptionNotice;
+    this.pendingEvidenceConsumptionNotice = null;
+    return notice;
+  }
+
+  restoreRuntimeBlockedEvidenceAction(notice) {
+    if (!notice || !this.productiveProgress || !this.productiveBlockerTool) return false;
+    // need_more_evidence grants exactly one executable evidence action. A harness/runtime policy
+    // rejection is not an evidence attempt, so restore the same open permit instead of forcing the
+    // model to lose it or request a second unlock.
+    this.pendingEvidenceConsumptionNotice = null;
+    this.productiveEvidenceRemaining = Math.max(1, this.productiveEvidenceRemaining);
+    this.productiveState = 'evidence_allowed';
+    this.blockerEvidenceWindowActive = true;
+    return true;
+  }
+
   complexityRecorded() {
     return !this.requireComplexity || Boolean(this.complexity);
   }
@@ -418,12 +494,8 @@ export class ProgressController {
     return this.complexityRecorded() || this.preparationState === 'PREPARATION_FALLBACK';
   }
 
-  enterPreparationFallback() {
-    if (!this.requiredFirstReadDone ||
-        !this.usedSingleUseTools.has(this.productiveActivationTool) ||
-        this.preparationSatisfied()) {
-      throw new Error('Preparation fallback requires an attempted, unresolved preparation action');
-    }
+  // Bootstrap resolved planner infrastructure failure before the first provider request.
+  installPreparationFallback() {
     this.preparationState = 'PREPARATION_FALLBACK';
     // No planner estimate is available, so grant a small deterministic orientation window
     // to establish the canonical source/test layout before mutation. The normal bounded
@@ -436,6 +508,30 @@ export class ProgressController {
       preparationState: this.preparationState,
       complexity: this.complexity,
       evidenceBudget: PREPARATION_FALLBACK_EVIDENCE_BUDGET,
+    };
+  }
+
+  // Installs a PreparedImplementation artifact resolved by the runtime bootstrap before the main
+  // session's first provider request. Produces the same state a successful prepare_implementation
+  // tool call used to produce: complexity, planner evidence budget, armed large-mutation intent and
+  // the initial productive-progress state.
+  applyPreparedImplementation(prepared) {
+    if (prepared.status === 'fallback') {
+      return { ...this.installPreparationFallback(), largeMutationArmed: false };
+    }
+    this.setComplexity(prepared.complexity);
+    this.setEvidenceBudget(prepared.evidenceBudget);
+    const largeMutationArmed = this.armAutomaticLargeMutationBudget(prepared.largeMutation);
+    const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
+    this.productiveEvidenceRemaining = evidenceBudget;
+    // Zero planner-reported evidence need goes straight to action_required.
+    this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
+    this.evidenceUnlockUsedSinceProgress = false;
+    return {
+      preparationState: this.preparationState,
+      complexity: this.complexity,
+      evidenceBudget,
+      largeMutationArmed,
     };
   }
 
@@ -469,7 +565,12 @@ export class ProgressController {
     this.turnUsedTool = false;
   }
 
-  checkToolCall(toolName, input) {
+  checkToolCall(toolName, input, { productiveEvidenceIndependent = false } = {}) {
+    const recoveryVerificationCall =
+      Boolean(this.productiveVerificationTool) &&
+      toolName === this.productiveVerificationTool &&
+      this.recoveryVerificationSignature === recoveryVerificationSignature(toolName, input ?? {});
+
     if (!this.requiredFirstReadDone) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const allowed = toolName === 'read' &&
@@ -486,7 +587,13 @@ export class ProgressController {
     // the real guarantee; the runtime's tool-surface restriction is UX on top of it, not a
     // substitute for it.
     const elevatedEvidenceUnlock = Boolean(this.productiveBlockerTool && toolName === this.productiveBlockerTool);
-    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !ELEVATED_MUTATION_TURN_TOOLS.has(toolName) && !elevatedEvidenceUnlock) {
+    if (
+      this.largeMutationBudgetTool &&
+      this.largeMutationBudgetState === 'active' &&
+      !ELEVATED_MUTATION_TURN_TOOLS.has(toolName) &&
+      !elevatedEvidenceUnlock &&
+      !recoveryVerificationCall
+    ) {
       const blockerGuidance = this.productiveBlockerTool ? `, or ${this.productiveBlockerTool} for one concrete missing fact` : '';
       return {
         block: true,
@@ -519,6 +626,7 @@ export class ProgressController {
     const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
     let acceptedVerificationCall = false;
+    let acceptedRecoveryVerificationCall = false;
 
     const preComplexityEvidenceTool =
       this.requireComplexity &&
@@ -607,7 +715,17 @@ export class ProgressController {
       };
     }
 
-    if (this.productiveProgress) {
+    if (productiveEvidenceIndependent && toolName !== 'read') {
+      return {
+        block: true,
+        reason: `BLOCKED: productiveEvidenceIndependent is reserved for bounded repair reads; ${toolName} did not execute.`,
+      };
+    }
+
+    // Repair reads may be admitted by the runtime without reopening or consuming the normal
+    // productive evidence window. Every generic controller invariant above and the repeat/turn
+    // guards below still applies; only productive-state evidence accounting is skipped.
+    if (this.productiveProgress && !productiveEvidenceIndependent) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const activatesOnRead =
         this.productiveState === 'inactive' &&
@@ -620,6 +738,10 @@ export class ProgressController {
         this.productiveState = 'action_required';
       } else if (this.productiveState === 'action_required') {
         if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+          const evidenceRequest = validateSingleEvidenceRequest(input);
+          if (!evidenceRequest.ok) {
+            return { block: true, reason: `BLOCKED: ${evidenceRequest.reason}` };
+          }
           const blockerSignature = toolCallSignature(toolName, input);
           if (blockerSignature === this.lastEvidenceRequestSignature) {
             return {
@@ -640,10 +762,18 @@ export class ProgressController {
               evidenceUnlockUsedSinceProgress: this.evidenceUnlockUsedSinceProgress,
               productiveEvidenceRemaining: this.productiveEvidenceRemaining,
               productiveState: this.productiveState,
+              blockerEvidenceWindowActive: this.blockerEvidenceWindowActive,
             },
           };
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
-          if (this.verificationPermits > 0) {
+          if (recoveryVerificationCall) {
+            acceptedRecoveryVerificationCall = true;
+          } else if (this.recoveryVerificationSignature) {
+            return {
+              block: true,
+              reason: `BLOCKED: terminal recovery requires the exact authoritative verification action; this ${toolName} input does not match it.`,
+            };
+          } else if (this.verificationPermits > 0) {
             acceptedVerificationCall = true;
           } else {
             return {
@@ -669,7 +799,14 @@ export class ProgressController {
           };
         }
         if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
-          if (this.verificationPermits > 0) {
+          if (recoveryVerificationCall) {
+            acceptedRecoveryVerificationCall = true;
+          } else if (this.recoveryVerificationSignature) {
+            return {
+              block: true,
+              reason: `BLOCKED: terminal recovery requires the exact authoritative verification action; this ${toolName} input does not match it.`,
+            };
+          } else if (this.verificationPermits > 0) {
             acceptedVerificationCall = true;
           } else {
             return {
@@ -680,27 +817,36 @@ export class ProgressController {
             };
           }
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
-          const semanticFallback = this.semanticLookupAwaitingRead &&
-            !this.semanticFallbackEvidenceUsed &&
-            toolName !== 'read' &&
-            toolName !== 'lsp_find_symbol';
-          if (semanticFallback) {
-            // A name lookup can complete successfully at the transport level yet
-            // return no useful match. Permit exactly one deterministic fallback
-            // discovery action without stealing the authoritative source read.
-            this.semanticFallbackEvidenceUsed = true;
+          if (this.blockerEvidenceWindowActive) {
+            // need_more_evidence is a strict one-action escape hatch: the first accepted
+            // evidence call consumes the permit immediately, whatever evidence tool it is.
+            this.productiveEvidenceRemaining = 0;
+            this.productiveState = 'action_required';
+            this.blockerEvidenceWindowActive = false;
+            this.pendingEvidenceConsumptionNotice = { tool: toolName };
           } else {
-            // Consume bounded evidence budget at accepted call time. This still
-            // prevents unbounded parallel exploration, while allowing a short
-            // locate -> read -> anchor sequence before mutation is required.
-            this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
-            if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
+            const semanticFallback = this.semanticLookupAwaitingRead &&
+              !this.semanticFallbackEvidenceUsed &&
+              toolName !== 'read' &&
+              toolName !== 'lsp_find_symbol';
+            if (semanticFallback) {
+              // Planner/bootstrap evidence windows retain the deterministic semantic fallback.
+              this.semanticFallbackEvidenceUsed = true;
+            } else {
+              this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
+              if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
+            }
           }
         }
       }
     }
 
-    if (this.absoluteTurn >= this.turnLimit && !finishTool && !pendingComplexityTransition) {
+    if (
+      this.absoluteTurn >= this.turnLimit &&
+      !finishTool &&
+      !pendingComplexityTransition &&
+      !acceptedRecoveryVerificationCall
+    ) {
       return {
         block: true,
         reason: `BLOCKED: ${toolName} did not execute. Global execution limit reached (${this.turnLimit} turns). Exploration is closed; use only the pending preparation/classification action or terminal submit tool to finish.`,
@@ -708,19 +854,26 @@ export class ProgressController {
     }
 
     const signature = toolCallSignature(toolName, input);
-    if (signature === this.lastSignature) this.repeatCount += 1;
-    else {
+    if (acceptedRecoveryVerificationCall) {
+      // The terminal obligation itself is fresh authoritative reason to retry this exact check.
+      // Do not let the ordinary consecutive-call guard veto the one recovery permit.
       this.lastSignature = signature;
       this.repeatCount = 1;
-    }
-    if (this.repeatCount > this.repeatThreshold) {
-      return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
+    } else {
+      if (signature === this.lastSignature) this.repeatCount += 1;
+      else {
+        this.lastSignature = signature;
+        this.repeatCount = 1;
+      }
+      if (this.repeatCount > this.repeatThreshold) {
+        return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
+      }
     }
     if (preComplexityEvidenceTool && this.preComplexityEvidenceRemaining != null) {
       this.preComplexityEvidenceRemaining = Math.max(0, this.preComplexityEvidenceRemaining - 1);
     }
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
-    if (acceptedVerificationCall) {
+    if (acceptedVerificationCall && !acceptedRecoveryVerificationCall) {
       this.verificationPermits -= 1;
       if (this.verificationPermits === 0) this.verificationState = 'exhausted';
     }
@@ -729,6 +882,7 @@ export class ProgressController {
       this.lastEvidenceRequestSignature = acceptedEvidenceUnlock.signature;
       this.evidenceUnlockUsedSinceProgress = true;
       this.productiveEvidenceRemaining = 1;
+      this.blockerEvidenceWindowActive = true;
       this.productiveState = 'evidence_allowed';
     }
     this.turnUsedTool = true;
@@ -744,11 +898,15 @@ export class ProgressController {
       tool: toolName,
       serverId: input?.server_id,
       workspaceRoot: input?.workspace_root,
-      fallback: key === 'preparation' && this.preparationState === 'PREPARATION_FALLBACK',
     });
   }
 
-  onToolExecutionEnd(toolName, isError, { madeProgress = true, input = null } = {}) {
+  onToolExecutionEnd(toolName, isError, {
+    madeProgress = true,
+    input = null,
+    strictBlockerEvidence = false,
+    verificationEligible = madeProgress,
+  } = {}) {
     if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
       const pending = this.pendingEvidenceUnlock;
       const executionSignature = input == null ? null : toolCallSignature(toolName, input);
@@ -762,6 +920,7 @@ export class ProgressController {
           this.evidenceUnlockUsedSinceProgress = pending.previous.evidenceUnlockUsedSinceProgress;
           this.productiveEvidenceRemaining = pending.previous.productiveEvidenceRemaining;
           this.productiveState = pending.previous.productiveState;
+          this.blockerEvidenceWindowActive = pending.previous.blockerEvidenceWindowActive;
         }
       }
     }
@@ -789,11 +948,13 @@ export class ProgressController {
       } else if (isError) {
         this.semanticLookupAwaitingRead = false;
         this.semanticFallbackEvidenceUsed = false;
-        // Failed semantic discovery produced no evidence. Restore the permit
-        // consumed when the call was accepted so fallback search + exact read
-        // can still fit inside the same bounded evidence window.
-        this.productiveEvidenceRemaining += 1;
-        if (this.productiveState === 'action_required') this.productiveState = 'evidence_allowed';
+        if (!strictBlockerEvidence) {
+          // Planner/bootstrap evidence windows may recover from a failed semantic lookup.
+          // A need_more_evidence window is different: its one accepted action is consumed
+          // regardless of outcome, so failure must return to action_required.
+          this.productiveEvidenceRemaining += 1;
+          if (this.productiveState === 'action_required') this.productiveState = 'evidence_allowed';
+        }
       }
     }
     if (this.productiveProgress && toolName === 'read' && !isError && this.semanticLookupAwaitingRead) {
@@ -801,15 +962,6 @@ export class ProgressController {
       this.semanticFallbackEvidenceUsed = false;
       this.productiveEvidenceRemaining = 0;
       if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
-    }
-    if (!isError && this.productiveProgress && toolName === this.productiveActivationTool &&
-        this.preparationState !== 'PREPARATION_FALLBACK') {
-      const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
-      this.productiveEvidenceRemaining = evidenceBudget;
-      // A task whose planner-reported evidence need is zero has nothing to gather: go
-      // straight to action_required instead of granting one incidental evidence action.
-      this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
-      this.evidenceUnlockUsedSinceProgress = false;
     }
     if (!isError && this.automaticLargeMutationBudgetArmed &&
         (FINISH_TOOLS.has(toolName) || toolName === this.codingSessionTool)) {
@@ -822,14 +974,22 @@ export class ProgressController {
       this.largeMutationBudgetState = 'pending';
       this.largeMutationBudgetSource = 'manual';
     }
-    if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
+    if (
+      !isError &&
+      verificationEligible === true &&
+      this.productiveVerificationTool &&
+      MUTATION_TOOLS.has(toolName)
+    ) {
       this.verificationPermits = 1;
       this.verificationState = 'available';
     }
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
       this.semanticFallbackEvidenceUsed = false;
-      if (madeProgress) this.evidenceUnlockUsedSinceProgress = false;
+      if (madeProgress) {
+        this.evidenceUnlockUsedSinceProgress = false;
+        this.blockerEvidenceWindowActive = false;
+      }
       if (toolName === ROLLBACK_TOOL || this.productiveState === 'evidence_allowed') {
         this.productiveState = 'action_required';
       }

@@ -32,7 +32,7 @@ Choose the path from the initial prompt.
 If the initial prompt says saved checkpoint or issue-branch changes were replayed into the worktree:
 
 1. Call `submit_result` with no arguments immediately. Runtime derives candidate publication metadata from the trusted issue context and current diff.
-2. Do **not** call `prepare_implementation`, inspect repository files, summarize restored changes, or prove the restored implementation correct first.
+2. Do **not** inspect repository files, summarize restored changes, or prove the restored implementation correct first.
 3. If `submit_result` reports a concrete integration/metadata problem, fix only that reported problem and retry it. Authoritative product checks run outside the agent after submission; if they fail, the harness starts one focused repair attempt on the same worktree with the exact diagnostics.
 
 Do not pass `already_satisfied` for restored work. If replayed saved work is already contained in latest `dev`, `submit_result` detects the resulting zero diff and records the issue as already satisfied automatically; that runtime recovery is not a model claim.
@@ -43,25 +43,20 @@ Do not pass `already_satisfied` for restored work. If replayed saved work is alr
 
 Follow this sequence:
 
-1. Use the issue title/body already supplied in the prompt as the authoritative requested outcome. Do not inspect repository files and do not write a competing execution plan.
-2. Call `prepare_implementation` exactly once as the first tool action.
-   - The runtime sends only issue title/body to the permanent project `implementation-planner` subagent.
-   - The planner starts with its own planning contract plus inherited skill guidance.
-   - One structured result contains the ordered plan, `trivial | nontrivial`, the planner's own `evidence_budget` estimate (0-6), and one short reason.
-   - The main agent receives that prepared result. Do not call the child manually and do not re-run task-level classification.
-   - If planner infrastructure fails after the configured internal retry, runtime returns `PREPARATION_FALLBACK`: preparation is satisfied without planner output or complexity. Do not call `prepare_implementation` again. Continue from the issue and loaded contract. Fallback starts in `ACTION_REQUIRED`; use `need_more_evidence` if one concrete missing fact requires a read/search.
-3. Execute the first prepared plan step unless existing evidence already gives a more direct next action. In `PREPARATION_FALLBACK`, execute the requested issue using the same productive-progress rules.
+For fresh work, runtime has already prepared the top-level implementation plan before this session started. Preparation ran in a separate short-lived planner session whose private conversation is not part of yours; you receive only its compact result in the initial context (`Runtime-prepared implementation state`). There is no preparation tool to call, and no acknowledgement step.
+
+1. Use the issue title/body already supplied in the prompt as the authoritative requested outcome, and the prepared state as the plan: ordered steps, `trivial | nontrivial`, the planner's own `evidence_budget` estimate (0-6), the large-mutation decision, and one short reason. Do not write a competing plan and do not re-run task-level classification. Do not re-plan unless concrete repository evidence invalidates a plan assumption.
+2. If the planner failed after its bounded retries or hit its hard deadline, the initial context says `PREPARATION_FALLBACK`: preparation is already resolved without planner output or complexity. Continue from the issue and loaded contract using the bounded fallback evidence window described there; use `need_more_evidence` if one concrete missing fact requires a read/search after it closes.
+3. Execute the first prepared plan step unless existing evidence already gives a more direct next action. In `PREPARATION_FALLBACK`, execute the requested issue using the same productive-progress rules. Your first action should be real repository evidence or mutation work.
 4. Runtime creates fresh worktrees directly from the latest fetched `origin/dev`. Until the first successful `structural_edit`/`safe_edit`/`edit`/`write`, direct reads of the current worktree are authoritative latest-dev evidence. Do not spend Git/evidence calls re-proving whether HEAD or a clean known-path read came from latest dev.
 
 Once the next repository mutation is known and enough evidence exists, call `structural_edit`, `safe_edit`, `edit`, or `write` immediately. Prefer `structural_edit` for source-code changes that can be expressed as one exact ast-grep pattern/rewrite; it requires exactly one AST match and lets metavariables preserve untouched code instead of copying neighboring statements. Prefer `safe_edit` for bounded line/range or non-code text edits where structural matching is not a good fit; keep `edit`/`write` for cases where they are simpler. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
-
-For fresh work, do not modify repository files before preparation.
 
 ### Productive-progress protocol
 
 The runtime enforces execution as a state machine rather than a turn counter.
 
-- After successful `prepare_implementation`, the bounded evidence budget comes from the planner's own per-task `evidence_budget` estimate (0-6), not from the trivial/nontrivial classification: a nontrivial task can legitimately get `0` evidence actions (for example a fresh standalone file from a complete written specification). The classification-based fallback (2 actions for trivial work and 6 for nontrivial work) applies only when the planner does not provide an estimate.
+- The bounded evidence budget (already installed when your session starts) comes from the planner's own per-task `evidence_budget` estimate (0-6), not from the trivial/nontrivial classification: a nontrivial task can legitimately get `0` evidence actions (for example a fresh standalone file from a complete written specification). The classification-based fallback (2 actions for trivial work and 6 for nontrivial work) applies only when the planner does not provide an estimate.
 - An evidence action is any non-mutating repository/research action such as `read`, `repo_search`, scout/research delegation, or a bounded diagnostic command.
 - Use that budget only for one narrow implementation chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor`. Reading directly relevant files found during that chain is expected; do not mutate blindly merely to reopen evidence. Once the budget is exhausted (immediately, when it is `0`), exploration closes and the next substantive tool must be `structural_edit`, `safe_edit`, `edit`, `write`, `begin_coding_session`, or `submit_result`.
 - When runtime enters `action_required`, take one exposed productive action immediately instead of spending another turn narrating or restating the plan.
@@ -83,7 +78,7 @@ This protocol deliberately permits long/complex tasks without an arbitrary turn 
 
 The available delegated agents are:
 
-- `implementation-planner` — startup plan plus `trivial | nontrivial`; runtime invokes it through `prepare_implementation`.
+- `implementation-planner` — startup plan plus `trivial | nontrivial`; runtime runs it in a separate bootstrap session before yours starts.
 - `scout` — repository reconnaissance when deterministic tools are insufficient.
 - `delegate` — narrow focused helper.
 - `reviewer` — independent read-only review of code, diffs, plans, or evidence.
@@ -104,7 +99,7 @@ Use direct main-agent tools when the operation is cheaper than launching a child
 - **Known-path diff/status checks:** use bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>` as needed.
 - **Git history/context:** use this lane only after current code is known and one concrete historical question remains. Prefer one narrow local `git-context` MCP call over broad `git log`/history exploration: `blame_context` for why a bounded current-code line range exists, `commit_story` for the intent/story of one already-known commit, `file_history` for how one already-known file evolved, `search_commits` for one specific historical keyword/question, and `file_contributors` only when ownership history is genuinely relevant. Treat history as provenance evidence, never current source truth, current-symbol discovery, or an edit anchor. Verify current code with `read` before mutation. Do not use history as a startup ritual or when current-worktree evidence is already sufficient.
 - **Indexed repository search:** when `indexed_repo_search` is available, prefer it for literal/path discovery against the indexed `dev` snapshot when the source symbol/path is not already known. Do not use it before LSP merely to rediscover an already-named source symbol. Treat indexed results as discovery evidence only because the index can lag the current worktree.
-- **Semantic navigation (language-routed):** when the issue/plan already names a source symbol and LSP tools are available, semantic lookup is the first hop. Name-only workspace lookup requires an active language server. When the language is explicit from the issue/plan and no file position is known yet, call `lsp_start_server` once with the configured server id (`python` or `kotlin`) and the exact absolute workspace root supplied by `prepare_implementation`, then call `lsp_find_symbol`; this cold-start call is control-plane setup, not evidence. Do not precede that sequence with Zoekt, `repo_search`, Git Context, or scout just to discover a file/position, and do not call `lsp_server_status` first. If the language is not known, use deterministic discovery to resolve it instead of issuing a guaranteed-cold name-only lookup. If file + position are already known, skip explicit startup and use the narrow position-based tool directly: `lsp_goto_definition` for the resolved definition, `lsp_find_references` for usages, `lsp_find_implementations` for concrete implementations, and `lsp_call_hierarchy` for callers/callees; file-scoped LSP calls auto-start the correct server. The LSP bridge routes by file/language: Python (`.py`, `.pyi`) uses BasedPyright; Kotlin (`.kt`, `.kts`) uses JetBrains Kotlin LSP. Use `lsp_smart_search` only when several semantic facts are genuinely needed together. Treat LSP output as discovery evidence and still `read` the exact source before mutation. If startup/lookup times out, the server is unavailable, or the project cannot be resolved correctly, fall back immediately to Orbit/Zoekt/current-worktree search rather than retrying the same failed semantic request. A successful `lsp_find_symbol` followed by the authoritative source `read` closes the initial evidence window early and requires the next productive action; if one concrete fact still blocks a safe mutation, use `need_more_evidence` instead of continuing open-ended reads.
+- **Semantic navigation (language-routed):** when the issue/plan already names a source symbol and LSP tools are available, semantic lookup is the first hop. Name-only workspace lookup requires an active language server. When the language is explicit from the issue/plan and no file position is known yet, call `lsp_start_server` once with the configured server id (`python` or `kotlin`) and the exact absolute workspace root supplied in the prepared state, then call `lsp_find_symbol`; this cold-start call is control-plane setup, not evidence. Do not precede that sequence with Zoekt, `repo_search`, Git Context, or scout just to discover a file/position, and do not call `lsp_server_status` first. If the language is not known, use deterministic discovery to resolve it instead of issuing a guaranteed-cold name-only lookup. If file + position are already known, skip explicit startup and use the narrow position-based tool directly: `lsp_goto_definition` for the resolved definition, `lsp_find_references` for usages, `lsp_find_implementations` for concrete implementations, and `lsp_call_hierarchy` for callers/callees; file-scoped LSP calls auto-start the correct server. The LSP bridge routes by file/language: Python (`.py`, `.pyi`) uses BasedPyright; Kotlin (`.kt`, `.kts`) uses JetBrains Kotlin LSP. Use `lsp_smart_search` only when several semantic facts are genuinely needed together. Treat LSP output as discovery evidence and still `read` the exact source before mutation. If startup/lookup times out, the server is unavailable, or the project cannot be resolved correctly, fall back immediately to Orbit/Zoekt/current-worktree search rather than retrying the same failed semantic request. A successful `lsp_find_symbol` followed by the authoritative source `read` closes the initial evidence window early and requires the next productive action; if one concrete fact still blocks a safe mutation, use `need_more_evidence` instead of continuing open-ended reads.
 - **Orbit Local graph:** Orbit is configured before Implementer starts and is exposed through Pi's MCP integration. Use it for structural questions that LSP does not answer reliably, for non-Kotlin relationships, or as the first fallback after an LSP failure: imports, dependency direction, bounded blast radius, and graph relationships across the current worktree. Prefer one narrow Orbit graph query via the MCP tools (`get_graph_schema` when schema orientation is required, then `run_sql` for the actual bounded query) instead of broad repository scanning. Do not spend multiple startup evidence permits rediscovering structure that one semantic/graph call can answer. Orbit indexes the current worktree; exact source text still comes from `read` before mutation.
 - **Current-worktree search:** use `repo_search` for exact literal path/content discovery in the current tracked worktree, especially after mutations or when the indexed result must be verified.
 - `structural_edit` for source-code mutation after one exact `read` when a single AST node can be matched. It uses ast-grep, infers the language from the file, dry-runs the rewrite, requires exactly one match, verifies the matched byte range is still current, and atomically applies only that replacement. Prefer metavariables for untouched bodies/arguments instead of reproducing neighboring code.
@@ -169,7 +164,7 @@ If authoritative current code instead proves that the issue's explicit requested
 
 For fresh work with a known target, prefer:
 
-`loaded contract → prepare_implementation → lsp_start_server (cold name-only lookup; runtime absolute workspace root) → lsp_find_symbol → read → structural_edit/safe_edit/edit/write → submit_result`
+`loaded contract → prepared state → lsp_start_server (cold name-only lookup; runtime absolute workspace root) → lsp_find_symbol → read → structural_edit/safe_edit/edit/write → submit_result`
 
 If one more known fact is required after that read:
 
@@ -177,13 +172,13 @@ If one more known fact is required after that read:
 
 If a fresh task has an unknown target or unclear area:
 
-`loaded contract → prepare_implementation → indexed_repo_search (when available) or repo_search → read likely path → structural_edit/safe_edit/edit/write`
+`loaded contract → prepared state → indexed_repo_search (when available) or repo_search → read likely path → structural_edit/safe_edit/edit/write`
 
 Use Orbit only when the remaining question is structural rather than literal/path discovery.
 
 If literal discovery is needed:
 
-`loaded contract → prepare_implementation → indexed_repo_search (when available) or repo_search → read discovered path → read exact anchor if needed → structural_edit/safe_edit/edit/write`
+`loaded contract → prepared state → indexed_repo_search (when available) or repo_search → read discovered path → read exact anchor if needed → structural_edit/safe_edit/edit/write`
 
 If deterministic search still leaves one concrete semantic blocker:
 

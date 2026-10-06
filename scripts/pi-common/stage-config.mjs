@@ -40,6 +40,29 @@ function untrustedTaskInput(value) {
     .replaceAll('>', '\\u003e');
 }
 
+// Restored checkpoint/issue-branch work: direct submission path, never fresh planning.
+export function implementerResumed(env = process.env) {
+  const resumePatch = env.PI_RESUME_PATCH;
+  return env.PI_RESUME_ACTIVE != null
+    ? env.PI_RESUME_ACTIVE === 'true'
+    : Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
+}
+
+// Fresh work is the only path that gets runtime bootstrap planning; restored work and
+// validation-repair attempts enter their direct-action states instead.
+export function isFreshImplementerWork(env = process.env) {
+  return env.PI_STAGE === 'implementer' && !implementerResumed(env) && env.PI_VALIDATION_REPAIR !== 'true';
+}
+
+// The runner replaces this with the PreparedImplementation block once bootstrap has completed.
+export const PREPARED_IMPLEMENTATION_PLACEHOLDER = '<runtime_prepared_implementation_state/>';
+
+export function withPreparedImplementation(prompt, block) {
+  return prompt.includes(PREPARED_IMPLEMENTATION_PLACEHOLDER)
+    ? prompt.replace(PREPARED_IMPLEMENTATION_PLACEHOLDER, () => block)
+    : `${prompt}\n\n<trusted_context>\n${block}\n</trusted_context>`;
+}
+
 const promptBuilders = Object.freeze({
   architect(env) {
     const root = env.RUNNER_TEMP;
@@ -100,12 +123,7 @@ The worktree was preflight-synced with current ${baseBranch()}.
     const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
     const title = context.title ?? '';
     const body = context.body ?? '';
-    const resumePatch = env.PI_RESUME_PATCH;
-    const resumed = env.PI_RESUME_ACTIVE != null
-      ? env.PI_RESUME_ACTIVE === 'true'
-      : Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
-    const freshBaseCommit = String(env.PI_IMPLEMENTER_START_COMMIT ?? '').trim();
-    const worktreeRoot = env.JOB_DIR || process.cwd();
+    const resumed = implementerResumed(env);
     const resumeSource = env.PI_CHECKPOINT_EXPECTED
       ? 'checkpoint'
       : env.PI_ISSUE_BRANCH_EXPECTED
@@ -113,11 +131,9 @@ The worktree was preflight-synced with current ${baseBranch()}.
         : 'saved work';
     const runtimeState = resumed
       ? `Runtime resume state: restored ${resumeSource} work is already in this worktree.
-Call submit_result with no arguments immediately. Do not call prepare_implementation or inspect, summarize, validate, or plan the restored files first.
+Call submit_result with no arguments immediately. Do not inspect, summarize, validate, or plan the restored files first.
 If submit_result reports a concrete problem, fix only that problem and retry. Do not pass already_satisfied for restored work; zero-diff restored work is completed by runtime automatically.`
-      : `Fresh worktree base: latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.
-LSP workspace root: ${worktreeRoot}.
-Call prepare_implementation exactly once as the first tool action; runtime returns the startup plan and trivial/nontrivial classification.`;
+      : PREPARED_IMPLEMENTATION_PLACEHOLDER;
 
     return `${agentContractPrompt('implementer', env)}
 
@@ -213,19 +229,19 @@ export const STAGES = Object.freeze({
     // `begin_coding_session` (16k ceiling on the fork only). The parent-side one-shot grant
     // `request_large_mutation_budget` is LEGACY: kept only as a stage-1 compatibility fallback.
     implementationPlannerAgent: 'implementation-planner',
-    implementationPlannerMaxTokens: 768,
+    implementationPlannerMaxTokens: 2048,
     implementationPlannerStructuredRetry: 1,
-    implementationPlannerTimeoutMs: 45000,
-    preComplexityTurnLimit: 4,
-    preComplexityAllowedTools: ['prepare_implementation'],
-    preComplexityTransitionTools: ['prepare_implementation'],
+    // Hard maximum, not an expected duration: a healthy planner queued behind other model load must
+    // not be cancelled early. Only a true 15-minute timeout enters PREPARATION_FALLBACK.
+    implementationPlannerTimeoutMs: 900000,
+    // Planner's own read-only evidence cap (hard max 6). Independent of the planner's output
+    // `evidence_budget`, which sizes the main Implementer's window.
+    implementationPlannerEvidenceBudget: 6,
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     boundedDirectBash: true,
-    singleUseTools: ['prepare_implementation'],
     requireLspStartBeforeFindSymbol: true,
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       verificationTool: 'run_check',
       initialEvidenceBudget: 6,
