@@ -278,7 +278,8 @@ function codingPreparedState(prepared) {
 }
 
 function normalizedCodingSessionHandoff(value) {
-  return String(value ?? '').trim().slice(0, CODING_SESSION_HANDOFF_MAX_LENGTH);
+  const trimmed = String(value ?? '').trim();
+  return Array.from(trimmed).slice(0, CODING_SESSION_HANDOFF_MAX_LENGTH).join('').trimEnd();
 }
 
 function codingSessionTask(ctx, handoff, codingTools, env = process.env) {
