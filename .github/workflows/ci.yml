@@ -251,7 +251,8 @@ jobs:
       needs.test.result == 'success' &&
       needs.docker.result == 'success'
     needs: [test, docker]
-    runs-on: [self-hosted, linux, x64, n150, general]
+    # Dedicated persistent control-plane lane; intentionally not n150/general.
+    runs-on: [self-hosted, n150, control]
     timeout-minutes: 2
     steps:
       - name: Checkout trusted control repository
