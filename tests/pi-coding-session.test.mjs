@@ -203,7 +203,7 @@ function runtimeScenario(mode) {
     };
     fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
       ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
-      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort'].includes(mode), reason: 'One lookup' }));
+      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], repositoryFacts: ['Planner fact marker'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort'].includes(mode), reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
@@ -1085,6 +1085,7 @@ function runtimeScenario(mode) {
         assert.match(request.task, /<prepared_implementation>/);
         assert.match(request.task, /<parent_execution_handoff>/);
         assert.match(request.task, /<runtime_state>/);
+        assert.equal(request.task.match(/Planner fact marker/g)?.length, 1, 'prepared repository facts are handed off exactly once');
         assert.doesNotMatch(request.task, /## Startup|Available delegated agents|Repository access routing|PARENT_TRANSCRIPT_ONLY_MARKER/);
         sessionRequests.push({ task: request.task, maxTokens: process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, spec: JSON.parse(process.env.PI_CODING_SESSION) });
         if (mode === 'cancel') { signal.abort(); return; }
