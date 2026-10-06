@@ -63,8 +63,8 @@ issue,297,all,,,,,mixed_or_unknown,,775666,28730,76358,0,880754,3023.5,4428,fals
 issue,298,all,,,,,mixed_or_unknown,,948401,36613,43102,0,1028116,3940.1,5829,false,0,https://github.com/YuriiSokolenko/social-mcp/issues/298,0.0
 issue,455,all,,,,,mixed_or_unknown,,2260774,104094,0,0,2364868,6841.9,13409,false,1,https://github.com/YuriiSokolenko/social-mcp/issues/455,3677.0
 issue,489,all,,,,3,logical,30,41617,942,0,0,42559,1718.8,1834,true,0,https://github.com/YuriiSokolenko/social-mcp/issues/489,0.0
-issue,493,all,,,,21,logical,26,499548,23812,0,0,523360,1439.0,1513,true,0,https://github.com/YuriiSokolenko/social-mcp/issues/493,1001.4
-issue,493,all,,,,5,logical,9,47808,3540,0,0,51348,216.1,294,false,1,https://github.com/YuriiSokolenko/social-mcp/issues/493,218.0
+issue,493,all,,,,26,logical,35,547356,27352,0,0,574708,1655.1,1807,false,1,https://github.com/YuriiSokolenko/social-mcp/issues/493,1219.4
+issue,493,all,,,,1,logical,26,12388,255,0,0,12643,1920.8,2019,true,0,https://github.com/YuriiSokolenko/social-mcp/issues/493,0.0
 attempt,25,implementation,36039015936,1,cancelled,10,legacy_unknown,,19537,2657,89273,0,111467,165.6,266,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36039015936/attempts/1,
 attempt,10,implementation,36093253439,1,success,14,legacy_unknown,,32423,59901,296631,0,388955,7281.5,7339,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093253439/attempts/1,
 attempt,18,implementation,36093256959,1,success,78,legacy_unknown,,61865,30747,2878475,0,2971087,3027.9,3130,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093256959/attempts/1,
@@ -495,3 +495,4 @@ attempt,0,dispatcher,37448594481,1,success,0,logical,0,0,0,0,0,0,0.0,11,true,0,h
 attempt,0,triage,37454795852,1,success,0,logical,0,0,0,0,0,0,0.0,14,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37454795852/attempts/1,0.0
 attempt,0,dispatcher,37454795881,1,success,0,logical,0,0,0,0,0,0,0.0,12,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37454795881/attempts/1,0.0
 attempt,493,implementation,37454817531,1,failure,5,logical,9,47808,3540,0,0,51348,216.1,294,false,1,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37454817531/attempts/1,218.0
+attempt,493,implementation,37456605443,1,cancelled,1,logical,26,12388,255,0,0,12643,1920.8,2019,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37456605443/attempts/1,0.0
