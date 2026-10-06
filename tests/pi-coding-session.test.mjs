@@ -1848,7 +1848,7 @@ function runtimeScenario(mode) {
       const expectError = { cancel: /aborted/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', {
         reason: 'Implement generated.py and its test',
-        handoff: '  Current evidence established REQUIRED_CONSTANT = "abc123".  ',
+        handoff: '  Current evidence established REQUIRED_CONSTANT = "abc123". café 🚀  ',
       }, { expectError });
       if (mode === 'malformed-contract') {
         assert.equal(aborts, 0);
@@ -2042,7 +2042,7 @@ test('2K parent -> begin_coding_session -> isolated 16K coding child writes code
   assert.match(logs, /\[PI\]\[coding\] phase=agent_registered/);
   assert.match(logs, /"phase":"requested".*"parentMaxTokens":2048,"codingMaxTokens":16384/);
   assert.match(logs, /"phase":"started".*"context":"fresh","agent":"implementer-coding-session"/);
-  assert.match(logs, /"phase":"started"[^\n]*"handoffBytes":\d+,"parentHandoffBytes":58/);
+  assert.match(logs, /"phase":"started"[^\n]*"handoffBytes":\d+,"parentHandoffBytes":69/);
   assert.doesNotMatch(logs, /Current evidence established REQUIRED_CONSTANT/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_policy","side":"fork".*"policy":"normal_low_overhead".*"enableThinking":false,"maxTokens":16384/);
