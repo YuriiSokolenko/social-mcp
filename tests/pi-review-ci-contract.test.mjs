@@ -201,6 +201,20 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.doesNotMatch(ci, /contains\(github\.event\.head_commit\.message/);
 });
 
+test('control runner watchdog alerts independently when the post-dev wake queue stalls', () => {
+  const workflow = fs.readFileSync('.github/workflows/control-runner-watch.yml', 'utf8');
+  assert.match(workflow, /cron: '\*\/5 \* \* \* \*'/);
+  assert.match(workflow, /runs-on: ubuntu-latest/);
+  assert.match(workflow, /thresholdMs = 10 \* 60 \* 1000/);
+  assert.match(workflow, /workflow_id: 'ci\.yml'/);
+  assert.match(workflow, /branch: 'dev'/);
+  assert.match(workflow, /event: 'push'/);
+  assert.match(workflow, /status: 'in_progress'/);
+  assert.match(workflow, /job\.name !== 'wake-merge-gate' \|\| job\.status !== 'queued'/);
+  assert.match(workflow, /core\.setFailed/);
+  assert.doesNotMatch(workflow, /runs-on:\s*\[?self-hosted/);
+});
+
 test('dedicated control runner label is reserved for bounded wake orchestration', () => {
   const workflowDir = '.github/workflows';
 
@@ -345,6 +359,49 @@ test('dedicated control runner label is reserved for bounded wake orchestration'
     return specs;
   };
 
+  const jobBlocks = (workflow) => {
+    const lines = workflow.split('\n');
+    const starts = [];
+    let jobsIndent = null;
+    let jobIndent = null;
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const indent = /^(\s*)/.exec(line)[1].length;
+      if (/^\s*jobs:\s*$/.test(line)) {
+        jobsIndent = indent;
+        jobIndent = null;
+        continue;
+      }
+      if (jobsIndent === null || !line.trim() || line.trimStart().startsWith('#')) continue;
+      if (indent <= jobsIndent) {
+        jobsIndent = null;
+        jobIndent = null;
+        continue;
+      }
+      if (jobIndent === null) jobIndent = indent;
+      if (indent !== jobIndent) continue;
+      const match = /^\s*([a-zA-Z_][\w-]*):\s*$/.exec(line);
+      if (match) starts.push({ job: match[1], start: i, indent });
+    }
+
+    const blocks = new Map();
+    for (const item of starts) {
+      let end = lines.length;
+      for (let i = item.start + 1; i < lines.length; i += 1) {
+        const line = lines[i];
+        if (!line.trim() || line.trimStart().startsWith('#')) continue;
+        const indent = /^(\s*)/.exec(line)[1].length;
+        if (indent <= item.indent) {
+          end = i;
+          break;
+        }
+      }
+      blocks.set(item.job, lines.slice(item.start, end).join('\n'));
+    }
+    return blocks;
+  };
+
   const exactLabels = (labels, expected) =>
     labels.length === expected.length && expected.every(label => labels.includes(label));
 
@@ -367,6 +424,7 @@ test('dedicated control runner label is reserved for bounded wake orchestration'
     }
 
     const specs = runsOnSpecs(workflow);
+    const blocks = jobBlocks(workflow);
     for (const spec of specs) {
       assert.equal(
         spec.parsed,
@@ -400,6 +458,14 @@ test('dedicated control runner label is reserved for bounded wake orchestration'
         canMatchControlRunner(spec),
         false,
         `${name} / ${spec.job ?? 'unknown'}: runs-on labels must not be satisfiable by the dedicated control runner`,
+      );
+    }
+
+    for (const [job, block] of blocks) {
+      if (!/workflow-dispatch\.mjs|pi-post-merge\.mjs/.test(block)) continue;
+      assert.ok(
+        controlJobs.has(job),
+        `${name} / ${job}: workflow dispatch/finalization jobs require an explicit control-lane policy entry`,
       );
     }
   };
@@ -439,6 +505,11 @@ test('dedicated control runner label is reserved for bounded wake orchestration'
     /must not be satisfiable/,
     'label matching must be case-insensitive like GitHub',
   );
+
+  const indentedJob = runsOnSpecs(
+    'jobs:\n    heavy:\n        runs-on: [self-hosted, n150, general]',
+  )[0];
+  assert.equal(indentedJob.job, 'heavy', 'job tracking must not depend on exactly two spaces of indentation');
 
   const groupWithComment = runsOnSpecs(
     'jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment',
