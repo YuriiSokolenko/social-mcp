@@ -1345,7 +1345,7 @@ test('implementer action-required aborts keep defensive execution-failure proven
   assert.match(runtime, /tool_choice: 'required'/);
   assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
   assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED/);
-  assert.match(runtime, /failure_class: 'model_execution_abort'/);
+  assert.match(runtime, /runtimeFailureClassForCode\(failureCode\)/);
   assert.match(runtime, /PI_RUNTIME_FAILURE_FILE/);
 
   assert.match(workflow, /PI_RUNTIME_FAILURE_FILE=\$RUNNER_TEMP\/pi-runtime-failure-/);
