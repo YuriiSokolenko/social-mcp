@@ -169,9 +169,9 @@ export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS
 }
 
 // Laguna (llama-server, openai-completions) reasons by default once tools are present, and pi's
-// "off" level sends no reasoning field for this provider's compat. The coding session therefore
-// disables thinking on every provider request itself; chat_template_kwargs.enable_thinking=false
-// is honored by the Laguna chat template (live probe: 0 reasoning chars, immediate tool call).
+// "off" level sends no reasoning field for this provider's compat. Keep creation/follow-up turns
+// explicitly non-thinking, but allow one bounded reasoning decision after each authoritative repair
+// failure. chat_template_kwargs.enable_thinking is honored by the Laguna chat template.
 export function applyCodingThinkingPolicy(payload, {
   phase = 'creation',
   repairReasoningMaxTokens = CODING_REPAIR_REASONING_MAX_TOKENS,
@@ -3349,18 +3349,6 @@ export default function (pi) {
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
-      if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot && codingRepairWindowActive()) {
-        const repairMutation = recordCodingRepairMutation(event.toolName, mutationSnapshot, mutationAfterSnapshot, ctx?.cwd ?? process.cwd());
-        if (repairMutation) {
-          console.info(`PI_CODING_REPAIR_MUTATION ${JSON.stringify({
-            stage,
-            tool: event.toolName,
-            repairKey: codingValidationRepair.key,
-            ...repairMutation,
-            thinkingPhase: codingRepairThinkingPhase(),
-          })}`);
-        }
-      }
       if (!event.isError && mutationChanged !== false) {
         if (invalidateCodingBehavioralValidation(process.env)) {
           console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
@@ -3461,6 +3449,18 @@ export default function (pi) {
               await revertForProvenanceFailure(error);
             }
           }
+        }
+      }
+      if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot && codingRepairWindowActive()) {
+        const repairMutation = recordCodingRepairMutation(event.toolName, mutationSnapshot, mutationAfterSnapshot, ctx?.cwd ?? process.cwd());
+        if (repairMutation) {
+          console.info(`PI_CODING_REPAIR_MUTATION ${JSON.stringify({
+            stage,
+            tool: event.toolName,
+            repairKey: codingValidationRepair.key,
+            ...repairMutation,
+            thinkingPhase: codingRepairThinkingPhase(),
+          })}`);
         }
       }
       pendingMutationSnapshots.delete(event.toolCallId);
