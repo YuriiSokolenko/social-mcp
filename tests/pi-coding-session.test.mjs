@@ -375,17 +375,28 @@ function runtimeScenario(mode) {
           stderr_tail: '',
           truncated: false,
         });
-        const appendRepairFailure = (params, result) => {
+        const repairPass = () => ({
+          status: 'pass',
+          kind: 'pytest',
+          exit_code: 0,
+          duration_ms: 5,
+          summary: '1 passed',
+          diagnostics: [],
+          stdout_tail: '',
+          stderr_tail: '',
+          truncated: false,
+        });
+        const appendRepairRecord = (params, result) => {
           const records = fs.existsSync(process.env.PI_VALIDATION_LEDGER_FILE)
             ? fs.readFileSync(process.env.PI_VALIDATION_LEDGER_FILE, 'utf8').split('\\n').filter(Boolean)
             : [];
           fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
             seq: records.length,
             timestamp: new Date().toISOString(),
-            kind: 'pytest',
-            scope: { targets: params.targets },
-            status: 'fail',
-            exit_code: 1,
+            kind: result.kind,
+            scope: result.kind === 'pytest' ? { targets: params.targets } : { paths: params.paths },
+            status: result.status,
+            exit_code: result.exit_code,
             source: 'run_check',
             stage: 'implementer',
             backend: 'pi',
@@ -397,9 +408,9 @@ function runtimeScenario(mode) {
           }) + '\\n');
         };
         childTools.get('run_check').execute = async (_toolCallId, params) => {
-          if (['repair-evidence', 'repair-nonconvergent'].includes(mode) && params?.kind === 'pytest') {
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset'].includes(mode) && params?.kind === 'pytest') {
             const result = repairFailure('initial');
-            appendRepairFailure(params, result);
+            appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
           if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode) && params?.kind === 'pytest') {
@@ -482,14 +493,39 @@ function runtimeScenario(mode) {
           const event = { toolName: 'retry_last_failed_check', toolCallId: 'repair-retry-' + turn, input: {} };
           const blocked = await childHandlers.get('tool_call')(event, childCtx);
           assert.equal(blocked, undefined, 'exact retry passes the real runtime gate');
-          const result = repairFailure(variant);
-          appendRepairFailure({ targets: ['test_generated.py'] }, result);
+          const result = variant === 'pass' ? repairPass() : repairFailure(variant);
+          appendRepairRecord({ targets: ['test_generated.py'] }, result);
           await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
             content: [{ type: 'text', text: JSON.stringify(result) }],
             details: result,
           } }, childCtx);
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 800 } } }, childCtx);
           return result;
+        };
+        const settleSyntheticDifferentScopePass = async () => {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const event = {
+            toolName: 'run_check',
+            toolCallId: 'different-scope-pass-' + turn,
+            input: { kind: 'python_compile', paths: ['generated.py'] },
+          };
+          const result = {
+            status: 'pass',
+            kind: 'python_compile',
+            exit_code: 0,
+            duration_ms: 2,
+            summary: 'Compiled cleanly',
+            diagnostics: [],
+            stdout_tail: '',
+            stderr_tail: '',
+            truncated: false,
+          };
+          appendRepairRecord({ paths: ['generated.py'] }, result);
+          await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            details: result,
+          } }, childCtx);
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
         };
         if (mode === 'blocked') {
           await childCall('submit_result', { blocked_reason: 'A required behavior conflicts with a stated constraint.' });
