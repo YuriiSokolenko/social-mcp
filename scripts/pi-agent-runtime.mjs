@@ -654,6 +654,11 @@ export default function (pi) {
     return Number(history?.wholeFileRewritesByPath?.[pathname] ?? 0);
   }
 
+  function codingRepairBroadMutationCount(pathname) {
+    const history = codingRepairHistoryForActive();
+    return Number(history?.broadMutationsByPath?.[pathname] ?? 0);
+  }
+
   function codingRepairMutationPolicy(toolName, input, cwd) {
     if (!codingRepairWindowActive() || !CONTENT_MUTATION_TOOLS.has(toolName)) return null;
     const pathname = normalizedCodingRepairPath(input?.path, cwd);
@@ -754,7 +759,7 @@ export default function (pi) {
       path: pathname,
       shape,
       wholeFileRewriteCount: codingRepairWholeRewriteCount(pathname),
-      broadMutationCount: Number(history?.broadMutationsByPath?.[pathname] ?? 0),
+      broadMutationCount: codingRepairBroadMutationCount(pathname),
       targetedMutationCount: Number(history?.targetedMutationsByPath?.[pathname] ?? 0),
     };
   }
@@ -3346,11 +3351,64 @@ export default function (pi) {
       }
     }
 
+    if (
+      contentMutation &&
+      !event.isError &&
+      mutationChanged === true &&
+      mutationSnapshot &&
+      mutationAfterSnapshot &&
+      codingRepairWindowActive()
+    ) {
+      const pathname = normalizedCodingRepairPath(
+        mutationSnapshot.path,
+        pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd(),
+      ) ?? mutationSnapshot.path;
+      const mutationShape = codingRepairMutationShape(event.toolName, mutationSnapshot, mutationAfterSnapshot);
+      const priorBroadMutations = codingRepairBroadMutationCount(pathname);
+      if (
+        (mutationShape === 'whole_file_rewrite' || mutationShape === 'broad_edit') &&
+        priorBroadMutations >= CODING_REPAIR_WHOLE_FILE_REWRITE_LIMIT
+      ) {
+        if (mutationSnapshot.existed) {
+          fs.mkdirSync(path.dirname(mutationSnapshot.absolutePath), { recursive: true });
+          fs.writeFileSync(mutationSnapshot.absolutePath, mutationSnapshot.content);
+          if (mutationSnapshot.mode != null) fs.chmodSync(mutationSnapshot.absolutePath, mutationSnapshot.mode);
+        } else {
+          fs.rmSync(mutationSnapshot.absolutePath, { recursive: false, force: true });
+        }
+        mutationChanged = false;
+        repositoryStateAfter = repositoryStateFingerprint(pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd());
+        pendingMutationSnapshots.delete(event.toolCallId);
+        pendingLoopCalls.delete(event.toolCallId);
+        pendingToolInputs.delete(event.toolCallId);
+        const reason = `Repair already used its bounded broad mutation for ${pathname}. The latest ${mutationShape} was reverted before provenance was committed; refusing repeated near-full regeneration while validation remains red.`;
+        const details = {
+          repair_key: codingValidationRepair.key,
+          path: pathname,
+          mutation_shape: mutationShape,
+          broad_mutation_count: priorBroadMutations,
+          limit: CODING_REPAIR_WHOLE_FILE_REWRITE_LIMIT,
+          checkpoint: { worktree_preserved: true },
+        };
+        recordRuntimeAbort('PI_CODING_REPAIR_BROAD_REWRITE_LIMIT', reason, details);
+        console.error(`PI_CODING_REPAIR_ABORT ${JSON.stringify({
+          stage,
+          code: 'PI_CODING_REPAIR_BROAD_REWRITE_LIMIT',
+          ...details,
+          reason,
+          reverted: true,
+        })}`);
+        await ctx.abort();
+        return;
+      }
+    }
+
     if (contentMutation) {
       console.log(`PI_MUTATION ${JSON.stringify({
         stage,
         tool: event.toolName,
         mode: codingSession ? 'coding_session' : 'direct',
+        codingPhase: codingSession ? codingRepairThinkingPhase() : null,
         path: mutationSnapshot?.path ?? null,
         isError: event.isError === true,
         changed: mutationChanged,
