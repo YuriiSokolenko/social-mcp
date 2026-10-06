@@ -113,6 +113,7 @@ const CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT = 3;
 const CODING_REPAIR_REASONING_MAX_TOKENS = 4096;
 const CODING_REPAIR_BROAD_EDIT_LINE_LIMIT = 80;
 const CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT = 12000;
+const LARGE_MUTATION_ACTION_RETRY_LIMIT = 1;
 // Five non-improving failures leaves room for bounded diagnostic phase changes
 // (for example collection/import -> assertions) without allowing an endless repair loop.
 const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
@@ -962,12 +963,16 @@ export default function (pi) {
     console.error(`PI_CODING_RECOVERY_BLOCKED ${JSON.stringify({ stage, reason, ...details })}`);
     ctx.abort();
   }
-  // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
-  // or terminal submission) it was granted a one-shot elevated mutation budget for.
+  // Tracks whether the active elevated response emitted and successfully completed an allowed
+  // action. Provider forcing happens before the response; these flags decide whether the one-shot
+  // grant is consumed, preserved for the scope prelude, or gets its single bounded action retry.
+  let elevatedTurnObservedActionTool = false;
   let elevatedTurnAttemptedFinishTool = false;
+  let elevatedTurnSuccessfulFinishTool = false;
   let elevatedTurnAttemptedScopePrelude = false;
-  let elevatedTurnAttemptedEvidenceUnlock = false;
+  let elevatedTurnSuccessfulScopePrelude = false;
   let elevatedScopePreludeUsed = false;
+  let largeMutationActionRetryCount = 0;
 
   function validationRunId() {
     return resolveValidationRunId(process.env);
@@ -1215,11 +1220,7 @@ export default function (pi) {
           // UX on top of the controller's own hard gate: while the elevated budget is active,
           // don't even show tools this turn is not allowed to call. Exact terminal recovery
           // verification is a separate one-shot gate and temporarily supersedes this surface.
-          ? elevatedMutationTurnToolNames(unrestrictedActiveTools, {
-              blockerTool: controller.evidenceUnlockAvailable()
-                ? config.productiveProgress.blockerTool
-                : null,
-            })
+          ? elevatedMutationTurnToolNames(unrestrictedActiveTools)
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
@@ -1843,6 +1844,15 @@ export default function (pi) {
             activeTools: executableTools,
           })}`);
         }
+        if (!terminalRecoveryRequiredTool && controller.largeMutationBudgetActive()) {
+          requireToolOnNextProviderRequest = true;
+          console.warn(`PI_LARGE_MUTATION_TOOL_CHOICE_ARMED ${JSON.stringify({
+            stage,
+            request: providerCapabilitySnapshot.request,
+            activeTools: executableTools,
+            maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? patched.max_output_tokens ?? null,
+          })}`);
+        }
         console.log(`PI_PROVIDER_CAPABILITY_SNAPSHOT ${JSON.stringify({ stage, ...providerCapabilitySnapshot })}`);
         if (deferredTools.length) {
           console.warn(`PI_PROVIDER_CAPABILITY_DEFERRED ${JSON.stringify({
@@ -1876,7 +1886,12 @@ export default function (pi) {
           codingRepairProviderRequestInFlight &&
           codingRepairProviderRequestInFlight.request === providerCapabilitySnapshot?.request
         );
-        if (!repairActionForced && productiveState !== 'action_required') {
+        const largeMutationActionForced = Boolean(
+          stage === 'implementer' &&
+          controller.largeMutationBudgetActive() &&
+          providerCapabilitySnapshot?.request != null
+        );
+        if (!repairActionForced && !largeMutationActionForced && productiveState !== 'action_required') {
           requireToolOnNextProviderRequest = false;
           console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
         } else {
@@ -1888,6 +1903,13 @@ export default function (pi) {
               request: codingRepairProviderRequestInFlight.request,
             })}`);
           }
+          if (largeMutationActionForced && productiveState !== 'action_required') {
+            console.warn(`PI_LARGE_MUTATION_FORCE_STATE_DRIFT ${JSON.stringify({
+              stage,
+              productiveState,
+              request: providerCapabilitySnapshot?.request ?? null,
+            })}`);
+          }
           const constrained = requireToolChoiceInPayload(patched);
           if (constrained !== patched) {
             forcedProviderRequestInFlight = true;
@@ -1896,7 +1918,7 @@ export default function (pi) {
               mode: 'required',
               request: providerCapabilitySnapshot?.request ?? null,
               activeTools: providerCapabilitySnapshot?.executableTools ?? pi.getActiveTools(),
-              source: repairActionForced ? 'coding_repair' : 'productive_action',
+              source: repairActionForced ? 'coding_repair' : largeMutationActionForced ? 'large_mutation' : 'productive_action',
             })}`);
             patched = constrained;
           }
@@ -2874,9 +2896,11 @@ export default function (pi) {
     actionTurnAttemptedTool = false;
     unavailableCapabilityAttemptedThisTurn = false;
     unavailableCapabilityKindThisTurn = null;
+    elevatedTurnObservedActionTool = false;
     elevatedTurnAttemptedFinishTool = false;
+    elevatedTurnSuccessfulFinishTool = false;
     elevatedTurnAttemptedScopePrelude = false;
-    elevatedTurnAttemptedEvidenceUnlock = false;
+    elevatedTurnSuccessfulScopePrelude = false;
     loopGuardSteeredThisTurn = false;
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
@@ -2900,6 +2924,12 @@ export default function (pi) {
     const productiveState = controller.productiveProgressState();
     const activeToolNames = pi.getActiveTools();
     const largeMutationActiveAtCall = controller.largeMutationBudgetActive();
+    if (
+      largeMutationActiveAtCall &&
+      (FINISH_TOOLS.has(event.toolName) || event.toolName === ACCEPT_MUTATION_SCOPE_TOOL)
+    ) {
+      elevatedTurnObservedActionTool = true;
+    }
     const transitionKey = controller.transitions.keyFor(event.toolName, event.input);
     const alreadySatisfiedTransition = controller.transitions.has(transitionKey);
 
@@ -3176,9 +3206,6 @@ export default function (pi) {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
-    if (largeMutationActiveAtCall && event.toolName === config.productiveProgress?.blockerTool) {
-      elevatedTurnAttemptedEvidenceUnlock = true;
-    }
     if (event.toolName === ACCEPT_MUTATION_SCOPE_TOOL) {
       elevatedTurnAttemptedScopePrelude = true;
       if (controller.largeMutationBudgetActive()) elevatedScopePreludeUsed = true;
@@ -3567,6 +3594,13 @@ export default function (pi) {
     }
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
+    if (stage === 'implementer' && controller.largeMutationBudgetActive() && !event.isError) {
+      if (event.toolName === ACCEPT_MUTATION_SCOPE_TOOL) {
+        elevatedTurnSuccessfulScopePrelude = true;
+      } else if (FINISH_TOOLS.has(event.toolName) && effectiveProgress) {
+        elevatedTurnSuccessfulFinishTool = true;
+      }
+    }
     const canonicalToolName = controllerToolName(event.toolName);
     if (stage === 'implementer' && canonicalToolName === 'bash') {
       const bashValidationFingerprintAfter = repositoryStateFingerprint(ctx?.cwd ?? process.cwd());
@@ -3821,6 +3855,60 @@ export default function (pi) {
       return undefined;
     }
 
+    if (event.message?.stopReason === 'error' && stage === 'implementer' && controller.largeMutationBudgetActive()) {
+      if (retryableProviderErrorStatus(status)) {
+        largeMutationActionRetryCount += 1;
+        if (largeMutationActionRetryCount > LARGE_MUTATION_ACTION_RETRY_LIMIT) {
+          const reason = `retryable provider failure persisted after ${LARGE_MUTATION_ACTION_RETRY_LIMIT} bounded elevated retry`;
+          controller.resetLargeMutationBudget();
+          elevatedScopePreludeUsed = false;
+          recordRuntimeAbort('PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED', reason, {
+            status,
+            retries: largeMutationActionRetryCount,
+            retry_limit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+            checkpoint: { worktree_preserved: true },
+          });
+          console.error(`PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED ${JSON.stringify({
+            stage,
+            status,
+            retries: largeMutationActionRetryCount,
+            retryLimit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+            checkpoint: { worktree_preserved: true },
+          })}`);
+          largeMutationActionRetryCount = 0;
+          ctx.abort();
+          return undefined;
+        }
+        requireToolOnNextProviderRequest = true;
+        console.warn(`PI_LARGE_MUTATION_PROVIDER_RETRY ${JSON.stringify({
+          stage,
+          status,
+          retry: largeMutationActionRetryCount,
+          retryLimit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+          checkpoint: { worktree_preserved: true },
+        })}`);
+        return undefined;
+      }
+      const reason = status
+        ? `provider rejected required large-mutation action request with status ${status}`
+        : 'provider rejected required large-mutation action request';
+      controller.resetLargeMutationBudget();
+      elevatedScopePreludeUsed = false;
+      largeMutationActionRetryCount = 0;
+      recordRuntimeAbort('PI_LARGE_MUTATION_ACTION_FORCE_FAILED', reason, {
+        status,
+        checkpoint: { worktree_preserved: true },
+      });
+      console.error(`PI_LARGE_MUTATION_ACTION_FORCE_FAILED ${JSON.stringify({
+        stage,
+        status,
+        reason,
+        checkpoint: { worktree_preserved: true },
+      })}`);
+      ctx.abort();
+      return undefined;
+    }
+
     // Pi 0.79.4 surfaces provider 4xx failures as assistant error turns; its
     // after_provider_response hook is not emitted on this path. An error turn is transport
     // failure, not model prose, so it must not consume the prose/ceiling watchdogs.
@@ -3895,54 +3983,103 @@ export default function (pi) {
       }
     }
 
-    // Scope acceptance may be the necessary first call before a large new-file mutation.
-    // Preserve the one-shot elevated budget across that declaration-only turn; consume it only
-    // after a real mutation/rollback/terminal action, or collapse it on unrelated/no-action use.
+    // The elevated request is action-forced before it reaches the provider. A successful
+    // mutation/terminal action consumes the one-shot grant. A successful scope declaration may
+    // preserve it once for the actual new-file write. An allowed action that fails locally, or
+    // a ceiling/length response whose tool JSON may have been truncated before tool_call, gets
+    // one bounded elevated retry. Genuine completed prose/no-action still fails closed immediately.
     let preserveElevatedAfterScopePrelude = false;
+    let preserveElevatedAfterFailedAction = false;
+    const elevatedResponseHitCeiling = Boolean(
+      event.message?.stopReason === 'length' || responseHitOutputCeiling
+    );
     if (stage === 'implementer' && controller.largeMutationBudgetActive()) {
-      const evidenceYield = elevatedTurnAttemptedEvidenceUnlock
-        ? controller.yieldLargeMutationBudgetForEvidence()
-        : { yielded: false, rearmed: false };
-      if (evidenceYield.yielded) {
-        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
-          stage,
-          phase: 'yielded_for_evidence',
-          ...evidenceYield,
-          outputTokens,
-        })}`);
-        elevatedScopePreludeUsed = false;
-        syncActionToolSurface(productiveState);
-      } else if (elevatedTurnAttemptedFinishTool) {
+      if (elevatedTurnSuccessfulFinishTool) {
         console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
           stage,
           phase: 'consumed',
-          attemptedFinishTool: true,
+          attemptedFinishTool: elevatedTurnAttemptedFinishTool,
+          successfulFinishTool: true,
           scopePrelude: elevatedTurnAttemptedScopePrelude,
           outputTokens,
         })}`);
         controller.resetLargeMutationBudget();
         elevatedScopePreludeUsed = false;
+        largeMutationActionRetryCount = 0;
         syncActionToolSurface(productiveState);
-      } else if (elevatedTurnAttemptedScopePrelude) {
+      } else if (elevatedTurnSuccessfulScopePrelude) {
         preserveElevatedAfterScopePrelude = true;
+        largeMutationActionRetryCount = 0;
         console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
           stage,
           phase: 'scope_prelude',
           preserved: true,
           outputTokens,
         })}`);
-      } else {
-        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+      } else if (elevatedTurnObservedActionTool || elevatedResponseHitCeiling) {
+        const retryReason = elevatedTurnObservedActionTool
+          ? 'allowed_action_failed'
+          : 'output_ceiling_without_tool_call';
+        largeMutationActionRetryCount += 1;
+        if (largeMutationActionRetryCount > LARGE_MUTATION_ACTION_RETRY_LIMIT) {
+          const reason = elevatedTurnObservedActionTool
+            ? `large-mutation action failed to execute after ${LARGE_MUTATION_ACTION_RETRY_LIMIT} bounded retry`
+            : `large-mutation output hit the elevated ceiling without an executable tool call after ${LARGE_MUTATION_ACTION_RETRY_LIMIT} bounded retry`;
+          const failureCode = elevatedTurnObservedActionTool
+            ? 'PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED'
+            : 'PI_LARGE_MUTATION_TRUNCATION_RETRY_EXHAUSTED';
+          controller.resetLargeMutationBudget();
+          elevatedScopePreludeUsed = false;
+          recordRuntimeAbort(failureCode, reason, {
+            retries: largeMutationActionRetryCount,
+            retry_limit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+            retry_reason: retryReason,
+            checkpoint: { worktree_preserved: true },
+          });
+          console.error(`${failureCode} ${JSON.stringify({
+            stage,
+            retries: largeMutationActionRetryCount,
+            retryLimit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+            retryReason,
+            checkpoint: { worktree_preserved: true },
+          })}`);
+          largeMutationActionRetryCount = 0;
+          ctx.abort();
+          return;
+        }
+        preserveElevatedAfterFailedAction = true;
+        requireToolOnNextProviderRequest = true;
+        console.warn(`PI_LARGE_MUTATION_ACTION_RETRY ${JSON.stringify({
           stage,
-          phase: 'consumed',
-          attemptedFinishTool: false,
-          scopePrelude: false,
+          retry: largeMutationActionRetryCount,
+          retryLimit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+          retryReason,
           outputTokens,
+          checkpoint: { worktree_preserved: true },
         })}`);
-        console.warn('PI_LARGE_MUTATION_BUDGET_VIOLATION: elevated mutation response attempted no accept_mutation_scope/structural_edit/safe_edit/edit/write/rollback_last_mutation/submit_result; collapsing to the normal budget');
+        await pi.sendUserMessage(
+          elevatedTurnObservedActionTool
+            ? 'RUNTIME LARGE MUTATION RETRY: the required elevated action did not execute successfully. Do not read, inspect, or explain. In the next response call one exposed mutation, scope, rollback, or terminal tool immediately; provider-level tool choice remains required.'
+            : 'RUNTIME LARGE MUTATION RETRY: the elevated response hit its output ceiling before an executable tool call reached the runtime; tool arguments may have been truncated. Do not repeat reasoning or prose. Retry the intended exposed mutation/scope/rollback/terminal action once under the same required-tool 16K grant.',
+          { deliverAs: 'steer' },
+        );
+      } else {
+        const reason = 'elevated large-mutation provider response completed without an allowed tool call';
         controller.resetLargeMutationBudget();
         elevatedScopePreludeUsed = false;
-        syncActionToolSurface(productiveState);
+        largeMutationActionRetryCount = 0;
+        recordRuntimeAbort('PI_LARGE_MUTATION_ACTION_REQUIRED', reason, {
+          output_tokens: outputTokens,
+          checkpoint: { worktree_preserved: true },
+        });
+        console.error(`PI_LARGE_MUTATION_ACTION_REQUIRED ${JSON.stringify({
+          stage,
+          outputTokens,
+          reason,
+          checkpoint: { worktree_preserved: true },
+        })}`);
+        ctx.abort();
+        return;
       }
     }
 
@@ -4068,14 +4205,17 @@ export default function (pi) {
     // apply the elevated ceiling to exactly the upcoming response.
     const largeMutationBudgetGrantedThisTurn =
       stage === 'implementer' && controller.largeMutationBudgetPending();
-    if (preserveElevatedAfterScopePrelude) {
+    if (preserveElevatedAfterScopePrelude || preserveElevatedAfterFailedAction) {
       targetActionCap = controller.largeMutationBudgetMaxTokens;
-      budgetReason = 'large_mutation_scope_prelude';
+      budgetReason = preserveElevatedAfterScopePrelude
+        ? 'large_mutation_scope_prelude'
+        : 'large_mutation_action_retry';
     } else if (largeMutationBudgetGrantedThisTurn) {
       targetActionCap = controller.largeMutationBudgetMaxTokens;
       budgetReason = 'large_mutation_elevated';
       controller.activateLargeMutationBudget();
       elevatedScopePreludeUsed = false;
+      largeMutationActionRetryCount = 0;
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({ stage, phase: 'granted', maxTokens: targetActionCap })}`);
     }
 

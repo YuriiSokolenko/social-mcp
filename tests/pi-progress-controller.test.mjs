@@ -656,7 +656,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs', './scripts/pi-planner-evidence.mjs']);
 });
 
-test('runtime preserves a large mutation budget through scope declaration, then consumes it on the real finish action', () => {
+test('runtime action-forces the elevated large-mutation request and preserves only bounded resolution paths', () => {
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   assert.match(runtime, /elevatedMutationTurnToolNames/);
@@ -666,24 +666,35 @@ test('runtime preserves a large mutation budget through scope declaration, then 
   assert.match(runtime, /controller\.activateLargeMutationBudget\(\)/);
   assert.match(runtime, /controller\.largeMutationBudgetActive\(\)/);
   assert.match(runtime, /controller\.resetLargeMutationBudget\(\)/);
+  assert.match(runtime, /LARGE_MUTATION_ACTION_RETRY_LIMIT = 1/);
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET/);
-  assert.match(runtime, /PI_LARGE_MUTATION_BUDGET_VIOLATION/);
-  assert.match(runtime, /elevatedTurnAttemptedFinishTool/);
-  assert.match(runtime, /elevatedTurnAttemptedScopePrelude/);
+  assert.match(runtime, /PI_LARGE_MUTATION_TOOL_CHOICE_ARMED/);
+  assert.match(runtime, /source: repairActionForced \? 'coding_repair' : largeMutationActionForced \? 'large_mutation'/);
+  assert.match(runtime, /PI_LARGE_MUTATION_ACTION_REQUIRED/);
+  assert.match(runtime, /PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED/);
+  assert.match(runtime, /PI_LARGE_MUTATION_TRUNCATION_RETRY_EXHAUSTED/);
+  assert.match(runtime, /PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED/);
+  assert.doesNotMatch(runtime, /PI_LARGE_MUTATION_BUDGET_VIOLATION/);
+  assert.doesNotMatch(runtime, /elevatedTurnAttemptedEvidenceUnlock/);
+  assert.match(runtime, /elevatedTurnSuccessfulFinishTool/);
+  assert.match(runtime, /elevatedTurnSuccessfulScopePrelude/);
   assert.match(runtime, /phase: 'scope_prelude'/);
-  assert.match(runtime, /budgetReason = 'large_mutation_scope_prelude'/);
-  // Tool-surface restriction during the elevated turn is UX on top of the controller's own
-  // hard gate; the finish-tool attempt marker must only be set for a call the controller
-  // actually let through, never for one it blocked.
-  assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
-  assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
+  assert.match(runtime, /'large_mutation_scope_prelude'/);
+  // The provider-visible surface is mutation/scope/terminal-only while the elevated grant is
+  // active, and provider-level forcing is applied before model output can spend the 16K ceiling.
+  assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools\)/);
+  assert.match(runtime, /controller\.largeMutationBudgetActive\(\)[\s\S]*PI_LARGE_MUTATION_TOOL_CHOICE_ARMED[\s\S]*requireToolChoiceInPayload\(patched\)/);
+  // Consumption is based on successful execution, not merely emitting a finish-tool call.
+  assert.match(runtime, /if \(elevatedTurnSuccessfulFinishTool\)[\s\S]*controller\.resetLargeMutationBudget\(\)[\s\S]*else if \(elevatedTurnSuccessfulScopePrelude\)/);
+  assert.match(runtime, /elevatedResponseHitCeiling[\s\S]*else if \(elevatedTurnObservedActionTool \|\| elevatedResponseHitCeiling\)[\s\S]*PI_LARGE_MUTATION_ACTION_RETRY/);
+  assert.match(runtime, /retryableProviderErrorStatus\(status\)[\s\S]*largeMutationActionRetryCount \+= 1[\s\S]*PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED/);
   assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput[\s\S]*strictBlockerEvidence: consumedEvidence\?\.tool === canonicalToolName/);
   const blockedReturn = runtime.indexOf('return blocked;');
   const evidenceNotice = runtime.indexOf('const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice()', blockedReturn);
   const finishAttempt = runtime.indexOf('if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;', evidenceNotice);
   assert.ok(
     blockedReturn >= 0 && evidenceNotice > blockedReturn && finishAttempt > evidenceNotice,
-    'finish-tool attempt accounting happens only after blocked calls return and evidence ownership is captured',
+    'finish-tool attempt accounting happens only after controller-blocked calls return',
   );
   assert.match(planner, /evidence_budget/);
 });
