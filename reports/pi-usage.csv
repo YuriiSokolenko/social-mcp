@@ -62,6 +62,7 @@ issue,296,all,,,,,mixed_or_unknown,,191040,11629,49895,0,252564,1411.1,6581,fals
 issue,297,all,,,,,mixed_or_unknown,,775666,28730,76358,0,880754,3023.5,4428,false,0,https://github.com/YuriiSokolenko/social-mcp/issues/297,0.0
 issue,298,all,,,,,mixed_or_unknown,,948401,36613,43102,0,1028116,3940.1,5829,false,0,https://github.com/YuriiSokolenko/social-mcp/issues/298,0.0
 issue,455,all,,,,,mixed_or_unknown,,2260774,104094,0,0,2364868,6841.9,13409,false,1,https://github.com/YuriiSokolenko/social-mcp/issues/455,3677.0
+issue,489,all,,,,3,logical,30,41617,942,0,0,42559,1718.8,1834,true,0,https://github.com/YuriiSokolenko/social-mcp/issues/489,0.0
 attempt,25,implementation,36039015936,1,cancelled,10,legacy_unknown,,19537,2657,89273,0,111467,165.6,266,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36039015936/attempts/1,
 attempt,10,implementation,36093253439,1,success,14,legacy_unknown,,32423,59901,296631,0,388955,7281.5,7339,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093253439/attempts/1,
 attempt,18,implementation,36093256959,1,success,78,legacy_unknown,,61865,30747,2878475,0,2971087,3027.9,3130,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093256959/attempts/1,
@@ -481,3 +482,4 @@ attempt,0,triage,37426645077,1,success,0,logical,0,0,0,0,0,0,0.0,13,true,0,https
 attempt,0,dispatcher,37426645126,1,success,0,logical,0,0,0,0,0,0,0.0,12,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37426645126/attempts/1,0.0
 attempt,0,dispatcher,37426678098,1,success,0,logical,0,0,0,0,0,0,0.0,13,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37426678098/attempts/1,0.0
 attempt,0,triage,37426678183,1,success,0,logical,0,0,0,0,0,0,0.0,14,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37426678183/attempts/1,0.0
+attempt,489,implementation,37427519240,1,cancelled,3,logical,30,41617,942,0,0,42559,1718.8,1834,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37427519240/attempts/1,0.0
