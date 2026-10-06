@@ -359,22 +359,30 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'nested executor unavailable', usage: { input: 50, output: 5, totalTokens: 55 } });
         }
         // Executors stubbed; the runtime's gates around them are real.
-        const repairFailure = variant => ({
-          status: 'fail',
-          kind: 'pytest',
-          exit_code: 1,
-          duration_ms: 7,
-          summary: variant === 'shrunk' ? '1 failed' : '2 failed',
-          diagnostics: variant === 'shrunk'
-            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
-            : [
-                { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
-                { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
-              ],
-          stdout_tail: '',
-          stderr_tail: '',
-          truncated: false,
-        });
+        const repairFailure = variant => {
+          const volatile = variant === 'volatile-a' || variant === 'volatile-b';
+          const volatileMessage = variant === 'volatile-b'
+            ? 'test_constant: mismatch at /tmp/pytest-987/result.txt after 84.75ms address 0xdeadbeef'
+            : 'test_constant: mismatch at /tmp/pytest-123/result.txt after 12.50ms address 0xabc123';
+          return {
+            status: 'fail',
+            kind: 'pytest',
+            exit_code: 1,
+            duration_ms: 7,
+            summary: variant === 'shrunk' || volatile ? '1 failed' : '2 failed',
+            diagnostics: volatile
+              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+              : variant === 'shrunk'
+                ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
+                : [
+                    { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
+                    { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
+                  ],
+            stdout_tail: '',
+            stderr_tail: '',
+            truncated: false,
+          };
+        };
         const repairPass = () => ({
           status: 'pass',
           kind: 'pytest',
@@ -408,8 +416,8 @@ function runtimeScenario(mode) {
           }) + '\\n');
         };
         childTools.get('run_check').execute = async (_toolCallId, params) => {
-          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset'].includes(mode) && params?.kind === 'pytest') {
-            const result = repairFailure('initial');
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message'].includes(mode) && params?.kind === 'pytest') {
+            const result = repairFailure(mode === 'repair-volatile-message' ? 'volatile-a' : 'initial');
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
