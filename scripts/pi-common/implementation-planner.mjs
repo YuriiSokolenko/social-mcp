@@ -414,7 +414,7 @@ export function plannerTask(env = process.env, {
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
 STRUCTURED_OUTPUT SERIALIZATION CONTRACT — read before repository evidence. This is a shape example only; replace the sample content with the real plan and pass this object directly as the arguments to structured_output:
-{ "value": { "steps": ["Update the target module.", "Add focused tests."], "facts": ["The target follows the existing repository convention."], "complexity": "nontrivial", "evidence_budget": 0, "large_mutation": false, "reason": "The target and repository conventions are already resolved." } }
+{ "value": { "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."], "facts": ["Both implementation targets are new files."], "complexity": "nontrivial", "evidence_budget": 0, "large_mutation": false, "reason": "Both mutation targets are new files, so no current-file anchor is needed." } }
 Never add a second value wrapper such as { "value": { "value": { ... } } }. Never omit the outer value. Never stringify the payload as { "value": "{...}" }.
 
 MANDATORY COMPLETION: a successful attempt ends only by calling structured_output. Never finish a planner attempt with prose. After the final evidence result, call structured_output immediately in the same provider lifecycle instead of spending a reasoning-only turn.
