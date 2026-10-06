@@ -359,7 +359,49 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'nested executor unavailable', usage: { input: 50, output: 5, totalTokens: 55 } });
         }
         // Executors stubbed; the runtime's gates around them are real.
+        const repairFailure = variant => ({
+          status: 'fail',
+          kind: 'pytest',
+          exit_code: 1,
+          duration_ms: 7,
+          summary: variant === 'shrunk' ? '1 failed' : '2 failed',
+          diagnostics: variant === 'shrunk'
+            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected public behavior after repair' }]
+            : [
+                { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
+                { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
+              ],
+          stdout_tail: '',
+          stderr_tail: '',
+          truncated: false,
+        });
+        const appendRepairFailure = (params, result) => {
+          const records = fs.existsSync(process.env.PI_VALIDATION_LEDGER_FILE)
+            ? fs.readFileSync(process.env.PI_VALIDATION_LEDGER_FILE, 'utf8').split('\\n').filter(Boolean)
+            : [];
+          fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
+            seq: records.length,
+            timestamp: new Date().toISOString(),
+            kind: 'pytest',
+            scope: { targets: params.targets },
+            status: 'fail',
+            exit_code: 1,
+            source: 'run_check',
+            stage: 'implementer',
+            backend: 'pi',
+            run_id: process.env.PI_VALIDATION_RUN_ID,
+            attempt_id: 'primary',
+            diagnostics_count: result.diagnostics.length,
+            summary: result.summary,
+            infrastructure: null,
+          }) + '\\n');
+        };
         childTools.get('run_check').execute = async (_toolCallId, params) => {
+          if (['repair-evidence', 'repair-nonconvergent'].includes(mode) && params?.kind === 'pytest') {
+            const result = repairFailure('initial');
+            appendRepairFailure(params, result);
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+          }
           if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode) && params?.kind === 'pytest') {
             fs.appendFileSync(process.env.PI_VALIDATION_LEDGER_FILE, JSON.stringify({
               seq: 0,
