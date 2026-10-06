@@ -290,7 +290,11 @@ function runtimeScenario(mode) {
         assert.deepEqual(definition.extensions, [controlScripts + '/pi-bash-timeout.mjs', controlScripts + '/pi-agent-runtime.mjs', controlScripts + '/pi-implementer-result-tool.mjs']);
         const inherited = fs.readFileSync(sessionFile, 'utf8').trim().split('\\n').map(line => JSON.parse(line));
         const childTools = new Map(); const childHandlers = new Map();
-        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (mode !== 'tool-contract') throw new Error('fork aborted'); },
+        let childAborts = 0;
+        const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
+          if (!['tool-contract', 'repair-nonconvergent'].includes(mode)) throw new Error('fork aborted');
+          childAborts += 1;
+        },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
