@@ -722,7 +722,7 @@ ${provenance}${layoutGuidance(prepared.layoutHint, { authoritative: 'This curren
   }
   const numberedPlan = prepared.plan.map((step, index) => `${index + 1}. ${step}`).join('\n');
   const repositoryFacts = Array.isArray(prepared.repositoryFacts) && prepared.repositoryFacts.length > 0
-    ? `\nRepository facts already established by planner:\n${prepared.repositoryFacts.map(fact => `- ${fact}`).join('\n')}\n`
+    ? `\nRepository facts already established by planner (treat these as completed discovery; do not re-read their source files unless a current mutation anchor is explicitly required or new evidence shows a fact is stale):\n${prepared.repositoryFacts.map(fact => `- ${fact}`).join('\n')}\n`
     : '\n';
   return `Runtime-prepared implementation state:
 Implementation plan:

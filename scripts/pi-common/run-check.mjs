@@ -35,7 +35,7 @@ const PREFLIGHT_TIMEOUT_MS = 15000;
 // Versioned producer/executor handshake. Preflight must prove that the deployed trusted executor
 // accepts exactly this request-side environment vocabulary before any model work begins.
 export const RUN_CHECK_ENV_CONTRACT = Object.freeze({
-  version: 1,
+  version: 2,
   keys: Object.freeze([
     'HOME',
     'LANG',

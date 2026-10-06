@@ -344,10 +344,11 @@ test('sandboxPreflight succeeds through the real sandbox on this platform', { sk
   assert.equal(result.ok, true, result.summary);
 });
 
-test('Pi runtime preflights the sandbox at session start and fails the stage before any agent turn', { skip: process.platform !== 'linux' }, () => {
+test('Pi runtime fail-closes the stage when session_start preflight fails instead of swallowing the extension error', { skip: process.platform !== 'linux' }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-preflight-runtime-'));
   try {
     const issueContext = path.join(dir, 'issue.json');
+    const failureFile = path.join(dir, 'runtime-failure.json');
     const loader = path.join(dir, 'loader.mjs');
     fs.writeFileSync(issueContext, JSON.stringify({ title: 'test', body: 'test' }));
     // `typebox` is stubbed: only the session_start wiring is exercised here.
@@ -364,6 +365,7 @@ test('Pi runtime preflights the sandbox at session start and fails the stage bef
       import assert from 'node:assert/strict';
       const handlers = new Map();
       let modelSet = false;
+      let aborted = false;
       const pi = {
         on: (name, handler) => handlers.set(name, handler),
         registerTool: () => {},
@@ -374,11 +376,16 @@ test('Pi runtime preflights the sandbox at session start and fails the stage bef
       };
       const { default: extension } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
       extension(pi);
-      await assert.rejects(
-        handlers.get('session_start')({}, { model: { provider: 'test', id: 'model', maxTokens: 32000 }, cwd: process.cwd() }),
-        /run_check sandbox preflight failed: INFRASTRUCTURE ERROR: trusted run_check executor identity is unavailable/,
-      );
+      await handlers.get('session_start')({}, { model: { provider: 'test', id: 'model', maxTokens: 32000 }, cwd: process.cwd(), abort: async () => { aborted = true; } });
+      assert.equal(aborted, true, 'session_start explicitly aborts the Pi stage');
       assert.equal(modelSet, false, 'no agent budget/model work may start after a failed preflight');
+      const blocked = handlers.get('before_provider_request')({ payload: { tools: [{ function: { name: 'write' } }] } });
+      assert.deepEqual(blocked.tools, [], 'defensive request gate exposes no actionable tools');
+      assert.equal(blocked.tool_choice, 'none');
+      const failure = JSON.parse((await import('node:fs')).readFileSync(${JSON.stringify(failureFile)}, 'utf8'));
+      assert.equal(failure.failure_class, 'infrastructure');
+      assert.equal(failure.failure_code, 'PI_RUN_CHECK_PREFLIGHT_FAILED');
+      assert.match(failure.reason, /run_check sandbox preflight failed: INFRASTRUCTURE ERROR:/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url).pathname,
@@ -389,6 +396,7 @@ test('Pi runtime preflights the sandbox at session start and fails the stage bef
         PI_STAGE: 'implementer',
         PI_ISSUE: '1',
         PI_ISSUE_CONTEXT: issueContext,
+        PI_RUNTIME_FAILURE_FILE: failureFile,
         GITHUB_WORKSPACE: new URL('..', import.meta.url).pathname,
       },
     });
@@ -559,7 +567,7 @@ test('infrastructure errors are a distinct status and no shell fallback exists i
   assert.doesNotMatch(core, /['"`](?:\/bin\/)?(?:ba|z|da)?sh['"`]|bash -c|shell:\s*true/);
   const runtime = fs.readFileSync(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url), 'utf8');
   assert.match(runtime, /status: pass\|fail\|timeout\|invalid\|infra_error/);
-  assert.match(runtime, /if \(config\.productiveProgress\?\.verificationTool === 'run_check'\) await preflightRunCheckSandbox\(\);/);
+  assert.match(runtime, /if \(config\.productiveProgress\?\.verificationTool === 'run_check'\) \{[\s\S]*?await preflightRunCheckSandbox\(\);/);
   // Preflight must run before the response budget/model work of the session starts.
   assert.ok(runtime.indexOf('await preflightRunCheckSandbox();') < runtime.indexOf("await applyBudget('short', ctx);"));
 });

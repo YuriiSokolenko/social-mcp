@@ -167,6 +167,19 @@ export async function runPiStage(spec, { workspace }) {
   await rawDone;
   const filterCode = await filterCodePromise;
 
+  const runtimeFailureFile = String(spec.environment.PI_RUNTIME_FAILURE_FILE ?? '').trim();
+  if (runtimeFailureFile && fs.existsSync(runtimeFailureFile)) {
+    let failure = null;
+    try {
+      failure = JSON.parse(fs.readFileSync(runtimeFailureFile, 'utf8'));
+    } catch (error) {
+      console.warn(`PI_RUNTIME_FAILURE_METADATA_INVALID ${JSON.stringify({ error: String(error?.message ?? error) })}`);
+    }
+    if (failure?.failure_code === 'PI_RUN_CHECK_PREFLIGHT_FAILED') {
+      throw new Error(`${failure.failure_code}: ${failure.reason ?? failure.diagnostic ?? 'run_check preflight failed'}`);
+    }
+  }
+
   if (piCode !== 0) throw new Error(`Pi stage ${spec.stage} failed with exit code ${piCode}`);
   if (filterCode !== 0) throw new Error(`Pi log filter failed with exit code ${filterCode}`);
   if (!fs.existsSync(spec.artifacts.terminalResultPath) || !fs.statSync(spec.artifacts.terminalResultPath).size) {

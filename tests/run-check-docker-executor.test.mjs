@@ -40,6 +40,11 @@ test('#481 producer and trusted executor share one versioned environment contrac
     () => assertCheckEnvironmentContract({ version: RUN_CHECK_ENV_CONTRACT.version, keys: RUN_CHECK_ENV_CONTRACT.keys.filter(key => key !== 'PI_TRUSTED_ACCEPTANCE_TARGETS') }),
     error => error.code === 'CHECK_ENV_CONTRACT',
   );
+  assert.throws(
+    () => assertCheckEnvironmentContract({ version: RUN_CHECK_ENV_CONTRACT.version - 1, keys: RUN_CHECK_ENV_CONTRACT.keys }),
+    error => error.code === 'CHECK_ENV_CONTRACT',
+    'a stale executor with the previous contract version is rejected even if it has the same keys',
+  );
 
   let captured = null;
   const result = await sandboxPreflight({
@@ -71,11 +76,16 @@ test('#481 Docker preflight fails closed when a stale executor does not echo the
     timeoutMs: 1000,
   };
 
-  globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, duration_ms: 1 }), { status: 200 });
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ok: true,
+    duration_ms: 1,
+    environment_contract: { version: RUN_CHECK_ENV_CONTRACT.version - 1, keys: RUN_CHECK_ENV_CONTRACT.keys },
+  }), { status: 200 });
   const stale = await backend.preflight(args);
   assert.equal(stale.ok, false);
   assert.equal(stale.status, 'infra_error');
   assert.equal(stale.infrastructure.code, 'CHECK_ENV_CONTRACT');
+  assert.match(stale.summary, /environment contract does not match the runtime/);
 
   globalThis.fetch = async (_url, options) => {
     const body = JSON.parse(options.body);

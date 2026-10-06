@@ -71,6 +71,9 @@ test('the prepared block carries only the normalized result, with provenance and
   assert.match(block, /origin\/dev at deadbeef/);
   assert.match(block, /LSP workspace root: \/work\/tree/);
   assert.doesNotMatch(block, /prepare_implementation|structured_output|REPAIR|usage|plannerDurationMs/);
+  const factsBlock = preparedImplementationBlock({ ...prepared, repositoryFacts: ['The nearest smoke test uses the shared fixture helper.'] });
+  assert.match(factsBlock, /treat these as completed discovery; do not re-read their source files/);
+  assert.match(factsBlock, /The nearest smoke test uses the shared fixture helper/);
   assert.match(preparedImplementationBlock({ ...prepared, largeMutation: true }, { largeMutationArmed: true }), /auto-arm one-shot elevated mutation budget/);
 });
 

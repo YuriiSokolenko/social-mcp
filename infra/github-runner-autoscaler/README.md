@@ -146,7 +146,7 @@ image names, commands, or mount paths from the caller.
 Build the manager, Pi worker, general worker, dedicated control runner, and separate check sandbox first:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.6 .
+docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.7 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.6 .
@@ -215,6 +215,32 @@ network, no Docker socket, and the expected mount before logging
 `PI_RUN_CHECK_PREFLIGHT {"ok":true,...}`. Docker startup and executor failures
 remain structured `infra_error`; normal compiler and test failures remain
 `fail`. There is no unrestricted-shell fallback.
+
+The runtime and executor exchange a versioned environment contract on every
+preflight (`RUN_CHECK_ENV_CONTRACT`). A version or key-set mismatch is logged as
+`CHECK_ENV_CONTRACT`, recorded as `PI_RUN_CHECK_PREFLIGHT_FAILED`, and aborts the
+Implementer from `session_start` before it starts a coding session or model
+budget. If Pi schedules a request despite the abort, the request hook strips all
+tools and sets `tool_choice` to `none`, so no tool-capable provider request is
+sent. After changing the contract or executor, build the manager with the new
+`run-check-docker-0.1.7` tag, set `PI_RUNNER_MANAGER_IMAGE` in the host `.env`
+to that exact tag, and recreate
+`pi-runner-manager` so new ephemeral workers load the rebuilt executor:
+
+```bash
+docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.7 .
+docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
+```
+
+Confirm the manager is healthy and run a controlled Implementer workflow. Its
+`PI_RUN_CHECK_PREFLIGHT` record must report `ok:true`; a stale executor must fail
+with the contract diagnostic and no tool-capable provider request.
+
+Terminal receipt schema v2 adds the semantic Implementer outcome to the existing
+result digest binding. V2 readers reject v1 receipts, so deploy this manager and
+runtime update while the Pi pool is idle; finish active runs before recreating
+the manager. A run resumed with a v1 receipt must resubmit its result to create a
+v2 receipt before the parent can accept it.
 
 The manager also launches a local executor process with a Docker socket inside
 its trusted container. The Pi runner itself remains non-root, unprivileged,
@@ -481,7 +507,7 @@ All writes are best-effort and never fail a job or block registration. Read them
 Evidence is disabled when `INFRA_EVIDENCE_DIR` is unset.
 
 Deploy these changes by building the new manager tag
-`n150/pi-runner-manager:run-check-docker-0.1.6` and general worker tag
+`n150/pi-runner-manager:run-check-docker-0.1.7` and general worker tag
 `n150/github-general-runner-ephemeral:0.87.6` from this checkout, then updating the
 host `.env` and recreating the managers. Existing cached tags do not acquire the
 new gates. Do not restart busy worker containers during deployment.

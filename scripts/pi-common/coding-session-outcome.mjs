@@ -13,10 +13,13 @@ function errorText(error) {
  */
 export function normalizeCodingSessionOutcome({
   submitted,
+  outcome = null,
   sessionError = null,
   receiptError = null,
 } = {}) {
-  const successful = submitted === true;
+  const semanticOutcome = ['changed', 'already_satisfied', 'blocked'].includes(outcome) ? outcome : null;
+  const terminalSubmitted = submitted === true;
+  const successful = terminalSubmitted && semanticOutcome !== 'blocked';
   const recoveredErrors = successful && sessionError ? [errorText(sessionError)] : [];
   const unresolvedTerminalError = successful
     ? null
@@ -24,9 +27,10 @@ export function normalizeCodingSessionOutcome({
   const receiptDiagnostic = successful ? null : errorText(receiptError);
 
   return {
-    submitted: successful,
+    submitted: terminalSubmitted,
     successful_final_submission: successful,
-    status: successful ? 'ok' : (unresolvedTerminalError ? 'error' : 'incomplete'),
+    outcome: submitted === true ? semanticOutcome : null,
+    status: semanticOutcome === 'blocked' ? 'blocked' : successful ? 'ok' : (unresolvedTerminalError ? 'error' : 'incomplete'),
     recovered_errors: recoveredErrors.filter(Boolean),
     unresolved_terminal_error: unresolvedTerminalError,
     receipt_error: receiptDiagnostic,

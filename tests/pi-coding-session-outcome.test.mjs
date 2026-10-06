@@ -7,11 +7,13 @@ test('#402 earlier tool error is recovered by a trusted final submission', () =>
   assert.deepEqual(
     normalizeCodingSessionOutcome({
       submitted: true,
+      outcome: 'changed',
       sessionError: new Error('read failed: unavailable tool'),
     }),
     {
       submitted: true,
       successful_final_submission: true,
+      outcome: 'changed',
       status: 'ok',
       recovered_errors: ['read failed: unavailable tool'],
       unresolved_terminal_error: null,
@@ -23,6 +25,7 @@ test('#402 earlier tool error is recovered by a trusted final submission', () =>
 test('#396 failed submit followed by valid retry succeeds while failed-only stays unresolved', () => {
   const recovered = normalizeCodingSessionOutcome({
     submitted: true,
+    outcome: 'changed',
     sessionError: new Error('submit_result file-set mismatch'),
   });
   assert.equal(recovered.successful_final_submission, true);
@@ -36,6 +39,18 @@ test('#396 failed submit followed by valid retry succeeds while failed-only stay
   assert.equal(failedOnly.successful_final_submission, false);
   assert.equal(failedOnly.status, 'error');
   assert.equal(failedOnly.unresolved_terminal_error, 'submit_result file-set mismatch');
+});
+
+test('coding-session terminal semantics preserve changed, already_satisfied, and blocked separately', () => {
+  const changed = normalizeCodingSessionOutcome({ submitted: true, outcome: 'changed' });
+  const alreadySatisfied = normalizeCodingSessionOutcome({ submitted: true, outcome: 'already_satisfied' });
+  const blocked = normalizeCodingSessionOutcome({ submitted: true, outcome: 'blocked' });
+  assert.equal(changed.successful_final_submission, true);
+  assert.equal(alreadySatisfied.successful_final_submission, true);
+  assert.equal(alreadySatisfied.outcome, 'already_satisfied');
+  assert.equal(blocked.submitted, true, 'the terminal submission itself is valid');
+  assert.equal(blocked.successful_final_submission, false, 'blocked is not implementation success');
+  assert.equal(blocked.status, 'blocked');
 });
 
 test('an invalid receipt is recoverable incomplete state, not a terminal session error', () => {
