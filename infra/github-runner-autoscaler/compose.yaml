@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.7}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.8}
     container_name: pi-runner-manager
     restart: unless-stopped
     environment:
@@ -13,7 +13,7 @@ services:
       MODEL_MAX_CONCURRENCY: ${MODEL_MAX_CONCURRENCY:-}
       POLL_SECONDS: ${POLL_SECONDS:-}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-}
-      RUN_CHECK_SANDBOX_IMAGE: ${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.0}
+      RUN_CHECK_SANDBOX_IMAGE: ${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.1}
       RUN_CHECK_EXECUTOR_URL: ${RUN_CHECK_EXECUTOR_URL:-http://127.0.0.1:17343}
       RUN_CHECK_EXECUTOR_PORT: ${RUN_CHECK_EXECUTOR_PORT:-17343}
       RUN_CHECK_STAGE_VOLUME: ${RUN_CHECK_STAGE_VOLUME:-social-mcp-run-check-stage}
@@ -46,7 +46,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.7}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.8}
     container_name: general-runner-manager
     restart: unless-stopped
     environment:

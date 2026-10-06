@@ -146,16 +146,16 @@ image names, commands, or mount paths from the caller.
 Build the manager, Pi worker, general worker, dedicated control runner, and separate check sandbox first:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.7 .
+docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.8 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.6 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.6 .
-docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
+docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.1 .
 ```
 
 The manager and general worker retry a failed Docker daemon check once after five seconds before quarantining the pool or refusing runner registration. The Pi worker tag `0.89.1-mini-swe` pins `mini-swe-agent==2.4.6`, `pi-mcp-adapter@3.2.0`,
 `lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`, BasedPyright `1.40.1`, and the official JetBrains
-Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The Pi and general worker tags are `0.89.1-mini-swe` and `0.87.6`; the general image now retries a failed daemon health check once before registration. `run_check` tooling lives in the separate `0.1.0` sandbox image. System-package changes must use a new image tag rather than silently reusing an already-built local tag. The sandbox image independently contains Python 3.12, the repository's pinned Ruff and pytest tooling, Node for the configured `node_tests` profile, and Git for repository tests; it contains no runner registration, GitHub CLI, SSH client, or agent runtime. To roll the Pi pool back, set
+Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The Pi and general worker tags are `0.89.1-mini-swe` and `0.87.6`; the general image now retries a failed daemon health check once before registration. `run_check` tooling lives in the separate `0.1.1` sandbox image. System-package changes must use a new image tag rather than silently reusing an already-built local tag. The sandbox image independently contains Python 3.12, the repository's pinned Ruff and pytest tooling, Node for the configured `node_tests` profile, and Git for repository tests; it contains no runner registration, GitHub CLI, SSH client, or agent runtime. To roll the Pi pool back, set
 `RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
 untracked `.env` and recreate only `pi-runner-manager`:
 
@@ -203,7 +203,7 @@ is an explicit reset that discards registration and cooldown state. Do not add
 ### `run_check` sandbox backend
 
 `RUN_CHECK_SANDBOX_IMAGE` independently selects the versioned sandbox image; it
-defaults to `n150/run-check-sandbox:0.1.0`. Set it in the host's untracked
+defaults to `n150/run-check-sandbox:0.1.1`. Set it in the host's untracked
 `.env`, build that exact tag, and restart only `pi-runner-manager` when changing
 the sandbox version. The manager refuses to start Pi workers unless the image
 exists locally, a hardened no-network container can run the image probe, and
@@ -222,13 +222,16 @@ preflight (`RUN_CHECK_ENV_CONTRACT`). A version or key-set mismatch is logged as
 Implementer from `session_start` before it starts a coding session or model
 budget. If Pi schedules a request despite the abort, the request hook strips all
 tools and sets `tool_choice` to `none`, so no tool-capable provider request is
-sent. After changing the contract or executor, build the manager with the new
-`run-check-docker-0.1.7` tag, set `PI_RUNNER_MANAGER_IMAGE` in the host `.env`
-to that exact tag, and recreate
+sent. The sandbox wrapper must accept every key in the environment contract;
+the v2 acceptance-target keys were added in sandbox image `0.1.1`. Build the
+manager with the new `run-check-docker-0.1.8` tag and the sandbox with `0.1.1`,
+set `PI_RUNNER_MANAGER_IMAGE` and `RUN_CHECK_SANDBOX_IMAGE` in the host `.env`
+to those exact tags, then recreate
 `pi-runner-manager` so new ephemeral workers load the rebuilt executor:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.7 .
+docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.8 .
+docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.1 .
 docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
 ```
 
@@ -507,7 +510,8 @@ All writes are best-effort and never fail a job or block registration. Read them
 Evidence is disabled when `INFRA_EVIDENCE_DIR` is unset.
 
 Deploy these changes by building the new manager tag
-`n150/pi-runner-manager:run-check-docker-0.1.7` and general worker tag
+`n150/pi-runner-manager:run-check-docker-0.1.8`, sandbox tag
+`n150/run-check-sandbox:0.1.1`, and general worker tag
 `n150/github-general-runner-ephemeral:0.87.6` from this checkout, then updating the
 host `.env` and recreating the managers. Existing cached tags do not acquire the
 new gates. Do not restart busy worker containers during deployment.
