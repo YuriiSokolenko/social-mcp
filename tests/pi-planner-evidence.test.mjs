@@ -940,12 +940,21 @@ test('the pre-validation assistant-message boundary counts raw structured_output
     if (previousState === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV]; else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousState;
   });
   const handlers = new Map();
+  const logs = t.mock.method(console, 'log', () => {});
   plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
 
   const rawArguments = '{"value":';
+  await handlers.get('message_start')({ message: { role: 'assistant', content: [] } });
+  for (const delta of ['{"val', 'ue":']) {
+    await handlers.get('message_update')({ assistantMessageEvent: {
+      type: 'toolcall_delta', contentIndex: 0, delta,
+      partial: { content: [{ type: 'toolCall', id: 'raw-result-1', name: PLANNER_RESULT_TOOL, arguments: {} }] },
+    } });
+  }
   await handlers.get('message_end')({ message: {
     role: 'assistant',
-    content: [{ type: 'toolCall', id: 'raw-result-1', name: PLANNER_RESULT_TOOL, arguments: rawArguments }],
+    stopReason: 'length',
+    content: [{ type: 'toolCall', id: 'raw-result-1', name: PLANNER_RESULT_TOOL, arguments: {} }],
   } });
   const first = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   assert.equal(first.resultAttempts, 1);
@@ -970,6 +979,7 @@ test('the pre-validation assistant-message boundary counts raw structured_output
   assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 2, 'the constrained repair is the second provider attempt');
   await handlers.get('tool_result')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} }, isError: false, content: [] }, {});
   assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 2);
+  assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).includes('"resultAttempts":1')));
 });
 
 test('a raw schema-invalid provider result transitions to one required result-only repair', async (t) => {
@@ -992,9 +1002,15 @@ test('a raw schema-invalid provider result transitions to one required result-on
   });
   t.mock.method(console, 'log', () => {});
 
+  const rawArguments = JSON.stringify({ unexpected: 'x'.repeat(600) });
+  await handlers.get('message_start')({ message: { role: 'assistant', content: [] } });
+  await handlers.get('message_update')({ assistantMessageEvent: {
+    type: 'toolcall_delta', contentIndex: 0, delta: rawArguments,
+    partial: { content: [{ type: 'toolCall', id: 'schema-result-1', name: PLANNER_RESULT_TOOL, arguments: { unexpected: 'x'.repeat(20) } }] },
+  } });
   await handlers.get('message_end')({ message: {
     role: 'assistant',
-    content: [{ type: 'toolCall', id: 'schema-result-1', name: PLANNER_RESULT_TOOL, arguments: { unexpected: true } }],
+    content: [{ type: 'toolCall', id: 'schema-result-1', name: PLANNER_RESULT_TOOL, arguments: { unexpected: 'x'.repeat(20) } }],
   } });
   assert.deepEqual(active, [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL]);
   await handlers.get('tool_result')({
@@ -1002,7 +1018,7 @@ test('a raw schema-invalid provider result transitions to one required result-on
     toolCallId: 'schema-result-1',
     input: {},
     isError: true,
-    content: [{ type: 'text', text: 'Validation failed: value is required' }],
+    content: [{ type: 'text', text: 'Validation failed: value is required because schema field steps is missing' }],
   }, {});
   assert.deepEqual(active, [PLANNER_RESULT_TOOL]);
   const request = handlers.get('before_provider_request')({ payload: {
@@ -1020,7 +1036,73 @@ test('a raw schema-invalid provider result transitions to one required result-on
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   assert.equal(state.resultAttempts, 2, 'only the initial result and allowed repair are admitted into the sidecar');
   assert.equal(state.repairKind, 'schema_rejection');
-  assert.match(state.repairDiagnostic, /unexpected/);
+  assert.match(state.repairDiagnostic, /Validation failed: value is required/);
+  assert.match(state.repairDiagnostic, /arguments preview: \{"unexpected":"x+/);
+  assert.ok(state.repairDiagnostic.length <= 400);
+});
+
+test('multiple structured_output calls in one provider message admit the first and block siblings without aborting it', async (t) => {
+  const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  const previousState = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  const stateFile = path.join(os.tmpdir(), `pi-planner-sibling-results-${process.pid}-${Date.now()}.json`);
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '6';
+  process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = stateFile;
+  t.after(() => {
+    fs.rmSync(stateFile, { force: true });
+    if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV]; else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+    if (previousState === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV]; else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousState;
+  });
+  const handlers = new Map();
+  const logs = t.mock.method(console, 'log', () => {});
+  plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
+
+  await handlers.get('message_end')({ message: {
+    role: 'assistant',
+    content: [
+      { type: 'toolCall', id: 'sibling-1', name: PLANNER_RESULT_TOOL, arguments: { value: {} } },
+      { type: 'toolCall', id: 'sibling-2', name: PLANNER_RESULT_TOOL, arguments: { value: {} } },
+    ],
+  } });
+  let aborted = false;
+  assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'sibling-1', input: { value: {} } }), undefined);
+  assert.equal((await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'sibling-2', input: { value: {} } }, { abort: () => { aborted = true; } })).block, true);
+  assert.equal(aborted, false, 'blocking a sibling does not cancel the first admitted call');
+  await handlers.get('tool_result')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'sibling-1', input: { value: {} }, isError: false, content: [] }, {});
+  await handlers.get('tool_result')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'sibling-2', input: {}, isError: true, content: [] }, {});
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 2, 'both provider calls in the message are counted, though only one executes');
+  assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_RESULT_SUCCESS ')));
+  assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')));
+  assert.ok(!logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_RESULT_REPAIR_FAILURE ')));
+});
+
+test('an id-less result is matched across message_end and tool_call, while errored partial messages do not close evidence', async (t) => {
+  const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  const previousState = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  const stateFile = path.join(os.tmpdir(), `pi-planner-idless-result-${process.pid}-${Date.now()}.json`);
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '6';
+  process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = stateFile;
+  t.after(() => {
+    fs.rmSync(stateFile, { force: true });
+    if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV]; else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+    if (previousState === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV]; else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousState;
+  });
+  const handlers = new Map();
+  t.mock.method(console, 'log', () => {});
+  plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
+
+  await handlers.get('message_end')({ message: {
+    role: 'assistant', stopReason: 'error',
+    content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: {} }],
+  } });
+  assert.equal(await handlers.get('tool_call')({ toolName: 'read', input: {} }), undefined);
+  await handlers.get('message_end')({ message: {
+    role: 'assistant', stopReason: 'length',
+    content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: {} }],
+  } });
+  assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'runtime-assigned-id', input: {} }), undefined);
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 1);
+  await handlers.get('tool_result')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'runtime-assigned-id', input: {}, isError: false, content: [] }, {});
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 1);
 });
 
 test('a successful first structured_output has no repair and is returned unchanged', async (t) => {
