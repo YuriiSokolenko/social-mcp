@@ -1,10 +1,9 @@
 // Runtime-owned record of completed one-shot control transitions (LSP startup, subagent
-// enablement, preparation). The runtime knows these deterministically, so it materializes them
+// enablement). The runtime knows these deterministically, so it materializes them
 // into model-visible context and the active tool surface instead of trusting model memory.
 
 export const SUBAGENTS_ENABLE_TOOL = 'subagents_enable';
 export const LSP_START_TOOL = 'lsp_start_server';
-export const PREPARATION_KEY = 'preparation';
 
 export function mergeNewlyActiveTools(baseline, current) {
   const known = new Set(baseline);
@@ -48,8 +47,7 @@ export function capabilitySnapshotGuidance(activeToolNames) {
 }
 
 export class SessionTransitions {
-  constructor({ preparationTool = null } = {}) {
-    this.preparationTool = preparationTool;
+  constructor() {
     this.completed = new Map();
   }
 
@@ -62,7 +60,6 @@ export class SessionTransitions {
       if (!serverId || !root) return null;
       return `${LSP_START_TOOL}:${serverId}:${root}`;
     }
-    if (this.preparationTool && toolName === this.preparationTool) return PREPARATION_KEY;
     return null;
   }
 
@@ -82,15 +79,13 @@ export class SessionTransitions {
   satisfiedToolNames() {
     const names = new Set();
     if (this.completed.has(SUBAGENTS_ENABLE_TOOL)) names.add(SUBAGENTS_ENABLE_TOOL);
-    if (this.preparationTool && this.completed.has(PREPARATION_KEY)) names.add(this.preparationTool);
     return names;
   }
 
   lines() {
     const lines = [];
     for (const record of this.completed.values()) {
-      if (record.key === PREPARATION_KEY) lines.push(`- preparation: ${record.fallback ? 'fallback-complete' : 'complete'}`);
-      else if (record.key === SUBAGENTS_ENABLE_TOOL) lines.push('- subagents: enabled');
+      if (record.key === SUBAGENTS_ENABLE_TOOL) lines.push('- subagents: enabled');
       else if (record.key.startsWith(`${LSP_START_TOOL}:`)) {
         lines.push(`- ${record.serverId} LSP: running (workspace ${record.workspaceRoot})`);
       }
@@ -147,12 +142,9 @@ export class SessionTransitions {
   }
 
   transitionNotice(record, verification = {}) {
-    const subject = record.key === PREPARATION_KEY
-      ? `preparation: ${record.fallback ? 'fallback-complete' : 'complete'}`
-      : record.key === SUBAGENTS_ENABLE_TOOL
-        ? 'subagents: enabled'
-        : `${record.serverId} LSP: running`;
-    const repeatTool = record.key === PREPARATION_KEY ? this.preparationTool : record.tool;
+    const subject = record.key === SUBAGENTS_ENABLE_TOOL
+      ? 'subagents: enabled'
+      : `${record.serverId} LSP: running`;
     const validation = this.verificationGuidance(verification);
     const activeToolNames = verification?.activeToolNames ?? null;
     const active = new Set(activeToolNames ?? []);
@@ -171,7 +163,7 @@ export class SessionTransitions {
       '',
       subject,
       'Result is already applied to this session.',
-      `Do not call ${repeatTool} again.`,
+      `Do not call ${record.tool} again.`,
       '',
       tail,
     ].join('\n');

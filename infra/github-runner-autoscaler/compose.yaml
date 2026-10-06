@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.5}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.8}
     container_name: pi-runner-manager
     restart: unless-stopped
     environment:
@@ -13,7 +13,7 @@ services:
       MODEL_MAX_CONCURRENCY: ${MODEL_MAX_CONCURRENCY:-}
       POLL_SECONDS: ${POLL_SECONDS:-}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-}
-      RUN_CHECK_SANDBOX_IMAGE: ${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.0}
+      RUN_CHECK_SANDBOX_IMAGE: ${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.1}
       RUN_CHECK_EXECUTOR_URL: ${RUN_CHECK_EXECUTOR_URL:-http://127.0.0.1:17343}
       RUN_CHECK_EXECUTOR_PORT: ${RUN_CHECK_EXECUTOR_PORT:-17343}
       RUN_CHECK_STAGE_VOLUME: ${RUN_CHECK_STAGE_VOLUME:-social-mcp-run-check-stage}
@@ -46,7 +46,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.5}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.8}
     container_name: general-runner-manager
     restart: unless-stopped
     environment:
@@ -67,13 +67,54 @@ services:
       CURL_CONNECT_TIMEOUT_SECONDS: ${CURL_CONNECT_TIMEOUT_SECONDS:-5}
       CURL_MAX_TIME_SECONDS: ${CURL_MAX_TIME_SECONDS:-15}
       DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
+      DOCKER_DEEP_PROBE_INTERVAL_SECONDS: ${GENERAL_DOCKER_DEEP_PROBE_INTERVAL_SECONDS:-300}
       INFRA_EVIDENCE_DIR: /evidence
       INFRA_EVIDENCE_VOLUME: ${GENERAL_EVIDENCE_VOLUME:-social-mcp-general-runner-evidence}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - general-runner-evidence:/evidence
 
+  # Always-on control-plane lane for tiny orchestration jobs. This runner is
+  # intentionally not autoscaled and cannot satisfy jobs requiring `general`
+  # or `pi-agent`.
+  control-runner:
+    build:
+      context: ../..
+      dockerfile: infra/github-runner-autoscaler/control-runner.Dockerfile
+    image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.6}
+    container_name: ${CONTROL_RUNNER_NAME:-n150-control}
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      GH_ADMIN_TOKEN: ${GH_ADMIN_TOKEN}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}
+      RUNNER_NAME: ${CONTROL_RUNNER_NAME:-n150-control}
+      RUNNER_LABELS: ${CONTROL_RUNNER_LABELS:-n150,control}
+      CONTROL_REPAIR_COOLDOWN_SECONDS: ${CONTROL_REPAIR_COOLDOWN_SECONDS:-300}
+      CONTROL_RETRY_SECONDS: ${CONTROL_RETRY_SECONDS:-30}
+      CONTROL_SHORT_RETRY_SECONDS: ${CONTROL_SHORT_RETRY_SECONDS:-5}
+      CONTROL_UPDATE_WAIT_SECONDS: ${CONTROL_UPDATE_WAIT_SECONDS:-30}
+      CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS: ${CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS:-90}
+      CONTROL_CHILD_STOP_WAIT_SECONDS: ${CONTROL_CHILD_STOP_WAIT_SECONDS:-30}
+    cpus: 1.00
+    mem_limit: 1g
+    pids_limit: 512
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+      - KILL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    volumes:
+      - control-runner-state:/home/runner/actions-runner
+
 volumes:
+  control-runner-state:
+    name: ${CONTROL_RUNNER_STATE_VOLUME:-social-mcp-control-runner-state}
   general-runner-evidence:
     name: ${GENERAL_EVIDENCE_VOLUME:-social-mcp-general-runner-evidence}
   run-check-stage:

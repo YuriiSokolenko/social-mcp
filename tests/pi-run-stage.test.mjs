@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 
-import { DEFAULT_MODEL_BASE_URL, buildStageRunSpec, forcePiProviderBaseUrl, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
+import { DEFAULT_MODEL_BASE_URL, TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV, TRUSTED_ACCEPTANCE_TARGETS_ENV, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
-import { buildPiInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
+import { buildBootstrapInvocation, buildPiInvocation, runPiStage } from '../scripts/pi-common/pi-stage-backend.mjs';
+import { PREPARED_IMPLEMENTATION_PLACEHOLDER, isFreshImplementerWork, withPreparedImplementation } from '../scripts/pi-common/stage-config.mjs';
 import { writeImplementerResult } from '../scripts/pi-common/implementer-result.mjs';
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
-import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
+import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairHandoff, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
 import { captureMutationSnapshot } from '../scripts/pi-common/mutation-snapshot.mjs';
 import { recordSuccessfulMutation } from '../scripts/pi-common/mutation-journal.mjs';
 import { issueWorktreePatchPath } from '../scripts/pi-common/issue-worktree.mjs';
@@ -67,6 +68,59 @@ function implementerStartup(t, extraEnv = {}) {
   });
 }
 
+test('implementer spec preserves issue context for authoritative final validation', (t) => {
+  const { spec } = implementerStartup(t);
+  assert.match(spec.environment.PI_ISSUE_CONTEXT, /issue\.json$/);
+  assert.equal(spec.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV], '');
+  assert.equal(spec.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV], '');
+
+  const repair = createValidationRepairSpec(spec, new Error('pytest failed'), 1);
+  assert.equal(repair.environment.PI_ISSUE_CONTEXT, spec.environment.PI_ISSUE_CONTEXT);
+  assert.equal(repair.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV], '');
+  assert.equal(repair.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV], '');
+});
+
+test('trusted acceptance state is derived from the manifest, issue marker, and start commit', (t) => {
+  const dir = temporaryDirectory(t, 'pi-trusted-acceptance-');
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Trusted Acceptance Test'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'trusted@example.invalid'], { cwd: dir });
+  mkdirSync(join(dir, 'src/social_mcp/diagnostics'), { recursive: true });
+  writeFileSync(join(dir, 'src/social_mcp/diagnostics/smoke_lru.py'), 'class LRUCache: pass\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+  const start = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+  const issueContext = join(dir, 'issue.json');
+  writeFileSync(issueContext, JSON.stringify({
+    number: 427,
+    title: 'Recreate deferred smoke targets',
+    body: 'trusted-acceptance-target: social_mcp.diagnostics.smoke_intervals\n',
+  }));
+
+  const { spec } = buildStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+  }, {
+    RUNNER_TEMP: dir,
+    GITHUB_WORKSPACE: process.cwd(),
+    PI_MODEL: 'model-x',
+    PI_PROVIDER: 'provider-x',
+    PI_MODEL_BASE_URL: 'http://model/v1',
+    ISSUE: '427',
+    PI_ISSUE_CONTEXT: issueContext,
+    PI_IMPLEMENTER_START_COMMIT: start,
+  });
+
+  assert.equal(spec.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV], 'social_mcp.diagnostics.smoke_intervals');
+  assert.equal(spec.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV], 'social_mcp.diagnostics.smoke_lru');
+
+  const repair = createValidationRepairSpec(spec, new Error('pytest failed'), 1);
+  assert.equal(repair.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV], spec.environment[TRUSTED_ACCEPTANCE_TARGETS_ENV]);
+  assert.equal(repair.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV], spec.environment[TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV]);
+});
+
+
 test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => {
   const env = {
     RUNNER_TEMP: '/tmp/runner',
@@ -98,6 +152,7 @@ test('buildStageRunSpec preserves the existing resolved Pi stage inputs', () => 
   assert.equal(spec.environment.PI_PHASE, 'dispatcher');
   assert.equal(spec.environment.PI_VALIDATION_RUN_ID, '123-2');
   assert.equal(spec.environment.PI_ISSUE, '42');
+  assert.equal(spec.environment.PI_DIAGNOSTICS_FILE, '/tmp/runner/pi-diagnostics-dispatcher-123-2.jsonl');
   assert.equal(spec.environment.PI_BASH_TIMEOUT_SECONDS, '600');
   assert.equal(spec.artifacts.terminalResultPath, '/tmp/runner/pi-terminal-123-2');
   assert.equal(spec.artifacts.metricsPath, '/tmp/runner/pi-usage-123-2.jsonl');
@@ -229,6 +284,44 @@ test('issue worktree patch names use normalized GitHub artifact identity semanti
     `/tmp/pi-resume-local-${process.pid}-1.patch`,
   );
 });
+
+test('#470 provider accounting counts only successful completion endpoints', () => {
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/responses',
+    status: 200,
+    transportError: false,
+  }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/chat/completions?foo=bar',
+    status: 201,
+    transportError: false,
+  }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/completions',
+    status: 200,
+    transportError: false,
+  }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/messages',
+    status: 200,
+    transportError: false,
+  }), true);
+
+  for (const exchange of [
+    { requestMethod: 'GET', requestPath: '/v1/models', status: 200, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/responses', status: 429, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/chat/completions', status: 500, transportError: false },
+    { requestMethod: 'POST', requestPath: '/v1/responses', status: 200, transportError: true },
+    { requestMethod: 'POST', requestPath: '/v1/embeddings', status: 200, transportError: false },
+  ]) {
+    assert.equal(isCountedProviderResponse(exchange), false, JSON.stringify(exchange));
+  }
+});
+
 
 test('model endpoint defaults to the shared Open Responses server on port 4001', () => {
   const { spec } = buildStageRunSpec({
@@ -744,6 +837,8 @@ test('shared validation harness treats blocked implementer outcome as terminal w
   assert.equal(validations, 0);
   assert.equal(result.backend, 'fake');
   assert.equal(result.durationMs, 7);
+  assert.match(readFileSync(resultFile, 'utf8'), /"outcome": "blocked"/);
+  assert.match(readFileSync(resultFile, 'utf8'), /Requirement A requires behavior that constraint B explicitly forbids/);
 });
 
 test('shared validation recovery stops after one failed repair attempt', async (t) => {
@@ -1001,4 +1096,313 @@ test('mini-swe trajectory usage maps into the shared PI_METRIC schema', () => {
   }, { PI_ISSUE: '77', PI_PHASE: 'implementation', PI_CALL: 'repair' });
   assert.equal(repairRecords[0].call, 'repair');
 
+});
+
+// ---- #456: planner bootstrap runs in its own pi process before the main Implementer session ----
+
+const PREPARED_ARTIFACT = {
+  version: 1, status: 'prepared', plan: ['Locate the target', 'Apply the bounded change'], complexity: 'nontrivial',
+  evidenceBudget: 2, largeMutation: false, reason: 'Needs one lookup', workspaceRoot: '/work', freshBaseCommit: 'abc123',
+  baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 1200,
+};
+
+// A fake `pi` on PATH: records every invocation (argv + selected env) in order; as the bootstrap
+// process it writes the PreparedImplementation artifact, as the main process the terminal result.
+function installFakePi(t, { bootstrapExit = 0, runtimeFailure = null } = {}) {
+  const dir = temporaryDirectory(t, 'pi-fake-bin-');
+  const log = join(dir, 'invocations.jsonl');
+  const script = join(dir, 'pi');
+  writeFileSync(script, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const bootstrap = args.some(arg => arg.endsWith('pi-implementer-bootstrap.mjs'));
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, bootstrap, bootstrapEnv: process.env.PI_IMPLEMENTER_BOOTSTRAP ?? null, prepared: process.env.PI_PREPARED_IMPLEMENTATION_FILE ?? null }) + '\\n');
+if (bootstrap) {
+  if (${bootstrapExit} !== 0) process.exit(${bootstrapExit});
+  fs.writeFileSync(process.env.PI_PREPARED_IMPLEMENTATION_FILE, ${JSON.stringify(JSON.stringify(PREPARED_ARTIFACT))});
+  console.log('PI_BOOTSTRAP {"phase":"planner_completed"}');
+  console.log('{"type":"session"}');
+} else {
+  if (${JSON.stringify(runtimeFailure)} && process.env.PI_RUNTIME_FAILURE_FILE) {
+    fs.writeFileSync(process.env.PI_RUNTIME_FAILURE_FILE, JSON.stringify(${JSON.stringify(runtimeFailure)}) + '\\n');
+  }
+  fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'ok');
+}
+`, { mode: 0o755 });
+  const invocations = () => readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+  return { dir, invocations };
+}
+
+function bootstrapSpec(t, fake, environment = {}) {
+  const dir = temporaryDirectory(t, 'pi-bootstrap-run-');
+  return createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: `Issue text\n${PREPARED_IMPLEMENTATION_PLACEHOLDER}`,
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PATH: `${fake.dir}:${process.env.PATH}`, PI_TERMINAL_RESULT_FILE: join(dir, 'terminal'), PI_STAGE: 'implementer', PI_PHASE: 'implementation', PI_IMPLEMENTER_START_COMMIT: 'abc123', ...environment },
+    artifacts: { terminalResultPath: join(dir, 'terminal'), metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: join(dir, 'raw.jsonl') },
+  });
+}
+
+test('only fresh Implementer work gets planner bootstrap; restored and repair work do not', () => {
+  assert.equal(isFreshImplementerWork({ PI_STAGE: 'implementer' }), true);
+  assert.equal(isFreshImplementerWork({ PI_STAGE: 'implementer', PI_RESUME_ACTIVE: 'false' }), true);
+  assert.equal(isFreshImplementerWork({ PI_STAGE: 'implementer', PI_RESUME_ACTIVE: 'true' }), false);
+  assert.equal(isFreshImplementerWork({ PI_STAGE: 'implementer', PI_VALIDATION_REPAIR: 'true' }), false);
+  for (const stage of ['dispatcher', 'reviewer', 'repair', 'architect', 'triage']) {
+    assert.equal(isFreshImplementerWork({ PI_STAGE: stage }), false, stage);
+  }
+});
+
+test('bootstrap pi invocation is a prompt-less, session-less planner host', () => {
+  const spec = createStageRunSpec({ ...specFor('implementer'), environment: { PI_STAGE: 'implementer' } });
+  const { command, args, options } = buildBootstrapInvocation(spec, '/control');
+  assert.equal(command, 'pi');
+  assert.deepEqual(args, [
+    '--extension', '/control/scripts/pi-implementer-bootstrap.mjs',
+    '--provider', 'provider-x', '--model', 'model-x', '--mode', 'json', '--no-session',
+  ]);
+  assert.ok(!args.includes('do the task'), 'no prompt: the bootstrap process makes no model request of its own');
+  assert.equal(options.env.PI_IMPLEMENTER_BOOTSTRAP, 'true');
+  assert.equal(options.env.PI_PREPARED_IMPLEMENTATION_FILE, '/tmp/terminal.prepared-implementation.json');
+});
+
+test('withPreparedImplementation fills the placeholder, or appends trusted context for a custom prompt', () => {
+  assert.equal(withPreparedImplementation(`a ${PREPARED_IMPLEMENTATION_PLACEHOLDER} b`, 'BLOCK'), 'a BLOCK b');
+  assert.equal(withPreparedImplementation('custom prompt', 'BLOCK'), 'custom prompt\n\n<trusted_context>\nBLOCK\n</trusted_context>');
+  assert.equal(withPreparedImplementation(`x ${PREPARED_IMPLEMENTATION_PLACEHOLDER}`, '$& $1'), 'x $& $1', 'replacement text is literal');
+});
+
+test('fresh Implementer: bootstrap pi completes first, then the main session starts with the prepared state in its first prompt', async (t) => {
+  const fake = installFakePi(t);
+  const spec = bootstrapSpec(t, fake);
+  await runPiStage(spec, { workspace: process.cwd() });
+
+  const [bootstrap, main, ...rest] = fake.invocations();
+  assert.equal(rest.length, 0);
+  assert.equal(bootstrap.bootstrap, true, 'planner bootstrap process runs first');
+  assert.equal(bootstrap.bootstrapEnv, 'true');
+  assert.ok(!bootstrap.args.some(arg => arg.includes('Issue text')), 'bootstrap receives no prompt');
+  assert.equal(main.bootstrap, false);
+  assert.equal(main.bootstrapEnv, null, 'main session is not a bootstrap session');
+  assert.equal(main.prepared, `${spec.artifacts.terminalResultPath}.prepared-implementation.json`);
+  const prompt = main.args.at(-1);
+  assert.match(prompt, /Issue text/);
+  assert.match(prompt, /Runtime-prepared implementation state/);
+  assert.match(prompt, /1\. Locate the target\n2\. Apply the bounded change/);
+  assert.match(prompt, /Evidence budget: 2/);
+  assert.doesNotMatch(prompt, /prepare_implementation|runtime_prepared_implementation_state/);
+  assert.ok(main.args.includes('--session-dir'), 'main Implementer keeps its forkable session');
+  assert.ok(!bootstrap.args.includes('--session-dir'));
+});
+
+test('a crashed bootstrap process resolves PREPARATION_FALLBACK before the main session starts', async (t) => {
+  const fake = installFakePi(t, { bootstrapExit: 3 });
+  const spec = bootstrapSpec(t, fake);
+  await runPiStage(spec, { workspace: process.cwd() });
+
+  const [bootstrap, main] = fake.invocations();
+  assert.equal(bootstrap.bootstrap, true);
+  assert.equal(main.bootstrap, false);
+  const prompt = main.args.at(-1);
+  assert.match(prompt, /PREPARATION_FALLBACK/);
+  assert.match(prompt, /bootstrap_process_failure/);
+  assert.match(prompt, /nothing to prepare or retry/);
+  assert.doesNotMatch(prompt, /prepare_implementation/);
+  assert.equal(JSON.parse(readFileSync(main.prepared, 'utf8')).status, 'fallback');
+});
+
+test('Pi stage surfaces the exact failed run_check preflight diagnostic from runtime failure metadata', async (t) => {
+  const fake = installFakePi(t, { runtimeFailure: {
+    failure_class: 'infrastructure',
+    failure_code: 'PI_RUN_CHECK_PREFLIGHT_FAILED',
+    reason: 'run_check sandbox preflight failed: INFRASTRUCTURE ERROR: CHECK_ENV_CONTRACT',
+  } });
+  const failureFile = join(temporaryDirectory(t, 'pi-preflight-failure-'), 'runtime-failure.json');
+  const spec = bootstrapSpec(t, fake, { PI_RESUME_ACTIVE: 'true', PI_RUNTIME_FAILURE_FILE: failureFile });
+  await assert.rejects(
+    runPiStage(spec, { workspace: process.cwd() }),
+    /PI_RUN_CHECK_PREFLIGHT_FAILED: run_check sandbox preflight failed: INFRASTRUCTURE ERROR: CHECK_ENV_CONTRACT/,
+  );
+});
+
+test('restored and validation-repair Implementer runs never launch the planner bootstrap', async (t) => {
+  for (const environment of [{ PI_RESUME_ACTIVE: 'true' }, { PI_VALIDATION_REPAIR: 'true' }]) {
+    const fake = installFakePi(t);
+    const spec = bootstrapSpec(t, fake, environment);
+    await runPiStage(spec, { workspace: process.cwd() });
+    const calls = fake.invocations();
+    assert.equal(calls.length, 1, JSON.stringify(environment));
+    assert.equal(calls[0].bootstrap, false);
+    assert.equal(calls[0].prepared, null);
+  }
+});
+
+
+test('#469 validation repair handoff is bounded, deterministic, and independent of parent transcript size', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-handoff-');
+  const terminal = join(dir, 'terminal');
+  const preparedPath = `${terminal}.prepared-implementation.json`;
+  writeFileSync(preparedPath, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Edit src/connect_four.py', 'Update tests/test_connect_four.py'],
+    complexity: 'nontrivial',
+    evidenceBudget: 1,
+    largeMutation: true,
+    reason: 'Source and direct smoke test both change.',
+    workspaceRoot: dir,
+    freshBaseCommit: 'abc123',
+    baseRef: 'origin/dev',
+    layoutHint: {
+      sourceRoot: 'src',
+      sourceDirectory: 'src',
+      sourceTarget: 'src/connect_four.py',
+      sourceConvention: 'src/tic_tac_toe.py',
+      testDirectory: 'tests',
+      testTarget: 'tests/test_connect_four.py',
+      testTargetRequired: true,
+      testConvention: 'tests/test_tic_tac_toe.py',
+    },
+    plannerUsage: null,
+    plannerDurationMs: 100,
+  }));
+  const makeSpec = prompt => createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt,
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: { terminalResultPath: terminal, metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: null },
+  });
+  const result = {
+    outcome: 'changed',
+    title: 'Fix Connect Four smoke path',
+    summary: 'Add source and direct smoke coverage.',
+    changes: ['Fix import wiring', 'Add smoke coverage'],
+    files: ['src/connect_four.py', 'tests/test_connect_four.py'],
+  };
+  const acceptedScope = {
+    schema_version: 1,
+    accepted: [
+      { path: 'src/connect_four.py', disposition: 'publishable', rationale: 'source' },
+      { path: 'tests/test_connect_four.py', disposition: 'publishable', rationale: 'test' },
+    ],
+  };
+  const receipt = {
+    receipt: {
+      session_id: 'coding-session-469',
+      candidate_revision: { digest: 'candidate-469' },
+    },
+  };
+  const failure = new Error('pytest failed: tests/test_connect_four.py::test_smoke');
+  const handoff = validationRepairHandoff(makeSpec('short'), failure, {
+    implementerResult: result,
+    terminalReceipt: receipt,
+    acceptedScope,
+  });
+  assert.deepEqual(handoff.changed_files, ['src/connect_four.py', 'tests/test_connect_four.py']);
+  assert.equal(handoff.completion.session_id, 'coding-session-469');
+  assert.equal(handoff.completion.candidate_revision, 'candidate-469');
+  assert.equal(handoff.prepared_implementation.layout_hint.sourceTarget, 'src/connect_four.py');
+  assert.equal(handoff.prepared_implementation.layout_hint.testTarget, 'tests/test_connect_four.py');
+  assert.equal(handoff.prepared_implementation.layout_hint.testTargetRequired, true);
+  assert.match(handoff.validation_failure, /pytest failed/);
+
+  const shortRepair = createValidationRepairSpec(makeSpec('short'), failure, 1, acceptedScope, result, receipt);
+  const hugeRepair = createValidationRepairSpec(makeSpec('x'.repeat(1_000_000)), failure, 1, acceptedScope, result, receipt);
+  assert.equal(shortRepair.prompt, hugeRepair.prompt, 'repair prompt must not grow with inherited transcript text');
+  assert.ok(shortRepair.prompt.length < 30_000);
+  assert.match(shortRepair.prompt, /Runtime repair handoff/);
+  assert.match(shortRepair.prompt, /tests\/test_connect_four\.py/);
+});
+
+
+test('#470 repair handoff marks every truncated authoritative list as incomplete', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-handoff-truncated-');
+  const terminal = join(dir, 'terminal');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'repair',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: { terminalResultPath: terminal, metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: null },
+  });
+  const files = Array.from({ length: 25 }, (_, i) => `src/file_${i}.py`);
+  const changes = Array.from({ length: 25 }, (_, i) => `change ${i}`);
+  const accepted = files.map((file, i) => ({ path: file, rationale: `reason ${i}` }));
+  const baseline = Array.from({ length: 25 }, (_, i) => `baseline_${i}.py`);
+  const handoff = validationRepairHandoff(spec, new Error('validation failed'), {
+    implementerResult: {
+      outcome: 'changed',
+      title: 'Large repair',
+      summary: 'Many files',
+      changes,
+      files,
+    },
+    acceptedScope: { schema_version: 1, accepted, temporary: accepted, baseline },
+  });
+
+  assert.equal(handoff.changed_files.length, 20);
+  assert.equal(handoff.changed_files_total, 25);
+  assert.equal(handoff.changed_files_truncated, true);
+  assert.equal(handoff.completion.changes.length, 20);
+  assert.equal(handoff.completion.changes_total, 25);
+  assert.equal(handoff.completion.changes_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.accepted_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.accepted_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.temporary_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.temporary_truncated, true);
+  assert.equal(handoff.accepted_mutation_scope.baseline_total, 25);
+  assert.equal(handoff.accepted_mutation_scope.baseline_truncated, true);
+  assert.match(validationRepairPrompt(new Error('validation failed'), handoff), /\*_truncated=true|\*_truncated/);
+});
+
+
+test('#469 repair handoff recomputes current changed files after a validation-time mutation', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-current-files-');
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Repair Handoff Test'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'repair@example.invalid'], { cwd: dir });
+  writeFileSync(join(dir, 'README.md'), 'base\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+  const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+  writeFileSync(join(dir, 'source.py'), 'VALUE = 1\n');
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'implement',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: {
+      terminalResultPath: join(dir, 'terminal'),
+      metricsPath: join(dir, 'metrics.jsonl'),
+      rawLogPath: null,
+    },
+  });
+  const implementerResult = {
+    outcome: 'changed',
+    title: 'Change source',
+    summary: 'Initial candidate',
+    changes: ['Change source'],
+    files: ['source.py'],
+  };
+
+  // Simulate a trusted validation safe-fix that changes the candidate after submit_result.
+  writeFileSync(join(dir, 'validation_fix.py'), 'FIXED = True\n');
+  const handoff = validationRepairHandoff(spec, new Error('final validation failed'), {
+    implementerResult,
+    terminalReceipt: {
+      candidateRevision: { base_commit: baseCommit },
+      receipt: {
+        session_id: 'coding-469',
+        candidate_revision: { base_commit: baseCommit, digest: 'before-validation-fix' },
+      },
+    },
+  });
+  assert.deepEqual(handoff.changed_files, ['source.py', 'validation_fix.py']);
 });

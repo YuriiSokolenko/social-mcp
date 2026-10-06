@@ -6,6 +6,7 @@ COPY infra/github-runner-autoscaler/manager.sh /usr/local/bin/pi-runner-manager
 COPY infra/github-runner-autoscaler/run-check-executor.mjs /usr/local/lib/run-check-executor.mjs
 COPY .agent-harness.json /opt/social-mcp/.agent-harness.json
 COPY scripts/pi-common/run-check.mjs /opt/social-mcp/scripts/pi-common/run-check.mjs
+COPY scripts/pi-common/diagnostics-artifact.mjs /opt/social-mcp/scripts/pi-common/diagnostics-artifact.mjs
 COPY scripts/pi-common/package-root-check.mjs /opt/social-mcp/scripts/pi-common/package-root-check.mjs
 COPY scripts/pi-common/run-check-docker-backend.mjs /opt/social-mcp/scripts/pi-common/run-check-docker-backend.mjs
 COPY scripts/pi-common/project-config.mjs /opt/social-mcp/scripts/pi-common/project-config.mjs

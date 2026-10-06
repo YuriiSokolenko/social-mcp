@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { recordDescendantMetric, runStructuredSubagent } from './pi-common/structured-subagent.mjs';
+import { readPreparedImplementation, bootstrapFailureFallback } from './pi-common/implementation-planner.mjs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -24,8 +25,10 @@ import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
   appendCheckRecord,
+  groupKey,
   latestUnresolvedRunCheckFailure,
   normalizeScope,
+  validationScopeCovers,
   readValidationLedger,
   resolveValidationRunId,
   runCheckRequestForRecord,
@@ -54,12 +57,19 @@ import {
   SemanticLoopGuard,
   isSemanticMutationTool,
   loopGuardLimits,
+  mutationResolvesSubmissionObligation,
   repositoryStateFingerprint,
 } from './pi-common/semantic-loop-guard.mjs';
 import { zoektSearch } from './pi-common/zoekt-search.mjs';
 import { classifyWorktreeDrift, recoverWorktree, worktreeChangedFiles } from './pi-common/worktree-recovery.mjs';
+import {
+  compactTerminalRecoveryPayload,
+  recoveryCallMatchesPlan,
+  selectTerminalRecovery,
+  terminalRecoveryGuidance,
+} from './pi-common/terminal-recovery-controller.mjs';
 import { captureWorktreeBaseline, observeWorktreeDrift, readWorktreeBaseline, readWorktreeObserved } from './pi-common/worktree-baseline.mjs';
-import { assertImplementerFileSet } from './pi-common/implementer-result.mjs';
+import { assertImplementerFileSet, readImplementerResult } from './pi-common/implementer-result.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
 import {
   assertMutationPathAuthorized,
@@ -70,7 +80,7 @@ import {
   assertSuccessfulTerminalReceipt,
   invalidateTerminalReceipt,
 } from './pi-common/terminal-receipt.mjs';
-import { normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
+import { codingSessionRecoveryReceipt, normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
 import {
   TRUSTED_RECOVERY_TOOLS,
   consumeUnavailableCapabilityAttempts,
@@ -78,6 +88,14 @@ import {
   incapableCodingSessionRecord,
   recordUnavailableCapabilityAttempt,
 } from './pi-common/coding-session-capability.mjs';
+import {
+  CODING_SESSION_USED_ENV,
+  codingSessionSubmissionReadiness,
+  invalidateCodingBehavioralValidation,
+  recordCodingBehavioralValidation,
+  repositoryFingerprintRequiresValidation,
+  requiredPreparedOutputPaths,
+} from './pi-common/coding-session-validation.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
@@ -87,6 +105,20 @@ const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 
 const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
+const CODING_REPAIR_READ_LIMIT = 2;
+const CODING_REPAIR_IMPORT_PATH_LIMIT = 8;
+// Five non-improving failures leaves room for bounded diagnostic phase changes
+// (for example collection/import -> assertions) without allowing an endless repair loop.
+const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
+const DETERMINISTIC_RUN_CHECK_INFRASTRUCTURE_CODES = new Set(['CHECK_ENV', 'CHECK_ENV_CONTRACT']);
+const DETERMINISTIC_TERMINAL_RECOVERY_KINDS = new Set([
+  'metadata',
+  'validation',
+  'prepared_outputs',
+  'conflict',
+  'file_set',
+  'file_set_cleanup',
+]);
 
 // Trust boundary: the coding session's agent definition, tool allowlist and extensions come
 // from THIS module's control checkout (the trusted harness), never from the issue worktree the
@@ -101,7 +133,7 @@ const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing y
 
 The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
 
-Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime; never invent helper names such as read_for_input. In action-required state, normal read may be hidden: if one concrete missing fact prevents the next safe action, call need_more_evidence with that missing fact and reason, then use the single evidence action the runtime exposes. After a failing run_check, the runtime may expose bounded repair read access only for the failing/changed paths; use it when current fixture/source state is needed before the next repair, and do not broaden that into repository discovery. Tests must prefer public behavior and public APIs; do not mutate private/internal implementation state merely to manufacture fixture state unless the task explicitly requires internal-state testing. Otherwise mutate, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
 
 export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
   return {
@@ -195,249 +227,6 @@ function codingSessionSpec(env = process.env) {
 }
 
 
-// Evidence needs are reported independently of complexity: a nontrivial task can still need
-// zero repository evidence (a fresh standalone file from a complete spec), so complexity is
-// not a valid proxy for how many evidence actions the Implementer should be granted.
-const MAX_PLANNER_EVIDENCE_BUDGET = 6;
-
-const MAX_PLANNER_STEP_LENGTH = 240;
-
-// Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
-// reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
-// The strict canonical contract is enforced locally by validateImplementationPreparation().
-const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    steps: {
-      type: 'array',
-      minItems: 1,
-      maxItems: 8,
-      items: { type: 'string', minLength: 1 },
-    },
-    complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
-    evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
-    large_mutation: { type: 'boolean' },
-    reason: { type: 'string', minLength: 1, maxLength: 300 },
-  },
-  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
-  additionalProperties: true,
-});
-
-function implementerIssueContext(env = process.env) {
-  const contextFile = env.PI_ISSUE_CONTEXT;
-  if (!contextFile) throw new Error('PI_ISSUE_CONTEXT is required for runtime implementation preparation');
-  const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
-  return {
-    title: String(context.title ?? ''),
-    body: String(context.body ?? ''),
-  };
-}
-
-function repoRelativePath(...parts) {
-  return path.join(...parts).split(path.sep).join('/');
-}
-
-function nearestPythonSibling(directory, preferredPrefix, excludeName = '') {
-  let entries;
-  try {
-    entries = fs.readdirSync(directory, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  const files = entries
-    .filter(entry => entry.isFile() && entry.name.endsWith('.py') && entry.name !== '__init__.py' && entry.name !== excludeName)
-    .map(entry => entry.name);
-  if (files.length === 0) return null;
-  files.sort((left, right) => {
-    const leftPreferred = preferredPrefix && left.startsWith(preferredPrefix) ? 0 : 1;
-    const rightPreferred = preferredPrefix && right.startsWith(preferredPrefix) ? 0 : 1;
-    return leftPreferred - rightPreferred || left.localeCompare(right);
-  });
-  return files[0];
-}
-
-// Bounded, model-free orientation for additive Python work. It recognizes a conventional src/
-// layout from a dotted target already present in the issue, then looks only at that package
-// directory and its nearest mirrored tests directory. Package names remain data from the issue
-// and worktree; the generic runtime never hard-codes product-specific paths.
-export function discoverAdditivePythonLayout(cwd, issue) {
-  const srcRoot = path.join(cwd, 'src');
-  const testsRoot = path.join(cwd, 'tests');
-  if (!fs.existsSync(srcRoot) || !fs.statSync(srcRoot).isDirectory() ||
-      !fs.existsSync(testsRoot) || !fs.statSync(testsRoot).isDirectory()) return null;
-
-  const issueText = `${String(issue?.title ?? '')}\n${String(issue?.body ?? '')}`;
-  const dottedTargets = [...issueText.matchAll(/`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,})`/g)]
-    .map(match => match[1]);
-
-  for (const dottedTarget of dottedTargets) {
-    const parts = dottedTarget.split('.');
-    let existingPackageParts = 0;
-    for (let length = 1; length < parts.length; length += 1) {
-      const candidate = path.join(srcRoot, ...parts.slice(0, length));
-      if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) break;
-      existingPackageParts = length;
-    }
-    // A safe additive hint needs an explicit new module *and* a symbol inside it. If only one
-    // dotted segment remains after the existing package, it could just as well be an existing
-    // function/class exported from that package, so leave discovery to normal evidence tools.
-    if (existingPackageParts === 0 || parts.length - existingPackageParts < 2) continue;
-
-    const moduleName = parts[existingPackageParts];
-    if (!/^[a-z_]\w*$/.test(moduleName)) continue;
-    const sourceDirectoryParts = parts.slice(0, existingPackageParts);
-    const sourceDirectory = path.join(srcRoot, ...sourceDirectoryParts);
-    const sourceTargetAbsolute = path.join(sourceDirectory, `${moduleName}.py`);
-    if (fs.existsSync(sourceTargetAbsolute)) continue;
-
-    const mirroredTestParts = sourceDirectoryParts.slice(1);
-    const testCandidates = [
-      path.join(testsRoot, ...mirroredTestParts),
-      path.join(testsRoot, ...sourceDirectoryParts),
-      testsRoot,
-    ];
-    const testDirectory = testCandidates.find(candidate =>
-      fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()
-    );
-    if (!testDirectory) continue;
-
-    const sharedPrefix = moduleName.includes('_') ? `${moduleName.split('_')[0]}_` : '';
-    const sourceSibling = nearestPythonSibling(sourceDirectory, sharedPrefix, `${moduleName}.py`);
-    const testPrefix = `test_${sharedPrefix}`;
-    const testSibling = nearestPythonSibling(testDirectory, testPrefix, `test_${moduleName}.py`);
-
-    return {
-      dottedTarget,
-      sourceRoot: 'src',
-      sourceDirectory: repoRelativePath(path.relative(cwd, sourceDirectory)),
-      sourceTarget: repoRelativePath(path.relative(cwd, sourceTargetAbsolute)),
-      sourceConvention: sourceSibling
-        ? repoRelativePath(path.relative(cwd, path.join(sourceDirectory, sourceSibling)))
-        : null,
-      testDirectory: repoRelativePath(path.relative(cwd, testDirectory)),
-      testConvention: testSibling
-        ? repoRelativePath(path.relative(cwd, path.join(testDirectory, testSibling)))
-        : null,
-    };
-  }
-  return null;
-}
-
-// Safe repairs only: keep the five canonical fields, trim strings, truncate overlong steps.
-// large_mutation is an optional planner hint: omission safely defaults to false, while an
-// explicitly present non-boolean value is preserved so strict validation rejects it.
-function normalizeImplementationPreparation(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const trim = item => typeof item === 'string' ? item.trim() : item;
-  const normalized = {};
-  for (const key of ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
-    if (!(key in value)) continue;
-    normalized[key] = key === 'steps' && Array.isArray(value.steps)
-      ? value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step)
-      : trim(value[key]);
-  }
-  if (!('large_mutation' in normalized)) normalized.large_mutation = false;
-  return normalized;
-}
-
-function validateImplementationPreparation(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Implementation planner returned a non-object structured result');
-  }
-  const keys = Object.keys(value);
-  const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason'];
-  if (keys.length !== requiredKeys.length || !requiredKeys.every(key => keys.includes(key))) {
-    throw new Error('Implementation planner returned unexpected structured fields');
-  }
-  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 8) {
-    throw new Error('Implementation planner returned an invalid step list');
-  }
-  const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
-  if (steps.some(step => !step || step.length > MAX_PLANNER_STEP_LENGTH)) {
-    throw new Error('Implementation planner returned an invalid plan step');
-  }
-  if (!['trivial', 'nontrivial'].includes(value.complexity)) {
-    throw new Error(`Implementation planner returned invalid complexity: ${String(value.complexity)}`);
-  }
-  const evidenceBudget = Number(value.evidence_budget);
-  if (!Number.isSafeInteger(evidenceBudget) || evidenceBudget < 0 || evidenceBudget > MAX_PLANNER_EVIDENCE_BUDGET) {
-    throw new Error(`Implementation planner returned invalid evidence_budget: ${String(value.evidence_budget)}`);
-  }
-  if (typeof value.large_mutation !== 'boolean') {
-    throw new Error(`Implementation planner returned invalid large_mutation: ${String(value.large_mutation)}`);
-  }
-  const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
-  if (!reason || reason.length > 300) throw new Error('Implementation planner returned an invalid reason');
-  return { steps, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
-}
-
-function plannerTask(env = process.env, { repair = false, layoutHint = null } = {}) {
-  const issue = implementerIssueContext(env);
-  const layoutGuidance = layoutHint
-    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. For this additive module/test task, treat the resolved directories as authoritative layout evidence. Prefer at most one targeted convention read (the nearest source/test sibling if needed) over multiple broad searches, and do not spend evidence re-proving fresh-worktree provenance.`
-    : '';
-  return `Create the concise top-level implementation plan for this issue, classify only whether it is trivial or nontrivial, separately estimate the bounded evidence budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}), and decide whether the next implementation mutation clearly needs the one-shot large mutation budget. Set large_mutation=true only when the plan clearly requires creating or substantially rewriting source/module or test files whose write/edit payload is likely too large for the normal small action response; a new module plus its test implementation is a positive example. Keep it false for bounded edits, small replacements, metadata/config tweaks, and changes that fit comfortably in the normal mutation response. Do not infer large_mutation from complexity alone. Evidence needs are independent of complexity: a nontrivial task can still need 0 evidence actions (for example a fresh standalone file from a complete written specification), while a trivial one-line fix to an unfamiliar file may still need 1-2. Do not inspect the repository or implement the task. Describe the evidence/target needed, but do not prescribe scout/subagent/direct-tool routing.${layoutGuidance}
-
-Output contract: call structured_output with the result wrapped in the required outer envelope { "value": { "steps": [...], "complexity": "...", "evidence_budget": N, "large_mutation": true|false, "reason": "..." } }. Each step must be at most 240 characters (aim for 200 or fewer); include no fields beyond the five listed.${repair ? `\n\nREPAIR: your previous structured_output call was rejected by schema validation. Call structured_output again with exactly { "value": { "steps": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } } and nothing else.` : ''}
-
-Issue title:
-${issue.title}
-
-Issue body:
-${issue.body}`;
-}
-
-// pi-subagents reports a terminal schema/envelope rejection as `Structured output validation failed: <details>`
-// (readStructuredOutput). The structured_output tool's own per-call "Validation failed for tool" errors stay
-// inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
-const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
-
-async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null) {
-  const request = {
-    agent: config.implementationPlannerAgent,
-    nodeId: 'implementation-plan',
-    metricCall: 'planner',
-    task: plannerTask(process.env, { layoutHint }),
-    schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
-    timeoutMs: Number(config.implementationPlannerTimeoutMs ?? 45000),
-    maxTokens: Number(config.implementationPlannerMaxTokens ?? 768),
-    toolBudget: { hard: 3 },
-  };
-  const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
-  let response;
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      response = await runStructuredSubagent(pi, ctx, request, signal);
-      break;
-    } catch (error) {
-      const message = String(error?.message ?? error);
-      const missing = message.includes('Missing structured_output call');
-      const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
-      const retryable = missing || schemaFailure;
-      const reason = missing ? 'missing_structured_output' : schemaFailure ? 'structured_output_schema_failure' : 'planner_infrastructure_failure';
-      if (schemaFailure) request.task = plannerTask(process.env, { repair: true, layoutHint });
-      console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
-        agent: config.implementationPlannerAgent,
-        reason,
-        attempt: attempt + 1,
-        retriesExhausted: retryable && attempt >= retries,
-        error: message,
-      })}`);
-      if (!retryable || attempt >= retries) throw error;
-      console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
-        agent: config.implementationPlannerAgent,
-        reason,
-        attempt: attempt + 1,
-      })}`);
-    }
-  }
-  return {
-    ...validateImplementationPreparation(normalizeImplementationPreparation(response.result.value)),
-    usage: response.usage ?? null,
-    layoutHint,
-  };
-}
-
 function resultText(result) {
   if (typeof result === 'string') return result;
   const content = Array.isArray(result) ? result : result?.content;
@@ -445,8 +234,72 @@ function resultText(result) {
   return typeof result?.message === 'string' ? result.message : '';
 }
 
+// A fresh Implementer without a bootstrap artifact (not launched through the runner) fails soft into
+// the same already-resolved fallback rather than being blocked; the runner always supplies one.
+function loadPreparedImplementation(env = process.env) {
+  const prepared = readPreparedImplementation(env.PI_PREPARED_IMPLEMENTATION_FILE);
+  return prepared ?? bootstrapFailureFallback(process.cwd(), 'PreparedImplementation artifact is missing', env);
+}
+
+function logPreparedImplementation(prepared, applied) {
+  const stage = 'implementer';
+  const usage = prepared.plannerUsage ?? null;
+  console.log(`[PI][planner] prepared status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence=${prepared.plannerEvidenceUsed ?? 'unknown'}/${prepared.plannerEvidenceCap ?? 'unknown'} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${usage?.input ?? 'unknown'} out=${usage?.output ?? 'unknown'}`);
+  if (prepared.status === 'fallback') {
+    console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
+      stage,
+      preparationState: applied.preparationState,
+      evidenceBudget: applied.evidenceBudget,
+      source: 'implementation-planner',
+      failureClass: prepared.failureClass,
+      recovery: 'continue_without_planner_output',
+      reason: prepared.reason,
+      plannerDurationMs: prepared.plannerDurationMs,
+      evidenceUsed: prepared.plannerEvidenceUsed ?? null,
+      evidenceCap: prepared.plannerEvidenceCap ?? null,
+      providerTurns: prepared.plannerProviderTurns ?? null,
+    })}`);
+  } else {
+    console.log(`PI_PLAN ${JSON.stringify({
+      stage,
+      steps: prepared.plan,
+      repositoryFacts: prepared.repositoryFacts ?? [],
+      complexity: prepared.complexity,
+      evidenceBudget: prepared.evidenceBudget,
+      largeMutation: prepared.largeMutation,
+      largeMutationArmed: applied.largeMutationArmed,
+      reason: prepared.reason,
+      usage,
+      plannerDurationMs: prepared.plannerDurationMs,
+      evidenceUsed: prepared.plannerEvidenceUsed ?? null,
+      evidenceCap: prepared.plannerEvidenceCap ?? null,
+      providerTurns: prepared.plannerProviderTurns ?? null,
+    })}`);
+    if (applied.largeMutationArmed) {
+      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({ stage, phase: 'auto_armed', source: 'implementation-planner' })}`);
+    }
+    console.log(`PI_COMPLEXITY ${JSON.stringify({
+      stage,
+      complexity: prepared.complexity,
+      evidenceBudget: prepared.evidenceBudget,
+      largeMutation: prepared.largeMutation,
+      reason: prepared.reason,
+      usage,
+      source: 'implementation-planner',
+    })}`);
+  }
+  console.log(`PI_BOOTSTRAP ${JSON.stringify({ phase: 'prepared_state_applied', status: prepared.status, beforeFirstProviderRequest: true })}`);
+}
+
 function codingSessionLog(phase, fields) {
   const line = `PI_CODING_SESSION ${JSON.stringify({ phase, ...fields })}`;
+  const summaryFields = ['side', 'agent', 'tool', 'status', 'durationMs', 'reason']
+    .filter(key => fields[key] != null)
+    .map(key => `${key}=${String(fields[key]).replace(/\s+/g, ' ').slice(0, 100)}`)
+    .join(' ');
+  const readable = `[PI][coding] phase=${phase}${summaryFields ? ` ${summaryFields}` : ''}`;
+  if (['failed', 'rejected', 'cancelled', 'blocked', 'ended_without_submit'].includes(phase)) console.warn(readable);
+  else console.log(readable);
   if (['failed', 'rejected', 'cancelled'].includes(phase)) console.warn(line);
   else console.log(line);
 }
@@ -482,9 +335,6 @@ export default function (pi) {
         fs.statSync(resumePatch).size > 0
       );
   const validationRepair = stage === 'implementer' && process.env.PI_VALIDATION_REPAIR === 'true';
-  const freshBaseCommit = stage === 'implementer'
-    ? String(process.env.PI_IMPLEMENTER_START_COMMIT ?? '').trim()
-    : '';
   // A coding session is already prepared: it starts directly in the action phase.
   const directActionImplementer = resumedImplementer || validationRepair || Boolean(codingSession);
   const controller = new ProgressController(
@@ -502,6 +352,15 @@ export default function (pi) {
     ? new SemanticLoopGuard(loopGuardLimits())
     : null;
 
+  // Fresh work only: planning already ran in the runner's bootstrap session, so this session is born
+  // prepared and its first provider request already carries the plan (see the stage prompt). Restored
+  // work, validation repair and coding sessions keep their direct-action paths and never re-plan.
+  if (stage === 'implementer' && !directActionImplementer) {
+    const preparedImplementation = loadPreparedImplementation();
+    const applied = controller.applyPreparedImplementation(preparedImplementation);
+    logPreparedImplementation(preparedImplementation, applied);
+  }
+
   let appliedActionCap = 0;
   let actionTurnAttemptedTool = false;
   let actionRequiredProseOnlyTurns = 0;
@@ -509,8 +368,17 @@ export default function (pi) {
   let requireToolOnNextProviderRequest = false;
   let forcedProviderRequestInFlight = false;
   let loopGuardSteeredThisTurn = false;
+  let terminalRecoveryState = null;
+  let terminalRecoveryRequiredTool = null;
+  let terminalRecoveryAttemptToolCallId = null;
+  // The payload that actually produced the current structured terminal obligation. Locally
+  // blocked retries have no terminal diagnostics and must never replace this publication base.
+  let lastTerminalFailureInput = null;
   let unrestrictedActiveTools = null;
   let unavailableToolAttempts = 0;
+  let unavailableCapabilityAttemptedThisTurn = false;
+  let unavailableCapabilityKindThisTurn = null;
+  let consecutiveUnavailableCapabilityTurns = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
   // Successful trusted recovery transitions in this process; releases the incapable-fork guard.
@@ -520,6 +388,423 @@ export default function (pi) {
   // surface (permit exhaustion or exact-retry substitution). A later valid
   // permit may restore it only in that case; unrelated removals stay removed.
   let verificationToolHiddenByPermitGate = false;
+  let deterministicVerificationInfrastructure = null;
+  // After a fork returns with trusted publishable mutations, prevent a blind second fork or
+  // rewrite of those completed outputs. Release only after evidence inspects one protected path
+  // or authoritative validation settles; if neither route remains reachable, preserve the
+  // worktree and fail closed instead of reopening mutation/fork capabilities.
+  let codingRecoveryGuard = null;
+
+  // Ordinary validation repair inside a still-live coding-session fork is intentionally separate
+  // from codingRecoveryGuard, which protects parent-side recovery only after the fork has ended.
+  // A failed focused check opens a tiny read-only window over the authoritative failure scope and
+  // changed publishable files, without touching the Planner/main evidence budget.
+  let codingValidationRepair = null;
+  const codingValidationRepairHistory = new Map();
+  const pendingCodingRepairReads = new Map();
+
+  function normalizedCodingRepairPath(value, cwd) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const file = value.split('::')[0];
+    const root = path.resolve(cwd);
+    const absolute = path.isAbsolute(file) ? path.resolve(file) : path.resolve(root, file);
+    const relative = path.relative(root, absolute);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+    return relative.split(path.sep).join('/');
+  }
+
+  function trustedCodingRepairReadPath(value, cwd) {
+    const normalized = normalizedCodingRepairPath(value, cwd);
+    if (!normalized) return null;
+    try {
+      const realRoot = fs.realpathSync(cwd);
+      const realCandidate = fs.realpathSync(path.resolve(cwd, normalized));
+      const relative = path.relative(realRoot, realCandidate);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+      return normalized;
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizeCodingRepairDiagnosticText(value) {
+    return String(value ?? '')
+      .trim()
+      // Diagnostic text often embeds ephemeral paths, addresses and measured values.
+      // Keep semantic numbers such as "expected 42" while removing volatile measurements.
+      .replace(/\b0x[0-9a-f]+\b/gi, '<hex>')
+      .replace(/\b[0-9a-f]{12,}\b/gi, '<hex>')
+      .replace(/[A-Za-z]:\\(?:[^\\\s"'():]+\\)+[^\\\s"'():]*/g, '<path>')
+      .replace(/(^|[\s"'(])\/(?:[^/\s"'():]+\/)+[^/\s"'():]*/g, '$1<path>')
+      .replace(/(^|[^\w])[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?:ns|us|µs|ms|s|bytes?|kb|mb|gb)(?=$|[^\w])/gi, '$1<number>')
+      .replace(/\s+/g, ' ');
+  }
+
+  function codingRepairImportedPaths(seedPaths, cwd) {
+    const imported = new Set();
+    const seeds = new Set(seedPaths);
+    const maybeAdd = candidate => {
+      if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) return;
+      const normalized = trustedCodingRepairReadPath(candidate, cwd);
+      if (!normalized || seeds.has(normalized) || imported.has(normalized)) return;
+      try {
+        if (!fs.statSync(path.resolve(cwd, normalized)).isFile()) return;
+      } catch {
+        return;
+      }
+      imported.add(normalized);
+    };
+
+    for (const seed of seedPaths.slice(0, 40)) {
+      if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+      const safeSeed = trustedCodingRepairReadPath(seed, cwd);
+      if (!safeSeed) continue;
+      const absolute = path.resolve(cwd, safeSeed);
+      let source;
+      try {
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile() || stat.size > 256 * 1024) continue;
+        source = fs.readFileSync(absolute, 'utf8');
+      } catch {
+        continue;
+      }
+
+      if (/\.py$/i.test(safeSeed)) {
+        const importPattern = /^\s*(?:from\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\b|import\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*))/gm;
+        for (const match of source.matchAll(importPattern)) {
+          const moduleName = match[1] ?? match[2];
+          if (!moduleName) continue;
+          const modulePath = moduleName.split('.').join('/');
+          for (const base of ['', path.dirname(safeSeed)]) {
+            maybeAdd(path.join(base, `${modulePath}.py`));
+            maybeAdd(path.join(base, modulePath, '__init__.py'));
+            if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+          }
+          if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+        }
+      } else if (/\.(?:[cm]?js|jsx|ts|tsx)$/i.test(safeSeed)) {
+        const importPattern = /(?:from\s+|require\(\s*|import\(\s*)['"]([^'"]+)['"]/g;
+        for (const match of source.matchAll(importPattern)) {
+          const specifier = match[1];
+          if (!specifier?.startsWith('.')) continue;
+          const base = path.join(path.dirname(safeSeed), specifier);
+          for (const candidate of [base, `${base}.js`, `${base}.mjs`, `${base}.cjs`, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.js'), path.join(base, 'index.ts')]) {
+            maybeAdd(candidate);
+            if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+          }
+          if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+        }
+      }
+    }
+    return [...imported];
+  }
+
+  function codingRepairFailureSet(result, cwd) {
+    const diagnostics = (Array.isArray(result?.diagnostics) ? result.diagnostics : [])
+      .map(item => ({
+        file: normalizedCodingRepairPath(item?.file, cwd),
+        code: typeof item?.code === 'string' ? item.code : null,
+        message: normalizeCodingRepairDiagnosticText(item?.message),
+      }))
+      .filter(item => item.file || item.code || item.message)
+      .map(item => JSON.stringify(item))
+      .sort();
+    return diagnostics.length
+      ? [...new Set(diagnostics)]
+      : [JSON.stringify({ summary: normalizeCodingRepairDiagnosticText(result?.summary ?? 'check failed') })];
+  }
+
+  function codingRepairIdentity(input, result, cwd) {
+    const kind = typeof result?.kind === 'string' && result.kind
+      ? result.kind
+      : typeof input?.kind === 'string' && input.kind
+        ? input.kind
+        : 'unknown';
+    const scope = normalizeScope(input ?? {}, cwd);
+    const failures = codingRepairFailureSet(result, cwd);
+    return {
+      kind,
+      scope,
+      key: groupKey(kind, scope),
+      failures,
+      signature: JSON.stringify({ kind, scope, failures }),
+    };
+  }
+
+  function strictFailureSetReduction(current, best) {
+    if (!Array.isArray(best) || current.length >= best.length) return false;
+    const bestSet = new Set(best);
+    return current.every(item => bestSet.has(item));
+  }
+
+  function codingRepairScope(input, result, cwd) {
+    const paths = new Set();
+    const diagnosticLines = {};
+    const add = value => {
+      const normalized = normalizedCodingRepairPath(value, cwd);
+      if (normalized) paths.add(normalized);
+      return normalized;
+    };
+
+    for (const value of input?.paths ?? []) add(value);
+    for (const value of input?.targets ?? []) add(value);
+    for (const diagnostic of result?.diagnostics ?? []) {
+      const normalized = add(diagnostic?.file);
+      const line = Number(diagnostic?.line);
+      if (normalized && Number.isSafeInteger(line) && line > 0) {
+        const lines = diagnosticLines[normalized] ?? [];
+        if (!lines.includes(line) && lines.length < 8) lines.push(line);
+        diagnosticLines[normalized] = lines;
+      }
+    }
+
+    try {
+      const changed = new Set(
+        worktreeChangedFiles(cwd, baseRef())
+          .map(item => normalizedCodingRepairPath(item, cwd))
+          .filter(Boolean),
+      );
+      const accepted = mutationScopeReceipt(cwd, process.env).accepted ?? [];
+      for (const item of accepted) {
+        const normalized = normalizedCodingRepairPath(item?.path, cwd);
+        if (normalized && changed.has(normalized)) paths.add(normalized);
+      }
+    } catch (error) {
+      console.warn(`PI_CODING_REPAIR_SCOPE_WARN ${JSON.stringify({
+        stage,
+        error: String(error?.message ?? error),
+      })}`);
+    }
+
+    for (const imported of codingRepairImportedPaths([...paths], cwd)) paths.add(imported);
+    const trustedPaths = [...paths]
+      .map(item => trustedCodingRepairReadPath(item, cwd))
+      .filter(Boolean);
+
+    return {
+      paths: [...new Set(trustedPaths)].sort().slice(0, 40),
+      diagnosticLines,
+    };
+  }
+
+  function codingRepairWindowActive() {
+    return Boolean(codingSession && codingValidationRepair?.status === 'fail');
+  }
+
+  function codingRepairReadAvailable() {
+    return Boolean(
+      codingRepairWindowActive() &&
+      codingValidationRepair.paths.length > 0 &&
+      codingValidationRepair.readsRemaining > 0 &&
+      controller.productiveProgressState() === 'action_required'
+    );
+  }
+
+  function codingRepairReadPolicy(input, cwd) {
+    if (!codingRepairReadAvailable()) return null;
+    const requested = trustedCodingRepairReadPath(input?.path, cwd);
+    if (!requested || !codingValidationRepair.paths.includes(requested)) {
+      return {
+        block: true,
+        reason: `BLOCKED: repair read is limited to the authoritative failing/changed paths: ${codingValidationRepair.paths.join(', ') || '(none)'}. Broad repository discovery remains closed.`,
+      };
+    }
+    return {
+      allowed: true,
+      path: requested,
+      diagnosticLines: codingValidationRepair.diagnosticLines?.[requested] ?? [],
+    };
+  }
+
+  async function observeCodingValidationRepair(input, result, ctx) {
+    if (!codingSession || !result || typeof result !== 'object') return false;
+    const status = result.status ?? null;
+    const identity = codingRepairIdentity(input, result, ctx.cwd);
+
+    if (status === 'pass') {
+      const cleared = [];
+      let previousNonImprovingFailures = null;
+      for (const [key, history] of codingValidationRepairHistory.entries()) {
+        if (
+          history.kind === identity.kind &&
+          validationScopeCovers(identity.kind, identity.scope, history.scope)
+        ) {
+          if (key === codingValidationRepair?.key) {
+            previousNonImprovingFailures = history.nonImprovingFailures ?? null;
+          }
+          cleared.push(key);
+          codingValidationRepairHistory.delete(key);
+        }
+      }
+      const activeCovered = Boolean(
+        codingValidationRepair &&
+        codingValidationRepair.kind === identity.kind &&
+        validationScopeCovers(identity.kind, identity.scope, codingValidationRepair.scope)
+      );
+      if (activeCovered) {
+        console.info(`PI_CODING_REPAIR_STATE ${JSON.stringify({
+          stage,
+          status: 'cleared',
+          reason: identity.key === codingValidationRepair.key
+            ? 'validation_pass_same_scope'
+            : 'validation_pass_covering_scope',
+          key: codingValidationRepair.key,
+          coveringKey: identity.key,
+          clearedHistoryKeys: cleared,
+          previousNonImprovingFailures,
+        })}`);
+        codingValidationRepair = null;
+      }
+      return false;
+    }
+    // Timeout/invalid/infra or unrelated passes do not erase unresolved repair history.
+    if (status !== 'fail') return false;
+
+    const previous = codingValidationRepairHistory.get(identity.key) ?? null;
+    const strictReduction = Boolean(
+      previous &&
+      strictFailureSetReduction(identity.failures, previous.bestFailureSet),
+    );
+    const nonImprovingFailures = previous == null || strictReduction
+      ? 1
+      : previous.nonImprovingFailures + 1;
+    const bestFailureSet = previous == null || strictReduction
+      ? identity.failures
+      : previous.bestFailureSet;
+    const seenSignatures = new Set(previous?.seenSignatures ?? []);
+    seenSignatures.add(identity.signature);
+    codingValidationRepairHistory.set(identity.key, {
+      kind: identity.kind,
+      scope: identity.scope,
+      bestFailureSet,
+      nonImprovingFailures,
+      seenSignatures: [...seenSignatures].slice(-20),
+    });
+
+    const scope = codingRepairScope(input, result, ctx.cwd);
+    const informedByDiagnostics = Array.isArray(result.diagnostics) && result.diagnostics.length > 0;
+    codingValidationRepair = {
+      status: 'fail',
+      kind: identity.kind,
+      scope: identity.scope,
+      key: identity.key,
+      signature: identity.signature,
+      nonImprovingFailures,
+      strictReduction,
+      bestFailureSet,
+      readsRemaining: CODING_REPAIR_READ_LIMIT,
+      readObserved: false,
+      informedByDiagnostics,
+      readRequiredBeforeMutation: !informedByDiagnostics && scope.paths.length > 0,
+      evidenceGateReleased: !informedByDiagnostics && scope.paths.length === 0,
+      paths: scope.paths,
+      diagnosticLines: scope.diagnosticLines,
+    };
+
+    console.warn(`PI_CODING_REPAIR_STATE ${JSON.stringify({
+      stage,
+      status: 'fail',
+      key: identity.key,
+      nonImprovingFailures,
+      strictReduction,
+      seenSignatures: seenSignatures.size,
+      limit: CODING_EQUIVALENT_FAILURE_LIMIT,
+      paths: codingValidationRepair.paths,
+      diagnosticLines: codingValidationRepair.diagnosticLines,
+      informedByDiagnostics: codingValidationRepair.informedByDiagnostics,
+      readRequiredBeforeMutation: codingValidationRepair.readRequiredBeforeMutation,
+      evidenceGateReleased: codingValidationRepair.evidenceGateReleased,
+    })}`);
+    // The next response must take a concrete repair step. Because bounded read is now part of
+    // the repair surface, provider-level required tool choice cannot force a blind mutation.
+    requireToolOnNextProviderRequest = true;
+
+    if (nonImprovingFailures >= CODING_EQUIVALENT_FAILURE_LIMIT) {
+      const reason = `Authoritative validation produced ${nonImprovingFailures} failures for the same kind+scope without a new strict reduction of the best failure set. Refusing further blind rewrites.`;
+      const details = {
+        validation_key: identity.key,
+        validation_signature: identity.signature,
+        non_improving_failures: nonImprovingFailures,
+        seen_signatures: seenSignatures.size,
+        limit: CODING_EQUIVALENT_FAILURE_LIMIT,
+        repair_paths: codingValidationRepair.paths,
+        checkpoint: { worktree_preserved: true },
+      };
+      recordRuntimeAbort('PI_CODING_VALIDATION_NON_CONVERGENT', reason, details);
+      console.error(`PI_CODING_VALIDATION_NON_CONVERGENT ${JSON.stringify({ stage, reason, ...details })}`);
+      await ctx.abort();
+      return true;
+    }
+
+    const neighborhoods = Object.entries(codingValidationRepair.diagnosticLines)
+      .map(([file, lines]) => `${file}:${lines.join(',')}`)
+      .join('; ');
+    const evidenceGuidance = codingValidationRepair.paths.length > 0
+      ? `You may read only these repair-relevant failing/changed/import paths before the next repair: ${codingValidationRepair.paths.join(', ')}.`
+      : 'No trusted bounded repair path is available, so the read-before-mutation evidence gate is released rather than dead-ending the repair state.';
+    await pi.sendUserMessage(
+      `RUNTIME REPAIR EVIDENCE: validation failed. ${evidenceGuidance} ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. When a bounded read route exists, a semantic repair mutation without structured diagnostics must use it first. Repair convergence is tracked per kind+scope; a same-kind passing scope clears a failed scope only when coverage is provable, and only a strict reduction below the best failure set resets the non-improving counter.`,
+      { deliverAs: 'steer' },
+    );
+    return false;
+  }
+
+  function normalizedRecoveryEvidencePaths(input, cwd) {
+    const candidates = [
+      typeof input?.path === 'string' ? input.path : null,
+      ...(Array.isArray(input?.paths) ? input.paths : []),
+    ].filter(item => typeof item === 'string' && item.trim());
+    const root = path.resolve(cwd);
+    const normalized = [];
+    for (const candidate of candidates) {
+      const absolute = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(root, candidate);
+      const relative = path.relative(root, absolute);
+      if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) continue;
+      normalized.push(relative.split(path.sep).join('/'));
+    }
+    return [...new Set(normalized)];
+  }
+
+  function codingRecoveryEvidenceTouchesGuard(guard, input, cwd) {
+    if (!guard?.changed_publishable_paths?.length) return false;
+    const protectedPaths = new Set(
+      guard.changed_publishable_paths.map(item => String(item).split('\\').join('/')),
+    );
+    return normalizedRecoveryEvidencePaths(input, cwd).some(item => protectedPaths.has(item));
+  }
+
+  function codingRecoveryEvidenceAvailable() {
+    const evidenceWindowReachable =
+      controller.evidenceUnlockAvailable() ||
+      controller.productiveProgressState() === 'evidence_allowed';
+    if (!evidenceWindowReachable) return false;
+    const inventory = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name })))
+      .map(tool => typeof tool === 'string' ? tool : tool?.name);
+    return inventory.includes('read');
+  }
+
+  function codingRecoveryValidationAvailable() {
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    if (!verificationTool || deterministicVerificationInfrastructure) return false;
+    const capabilityOwned = Boolean(
+      pi.getActiveTools().includes(verificationTool) ||
+      verificationToolHiddenByPermitGate ||
+      unrestrictedActiveTools?.includes(verificationTool)
+    );
+    return capabilityOwned && Boolean(
+      controller.verificationPermitted() || controller.recoveryVerificationArmed()
+    );
+  }
+
+  function abortBlockedCodingRecovery(ctx, reason) {
+    const details = {
+      recovery_receipt: codingRecoveryGuard,
+      checkpoint: { worktree_preserved: true },
+    };
+    recordRuntimeAbort('PI_CODING_RECOVERY_BLOCKED', reason, details);
+    console.error(`PI_CODING_RECOVERY_BLOCKED ${JSON.stringify({ stage, reason, ...details })}`);
+    ctx.abort();
+  }
   // Tracks whether the current turn attempted one of the finish tools (mutation, rollback,
   // or terminal submission) it was granted a one-shot elevated mutation budget for.
   let elevatedTurnAttemptedFinishTool = false;
@@ -574,6 +859,63 @@ export default function (pi) {
   }
 
   let lastSurfaceSignature = null;
+  let lastCodingSubmissionGuardSignature = null;
+
+  function codingSubmissionReadiness() {
+    if (!codingSession) return { ready: true, missing_outputs: [] };
+    const prepared = readPreparedImplementation(process.env.PI_PREPARED_IMPLEMENTATION_FILE);
+    if (!requiredPreparedOutputPaths(prepared).length) return { ready: true, missing_outputs: [] };
+    return codingSessionSubmissionReadiness({
+      prepared,
+      cwd: process.cwd(),
+      resumed: resumedImplementer,
+      validationRepair,
+    });
+  }
+
+  function preparedOutputPresence(cwd) {
+    const prepared = readPreparedImplementation(process.env.PI_PREPARED_IMPLEMENTATION_FILE);
+    const required = new Set(requiredPreparedOutputPaths(prepared));
+    const source = required.has(prepared?.layoutHint?.sourceTarget)
+      && fs.existsSync(path.resolve(cwd, prepared.layoutHint.sourceTarget));
+    const test = required.has(prepared?.layoutHint?.testTarget)
+      && fs.existsSync(path.resolve(cwd, prepared.layoutHint.testTarget));
+    return { source, test };
+  }
+
+  function latestCodingValidation() {
+    const { records, corrupted } = readValidationLedger(process.env.PI_VALIDATION_LEDGER_FILE);
+    if (corrupted) {
+      return { kind: null, status: 'infra_error', infrastructure_code: 'VALIDATION_LEDGER_CORRUPT' };
+    }
+    const record = [...records].reverse().find(item =>
+      item?.source === 'run_check' &&
+      item?.stage === 'implementer' &&
+      item?.run_id === validationRunId()
+    );
+    if (!record) return null;
+    return {
+      kind: record.kind ?? null,
+      status: record.status ?? null,
+      infrastructure_code: record.infrastructure?.code ?? null,
+    };
+  }
+
+  function trustedCodingRecoveryReceipt(cwd) {
+    let changedFiles = [];
+    try {
+      changedFiles = worktreeChangedFiles(cwd, baseRef());
+    } catch (error) {
+      console.warn(`PI_CODING_RECOVERY_CHANGED_FILES_UNAVAILABLE ${JSON.stringify({ error: String(error?.message ?? error) })}`);
+    }
+    return codingSessionRecoveryReceipt({
+      changedFiles,
+      acceptedScope: mutationScopeReceipt(cwd, process.env),
+      preparedOutputs: preparedOutputPresence(cwd),
+      lastValidation: latestCodingValidation(),
+    });
+  }
+
   function setSurface(names, reason) {
     pi.setActiveTools(names);
     const actual = pi.getActiveTools();
@@ -603,6 +945,7 @@ export default function (pi) {
       productiveActionRequired &&
       failedCheckRecovery &&
       !recoveryLedgerCorrupted &&
+      !deterministicVerificationInfrastructure &&
       controller.verificationPermitted()
     );
 
@@ -617,9 +960,12 @@ export default function (pi) {
     // usable; only exact retry is disabled because its historical scope cannot
     // be reconstructed safely from an incomplete ledger.
     const verificationPermitted = controller.verificationPermitted();
+    const recoveryVerificationArmed = controller.recoveryVerificationArmed();
+    const verificationVisible = !deterministicVerificationInfrastructure
+      && (verificationPermitted || recoveryVerificationArmed);
     const currentWithPermittedVerification =
       verificationTool &&
-      verificationPermitted &&
+      verificationVisible &&
       verificationToolHiddenByPermitGate &&
       !current.includes(verificationTool)
         ? [...current, verificationTool]
@@ -651,9 +997,36 @@ export default function (pi) {
         unrestrictedActiveTools = unrestrictedActiveTools.filter(name => name !== verificationTool);
       }
     }
+    const submissionReadiness = codingSubmissionReadiness();
+    const guardSignature = submissionReadiness.ready ? 'ready' : submissionReadiness.missing_outputs.join('\0');
+    if (guardSignature !== lastCodingSubmissionGuardSignature) {
+      lastCodingSubmissionGuardSignature = guardSignature;
+      if (!submissionReadiness.ready) {
+        console.warn(`PI_CODING_SUBMIT_GUARD ${JSON.stringify({
+          stage,
+          reason: 'prepared_outputs_missing',
+          missingOutputs: submissionReadiness.missing_outputs,
+          terminalOutcomesRemainAvailable: true,
+        })}`);
+      }
+    }
+    const codingRecoveryBlocked = name => Boolean(
+      codingRecoveryGuard &&
+      (
+        CONTENT_MUTATION_TOOLS.has(name) ||
+        name === 'bash' ||
+        name === config.productiveProgress?.codingSessionTool
+      )
+    );
+    const codingRepairBlocked = name => Boolean(
+      codingRepairWindowActive() &&
+      name === config.productiveProgress?.blockerTool
+    );
     const visible = names => names.filter(name =>
       !satisfied.has(name) &&
-      (!verificationTool || name !== verificationTool || (verificationPermitted && !recoveryRetryReady)) &&
+      !codingRecoveryBlocked(name) &&
+      !codingRepairBlocked(name) &&
+      (!verificationTool || name !== verificationTool || (verificationVisible && !recoveryRetryReady)) &&
       (name !== RETRY_FAILED_CHECK_TOOL || recoveryRetryReady)
     );
     const applySurface = (names, reason) => {
@@ -661,10 +1034,10 @@ export default function (pi) {
         if (
           current.includes(verificationTool) &&
           !names.includes(verificationTool) &&
-          (!verificationPermitted || recoveryRetryReady)
+          (!verificationVisible || recoveryRetryReady)
         ) {
           verificationToolHiddenByPermitGate = true;
-        } else if (verificationPermitted && !recoveryRetryReady && names.includes(verificationTool)) {
+        } else if (verificationVisible && !recoveryRetryReady && names.includes(verificationTool)) {
           verificationToolHiddenByPermitGate = false;
         }
       }
@@ -681,9 +1054,10 @@ export default function (pi) {
               'submit_repair',
             ]).has(name)
           )
-        : largeMutationBudgetActive
+        : largeMutationBudgetActive && !recoveryVerificationArmed
           // UX on top of the controller's own hard gate: while the elevated budget is active,
-          // don't even show tools this turn is not allowed to call.
+          // don't even show tools this turn is not allowed to call. Exact terminal recovery
+          // verification is a separate one-shot gate and temporarily supersedes this surface.
           ? elevatedMutationTurnToolNames(unrestrictedActiveTools, {
               blockerTool: controller.evidenceUnlockAvailable()
                 ? config.productiveProgress.blockerTool
@@ -697,11 +1071,14 @@ export default function (pi) {
               : null,
             verificationTools: recoveryRetryReady
               ? [RETRY_FAILED_CHECK_TOOL]
-              : verificationPermitted
+              : verificationVisible
                 ? [config.productiveProgress.verificationTool].filter(Boolean)
                 : [],
           });
-      applySurface(visible(restricted), 'restricted');
+      const repairAwareRestricted = codingRepairReadAvailable() && unrestrictedActiveTools.includes('read')
+        ? unrestrictedActiveTools.filter(name => name === 'read' || restricted.includes(name))
+        : restricted;
+      applySurface(visible(repairAwareRestricted), codingRepairReadAvailable() ? 'repair_evidence' : 'restricted');
       return;
     }
 
@@ -738,6 +1115,7 @@ export default function (pi) {
   function recordRuntimeAbort(failureCode, reason, details = {}) {
     const record = {
       ...details,
+      checkpoint: details.checkpoint ?? { repository_state: null, worktree_preserved: true },
       schema_version: 1,
       stage,
       failure_class: 'model_execution_abort',
@@ -817,7 +1195,103 @@ export default function (pi) {
     return guidance;
   }
 
-  async function handleLoopResult(loopResult, ctx) {
+  function terminalInputForLoop(tool, input) {
+    if (!['submit_result', 'submit_repair'].includes(tool)) return null;
+    return input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  }
+
+  function terminalRecoveryPlan(loopResult, terminalInput, ctx) {
+    let currentChangedFiles = [];
+    let drift = [];
+    let acceptedPaths = [];
+    let repositoryFactsAvailable = true;
+    try {
+      currentChangedFiles = worktreeChangedFiles(ctx.cwd, baseRef());
+      const evidence = driftEvidence(ctx.cwd);
+      acceptedPaths = [...evidence.acceptedPaths];
+      drift = classifyWorktreeDrift({
+        cwd: ctx.cwd,
+        changed: currentChangedFiles,
+        expectedFiles: Array.isArray(terminalInput?.files) ? terminalInput.files : [],
+        ...evidence,
+      });
+    } catch (error) {
+      repositoryFactsAvailable = false;
+      console.warn('PI_TERMINAL_RECOVERY_FACTS_FAILED ' + JSON.stringify({
+        stage,
+        obligationKey: loopResult.obligation?.key ?? null,
+        error: String(error?.message ?? error),
+      }));
+    }
+    let recoveryActiveTools = pi.getActiveTools();
+    const verificationTool = config.productiveProgress?.verificationTool ?? null;
+    if (
+      loopResult.obligation?.kind === 'validation' &&
+      verificationTool &&
+      verificationToolHiddenByPermitGate &&
+      !recoveryActiveTools.includes(verificationTool)
+    ) {
+      recoveryActiveTools = [...recoveryActiveTools, verificationTool];
+    }
+    return selectTerminalRecovery({
+      obligation: loopResult.obligation,
+      terminalInput,
+      activeToolNames: recoveryActiveTools,
+      currentChangedFiles,
+      drift,
+      acceptedPaths,
+      repositoryFactsAvailable,
+    });
+  }
+
+  function terminalObligationSummary(obligation) {
+    if (!obligation || typeof obligation !== 'object') return null;
+    const summary = {
+      key: obligation.key ?? null,
+      kind: obligation.kind ?? null,
+      code: obligation.code ?? null,
+    };
+    for (const key of ['paths', 'conflictPaths', 'missingFields', 'requiredTargets', 'missingOutputs']) {
+      if (!Array.isArray(obligation[key])) continue;
+      summary[key] = obligation[key].slice(0, 20);
+      if (obligation[key].length > 20) summary[key + 'Count'] = obligation[key].length;
+    }
+    return summary;
+  }
+
+  function terminalRecoveryPlanSummary(plan) {
+    if (!plan || typeof plan !== 'object') return null;
+    return {
+      status: plan.status ?? null,
+      obligationKey: plan.obligationKey ?? null,
+      obligationKind: plan.obligationKind ?? null,
+      kind: plan.kind ?? null,
+      tool: plan.tool ?? null,
+      target: plan.target ?? null,
+      requiredTool: plan.requiredTool ?? null,
+      reason: plan.reason ?? null,
+    };
+  }
+
+  function abortTerminalRecovery(loopResult, plan, metric, ctx) {
+    controller.clearRecoveryVerification();
+    const reason = plan?.status === 'blocked'
+      ? plan.reason
+      : 'The same terminal obligation persisted after a deterministic repair was selected without obligation-reducing progress.';
+    const details = {
+      unresolved_obligation: terminalObligationSummary(loopResult.obligation),
+      selected_repair: terminalRecoveryPlanSummary(plan),
+      checkpoint: {
+        repository_state: loopResult.repositoryState ?? null,
+        worktree_preserved: true,
+      },
+    };
+    recordRuntimeAbort('PI_TERMINAL_RECOVERY_BLOCKED', reason, details);
+    console.error('PI_TERMINAL_RECOVERY_BLOCKED ' + JSON.stringify({ ...metric, ...details, reason }));
+    ctx.abort();
+  }
+
+  async function handleLoopResult(loopResult, ctx, { terminalInput = null } = {}) {
     if (!loopResult?.tripped) return;
     const metric = {
       stage: loopResult.stage,
@@ -833,8 +1307,92 @@ export default function (pi) {
       repeatedFailure: loopResult.repeatedFailure,
       returnedToSeenState: loopResult.returnedToSeenState,
       action: loopResult.action,
+      obligationKey: loopResult.obligation?.key ?? null,
+      obligationKind: loopResult.obligation?.kind ?? null,
     };
     console.log('PI_LOOP_GUARD ' + JSON.stringify(metric));
+    if (loopResult.repeatedFailure === true) {
+      console.warn(`[PI][recovery] equivalent_failure ${JSON.stringify({
+        stage: loopResult.stage,
+        signature: loopResult.errorClass ?? loopResult.fingerprintClass ?? null,
+        count: loopResult.revisitCount ?? null,
+        action: loopResult.action,
+        tool: loopResult.tool,
+      })}`);
+    }
+
+    const terminalFailure =
+      loopResult.reason === 'repeated_failed_strategy' &&
+      loopResult.repeatedFailure === true &&
+      loopResult.obligation?.key &&
+      DETERMINISTIC_TERMINAL_RECOVERY_KINDS.has(loopResult.obligation?.kind) &&
+      ['submit_result', 'submit_repair'].includes(loopResult.tool);
+
+    if (terminalFailure && loopResult.action === 'steer') {
+      const retainedRecovery =
+        terminalRecoveryState?.obligationKey === loopResult.obligation.key
+          ? terminalRecoveryState
+          : null;
+      const recoveryTerminalInput =
+        retainedRecovery?.terminalInput ??
+        (
+          lastTerminalFailureInput?.obligationKey === loopResult.obligation.key
+            ? lastTerminalFailureInput.input
+            : terminalInput
+        );
+      let plan = retainedRecovery?.plan ?? terminalRecoveryPlan(loopResult, recoveryTerminalInput, ctx);
+      controller.clearRecoveryVerification();
+      if (plan.status === 'repair' && plan.kind === 'exact_validation') {
+        if (controller.largeMutationBudgetPending() || controller.largeMutationBudgetActive()) {
+          controller.resetLargeMutationBudget();
+          elevatedScopePreludeUsed = false;
+        }
+        if (!controller.armRecoveryVerification(plan.args)) {
+          plan = {
+            status: 'blocked',
+            obligationKey: plan.obligationKey,
+            obligationKind: plan.obligationKind,
+            reason: 'The exact validation recovery action is available as a runtime tool, but the progress controller has no verification tool configured for this stage.',
+            requiredTool: plan.tool,
+          };
+        }
+      }
+      terminalRecoveryState = {
+        obligationKey: loopResult.obligation.key,
+        obligation: loopResult.obligation,
+        plan,
+        // Preserve the payload that actually produced this obligation. A later locally-blocked
+        // retry has no terminal diagnostics and must never become the new metadata baseline.
+        terminalInput:
+          recoveryTerminalInput && typeof recoveryTerminalInput === 'object' && !Array.isArray(recoveryTerminalInput)
+            ? structuredClone(recoveryTerminalInput)
+            : recoveryTerminalInput,
+      };
+      if (plan.status === 'blocked') {
+        abortTerminalRecovery(loopResult, plan, metric, ctx);
+        return;
+      }
+      terminalRecoveryRequiredTool = plan.tool;
+      requireToolOnNextProviderRequest = true;
+      loopGuardSteeredThisTurn = true;
+      const guidance = terminalRecoveryGuidance(plan);
+      console.warn('PI_TERMINAL_RECOVERY_SELECTED ' + JSON.stringify({
+        ...metric,
+        plan: terminalRecoveryPlanSummary(plan),
+        activeTools: pi.getActiveTools(),
+      }));
+      await pi.sendUserMessage(guidance, { deliverAs: 'steer' });
+      return;
+    }
+
+    if (terminalFailure && loopResult.action === 'abort') {
+      const plan = terminalRecoveryState?.obligationKey === loopResult.obligation.key
+        ? terminalRecoveryState.plan
+        : terminalRecoveryPlan(loopResult, terminalInput, ctx);
+      abortTerminalRecovery(loopResult, plan, metric, ctx);
+      return;
+    }
+
     if (loopResult.action === 'steer') {
       loopGuardSteeredThisTurn = true;
       console.warn('PI_LOOP_GUARD_STEER ' + JSON.stringify(metric));
@@ -884,6 +1442,9 @@ export default function (pi) {
   function verificationLifecycleGuidance() {
     const verificationTool = config.productiveProgress?.verificationTool;
     if (!verificationTool) return finalValidationGuidance();
+    if (deterministicVerificationInfrastructure) {
+      return `run_check is disabled for the rest of this process after deterministic infrastructure failure ${deterministicVerificationInfrastructure.code}. Do not mutate merely to re-arm verification and do not retry or seek a shell workaround. Preserve the current worktree for trusted recovery. ${finalValidationGuidance()}`;
+    }
     const state = controller.verificationLifecycleState();
     const lifecycle = state === 'available'
       ? `${verificationTool} is available once for the current mutation state.`
@@ -931,6 +1492,9 @@ export default function (pi) {
       const blockerTool = config.productiveProgress?.blockerTool;
       if (blockerTool && active.has(blockerTool)) {
         hints.push(`Call ${blockerTool} only when exactly one concrete missing fact prevents the next safe action.`);
+        if (codingSession && !active.has('read')) {
+          hints.push(`This coding session is action-required: read is not exposed now. Do not invent helper tools such as read_for_input; request the one missing fact through ${blockerTool}, or continue with an exposed mutation/terminal tool.`);
+        }
       }
       if (active.has(RETRY_FAILED_CHECK_TOOL)) {
         hints.push(`Use ${RETRY_FAILED_CHECK_TOOL} to rerun the exact unresolved failed verification scope after fixing it.`);
@@ -953,6 +1517,7 @@ export default function (pi) {
     console[result.ok ? 'info' : 'error'](`PI_RUN_CHECK_PREFLIGHT ${JSON.stringify(record)}`);
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
+  let runCheckPreflightFailed = false;
 
   // The request boundary is the capability authority. Re-synchronize the surface immediately
   // before every Implementer provider request, filter payload.tools to that surface, snapshot the
@@ -963,14 +1528,23 @@ export default function (pi) {
   let codingFirstToolLogged = false;
   let codingFirstResponseLogged = false;
   let codingResponseNumber = 0;
+  let codingProviderRequestStartedAt = null;
   if (stage === 'implementer') {
     let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
+      if (runCheckPreflightFailed) {
+        console.error('PI_RUN_CHECK_PREFLIGHT_PROVIDER_BLOCKED');
+        return { ...event.payload, tools: [], tool_choice: 'none' };
+      }
       forcedProviderRequestInFlight = false;
+      if (codingSession) codingProviderRequestStartedAt = Date.now();
       const productiveState = syncProductiveState();
       syncActionToolSurface(productiveState);
 
       let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
+      if (terminalRecoveryState) {
+        patched = compactTerminalRecoveryPayload(patched, terminalRecoveryState);
+      }
       if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
         codingSessionLog('thinking_disabled', {
           side: 'fork',
@@ -982,8 +1556,33 @@ export default function (pi) {
 
       if (Array.isArray(patched?.tools)) {
         const active = new Set(pi.getActiveTools());
-        const tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
-        if (tools.length !== patched.tools.length) patched = { ...patched, tools };
+        let tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
+        if (terminalRecoveryRequiredTool) {
+          const selected = tools.filter(tool =>
+            controllerToolName(tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
+          );
+          if (selected.length) {
+            tools = selected;
+            requireToolOnNextProviderRequest = true;
+            console.warn('PI_TERMINAL_RECOVERY_TOOL_SURFACE ' + JSON.stringify({
+              stage,
+              obligationKey: terminalRecoveryState?.obligationKey ?? null,
+              tool: terminalRecoveryRequiredTool,
+            }));
+          } else {
+            console.warn('PI_TERMINAL_RECOVERY_TOOL_DEFERRED ' + JSON.stringify({
+              stage,
+              obligationKey: terminalRecoveryState?.obligationKey ?? null,
+              tool: terminalRecoveryRequiredTool,
+            }));
+          }
+        }
+        if (
+          tools.length !== patched.tools.length ||
+          tools.some((tool, index) => tool !== patched.tools[index])
+        ) {
+          patched = { ...patched, tools };
+        }
 
         // pi resolves this turn's tool calls against the context captured with this payload, so
         // the payload's definitions are the executable surface of this request. A tool activated
@@ -1101,7 +1700,22 @@ export default function (pi) {
       }
     }
     // The sandbox preflight is the first hard gate: nothing else starts if it fails.
-    if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
+    if (config.productiveProgress?.verificationTool === 'run_check') {
+      try {
+        await preflightRunCheckSandbox();
+      } catch (error) {
+        runCheckPreflightFailed = true;
+        const reason = String(error?.message ?? error);
+        recordRuntimeAbort('PI_RUN_CHECK_PREFLIGHT_FAILED', reason, {
+          failure_class: 'infrastructure',
+          diagnostic: reason,
+        });
+        console.error(`PI_RUN_CHECK_PREFLIGHT_ABORT ${JSON.stringify({ stage, reason })}`);
+        // Pi treats extension hook exceptions as non-fatal; explicitly abort the stage here.
+        await ctx?.abort?.();
+        return;
+      }
+    }
     if (stage === 'implementer' && config.productiveProgress?.codingSessionTool) ensureCodingSessionAgent();
     await applyBudget('short', ctx);
     syncActionToolSurface(syncProductiveState());
@@ -1121,115 +1735,7 @@ export default function (pi) {
     }
   });
 
-  if (controller.requireComplexity && config.implementationPlannerAgent) {
-    pi.registerTool({
-      name: 'prepare_implementation',
-      label: 'Prepare implementation',
-      description: 'Run the runtime-owned implementation planner once. It returns the plan and a trivial/nontrivial classification in one structured result, or PREPARATION_FALLBACK if planner infrastructure fails; do not write a competing plan in the main agent.',
-      parameters: Type.Object({}),
-      async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-        let layoutHint = null;
-        let prepared;
-        try {
-          const issue = implementerIssueContext();
-          layoutHint = discoverAdditivePythonLayout(ctx.cwd, issue);
-          prepared = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint);
-        } catch (error) {
-          // Cancellation is not a recovery request: never unlock execution on abort.
-          if (signal?.aborted) throw error;
-          const fallback = controller.enterPreparationFallback();
-          const reason = String(error?.message ?? error);
-          console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
-            stage,
-            ...fallback,
-            source: config.implementationPlannerAgent,
-            failureClass: 'preparation_infrastructure_failure',
-            recovery: 'continue_without_planner_output',
-            reason,
-          })}`);
-          syncActionToolSurface(syncProductiveState());
-          const fallbackActiveToolNames = pi.getActiveTools();
-          return {
-            content: [{ type: 'text', text:
-              `PREPARATION_FALLBACK: implementation planner infrastructure failed: ${reason}\n` +
-              'Your preparation obligation is satisfied. No planner output or complexity was recorded. Do not repeat preparation. ' +
-              'If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. ' +
-              `You may use up to ${fallback.evidenceBudget} repository evidence attempts; every accepted non-control evidence action consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. ` +
-              'Direct mutation remains allowed during the window and closes it on success. The coding-session action becomes valid only after the evidence window is closed. ' +
-              'Focused verification becomes available only after a successful mutation. Final submission rules are unchanged. ' +
-              'After the fallback window closes, use only the blocker action exposed by the runtime when one concrete implementation fact is still missing.\n' +
-              `${activeToolGuidance(fallbackActiveToolNames)}\n` +
-              `LSP workspace root: ${ctx.cwd}. Fresh worktree base: ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.` +
-              (layoutHint
-                ? `\nRepository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; tests ${layoutHint.testDirectory}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}. This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.`
-                : ''),
-            }],
-            details: { ...fallback, failureClass: 'preparation_infrastructure_failure', reason,
-              lspWorkspaceRoot: ctx.cwd, freshBaseCommit, layoutHint },
-          };
-        }
-        const result = controller.setComplexity(prepared.complexity);
-        controller.setEvidenceBudget(prepared.evidenceBudget);
-        const automaticLargeMutationArmed =
-          controller.armAutomaticLargeMutationBudget(prepared.largeMutation);
-        console.log(`PI_PLAN ${JSON.stringify({
-          stage,
-          steps: prepared.steps,
-          complexity: prepared.complexity,
-          evidenceBudget: prepared.evidenceBudget,
-          largeMutation: prepared.largeMutation,
-          largeMutationArmed: automaticLargeMutationArmed,
-          reason: prepared.reason,
-          usage: prepared.usage,
-        })}`);
-        if (automaticLargeMutationArmed) {
-          console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
-            stage,
-            phase: 'auto_armed',
-            source: 'implementation-planner',
-          })}`);
-        }
-        console.log(`PI_COMPLEXITY ${JSON.stringify({
-          stage,
-          complexity: prepared.complexity,
-          evidenceBudget: prepared.evidenceBudget,
-          largeMutation: prepared.largeMutation,
-          reason: prepared.reason,
-          usage: prepared.usage,
-          source: 'implementation-planner',
-        })}`);
-        const numberedPlan = prepared.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
-        const provenance = stage === 'implementer' && !resumedImplementer
-          ? `\n\nFresh worktree provenance: runtime created this worktree directly from latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}, and no saved issue work was applied. Until the first successful structural_edit/safe_edit/edit/write, direct reads of this worktree are authoritative latest-base evidence; do not use extra Git/evidence calls to re-prove that provenance.`
-          : '';
-        const lspWorkspace = stage === 'implementer' && !resumedImplementer
-          ? `\n\nLSP workspace root: ${ctx.cwd}. Use only inspection/control tools currently exposed by the runtime; runtime steering is authoritative for valid tool names.`
-          : '';
-        const layoutGuidance = prepared.layoutHint
-          ? `\n\nRepository layout hint: source root ${prepared.layoutHint.sourceRoot}; new module target ${prepared.layoutHint.sourceTarget}; source directory ${prepared.layoutHint.sourceDirectory}${prepared.layoutHint.sourceConvention ? `; nearest source convention ${prepared.layoutHint.sourceConvention}` : ''}; tests ${prepared.layoutHint.testDirectory}${prepared.layoutHint.testConvention ? `; nearest test convention ${prepared.layoutHint.testConvention}` : ''}. This bounded current-worktree lookup is authoritative layout evidence. Prefer one targeted convention read if needed; do not broad-search or re-prove the fresh-worktree provenance.`
-          : '';
-        return {
-          content: [{
-            type: 'text',
-            text: `Implementation plan:\n${numberedPlan}\n\nComplexity: ${result.complexity} — ${prepared.reason}\nEvidence budget: ${prepared.evidenceBudget}\nLarge mutation: ${automaticLargeMutationArmed ? 'auto-arm one-shot elevated mutation budget when evidence is complete' : 'normal mutation budget'}\nPreparation complete. Continue according to the loaded Implementer contract.${provenance}${lspWorkspace}${layoutGuidance}`,
-          }],
-          details: {
-            ...result,
-            plan: prepared.steps,
-            evidenceBudget: prepared.evidenceBudget,
-            largeMutation: prepared.largeMutation,
-            largeMutationArmed: automaticLargeMutationArmed,
-            plannerUsage: prepared.usage,
-            reason: prepared.reason,
-            freshBaseCommit: stage === 'implementer' && !resumedImplementer ? freshBaseCommit : null,
-            freshWorktreeIsLatestDev: stage === 'implementer' && !resumedImplementer,
-            lspWorkspaceRoot: stage === 'implementer' && !resumedImplementer ? ctx.cwd : null,
-            layoutHint: prepared.layoutHint,
-          },
-        };
-      },
-    });
-  } else if (controller.requireComplexity) {
+  if (controller.requireComplexity && !config.implementationPlannerAgent) {
     pi.registerTool({
       name: 'declare_task_complexity',
       label: 'Declare task complexity',
@@ -1283,6 +1789,8 @@ export default function (pi) {
   const truncationGuidedCalls = new Set();
   const pendingLoopCalls = new Map();
   const pendingToolInputs = new Map();
+  const pendingEvidenceConsumptionNotices = new Map();
+  const pendingBashValidationFingerprints = new Map();
   let lastSuccessfulMutationSnapshot = null;
   let lastSuccessfulMutationLocalOnlyMarkerId = null;
 
@@ -1374,6 +1882,19 @@ export default function (pi) {
     async function executeAuthoritativeRunCheck(params, ctx, { retry = false } = {}) {
       const result = await runCheck(ctx.cwd, params);
       const scope = normalizeScope(params, ctx.cwd);
+      const codingValidation = recordCodingBehavioralValidation({
+        scope,
+        result,
+        env: process.env,
+        cwd: ctx.cwd,
+      });
+      if (codingValidation) {
+        console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+          stage,
+          status: 'pass',
+          targets: codingValidation.targets,
+        })}`);
+      }
       console.info(`PI_RUN_CHECK ${JSON.stringify(checkMetricRecord(result, { backend: 'pi', stage }))}`);
       const appendedRecord = appendCheckRecord(process.env.PI_VALIDATION_LEDGER_FILE, {
         kind: result.kind,
@@ -1391,6 +1912,26 @@ export default function (pi) {
       });
       if (retry) {
         console.info(`PI_RUN_CHECK_RETRY ${JSON.stringify({ stage, kind: result.kind, scope, status: result.status })}`);
+        console.info(`[PI][recovery] check_retry ${JSON.stringify({ stage, kind: result.kind, status: result.status, duration_ms: result.duration_ms })}`);
+      }
+      const deterministicInfrastructureCode = result.status === 'infra_error'
+        ? result.infrastructure?.code ?? null
+        : null;
+      if (
+        DETERMINISTIC_RUN_CHECK_INFRASTRUCTURE_CODES.has(deterministicInfrastructureCode) &&
+        !deterministicVerificationInfrastructure
+      ) {
+        deterministicVerificationInfrastructure = {
+          code: deterministicInfrastructureCode,
+          kind: result.kind,
+          scope,
+          summary: result.summary,
+        };
+        console.error(`PI_RUN_CHECK_DETERMINISTIC_INFRA ${JSON.stringify({
+          stage,
+          ...deterministicVerificationInfrastructure,
+          action: 'verification_disabled_for_process',
+        })}`);
       }
       // Re-read recovery state after appending the result. Emit retry guidance
       // only when this exact failed record became the active deterministic
@@ -1783,6 +2324,10 @@ export default function (pi) {
             );
           }
           sessionsStarted += 1;
+          // Durable in the parent process: if the fork returns without terminal submission,
+          // parent-side run_check/mutations/submit_result remain under the same behavioral
+          // validation contract.
+          process.env[CODING_SESSION_USED_ENV] = 'true';
           const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
           const contractFile = `${process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || parentSessionFile}.${sessionId}.contract.json`;
           const capabilityFile = `${contractFile}.capabilities.json`;
@@ -1901,33 +2446,53 @@ export default function (pi) {
           if (receiptError) invalidateTerminalReceipt(process.env);
           const outcome = normalizeCodingSessionOutcome({
             submitted: Boolean(receiptResult),
+            outcome: receiptResult?.receipt?.outcome ?? null,
             sessionError,
             receiptError,
           });
           const submitted = outcome.successful_final_submission;
+          const terminalSubmitted = outcome.submitted;
+          const recoveryReceipt = terminalSubmitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
+          if (
+            recoveryReceipt?.changed_publishable_paths?.length &&
+            recoveryReceipt.prepared_outputs_present?.source === true &&
+            recoveryReceipt.prepared_outputs_present?.test === true
+          ) {
+            codingRecoveryGuard = recoveryReceipt;
+            console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
+              stage,
+              sessionId,
+              changedPublishablePaths: recoveryReceipt.changed_publishable_paths,
+              remainingTerminalObligation: recoveryReceipt.remaining_terminal_obligation,
+            })}`);
+          }
           const incapable = incapableCodingSessionRecord({
-            submitted,
+            submitted: terminalSubmitted,
             attemptedTools,
             contractTools: agentReady.tools,
             recoveryEpoch: trustedRecoveryEpoch,
           });
-          if (!submitted) lastIncapableCodingSession = incapable;
+          if (!terminalSubmitted) lastIncapableCodingSession = incapable;
           const delegationUsage = response?.usage ?? sessionError?.delegationUsage ?? null;
           recordDescendantMetric({
             call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
-            status: sessionError?.delegationStatus ?? (submitted ? 'completed' : sessionError ? 'error' : 'ended_without_submit'),
+            status: outcome.status === 'blocked' ? 'blocked' : sessionError?.delegationStatus ?? (terminalSubmitted ? 'completed' : sessionError ? 'error' : 'ended_without_submit'),
             usage: delegationUsage,
           });
-          codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
+          codingSessionLog(outcome.status === 'blocked' ? 'blocked' : terminalSubmitted ? 'completed' : 'ended_without_submit', {
             ...base,
             durationMs: Date.now() - startedAt,
             usage: delegationUsage,
             ...outcome,
+            ...(recoveryReceipt ? { recoveryReceipt } : {}),
             ...(incapable ? { unreachableCapabilities: incapable.unreachable } : {}),
           });
           if (submitted) {
+            const completionText = outcome.outcome === 'already_satisfied'
+              ? 'Coding session confirmed the requested implementation is already satisfied. Stop now.'
+              : 'Coding session completed the implementation and submitted the result. The work is done: stop now.';
             return {
-              content: [{ type: 'text', text: 'Coding session completed the implementation and submitted the result. The work is done: stop now.' }],
+              content: [{ type: 'text', text: completionText }],
               details: {
                 ...base,
                 submitted: true,
@@ -1939,25 +2504,42 @@ export default function (pi) {
               terminate: true,
             };
           }
-          const remaining = maxSessions - sessionsStarted;
+          if (outcome.outcome === 'blocked') {
+            const blockedResult = readImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE);
+            return {
+              content: [{ type: 'text', text: `Coding session submitted a blocked outcome: ${blockedResult?.blocked_reason ?? 'no reason recorded'}. The implementation was not completed.` }],
+              details: { ...base, submitted: true, successful_final_submission: false, outcome: 'blocked', blocked_reason: blockedResult?.blocked_reason ?? null },
+              terminate: true,
+            };
+          }
           const activeToolNames = pi.getActiveTools();
           const terminalStatus = activeToolNames.includes('submit_result')
             ? 'Coding session ended without submit_result'
             : 'Coding session ended without a terminal result';
-          const continuation =
-            remaining > 0 && codingSessionTool && activeToolNames.includes(codingSessionTool)
-              ? `You may call ${codingSessionTool} once more (${remaining} left). `
-              : '';
           const terminalDiagnostic = sessionError ?? receiptError;
-          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}. Its repository changes, if any, are in the worktree. ${continuation}${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+          const recoveryGuidance = recoveryReceipt
+            ? ` Trusted recovery receipt: ${JSON.stringify(recoveryReceipt)} Resume from these existing worktree mutations; do not rewrite completed prepared outputs. If one concrete fact must be inspected, use the bounded evidence path exposed by the parent rather than restarting a coding session from memory.`
+            : '';
+          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}.${recoveryGuidance} ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
           // A real session/delegation error is still terminal for this tool call.
           // A stale/invalid receipt is recoverable: return control so the parent
           // can submit the current tree again instead of converting consistency
           // drift into an execution failure.
-          if (sessionError) throw new Error(message);
+          const recoverableSessionAbort = Boolean(
+            sessionError &&
+            recoveryReceipt?.changed_publishable_paths?.length > 0
+          );
+          if (sessionError && !recoverableSessionAbort) throw new Error(message);
+          if (recoverableSessionAbort) {
+            console.warn(`PI_CODING_RECOVERY_HANDOFF ${JSON.stringify({
+              sessionId,
+              error: String(sessionError?.message ?? sessionError),
+              recoveryReceipt,
+            })}`);
+          }
           return {
             content: [{ type: 'text', text: message }],
-            details: { ...base, ...outcome, submitted: false },
+            details: { ...base, ...outcome, submitted: false, recovery_receipt: recoveryReceipt },
           };
         },
       });
@@ -2034,6 +2616,8 @@ export default function (pi) {
 
   pi.on('turn_start', (event) => {
     actionTurnAttemptedTool = false;
+    unavailableCapabilityAttemptedThisTurn = false;
+    unavailableCapabilityKindThisTurn = null;
     elevatedTurnAttemptedFinishTool = false;
     elevatedTurnAttemptedScopePrelude = false;
     elevatedTurnAttemptedEvidenceUnlock = false;
@@ -2068,7 +2652,6 @@ export default function (pi) {
     // forcing must not remain stuck across the next provider request.
     const satisfiedProviderForcing = requireToolOnNextProviderRequest;
     if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
-
     // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
     // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
     // run_check for controller policy after visibility has been checked.
@@ -2084,7 +2667,11 @@ export default function (pi) {
       !activeToolNames.includes(event.toolName);
     if (enforceActiveSurface) {
       unavailableToolAttempts += 1;
+      unavailableCapabilityAttemptedThisTurn = true;
       const presentAtRequestStart = providerCapabilitySnapshot?.executableTools?.includes(event.toolName) === true;
+      unavailableCapabilityKindThisTurn = presentAtRequestStart
+        ? 'stale_after_capability_transition'
+        : 'not_exposed_in_provider_request';
       const unavailable = {
         block: true,
         reason: presentAtRequestStart
@@ -2123,8 +2710,11 @@ export default function (pi) {
           result: unavailable,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(event.toolName, event.input),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
@@ -2140,6 +2730,9 @@ export default function (pi) {
     );
     let recoveryBlocked = null;
     let canonicalInput = event.input ?? {};
+    const repairReadPolicy = event.toolName === 'read'
+      ? codingRepairReadPolicy(canonicalInput, ctx.cwd)
+      : null;
     if (
       event.toolName === ACCEPT_MUTATION_SCOPE_TOOL &&
       controller.largeMutationBudgetActive() &&
@@ -2167,10 +2760,30 @@ export default function (pi) {
         block: true,
         reason: 'BLOCKED: retry_last_failed_check is not available in the current action state. Continue with the visible tools; the exact retry is exposed only when recovery is actionable.',
       };
+    } else if (
+      deterministicVerificationInfrastructure &&
+      CONTENT_MUTATION_TOOLS.has(event.toolName)
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: `BLOCKED: deterministic run_check infrastructure failure ${deterministicVerificationInfrastructure.code} already made local verification unavailable. Preserve the current worktree; do not mutate merely to re-arm validation or work around the trusted sandbox.`,
+      };
     } else if (recoveryRetryReady && event.toolName === 'run_check') {
       recoveryBlocked = {
         block: true,
         reason: `BLOCKED: run_check did not execute. The failed ${failedCheckRecovery.kind} scope ${JSON.stringify(failedCheckRecovery.scope)} has an exact retry ready now; call retry_last_failed_check so the same kind+scope consumes this verification permit.`,
+      };
+    } else if (repairReadPolicy?.block) {
+      recoveryBlocked = repairReadPolicy;
+    } else if (
+      codingRepairWindowActive() &&
+      CONTENT_MUTATION_TOOLS.has(event.toolName) &&
+      codingValidationRepair.readRequiredBeforeMutation &&
+      !codingValidationRepair.readObserved
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: 'BLOCKED: the failed validation did not provide structured diagnostics. Read one repair-relevant failing/changed path first so the next mutation is evidence-driven.',
       };
     }
 
@@ -2179,7 +2792,21 @@ export default function (pi) {
     }
 
     const canonicalToolName = controllerToolName(event.toolName);
-    const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput);
+    if (
+      !recoveryBlocked &&
+      terminalRecoveryRequiredTool === canonicalToolName &&
+      terminalRecoveryState?.plan &&
+      !recoveryCallMatchesPlan(terminalRecoveryState.plan, canonicalToolName, canonicalInput)
+    ) {
+      recoveryBlocked = {
+        block: true,
+        reason: `BLOCKED: ${event.toolName} did not execute. Terminal recovery requires the selected deterministic repair arguments; this call does not match the pending recovery plan.`,
+      };
+    }
+    const repairReadAccepted = repairReadPolicy?.allowed === true;
+    const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput, {
+      productiveEvidenceIndependent: repairReadAccepted,
+    });
     if (blocked?.alreadySatisfied) {
       blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is single-shot and already completed; it did not execute. ${activeToolGuidance(activeToolNames)}`;
     }
@@ -2206,14 +2833,37 @@ export default function (pi) {
           result: blocked,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
         // A blocked tool has no tool_execution_end event, so classify it here.
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(canonicalToolName, canonicalInput),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
+      if (terminalRecoveryRequiredTool === canonicalToolName) {
+        // The selected recovery tool was emitted but rejected by local policy (for example,
+        // wrong run_check arguments). Keep the exact recovery state armed for the next request.
+        requireToolOnNextProviderRequest = true;
+      }
       return blocked;
     }
+
+    // Capture the controller notice now, but publish it only for this exact toolCallId after
+    // execution. Any later runtime-side block simply drops this local value.
+    const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice();
+    const restoreRuntimeBlockedEvidence = () => {
+      if (evidenceConsumptionNotice) {
+        controller.restoreRuntimeBlockedEvidenceAction(evidenceConsumptionNotice);
+      }
+      if (terminalRecoveryRequiredTool === canonicalToolName) {
+        // The provider satisfied tool_choice, but the runtime refused execution after the
+        // controller gate. Keep the selected recovery armed and force it again next request.
+        requireToolOnNextProviderRequest = true;
+      }
+    };
+    try {
     // Only a call the controller actually let through counts as an attempted finish tool: a
     // blocked call never reached execution, so it must not suppress the violation warning.
     if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;
@@ -2247,11 +2897,15 @@ export default function (pi) {
           result: noOpBlocked,
           blocked: true,
           productiveState,
+          repositoryRoot: ctx.cwd,
         });
-        await handleLoopResult(loopResult, ctx).catch(error => {
+        await handleLoopResult(loopResult, ctx, {
+          terminalInput: terminalInputForLoop(event.toolName, event.input),
+        }).catch(error => {
           console.error('PI_LOOP_GUARD_HANDLER_ERROR ' + String(error?.message ?? error));
         });
       }
+      restoreRuntimeBlockedEvidence();
       return noOpBlocked;
     }
 
@@ -2267,9 +2921,12 @@ export default function (pi) {
           env: process.env,
         });
       } catch (error) {
-        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') throw error;
+        if (!(error instanceof MutationTargetRejected) && !String(error?.code ?? '').startsWith('scope_') && error?.code !== 'mutation_scope_required') {
+          throw error;
+        }
         const containmentBlocked = { block: true, reason: `BLOCKED: ${event.toolName} did not execute. ${error.message}` };
         console.warn(`PI_MUTATION_BLOCKED ${JSON.stringify({ stage, tool: event.toolName, reason: error.code, path: event.input?.path ?? null })}`);
+        restoreRuntimeBlockedEvidence();
         return containmentBlocked;
       }
     }
@@ -2311,26 +2968,81 @@ export default function (pi) {
           tool: event.toolName,
           reason,
         }));
+        restoreRuntimeBlockedEvidence();
         return {
           block: true,
           reason: `BLOCKED: ${event.toolName} did not execute because mutation provenance is corrupt or unavailable for a non-capacity reason. ${reason}`,
         };
       }
     }
-    pendingToolInputs.set(event.toolCallId, structuredClone(canonicalInput));
+    if (stage === 'implementer' && canonicalToolName === 'bash') {
+      pendingBashValidationFingerprints.set(event.toolCallId, repositoryStateFingerprint(cwd));
+    }
+
+    // Finish all setup that can still reject/throw before committing terminal recovery.
+    // In particular, structuredClone can fail on malformed synthetic/runtime inputs; such a
+    // failure must leave the exact validation permit and forced recovery directive intact.
+    const clonedCanonicalInput = structuredClone(canonicalInput);
+
+    if (terminalRecoveryRequiredTool === canonicalToolName) {
+      const plan = terminalRecoveryState?.plan ?? null;
+      if (plan?.kind === 'exact_validation' && !controller.commitRecoveryVerification(canonicalInput)) {
+        restoreRuntimeBlockedEvidence();
+        return {
+          block: true,
+          reason: 'BLOCKED: exact terminal recovery verification was authorized but its one-shot permit could not be committed at the execution boundary.',
+        };
+      }
+      console.log('PI_TERMINAL_RECOVERY_TOOL_ATTEMPT ' + JSON.stringify({
+        stage,
+        obligationKey: terminalRecoveryState?.obligationKey ?? null,
+        tool: event.toolName,
+      }));
+      terminalRecoveryAttemptToolCallId = event.toolCallId ?? null;
+      terminalRecoveryRequiredTool = null;
+      controller.clearRecoveryVerification();
+      // Consume recovery only at the actual execution boundary, after controller policy,
+      // argument matching, containment, no-op, provenance and clone setup have all succeeded.
+      terminalRecoveryState = null;
+    }
+
+    pendingToolInputs.set(event.toolCallId, clonedCanonicalInput);
+    if (repairReadAccepted) {
+      pendingCodingRepairReads.set(event.toolCallId, {
+        path: repairReadPolicy.path,
+        diagnosticLines: repairReadPolicy.diagnosticLines,
+      });
+    }
+    if (evidenceConsumptionNotice) {
+      pendingEvidenceConsumptionNotices.set(event.toolCallId, evidenceConsumptionNotice);
+    }
     if (loopGuard) {
       pendingLoopCalls.set(event.toolCallId, {
         cwd,
         toolName: canonicalToolName,
-        input: structuredClone(canonicalInput),
+        input: clonedCanonicalInput,
         productiveState,
         repositoryStateBefore,
       });
     }
     return undefined;
+    } catch (error) {
+      // The controller has already converted the one-action evidence window back to
+      // action_required by this point. If trusted runtime setup throws before execution,
+      // restore that same permit so a harness failure cannot silently consume it.
+      restoreRuntimeBlockedEvidence();
+      throw error;
+    }
   });
   pi.on('tool_execution_end', async (event, ctx) => {
+    const consumedEvidence = pendingEvidenceConsumptionNotices.get(event.toolCallId) ?? null;
+    pendingEvidenceConsumptionNotices.delete(event.toolCallId);
+    const codingRepairRead = pendingCodingRepairReads.get(event.toolCallId) ?? null;
+    pendingCodingRepairReads.delete(event.toolCallId);
+    const bashValidationFingerprintBefore = pendingBashValidationFingerprints.get(event.toolCallId) ?? null;
+    pendingBashValidationFingerprints.delete(event.toolCallId);
     if (event.isError && /^Tool .+ not found$/m.test(resultText(event.result ?? event).trim())) {
+      if (consumedEvidence) controller.restoreRuntimeBlockedEvidenceAction(consumedEvidence);
       await handleMissingExecutor(event, ctx);
       return;
     }
@@ -2396,6 +3108,15 @@ export default function (pi) {
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
+      if (!event.isError && mutationChanged !== false) {
+        if (invalidateCodingBehavioralValidation(process.env)) {
+          console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+            stage,
+            status: mutationChanged === true ? 'invalidated_by_mutation' : 'invalidated_by_unknown_mutation',
+            path: mutationSnapshot?.path ?? null,
+          })}`);
+        }
+      }
       if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot) {
         const mutationCwd = pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd();
 
@@ -2494,11 +3215,106 @@ export default function (pi) {
 
     const effectiveProgress = !event.isError && (mutationChanged == null || mutationChanged);
     const canonicalToolName = controllerToolName(event.toolName);
+    if (stage === 'implementer' && canonicalToolName === 'bash') {
+      const bashValidationFingerprintAfter = repositoryStateFingerprint(ctx?.cwd ?? process.cwd());
+      const bashRequiresValidation = repositoryFingerprintRequiresValidation(
+        bashValidationFingerprintBefore,
+        bashValidationFingerprintAfter,
+      );
+      if (bashRequiresValidation && invalidateCodingBehavioralValidation(process.env)) {
+        const knownChange = Boolean(
+          bashValidationFingerprintBefore &&
+          bashValidationFingerprintAfter &&
+          bashValidationFingerprintBefore !== bashValidationFingerprintAfter
+        );
+        console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+          stage,
+          status: knownChange ? 'invalidated_by_bash_change' : 'invalidated_by_bash_unknown',
+        })}`);
+      }
+    }
+    if (!event.isError && ['rollback_last_mutation', 'recover_worktree', 'undo_mutation'].includes(canonicalToolName)) {
+      if (invalidateCodingBehavioralValidation(process.env)) {
+        console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
+          stage,
+          status: 'invalidated_by_recovery_mutation',
+          tool: canonicalToolName,
+        })}`);
+      }
+    }
     const acceptedToolInput = pendingToolInputs.get(event.toolCallId) ?? null;
+    if (codingRepairRead && codingValidationRepair && !event.isError) {
+      codingValidationRepair.readsRemaining = Math.max(0, codingValidationRepair.readsRemaining - 1);
+      codingValidationRepair.readObserved = true;
+      console.info(`PI_CODING_REPAIR_READ ${JSON.stringify({
+        stage,
+        path: codingRepairRead.path,
+        diagnosticLines: codingRepairRead.diagnosticLines,
+        readsRemaining: codingValidationRepair.readsRemaining,
+        evidenceBudgetIndependent: true,
+      })}`);
+    }
+    const outstandingTerminalObligation = loopGuard?.terminalObligation ?? null;
+    const terminalObligationHasExactMutationPaths =
+      Array.isArray(outstandingTerminalObligation?.paths) &&
+      outstandingTerminalObligation.paths.length > 0;
+    const verificationEligible =
+      effectiveProgress &&
+      (
+        !terminalObligationHasExactMutationPaths ||
+        mutationResolvesSubmissionObligation(
+          outstandingTerminalObligation,
+          pendingLoopCall?.input ?? acceptedToolInput,
+          event.result,
+          ctx.cwd,
+        )
+      );
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
       madeProgress: effectiveProgress,
       input: acceptedToolInput,
+      strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
+      verificationEligible,
     });
+
+    if (codingRecoveryGuard) {
+      const validationStatus = event.result?.details?.status ?? null;
+      const informedByEvidence = Boolean(
+        consumedEvidence &&
+        !event.isError &&
+        codingRecoveryEvidenceTouchesGuard(codingRecoveryGuard, acceptedToolInput, ctx.cwd)
+      );
+      const informedByValidation =
+        canonicalToolName === 'run_check' &&
+        !event.isError &&
+        (validationStatus === 'pass' || validationStatus === 'fail');
+      const terminalSucceeded =
+        ['submit_result', 'submit_repair'].includes(canonicalToolName) &&
+        event.isError !== true;
+      const releaseReason = informedByEvidence
+        ? 'bounded_recovery_evidence'
+        : informedByValidation
+          ? `validation_${validationStatus}`
+          : terminalSucceeded
+            ? 'terminal_success'
+            : null;
+      if (releaseReason) {
+        console.info(`PI_CODING_RECOVERY_GUARD_RELEASED ${JSON.stringify({
+          stage,
+          reason: releaseReason,
+          changedPublishablePaths: codingRecoveryGuard.changed_publishable_paths,
+        })}`);
+        codingRecoveryGuard = null;
+      }
+    }
+
+    const codingValidationDetails = canonicalToolName === 'run_check'
+      ? event.result?.details ?? null
+      : null;
+    const codingValidationAbort = codingValidationDetails && (!event.isError || codingValidationDetails.status === 'fail')
+      ? await observeCodingValidationRepair(acceptedToolInput, codingValidationDetails, ctx)
+      : false;
+    if (codingValidationAbort) return;
+
     const autoLargeMutationPending = controller.maybeGrantAutomaticLargeMutationBudget();
     if (autoLargeMutationPending) {
       console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
@@ -2511,6 +3327,19 @@ export default function (pi) {
     pendingToolInputs.delete(event.toolCallId);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
+    if (consumedEvidence) {
+      const activeToolNames = pi.getActiveTools();
+      console.info(`PI_EVIDENCE_PERMIT_CONSUMED ${JSON.stringify({
+        stage,
+        tool: consumedEvidence.tool,
+        productiveState,
+        activeTools: activeToolNames,
+      })}`);
+      await pi.sendUserMessage(
+        `RUNTIME EVIDENCE PERMIT CONSUMED: the one evidence action (${consumedEvidence.tool}) is complete. read/search evidence and repeated need_more_evidence are unavailable until successful productive progress. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
+        { deliverAs: 'steer' },
+      );
+    }
     if (transitionRecord) await announceTransition(transitionRecord, productiveState);
 
     if (loopGuard && pendingLoopCall) {
@@ -2524,10 +3353,43 @@ export default function (pi) {
         repositoryStateBefore: pendingLoopCall.repositoryStateBefore,
         repositoryStateAfter,
         mutationChanged,
+        repositoryRoot: ctx.cwd,
       });
       pendingLoopCalls.delete(event.toolCallId);
 
-      await handleLoopResult(loopResult, ctx);
+      if (['submit_result', 'submit_repair'].includes(pendingLoopCall.toolName)) {
+        if (!event.isError) {
+          lastTerminalFailureInput = null;
+        } else if (loopResult.obligation?.key && loopResult.classification === 'error') {
+          lastTerminalFailureInput = {
+            obligationKey: loopResult.obligation.key,
+            input: structuredClone(pendingLoopCall.input ?? {}),
+          };
+        }
+      }
+
+      await handleLoopResult(loopResult, ctx, {
+        terminalInput: terminalInputForLoop(pendingLoopCall.toolName, pendingLoopCall.input),
+      });
+      if (terminalRecoveryAttemptToolCallId === event.toolCallId) {
+        console.log('PI_TERMINAL_RECOVERY_TOOL_SETTLED ' + JSON.stringify({
+          stage,
+          tool: pendingLoopCall.toolName,
+          isError: event.isError === true,
+        }));
+        terminalRecoveryAttemptToolCallId = null;
+      }
+    }
+
+    if (
+      codingRecoveryGuard &&
+      !codingRecoveryEvidenceAvailable() &&
+      !codingRecoveryValidationAvailable()
+    ) {
+      abortBlockedCodingRecovery(
+        ctx,
+        'Coding-session recovery guard has no safe remaining release path: bounded read evidence is exhausted or unavailable and authoritative validation is unavailable. Preserving recovered worktree mutations and refusing blind rewrite/re-fork recovery.',
+      );
     }
   });
 
@@ -2557,8 +3419,10 @@ export default function (pi) {
       recordDescendantMetric({
         call: 'coding', childSession: codingSession.sessionId, response: codingResponseNumber,
         usage: event.message?.usage ?? null,
+        responseMs: codingProviderRequestStartedAt == null ? 0 : Math.max(0, Date.now() - codingProviderRequestStartedAt),
         ...(event.message?.usage ? {} : { reason: 'provider_usage_unavailable' }),
       });
+      codingProviderRequestStartedAt = null;
     }
     const status = providerErrorStatus(event.message);
     const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
@@ -2681,11 +3545,41 @@ export default function (pi) {
           ? (config.postComplexityActionResponseRetryMaxTokens ?? actionCap)
           : (config.productiveProgress?.actionResponseRetryMaxTokens ?? actionCap)
     );
+    const effectiveAttemptedTool = actionTurnAttemptedTool || unavailableCapabilityAttemptedThisTurn;
+    const unavailableCapabilityStrike =
+      runtimeActionRequired &&
+      unavailableCapabilityAttemptedThisTurn &&
+      !controller.turnMadeProgress &&
+      unavailableCapabilityKindThisTurn !== 'stale_after_capability_transition';
+    if (unavailableCapabilityStrike) {
+      consecutiveUnavailableCapabilityTurns += 1;
+    } else {
+      // "Consecutive" is literal: any non-strike turn resets the streak. A tool that was valid at
+      // provider-request start but became stale after an earlier same-response transition is a
+      // benign lifecycle race, not a model-error strike.
+      consecutiveUnavailableCapabilityTurns = 0;
+    }
+    if (consecutiveUnavailableCapabilityTurns >= 2) {
+      const reason = `second consecutive unavailable capability turn (${unavailableCapabilityKindThisTurn ?? 'unknown'}); aborting stage`;
+      recordRuntimeAbort(
+        'PI_UNAVAILABLE_CAPABILITY_ABORT',
+        reason,
+        {
+          unavailableToolAttempts,
+          consecutiveUnavailableCapabilityTurns,
+          unavailableCapabilityKind: unavailableCapabilityKindThisTurn,
+        },
+      );
+      console.error(`PI_UNAVAILABLE_CAPABILITY_ABORT: ${reason}`);
+      ctx.abort();
+      return;
+    }
+
     actionRequiredProseOnlyTurns = nextActionRequiredProseOnlyTurns(
       actionRequiredProseOnlyTurns,
       {
         actionRequired: runtimeActionRequired,
-        attemptedTool: actionTurnAttemptedTool,
+        attemptedTool: effectiveAttemptedTool,
         madeProgress: controller.turnMadeProgress,
         responseHitOutputCeiling,
       },
@@ -2719,7 +3613,7 @@ export default function (pi) {
 
     ceilingWithoutToolTurns = nextCeilingWithoutToolTurns(ceilingWithoutToolTurns, {
       actionRequired: runtimeActionRequired,
-      attemptedTool: actionTurnAttemptedTool,
+      attemptedTool: effectiveAttemptedTool,
       madeProgress: controller.turnMadeProgress,
       responseHitOutputCeiling,
     });
@@ -2803,7 +3697,8 @@ export default function (pi) {
       afterTurn: event.turnIndex,
       outputTokens,
       madeProgress: controller.turnMadeProgress,
-      attemptedTool: actionTurnAttemptedTool,
+      attemptedTool: effectiveAttemptedTool,
+      unavailableCapabilityAttempted: unavailableCapabilityAttemptedThisTurn,
       responseHitOutputCeiling,
       nextBudget: next.level,
       maxTokens: appliedActionCap || next.maxTokens,

@@ -18,6 +18,7 @@ import {
   nextActionResponseCap,
   nextResponseBudgetLevel,
   toolCallSignature,
+  validateSingleEvidenceRequest,
 } from '../scripts/pi-common/progress-controller.mjs';
 import { repoSearch } from '../scripts/pi-common/repo-search.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
@@ -142,6 +143,34 @@ test('action-required tool surface keeps only productive and control tools', () 
       },
     ),
     ['safe_edit', 'submit_result', 'need_more_evidence', 'set_response_budget'],
+  );
+});
+
+test('#503 repair reads keep controller repeat guards without consuming productive evidence', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['write', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  });
+
+  state.onTurnStart(0);
+  const options = { productiveEvidenceIndependent: true };
+  assert.equal(state.checkToolCall('read', { path: 'test_feature.py' }, options), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('read', { path: 'test_feature.py' }, options), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'test_feature.py' }, options), undefined);
+  assert.match(
+    state.checkToolCall('read', { path: 'test_feature.py' }, options).reason,
+    /already ran this exact read call 3 times consecutively/,
+  );
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(
+    state.checkToolCall('write', { path: 'x.py', content: 'x' }, options).reason,
+    /reserved for bounded repair reads/,
   );
 });
 
@@ -282,7 +311,6 @@ test('trivial productive progress serializes cold LSP startup and requires actio
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 6,
       initialEvidenceBudgetByComplexity: {
@@ -295,9 +323,7 @@ test('trivial productive progress serializes cold LSP startup and requires actio
   });
 
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('trivial');
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'trivial', evidenceBudget: null, largeMutation: false, reason: 'test' });
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.match(
     state.checkToolCall('lsp_find_symbol', { name: '_clamp_limit' }).reason,
@@ -340,7 +366,6 @@ test('blocked pre-preparation LSP start cannot unlock name-only lookup', () => {
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       initialEvidenceBudgetByComplexity: { trivial: 2 },
       actionTools: ['safe_edit', 'submit_result'],
       controlTools: ['lsp_start_server'],
@@ -355,9 +380,7 @@ test('blocked pre-preparation LSP start cannot unlock name-only lookup', () => {
     }).reason,
     /Before complexity is recorded/,
   );
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('trivial');
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'trivial', evidenceBudget: null, largeMutation: false, reason: 'test' });
 
   assert.match(
     state.checkToolCall('lsp_find_symbol', { name: '_is_sensitive_key' }).reason,
@@ -377,7 +400,6 @@ test('trivial semantic miss preserves one fallback discovery plus authoritative 
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 6,
       initialEvidenceBudgetByComplexity: { trivial: 2, nontrivial: 6 },
@@ -387,9 +409,7 @@ test('trivial semantic miss preserves one fallback discovery plus authoritative 
   });
 
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('trivial');
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'trivial', evidenceBudget: null, largeMutation: false, reason: 'test' });
 
   assert.equal(state.checkToolCall('lsp_start_server', {
     server_id: 'python',
@@ -413,7 +433,6 @@ test('failed semantic lookup restores its evidence permit for fallback', () => {
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudgetByComplexity: { trivial: 2 },
       initialEvidenceBudget: 6,
@@ -423,9 +442,7 @@ test('failed semantic lookup restores its evidence permit for fallback', () => {
   });
 
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('trivial');
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'trivial', evidenceBudget: null, largeMutation: false, reason: 'test' });
   assert.equal(state.checkToolCall('lsp_start_server', {
     server_id: 'python',
     workspace_root: '/tmp/worktree',
@@ -446,7 +463,6 @@ test('nontrivial semantic lookup closes evidence after the authoritative source 
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 6,
       actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
@@ -454,9 +470,7 @@ test('nontrivial semantic lookup closes evidence after the authoritative source 
     },
   });
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: null, largeMutation: false, reason: 'test' });
   assert.equal(state.checkToolCall('lsp_find_symbol', { name: '_check_active' }), undefined);
   state.onToolExecutionEnd('lsp_find_symbol', false);
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
@@ -472,7 +486,6 @@ test('productive progress allows a bounded initial evidence sequence before acti
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       initialEvidenceBudget: 6,
       actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
@@ -480,9 +493,7 @@ test('productive progress allows a bounded initial evidence sequence before acti
     },
   });
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('normal');
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'normal', evidenceBudget: null, largeMutation: false, reason: 'test' });
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
 
   assert.equal(state.checkToolCall('indexed_repo_search', { kind: 'content', query: 'target' }), undefined);
@@ -516,6 +527,45 @@ test('productive progress allows a bounded initial evidence sequence before acti
   }).reason, /same missing-evidence request/);
   assert.equal(state.checkToolCall('write', { path: 'src/new.py' }), undefined);
   assert.equal(state.checkToolCall('submit_result', {}), undefined);
+});
+
+
+test('#470 runtime-side rejection restores the same one-action evidence permit', () => {
+  const state = controller({
+    productiveProgress: {
+      blockerTool: 'need_more_evidence',
+      initialEvidenceBudget: 1,
+      actionTools: ['edit', 'write', 'submit_result'],
+      controlTools: [],
+    },
+  });
+  state.onTurnStart(0);
+  state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['plan'],
+    complexity: 'trivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'test',
+  });
+
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'exact import anchor',
+    reason: 'needed for the next safe edit',
+  }), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
+  const notice = state.consumeEvidenceActionNotice();
+  assert.deepEqual(notice, { tool: 'read' });
+  assert.equal(state.productiveProgressState(), 'action_required');
+
+  assert.equal(state.restoreRuntimeBlockedEvidenceAction(notice), true);
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined, 'same unlocked evidence action can be retried after harness rejection');
+  const retried = state.consumeEvidenceActionNotice();
+  assert.deepEqual(retried, { tool: 'read' });
+  state.onToolExecutionEnd('read', false, { strictBlockerEvidence: true });
+  assert.equal(state.productiveProgressState(), 'action_required', 'an actually executed retry consumes the one-action permit');
 });
 
 
@@ -568,14 +618,14 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   const delegation = fs.readFileSync('scripts/pi-common/structured-subagent.mjs', 'utf8');
   assert.match(delegation, /prompt-template:subagent:request/);
   assert.match(delegation, /prompt-template:subagent:response/);
-  assert.match(runtime, /name: 'prepare_implementation'/);
-  assert.match(runtime, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
-  assert.match(runtime, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
-  assert.match(runtime, /evidence_budget: \{ type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET \}/);
-  assert.match(runtime, /implementationPlannerMaxTokens \?\? 768[\s\S]*toolBudget: \{ hard: 3 \}/);
-  assert.doesNotMatch(runtime, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
-  assert.match(runtime, /controller\.setComplexity\(prepared\.complexity\)/);
-  assert.match(runtime, /controller\.setEvidenceBudget\(prepared\.evidenceBudget\)/);
+  const bootstrapPlanner = fs.readFileSync('scripts/pi-common/implementation-planner.mjs', 'utf8');
+  assert.doesNotMatch(runtime, /name: 'prepare_implementation'|runStructuredImplementationPlanner/, 'main runtime no longer registers or runs the planner');
+  assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
+  assert.match(bootstrapPlanner, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
+  assert.match(bootstrapPlanner, /evidence_budget: \{ type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET \}/);
+  assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 2048[\s\S]*request\.toolBudget = \{ hard: cap \+ 3 \}/);
+  assert.doesNotMatch(`${runtime}${bootstrapPlanner}`, /runStructuredComplexityClassifier|complexityClassifierAgent|complexityClassifierTimeoutMs/);
+  assert.match(runtime, /controller\.applyPreparedImplementation\(preparedImplementation\)/);
   assert.match(runtime, /directActionImplementer[\s\S]*requireComplexity: false/);
   assert.match(runtime, /validationRepair[\s\S]*PI_VALIDATION_REPAIR/);
   assert.match(runtime, /responseHitOutputCeiling/);
@@ -597,13 +647,13 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /pi\.sendUserMessage/);
   assert.match(runtime, /maxTokens: appliedActionCap \|\| controller\.fixedMaxTokens/);
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
-  assert.match(runtime, /freshWorktreeIsLatestDev/);
+  assert.match(bootstrapPlanner, /Fresh worktree base: latest fetched/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
-  assert.match(runtime, /Preparation complete\. Continue according to the loaded Implementer contract/);
+  assert.match(bootstrapPlanner, /Preparation complete; do not re-plan unless concrete repository evidence invalidates a plan assumption/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /trivial \| nontrivial/);
   assert.match(planner, /Dispatcher already owns Architect routing/);
-  assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs']);
+  assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs', './scripts/pi-planner-evidence.mjs']);
 });
 
 test('runtime preserves a large mutation budget through scope declaration, then consumes it on the real finish action', () => {
@@ -627,8 +677,14 @@ test('runtime preserves a large mutation budget through scope declaration, then 
   // actually let through, never for one it blocked.
   assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools/);
   assert.match(runtime, /const evidenceYield = elevatedTurnAttemptedEvidenceUnlock[\s\S]*if \(evidenceYield\.yielded\)[\s\S]*else if \(elevatedTurnAttemptedFinishTool\)/);
-  assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput/);
-  assert.match(runtime, /return blocked;\s*\}[\s\S]{0,200}if \(FINISH_TOOLS\.has\(event\.toolName\)\) elevatedTurnAttemptedFinishTool = true;/);
+  assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput[\s\S]*strictBlockerEvidence: consumedEvidence\?\.tool === canonicalToolName/);
+  const blockedReturn = runtime.indexOf('return blocked;');
+  const evidenceNotice = runtime.indexOf('const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice()', blockedReturn);
+  const finishAttempt = runtime.indexOf('if (FINISH_TOOLS.has(event.toolName)) elevatedTurnAttemptedFinishTool = true;', evidenceNotice);
+  assert.ok(
+    blockedReturn >= 0 && evidenceNotice > blockedReturn && finishAttempt > evidenceNotice,
+    'finish-tool attempt accounting happens only after blocked calls return and evidence ownership is captured',
+  );
   assert.match(planner, /evidence_budget/);
 });
 
@@ -855,15 +911,15 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.deepEqual(stageConfig('reviewer').preComplexityTransitionTools, ['declare_task_complexity']);
   assert.deepEqual(stageConfig('repair').preComplexityAllowedTools, ['read', 'bash']);
   assert.deepEqual(stageConfig('repair').preComplexityTransitionTools, ['declare_task_complexity']);
-  assert.deepEqual(stageConfig('implementer').preComplexityAllowedTools, ['prepare_implementation']);
-  assert.deepEqual(stageConfig('implementer').preComplexityTransitionTools, ['prepare_implementation']);
+  assert.equal(stageConfig('implementer').preComplexityAllowedTools, undefined);
+  assert.equal(stageConfig('implementer').preComplexityTransitionTools, undefined);
   assert.equal(stageConfig('implementer').implementationPlannerAgent, 'implementation-planner');
-  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 768);
-  assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 45000);
+  assert.equal(stageConfig('implementer').implementationPlannerMaxTokens, 2048);
+  assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, 900000);
   assert.deepEqual(stageConfig('implementer').delegatedTools, ['grep', 'find', 'ls']);
   assert.equal(stageConfig('implementer').delegationTool, 'subagent');
-  assert.deepEqual(stageConfig('implementer').singleUseTools, ['prepare_implementation']);
-  assert.equal(stageConfig('implementer').productiveProgress.activationTool, 'prepare_implementation');
+  assert.equal(stageConfig('implementer').singleUseTools, undefined);
+  assert.equal(stageConfig('implementer').productiveProgress.activationTool, undefined);
   assert.equal(stageConfig('implementer').productiveProgress.blockerTool, 'need_more_evidence');
   assert.equal(stageConfig('implementer').productiveProgress.initialEvidenceBudget, 6);
   assert.deepEqual(stageConfig('implementer').productiveProgress.initialEvidenceBudgetByComplexity, {
@@ -926,7 +982,9 @@ test('stage configuration owns every model prompt and injects the shared contrac
 
     const implementerPrompt = stagePrompt('implementer', env);
     assert.match(implementerPrompt, /# Pi Implementer Agent[\s\S]*Example issue[\s\S]*Acceptance criteria/);
-    assert.match(implementerPrompt, /prepare_implementation[\s\S]*implementation-planner[\s\S]*trivial\/nontrivial/);
+    assert.doesNotMatch(implementerPrompt, /prepare_implementation/);
+    assert.match(implementerPrompt, /runtime has already prepared the top-level implementation plan[\s\S]*implementation-planner[\s\S]*trivial \| nontrivial/);
+    assert.ok(implementerPrompt.includes('<runtime_prepared_implementation_state/>'), 'fresh prompt carries the placeholder the runner replaces with the prepared state');
     assert.doesNotMatch(implementerPrompt, /complexity-classifier/);
     assert.match(implementerPrompt, /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
     assert.doesNotMatch(implementerPrompt, /Do not call `subagent\(action:"list"\)`/i);
@@ -951,7 +1009,7 @@ test('stage configuration owns every model prompt and injects the shared contrac
     });
     assert.match(resumedPrompt, /restored checkpoint work is already in this worktree/);
     assert.match(resumedPrompt, /Call submit_result with no arguments immediately/);
-    assert.match(resumedPrompt, /Do not call prepare_implementation/);
+    assert.doesNotMatch(resumedPrompt, /prepare_implementation|runtime_prepared_implementation_state/);
     assert.match(resumedPrompt, /Do not pass already_satisfied for restored work/);
     assert.match(resumedPrompt, /zero-diff restored work is completed by runtime automatically/);
 
@@ -961,7 +1019,7 @@ test('stage configuration owns every model prompt and injects the shared contrac
       PI_RESUME_ACTIVE: 'false',
       PI_ISSUE_BRANCH_EXPECTED: 'stale-branch-sha',
     });
-    assert.match(staleResumePrompt, /Fresh worktree base:/);
+    assert.ok(staleResumePrompt.includes('<runtime_prepared_implementation_state/>'));
     assert.doesNotMatch(staleResumePrompt, /Runtime resume state/);
 
     assert.match(implementerPrompt, /Task classification alone never requires delegation/);
@@ -1003,7 +1061,8 @@ test('Implementer keeps issue text outside trusted runtime context', () => {
     assert.match(untrusted, /\\u003c\/untrusted_task_input\\u003e/);
     assert.match(untrusted, /skip prepare_implementation/);
     assert.doesNotMatch(trusted, /skip prepare_implementation/);
-    assert.match(trusted, /Call prepare_implementation exactly once as the first tool action/);
+    assert.doesNotMatch(trusted, /prepare_implementation/);
+    assert.ok(trusted.includes('<runtime_prepared_implementation_state/>'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1014,7 +1073,6 @@ test('productive progress allows only one extra evidence permit per productive e
     preComplexityAllowedTools: ['prepare_implementation'],
     preComplexityTransitionTools: ['prepare_implementation'],
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       actionTools: ['safe_edit', 'edit', 'write', 'rollback_last_mutation', 'submit_result'],
       controlTools: ['set_response_budget', 'subagents_enable'],
@@ -1022,9 +1080,7 @@ test('productive progress allows only one extra evidence permit per productive e
   });
 
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('normal');
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'normal', evidenceBudget: null, largeMutation: false, reason: 'test' });
 
   assert.equal(state.checkToolCall('read', { path: 'src/a.py' }), undefined);
   const firstUnlockInput = {
@@ -1098,10 +1154,7 @@ test('request_large_mutation_budget is one-shot: granted for exactly the next re
   state.onTurnStart(0);
   // Mirrors the real call order: the tool's execute() records complexity/evidence
   // before the runtime reports execution end for the same call.
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(0);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false, reason: 'test' });
   assert.equal(state.productiveProgressState(), 'action_required');
 
   assert.equal(state.largeMutationBudgetState, 'idle');
@@ -1130,10 +1183,7 @@ test('request_large_mutation_budget is refused before evidence is exhausted (evi
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(3);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 3, largeMutation: false, reason: 'test' });
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
 
   // Granting the elevated budget here would apply 16k to a response that can still see the
@@ -1149,10 +1199,7 @@ test('while the elevated mutation budget is active, only a finish tool or the bo
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(0);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false, reason: 'test' });
   assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'large new file' }), undefined);
   state.onToolExecutionEnd('request_large_mutation_budget', false);
   assert.equal(state.activateLargeMutationBudget(), true);
@@ -1189,10 +1236,7 @@ test('while the elevated mutation budget is active, only a finish tool or the bo
 test('failed need_more_evidence does not yield an elevated grant or leave a phantom evidence window', () => {
   const state = new ProgressController(stageConfig('implementer'), {});
   state.onTurnStart(0);
-  assert.equal(state.checkToolCall('prepare_implementation', {}), undefined);
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(0);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false, reason: 'test' });
   assert.equal(state.checkToolCall('request_large_mutation_budget', { reason: 'large new file' }), undefined);
   state.onToolExecutionEnd('request_large_mutation_budget', false);
   assert.equal(state.activateLargeMutationBudget(), true);
@@ -1221,10 +1265,7 @@ test('a zero evidence_budget preparation transitions directly to action_required
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
   state.onTurnStart(0);
-  state.checkToolCall('prepare_implementation', {});
-  state.setComplexity('nontrivial');
-  state.setEvidenceBudget(0);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false, reason: 'test' });
   assert.equal(state.productiveProgressState(), 'action_required');
   // No incidental evidence action slips through: a non-action tool is blocked immediately.
   assert.match(state.checkToolCall('read', { path: 'README.md' }).reason, /productive progress requires an action now/);
@@ -1234,10 +1275,7 @@ test('a positive planner evidence_budget overrides the by-complexity table and s
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
   state.onTurnStart(0);
-  state.checkToolCall('prepare_implementation', {});
-  state.setComplexity('trivial');
-  state.setEvidenceBudget(1);
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'trivial', evidenceBudget: 1, largeMutation: false, reason: 'test' });
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.equal(state.checkToolCall('read', { path: 'src/known.py' }), undefined);
   state.onToolExecutionEnd('read', false);
@@ -1248,9 +1286,7 @@ test('without a planner override, evidence budget still falls back to the by-com
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
   state.onTurnStart(0);
-  state.checkToolCall('prepare_implementation', {});
-  state.setComplexity('nontrivial');
-  state.onToolExecutionEnd('prepare_implementation', false);
+  state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: null, largeMutation: false, reason: 'test' });
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.equal(state.productiveEvidenceRemaining, 6);
 });
@@ -1285,4 +1321,225 @@ test('runtime surfaces truncated tool calls through the tool_result hook', () =>
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /pi\.on\('tool_result'/);
   assert.match(runtime, /truncatedToolCallGuidance/);
+});
+
+
+test('#469 need_more_evidence validates shape only and consumes exactly one evidence action', () => {
+  for (const missing of [
+    'Does for(;;) exist in loop.py?',
+    'Where is the plus operator handled in calc.py?',
+    'Differences between src/a.py and src/b.py relevant to the import signature.',
+    'Read tests/test_smoke_connect_four.py, check the signature needed for the repair edit.',
+    'Read a.py and read b.py.',
+    'Exact pytest configuration; exact smoke test location.',
+  ]) {
+    assert.equal(
+      validateSingleEvidenceRequest({ missing }).ok,
+      true,
+      `free-text semantics are not guessed for: ${missing}`,
+    );
+  }
+  assert.equal(validateSingleEvidenceRequest({ missing: '   ' }).ok, false);
+
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const request = {
+    missing: 'Read tests/test_smoke_connect_four.py to obtain the exact import line needed for the repair edit.',
+    reason: 'The exact import statement is the only missing fact.',
+  };
+  assert.equal(state.checkToolCall('need_more_evidence', request), undefined);
+  state.onToolExecutionEnd('need_more_evidence', false, { madeProgress: false, input: request });
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+  assert.equal(state.evidenceUnlockAvailable(), false);
+
+  assert.equal(state.checkToolCall('read', { path: 'tests/test_smoke_connect_four.py' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.deepEqual(state.consumeEvidenceActionNotice(), { tool: 'read' });
+  assert.equal(state.consumeEvidenceActionNotice(), null);
+  state.onToolExecutionEnd('read', false, { madeProgress: false, input: { path: 'tests/test_smoke_connect_four.py' } });
+
+  const repeated = state.checkToolCall('need_more_evidence', {
+    missing: 'Read tests/test_smoke_connect_four.py for another detail.',
+    reason: 'Try another lookup',
+  });
+  assert.equal(repeated.block, true);
+  assert.match(repeated.reason, /extra evidence permit was already used/);
+
+  assert.equal(state.checkToolCall('edit', { path: 'src/game.py' }), undefined);
+  state.onToolExecutionEnd('edit', false, { madeProgress: true, input: { path: 'src/game.py' } });
+  assert.equal(state.evidenceUnlockAvailable(), true);
+});
+
+test('#470 failed strict blocker LSP evidence stays consumed after runtime drains its notice', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const request = {
+    missing: 'Find the exact signature of MissingSymbol.',
+    reason: 'The signature is the only fact needed before the edit.',
+  };
+  assert.equal(state.checkToolCall('need_more_evidence', request), undefined);
+  state.onToolExecutionEnd('need_more_evidence', false, { madeProgress: false, input: request });
+  assert.equal(state.productiveProgressState(), 'evidence_allowed');
+
+  const lookup = { name: 'MissingSymbol' };
+  assert.equal(state.checkToolCall('lsp_find_symbol', lookup), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  const notice = state.consumeEvidenceActionNotice();
+  assert.deepEqual(notice, { tool: 'lsp_find_symbol' });
+
+  state.onToolExecutionEnd('lsp_find_symbol', true, {
+    madeProgress: false,
+    input: lookup,
+    strictBlockerEvidence: notice?.tool === 'lsp_find_symbol',
+  });
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(
+    state.checkToolCall('repo_search', { query: 'MissingSymbol' }).reason,
+    /productive progress requires an action/,
+  );
+});
+
+
+test('#469 stale unavailable capability attempts are not wired to the prose-only abort reason', () => {
+  const source = readScript('scripts/pi-agent-runtime.mjs');
+  assert.match(source, /PI_UNAVAILABLE_CAPABILITY_ABORT/);
+  assert.match(source, /unavailableCapabilityAttemptedThisTurn/);
+  assert.match(source, /effectiveAttemptedTool = actionTurnAttemptedTool \|\| unavailableCapabilityAttemptedThisTurn/);
+  assert.match(source, /RUNTIME EVIDENCE PERMIT CONSUMED/);
+});
+
+
+test('#426 verification permit requires obligation-eligible mutation progress', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      verificationTool: 'run_check',
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: false,
+    verificationEligible: false,
+    input: { path: 'scratch/noop.py' },
+  });
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+    'no-op mutation cannot manufacture a verification permit',
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: true,
+    verificationEligible: false,
+    input: { path: 'scratch/unrelated.py' },
+  });
+  assert.match(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }).reason,
+    /not yet available/,
+    'unrelated mutation cannot manufacture a verification permit',
+  );
+
+  state.onToolExecutionEnd('edit', false, {
+    madeProgress: true,
+    verificationEligible: true,
+    input: { path: 'src/relevant.py' },
+  });
+  assert.equal(
+    state.checkToolCall('run_check', { kind: 'pytest', targets: ['tests/test_widget.py'] }),
+    undefined,
+    'obligation-reducing mutation earns one focused verification permit',
+  );
+});
+
+
+test('#426 exact terminal-recovery verification permit bypasses only the matching run_check gate', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      actionTools: ['edit', 'submit_result'],
+      controlTools: [],
+      verificationTool: 'run_check',
+      initialEvidenceBudget: 1,
+    },
+  });
+  state.onTurnStart(0);
+
+  const exact = { kind: 'pytest', targets: ['tests/test_required.py'] };
+  const exactWithEquivalentEmptyFields = {
+    kind: 'pytest',
+    targets: ['tests/test_required.py'],
+    paths: [],
+  };
+  const unrelated = { kind: 'pytest', targets: ['tests/test_other.py'] };
+
+  assert.match(
+    state.checkToolCall('run_check', exact).reason,
+    /not yet available/,
+    'ordinary verification remains closed without a mutation permit',
+  );
+
+  assert.equal(state.armRecoveryVerification(exact), true);
+  assert.equal(state.recoveryVerificationArmed(), true);
+
+  assert.match(
+    state.checkToolCall('run_check', unrelated).reason,
+    /requires the exact authoritative verification action/,
+    'recovery does not open arbitrary run_check access',
+  );
+  assert.equal(state.recoveryVerificationArmed(), true, 'wrong input does not consume the exact permit');
+
+  assert.equal(
+    state.checkToolCall('run_check', exactWithEquivalentEmptyFields),
+    undefined,
+    'the exact authoritative recovery check accepts semantically equivalent omitted/empty scope fields',
+  );
+  assert.equal(
+    state.recoveryVerificationArmed(),
+    true,
+    'policy authorization alone does not consume recovery before runtime execution gates finish',
+  );
+  assert.equal(
+    state.commitRecoveryVerification(unrelated),
+    false,
+    'an unrelated action cannot commit the exact recovery permit',
+  );
+  assert.equal(state.recoveryVerificationArmed(), true);
+  assert.equal(
+    state.commitRecoveryVerification(exactWithEquivalentEmptyFields),
+    true,
+    'the runtime execution boundary commits the matching one-shot permit',
+  );
+  assert.equal(state.recoveryVerificationArmed(), false, 'the committed recovery permit is one-shot');
+  assert.match(
+    state.checkToolCall('run_check', exact).reason,
+    /not yet available/,
+    'ordinary verification policy resumes after the recovery execution is committed',
+  );
 });

@@ -18,6 +18,8 @@ export function normalizeUsage(value) {
   if (!Number.isSafeInteger(usage.totalTokens)) {
     usage.totalTokens = USAGE_KEYS.reduce((sum, key) => sum + (usage[key] ?? 0), 0);
   }
+  if (Number.isSafeInteger(value.turns) && value.turns >= 0) usage.turns = value.turns;
+  if (Number.isFinite(value.durationMs) && value.durationMs >= 0) usage.durationMs = value.durationMs;
   return usage;
 }
 
@@ -31,10 +33,41 @@ function responseKey(record) {
 }
 
 export function emptyTotals() {
-  return { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, responseMs: 0 };
+  return {
+    responses: 0,
+    providerResponses: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+    responseMs: 0,
+    providerResponseMs: 0,
+    delegatedLifecycleMs: 0,
+  };
 }
 
-function add(target, usage, responseMs) {
+function providerTurns(usage) {
+  return Number.isSafeInteger(usage?.turns) && usage.turns >= 0 ? usage.turns : 1;
+}
+
+function delegatedLifecycleDurationMs(usage) {
+  return Number.isFinite(usage?.durationMs) && usage.durationMs >= 0 ? usage.durationMs : 0;
+}
+
+function rollupLifecycleDurationMs(usage, responseMs = 0) {
+  const explicit = Number(responseMs);
+  const aggregateElapsed = Number.isFinite(explicit) && explicit >= 0 ? explicit : 0;
+  // Aggregate/session responseMs is lifecycle/tool elapsed time, not provider-only response time.
+  // Keep the best known lifecycle duration without adding overlapping measurements together.
+  return Math.max(delegatedLifecycleDurationMs(usage), aggregateElapsed);
+}
+
+function add(target, usage, responseMs, {
+  providerResponses = 1,
+  providerResponseMs = responseMs,
+  delegatedLifecycleMs = 0,
+} = {}) {
   target.input += usage.input ?? 0;
   target.output += usage.output ?? 0;
   target.cacheRead += usage.cacheRead ?? 0;
@@ -42,6 +75,18 @@ function add(target, usage, responseMs) {
   target.total += usage.totalTokens;
   target.responseMs += Number.isFinite(responseMs) ? responseMs : 0;
   target.responses += 1;
+  target.providerResponses += Number.isSafeInteger(providerResponses) && providerResponses >= 0 ? providerResponses : 1;
+  target.providerResponseMs += Number.isFinite(providerResponseMs) && providerResponseMs >= 0 ? providerResponseMs : 0;
+  target.delegatedLifecycleMs += Number.isFinite(delegatedLifecycleMs) && delegatedLifecycleMs >= 0 ? delegatedLifecycleMs : 0;
+}
+
+function supplementProviderRollup(target, sum, usage, responseMs = 0) {
+  // Once exact per-response records exist for a child session, their provider count is
+  // authoritative. Aggregate usage.turns is a lifecycle roll-up and may include a cancelled or
+  // otherwise unsettled request; it must never invent extra completed provider responses.
+  // Roll-up token vectors are still reconciled below, and lifecycle timing remains useful.
+  void sum;
+  target.delegatedLifecycleMs += rollupLifecycleDurationMs(usage, responseMs);
 }
 
 /**
@@ -56,8 +101,21 @@ export function summarizeUsage(records) {
   const responses = new Map();
   const aggregates = new Map();
   const sessions = new Map();
+  const providerResponses = new Map();
   for (const record of records) {
     if (!record || typeof record !== "object" || typeof record.call !== "string") continue;
+    if (record.record_type === "provider_transport_error" || record.record_type === "provider_exchange_diagnostic") continue;
+    if (record.provider_response === true || record.record_type === "provider_response") {
+      const sequence = Number(record.response);
+      const providerSession = typeof record.provider_session === "string" && record.provider_session
+        ? record.provider_session
+        : "legacy";
+      const key = Number.isSafeInteger(sequence) && sequence >= 0
+        ? `provider:${providerSession}:${sequence}`
+        : `provider:${providerSession}:${providerResponses.size + 1}`;
+      providerResponses.set(key, record);
+      continue;
+    }
     const session = sessionOf(record);
     if (record.scope === "session" && session) {
       sessions.set(session, record);
@@ -80,8 +138,18 @@ export function summarizeUsage(records) {
       unknown.push({ call: record.call, childSession: sessionOf(record), response: record.response ?? null, reason: record.reason ?? "usage_unavailable" });
       return;
     }
-    add(row, usage, record.responseMs);
-    add(totals, usage, record.responseMs);
+    const rollup = Boolean(record.aggregate || record.scope === "session");
+    const synthetic = record.synthetic === true || record.record_type === "synthetic_settlement";
+    const responseMs = Number(record.responseMs) || 0;
+    const provider = {
+      providerResponses: rollup ? providerTurns(usage) : synthetic ? 0 : 1,
+      providerResponseMs: rollup || synthetic ? 0 : responseMs,
+      delegatedLifecycleMs: rollup ? rollupLifecycleDurationMs(usage, responseMs) : 0,
+    };
+    // Preserve generic elapsed timing for standalone aggregates, but never relabel that lifecycle
+    // measurement as provider response time.
+    add(row, usage, responseMs, provider);
+    add(totals, usage, responseMs, provider);
   };
   const responseSums = new Map();
   for (const record of responses.values()) {
@@ -90,34 +158,50 @@ export function summarizeUsage(records) {
     const usage = normalizeUsage(record.usage);
     if (session && usage) {
       const sum = responseSums.get(session) ?? emptyTotals();
-      add(sum, usage, 0);
+      const synthetic = record.synthetic === true || record.record_type === "synthetic_settlement";
+      add(sum, usage, 0, {
+        providerResponses: synthetic ? 0 : 1,
+        providerResponseMs: synthetic ? 0 : Number(record.responseMs) || 0,
+      });
+      if (synthetic) sum.syntheticResponses = (sum.syntheticResponses ?? 0) + 1;
       responseSums.set(session, sum);
     }
   }
   // Roll-ups per child session: the session's own record and any delegate aggregate. Keep the
   // largest known one; it is a lower bound that must never be discarded for a smaller sum.
   const rollups = new Map();
-  const offer = (session, call, usage) => {
+  const offer = (session, call, usage, responseMs = 0) => {
     if (!session || !usage) return;
-    if (!rollups.has(session) || usage.totalTokens > rollups.get(session).usage.totalTokens) rollups.set(session, { call, usage });
+    const existing = rollups.get(session);
+    if (!existing || usage.totalTokens > existing.usage.totalTokens ||
+        (usage.totalTokens === existing.usage.totalTokens && delegatedLifecycleDurationMs(usage) > delegatedLifecycleDurationMs(existing.usage))) {
+      rollups.set(session, { call, usage, responseMs });
+    }
   };
   for (const record of aggregates.values()) {
     const session = sessionOf(record);
-    if (session) offer(session, record.call, normalizeUsage(record.usage));
+    if (session) offer(session, record.call, normalizeUsage(record.usage), record.responseMs);
     else include(record);
   }
-  for (const [session, record] of sessions) offer(session, record.call, normalizeUsage(record.usage));
+  for (const [session, record] of sessions) offer(session, record.call, normalizeUsage(record.usage), record.responseMs);
 
-  for (const [session, { call, usage }] of rollups) {
+  for (const [session, { call, usage, responseMs }] of rollups) {
     const row = calls.get(call) ?? emptyTotals();
     calls.set(call, row);
     const sum = responseSums.get(session);
     if (!sum) {
-      add(row, usage, 0);
-      add(totals, usage, 0);
+      const provider = {
+        providerResponses: providerTurns(usage),
+        providerResponseMs: 0,
+        delegatedLifecycleMs: rollupLifecycleDurationMs(usage, responseMs),
+      };
+      add(row, usage, Number(responseMs) || 0, provider);
+      add(totals, usage, Number(responseMs) || 0, provider);
       continue;
     }
     const sameVector = USAGE_KEYS.every((key) => (usage[key] ?? 0) === sum[key]) && usage.totalTokens === sum.total;
+    supplementProviderRollup(row, sum, usage, responseMs);
+    supplementProviderRollup(totals, sum, usage, responseMs);
     if (sameVector) continue;
     // Per-response records and the roll-up disagree somewhere in the vector: never double count and
     // never drop known tokens. Take the known lower bound per component; the total can be no
@@ -137,6 +221,47 @@ export function summarizeUsage(records) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: `${status}_request_usage_unavailable` });
     } else if (!responseSums.has(session) && !rollups.has(session) && !record.usageKnownEmpty) {
       unknown.push({ call: record.call, childSession: session, response: null, reason: "session_usage_unavailable" });
+    }
+  }
+
+  if (providerResponses.size) {
+    const logicalProviderResponses = totals.providerResponses;
+    const logicalProviderResponseMs = totals.providerResponseMs;
+    const traced = emptyTotals();
+    let tracedLatencySamples = 0;
+    for (const record of providerResponses.values()) {
+      traced.providerResponses += 1;
+      const responseMs = Number(record.responseMs);
+      if (Number.isFinite(responseMs) && responseMs >= 0) {
+        traced.providerResponseMs += responseMs;
+        tracedLatencySamples += 1;
+      }
+    }
+
+    // Preserve call-level logical attribution. The transport trace can prove that additional calls
+    // or latency exist, but it cannot map them back to planner/main/coding rows. Add only the
+    // unattributed positive response-count delta, under a collision-free synthetic row, so call
+    // rows are never overwritten or zeroed. Trace latency stays aggregate-only because it cannot
+    // be safely distributed without double-counting logical per-call measurements.
+    const supplemental = emptyTotals();
+    supplemental.providerResponses = Math.max(0, traced.providerResponses - logicalProviderResponses);
+    if (supplemental.providerResponses) {
+      let key = 'provider_trace_unattributed';
+      while (calls.has(key)) key += '_';
+      calls.set(key, supplemental);
+    }
+    totals.providerResponses = Math.max(logicalProviderResponses, traced.providerResponses);
+    // Trace and logical rows are not correlated by request identity, so even equal counts do not
+    // prove that the trace covers the same calls. Preserve the strongest known lower bound and
+    // never let trace reconciliation reduce provider latency already attributed logically.
+    totals.providerResponseMs = Math.max(logicalProviderResponseMs, traced.providerResponseMs);
+    if (traced.providerResponses < logicalProviderResponses || tracedLatencySamples < traced.providerResponses) {
+      unknown.push({
+        call: 'provider',
+        childSession: null,
+        response: null,
+        reason: 'provider_trace_incomplete',
+      });
     }
   }
   return { calls, totals, unknown, complete: unknown.length === 0 };

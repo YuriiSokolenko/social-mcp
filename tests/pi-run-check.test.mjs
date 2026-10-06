@@ -177,6 +177,19 @@ test('paths outside the worktree, traversal, symlink escapes and option-like pat
   assert.equal(pytest.status, 'invalid');
 });
 
+test('#503 pytest focused-check scope has no hidden -k or marker filters', async () => {
+  const dir = worktree({ 'tests/test_a.py': 'def test_a():\n    assert True\n' });
+  for (const request of [
+    { kind: 'pytest', targets: ['tests/test_a.py'], k: 'test_a' },
+    { kind: 'pytest', targets: ['tests/test_a.py'], markers: 'slow' },
+    { kind: 'pytest', targets: ['tests/test_a.py'], marker: 'slow' },
+  ]) {
+    const result = await runCheck(dir, request);
+    assert.equal(result.status, 'invalid', JSON.stringify(request));
+    assert.match(result.summary, /unsupported field/);
+  }
+});
+
 test('no arbitrary command is expressible through the public contract', async () => {
   const dir = worktree({ 'ok.py': '' });
   assert.deepEqual(CHECK_KINDS, ['python_compile', 'ruff', 'pytest', 'profile']);
@@ -210,7 +223,13 @@ test('Docker backend sends structured check fields only and strips runner secret
     });
     const result = await runCheck(dir, { kind: 'python_compile', paths: ['ok.py'] }, {
       backend,
-      env: { PATH: '/bin', LANG: 'C.UTF-8', GITHUB_TOKEN: 'must-not-escape' },
+      env: {
+        PATH: '/bin',
+        LANG: 'C.UTF-8',
+        GITHUB_TOKEN: 'must-not-escape',
+        PI_TRUSTED_ACCEPTANCE_TARGETS: 'social_mcp.diagnostics.smoke_lru',
+        PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS: 'social_mcp.diagnostics.smoke_intervals',
+      },
     });
     assert.equal(result.status, 'pass');
     assert.equal(captured.url, 'http://127.0.0.1:17343/v1/run-check');
@@ -218,6 +237,8 @@ test('Docker backend sends structured check fields only and strips runner secret
     assert.deepEqual(captured.body.params, { kind: 'python_compile', paths: ['ok.py'] });
     assert.deepEqual(Object.keys(captured.body).sort(), ['env', 'params', 'root', 'runner_name', 'timeout_ms']);
     assert.equal(captured.body.env.GITHUB_TOKEN, undefined);
+    assert.equal(captured.body.env.PI_TRUSTED_ACCEPTANCE_TARGETS, 'social_mcp.diagnostics.smoke_lru');
+    assert.equal(captured.body.env.PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS, 'social_mcp.diagnostics.smoke_intervals');
     assert.equal(captured.body.docker_args, undefined);
     assert.equal(captured.body.mounts, undefined);
     assert.equal(captured.body.command, undefined);
@@ -258,14 +279,83 @@ test('output is bounded deterministically and secrets are not inherited', async 
   assert.ok(result.diagnostics.length <= 20);
 });
 
-test('output beyond four MiB retains the final failure, not the first chunk', async () => {
+test('output beyond four MiB keeps a bounded failure tail and the complete artifact', async () => {
   const dir = worktree({ 'tests/test_big.py': '' });
-  const big = fakeBin(dir, 'pytest-huge', 'head -c 4500000 /dev/zero | tr "\\000" x\nprintf "\\nFINAL_TRACEBACK\\n"\nexit 1');
-  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, directOptions({ bins: { pytest: big } }));
+  const diagnosticsFile = path.join(dir, 'diagnostics.jsonl');
+  const big = fakeBin(dir, 'pytest-huge', 'echo FIRST_DIAGNOSTIC\nhead -c 4500000 /dev/zero | tr "\\000" x\nprintf "\\nFINAL_TRACEBACK\\n"\nexit 1');
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, directOptions({
+    bins: { pytest: big },
+    env: { ...process.env, PI_DIAGNOSTICS_FILE: diagnosticsFile },
+  }));
   assert.equal(result.status, 'fail');
   assert.equal(result.truncated, true);
   assert.match(result.stdout_tail, /FINAL_TRACEBACK/);
   assert.ok(result.stdout_tail.length <= 3000);
+  const artifact = fs.readFileSync(diagnosticsFile, 'utf8');
+  assert.match(artifact, /FIRST_DIAGNOSTIC/);
+  assert.match(artifact, /FINAL_TRACEBACK/);
+});
+
+test('output beyond the spool cap is bounded and reports omitted bytes explicitly', async () => {
+  const dir = worktree({ 'tests/test_huge.py': '' });
+  const diagnosticsFile = path.join(dir, 'diagnostics.jsonl');
+  const huge = fakeBin(dir, 'pytest-spool-cap', 'echo FIRST_SPOOL_DIAGNOSTIC\nhead -c 34000000 /dev/zero | tr "\\000" x\nprintf "\\nFINAL_SPOOL_TRACEBACK\\n"\nexit 1');
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_huge.py'] }, directOptions({
+    bins: { pytest: huge },
+    env: { ...process.env, PI_DIAGNOSTICS_FILE: diagnosticsFile },
+  }));
+  assert.equal(result.status, 'fail');
+  assert.equal(result.output_spool_truncated, true);
+  assert.ok(result.output_spool_omitted_bytes.stdout > 0);
+  const artifact = fs.readFileSync(diagnosticsFile, 'utf8');
+  assert.match(artifact, /FIRST_SPOOL_DIAGNOSTIC/);
+  assert.match(artifact, /FINAL_SPOOL_TRACEBACK/);
+  assert.match(artifact, /"spool_truncated":true/);
+});
+
+test('spool setup failure falls back to bounded output without masking the check result', async () => {
+  const dir = worktree({ 'tests/test_spool.py': '' });
+  const fail = fakeBin(dir, 'pytest-spool-setup-fail', 'echo CHECK_FAILURE >&2\nexit 1');
+  const originalMkdtempSync = fs.mkdtempSync;
+  fs.mkdtempSync = () => { throw new Error('temporary directory unavailable'); };
+  try {
+    const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_spool.py'] }, directOptions({ bins: { pytest: fail } }));
+    assert.equal(result.status, 'fail');
+    assert.equal(result.output_capture_failed, true);
+    assert.match(result.stderr_tail, /CHECK_FAILURE/);
+  } finally {
+    fs.mkdtempSync = originalMkdtempSync;
+  }
+});
+
+test('diagnostic artifact write failure does not change check status', async () => {
+  const dir = worktree({ 'tests/test_artifact.py': '' });
+  const fail = fakeBin(dir, 'pytest-artifact-fail', 'echo ORIGINAL_FAILURE >&2\nexit 1');
+  const artifactDirectory = path.join(dir, 'diagnostics');
+  fs.mkdirSync(artifactDirectory);
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_artifact.py'] }, directOptions({
+    bins: { pytest: fail }, env: { ...process.env, PI_DIAGNOSTICS_FILE: artifactDirectory },
+  }));
+  assert.equal(result.status, 'fail');
+  assert.equal(result.diagnostic_artifact_failed, true);
+  assert.match(result.stderr_tail, /ORIGINAL_FAILURE/);
+});
+
+test('failed check writes complete sanitized output to the diagnostics artifact', async () => {
+  const dir = worktree({ 'tests/test_big.py': '' });
+  const diagnosticsFile = path.join(dir, 'diagnostics.jsonl');
+  const payload = 'complete-check-detail-'.repeat(400);
+  const failing = fakeBin(dir, 'pytest-diagnostic', `printf '%s\\n' '${payload}'\nprintf 'api_key=syntheticCheckSecret123\\n' >&2\nexit 1`);
+  const result = await runCheck(dir, { kind: 'pytest', targets: ['tests/test_big.py'] }, directOptions({
+    bins: { pytest: failing },
+    env: { ...process.env, PI_DIAGNOSTICS_FILE: diagnosticsFile },
+  }));
+  assert.equal(result.status, 'fail');
+  assert.match(result.diagnostic_ref, /diagnostics\.jsonl#check-/);
+  const artifact = fs.readFileSync(diagnosticsFile, 'utf8');
+  assert.match(artifact, /complete-check-detail-/);
+  assert.match(artifact, /api_key=\[REDACTED\]/);
+  assert.doesNotMatch(artifact, /syntheticCheckSecret123/);
 });
 
 test('check subprocess cannot use the network or read home credentials', { skip: !hasRealSandbox }, async () => {
@@ -336,10 +426,11 @@ test('sandboxPreflight succeeds through the real sandbox on this platform', { sk
   assert.equal(result.ok, true, result.summary);
 });
 
-test('Pi runtime preflights the sandbox at session start and fails the stage before any agent turn', { skip: process.platform !== 'linux' }, () => {
+test('Pi runtime fail-closes the stage when session_start preflight fails instead of swallowing the extension error', { skip: process.platform !== 'linux' }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-preflight-runtime-'));
   try {
     const issueContext = path.join(dir, 'issue.json');
+    const failureFile = path.join(dir, 'runtime-failure.json');
     const loader = path.join(dir, 'loader.mjs');
     fs.writeFileSync(issueContext, JSON.stringify({ title: 'test', body: 'test' }));
     // `typebox` is stubbed: only the session_start wiring is exercised here.
@@ -356,6 +447,7 @@ test('Pi runtime preflights the sandbox at session start and fails the stage bef
       import assert from 'node:assert/strict';
       const handlers = new Map();
       let modelSet = false;
+      let aborted = false;
       const pi = {
         on: (name, handler) => handlers.set(name, handler),
         registerTool: () => {},
@@ -366,11 +458,16 @@ test('Pi runtime preflights the sandbox at session start and fails the stage bef
       };
       const { default: extension } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
       extension(pi);
-      await assert.rejects(
-        handlers.get('session_start')({}, { model: { provider: 'test', id: 'model', maxTokens: 32000 }, cwd: process.cwd() }),
-        /run_check sandbox preflight failed: INFRASTRUCTURE ERROR: trusted run_check executor identity is unavailable/,
-      );
+      await handlers.get('session_start')({}, { model: { provider: 'test', id: 'model', maxTokens: 32000 }, cwd: process.cwd(), abort: async () => { aborted = true; } });
+      assert.equal(aborted, true, 'session_start explicitly aborts the Pi stage');
       assert.equal(modelSet, false, 'no agent budget/model work may start after a failed preflight');
+      const blocked = handlers.get('before_provider_request')({ payload: { tools: [{ function: { name: 'write' } }] } });
+      assert.deepEqual(blocked.tools, [], 'defensive request gate exposes no actionable tools');
+      assert.equal(blocked.tool_choice, 'none');
+      const failure = JSON.parse((await import('node:fs')).readFileSync(${JSON.stringify(failureFile)}, 'utf8'));
+      assert.equal(failure.failure_class, 'infrastructure');
+      assert.equal(failure.failure_code, 'PI_RUN_CHECK_PREFLIGHT_FAILED');
+      assert.match(failure.reason, /run_check sandbox preflight failed: INFRASTRUCTURE ERROR:/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url).pathname,
@@ -381,6 +478,7 @@ test('Pi runtime preflights the sandbox at session start and fails the stage bef
         PI_STAGE: 'implementer',
         PI_ISSUE: '1',
         PI_ISSUE_CONTEXT: issueContext,
+        PI_RUNTIME_FAILURE_FILE: failureFile,
         GITHUB_WORKSPACE: new URL('..', import.meta.url).pathname,
       },
     });
@@ -396,6 +494,7 @@ test('focused-check tools live in the dedicated sandbox image, not the agent ima
   assert.match(source, /FROM python:3\.12/);
   assert.match(source, /USER 1001:1001/);
   assert.doesNotMatch(fs.readFileSync(new URL('../infra/github-runner-autoscaler/worker.Dockerfile', import.meta.url), 'utf8'), /bubblewrap/);
+  assert.match(fs.readFileSync(new URL('../infra/github-runner-autoscaler/manager.Dockerfile', import.meta.url), 'utf8'), /COPY scripts\/pi-common\/diagnostics-artifact\.mjs \/opt\/social-mcp\/scripts\/pi-common\/diagnostics-artifact\.mjs/);
 });
 
 test('failed check returns usable diagnostics even when output is unparsed', async () => {
@@ -551,7 +650,7 @@ test('infrastructure errors are a distinct status and no shell fallback exists i
   assert.doesNotMatch(core, /['"`](?:\/bin\/)?(?:ba|z|da)?sh['"`]|bash -c|shell:\s*true/);
   const runtime = fs.readFileSync(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url), 'utf8');
   assert.match(runtime, /status: pass\|fail\|timeout\|invalid\|infra_error/);
-  assert.match(runtime, /if \(config\.productiveProgress\?\.verificationTool === 'run_check'\) await preflightRunCheckSandbox\(\);/);
+  assert.match(runtime, /if \(config\.productiveProgress\?\.verificationTool === 'run_check'\) \{[\s\S]*?await preflightRunCheckSandbox\(\);/);
   // Preflight must run before the response budget/model work of the session starts.
   assert.ok(runtime.indexOf('await preflightRunCheckSandbox();') < runtime.indexOf("await applyBudget('short', ctx);"));
 });

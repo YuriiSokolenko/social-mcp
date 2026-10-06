@@ -8,9 +8,10 @@ import {
   sameCandidateRevision,
 } from './candidate-revision.mjs';
 import { resolveValidationRunId } from './validation-ledger.mjs';
+import { readImplementerResult } from './implementer-result.mjs';
 
 export const TERMINAL_RECEIPT_KIND = 'pi_terminal_receipt';
-export const TERMINAL_RECEIPT_SCHEMA_VERSION = 1;
+export const TERMINAL_RECEIPT_SCHEMA_VERSION = 2;
 
 // This receipt is a consistency binding, not a cryptographic authentication
 // token. Authorization still comes from trusted harness validation/publication
@@ -69,6 +70,7 @@ export function createSuccessfulTerminalReceipt({
     kind: TERMINAL_RECEIPT_KIND,
     schema_version: TERMINAL_RECEIPT_SCHEMA_VERSION,
     status: 'success',
+    outcome: readImplementerResult(resultFile)?.outcome ?? null,
     run_id: resolveValidationRunId(env),
     attempt_id: receiptAttemptId(env),
     session_id: receiptSessionId(env),
@@ -96,6 +98,7 @@ export function readTerminalReceiptFile(target) {
       receipt?.kind !== TERMINAL_RECEIPT_KIND ||
       receipt?.schema_version !== TERMINAL_RECEIPT_SCHEMA_VERSION ||
       receipt?.status !== 'success' ||
+      !['changed', 'already_satisfied', 'blocked'].includes(receipt?.outcome) ||
       typeof receipt?.run_id !== 'string' ||
       typeof receipt?.attempt_id !== 'string' ||
       typeof receipt?.result_metadata_sha256 !== 'string' ||

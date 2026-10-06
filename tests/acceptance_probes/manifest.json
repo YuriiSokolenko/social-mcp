@@ -1,6 +1,7 @@
 {
   "description": "Trusted acceptance-boundary probes (#427). Control-plane protected: implementers cannot edit or delete them. Each probe is tied to a criterion and records whether the behaviour is an acceptance requirement or a documented policy choice.",
-  "args_encoding": "JSON values, plus {\"$float\": \"nan|inf|-inf|1.5\"} and {\"$datetime\": \"<ISO-8601>\"} tags, plus {\"$int\": \"1eN\"} for 10**N.",
+  "deferred_activation": "For a rerun that must create a deferred target, put an exact line in the issue body: trusted-acceptance-target: <python.module>. Free-text mentions do not activate deferred targets.",
+  "args_encoding": "JSON values, plus {\"$float\": \"nan|inf|-inf|1.5\"}, {\"$datetime\": \"<ISO-8601>\"}, {\"$int\": \"1eN\"}, {\"$decimal\": \"<decimal>\"}, and {\"$fraction\": [numerator, denominator]} tags.",
   "criteria": {
     "retry-after-delta-grammar": {
       "source": "RFC 9110 section 10.2.3 delay-seconds = 1*DIGIT; issues #345/#400",
@@ -21,6 +22,23 @@
       "source": "bool is not a number; non-finite values are not valid bucket state. POLICY: int/float only; Decimal/Fraction are rejected",
       "status": "policy-int-float-only",
       "target": "social_mcp.diagnostics.smoke_token_bucket:token_bucket_transition"
+    },
+    "lru-capacity-integer": {
+      "source": "issues #347/#402 and follow-up #366: positive integer capacity excludes bool",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_lru:LRUCache",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_lru",
+      "source_path": "src/social_mcp/diagnostics/smoke_lru.py"
+    },
+    "interval-numeric-domain": {
+      "source": "issues #346/#401 and follow-up #368; original 'numeric' wording was ambiguous",
+      "status": "policy-real-plus-decimal",
+      "target": "social_mcp.diagnostics.smoke_intervals:merge_intervals",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_intervals",
+      "source_path": "src/social_mcp/diagnostics/smoke_intervals.py",
+      "policy": "Reject bool and NaN; accept numbers.Real values (including Fraction) or Decimal bounds; ordered infinities are accepted. Cross-domain Decimal/float mixing is not asserted by this policy."
     }
   },
   "probes": [
@@ -41,6 +59,17 @@
     {"id": "bucket-bool-capacity", "criterion": "bucket-numeric-domain", "args": [0, true, 1, 1, 1], "raises": "ValueError"},
     {"id": "bucket-nan-tokens", "criterion": "bucket-numeric-domain", "args": [{"$float": "nan"}, 5, 1, 1, 1], "raises": "ValueError"},
     {"id": "bucket-huge-int-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$int": "1e400"}, 1, 1, 1], "returns": [0, true]},
-    {"id": "bucket-inf-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$float": "inf"}, 1, 1, 1], "raises": "ValueError"}
+    {"id": "bucket-inf-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$float": "inf"}, 1, 1, 1], "raises": "ValueError"},
+    {"id": "lru-bool-capacity", "criterion": "lru-capacity-integer", "args": [true], "raises": "ValueError"},
+    {"id": "lru-zero-capacity", "criterion": "lru-capacity-integer", "args": [0], "raises": "ValueError"},
+    {"id": "lru-negative-capacity", "criterion": "lru-capacity-integer", "args": [-1], "raises": "ValueError"},
+    {"id": "interval-bool-bound", "criterion": "interval-numeric-domain", "args": [[[true, 2]]], "raises": "ValueError"},
+    {"id": "interval-float-nan", "criterion": "interval-numeric-domain", "args": [[[{"$float": "nan"}, 2]]], "raises": "ValueError"},
+    {"id": "interval-decimal-nan", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "NaN"}, 2]]], "raises": "ValueError"},
+    {"id": "interval-decimal-snan", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "sNaN"}, 2]]], "raises": "ValueError"},
+    {"id": "interval-decimal", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "1.0"}, {"$decimal": "2.0"}], [{"$decimal": "2.0"}, {"$decimal": "3.0"}]]], "accepts": true},
+    {"id": "interval-fraction", "criterion": "interval-numeric-domain", "args": [[[{"$fraction": [1, 2]}, 1], [1, {"$fraction": [3, 2]}]]], "accepts": true},
+    {"id": "interval-infinity", "criterion": "interval-numeric-domain", "args": [[[0, {"$float": "inf"}], [1, 2]]], "accepts": true},
+    {"id": "interval-decimal-infinity", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "0"}, {"$decimal": "Infinity"}], [{"$decimal": "1"}, {"$decimal": "2"}]]], "accepts": true}
   ]
 }

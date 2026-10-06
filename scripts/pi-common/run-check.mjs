@@ -6,6 +6,7 @@ import { ruffArgs } from './ruff-spec.mjs';
 import { duplicatePackageRootDiagnostics } from './package-root-check.mjs';
 import { expandCommand, projectConfig } from './project-config.mjs';
 import { createDockerSandboxBackend } from './run-check-docker-backend.mjs';
+import { appendDiagnostic } from './diagnostics-artifact.mjs';
 
 /**
  * Backend-neutral focused verification for agents that have no unrestricted
@@ -28,12 +29,36 @@ const MAX_DIAGNOSTICS = 20;
 const MAX_MESSAGE_CHARS = 400;
 const TAIL_CHARS = 3000;
 const CAPTURE_LIMIT_BYTES = 4 * 1024 * 1024;
+const OUTPUT_SPOOL_LIMIT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_TIMEOUT_SECONDS = 600;
 const PREFLIGHT_TIMEOUT_MS = 15000;
 
-// Only these variables reach a check subprocess: never the caller's token/secret environment.
-const ENV_ALLOWLIST = ['PATH', 'LANG', 'LC_ALL'];
+// Versioned producer/executor handshake. Preflight must prove that the deployed trusted executor
+// accepts exactly this request-side environment vocabulary before any model work begins.
+export const RUN_CHECK_ENV_CONTRACT = Object.freeze({
+  version: 2,
+  keys: Object.freeze([
+    'HOME',
+    'LANG',
+    'LC_ALL',
+    'PATH',
+    'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS',
+    'PI_TRUSTED_ACCEPTANCE_TARGETS',
+    'PYTHONDONTWRITEBYTECODE',
+    'PYTHONIOENCODING',
+    'TMPDIR',
+  ]),
+});
+
+// Only optional caller values from this contract are copied; fixed keys below are runtime-owned.
+const ENV_ALLOWLIST = [
+  'PATH',
+  'LANG',
+  'LC_ALL',
+  'PI_TRUSTED_ACCEPTANCE_TARGETS',
+  'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS',
+];
 
 // Compiles in memory so a focused check never writes __pycache__ into the worktree.
 const PYTHON_COMPILE_SCRIPT = [
@@ -253,6 +278,17 @@ function execute({ command, args, cwd, env, timeoutMs }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const chunks = { stdout: [], stderr: [] };
+    let fullOutputDir = null;
+    let fullOutputPaths = null;
+    try {
+      fullOutputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-run-check-output-'));
+      fullOutputPaths = { stdout: path.join(fullOutputDir, 'stdout'), stderr: path.join(fullOutputDir, 'stderr') };
+    } catch { /* The bounded in-memory tails remain available if spooling cannot start. */ }
+    let fullOutputCaptureFailed = false;
+    const captureFailedByStream = { stdout: false, stderr: false };
+    const spooledBytes = { stdout: 0, stderr: 0 };
+    const totalBytes = { stdout: 0, stderr: 0 };
+    const spoolTruncated = { stdout: false, stderr: false };
     const sizes = { stdout: 0, stderr: 0 };
     let dropped = false;
     let timedOut = false;
@@ -260,6 +296,22 @@ function execute({ command, args, cwd, env, timeoutMs }) {
 
     const child = spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const collect = (name) => (data) => {
+      totalBytes[name] += data.length;
+      const remaining = Math.max(0, OUTPUT_SPOOL_LIMIT_BYTES - spooledBytes[name]);
+      const spoolChunk = data.subarray(0, remaining);
+      if (data.length > remaining) spoolTruncated[name] = true;
+      if (spoolChunk.length && fullOutputPaths) {
+        try {
+          fs.appendFileSync(fullOutputPaths[name], spoolChunk);
+          spooledBytes[name] += spoolChunk.length;
+        } catch {
+          fullOutputCaptureFailed = true;
+          captureFailedByStream[name] = true;
+        }
+      } else if (spoolChunk.length) {
+        fullOutputCaptureFailed = true;
+        captureFailedByStream[name] = true;
+      }
       chunks[name].push(data);
       sizes[name] += data.length;
       while (sizes[name] > CAPTURE_LIMIT_BYTES) {
@@ -284,15 +336,45 @@ function execute({ command, args, cwd, env, timeoutMs }) {
       settled = true;
       clearTimeout(timer);
       killTree(); // reap any grandchildren that outlived the direct child
+      const readFullOutput = name => {
+        try {
+          const prefix = fullOutputPaths && fs.existsSync(fullOutputPaths[name])
+            ? fs.readFileSync(fullOutputPaths[name], 'utf8')
+            : '';
+          if (captureFailedByStream[name] && totalBytes[name] > 0) {
+            const tail = Buffer.concat(chunks[name]).toString('utf8');
+            return `${prefix}\n[complete output spool unavailable; retained bounded tail follows]\n${tail}`;
+          }
+          if (spoolTruncated[name]) {
+            const tail = Buffer.concat(chunks[name]).toString('utf8');
+            return `${prefix}\n[output spool truncated after ${OUTPUT_SPOOL_LIMIT_BYTES} bytes; omitted ${totalBytes[name] - OUTPUT_SPOOL_LIMIT_BYTES} bytes]\n${tail}`;
+          }
+          return prefix;
+        }
+        catch {
+          fullOutputCaptureFailed = true;
+          captureFailedByStream[name] = true;
+          return Buffer.concat(chunks[name]).toString('utf8');
+        }
+      };
+      const fullStdout = readFullOutput('stdout');
+      const fullStderr = readFullOutput('stderr');
       resolve({
         exitCode,
         timedOut,
-        dropped,
+        dropped: dropped || fullOutputCaptureFailed || Object.values(spoolTruncated).some(Boolean),
+        outputCaptureFailed: fullOutputCaptureFailed,
+        outputSpoolTruncated: Object.values(spoolTruncated).some(Boolean),
+        outputSpoolOmittedBytes: Object.fromEntries(Object.keys(spoolTruncated).map(name => [name, Math.max(0, totalBytes[name] - OUTPUT_SPOOL_LIMIT_BYTES)])),
         spawnError,
         durationMs: Date.now() - started,
-        stdout: Buffer.concat(chunks.stdout).toString('utf8'),
-        stderr: Buffer.concat(chunks.stderr).toString('utf8'),
+        stdout: fullStdout,
+        stderr: fullStderr,
       });
+      if (fullOutputDir) {
+        try { fs.rmSync(fullOutputDir, { recursive: true, force: true }); }
+        catch { /* Temporary diagnostic cleanup is best-effort. */ }
+      }
     };
     child.once('error', error => finish(null, error));
     child.once('close', code => finish(code, null));
@@ -456,11 +538,35 @@ export async function runCheck(root, params, options = {}) {
     stdout_tail: stdoutTail.text,
     stderr_tail: stderrTail.text,
     truncated,
+    ...(run.outputCaptureFailed ? { output_capture_failed: true } : {}),
+    ...(run.outputSpoolTruncated ? {
+      output_spool_truncated: true,
+      output_spool_omitted_bytes: run.outputSpoolOmittedBytes,
+    } : {}),
     ...(run.image ? { sandbox_image: run.image } : {}),
     ...(run.image_id ? { sandbox_image_id: run.image_id } : {}),
     ...(run.sandbox_security ? { sandbox_security: run.sandbox_security } : {}),
     ...(run.container_removed !== undefined ? { sandbox_container_removed: run.container_removed } : {}),
   };
+
+  const checkDiagnosticId = `check-${process.pid}-${Date.now()}`;
+  const diagnosticStored = (truncated || run.exitCode !== 0 || run.timedOut) && appendDiagnostic(env.PI_DIAGNOSTICS_FILE, {
+    id: checkDiagnosticId,
+    at: new Date().toISOString(),
+    type: 'run_check',
+    kind,
+    profile: request.profile ?? null,
+    status: run.timedOut ? 'timeout' : run.exitCode === 0 ? 'pass' : 'fail',
+    exit_code: run.exitCode,
+    duration_ms: run.durationMs,
+    stdout: run.stdout,
+    stderr: run.stderr,
+    capture_incomplete: Boolean(run.outputCaptureFailed),
+    spool_truncated: Boolean(run.outputSpoolTruncated),
+    spool_omitted_bytes: run.outputSpoolOmittedBytes,
+  });
+  if (diagnosticStored) base.diagnostic_ref = `${path.basename(env.PI_DIAGNOSTICS_FILE)}#${checkDiagnosticId}`;
+  else if (truncated || run.exitCode !== 0 || run.timedOut) base.diagnostic_artifact_failed = true;
 
   if (run.timedOut) {
     return { status: 'timeout', ...base, summary: `Timed out after ${Math.round(timeoutMs / 1000)}s; process tree killed`, diagnostics: [] };
@@ -501,7 +607,12 @@ export async function sandboxPreflight(options = {}) {
       : selectSandboxBackend(env));
     if (!backend) return fail({ component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}` });
     if (backend.preflight) {
-      const result = await backend.preflight({ root: probeRoot, env: checkEnv(env), timeoutMs });
+      const result = await backend.preflight({
+        root: probeRoot,
+        env: checkEnv(env),
+        envContract: RUN_CHECK_ENV_CONTRACT,
+        timeoutMs,
+      });
       if (result?.ok) return result;
       const summary = String(result?.summary || 'The trusted sandbox preflight failed');
       return {

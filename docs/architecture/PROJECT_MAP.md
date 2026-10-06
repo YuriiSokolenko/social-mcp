@@ -144,7 +144,7 @@ This document is the human- and agent-readable text map of the current Social MC
                                               +----------------+----------------+
                                               |                                 |
                                               v                                 v
-                                   prepare_implementation                 restored work
+                                   bootstrap planner session              restored work
                                               |                                 |
                                        planner                                  |
                                               |                                 |
@@ -165,9 +165,23 @@ This document is the human- and agent-readable text map of the current Social MC
                                                        |
                                                        v
                                                  submit_result
-                                                       |
-                                                       v
-                                                  Pull Request
+                                                  /        \
+                                      success ---+          +--- failed terminal obligation
+                                          |                          |
+                                          v                          v
+                                     Pull Request          terminal recovery controller
+                                                                     |
+                                             +-----------------------+----------------------+
+                                             |                                              |
+                                             v                                              v
+                               capability-valid deterministic repair              no legal repair remains
+                               (cleanup / metadata / conflict /                    |
+                                exact validation / prepared output)                v
+                                             |                              checkpoint + needs-human
+                                             v
+                                      ACTION_REQUIRED
+                                             |
+                                             +------------------------------> submit_result
                                                        |
                                                        v
                                                     Reviewer
@@ -185,7 +199,7 @@ This document is the human- and agent-readable text map of the current Social MC
 
 ## Implementer productive-progress / repository-access hierarchy
 
-    prepare_implementation (single-shot)
+    bootstrap planner session (runs before the main Implementer session starts)
        |
        +--> planner infrastructure failure after configured retry
        |      +--> PREPARATION_FALLBACK (no planner output or complexity)
@@ -224,6 +238,11 @@ This document is the human- and agent-readable text map of the current Social MC
        |      +--> parent ends after the fork submits; otherwise back to 2K (bounded sessions per run)
        |
        +--> submit_result
+       |      +--> success -> Pull Request
+       |      +--> repeated equivalent terminal failure
+       |             +--> obligation-driven deterministic repair using the current capability snapshot
+       |             +--> exact-path cleanup must reduce the named obligation before verification is re-armed
+       |             +--> no legal repair -> preserved checkpoint + pi:needs-human
        |
        +--> one concrete fact still missing
                |
