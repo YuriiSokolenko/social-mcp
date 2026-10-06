@@ -196,6 +196,10 @@ export function requireToolChoiceInPayload(payload) {
   return { ...payload, tool_choice: 'required' };
 }
 
+export function retryableProviderErrorStatus(status) {
+  return status == null || status === 408 || status === 429 || status >= 500;
+}
+
 export function providerErrorStatus(message) {
   if (message?.stopReason !== 'error') return null;
 
@@ -410,6 +414,7 @@ export default function (pi) {
   // A failed focused check opens a tiny read-only window over the authoritative failure scope and
   // changed publishable files, without touching the Planner/main evidence budget.
   let codingValidationRepair = null;
+  let codingRepairProviderRequestInFlight = null;
   const codingValidationRepairHistory = new Map();
   const codingRepairRewriteCounts = new Map();
   const codingRepairMutationShapeCounts = new Map();
@@ -701,8 +706,41 @@ export default function (pi) {
       codingRepairWindowActive() &&
       codingValidationRepair.paths.length > 0 &&
       codingValidationRepair.readsRemaining > 0 &&
+      codingValidationRepair.readObserved !== true &&
       controller.productiveProgressState() === 'action_required'
     );
+  }
+
+  async function armCodingRepairActionFallback(reason, request = null) {
+    if (!codingValidationRepair || codingValidationRepair.status !== 'fail') return false;
+    if (request?.key && request.key !== codingValidationRepair.key) return false;
+    codingValidationRepair.fallbackRequired = true;
+    codingValidationRepair.fallbackAttempted = false;
+    requireToolOnNextProviderRequest = true;
+    console.warn(`PI_CODING_REPAIR_ACTION_FALLBACK_ARMED ${JSON.stringify({
+      stage,
+      validationKey: codingValidationRepair.key,
+      reason,
+      request: request?.request ?? null,
+      checkpoint: { worktree_preserved: true },
+    })}`);
+    await pi.sendUserMessage(
+      'RUNTIME REPAIR ACTION FALLBACK: the bounded reasoning request produced no usable repair action. Do not read or inspect again. In the next response call one exposed mutation or terminal tool immediately; provider-level tool choice is required and thinking stays off.',
+      { deliverAs: 'steer' },
+    );
+    return true;
+  }
+
+  async function abortCodingRepairActionFallback(ctx, reason, request = null) {
+    const details = {
+      validation_key: codingValidationRepair?.key ?? request?.key ?? null,
+      request: request?.request ?? null,
+      reason,
+      checkpoint: { worktree_preserved: true },
+    };
+    recordRuntimeAbort('PI_CODING_REPAIR_ACTION_FALLBACK_FAILED', reason, details);
+    console.error(`PI_CODING_REPAIR_ACTION_FALLBACK_FAILED ${JSON.stringify({ stage, ...details })}`);
+    await ctx.abort();
   }
 
   function codingRepairReadPolicy(input, cwd) {
@@ -810,6 +848,8 @@ export default function (pi) {
       diagnosticLines: scope.diagnosticLines,
       rewriteEligiblePaths,
       thinkingRequestUsed: false,
+      fallbackRequired: false,
+      fallbackAttempted: false,
     };
 
     console.warn(`PI_CODING_REPAIR_STATE ${JSON.stringify({
@@ -1663,13 +1703,22 @@ export default function (pi) {
         !codingValidationRepair.readObserved &&
         codingRepairReadAvailable()
       );
+      const repairFallbackRequest = Boolean(
+        codingSession &&
+        codingRepairWindowActive() &&
+        codingValidationRepair.fallbackRequired === true &&
+        codingValidationRepair.fallbackAttempted !== true &&
+        !repairReadGateOpen
+      );
       const repairThinkingRequest = Boolean(
         codingSession &&
         codingRepairWindowActive() &&
         codingValidationRepair.thinkingRequestUsed !== true &&
+        codingValidationRepair.fallbackRequired !== true &&
         !repairReadGateOpen
       );
       if (repairThinkingRequest) codingValidationRepair.thinkingRequestUsed = true;
+      if (repairFallbackRequest) codingValidationRepair.fallbackAttempted = true;
       let patched = codingSession
         ? applyCodingThinkingPolicy(event.payload, { enableThinking: repairThinkingRequest })
         : event.payload;
@@ -1702,11 +1751,13 @@ export default function (pi) {
           sessionId: codingSession.sessionId,
           policy: repairThinkingRequest
             ? 'repair_reasoning_once'
-            : repairReadGateOpen
-              ? 'repair_evidence_low_overhead'
-              : codingRepairWindowActive()
-                ? 'repair_followup_low_overhead'
-                : 'normal_low_overhead',
+            : repairFallbackRequest
+              ? 'repair_action_fallback_low_overhead'
+              : repairReadGateOpen
+                ? 'repair_evidence_low_overhead'
+                : codingRepairWindowActive()
+                  ? 'repair_followup_low_overhead'
+                  : 'normal_low_overhead',
           validationKey: codingValidationRepair?.key ?? null,
           enableThinking: patched.chat_template_kwargs.enable_thinking,
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
@@ -1719,9 +1770,18 @@ export default function (pi) {
         if (!terminalRecoveryRequiredTool && repairReadGateOpen) {
           tools = tools.filter(tool => (tool.function?.name ?? tool.name) === 'read');
           console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({ stage, phase: 'evidence', tools: tools.map(tool => tool.function?.name ?? tool.name) })}`);
-        } else if (!terminalRecoveryRequiredTool && repairThinkingRequest) {
-          tools = tools.filter(tool => (tool.function?.name ?? tool.name) !== 'read');
-          console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({ stage, phase: 'reasoning_mutation', tools: tools.map(tool => tool.function?.name ?? tool.name) })}`);
+        } else if (!terminalRecoveryRequiredTool && (repairThinkingRequest || repairFallbackRequest)) {
+          // #511 deliberately keeps these provider turns mutation/terminal-only. Scope acceptance
+          // is a prelude, not a repair action. Any existing path that reached authoritative
+          // validation has already passed accepted-scope authorization on its first mutation;
+          // introducing a brand-new publishable path from this fallback would violate that
+          // mutation-only contract and must be planned/accepted before the repair window.
+          tools = tools.filter(tool => FINISH_TOOLS.has(tool.function?.name ?? tool.name));
+          console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({
+            stage,
+            phase: repairThinkingRequest ? 'reasoning_mutation' : 'fallback_mutation',
+            tools: tools.map(tool => tool.function?.name ?? tool.name),
+          })}`);
         }
         if (terminalRecoveryRequiredTool) {
           const selected = tools.filter(tool =>
@@ -1766,6 +1826,23 @@ export default function (pi) {
           liveActiveTools,
           deferredTools,
         };
+        if (repairThinkingRequest || repairFallbackRequest) {
+          codingRepairProviderRequestInFlight = {
+            key: codingValidationRepair?.key ?? null,
+            phase: repairThinkingRequest ? 'reasoning' : 'fallback',
+            request: providerCapabilitySnapshot.request,
+            maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? patched.max_output_tokens ?? null,
+            actionObserved: false,
+            tool: null,
+          };
+          requireToolOnNextProviderRequest = true;
+          console.warn(`PI_CODING_REPAIR_TOOL_CHOICE_ARMED ${JSON.stringify({
+            stage,
+            phase: codingRepairProviderRequestInFlight.phase,
+            request: codingRepairProviderRequestInFlight.request,
+            activeTools: executableTools,
+          })}`);
+        }
         console.log(`PI_PROVIDER_CAPABILITY_SNAPSHOT ${JSON.stringify({ stage, ...providerCapabilitySnapshot })}`);
         if (deferredTools.length) {
           console.warn(`PI_PROVIDER_CAPABILITY_DEFERRED ${JSON.stringify({
@@ -1795,10 +1872,22 @@ export default function (pi) {
       }
 
       if (requireToolOnNextProviderRequest) {
-        if (productiveState !== 'action_required') {
+        const repairActionForced = Boolean(
+          codingRepairProviderRequestInFlight &&
+          codingRepairProviderRequestInFlight.request === providerCapabilitySnapshot?.request
+        );
+        if (!repairActionForced && productiveState !== 'action_required') {
           requireToolOnNextProviderRequest = false;
           console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
         } else {
+          if (repairActionForced && productiveState !== 'action_required') {
+            console.warn(`PI_CODING_REPAIR_FORCE_STATE_DRIFT ${JSON.stringify({
+              stage,
+              productiveState,
+              phase: codingRepairProviderRequestInFlight.phase,
+              request: codingRepairProviderRequestInFlight.request,
+            })}`);
+          }
           const constrained = requireToolChoiceInPayload(patched);
           if (constrained !== patched) {
             forcedProviderRequestInFlight = true;
@@ -1807,6 +1896,7 @@ export default function (pi) {
               mode: 'required',
               request: providerCapabilitySnapshot?.request ?? null,
               activeTools: providerCapabilitySnapshot?.executableTools ?? pi.getActiveTools(),
+              source: repairActionForced ? 'coding_repair' : 'productive_action',
             })}`);
             patched = constrained;
           }
@@ -3054,6 +3144,21 @@ export default function (pi) {
       return blocked;
     }
 
+    if (
+      codingRepairProviderRequestInFlight &&
+      codingRepairProviderRequestInFlight.key === codingValidationRepair?.key &&
+      FINISH_TOOLS.has(event.toolName)
+    ) {
+      codingRepairProviderRequestInFlight.actionObserved = true;
+      codingRepairProviderRequestInFlight.tool = event.toolName;
+      console.info(`PI_CODING_REPAIR_ACTION_OBSERVED ${JSON.stringify({
+        stage,
+        phase: codingRepairProviderRequestInFlight.phase,
+        request: codingRepairProviderRequestInFlight.request,
+        tool: event.toolName,
+      })}`);
+    }
+
     // Capture the controller notice now, but publish it only for this exact toolCallId after
     // execution. Any later runtime-side block simply drops this local value.
     const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice();
@@ -3341,6 +3446,21 @@ export default function (pi) {
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
+      if (
+        pendingMutation?.repairPhase &&
+        !event.isError &&
+        mutationChanged !== false &&
+        codingValidationRepair
+      ) {
+        codingValidationRepair.fallbackRequired = false;
+        codingValidationRepair.fallbackAttempted = false;
+        console.info(`PI_CODING_REPAIR_ACTION_SATISFIED ${JSON.stringify({
+          stage,
+          validationKey: codingValidationRepair.key,
+          tool: event.toolName,
+          changed: mutationChanged,
+        })}`);
+      }
       if (!event.isError && mutationChanged !== false) {
         if (invalidateCodingBehavioralValidation(process.env)) {
           console.info(`PI_CODING_TARGETED_PYTEST ${JSON.stringify({
@@ -3658,8 +3778,48 @@ export default function (pi) {
       codingProviderRequestStartedAt = null;
     }
     const status = providerErrorStatus(event.message);
+    const repairRequest = codingRepairProviderRequestInFlight;
+    codingRepairProviderRequestInFlight = null;
     const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
     forcedProviderRequestInFlight = false;
+
+    if (event.message?.stopReason === 'error' && repairRequest) {
+      if (retryableProviderErrorStatus(status)) {
+        if (codingValidationRepair?.key === repairRequest.key) {
+          if (repairRequest.phase === 'reasoning') {
+            codingValidationRepair.thinkingRequestUsed = false;
+          } else {
+            codingValidationRepair.fallbackAttempted = false;
+          }
+        }
+        requireToolOnNextProviderRequest = true;
+        console.warn(`PI_CODING_REPAIR_PROVIDER_RETRY ${JSON.stringify({
+          stage,
+          phase: repairRequest.phase,
+          request: repairRequest.request,
+          status,
+          validationKey: repairRequest.key,
+        })}`);
+        // Transport/rate-limit/server failures are not model repair attempts. Do not convert
+        // them into the cheap fallback or consume that fallback; let Pi retry the same logical
+        // repair phase under the same action-only surface and required tool choice.
+        return undefined;
+      }
+      requireToolOnNextProviderRequest = false;
+      if (repairRequest.phase === 'reasoning') {
+        await armCodingRepairActionFallback(
+          status ? `provider_error_${status}` : 'provider_error',
+          repairRequest,
+        );
+      } else {
+        await abortCodingRepairActionFallback(
+          ctx,
+          status ? `fallback_provider_error_${status}` : 'fallback_provider_error',
+          repairRequest,
+        );
+      }
+      return undefined;
+    }
 
     // Pi 0.79.4 surfaces provider 4xx failures as assistant error turns; its
     // after_provider_response hook is not emitted on this path. An error turn is transport
@@ -3703,6 +3863,37 @@ export default function (pi) {
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
+
+    if (repairRequest) {
+      const actionObserved = repairRequest.actionObserved === true;
+      const requestMaxTokens = Number(repairRequest.maxTokens ?? 0);
+      const hitRepairCeiling =
+        event.message?.stopReason === 'length' ||
+        (requestMaxTokens > 0 && outputTokens >= requestMaxTokens);
+      if (repairRequest.phase === 'reasoning' && !actionObserved) {
+        await armCodingRepairActionFallback(
+          hitRepairCeiling ? 'reasoning_output_ceiling_without_action' : 'reasoning_completed_without_action',
+          repairRequest,
+        );
+        return undefined;
+      }
+      if (repairRequest.phase === 'fallback' && !actionObserved) {
+        await abortCodingRepairActionFallback(
+          ctx,
+          hitRepairCeiling ? 'fallback_output_ceiling_without_action' : 'fallback_completed_without_action',
+          repairRequest,
+        );
+        return undefined;
+      }
+      if (actionObserved) {
+        console.info(`PI_CODING_REPAIR_ACTION_REQUEST_SATISFIED ${JSON.stringify({
+          stage,
+          phase: repairRequest.phase,
+          request: repairRequest.request,
+          tool: repairRequest.tool,
+        })}`);
+      }
+    }
 
     // Scope acceptance may be the necessary first call before a large new-file mutation.
     // Preserve the one-shot elevated budget across that declaration-only turn; consume it only
