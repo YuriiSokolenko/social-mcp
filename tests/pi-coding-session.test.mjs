@@ -33,6 +33,9 @@ test('coding-session guidance uses only exposed tools and routes missing evidenc
   assert.match(runtime, /if one concrete missing fact prevents the next safe action, call need_more_evidence/);
   assert.match(runtime, /action-required: read is not exposed now/);
   assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
+  assert.match(runtime, /bounded repair read access only for the failing\/changed paths/);
+  assert.match(runtime, /Tests must prefer public behavior and public APIs/);
+  assert.match(runtime, /do not mutate private\/internal implementation state merely to manufacture fixture state/);
 });
 
 test('#470 evidence-consumed notices are correlated to the exact tool call', () => {
