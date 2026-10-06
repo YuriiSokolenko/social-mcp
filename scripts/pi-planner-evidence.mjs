@@ -88,15 +88,13 @@ export default function (pi) {
   pi.on('before_provider_request', (event) => {
     const payload = event?.payload;
     if (!payload || !Array.isArray(payload.tools)) return payload;
-    if (!repairActive && !outputOnly) return { ...payload, parallel_tool_calls: false };
+    if (!repairActive && !outputOnly) return payload;
     const tools = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === PLANNER_RESULT_TOOL);
     if (!tools.length) return payload;
     return {
       ...payload,
       tools,
       tool_choice: 'required',
-      parallel_tool_calls: false,
-      chat_template_kwargs: { ...(payload.chat_template_kwargs ?? {}), enable_thinking: false },
     };
   });
 
@@ -110,19 +108,22 @@ export default function (pi) {
           const diagnostic = 'Output-only Planner recovery attempted structured_output more than once.';
           recordPlannerResultState({ resultAttempts, repairStatus: 'failed', repairDiagnostic: diagnostic, repairKind: 'output_only_attempt_limit' });
         }
-        console.log(`PI_PLANNER_RESULT_REPAIR_FAILURE ${JSON.stringify({ resultAttempts, repairAttempts: 0, reason: resultSucceeded ? 'extra_result_after_success' : 'output_only_second_result_blocked' })}`);
+        const eventName = resultSucceeded ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
+        console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: 0, reason: 'output_only_second_result_blocked' })}`);
         if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
         if (!resultSucceeded) ctx?.abort?.();
         return { block: true, reason: 'Output-only Planner recovery allows exactly one structured_output call.' };
       }
       if (!repairActive && !outputOnly && resultAttempts > 1) {
-        console.log(`PI_PLANNER_RESULT_REPAIR_FAILURE ${JSON.stringify({ resultAttempts, repairAttempts: 0, reason: 'first_attempt_second_result_blocked' })}`);
+        const eventName = resultSucceeded ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
+        console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: 0, reason: 'first_attempt_second_result_blocked' })}`);
         if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
         if (!resultSucceeded) ctx?.abort?.();
         return { block: true, reason: 'Planner allows one initial structured_output call before repair.' };
       }
       if (repairActive && repairAttempted) {
-        console.log(`PI_PLANNER_RESULT_REPAIR_FAILURE ${JSON.stringify({ resultAttempts, repairAttempts: 1, reason: 'second_result_call_blocked' })}`);
+        const eventName = resultSucceeded ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
+        console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: 1, reason: 'second_result_call_blocked' })}`);
         if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
         return { block: true, reason: 'Planner result repair is limited to one structured_output attempt; stop now.' };
       }

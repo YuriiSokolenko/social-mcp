@@ -698,10 +698,13 @@ test('a rejected structured_output gets exactly one constrained child repair wit
     setActiveTools: value => { active = [...value]; },
   });
 
-  const normalRequest = handlers.get('before_provider_request')({ payload: {
+  const ordinaryPayload = {
     tools: [{ function: { name: 'read' } }, { function: { name: PLANNER_RESULT_TOOL } }],
-  } });
-  assert.equal(normalRequest.parallel_tool_calls, false, 'evidence and finalization cannot race in one multi-tool response');
+    parallel_tool_calls: true,
+    chat_template_kwargs: { enable_thinking: true },
+  };
+  const normalRequest = handlers.get('before_provider_request')({ payload: ordinaryPayload });
+  assert.deepEqual(normalRequest, ordinaryPayload, 'normal evidence requests retain existing parallel and thinking settings');
 
   assert.equal(await handlers.get('tool_call')({ toolName: 'read', toolCallId: 'source-read', input: { path: 'src/foo.py' } }), undefined);
   await handlers.get('tool_execution_end')({ toolName: 'read', toolCallId: 'source-read', isError: false, result: { content: [{ type: 'text', text: 'def foo(): return 1' }] } });
@@ -714,16 +717,19 @@ test('a rejected structured_output gets exactly one constrained child repair wit
   }, {});
 
   assert.deepEqual(active, [PLANNER_RESULT_TOOL]);
-  const constrained = handlers.get('before_provider_request')({ payload: {
+  const repairPayload = { payload: {
     tools: [
       { type: 'function', function: { name: 'read' } },
       { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
     ],
-  } });
+    parallel_tool_calls: true,
+    chat_template_kwargs: { enable_thinking: true },
+  } };
+  const constrained = handlers.get('before_provider_request')(repairPayload);
   assert.deepEqual(constrained.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL]);
   assert.equal(constrained.tool_choice, 'required');
-  assert.equal(constrained.parallel_tool_calls, false);
-  assert.deepEqual(constrained.chat_template_kwargs, { enable_thinking: false });
+  assert.equal(constrained.parallel_tool_calls, true, 'the repair hook does not override provider parallelism');
+  assert.deepEqual(constrained.chat_template_kwargs, { enable_thinking: true }, 'the repair hook preserves provider thinking');
   assert.equal((await handlers.get('tool_call')({ toolName: 'read', input: {} })).block, true);
   assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} } }), undefined);
   await handlers.get('tool_result')({ toolName: PLANNER_RESULT_TOOL, input: {}, isError: false, content: [] }, {});
@@ -737,7 +743,8 @@ test('a rejected structured_output gets exactly one constrained child repair wit
   assert.ok(markers.some(line => line.startsWith('PI_PLANNER_RESULT_REJECTION ')));
   assert.ok(markers.some(line => line.startsWith('PI_PLANNER_RESULT_REPAIR_STARTED ')));
   assert.ok(markers.some(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')));
-  assert.ok(markers.some(line => line.startsWith('PI_PLANNER_RESULT_REPAIR_FAILURE ')));
+  assert.ok(markers.some(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')));
+  assert.ok(!markers.some(line => line.startsWith('PI_PLANNER_RESULT_REPAIR_FAILURE ')));
 });
 
 test('JSON-quoted credential fields are redacted before diagnostics reach the repair prompt or sidecar', async (t) => {
@@ -824,6 +831,8 @@ test('a successful first structured_output has no repair and is returned unchang
   assert.equal(await handlers.get('tool_result')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'extra-result', input: {}, isError: true, content: [] }, { abort: () => { aborted = true; } }), undefined);
   assert.equal(aborted, false, 'the blocked call result cannot abort or invalidate the accepted plan');
   assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).repairStatus, 'first_call_succeeded');
+  assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')));
+  assert.ok(!logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_RESULT_REPAIR_FAILURE ')));
   const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', usage: { turns: 1 }, result: { kind: 'structured', value } }) });
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
   assert.deepEqual(prepared.plan, value.steps);
