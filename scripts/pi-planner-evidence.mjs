@@ -236,6 +236,11 @@ export default function (pi) {
   let resultCallPending = false;
   let resultSucceeded = false;
   const blockedResultCallIds = new Set();
+  // `message_end` is emitted for the complete provider message before Pi validates tool
+  // arguments. Remember calls seen there so `tool_call`/`tool_result` can enrich the same
+  // attempt without counting it twice.
+  const observedResultCallIds = new Set();
+  const rawResultDiagnostics = new Map();
   const gate = createPlannerEvidenceGate(evidenceBudget());
   const pendingEvidence = new Map();
   // Write an explicit zero before any evidence call. If the child cannot see/write the
@@ -272,7 +277,9 @@ export default function (pi) {
 
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName === PLANNER_RESULT_TOOL) {
-      resultAttempts += 1;
+      const alreadyObserved = event.toolCallId && observedResultCallIds.has(event.toolCallId);
+      if (alreadyObserved) observedResultCallIds.delete(event.toolCallId);
+      else resultAttempts += 1;
       resultSubmitted = true;
       resultCallPending = true;
       if (outputOnly && resultAttempts > 1) {
@@ -300,8 +307,10 @@ export default function (pi) {
         return { block: true, reason: 'Planner result repair is limited to one structured_output attempt; stop now.' };
       }
       if (repairActive) repairAttempted = true;
-      console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, repair: repairActive })}`);
-      recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
+      if (!alreadyObserved) {
+        console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, repair: repairActive })}`);
+        recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
+      }
       return undefined;
     }
     if (resultSubmitted) {
@@ -322,8 +331,31 @@ export default function (pi) {
     return { block: true, reason: admission.reason };
   });
 
+  // Pi emits the provider's completed assistant message before preparing tool calls. At this
+  // boundary the raw tool-call arguments are still observable, including incomplete JSON that
+  // will later be rejected before `tool_call` is dispatched.
+  pi.on('message_end', async (event) => {
+    const message = event?.message;
+    if (message?.role !== 'assistant' || !Array.isArray(message.content)) return;
+    for (const block of message.content) {
+      if (block?.type !== 'toolCall' || block.name !== PLANNER_RESULT_TOOL) continue;
+      const id = typeof block.id === 'string' && block.id ? block.id : null;
+      if (id && observedResultCallIds.has(id)) continue;
+      if (id) observedResultCallIds.add(id);
+      const rawArguments = Object.hasOwn(block, 'arguments') ? block.arguments
+        : Object.hasOwn(block, 'input') ? block.input : undefined;
+      if (id && rawArguments !== undefined) rawResultDiagnostics.set(id, safeDiagnostic({ details: rawArguments }));
+      resultAttempts += 1;
+      resultSubmitted = true;
+      resultCallPending = true;
+      console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, repair: repairActive, source: 'pre_validation_message' })}`);
+      recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
+    }
+  });
+
   pi.on('tool_result', async (event, ctx) => {
     if (event?.toolName !== PLANNER_RESULT_TOOL) return undefined;
+    if (event.toolCallId) observedResultCallIds.delete(event.toolCallId);
     if (event.toolCallId && blockedResultCallIds.delete(event.toolCallId)) {
       resultCallPending = false;
       return undefined;
@@ -337,8 +369,13 @@ export default function (pi) {
       recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
     }
     if (event.isError) {
-      const diagnostic = safeDiagnostic(event);
-      const repairKind = /(?:unexpected end|unterminated|incomplete|invalid json|json parse|parse error)/i.test(diagnostic)
+      const rawDiagnostic = event?.toolCallId ? rawResultDiagnostics.get(event.toolCallId) : null;
+      if (event?.toolCallId) rawResultDiagnostics.delete(event.toolCallId);
+      const diagnostic = safeDiagnostic({ details: [rawDiagnostic, safeDiagnostic(event)].filter(Boolean).join(' ') });
+      const rawArgumentsMalformed = rawDiagnostic != null && (() => {
+        try { JSON.parse(rawDiagnostic); return false; } catch { return true; }
+      })();
+      const repairKind = rawArgumentsMalformed || /(?:unexpected end|unterminated|incomplete|invalid json|json parse|parse error)/i.test(diagnostic)
         ? 'malformed_arguments'
         : 'schema_rejection';
       if (!repairActive && !outputOnly) {

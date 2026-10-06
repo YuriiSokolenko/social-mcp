@@ -928,7 +928,7 @@ test('JSON-quoted credential fields are redacted before diagnostics reach the re
   assert.match(persisted, /\[redacted\]/);
 });
 
-test('a structured_output rejection closes evidence and counts the attempt even without tool_call', async (t) => {
+test('the pre-validation assistant-message boundary counts raw structured_output attempts and preserves incomplete arguments', async (t) => {
   const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
   const previousState = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   const stateFile = path.join(os.tmpdir(), `pi-planner-missing-tool-call-${process.pid}-${Date.now()}.json`);
@@ -942,22 +942,85 @@ test('a structured_output rejection closes evidence and counts the attempt even 
   const handlers = new Map();
   plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
 
-  await handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    input: {},
-    isError: true,
-    content: [{ type: 'text', text: 'Unexpected end of JSON input after {"value":' }],
-  }, {});
+  const rawArguments = '{"value":';
+  await handlers.get('message_end')({ message: {
+    role: 'assistant',
+    content: [{ type: 'toolCall', id: 'raw-result-1', name: PLANNER_RESULT_TOOL, arguments: rawArguments }],
+  } });
   const first = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   assert.equal(first.resultAttempts, 1);
-  assert.equal(first.repairKind, 'malformed_arguments');
+  assert.equal(first.repairStatus, undefined, 'the attempt is counted before Pi validation returns its rejection');
   assert.equal((await handlers.get('tool_call')({ toolName: 'read', input: {} })).block, true,
-    'evidence closes when the error result is observed');
+    'evidence closes as soon as the provider attempts finalization');
+
+  await handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'raw-result-1',
+    input: {},
+    isError: true,
+    content: [{ type: 'text', text: 'Validation failed for tool "structured_output": value required. Received arguments: {}' }],
+  }, {});
+  const rejected = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(rejected.resultAttempts, 1, 'the subsequent runtime error is the same provider attempt');
+  assert.equal(rejected.repairKind, 'malformed_arguments');
+  assert.match(rejected.repairDiagnostic, /\{"value":/);
+  assert.match(rejected.repairDiagnostic, /Validation failed/);
 
   assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} } }), undefined);
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 2, 'the constrained repair is the second provider attempt');
   await handlers.get('tool_result')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} }, isError: false, content: [] }, {});
-  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 2,
-    'the missing tool_call did not grant an extra result attempt');
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 2);
+});
+
+test('a raw schema-invalid provider result transitions to one required result-only repair', async (t) => {
+  const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  const previousState = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  const stateFile = path.join(os.tmpdir(), `pi-planner-prevalidation-schema-${process.pid}-${Date.now()}.json`);
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '6';
+  process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = stateFile;
+  t.after(() => {
+    fs.rmSync(stateFile, { force: true });
+    if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV]; else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+    if (previousState === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV]; else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousState;
+  });
+  const handlers = new Map();
+  let active = [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL];
+  plannerEvidenceExtension({
+    on: (event, fn) => handlers.set(event, fn),
+    getActiveTools: () => active,
+    setActiveTools: tools => { active = [...tools]; },
+  });
+  t.mock.method(console, 'log', () => {});
+
+  await handlers.get('message_end')({ message: {
+    role: 'assistant',
+    content: [{ type: 'toolCall', id: 'schema-result-1', name: PLANNER_RESULT_TOOL, arguments: { unexpected: true } }],
+  } });
+  assert.deepEqual(active, [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL]);
+  await handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'schema-result-1',
+    input: {},
+    isError: true,
+    content: [{ type: 'text', text: 'Validation failed: value is required' }],
+  }, {});
+  assert.deepEqual(active, [PLANNER_RESULT_TOOL]);
+  const request = handlers.get('before_provider_request')({ payload: {
+    tools: [{ function: { name: 'read' } }, { function: { name: PLANNER_RESULT_TOOL } }],
+    parallel_tool_calls: true,
+    chat_template_kwargs: { enable_thinking: true },
+  } });
+  assert.deepEqual(request.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL]);
+  assert.equal(request.tool_choice, 'required');
+  assert.equal(request.parallel_tool_calls, true);
+  assert.deepEqual(request.chat_template_kwargs, { enable_thinking: true });
+  assert.equal((await handlers.get('tool_call')({ toolName: 'read', input: {} })).block, true);
+  assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} } }), undefined);
+  assert.equal((await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} } })).block, true);
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 2, 'only the initial result and allowed repair are admitted into the sidecar');
+  assert.equal(state.repairKind, 'schema_rejection');
+  assert.match(state.repairDiagnostic, /unexpected/);
 });
 
 test('a successful first structured_output has no repair and is returned unchanged', async (t) => {
