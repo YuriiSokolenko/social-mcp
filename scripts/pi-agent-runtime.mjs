@@ -1631,7 +1631,6 @@ export default function (pi) {
   let codingResponseNumber = 0;
   let codingProviderRequestStartedAt = null;
   if (stage === 'implementer') {
-    let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
       if (runCheckPreflightFailed) {
         console.error('PI_RUN_CHECK_PREFLIGHT_PROVIDER_BLOCKED');
@@ -1642,14 +1641,28 @@ export default function (pi) {
       const productiveState = syncProductiveState();
       syncActionToolSurface(productiveState);
 
-      let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
+      const repairThinkingRequest = Boolean(
+        codingSession &&
+        codingRepairWindowActive() &&
+        codingValidationRepair.thinkingRequestUsed !== true
+      );
+      if (repairThinkingRequest) codingValidationRepair.thinkingRequestUsed = true;
+      let patched = codingSession
+        ? applyCodingThinkingPolicy(event.payload, { enableThinking: repairThinkingRequest })
+        : event.payload;
       if (terminalRecoveryState) {
         patched = compactTerminalRecoveryPayload(patched, terminalRecoveryState);
       }
-      if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
-        codingSessionLog('thinking_disabled', {
+      if (codingSession && patched !== event.payload) {
+        codingSessionLog('thinking_policy', {
           side: 'fork',
           sessionId: codingSession.sessionId,
+          policy: repairThinkingRequest
+            ? 'repair_reasoning_once'
+            : codingRepairWindowActive()
+              ? 'repair_followup_low_overhead'
+              : 'normal_low_overhead',
+          validationKey: codingValidationRepair?.key ?? null,
           enableThinking: patched.chat_template_kwargs.enable_thinking,
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
         });
