@@ -412,7 +412,7 @@ export default function (pi) {
       .replace(/\b[0-9a-f]{12,}\b/gi, '<hex>')
       .replace(/[A-Za-z]:\\(?:[^\\\s"'():]+\\)+[^\\\s"'():]*/g, '<path>')
       .replace(/\/(?:[^/\s"'():]+\/)+[^/\s"'():]*/g, '<path>')
-      .replace(/(^|[^\w])[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?=$|[^\w])/gi, '$1<number>')
+      .replace(/(^|[^\w])[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?:ns|us|µs|ms|s|bytes?|kb|mb|gb)?(?=$|[^\w])/gi, '$1<number>')
       .replace(/\s+/g, ' ');
   }
 
