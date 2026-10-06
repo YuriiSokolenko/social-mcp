@@ -1350,44 +1350,34 @@ test('implementer action-required aborts keep defensive execution-failure proven
 
   assert.match(workflow, /PI_RUNTIME_FAILURE_FILE=\$RUNNER_TEMP\/pi-runtime-failure-/);
   assert.match(workflow, /Pi execution aborted before terminal submission \[\$FAILURE_CLASS\/\$FAILURE_CODE\]/);
+  const runtimeFailureClassifier = fs.readFileSync('scripts/pi-common/runtime-failure.mjs', 'utf8');
   assert.equal(
-    (workflow.match(/\.failure_code == "PI_ACTION_REQUIRED_ABORT"/g) ?? []).length,
+    (workflow.match(/runtime-failure\.mjs" classify "\$PI_RUNTIME_FAILURE_FILE"/g) ?? []).length,
     2,
-    'both workflow consumers accept only the known runtime-abort code',
+    'both workflow consumers delegate runtime metadata validation to the canonical classifier',
   );
+  assert.match(runtimeFailureClassifier, /'PI_ACTION_REQUIRED_ABORT'/);
+  assert.match(runtimeFailureClassifier, /'PI_LARGE_MUTATION_ACTION_REQUIRED'/);
+  assert.match(runtimeFailureClassifier, /'PI_RUN_CHECK_PREFLIGHT_FAILED'/);
+  assert.match(runtimeFailureClassifier, /'PI_TERMINAL_RECOVERY_BLOCKED'/);
+  assert.match(runtimeFailureClassifier, /typeof value\.reason !== 'string'/);
+  assert.match(runtimeFailureClassifier, /value\.failure_class !== expectedClass/);
   assert.equal(
-    (workflow.match(/\(\.reason \| type == "string"\)/g) ?? []).length,
+    (workflow.match(/FAILURE_CLASS="\$\(jq -r '\.failure_class' <<<"\$CLASSIFIED_RUNTIME_FAILURE"\)"/g) ?? []).length,
     2,
-    'both workflow consumers require a string reason before accepting the record',
+    'both workflow consumers use only the classifier-validated class',
   );
   assert.equal(
-    (workflow.match(/FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"/g) ?? []).length,
+    (workflow.match(/FAILURE_CODE="\$\(jq -r '\.failure_code' <<<"\$CLASSIFIED_RUNTIME_FAILURE"\)"/g) ?? []).length,
     2,
-    'accepted records are rendered through fixed trusted text rather than file content',
+    'both workflow consumers preserve the classifier-validated runtime code',
   );
   assert.equal(
-    (workflow.match(/\.failure_code == "PI_RUN_CHECK_PREFLIGHT_FAILED"/g) ?? []).length,
-    4,
-    'both workflow consumers validate and map the preflight infrastructure failure',
-  );
-  assert.equal(
-    (workflow.match(/FAILURE_REASON="Run-check preflight failed: \$\(jq -r '\.reason' "\$PI_RUNTIME_FAILURE_FILE"\)"/g) ?? []).length,
+    (workflow.match(/FAILURE_REASON="\$\(jq -r '\.reason' <<<"\$CLASSIFIED_RUNTIME_FAILURE"\)"/g) ?? []).length,
     2,
-    'the preflight failure mapping preserves its exact diagnostic in both workflow consumers',
+    'both workflow consumers preserve the runtime reason only after canonical validation',
   );
-  assert.equal(
-    (workflow.match(/\.failure_code == "PI_TERMINAL_RECOVERY_BLOCKED"/g) ?? []).length,
-    4,
-    'both workflow consumers validate and branch on the known terminal-recovery blocked code',
-  );
-  assert.equal(
-    (workflow.match(/FAILURE_REASON="Terminal recovery exhausted or could not select a capability-valid deterministic repair;/g) ?? []).length,
-    2,
-    'terminal-recovery blocked records also render through fixed trusted text',
-  );
-  assert.doesNotMatch(workflow, /FAILURE_REASON="\$\(jq/);
-  assert.doesNotMatch(workflow, /FAILURE_CODE="\$\(jq/);
-  assert.doesNotMatch(workflow, /FAILURE_CLASS="\$\(jq/);
+  assert.doesNotMatch(workflow, /jq -r '\.(?:failure_class|failure_code|reason)' "\$PI_RUNTIME_FAILURE_FILE"/);
   assert.equal(
     (workflow.match(/runtime_failure_metadata_invalid/g) ?? []).length,
     2,
