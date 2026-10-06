@@ -154,7 +154,11 @@ jobs:
           docker run --rm --entrypoint bash "$base_image" -lc '
             set -euo pipefail
             git --version >/dev/null
-            test "$(node -p "process.versions.node.split(\".\")[0]")" = "24"
+            node_version="$(node --version)"
+            case "$node_version" in
+              v24.*) ;;
+              *) echo "unexpected Node.js version: $node_version" >&2; exit 1 ;;
+            esac
             test "$(./bin/Runner.Listener --version)" = "2.337.0"
           '
           docker build --build-arg "BASE_IMAGE=$base_image" -t "$fixture_image" "$fixture"
