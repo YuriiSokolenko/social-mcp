@@ -408,6 +408,8 @@ export default function (pi) {
   // changed publishable files, without touching the Planner/main evidence budget.
   let codingValidationRepair = null;
   const codingValidationRepairHistory = new Map();
+  const codingRepairRewriteCounts = new Map();
+  const codingRepairMutationShapeCounts = new Map();
   const pendingCodingRepairReads = new Map();
 
   function normalizedCodingRepairPath(value, cwd) {
@@ -544,6 +546,90 @@ export default function (pi) {
     return current.every(item => bestSet.has(item));
   }
 
+  function codingRepairRewriteEligiblePaths(result, cwd) {
+    const eligible = new Set();
+    for (const diagnostic of Array.isArray(result?.diagnostics) ? result.diagnostics : []) {
+      const code = String(diagnostic?.code ?? '');
+      const message = String(diagnostic?.message ?? '');
+      const wholeFileFailure =
+        /^(?:SyntaxError|IndentationError|TabError|ParseError)$/i.test(code) ||
+        /\b(?:invalid syntax|parse error|parser error|unexpected (?:token|eof)|unterminated|malformed source)\b/i.test(message);
+      if (!wholeFileFailure) continue;
+      const normalized = trustedCodingRepairReadPath(diagnostic?.file, cwd);
+      if (normalized) eligible.add(normalized);
+    }
+    return [...eligible].sort();
+  }
+
+  function mutationTextExtent(values) {
+    let chars = 0;
+    let lines = 0;
+    for (const value of values) {
+      if (typeof value !== 'string') continue;
+      chars = Math.max(chars, value.length);
+      lines = Math.max(lines, value.split('\n').length);
+    }
+    return { chars, lines };
+  }
+
+  function codingMutationShape(toolName, input, snapshot) {
+    if (toolName === 'write') return snapshot?.existed ? 'whole_file_rewrite' : 'creation';
+    if (!['edit', 'safe_edit', 'structural_edit'].includes(toolName)) return 'other';
+    const extent = mutationTextExtent([
+      input?.text,
+      input?.oldText,
+      input?.newText,
+      input?.old_text,
+      input?.new_text,
+      input?.pattern,
+      input?.rewrite,
+    ]);
+    const safeEditSpan = toolName === 'safe_edit'
+      ? Math.max(1, Number(input?.end_line ?? input?.start_line ?? 1) - Number(input?.start_line ?? 1) + 1)
+      : 0;
+    return (
+      extent.chars > CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT ||
+      extent.lines > CODING_REPAIR_BROAD_EDIT_LINE_LIMIT ||
+      safeEditSpan > CODING_REPAIR_BROAD_EDIT_LINE_LIMIT
+    ) ? 'broad_edit' : 'targeted_edit';
+  }
+
+  function codingRepairWritePolicy(input, cwd) {
+    if (!codingRepairWindowActive()) return null;
+    let target;
+    try {
+      target = resolveMutationTarget(cwd, input?.path);
+    } catch {
+      return null; // containment/authorization below owns the authoritative rejection.
+    }
+    const normalized = normalizedCodingRepairPath(input?.path, cwd);
+    if (!normalized || !target.exists) return null; // First creation remains efficient.
+    const rewriteCount = codingRepairRewriteCounts.get(normalized) ?? 0;
+    if (rewriteCount >= CODING_REPAIR_WHOLE_REWRITE_LIMIT) {
+      return {
+        block: true,
+        abort: true,
+        path: normalized,
+        rewriteCount,
+        reason: `BLOCKED: repair whole-file rewrite limit reached for ${normalized}. The worktree is preserved; use a targeted structural_edit/safe_edit/edit instead of regenerating the file.`,
+      };
+    }
+    if (codingValidationRepair.rewriteEligiblePaths.includes(normalized)) {
+      return {
+        allowRewrite: true,
+        path: normalized,
+        rewriteCount,
+        reason: 'authoritative diagnostics indicate whole-file syntax/parse corruption',
+      };
+    }
+    return {
+      block: true,
+      abort: false,
+      path: normalized,
+      rewriteCount,
+      reason: `BLOCKED: ${normalized} already exists and authoritative validation is in repair mode. Full write regeneration is not justified by the current diagnostics; use structural_edit, safe_edit, or a bounded edit.`,
+    };
+  }
   function codingRepairScope(input, result, cwd) {
     const paths = new Set();
     const diagnosticLines = {};
