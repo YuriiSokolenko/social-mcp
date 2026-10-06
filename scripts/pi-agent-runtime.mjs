@@ -25,6 +25,7 @@ import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
   appendCheckRecord,
+  groupKey,
   latestUnresolvedRunCheckFailure,
   normalizeScope,
   readValidationLedger,
@@ -387,6 +388,7 @@ export default function (pi) {
   // A failed focused check opens a tiny read-only window over the authoritative failure scope and
   // changed publishable files, without touching the Planner/main evidence budget.
   let codingValidationRepair = null;
+  const codingValidationRepairHistory = new Map();
   const pendingCodingRepairReads = new Map();
 
   function normalizedCodingRepairPath(value, cwd) {
@@ -399,7 +401,7 @@ export default function (pi) {
     return relative.split(path.sep).join('/');
   }
 
-  function codingRepairFailureSignature(input, result, cwd) {
+  function codingRepairFailureSet(result, cwd) {
     const diagnostics = (Array.isArray(result?.diagnostics) ? result.diagnostics : [])
       .map(item => ({
         file: normalizedCodingRepairPath(item?.file, cwd),
@@ -407,14 +409,34 @@ export default function (pi) {
         message: typeof item?.message === 'string' ? item.message.trim() : '',
       }))
       .filter(item => item.file || item.code || item.message)
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-    return JSON.stringify({
-      kind: result?.kind ?? input?.kind ?? null,
-      scope: normalizeScope(input ?? {}, cwd),
-      failures: diagnostics.length
-        ? diagnostics
-        : [{ summary: String(result?.summary ?? 'check failed').trim() }],
-    });
+      .map(item => JSON.stringify(item))
+      .sort();
+    return diagnostics.length
+      ? [...new Set(diagnostics)]
+      : [JSON.stringify({ summary: String(result?.summary ?? 'check failed').trim() })];
+  }
+
+  function codingRepairIdentity(input, result, cwd) {
+    const kind = typeof result?.kind === 'string' && result.kind
+      ? result.kind
+      : typeof input?.kind === 'string' && input.kind
+        ? input.kind
+        : 'unknown';
+    const scope = normalizeScope(input ?? {}, cwd);
+    const failures = codingRepairFailureSet(result, cwd);
+    return {
+      kind,
+      scope,
+      key: groupKey(kind, scope),
+      failures,
+      signature: JSON.stringify({ kind, scope, failures }),
+    };
+  }
+
+  function strictFailureSetReduction(current, best) {
+    if (!Array.isArray(best) || current.length >= best.length) return false;
+    const bestSet = new Set(best);
+    return current.every(item => bestSet.has(item));
   }
 
   function codingRepairScope(input, result, cwd) {
@@ -493,29 +515,54 @@ export default function (pi) {
   async function observeCodingValidationRepair(input, result, ctx) {
     if (!codingSession || !result || typeof result !== 'object') return false;
     const status = result.status ?? null;
-    if (status !== 'fail') {
-      if (codingValidationRepair) {
+    const identity = codingRepairIdentity(input, result, ctx.cwd);
+
+    if (status === 'pass') {
+      const previous = codingValidationRepairHistory.get(identity.key) ?? null;
+      if (previous) codingValidationRepairHistory.delete(identity.key);
+      if (codingValidationRepair?.key === identity.key) {
         console.info(`PI_CODING_REPAIR_STATE ${JSON.stringify({
           stage,
           status: 'cleared',
-          reason: `validation_${status ?? 'unknown'}`,
-          previousEquivalentFailures: codingValidationRepair.equivalentFailures,
+          reason: 'validation_pass_same_scope',
+          key: identity.key,
+          previousNonImprovingFailures: previous?.nonImprovingFailures ?? null,
         })}`);
+        codingValidationRepair = null;
       }
-      codingValidationRepair = null;
       return false;
     }
+    // A pass/timeout/invalid/infra result for another kind+scope must not erase an unresolved
+    // pytest repair streak. Only a pass for the exact same kind+scope resolves that history.
+    if (status !== 'fail') return false;
 
-    const signature = codingRepairFailureSignature(input, result, ctx.cwd);
-    const sameFailure = codingValidationRepair?.signature === signature;
+    const previous = codingValidationRepairHistory.get(identity.key) ?? null;
+    const strictReduction = Boolean(
+      previous &&
+      strictFailureSetReduction(identity.failures, previous.bestFailureSet),
+    );
+    const nonImprovingFailures = previous == null || strictReduction
+      ? 1
+      : previous.nonImprovingFailures + 1;
+    const bestFailureSet = previous == null || strictReduction
+      ? identity.failures
+      : previous.bestFailureSet;
+    const seenSignatures = new Set(previous?.seenSignatures ?? []);
+    seenSignatures.add(identity.signature);
+    codingValidationRepairHistory.set(identity.key, {
+      bestFailureSet,
+      nonImprovingFailures,
+      seenSignatures: [...seenSignatures].slice(-20),
+    });
+
     const scope = codingRepairScope(input, result, ctx.cwd);
-    const equivalentFailures = sameFailure
-      ? codingValidationRepair.equivalentFailures + 1
-      : 1;
     codingValidationRepair = {
       status: 'fail',
-      signature,
-      equivalentFailures,
+      key: identity.key,
+      signature: identity.signature,
+      nonImprovingFailures,
+      strictReduction,
+      bestFailureSet,
       readsRemaining: CODING_REPAIR_READ_LIMIT,
       readObserved: false,
       informedByDiagnostics: Array.isArray(result.diagnostics) && result.diagnostics.length > 0,
@@ -526,7 +573,10 @@ export default function (pi) {
     console.warn(`PI_CODING_REPAIR_STATE ${JSON.stringify({
       stage,
       status: 'fail',
-      equivalentFailures,
+      key: identity.key,
+      nonImprovingFailures,
+      strictReduction,
+      seenSignatures: seenSignatures.size,
       limit: CODING_EQUIVALENT_FAILURE_LIMIT,
       paths: codingValidationRepair.paths,
       diagnosticLines: codingValidationRepair.diagnosticLines,
@@ -536,11 +586,13 @@ export default function (pi) {
     // the repair surface, provider-level required tool choice cannot force a blind mutation.
     requireToolOnNextProviderRequest = true;
 
-    if (equivalentFailures >= CODING_EQUIVALENT_FAILURE_LIMIT) {
-      const reason = `Authoritative validation returned the same failing signature ${equivalentFailures} times without failure-set improvement. Refusing further blind rewrites.`;
+    if (nonImprovingFailures >= CODING_EQUIVALENT_FAILURE_LIMIT) {
+      const reason = `Authoritative validation produced ${nonImprovingFailures} failures for the same kind+scope without a new strict reduction of the best failure set. Refusing further blind rewrites.`;
       const details = {
-        validation_signature: signature,
-        equivalent_failures: equivalentFailures,
+        validation_key: identity.key,
+        validation_signature: identity.signature,
+        non_improving_failures: nonImprovingFailures,
+        seen_signatures: seenSignatures.size,
         limit: CODING_EQUIVALENT_FAILURE_LIMIT,
         repair_paths: codingValidationRepair.paths,
         checkpoint: { worktree_preserved: true },
@@ -555,7 +607,7 @@ export default function (pi) {
       .map(([file, lines]) => `${file}:${lines.join(',')}`)
       .join('; ');
     await pi.sendUserMessage(
-      `RUNTIME REPAIR EVIDENCE: validation failed. You may read only these repair-relevant paths before the next repair: ${codingValidationRepair.paths.join(', ') || '(none)'}. ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. A semantic repair mutation must be informed by the diagnostics above or by one of these bounded reads. Equivalent failures are bounded; changing or shrinking the authoritative failure set resets the non-convergence streak.`,
+      `RUNTIME REPAIR EVIDENCE: validation failed. You may read only these repair-relevant paths before the next repair: ${codingValidationRepair.paths.join(', ') || '(none)'}. ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. A semantic repair mutation must be informed by the diagnostics above or by one of these bounded reads. Repair convergence is tracked per exact kind+scope; only a pass of that same scope clears its history, and only a strict reduction below the best failure set resets the non-improving counter.`,
       { deliverAs: 'steer' },
     );
     return false;
