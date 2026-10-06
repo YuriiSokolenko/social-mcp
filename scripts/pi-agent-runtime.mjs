@@ -3258,11 +3258,23 @@ export default function (pi) {
     }
 
     if (contentMutation) {
+      let repairMutationCount = null;
+      if (pendingMutation?.repairPhase && !event.isError && mutationChanged !== false && pendingMutation?.shape) {
+        const countKey = `${mutationSnapshot?.path ?? ''}\0${pendingMutation.shape}`;
+        repairMutationCount = (codingRepairMutationShapeCounts.get(countKey) ?? 0) + 1;
+        codingRepairMutationShapeCounts.set(countKey, repairMutationCount);
+      }
       console.log(`PI_MUTATION ${JSON.stringify({
         stage,
         tool: event.toolName,
         mode: codingSession ? 'coding_session' : 'direct',
         path: mutationSnapshot?.path ?? null,
+        shape: pendingMutation?.shape ?? null,
+        repairPhase: pendingMutation?.repairPhase === true,
+        repairMutationCount,
+        wholeFileRewriteCount: pendingMutation?.shape === 'whole_file_rewrite'
+          ? (codingRepairRewriteCounts.get(normalizedCodingRepairPath(mutationSnapshot?.path, ctx.cwd)) ?? 0)
+          : null,
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
