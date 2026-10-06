@@ -1915,7 +1915,13 @@ test('#506 one syntax broad mutation is shared across write/safe_edit/edit and r
   assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"shape":"broad_edit".*"blockedAttempts":2/);
   assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"status":"limit_abort".*"shape":"broad_edit".*"blockedAttempts":3/);
   assert.match(logs, /PI_CODING_REPAIR_BROAD_MUTATION_LIMIT .*"worktree_preserved":true/);
-  assert.doesNotMatch(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_ARMED/, 'successful reasoning tool calls never invoke the fallback');
+  const firstSuccessfulRepairEnd = logs.indexOf('"strictReduction":true');
+  assert.ok(firstSuccessfulRepairEnd > 0, 'first successful reasoning mutation reaches the next authoritative failure');
+  assert.doesNotMatch(
+    logs.slice(0, firstSuccessfulRepairEnd),
+    /PI_CODING_REPAIR_ACTION_FALLBACK_ARMED/,
+    'a successful reasoning tool call does not invoke fallback before the next validation state',
+  );
   assert.match(logs, /CODING_REPAIR_BROAD_MUTATION_LIMIT_OK/);
 });
 test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failure flip-flops', () => {
