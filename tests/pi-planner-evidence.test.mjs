@@ -81,6 +81,35 @@ test('#483 planner documentation and custom runtime registration stay synchroniz
   assert.ok(!registered.some(tool => ['mcp', 'mcpScript'].includes(tool.name)));
 });
 
+test('#487 planner structured_output envelope is concrete before evidence', (t) => {
+  const source = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-envelope-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const issue = path.join(dir, 'issue.json');
+  fs.writeFileSync(issue, JSON.stringify({ title: 'Add target', body: 'Create src/new_target.py with focused tests.' }));
+  const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
+
+  for (const text of [source, task]) {
+    assert.match(text, /structured.output serialization contract/i);
+    assert.match(text, /pass (?:this |the )?object directly as the arguments to .*structured_output/i);
+    assert.match(text, /"steps": \["Create src\/new_target\.py\.", "Create tests\/test_new_target\.py\."\]/);
+    assert.match(text, /"facts": \["Both implementation targets are new files\."\]/);
+    assert.match(text, /"evidence_budget": 0/);
+    assert.match(text, /second .*value.* wrapper/i);
+    assert.match(text, /omit the outer .*value/i);
+    assert.match(text, /stringify the payload/i);
+  }
+
+  assert.ok(
+    source.toLowerCase().indexOf('structured-output serialization contract') < source.indexOf('Available repository evidence:'),
+    'agent sees the serialization contract before evidence guidance',
+  );
+  assert.ok(
+    task.indexOf('STRUCTURED_OUTPUT SERIALIZATION CONTRACT') < task.indexOf('MANDATORY COMPLETION:'),
+    'runtime task gives the serialization contract before completion/evidence work',
+  );
+});
+
 test('#483 repo_search resolves an unknown path through the planner-only registered tool', async () => {
   const registered = [];
   const calls = [];
