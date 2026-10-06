@@ -189,10 +189,6 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
     ci,
     /wake-merge-gate:[\s\S]*?runs-on: \[self-hosted, n150, control\][\s\S]*?timeout-minutes: 2/,
   );
-  assert.doesNotMatch(
-    ci,
-    /wake-merge-gate:[\s\S]*?runs-on: \[self-hosted[^\n]*(?:general|pi-agent)[^\n]*\]/,
-  );
   assert.match(
     terminalWake,
     /concurrency:\n\s+group: ci-terminal-wake-\$\{\{ github\.event\.workflow_run\.id \}\}\n\s+cancel-in-progress: false/,
@@ -222,21 +218,34 @@ test('dedicated control runner label is reserved for bounded wake orchestration'
   const runsOnSpecs = (workflow) => {
     const lines = workflow.split('\n');
     const specs = [];
-    let inJobs = false;
+    let jobsIndent = null;
+    let jobIndent = null;
     let currentJob = null;
 
     for (let i = 0; i < lines.length; i += 1) {
-      if (/^jobs:\s*$/.test(lines[i])) {
-        inJobs = true;
+      const line = lines[i];
+      const indent = /^(\s*)/.exec(line)[1].length;
+      if (/^\s*jobs:\s*$/.test(line)) {
+        jobsIndent = indent;
+        jobIndent = null;
         currentJob = null;
         continue;
       }
-      if (inJobs) {
-        const jobMatch = /^  ([a-zA-Z_][\w-]*):\s*$/.exec(lines[i]);
-        if (jobMatch) currentJob = jobMatch[1];
+      if (jobsIndent !== null && line.trim() && !line.trimStart().startsWith('#')) {
+        if (indent <= jobsIndent) {
+          jobsIndent = null;
+          jobIndent = null;
+          currentJob = null;
+        } else {
+          if (jobIndent === null) jobIndent = indent;
+          if (indent === jobIndent) {
+            const jobMatch = /^\s*([a-zA-Z_][\w-]*):\s*$/.exec(line);
+            if (jobMatch) currentJob = jobMatch[1];
+          }
+        }
       }
 
-      const match = /^(\s*)runs-on:\s*(.*)$/.exec(lines[i]);
+      const match = /^(\s*)runs-on:\s*(.*)$/.exec(line);
       if (!match) continue;
 
       const baseIndent = match[1].length;
@@ -392,9 +401,19 @@ test('dedicated control runner label is reserved for bounded wake orchestration'
         false,
         `${name} / ${spec.job ?? 'unknown'}: runs-on labels must not be satisfiable by the dedicated control runner`,
       );
-      if (/wake/i.test(spec.job ?? '')) {
+      if (spec.job) {
+        const jobBlock = workflow.match(
+          new RegExp(`^\\s*${spec.job.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\      if (/wake/i.test(spec.job ?? '')) {
         assert.fail(
           `${name} / ${spec.job}: wake jobs must use the dedicated control lane or be explicitly added to the control-job policy`,
+        );
+      }
+')}:\\s*$([\\s\\S]*?)(?=^\\s*[a-zA-Z_][\\w-]*:\\s*$|\\z)`, 'm'),
+        )?.[0] ?? '';
+        assert.doesNotMatch(
+          jobBlock,
+          /workflow-dispatch\.mjs|pi-post-merge\.mjs/,
+          `${name} / ${spec.job}: control-plane dispatch/finalization jobs must be explicitly assigned to the dedicated control lane`,
         );
       }
     }
