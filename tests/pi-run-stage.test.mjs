@@ -836,6 +836,8 @@ test('shared validation harness treats blocked implementer outcome as terminal w
   assert.equal(validations, 0);
   assert.equal(result.backend, 'fake');
   assert.equal(result.durationMs, 7);
+  assert.match(readFileSync(resultFile, 'utf8'), /"outcome": "blocked"/);
+  assert.match(readFileSync(resultFile, 'utf8'), /Requirement A requires behavior that constraint B explicitly forbids/);
 });
 
 test('shared validation recovery stops after one failed repair attempt', async (t) => {
@@ -1105,7 +1107,7 @@ const PREPARED_ARTIFACT = {
 
 // A fake `pi` on PATH: records every invocation (argv + selected env) in order; as the bootstrap
 // process it writes the PreparedImplementation artifact, as the main process the terminal result.
-function installFakePi(t, { bootstrapExit = 0 } = {}) {
+function installFakePi(t, { bootstrapExit = 0, runtimeFailure = null } = {}) {
   const dir = temporaryDirectory(t, 'pi-fake-bin-');
   const log = join(dir, 'invocations.jsonl');
   const script = join(dir, 'pi');
@@ -1120,6 +1122,9 @@ if (bootstrap) {
   console.log('PI_BOOTSTRAP {"phase":"planner_completed"}');
   console.log('{"type":"session"}');
 } else {
+  if (${JSON.stringify(runtimeFailure)} && process.env.PI_RUNTIME_FAILURE_FILE) {
+    fs.writeFileSync(process.env.PI_RUNTIME_FAILURE_FILE, JSON.stringify(${JSON.stringify(runtimeFailure)}) + '\\n');
+  }
   fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'ok');
 }
 `, { mode: 0o755 });
@@ -1205,6 +1210,20 @@ test('a crashed bootstrap process resolves PREPARATION_FALLBACK before the main 
   assert.match(prompt, /nothing to prepare or retry/);
   assert.doesNotMatch(prompt, /prepare_implementation/);
   assert.equal(JSON.parse(readFileSync(main.prepared, 'utf8')).status, 'fallback');
+});
+
+test('Pi stage surfaces the exact failed run_check preflight diagnostic from runtime failure metadata', async (t) => {
+  const fake = installFakePi(t, { runtimeFailure: {
+    failure_class: 'infrastructure',
+    failure_code: 'PI_RUN_CHECK_PREFLIGHT_FAILED',
+    reason: 'run_check sandbox preflight failed: INFRASTRUCTURE ERROR: CHECK_ENV_CONTRACT',
+  } });
+  const failureFile = join(temporaryDirectory(t, 'pi-preflight-failure-'), 'runtime-failure.json');
+  const spec = bootstrapSpec(t, fake, { PI_RESUME_ACTIVE: 'true', PI_RUNTIME_FAILURE_FILE: failureFile });
+  await assert.rejects(
+    runPiStage(spec, { workspace: process.cwd() }),
+    /PI_RUN_CHECK_PREFLIGHT_FAILED: run_check sandbox preflight failed: INFRASTRUCTURE ERROR: CHECK_ENV_CONTRACT/,
+  );
 });
 
 test('restored and validation-repair Implementer runs never launch the planner bootstrap', async (t) => {

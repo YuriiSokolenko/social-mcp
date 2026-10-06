@@ -67,7 +67,7 @@ import {
   terminalRecoveryGuidance,
 } from './pi-common/terminal-recovery-controller.mjs';
 import { captureWorktreeBaseline, observeWorktreeDrift, readWorktreeBaseline, readWorktreeObserved } from './pi-common/worktree-baseline.mjs';
-import { assertImplementerFileSet } from './pi-common/implementer-result.mjs';
+import { assertImplementerFileSet, readImplementerResult } from './pi-common/implementer-result.mjs';
 import { MutationTargetRejected, resolveMutationTarget } from './pi-common/mutation-target.mjs';
 import {
   assertMutationPathAuthorized,
@@ -1130,6 +1130,7 @@ export default function (pi) {
     console[result.ok ? 'info' : 'error'](`PI_RUN_CHECK_PREFLIGHT ${JSON.stringify(record)}`);
     if (!result.ok) throw new Error(`run_check sandbox preflight failed: ${result.summary}`);
   }
+  let runCheckPreflightFailed = false;
 
   // The request boundary is the capability authority. Re-synchronize the surface immediately
   // before every Implementer provider request, filter payload.tools to that surface, snapshot the
@@ -1144,6 +1145,10 @@ export default function (pi) {
   if (stage === 'implementer') {
     let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
+      if (runCheckPreflightFailed) {
+        console.error('PI_RUN_CHECK_PREFLIGHT_PROVIDER_BLOCKED');
+        return { ...event.payload, tools: [], tool_choice: 'none' };
+      }
       forcedProviderRequestInFlight = false;
       if (codingSession) codingProviderRequestStartedAt = Date.now();
       const productiveState = syncProductiveState();
@@ -1308,7 +1313,22 @@ export default function (pi) {
       }
     }
     // The sandbox preflight is the first hard gate: nothing else starts if it fails.
-    if (config.productiveProgress?.verificationTool === 'run_check') await preflightRunCheckSandbox();
+    if (config.productiveProgress?.verificationTool === 'run_check') {
+      try {
+        await preflightRunCheckSandbox();
+      } catch (error) {
+        runCheckPreflightFailed = true;
+        const reason = String(error?.message ?? error);
+        recordRuntimeAbort('PI_RUN_CHECK_PREFLIGHT_FAILED', reason, {
+          failure_class: 'infrastructure',
+          diagnostic: reason,
+        });
+        console.error(`PI_RUN_CHECK_PREFLIGHT_ABORT ${JSON.stringify({ stage, reason })}`);
+        // Pi treats extension hook exceptions as non-fatal; explicitly abort the stage here.
+        await ctx?.abort?.();
+        return;
+      }
+    }
     if (stage === 'implementer' && config.productiveProgress?.codingSessionTool) ensureCodingSessionAgent();
     await applyBudget('short', ctx);
     syncActionToolSurface(syncProductiveState());
@@ -2038,11 +2058,13 @@ export default function (pi) {
           if (receiptError) invalidateTerminalReceipt(process.env);
           const outcome = normalizeCodingSessionOutcome({
             submitted: Boolean(receiptResult),
+            outcome: receiptResult?.receipt?.outcome ?? null,
             sessionError,
             receiptError,
           });
           const submitted = outcome.successful_final_submission;
-          const recoveryReceipt = submitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
+          const terminalSubmitted = outcome.submitted;
+          const recoveryReceipt = terminalSubmitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
           if (
             recoveryReceipt?.changed_publishable_paths?.length &&
             recoveryReceipt.prepared_outputs_present?.source === true &&
@@ -2057,19 +2079,19 @@ export default function (pi) {
             })}`);
           }
           const incapable = incapableCodingSessionRecord({
-            submitted,
+            submitted: terminalSubmitted,
             attemptedTools,
             contractTools: agentReady.tools,
             recoveryEpoch: trustedRecoveryEpoch,
           });
-          if (!submitted) lastIncapableCodingSession = incapable;
+          if (!terminalSubmitted) lastIncapableCodingSession = incapable;
           const delegationUsage = response?.usage ?? sessionError?.delegationUsage ?? null;
           recordDescendantMetric({
             call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
-            status: sessionError?.delegationStatus ?? (submitted ? 'completed' : sessionError ? 'error' : 'ended_without_submit'),
+            status: outcome.status === 'blocked' ? 'blocked' : sessionError?.delegationStatus ?? (terminalSubmitted ? 'completed' : sessionError ? 'error' : 'ended_without_submit'),
             usage: delegationUsage,
           });
-          codingSessionLog(submitted ? 'completed' : 'ended_without_submit', {
+          codingSessionLog(outcome.status === 'blocked' ? 'blocked' : terminalSubmitted ? 'completed' : 'ended_without_submit', {
             ...base,
             durationMs: Date.now() - startedAt,
             usage: delegationUsage,
@@ -2078,8 +2100,11 @@ export default function (pi) {
             ...(incapable ? { unreachableCapabilities: incapable.unreachable } : {}),
           });
           if (submitted) {
+            const completionText = outcome.outcome === 'already_satisfied'
+              ? 'Coding session confirmed the requested implementation is already satisfied. Stop now.'
+              : 'Coding session completed the implementation and submitted the result. The work is done: stop now.';
             return {
-              content: [{ type: 'text', text: 'Coding session completed the implementation and submitted the result. The work is done: stop now.' }],
+              content: [{ type: 'text', text: completionText }],
               details: {
                 ...base,
                 submitted: true,
@@ -2088,6 +2113,14 @@ export default function (pi) {
                 unresolved_terminal_error: outcome.unresolved_terminal_error,
               },
               // The fork already called submit_result; end this session without another turn.
+              terminate: true,
+            };
+          }
+          if (outcome.outcome === 'blocked') {
+            const blockedResult = readImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE);
+            return {
+              content: [{ type: 'text', text: `Coding session submitted a blocked outcome: ${blockedResult?.blocked_reason ?? 'no reason recorded'}. The implementation was not completed.` }],
+              details: { ...base, submitted: true, successful_final_submission: false, outcome: 'blocked', blocked_reason: blockedResult?.blocked_reason ?? null },
               terminate: true,
             };
           }

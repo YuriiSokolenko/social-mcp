@@ -1261,6 +1261,16 @@ test('implementer action-required aborts keep defensive execution-failure proven
     'accepted records are rendered through fixed trusted text rather than file content',
   );
   assert.equal(
+    (workflow.match(/\.failure_code == "PI_RUN_CHECK_PREFLIGHT_FAILED"/g) ?? []).length,
+    4,
+    'both workflow consumers validate and map the preflight infrastructure failure',
+  );
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="Run-check preflight failed: \$\(jq -r '\.reason' "\$PI_RUNTIME_FAILURE_FILE"\)"/g) ?? []).length,
+    2,
+    'the preflight failure mapping preserves its exact diagnostic in both workflow consumers',
+  );
+  assert.equal(
     (workflow.match(/\.failure_code == "PI_TERMINAL_RECOVERY_BLOCKED"/g) ?? []).length,
     4,
     'both workflow consumers validate and branch on the known terminal-recovery blocked code',

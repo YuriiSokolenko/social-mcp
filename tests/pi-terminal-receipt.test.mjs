@@ -174,3 +174,19 @@ test('receipt defaults to the same run-start fallback base when latest dev is no
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('terminal receipt carries the semantic implementer outcome under the result metadata digest', t => {
+  const { repo, resultFile, terminalFile, env } = fixture(t);
+  writeImplementerResult(resultFile, {
+    title: 'Blocked implementation',
+    summary: 'No compliant implementation is possible.',
+    outcome: 'blocked',
+    changes: [],
+    files: [],
+    blocked_reason: 'The requested behavior conflicts with an explicit constraint.',
+  });
+  const receipt = createSuccessfulTerminalReceipt({ cwd: repo, resultFile, env, base: 'origin/dev' });
+  assert.equal(receipt.outcome, 'blocked');
+  writeTerminalReceiptFile(terminalFile, receipt);
+  assert.equal(assertSuccessfulTerminalReceipt({ cwd: repo, resultFile, env, base: 'origin/dev' }).receipt.outcome, 'blocked');
+});

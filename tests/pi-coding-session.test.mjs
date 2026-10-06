@@ -382,13 +382,16 @@ function runtimeScenario(mode) {
           return { content: [{ type: 'text', text: 'check passed' }] };
         };
         childTools.get('submit_result').execute = async () => {
-          writeImplementerResult(resultFile, {
-            title: 't',
-            summary: 's',
-            changes: ['c'],
-            files: ['generated.py', 'test_generated.py'],
-            security_notes: 'n',
-            limitations: 'n',
+          writeImplementerResult(resultFile, mode === 'blocked' ? {
+            title: 'Blocked task',
+            summary: 'The issue cannot be implemented under the supplied constraints.',
+            outcome: 'blocked',
+            changes: [],
+            files: [],
+            blocked_reason: 'A required behavior conflicts with a stated constraint.',
+          } : {
+            title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'],
+            security_notes: 'n', limitations: 'n',
           });
           const receiptEnv = { ...process.env, PI_TERMINAL_RESULT_FILE: terminal };
           writeTerminalReceiptFile(
@@ -425,6 +428,11 @@ function runtimeScenario(mode) {
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 3000 } } }, childCtx);
           return result;
         };
+        if (mode === 'blocked') {
+          await childCall('submit_result', { blocked_reason: 'A required behavior conflicts with a stated constraint.' });
+          respond(request, { status: 'completed', result: { kind: 'text', value: 'blocked' }, usage: { output: 100 } });
+          return;
+        }
         // The forked "model": its knowledge comes from the inherited transcript + task only.
         const transcript = inherited.flatMap(entry => Array.isArray(entry.message?.content)
           ? entry.message.content.map(part => part?.text ?? '') : [String(entry.message?.content ?? '')]).join('\\n');
@@ -1040,6 +1048,16 @@ function runtimeScenario(mode) {
       if (sessionRequests.length) {
         assert.equal(process.env.PI_CODING_SESSION_USED, 'true', 'parent retains the durable coding-lifecycle validation marker');
       }
+      if (mode === 'blocked') {
+        assert.equal(result.terminate, true, 'a valid blocked terminal receipt ends the parent coding action');
+        assert.equal(result.details.outcome, 'blocked');
+        assert.equal(result.details.successful_final_submission, false);
+        assert.match(result.content[0].text, /blocked outcome/);
+        assert.match(result.content[0].text, /implementation was not completed/);
+        assert.doesNotMatch(result.content[0].text, /work is done/i);
+        assert.match(fs.readFileSync(resultFile, 'utf8'), /"outcome": "blocked"/);
+        process.exit(0);
+      }
       assert.ok(caps.filter(cap => cap !== 32000).every(cap => cap === 2048), 'parent stays at 2048: ' + caps);
       if (mode === 'no-session') assert.equal(sessionRequests.length, 0, 'no fresh-prompt fallback');
       else {
@@ -1209,6 +1227,13 @@ test('2K parent -> begin_coding_session -> 16K same-context fork writes code + t
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"changed":true/g)?.length, 2, 'several files in one session');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_BUDGET|mutation-writer|PI_MUTATION_TURN/);
+});
+
+test('a valid blocked child terminal result propagates as blocked, never implementation success', () => {
+  const logs = runtimeScenario('blocked');
+  assert.match(logs, /"phase":"blocked"/);
+  assert.match(logs, /PI_CODING_SESSION .*"outcome":"blocked"/);
+  assert.doesNotMatch(logs, /Coding session completed the implementation/);
 });
 
 test('coding session works after PREPARATION_FALLBACK and on a resumed implementer', () => {
