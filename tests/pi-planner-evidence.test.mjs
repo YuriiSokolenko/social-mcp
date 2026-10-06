@@ -92,8 +92,8 @@ test('#487 planner structured_output envelope is concrete before evidence', (t) 
   for (const text of [source, task]) {
     assert.match(text, /structured.output serialization contract/i);
     assert.match(text, /pass (?:this |the )?object directly as the arguments to .*structured_output/i);
-    assert.match(text, /"steps": \["Update the target module\.", "Add focused tests\."\]/);
-    assert.match(text, /"facts": \["The target follows the existing repository convention\."\]/);
+    assert.match(text, /"steps": \["Create src\/new_target\.py\.", "Create tests\/test_new_target\.py\."\]/);
+    assert.match(text, /"facts": \["Both implementation targets are new files\."\]/);
     assert.match(text, /"evidence_budget": 0/);
     assert.match(text, /second .*value.* wrapper/i);
     assert.match(text, /omit the outer .*value/i);
