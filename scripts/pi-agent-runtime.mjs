@@ -1822,6 +1822,7 @@ export default function (pi) {
             key: codingValidationRepair?.key ?? null,
             phase: repairThinkingRequest ? 'reasoning' : 'fallback',
             request: providerCapabilitySnapshot.request,
+            maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? patched.max_output_tokens ?? null,
             actionObserved: false,
             tool: null,
           };
@@ -3822,9 +3823,10 @@ export default function (pi) {
 
     if (repairRequest) {
       const actionObserved = repairRequest.actionObserved === true;
+      const requestMaxTokens = Number(repairRequest.maxTokens ?? 0);
       const hitRepairCeiling =
         event.message?.stopReason === 'length' ||
-        outputTokens >= CODING_REPAIR_REASONING_MAX_TOKENS;
+        (requestMaxTokens > 0 && outputTokens >= requestMaxTokens);
       if (repairRequest.phase === 'reasoning' && !actionObserved) {
         await armCodingRepairActionFallback(
           hitRepairCeiling ? 'reasoning_output_ceiling_without_action' : 'reasoning_completed_without_action',
