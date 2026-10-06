@@ -1653,15 +1653,15 @@ export default function (pi) {
         ? applyCodingThinkingPolicy(event.payload, { enableThinking: repairThinkingRequest })
         : event.payload;
       if (repairThinkingRequest) {
-        if (Number.isFinite(Number(patched.max_completion_tokens))) {
+        if (Number.isFinite(patched.max_completion_tokens)) {
           patched = {
             ...patched,
-            max_completion_tokens: Math.min(Number(patched.max_completion_tokens), CODING_REPAIR_REASONING_MAX_TOKENS),
+            max_completion_tokens: Math.min(patched.max_completion_tokens, CODING_REPAIR_REASONING_MAX_TOKENS),
           };
-        } else if (Number.isFinite(Number(patched.max_tokens))) {
+        } else if (Number.isFinite(patched.max_tokens)) {
           patched = {
             ...patched,
-            max_tokens: Math.min(Number(patched.max_tokens), CODING_REPAIR_REASONING_MAX_TOKENS),
+            max_tokens: Math.min(patched.max_tokens, CODING_REPAIR_REASONING_MAX_TOKENS),
           };
         }
       }
