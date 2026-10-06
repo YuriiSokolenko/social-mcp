@@ -672,6 +672,8 @@ test('runtime action-forces the elevated large-mutation request and preserves on
   assert.match(runtime, /source: repairActionForced \? 'coding_repair' : largeMutationActionForced \? 'large_mutation'/);
   assert.match(runtime, /PI_LARGE_MUTATION_ACTION_REQUIRED/);
   assert.match(runtime, /PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED/);
+  assert.match(runtime, /PI_LARGE_MUTATION_TRUNCATION_RETRY_EXHAUSTED/);
+  assert.match(runtime, /PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED/);
   assert.doesNotMatch(runtime, /PI_LARGE_MUTATION_BUDGET_VIOLATION/);
   assert.doesNotMatch(runtime, /elevatedTurnAttemptedEvidenceUnlock/);
   assert.match(runtime, /elevatedTurnSuccessfulFinishTool/);
@@ -684,7 +686,8 @@ test('runtime action-forces the elevated large-mutation request and preserves on
   assert.match(runtime, /controller\.largeMutationBudgetActive\(\)[\s\S]*PI_LARGE_MUTATION_TOOL_CHOICE_ARMED[\s\S]*requireToolChoiceInPayload\(patched\)/);
   // Consumption is based on successful execution, not merely emitting a finish-tool call.
   assert.match(runtime, /if \(elevatedTurnSuccessfulFinishTool\)[\s\S]*controller\.resetLargeMutationBudget\(\)[\s\S]*else if \(elevatedTurnSuccessfulScopePrelude\)/);
-  assert.match(runtime, /else if \(elevatedTurnObservedActionTool\)[\s\S]*PI_LARGE_MUTATION_ACTION_RETRY/);
+  assert.match(runtime, /elevatedResponseHitCeiling[\s\S]*else if \(elevatedTurnObservedActionTool \|\| elevatedResponseHitCeiling\)[\s\S]*PI_LARGE_MUTATION_ACTION_RETRY/);
+  assert.match(runtime, /retryableProviderErrorStatus\(status\)[\s\S]*largeMutationActionRetryCount \+= 1[\s\S]*PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED/);
   assert.match(runtime, /const acceptedToolInput = pendingToolInputs\.get\(event\.toolCallId\) \?\? null[\s\S]*onToolExecutionEnd[\s\S]*input: acceptedToolInput[\s\S]*strictBlockerEvidence: consumedEvidence\?\.tool === canonicalToolName/);
   const blockedReturn = runtime.indexOf('return blocked;');
   const evidenceNotice = runtime.indexOf('const evidenceConsumptionNotice = controller.consumeEvidenceActionNotice()', blockedReturn);
