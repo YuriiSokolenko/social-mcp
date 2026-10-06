@@ -294,7 +294,7 @@ function runtimeScenario(mode) {
         const childTools = new Map(); const childHandlers = new Map();
         let childAborts = 0;
         const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
-          if (!['tool-contract', 'repair-nonconvergent'].includes(mode)) throw new Error('fork aborted');
+          if (!['tool-contract', 'repair-nonconvergent', 'repair-broad-rewrite-limit'].includes(mode)) throw new Error('fork aborted');
           childAborts += 1;
         },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
@@ -364,19 +364,27 @@ function runtimeScenario(mode) {
         const repairFailure = variant => {
           const volatile = variant === 'volatile-a' || variant === 'volatile-b';
           const semanticNumber = variant === 'semantic-42' || variant === 'semantic-43';
+          const malformed = variant === 'malformed-initial' || variant === 'malformed-shrunk';
           const volatileMessage = variant === 'volatile-b'
             ? 'test_constant: mismatch at /tmp/pytest-987/result.txt after 84.75ms address 0xdeadbeef'
             : 'test_constant: mismatch at /tmp/pytest-123/result.txt after 12.50ms address 0xabc123';
-          let diagnostics = volatile
-            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
-            : semanticNumber
-              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected ' + (variant === 'semantic-43' ? '43' : '42') }]
-              : variant === 'shrunk'
-                ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
-                : [
-                    { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
-                    { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
-                  ];
+          let diagnostics = malformed
+            ? (variant === 'malformed-shrunk'
+              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'SyntaxError', message: 'unterminated string literal' }]
+              : [
+                  { file: 'test_generated.py', line: 4, column: null, code: 'SyntaxError', message: 'unterminated string literal' },
+                  { file: 'test_generated.py', line: 8, column: null, code: 'SyntaxError', message: 'unexpected EOF while parsing' },
+                ])
+            : volatile
+              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+              : semanticNumber
+                ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected ' + (variant === 'semantic-43' ? '43' : '42') }]
+                : variant === 'shrunk'
+                  ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
+                  : [
+                      { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
+                      { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
+                    ];
           if (mode === 'repair-evidence' && variant === 'initial') {
             diagnostics = [...diagnostics, {
               file: 'link-source.py',
@@ -391,7 +399,7 @@ function runtimeScenario(mode) {
             kind: 'pytest',
             exit_code: 1,
             duration_ms: 7,
-            summary: variant === 'shrunk' || volatile || semanticNumber ? '1 failed' : '2 failed',
+            summary: variant === 'shrunk' || variant === 'malformed-shrunk' || volatile || semanticNumber ? '1 failed' : '2 failed',
             diagnostics,
             stdout_tail: '',
             stderr_tail: '',
@@ -450,12 +458,14 @@ function runtimeScenario(mode) {
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
-          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details'].includes(mode) && params?.kind === 'pytest') {
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details', 'repair-broad-rewrite-limit'].includes(mode) && params?.kind === 'pytest') {
             const variant = mode === 'repair-volatile-message'
               ? 'volatile-a'
               : mode === 'repair-semantic-number'
                 ? 'semantic-42'
-                : 'initial';
+                : mode === 'repair-broad-rewrite-limit'
+                  ? 'malformed-initial'
+                  : 'initial';
             const result = repairFailure(variant);
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
@@ -639,6 +649,38 @@ function runtimeScenario(mode) {
           fs.writeFileSync(outside, 'OUTSIDE = true\\n');
           fs.symlinkSync(outside, cwd + '/link-source.py');
         }
+        if (mode === 'repair-broad-rewrite-limit') {
+          const repairPayload = {
+            model: 'm',
+            messages: [],
+            max_completion_tokens: 16384,
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
+          assert.equal(repairRequest.chat_template_kwargs.enable_thinking, true);
+          assert.equal(repairRequest.max_completion_tokens, 4096);
+
+          const firstRewriteContent = 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# one justified systemic rewrite\\n';
+          const firstRewrite = await childCall('write', {
+            path: 'test_generated.py',
+            content: firstRewriteContent,
+          });
+          assert.equal(firstRewrite.block, undefined, 'malformed-file diagnostics allow one bounded whole-file rewrite');
+          assert.equal(childAborts, 0);
+          await settleRepairRetry('malformed-shrunk');
+          assert.equal(childAborts, 0, 'strictly shrinking diagnostics do not themselves abort repair');
+
+          const secondRewrite = await childCall('write', {
+            path: 'test_generated.py',
+            content: firstRewriteContent + '# second regeneration\\n',
+          });
+          assert.equal(secondRewrite.block, true, 'second whole-file rewrite is bounded even after strict failure reduction');
+          assert.equal(childAborts, 1, 'bounded broad-rewrite guard aborts deterministically');
+          assert.equal(fs.readFileSync(cwd + '/test_generated.py', 'utf8'), firstRewriteContent, 'aborted rewrite preserves the checkpoint');
+          console.log('CODING_REPAIR_BROAD_REWRITE_LIMIT_OK');
+          return respond(request, { status: 'failed', error: 'PI_CODING_REPAIR_BROAD_REWRITE_LIMIT', usage: { output: 3500 } });
+        }
+
         if (mode === 'repair-empty-scope') {
           const hiddenGit = cwd + '/.git-hidden-repair-empty';
           fs.renameSync(cwd + '/.git', hiddenGit);
@@ -654,12 +696,16 @@ function runtimeScenario(mode) {
           const repairPayload = {
             model: 'm',
             messages: [],
+            max_completion_tokens: 16384,
             tools: childActive.map(name => ({ type: 'function', function: { name } })),
           };
           const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
           const repairTools = repairRequest.tools.map(tool => tool.function?.name ?? tool.name);
           assert.equal(repairRequest.tool_choice, 'required', 'failed validation requires one concrete repair action');
+          assert.equal(repairRequest.chat_template_kwargs.enable_thinking, true, 'fresh authoritative repair enables bounded reasoning');
+          assert.equal(repairRequest.max_completion_tokens, 4096, 'repair reasoning has a bounded ceiling');
           assert.ok(repairTools.includes('read'), 'bounded repair read is provider-visible');
+          assert.ok(repairTools.includes('safe_edit'), 'localized mutation stays provider-visible');
           assert.ok(!repairTools.includes('repo_search'), 'repair does not reopen repository discovery');
           assert.ok(!repairTools.includes('need_more_evidence'), 'repair does not spend the generic evidence unlock');
 
@@ -678,10 +724,30 @@ function runtimeScenario(mode) {
           const exhaustedRead = await childCall('read', { path: 'generated.py' });
           assert.equal(exhaustedRead.block, true, 'repair read allowance remains bounded after readsRemaining is exhausted');
 
-          await childCall('write', {
+          const blockedRewrite = await childCall('write', {
             path: 'test_generated.py',
-            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# targeted repair\\n',
+            content: testSource + '# broad rewrite should be rejected\\n',
           });
+          assert.equal(blockedRewrite.block, true, 'localized diagnostics reject another full-file write');
+          assert.match(blockedRewrite.reason, /use edit, safe_edit, or structural_edit/);
+          assert.equal(fs.readFileSync(cwd + '/test_generated.py', 'utf8'), testSource, 'blocked rewrite preserves the current checkpoint');
+
+          const targeted = await childCall('safe_edit', {
+            path: 'test_generated.py',
+            operation: 'insert_after',
+            start_line: 5,
+            text: '# targeted repair',
+          });
+          assert.equal(targeted.block, undefined, 'bounded targeted repair remains allowed');
+          const followupPayload = {
+            model: 'm',
+            messages: [],
+            max_completion_tokens: 16384,
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const followupRequest = providerPatch({ payload: followupPayload }, childCtx);
+          assert.equal(followupRequest.chat_template_kwargs.enable_thinking, false, 'deterministic repair follow-up returns to low-overhead thinking');
+          assert.equal(followupRequest.max_completion_tokens, 16384, 'repair follow-up keeps the normal coding ceiling');
           assert.ok(childActive.includes('retry_last_failed_check'), 'targeted repair re-enables exact retry');
           await settleRepairRetry('shrunk');
           assert.equal(childAborts, 0, 'a shrinking failure set remains repairable');
@@ -699,9 +765,11 @@ function runtimeScenario(mode) {
           ];
           for (let index = 0; index < flipFlop.length; index++) {
             await settleSyntheticDifferentScopePass();
-            await childCall('write', {
+            await childCall('safe_edit', {
               path: 'test_generated.py',
-              content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round ' + (index + 1) + '\\n',
+              operation: 'insert_after',
+              start_line: 4 + index,
+              text: '# targeted repair round ' + (index + 1),
             });
             assert.ok(childActive.includes('retry_last_failed_check'));
             await settleRepairRetry(flipFlop[index][0]);
@@ -716,9 +784,11 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-volatile-message') {
-          await childCall('write', {
+          await childCall('safe_edit', {
             path: 'test_generated.py',
-            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# volatile diagnostic retry\\n',
+            operation: 'insert_after',
+            start_line: 4,
+            text: '# volatile diagnostic retry',
           });
           assert.ok(childActive.includes('retry_last_failed_check'));
           await settleRepairRetry('volatile-b');
@@ -728,9 +798,11 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-semantic-number') {
-          await childCall('write', {
+          await childCall('safe_edit', {
             path: 'test_generated.py',
-            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# semantic number retry\\n',
+            operation: 'insert_after',
+            start_line: 4,
+            text: '# semantic number retry',
           });
           assert.ok(childActive.includes('retry_last_failed_check'));
           await settleRepairRetry('semantic-43');
@@ -766,9 +838,11 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-pass-reset') {
-          await childCall('write', {
+          await childCall('safe_edit', {
             path: 'test_generated.py',
-            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# pass reset\\n',
+            operation: 'insert_after',
+            start_line: 4,
+            text: '# pass reset',
           });
           assert.ok(childActive.includes('retry_last_failed_check'));
           await settleSyntheticBroaderScopePass();
@@ -1544,6 +1618,7 @@ test('2K parent -> begin_coding_session -> 16K same-context fork writes code + t
   assert.match(logs, /"phase":"started".*"context":"fork","agent":"implementer-coding-session"/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_disabled","side":"fork".*"enableThinking":false,"maxTokens":16384/);
+  assert.match(logs, /PI_CODING_THINKING_POLICY .*"phase":"creation".*"enableThinking":false.*"maxTokens":16384/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"accept_mutation_scope"/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"first_response","side":"fork".*"attemptedTool":true/);
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"changed":true/g)?.length, 2, 'several files in one session');
@@ -1602,6 +1677,10 @@ test('#499 failing pytest exposes bounded repair evidence and strict failure-set
   assert.doesNotMatch(logs, /PI_CODING_REPAIR_READ .*"path":"link-source.py"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
+  assert.match(logs, /PI_CODING_THINKING_POLICY .*"phase":"repair_reasoning".*"enableThinking":true.*"maxTokens":4096/);
+  assert.match(logs, /PI_CODING_REPAIR_LOCALIZED_WRITE_BLOCKED .*"mutation_shape":"whole_file_rewrite".*"worktree_preserved":true/);
+  assert.match(logs, /PI_CODING_REPAIR_MUTATION .*"tool":"safe_edit".*"shape":"targeted_edit".*"thinkingPhase":"repair_followup"/);
+  assert.match(logs, /PI_CODING_THINKING_POLICY .*"phase":"repair_followup".*"enableThinking":false.*"maxTokens":16384/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
   assert.match(logs, /CODING_REPAIR_EVIDENCE_OK/);
 });
@@ -1614,6 +1693,16 @@ test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failu
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":5.*"strictReduction":false.*"limit":5/);
   assert.match(logs, /PI_CODING_VALIDATION_NON_CONVERGENT .*"seen_signatures":2.*"limit":5.*"worktree_preserved":true/);
   assert.match(logs, /CODING_REPAIR_NONCONVERGENT_OK/);
+});
+
+test('#506 systemic repair allows one whole-file rewrite, preserves its counter across shrinking failures, then aborts with checkpoint intact', () => {
+  const logs = runtimeScenario('repair-broad-rewrite-limit');
+  assert.match(logs, /PI_CODING_REPAIR_MUTATION_GATE .*"shape":"whole_file_rewrite".*"wholeFileRewriteCount":0/);
+  assert.match(logs, /PI_CODING_REPAIR_MUTATION .*"tool":"write".*"shape":"whole_file_rewrite".*"wholeFileRewriteCount":1/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"strictReduction":true.*"wholeFileRewritesByPath":\{"test_generated.py":1\}/);
+  assert.match(logs, /PI_CODING_REPAIR_BROAD_REWRITE_LIMIT .*"whole_file_rewrite_count":1.*"limit":1.*"worktree_preserved":true/);
+  assert.match(logs, /PI_CODING_REPAIR_ABORT .*"code":"PI_CODING_REPAIR_BROAD_REWRITE_LIMIT".*"worktree_preserved":true/);
+  assert.match(logs, /CODING_REPAIR_BROAD_REWRITE_LIMIT_OK/);
 });
 
 test('#499 volatile diagnostic values keep one semantic failure identity', () => {
