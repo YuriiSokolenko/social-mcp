@@ -14,6 +14,7 @@ import {
 } from '../scripts/pi-common/progress-controller.mjs';
 import { agentContractPrompt, implementerCodingContractPrompt, stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { summarizeUsage } from '../scripts/pi-common/usage-ledger.mjs';
+import { classifyRuntimeFailureRecord } from '../scripts/pi-common/runtime-failure.mjs';
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pi-coding-session-'));
@@ -2368,15 +2369,61 @@ test('#523 repeated invalid coding-session handoff aborts deterministically with
 
 test('#523 issue-agent accepts runtime-owned model abort codes and preserves their code and reason', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
-  const modelAbortPredicate = '(.failure_code | test("^PI_[A-Z0-9_]+$"))';
-  const preserveClass = 'FAILURE_CLASS="$(jq -r \'.failure_class\' "$PI_RUNTIME_FAILURE_FILE")"';
-  const preserveCode = 'FAILURE_CODE="$(jq -r \'.failure_code\' "$PI_RUNTIME_FAILURE_FILE")"';
-  const preserveReason = 'FAILURE_REASON="$(jq -r \'.reason\' "$PI_RUNTIME_FAILURE_FILE")"';
-  assert.equal(workflow.split(modelAbortPredicate).length - 1, 2, 'both publication failure paths share the runtime-owned model-abort predicate');
-  assert.equal(workflow.split(preserveClass).length - 1, 2);
-  assert.equal(workflow.split(preserveCode).length - 1, 2);
-  assert.equal(workflow.split(preserveReason).length - 1, 2);
-  assert.doesNotMatch(workflow, /\.failure_code == "PI_ACTION_REQUIRED_ABORT" or \.failure_code == "PI_TERMINAL_RECOVERY_BLOCKED"/);
+  const reason = 'elevated large-mutation provider response completed without an allowed tool call';
+  assert.deepEqual(
+    classifyRuntimeFailureRecord({
+      schema_version: 1,
+      failure_class: 'model_execution_abort',
+      failure_code: 'PI_LARGE_MUTATION_ACTION_REQUIRED',
+      reason,
+    }),
+    {
+      schema_version: 1,
+      failure_class: 'model_execution_abort',
+      failure_code: 'PI_LARGE_MUTATION_ACTION_REQUIRED',
+      reason,
+    },
+    'a legitimate large-mutation abort keeps its original code and reason',
+  );
+  assert.equal(
+    classifyRuntimeFailureRecord({
+      schema_version: 1,
+      failure_class: 'model_execution_abort',
+      failure_code: 'PI_CODING_SESSION_ARGUMENT_RETRY_EXHAUSTED',
+      reason: 'coding-session launch arguments remained invalid',
+    })?.failure_code,
+    'PI_CODING_SESSION_ARGUMENT_RETRY_EXHAUSTED',
+  );
+  assert.equal(
+    classifyRuntimeFailureRecord({
+      schema_version: 1,
+      failure_class: 'model_execution_abort',
+      failure_code: 'PI_FAKE_MODEL_CODE',
+      reason: 'not runtime-owned',
+    }),
+    null,
+    'unknown PI-looking codes remain invalid metadata',
+  );
+  assert.equal(
+    classifyRuntimeFailureRecord({
+      schema_version: 1,
+      failure_class: 'infrastructure',
+      failure_code: 'PI_LARGE_MUTATION_ACTION_REQUIRED',
+      reason,
+    }),
+    null,
+    'known codes with a mismatched class remain invalid metadata',
+  );
+  assert.equal(
+    (workflow.match(/runtime-failure\.mjs" classify "\$PI_RUNTIME_FAILURE_FILE"/g) ?? []).length,
+    2,
+    'both publication failure paths use the same canonical classifier',
+  );
+  assert.equal(
+    (workflow.match(/FAILURE_REASON="\$\(jq -r '\.reason' <<<"\$CLASSIFIED_RUNTIME_FAILURE"\)"/g) ?? []).length,
+    2,
+    'both publication paths preserve the validated original reason',
+  );
   assert.match(workflow, /runtime_failure_metadata_invalid/, 'malformed or unsupported metadata still has a fail-closed classification');
 });
 
