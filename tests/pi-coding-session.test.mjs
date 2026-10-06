@@ -12,7 +12,7 @@ import {
   nextCeilingWithoutToolTurns,
   truncatedToolCallGuidance,
 } from '../scripts/pi-common/progress-controller.mjs';
-import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+import { agentContractPrompt, implementerCodingContractPrompt, stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { summarizeUsage } from '../scripts/pi-common/usage-ledger.mjs';
 
 function tempDir() {
@@ -27,17 +27,35 @@ const TYPEBOX_STUB_LOADER = `export async function resolve(specifier, context, n
   return nextResolve(specifier, context);
 }`;
 
-test('coding-session guidance uses only exposed tools and routes missing evidence through need_more_evidence', () => {
+test('coding-session prompt is a compact canonical subset, not the startup Implementer overlay', () => {
+  const env = { ...process.env, GITHUB_WORKSPACE: process.cwd() };
+  const main = agentContractPrompt('implementer', env);
+  const coding = implementerCodingContractPrompt(env);
+  const count = (text, needle) => text.split(needle).length - 1;
+
+  assert.equal(count(main, '<shared_agent_contract '), 1);
+  assert.equal(count(main, '<role_contract '), 1);
+  assert.match(main, /## Startup/);
+  assert.match(main, /## Repository access routing/);
+  assert.doesNotMatch(main, /## Coding-session contract/);
+
+  assert.equal(count(coding, '<shared_agent_contract '), 1);
+  assert.equal(count(coding, '<coding_role_contract '), 1);
+  assert.match(coding, /## Hard boundaries/);
+  assert.match(coding, /## Coding-session contract/);
+  assert.match(coding, /## Engineering constraints/);
+  assert.doesNotMatch(coding, /## Startup|### Available delegated agents|## Repository access routing|implementation-planner|begin_coding_session|request_large_mutation_budget|lsp_|Orbit/);
+  assert.match(coding, /does \*\*not\*\* inherit the parent transcript/);
+  assert.match(coding, /No generic or startup navigation policy is inherited into this phase/);
+  assert.match(coding, /If one concrete fact blocks the next safe action/);
+  assert.match(coding, /Tests should exercise public behavior and public APIs/);
+});
+
+test('coding-session runtime keeps repair forcing and bounded evidence semantics', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  assert.match(runtime, /never invent helper names such as read_for_input/);
-  assert.match(runtime, /if one concrete missing fact prevents the next safe action, call need_more_evidence/);
   assert.match(runtime, /action-required: read is not exposed now/);
   assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
-  assert.match(runtime, /repair mode and may expose bounded read access only for the failing\/changed paths/);
-  assert.match(runtime, /In repair mode prefer structural_edit, safe_edit, or a small edit/);
   assert.match(runtime, /CODING_REPAIR_REASONING_MAX_TOKENS = 4096/);
-  assert.match(runtime, /Tests must prefer public behavior and public APIs/);
-  assert.match(runtime, /do not mutate private\/internal implementation state merely to manufacture fixture state/);
 });
 
 test('#470 evidence-consumed notices are correlated to the exact tool call', () => {
@@ -146,11 +164,11 @@ test('the coding session is the same Implementer runtime, defined only in truste
 });
 
 // Drives the real runtime end to end, in BOTH roles: the 2K parent, and (through the simulated
-// pi-subagents host below) the forked 16K coding session, which loads the registered extension
+// pi-subagents host below) the isolated 16K coding session, which loads the registered extension
 // paths and runs this same runtime in coding-session mode. pi-subagents 0.71.0 behavior is
 // mirrored: runtime-agent registry; same-name configured (worktree) agents collide at launch;
 // worktree agentOverrides only narrow model/thinking; an explicit "extensions" list disables
-// ambient extensions; "tools" is the strict allowlist; context "fork" branches the parent's
+// ambient extensions; "tools" is the strict allowlist; context "fresh" excludes the parent's
 // persisted transcript. pi-bash-timeout.mjs needs the pi package, so the host asserts its path
 // but does not import it; run_check / submit_result executors are stubbed (their gates are real).
 let lastMetrics = [];
@@ -252,6 +270,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
+      persist({ type: 'message', message: { role: 'assistant', content: 'PARENT_TRANSCRIPT_ONLY_MARKER' } });
       const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'scope-prelude-cap'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
@@ -292,14 +311,21 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: "Runtime agent '" + request.agent + "' collides with configured agent '" + request.agent + "'." });
         }
         assert.deepEqual(definition.extensions, [controlScripts + '/pi-bash-timeout.mjs', controlScripts + '/pi-agent-runtime.mjs', controlScripts + '/pi-implementer-result-tool.mjs']);
-        const inherited = fs.readFileSync(sessionFile, 'utf8').trim().split('\\n').map(line => JSON.parse(line));
+        assert.equal(definition.systemPromptMode, 'replace');
+        assert.equal(definition.inheritProjectContext, false);
+        assert.equal(definition.inheritGlobalContext, false);
+        assert.equal(definition.inheritSkills, false);
+        assert.equal(definition.defaultContext, 'fresh');
+        assert.match(definition.systemPrompt, /## Coding-session contract/);
+        assert.doesNotMatch(definition.systemPrompt, /## Startup|Available delegated agents|## Repository access routing|implementation-planner|begin_coding_session|request_large_mutation_budget|lsp_|Orbit/);
+        const inherited = [];
         const childTools = new Map(); const childHandlers = new Map();
         let childAborts = 0;
         const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
           if (!['tool-contract', 'repair-nonconvergent', 'repair-rewrite-limit', 'repair-reasoning-fallback-abort', 'repair-provider-errors'].includes(mode)) throw new Error('fork aborted');
           childAborts += 1;
         },
-          sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
+          sessionManager: { getSessionId: () => 'coding', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({}) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
           on: (n, f) => childHandlers.set(n, f),
@@ -617,10 +643,10 @@ function runtimeScenario(mode) {
           respond(request, { status: 'completed', result: { kind: 'text', value: 'blocked' }, usage: { output: 100 } });
           return;
         }
-        // The forked "model": its knowledge comes from the inherited transcript + task only.
-        const transcript = inherited.flatMap(entry => Array.isArray(entry.message?.content)
-          ? entry.message.content.map(part => part?.text ?? '') : [String(entry.message?.content ?? '')]).join('\\n');
-        const constant = /REQUIRED_CONSTANT = "([^"]+)"/.exec(transcript)?.[1];
+        // The coding "model" gets only the compact task handoff; parent transcript is absent.
+        assert.equal(inherited.length, 0, 'fresh coding child has no inherited parent entries');
+        assert.doesNotMatch(request.task, /PARENT_TRANSCRIPT_ONLY_MARKER/);
+        const constant = /REQUIRED_CONSTANT = "([^"]+)"/.exec(request.task)?.[1];
         if (mode === 'tampered') {
           assert.ok((await childCall('subagent', {})).block, 'worktree override cannot add subagent');
           assert.ok((await childCall('begin_coding_session', {})).block, 'no nested coding session');
@@ -1049,12 +1075,17 @@ function runtimeScenario(mode) {
       bus.on('prompt-template:subagent:request', async request => {
         assert.notEqual(request.agent, 'implementation-planner', 'planning runs in the bootstrap session, never in the main one');
         assert.equal(request.agent, 'implementer-coding-session');
-        assert.equal(request.context, 'fork', 'same-context fork, not a fresh prompt');
+        assert.equal(request.context, 'fresh', 'coding runs from a clean context, not the parent transcript');
         assert.deepEqual(request.result, { kind: 'text' });
         assert.equal(request.toolBudget, undefined, 'no artificial tool budget on the coding session');
         // Request-level thinking: pi-subagents 0.71.0 resolves thinkingOverride ?? agent.thinking
         // (replaceExisting suffix), so it wins over worktree agentOverrides.thinking / defaults.
         assert.equal(request.thinking, 'off', 'coding session requested with thinking off');
+        assert.match(request.task, /<untrusted_task_input>/);
+        assert.match(request.task, /<prepared_implementation>/);
+        assert.match(request.task, /<parent_execution_handoff>/);
+        assert.match(request.task, /<runtime_state>/);
+        assert.doesNotMatch(request.task, /## Startup|Available delegated agents|Repository access routing|PARENT_TRANSCRIPT_ONLY_MARKER/);
         sessionRequests.push({ task: request.task, maxTokens: process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, spec: JSON.parse(process.env.PI_CODING_SESSION) });
         if (mode === 'cancel') { signal.abort(); return; }
         await runFork(request);
@@ -1767,8 +1798,11 @@ function runtimeScenario(mode) {
         console.log('INCAPABLE_FORK_REPEAT_REJECTED_OK');
         process.exit(0);
       }
-      const expectError = { cancel: /aborted/, 'no-session': /cannot continue as a coding session/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
-      const result = await call('begin_coding_session', { reason: 'Implement generated.py and its test' }, { expectError });
+      const expectError = { cancel: /aborted/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
+      const result = await call('begin_coding_session', {
+        reason: 'Implement generated.py and its test',
+        handoff: 'Current evidence established REQUIRED_CONSTANT = "abc123".',
+      }, { expectError });
       if (mode === 'malformed-contract') {
         assert.equal(aborts, 0);
         assert.equal(sessionRequests.length, 1);
@@ -1925,9 +1959,9 @@ function runtimeScenario(mode) {
         assert.notEqual(result.terminate, true);
         assert.equal(handlers.get('agent_before_settle')()?.continue, true, 'without a submission the nudge still fires');
         assert.match(result.content[0].text, /ended without submit_result/);
-        await call('begin_coding_session', {});
+        await call('begin_coding_session', { handoff: 'Current evidence established REQUIRED_CONSTANT = "abc123".' });
         // The per-run limit (2) is enforced when the third session is requested.
-        await call('begin_coding_session', {}, { expectError: /coding session limit .2. for this run is reached/ });
+        await call('begin_coding_session', { handoff: 'Current evidence established REQUIRED_CONSTANT = "abc123".' }, { expectError: /coding session limit .2. for this run is reached/ });
       }
       if (mode === 'tampered' || mode === 'shadow-agent') {
         assert.equal(fs.existsSync(cwd + '/TAMPERED_RUNTIME_LOADED'), false, 'the issue-worktree runtime copy is never loaded');
@@ -1958,12 +1992,12 @@ function runtimeScenario(mode) {
   }
 }
 
-test('2K parent -> begin_coding_session -> 16K same-context fork writes code + tests, checks, submits; parent ends', () => {
+test('2K parent -> begin_coding_session -> isolated 16K coding child writes code + tests, checks, submits; parent ends', () => {
   const logs = runtimeScenario('flow');
   assert.match(logs, /PI_CODING_SESSION \{"phase":"agent_registered".*"source":"runtime","thinking":"off"/);
   assert.match(logs, /\[PI\]\[coding\] phase=agent_registered/);
   assert.match(logs, /"phase":"requested".*"parentMaxTokens":2048,"codingMaxTokens":16384/);
-  assert.match(logs, /"phase":"started".*"context":"fork","agent":"implementer-coding-session"/);
+  assert.match(logs, /"phase":"started".*"context":"fresh","agent":"implementer-coding-session"/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_policy","side":"fork".*"policy":"normal_low_overhead".*"enableThinking":false,"maxTokens":16384/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"accept_mutation_scope"/);
@@ -2275,9 +2309,11 @@ test('a deliberately non-compliant second prose-only turn still aborts with dura
   assert.match(logs, /RUNTIME_FAILURE_RECORD .*"failure_class":"model_execution_abort".*"failure_code":"PI_ACTION_REQUIRED_ABORT"/);
 });
 
-test('cancellation, a missing session, and drafting loops fail closed', () => {
+test('cancellation and drafting loops fail closed while coding no longer requires a persisted parent session', () => {
   assert.match(runtimeScenario('cancel'), /"phase":"cancelled"/);
-  assert.match(runtimeScenario('no-session'), /"phase":"rejected".*"reason":"fork_unavailable"/);
+  const noSession = runtimeScenario('no-session');
+  assert.match(noSession, /"phase":"started".*"context":"fresh"/);
+  assert.match(noSession, /"phase":"completed".*"submitted":true/);
   const draft = runtimeScenario('ceiling-draft');
   assert.match(draft, /PI_ACTION_REQUIRED_STEER: ceiling without tool \(1\/3\)/);
   assert.match(draft, /PI_ACTION_REQUIRED_ABORT: 3 consecutive action-required responses hit the output ceiling without a tool call/);
