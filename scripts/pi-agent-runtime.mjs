@@ -113,7 +113,7 @@ const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
 // Repair is deliberately asymmetric: creation may use one large write, but after authoritative
 // failure an existing file may be wholly replaced only once and only for a systemic/unlocalized
 // failure. Localized diagnostics must use targeted mutation tools instead.
-const CODING_REPAIR_WHOLE_FILE_REWRITE_LIMIT = 1;
+const CODING_REPAIR_BROAD_MUTATION_LIMIT = 1;
 // Reasoning is useful for interpreting fresh diagnostics, but a repair turn should not recover the
 // old unbounded "think before every mutation" behavior. The first decision after each failed check
 // gets a bounded reasoning budget; deterministic follow-up turns go back to the low-overhead path.
@@ -659,6 +659,48 @@ export default function (pi) {
     return Number(history?.broadMutationsByPath?.[pathname] ?? 0);
   }
 
+  function codingRepairRequestedShape(toolName, input, cwd, pathname) {
+    try {
+      const absolutePath = path.resolve(cwd, pathname);
+      if (!fs.existsSync(absolutePath)) return 'creation';
+      const stat = fs.lstatSync(absolutePath);
+      if (stat.isSymbolicLink() || !stat.isFile()) return null;
+      const source = fs.readFileSync(absolutePath);
+
+      if (toolName === 'safe_edit' && input?.operation === 'replace') {
+        const text = source.toString('utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const sourceLines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
+        const start = Number(input?.start_line);
+        const end = Number(input?.end_line ?? input?.start_line);
+        if (Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 1 && end >= start) {
+          const selectedLines = end - start + 1;
+          const replacementText = String(input?.text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          const replacementLines = replacementText
+            ? (replacementText.endsWith('\n') ? replacementText.slice(0, -1).split('\n').length : replacementText.split('\n').length)
+            : 0;
+          const afterLines = Math.max(0, sourceLines.length - selectedLines + replacementLines);
+          const ratio = Math.max(selectedLines, replacementLines) / Math.max(sourceLines.length, afterLines, 1);
+          if (ratio >= 0.5) return 'broad_edit';
+        }
+      }
+
+      if (toolName === 'edit') {
+        const oldText = typeof input?.oldText === 'string'
+          ? input.oldText
+          : typeof input?.old_text === 'string'
+            ? input.old_text
+            : null;
+        if (oldText != null && Buffer.byteLength(oldText, 'utf8') / Math.max(source.length, 1) >= 0.5) {
+          return 'broad_edit';
+        }
+      }
+    } catch {
+      // Containment/tool-specific validation remains authoritative. Failure to classify here must
+      // not grant broader access; the post-mutation classifier still observes what actually changed.
+    }
+    return null;
+  }
+
   function codingRepairMutationPolicy(toolName, input, cwd) {
     if (!codingRepairWindowActive() || !CONTENT_MUTATION_TOOLS.has(toolName)) return null;
     const pathname = normalizedCodingRepairPath(input?.path, cwd);
@@ -673,40 +715,53 @@ export default function (pi) {
     if (!existed) {
       return { allowed: true, shape: 'creation', path: pathname };
     }
-    if (toolName !== 'write') {
+
+    const requestedShape = toolName === 'write'
+      ? 'whole_file_rewrite'
+      : codingRepairRequestedShape(toolName, input, cwd, pathname) ?? 'targeted_edit';
+    const broad = requestedShape === 'whole_file_rewrite' || requestedShape === 'broad_edit';
+    if (!broad) {
       return { allowed: true, shape: 'targeted_edit', path: pathname };
     }
 
     const rewriteCount = codingRepairWholeRewriteCount(pathname);
+    const broadMutationCount = codingRepairBroadMutationCount(pathname);
     const justification = codingValidationRepair.rewriteJustifications?.[pathname] ?? null;
     const systemic = Boolean(justification || codingValidationRepair.allowUnlocalizedWholeRewrite);
     if (!systemic) {
       return {
         block: true,
-        code: 'PI_CODING_REPAIR_LOCALIZED_WRITE_BLOCKED',
+        code: requestedShape === 'whole_file_rewrite'
+          ? 'PI_CODING_REPAIR_LOCALIZED_WRITE_BLOCKED'
+          : 'PI_CODING_REPAIR_LOCALIZED_BROAD_EDIT_BLOCKED',
         path: pathname,
-        shape: 'whole_file_rewrite',
+        shape: requestedShape,
         rewriteCount,
-        reason: `BLOCKED: authoritative diagnostics localize the repair for ${pathname}. Do not replace the whole existing file with write; use edit, safe_edit, or structural_edit for the smallest evidence-supported change.`,
+        broadMutationCount,
+        reason: requestedShape === 'whole_file_rewrite'
+          ? `BLOCKED: authoritative diagnostics localize the repair for ${pathname}. Do not replace the whole existing file with write; use edit, safe_edit, or structural_edit for the smallest evidence-supported change.`
+          : `BLOCKED: authoritative diagnostics localize the repair for ${pathname}. This ${toolName} request replaces a broad region; narrow it to the smallest evidence-supported edit.`,
       };
     }
-    if (rewriteCount >= CODING_REPAIR_WHOLE_FILE_REWRITE_LIMIT) {
+    if (broadMutationCount >= CODING_REPAIR_BROAD_MUTATION_LIMIT) {
       return {
         block: true,
         abort: true,
         code: 'PI_CODING_REPAIR_BROAD_REWRITE_LIMIT',
         path: pathname,
-        shape: 'whole_file_rewrite',
+        shape: requestedShape,
         rewriteCount,
+        broadMutationCount,
         justification: justification ?? 'unlocalized_failure',
-        reason: `Repair already used the bounded whole-file rewrite for ${pathname} without reaching green. Refusing another regeneration; preserve the checkpoint and recover with localized mutation/evidence instead.`,
+        reason: `Repair already used the bounded broad mutation for ${pathname} without reaching green. Refusing another regeneration; preserve the checkpoint and recover with localized mutation/evidence instead.`,
       };
     }
     return {
       allowed: true,
       path: pathname,
-      shape: 'whole_file_rewrite',
+      shape: requestedShape,
       rewriteCount,
+      broadMutationCount,
       justification: justification ?? 'unlocalized_failure',
     };
   }
@@ -728,17 +783,33 @@ export default function (pi) {
     return Math.max(removed, added) / Math.max(beforeBytes.length, afterBytes.length, 1);
   }
 
-  function codingRepairMutationShape(toolName, before, after) {
+  function codingRepairMutationShape(toolName, before, after, input = null, result = null, cwd = process.cwd()) {
     if (!before?.existed) return 'creation';
     if (toolName === 'write') return 'whole_file_rewrite';
+    const pathname = normalizedCodingRepairPath(before.path, cwd) ?? before.path;
+    if (codingRepairRequestedShape(toolName, input, cwd, pathname) === 'broad_edit') return 'broad_edit';
+    if (toolName === 'structural_edit') {
+      const range = result?.details?.byte_range ?? result?.byte_range ?? null;
+      const start = Number(range?.start);
+      const end = Number(range?.end);
+      if (
+        Buffer.isBuffer(before?.content) &&
+        Number.isSafeInteger(start) &&
+        Number.isSafeInteger(end) &&
+        end > start &&
+        (end - start) / Math.max(before.content.length, 1) >= 0.5
+      ) {
+        return 'broad_edit';
+      }
+    }
     const ratio = changedSpanRatio(before, after);
     return ratio != null && ratio >= 0.5 ? 'broad_edit' : 'targeted_edit';
   }
 
-  function recordCodingRepairMutation(toolName, before, after, cwd) {
+  function recordCodingRepairMutation(toolName, before, after, cwd, input = null, result = null) {
     if (!codingRepairWindowActive() || !before || !after) return null;
     const pathname = normalizedCodingRepairPath(before.path, cwd) ?? before.path;
-    const shape = codingRepairMutationShape(toolName, before, after);
+    const shape = codingRepairMutationShape(toolName, before, after, input, result, cwd);
     const history = codingRepairHistoryForActive();
     if (history) {
       history.wholeFileRewritesByPath ??= {};
@@ -3122,7 +3193,8 @@ export default function (pi) {
           path: repairMutation.path,
           mutation_shape: repairMutation.shape,
           whole_file_rewrite_count: repairMutation.rewriteCount,
-          limit: CODING_REPAIR_WHOLE_FILE_REWRITE_LIMIT,
+          broad_mutation_count: repairMutation.broadMutationCount ?? 0,
+          limit: CODING_REPAIR_BROAD_MUTATION_LIMIT,
           checkpoint: { worktree_preserved: true },
         };
         console.warn(`${repairMutation.code} ${JSON.stringify({ stage, ...details, reason: repairMutation.reason })}`);
@@ -3363,11 +3435,18 @@ export default function (pi) {
         mutationSnapshot.path,
         pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd(),
       ) ?? mutationSnapshot.path;
-      const mutationShape = codingRepairMutationShape(event.toolName, mutationSnapshot, mutationAfterSnapshot);
+      const mutationShape = codingRepairMutationShape(
+        event.toolName,
+        mutationSnapshot,
+        mutationAfterSnapshot,
+        event.input,
+        event.result,
+        pendingLoopCall?.cwd ?? ctx?.cwd ?? process.cwd(),
+      );
       const priorBroadMutations = codingRepairBroadMutationCount(pathname);
       if (
         (mutationShape === 'whole_file_rewrite' || mutationShape === 'broad_edit') &&
-        priorBroadMutations >= CODING_REPAIR_WHOLE_FILE_REWRITE_LIMIT
+        priorBroadMutations >= CODING_REPAIR_BROAD_MUTATION_LIMIT
       ) {
         if (mutationSnapshot.existed) {
           fs.mkdirSync(path.dirname(mutationSnapshot.absolutePath), { recursive: true });
@@ -3387,7 +3466,7 @@ export default function (pi) {
           path: pathname,
           mutation_shape: mutationShape,
           broad_mutation_count: priorBroadMutations,
-          limit: CODING_REPAIR_WHOLE_FILE_REWRITE_LIMIT,
+          limit: CODING_REPAIR_BROAD_MUTATION_LIMIT,
           checkpoint: { worktree_preserved: true },
         };
         recordRuntimeAbort('PI_CODING_REPAIR_BROAD_REWRITE_LIMIT', reason, details);
@@ -3516,7 +3595,14 @@ export default function (pi) {
         }
       }
       if (!event.isError && mutationChanged === true && mutationSnapshot && mutationAfterSnapshot && codingRepairWindowActive()) {
-        const repairMutation = recordCodingRepairMutation(event.toolName, mutationSnapshot, mutationAfterSnapshot, ctx?.cwd ?? process.cwd());
+        const repairMutation = recordCodingRepairMutation(
+          event.toolName,
+          mutationSnapshot,
+          mutationAfterSnapshot,
+          ctx?.cwd ?? process.cwd(),
+          event.input,
+          event.result,
+        );
         if (repairMutation) {
           console.info(`PI_CODING_REPAIR_MUTATION ${JSON.stringify({
             stage,
