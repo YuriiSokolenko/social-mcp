@@ -1598,6 +1598,8 @@ test('#499 failing pytest exposes bounded repair evidence and strict failure-set
   const logs = runtimeScenario('repair-evidence');
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
   assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
+  assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"unchanged_helper.py".*"readsRemaining":0.*"evidenceBudgetIndependent":true/);
+  assert.doesNotMatch(logs, /PI_CODING_REPAIR_READ .*"path":"link-source.py"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
@@ -1621,13 +1623,32 @@ test('#499 volatile diagnostic values keep one semantic failure identity', () =>
   assert.match(logs, /CODING_REPAIR_VOLATILE_MESSAGE_OK/);
 });
 
-test('#499 only a pass for the same kind+scope clears convergence history', () => {
+test('#503 a provably covering same-kind pass clears narrower coding repair history', () => {
   const logs = runtimeScenario('repair-pass-reset');
-  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"cleared".*"reason":"validation_pass_same_scope"/);
-  const postReset = logs.slice(logs.indexOf('validation_pass_same_scope'));
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"cleared".*"reason":"validation_pass_covering_scope"/);
+  const postReset = logs.slice(logs.indexOf('validation_pass_covering_scope'));
   assert.match(postReset, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
   assert.match(logs, /CODING_REPAIR_PASS_RESET_OK/);
+});
+
+test('#503 semantic diagnostic numbers remain distinct repair identities', () => {
+  const logs = runtimeScenario('repair-semantic-number');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"seenSignatures":2/);
+  assert.match(logs, /CODING_REPAIR_SEMANTIC_NUMBER_OK/);
+});
+
+test('#503 structured run_check failure details are observed even when isError is true', () => {
+  const logs = runtimeScenario('repair-iserror-details');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"fail"/);
+  assert.match(logs, /CODING_REPAIR_ISERROR_DETAILS_OK/);
+});
+
+test('#503 empty trusted repair scope releases the evidence gate instead of dead-ending', () => {
+  const logs = runtimeScenario('repair-empty-scope');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"evidenceGateReleased":true/);
+  assert.doesNotMatch(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
+  assert.match(logs, /CODING_REPAIR_EMPTY_SCOPE_OK/);
 });
 
 test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
