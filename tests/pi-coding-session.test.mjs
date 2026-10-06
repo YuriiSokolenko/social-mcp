@@ -388,6 +388,9 @@ function runtimeScenario(mode) {
                       { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
                     ];
           if (mode === 'repair-evidence' && variant === 'initial') {
+            diagnostics = diagnostics.map((diagnostic, index) => index === 1
+              ? { ...diagnostic, message: 'test_secondary: assertion mentions unterminated input but is not a syntax diagnostic' }
+              : diagnostic);
             diagnostics = [...diagnostics, {
               file: 'link-source.py',
               line: 1,
@@ -1701,6 +1704,7 @@ test('#481 recovery guard fails closed after unrelated evidence when validation 
 test('#499/#506 repair reads precede bounded reasoning and broad edits cannot bypass localization', () => {
   const logs = runtimeScenario('repair-evidence');
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"rewriteEligiblePaths":\[\]/);
   assert.match(logs, /PI_CODING_REPAIR_TOOL_SURFACE .*"phase":"evidence".*"tools":\["read"\]/);
   assert.match(logs, /PI_CODING_SESSION .*"phase":"thinking_policy".*"policy":"repair_evidence_low_overhead".*"enableThinking":false/);
   assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
