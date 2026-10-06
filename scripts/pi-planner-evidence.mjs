@@ -311,12 +311,17 @@ export default function (pi) {
       resultSubmitted = true;
       resultCallPending = true;
       if (!observed.allowed) {
+        if (outputOnly && !resultSucceeded) {
+          const diagnostic = 'Output-only Planner recovery attempted structured_output more than once.';
+          recordPlannerResultState({ resultAttempts, repairStatus: 'failed', repairDiagnostic: diagnostic, repairKind: 'output_only_attempt_limit' });
+        }
         const eventName = resultSucceeded || observed.siblingOfAdmittedCall ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
         console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: repairAttempted ? 1 : 0, reason: 'result_attempt_limit' })}`);
         if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
         // Rejecting a sibling call must not abort the same provider response's first admitted
-        // result call. Later-turn over-limit calls still abort the child for parent fallback.
-        if (!resultSucceeded && !observed.siblingOfAdmittedCall) ctx?.abort?.();
+        // result call. A rejected repair result itself aborts in tool_result; an extra repair call
+        // is only blocked, preserving the existing single-repair lifecycle.
+        if (!resultSucceeded && !observed.siblingOfAdmittedCall && !repairActive) ctx?.abort?.();
         const reason = outputOnly
           ? 'Output-only Planner recovery allows exactly one structured_output call.'
           : repairActive
@@ -387,6 +392,7 @@ export default function (pi) {
       return undefined;
     }
     let observed = observedResultCalls.find(call => !call.toolResultSeen && event.toolCallId && call.id === event.toolCallId);
+    if (!observed && event.toolCallId) observed = observedResultCalls.find(call => !call.toolResultSeen && !call.id);
     if (!observed) observed = observedResultCalls.find(call => !call.toolResultSeen && call.toolCallSeen);
     if (observed) {
       observed.toolResultSeen = true;

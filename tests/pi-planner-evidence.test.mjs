@@ -665,6 +665,35 @@ test('output-only retry keeps the call-time gate when active-tool narrowing is u
     'the child blocks a second result call even without ctx.abort');
 });
 
+test('a repeated output-only result attempt remains visible in lifecycle diagnostics', async (t) => {
+  const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
+  const previousOutputOnly = process.env[PLANNER_OUTPUT_ONLY_ENV];
+  const previousState = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  const stateFile = path.join(os.tmpdir(), `pi-planner-output-only-limit-${process.pid}-${Date.now()}.json`);
+  process.env[PLANNER_EVIDENCE_BUDGET_ENV] = '0';
+  process.env[PLANNER_OUTPUT_ONLY_ENV] = 'true';
+  process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = stateFile;
+  t.after(() => {
+    fs.rmSync(stateFile, { force: true });
+    if (previousBudget === undefined) delete process.env[PLANNER_EVIDENCE_BUDGET_ENV]; else process.env[PLANNER_EVIDENCE_BUDGET_ENV] = previousBudget;
+    if (previousOutputOnly === undefined) delete process.env[PLANNER_OUTPUT_ONLY_ENV]; else process.env[PLANNER_OUTPUT_ONLY_ENV] = previousOutputOnly;
+    if (previousState === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV]; else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousState;
+  });
+  const handlers = new Map();
+  const logs = t.mock.method(console, 'log', () => {});
+  plannerEvidenceExtension({ on: (event, fn) => handlers.set(event, fn) });
+
+  assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }), undefined);
+  let aborted = false;
+  assert.equal((await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: {} }, { abort: () => { aborted = true; } })).block, true);
+  assert.equal(aborted, true);
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(state.repairStatus, 'failed');
+  assert.equal(state.repairKind, 'output_only_attempt_limit');
+  assert.match(state.repairDiagnostic, /Output-only Planner recovery attempted/);
+  assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_RESULT_REPAIR_FAILURE ')));
+});
+
 test('broad discovery stays available only as a justified targeted-evidence escalation', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-stale-target-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -1075,7 +1104,7 @@ test('multiple structured_output calls in one provider message admit the first a
   assert.ok(!logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_RESULT_REPAIR_FAILURE ')));
 });
 
-test('an id-less result is matched across message_end and tool_call, while errored partial messages do not close evidence', async (t) => {
+test('id-less pre-validation results retain raw arguments, while errored partial messages do not close evidence', async (t) => {
   const previousBudget = process.env[PLANNER_EVIDENCE_BUDGET_ENV];
   const previousState = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   const stateFile = path.join(os.tmpdir(), `pi-planner-idless-result-${process.pid}-${Date.now()}.json`);
@@ -1095,14 +1124,26 @@ test('an id-less result is matched across message_end and tool_call, while error
     content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: {} }],
   } });
   assert.equal(await handlers.get('tool_call')({ toolName: 'read', input: {} }), undefined);
+  await handlers.get('message_start')({ message: { role: 'assistant', content: [] } });
+  await handlers.get('message_update')({ assistantMessageEvent: {
+    type: 'toolcall_delta', contentIndex: 0, delta: '{"value":',
+    partial: { content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: {} }] },
+  } });
   await handlers.get('message_end')({ message: {
     role: 'assistant', stopReason: 'length',
     content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: {} }],
   } });
-  assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'runtime-assigned-id', input: {} }), undefined);
-  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 1);
-  await handlers.get('tool_result')({ toolName: PLANNER_RESULT_TOOL, toolCallId: 'runtime-assigned-id', input: {}, isError: false, content: [] }, {});
-  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).resultAttempts, 1);
+  await handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'runtime-assigned-id',
+    input: {},
+    isError: true,
+    content: [{ type: 'text', text: 'Validation failed: value required' }],
+  }, {});
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 1, 'the runtime result matches the id-less pre-validation attempt');
+  assert.equal(state.repairKind, 'malformed_arguments');
+  assert.match(state.repairDiagnostic, /\{"value":/);
 });
 
 test('a successful first structured_output has no repair and is returned unchanged', async (t) => {
@@ -1172,7 +1213,9 @@ test('malformed, double-wrapped, missing-value, and stringified results all ente
     assert.deepEqual(repair.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL], `${label}: only result tool remains`);
     assert.equal(repair.tool_choice, 'required', `${label}: result is required`);
     assert.equal(await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} } }), undefined, `${label}: one repair result is allowed`);
-    assert.equal((await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} } })).block, true, `${label}: no third result call`);
+    let aborted = false;
+    assert.equal((await handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, input: { value: {} } }, { abort: () => { aborted = true; } })).block, true, `${label}: no third result call`);
+    assert.equal(aborted, false, `${label}: a second call in the repair lifecycle is blocked without aborting`);
     const state = JSON.parse(fs.readFileSync(process.env[PLANNER_EVIDENCE_STATE_FILE_ENV], 'utf8'));
     assert.equal(state.repairKind, kind, `${label}: rejection kind is retained`);
   }
