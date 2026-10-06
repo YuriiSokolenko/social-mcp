@@ -649,38 +649,6 @@ function runtimeScenario(mode) {
           fs.writeFileSync(outside, 'OUTSIDE = true\\n');
           fs.symlinkSync(outside, cwd + '/link-source.py');
         }
-        if (mode === 'repair-broad-rewrite-limit') {
-          const repairPayload = {
-            model: 'm',
-            messages: [],
-            max_completion_tokens: 16384,
-            tools: childActive.map(name => ({ type: 'function', function: { name } })),
-          };
-          const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
-          assert.equal(repairRequest.chat_template_kwargs.enable_thinking, true);
-          assert.equal(repairRequest.max_completion_tokens, 4096);
-
-          const firstRewriteContent = 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# one justified systemic rewrite\\n';
-          const firstRewrite = await childCall('write', {
-            path: 'test_generated.py',
-            content: firstRewriteContent,
-          });
-          assert.equal(firstRewrite.block, undefined, 'malformed-file diagnostics allow one bounded whole-file rewrite');
-          assert.equal(childAborts, 0);
-          await settleRepairRetry('malformed-shrunk');
-          assert.equal(childAborts, 0, 'strictly shrinking diagnostics do not themselves abort repair');
-
-          const secondRewrite = await childCall('write', {
-            path: 'test_generated.py',
-            content: firstRewriteContent + '# second regeneration\\n',
-          });
-          assert.equal(secondRewrite.block, true, 'second whole-file rewrite is bounded even after strict failure reduction');
-          assert.equal(childAborts, 1, 'bounded broad-rewrite guard aborts deterministically');
-          assert.equal(fs.readFileSync(cwd + '/test_generated.py', 'utf8'), firstRewriteContent, 'aborted rewrite preserves the checkpoint');
-          console.log('CODING_REPAIR_BROAD_REWRITE_LIMIT_OK');
-          return respond(request, { status: 'failed', error: 'PI_CODING_REPAIR_BROAD_REWRITE_LIMIT', usage: { output: 3500 } });
-        }
-
         if (mode === 'repair-empty-scope') {
           const hiddenGit = cwd + '/.git-hidden-repair-empty';
           fs.renameSync(cwd + '/.git', hiddenGit);
@@ -817,6 +785,38 @@ function runtimeScenario(mode) {
           assert.equal(readAfterErroredFail.block, undefined);
           console.log('CODING_REPAIR_ISERROR_DETAILS_OK');
           return respond(request, { status: 'failed', error: 'simulated stop after isError repair proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-broad-rewrite-limit') {
+          const repairPayload = {
+            model: 'm',
+            messages: [],
+            max_completion_tokens: 16384,
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
+          assert.equal(repairRequest.chat_template_kwargs.enable_thinking, true);
+          assert.equal(repairRequest.max_completion_tokens, 4096);
+
+          const firstRewriteContent = 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# one justified systemic rewrite\\n';
+          const firstRewrite = await childCall('write', {
+            path: 'test_generated.py',
+            content: firstRewriteContent,
+          });
+          assert.equal(firstRewrite.block, undefined, 'malformed-file diagnostics allow one bounded whole-file rewrite');
+          assert.equal(childAborts, 0);
+          await settleRepairRetry('malformed-shrunk');
+          assert.equal(childAborts, 0, 'strictly shrinking diagnostics do not themselves abort repair');
+
+          const secondRewrite = await childCall('write', {
+            path: 'test_generated.py',
+            content: firstRewriteContent + '# second regeneration\\n',
+          });
+          assert.equal(secondRewrite.block, true, 'second whole-file rewrite is bounded even after strict failure reduction');
+          assert.equal(childAborts, 1, 'bounded broad-rewrite guard aborts deterministically');
+          assert.equal(fs.readFileSync(cwd + '/test_generated.py', 'utf8'), firstRewriteContent, 'aborted rewrite preserves the checkpoint');
+          console.log('CODING_REPAIR_BROAD_REWRITE_LIMIT_OK');
+          return respond(request, { status: 'failed', error: 'PI_CODING_REPAIR_BROAD_REWRITE_LIMIT', usage: { output: 3500 } });
         }
 
         if (mode === 'repair-empty-scope') {
