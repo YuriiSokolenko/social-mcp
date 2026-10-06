@@ -555,6 +555,27 @@ function runtimeScenario(mode) {
           console.log('CODING_REPAIR_EVIDENCE_OK');
           return respond(request, { status: 'failed', error: 'simulated stop after shrinking repair proof', usage: { output: 3000 } });
         }
+
+        if (mode === 'repair-nonconvergent') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round 1\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('initial');
+          assert.equal(childAborts, 0, 'second equivalent failure remains within the repair bound');
+
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round 2\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('initial');
+          assert.equal(childAborts, 1, 'third equivalent failure aborts the coding session');
+          console.log('CODING_REPAIR_NONCONVERGENT_OK');
+          return respond(request, { status: 'failed', error: 'PI_CODING_VALIDATION_NON_CONVERGENT', usage: { output: 5000 } });
+        }
+
         if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
         if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) {
           respond(request, {
