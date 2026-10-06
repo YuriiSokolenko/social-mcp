@@ -146,6 +146,34 @@ test('action-required tool surface keeps only productive and control tools', () 
   );
 });
 
+test('#503 repair reads keep controller repeat guards without consuming productive evidence', () => {
+  const state = controller({
+    productiveProgress: {
+      startState: 'action_required',
+      blockerTool: 'need_more_evidence',
+      actionTools: ['write', 'submit_result'],
+      controlTools: [],
+      initialEvidenceBudget: 1,
+    },
+  });
+
+  state.onTurnStart(0);
+  const options = { productiveEvidenceIndependent: true };
+  assert.equal(state.checkToolCall('read', { path: 'test_feature.py' }, options), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('read', { path: 'test_feature.py' }, options), undefined);
+  assert.equal(state.checkToolCall('read', { path: 'test_feature.py' }, options), undefined);
+  assert.match(
+    state.checkToolCall('read', { path: 'test_feature.py' }, options).reason,
+    /already ran this exact read call 3 times consecutively/,
+  );
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.match(
+    state.checkToolCall('write', { path: 'x.py', content: 'x' }, options).reason,
+    /reserved for bounded repair reads/,
+  );
+});
+
 test('Implementer model-visible transition rules match the runtime action surface', () => {
   const config = stageConfig('implementer');
   const surface = actionRequiredToolNames(
