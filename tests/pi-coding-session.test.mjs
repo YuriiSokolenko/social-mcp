@@ -665,7 +665,7 @@ function runtimeScenario(mode) {
 
           const unrelated = await childCall('read', { path: 'README.md' });
           assert.equal(unrelated.block, true);
-          assert.match(unrelated.reason, /repair read is limited to the authoritative failing\/changed paths/);
+          assert.match(unrelated.reason, /repair read is limited to the authoritative failing\\/changed paths/);
 
           const symlinkEscape = await childCall('read', { path: 'link-source.py' });
           assert.equal(symlinkEscape.block, true, 'diagnostic symlink escaping the worktree is never authorized');
