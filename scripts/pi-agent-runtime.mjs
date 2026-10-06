@@ -804,8 +804,8 @@ export default function (pi) {
       readsRemaining: CODING_REPAIR_READ_LIMIT,
       readObserved: false,
       informedByDiagnostics,
-      readRequiredBeforeMutation: scope.paths.length > 0,
-      evidenceGateReleased: scope.paths.length === 0,
+      readRequiredBeforeMutation: !informedByDiagnostics && scope.paths.length > 0,
+      evidenceGateReleased: !informedByDiagnostics && scope.paths.length === 0,
       paths: scope.paths,
       diagnosticLines: scope.diagnosticLines,
       rewriteEligiblePaths,
@@ -1660,7 +1660,6 @@ export default function (pi) {
       const repairReadGateOpen = Boolean(
         codingSession &&
         codingRepairWindowActive() &&
-        codingValidationRepair.readRequiredBeforeMutation &&
         !codingValidationRepair.readObserved &&
         codingRepairReadAvailable()
       );
