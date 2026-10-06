@@ -111,9 +111,27 @@ export function readPlannerEvidenceState(file, cap = MAX_PLANNER_REPOSITORY_EVID
     const facts = Array.isArray(state?.facts)
       ? state.facts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS)
       : [];
-    return { used: Math.min(used, cap), cap: Math.min(Number(state?.cap) || cap, cap), facts };
+    return {
+      used: Math.min(used, cap), cap: Math.min(Number(state?.cap) || cap, cap), facts,
+      ...(Number.isSafeInteger(state?.resultAttempts) ? { resultAttempts: state.resultAttempts } : {}),
+      ...(typeof state?.repairStatus === 'string' ? { repairStatus: state.repairStatus } : {}),
+      ...(typeof state?.repairDiagnostic === 'string' ? { repairDiagnostic: state.repairDiagnostic.slice(0, 400) } : {}),
+      ...(typeof state?.repairKind === 'string' ? { repairKind: state.repairKind } : {}),
+    };
   } catch {
     return null;
+  }
+}
+
+function resetPlannerRepairStatus(file) {
+  if (!file) return;
+  try {
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+    delete state.repairStatus;
+    delete state.repairFailureKind;
+    fs.writeFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+  } catch {
+    // If the sidecar is unavailable, retain the existing fail-closed behavior.
   }
 }
 
@@ -468,9 +486,9 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
   // stays available) and can never push the lifecycle past the hard cap.
   const applyEvidenceCap = attempt => {
     const cap = attempt === 0 ? evidenceCap : 0;
-    // Backstop only: pi-subagents counts every child tool call (including structured_output
-    // attempts) and, past `hard`, blocks read/grep/find/ls. The authoritative cap is the child-side
-    // gate (pi-planner-evidence.mjs); leave headroom for the result call and its schema retry.
+    // Backstop only: retain one spare unit for framework-counted blocked calls. The authoritative
+    // evidence/result counters are child-side because generic toolBudget accounting is not reliable
+    // for structured_output.
     request.toolBudget = { hard: cap + 3 };
     // Output-only retry deliberately gets exactly one result call. If that structured_output call
     // is still schema-invalid, fail closed instead of opening another provider/tool turn.
@@ -494,6 +512,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     for (let attempt = 0; ; attempt += 1) {
       try {
         applyEvidenceCap(attempt);
+        if (attempt > 0) resetPlannerRepairStatus(evidenceStateFile);
         request.timeoutMs = deadlineMs - (Date.now() - startedAt);
         if (request.timeoutMs <= 0) {
           throw Object.assign(new Error(`${config.implementationPlannerAgent} planning deadline of ${deadlineMs} ms exhausted`), { delegationStatus: 'timed_out' });
@@ -511,24 +530,29 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
       } catch (error) {
         usage = addUsage(usage, error?.delegationUsage);
         const message = String(error?.message ?? error);
+        const resultState = readPlannerEvidenceState(evidenceStateFile, evidenceCap);
         const missing = message.includes('Missing structured_output call');
         const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
         const outputOnlyInvalidTool = attempt > 0 && /(?:tool .* not found|unknown tool|tool budget)/i.test(message);
-        const retryable = !outputOnlyInvalidTool && (missing || schemaFailure);
+        const childRepairFailed = resultState?.repairStatus === 'failed';
+        const retryable = !outputOnlyInvalidTool && (missing || schemaFailure || childRepairFailed);
         const reason = outputOnlyInvalidTool
           ? 'output_only_invalid_tool'
-          : missing ? 'missing_structured_output'
-            : schemaFailure ? 'structured_output_schema_failure'
-              : 'planner_infrastructure_failure';
+          : childRepairFailed ? 'structured_output_repair_failed'
+            : missing ? 'missing_structured_output'
+              : schemaFailure ? 'structured_output_schema_failure'
+                : 'planner_infrastructure_failure';
         if (retryable && attempt < retries) {
-          const evidenceState = readPlannerEvidenceState(evidenceStateFile, evidenceCap);
+          const evidenceState = resultState ?? readPlannerEvidenceState(evidenceStateFile, evidenceCap);
           request.task = plannerTask(process.env, {
-            repair: schemaFailure,
+            repair: schemaFailure || childRepairFailed,
             layoutHint,
             outputOnly: true,
             retryFacts: evidenceState?.facts ?? [],
             evidenceUsed: evidenceState?.used ?? null,
-            repairError: schemaFailure ? message : null,
+            repairError: schemaFailure || childRepairFailed
+              ? [message, evidenceState?.repairKind ? `(${evidenceState.repairKind})` : null, evidenceState?.repairDiagnostic].filter(Boolean).join(' ')
+              : null,
           });
         }
         console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
