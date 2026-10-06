@@ -185,7 +185,7 @@ function runtimeScenario(mode) {
     };
     fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
       ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
-      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-action-retry-abort'].includes(mode), reason: 'One lookup' }));
+      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort'].includes(mode), reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
@@ -252,7 +252,7 @@ function runtimeScenario(mode) {
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end', 'large-mutation-prose-abort', 'large-mutation-action-retry-abort'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'scope-prelude-cap'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -1281,7 +1281,7 @@ function runtimeScenario(mode) {
         process.exit(0);
       }
 
-      if (['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-action-retry-abort'].includes(mode)) {
+      if (['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort'].includes(mode)) {
         assert.equal(caps.at(-1), 16384, 'planner largeMutation=true applies the one-shot 16K ceiling after evidence closes');
 
         const largeProviderRequest = () => {
@@ -1328,14 +1328,76 @@ function runtimeScenario(mode) {
           largeProviderRequest();
           await handlers.get('turn_end')({
             turnIndex: turn++,
-            message: { stopReason: 'length', usage: { input: 20, output: 16384, totalTokens: 16404 } },
+            message: { stopReason: 'stop', usage: { input: 20, output: 64, totalTokens: 84 } },
           }, ctx);
-          assert.equal(aborts, 1, 'a prose-only elevated response fails closed immediately');
-          assert.equal(caps.filter(value => value === 16384).length, 1, 'no second elevated turn is granted after prose');
+          assert.equal(aborts, 1, 'a completed prose-only elevated response fails closed immediately');
+          assert.equal(caps.filter(value => value === 16384).length, 1, 'no second elevated turn is granted after completed prose');
           const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
           assert.equal(failure.failure_code, 'PI_LARGE_MUTATION_ACTION_REQUIRED');
           assert.equal(failure.checkpoint.worktree_preserved, true);
           console.log('LARGE_MUTATION_PROSE_ABORT_OK');
+          process.exit(0);
+        }
+
+        if (mode === 'large-mutation-length-retry-abort') {
+          handlers.get('turn_start')({ turnIndex: turn });
+          largeProviderRequest();
+          await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: { stopReason: 'length', usage: { input: 20, output: 16384, totalTokens: 16404 } },
+          }, ctx);
+          assert.equal(aborts, 0, 'the first elevated ceiling hit gets one bounded truncation retry');
+          assert.equal(caps.at(-1), 16384, 'the bounded truncation retry keeps the 16K ceiling');
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const retry = largeProviderRequest();
+          assert.equal(retry.tool_choice, 'required', 'the truncation retry remains provider action-forced');
+          await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: { stopReason: 'length', usage: { input: 20, output: 16384, totalTokens: 16404 } },
+          }, ctx);
+          assert.equal(aborts, 1, 'a second elevated ceiling hit exhausts the single truncation retry');
+          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+          assert.equal(failure.failure_code, 'PI_LARGE_MUTATION_TRUNCATION_RETRY_EXHAUSTED');
+          assert.equal(failure.retry_limit, 1);
+          assert.equal(failure.checkpoint.worktree_preserved, true);
+          console.log('LARGE_MUTATION_LENGTH_RETRY_ABORT_OK');
+          process.exit(0);
+        }
+
+        if (mode === 'large-mutation-provider-retry-abort') {
+          handlers.get('turn_start')({ turnIndex: turn });
+          largeProviderRequest();
+          await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: {
+              stopReason: 'error',
+              status: 429,
+              errorMessage: '429: rate limited',
+              usage: { input: 10, output: 0, totalTokens: 10 },
+            },
+          }, ctx);
+          assert.equal(aborts, 0, 'one retryable provider failure preserves the elevated grant');
+          assert.equal(caps.at(-1), 16384, 'provider retry preserves the elevated cap');
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const retry = largeProviderRequest();
+          assert.equal(retry.tool_choice, 'required', 'provider retry remains required-tool');
+          await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: {
+              stopReason: 'error',
+              status: 503,
+              errorMessage: '503: upstream unavailable',
+              usage: { input: 10, output: 0, totalTokens: 10 },
+            },
+          }, ctx);
+          assert.equal(aborts, 1, 'a second retryable provider failure exhausts the bounded elevated retry');
+          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+          assert.equal(failure.failure_code, 'PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED');
+          assert.equal(failure.retry_limit, 1);
+          assert.equal(failure.checkpoint.worktree_preserved, true);
+          console.log('LARGE_MUTATION_PROVIDER_RETRY_ABORT_OK');
           process.exit(0);
         }
 
@@ -1438,6 +1500,25 @@ function runtimeScenario(mode) {
         assert.equal(secondPrelude.block, true);
         assert.match(secondPrelude.reason, /already used its one accept_mutation_scope prelude/);
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(aborts, 0, 'one blocked repeated scope declaration gets the single bounded action retry');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const thirdPrelude = await handlers.get('tool_call')({
+          toolName: 'accept_mutation_scope',
+          toolCallId: 'scope-repeat-final-' + turn,
+          input: {
+            paths: ['third-large.py'],
+            disposition: 'publishable',
+            rationale: 'Prove repeated scope-only turns terminate under the bounded retry.',
+          },
+        }, ctx);
+        assert.equal(thirdPrelude.block, true);
+        assert.match(thirdPrelude.reason, /already used its one accept_mutation_scope prelude/);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(aborts, 1, 'a second blocked repeated scope declaration exhausts the bounded retry');
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_code, 'PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED');
+        assert.equal(failure.retry_limit, 1);
         console.log('SCOPE_PRELUDE_CAP_OK');
         process.exit(0);
       }
@@ -2078,13 +2159,29 @@ test('#512 planner-armed 16K request is mutation-only, action-forced, and writes
   assert.match(logs, /LARGE_MUTATION_AUTO_FORCE_OK/);
 });
 
-test('#512 prose-only elevated completion aborts without spending another 16K turn', () => {
+test('#512 completed prose-only elevated response aborts without spending another 16K turn', () => {
   const logs = runtimeScenario('large-mutation-prose-abort');
   assert.match(logs, /PI_LARGE_MUTATION_TOOL_CHOICE_ARMED/);
   assert.match(logs, /PI_LARGE_MUTATION_ACTION_REQUIRED .*"worktree_preserved":true/);
   assert.equal((logs.match(/PI_LARGE_MUTATION_BUDGET .*"phase":"granted"/g) ?? []).length, 1);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_ACTION_RETRY/);
   assert.match(logs, /LARGE_MUTATION_PROSE_ABORT_OK/);
+});
+
+test('#512 elevated output ceiling gets one required 16K retry, then aborts deterministically', () => {
+  const logs = runtimeScenario('large-mutation-length-retry-abort');
+  assert.equal((logs.match(/PI_LARGE_MUTATION_ACTION_RETRY .*"retryReason":"output_ceiling_without_tool_call"/g) ?? []).length, 1);
+  assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"source":"large_mutation"/g) ?? []).length >= 2);
+  assert.match(logs, /PI_LARGE_MUTATION_TRUNCATION_RETRY_EXHAUSTED .*"retryLimit":1.*"worktree_preserved":true/);
+  assert.match(logs, /LARGE_MUTATION_LENGTH_RETRY_ABORT_OK/);
+});
+
+test('#512 retryable elevated provider errors are bounded to one retry', () => {
+  const logs = runtimeScenario('large-mutation-provider-retry-abort');
+  assert.equal((logs.match(/PI_LARGE_MUTATION_PROVIDER_RETRY /g) ?? []).length, 1);
+  assert.match(logs, /PI_LARGE_MUTATION_PROVIDER_RETRY .*"status":429.*"retry":1.*"retryLimit":1/);
+  assert.match(logs, /PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED .*"status":503.*"retryLimit":1.*"worktree_preserved":true/);
+  assert.match(logs, /LARGE_MUTATION_PROVIDER_RETRY_ABORT_OK/);
 });
 
 test('#512 failed elevated actions get exactly one required retry before deterministic abort', () => {
@@ -2095,9 +2192,11 @@ test('#512 failed elevated actions get exactly one required retry before determi
   assert.match(logs, /LARGE_MUTATION_ACTION_RETRY_ABORT_OK/);
 });
 
-test('one elevated mutation grant permits at most one scope-only prelude', () => {
+test('#512 one elevated mutation grant permits one scope prelude and repeated scope-only turns terminate', () => {
   const logs = runtimeScenario('scope-prelude-cap');
-  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"scope_prelude".*"preserved":true/);
+  assert.equal((logs.match(/PI_LARGE_MUTATION_BUDGET .*"phase":"scope_prelude".*"preserved":true/g) ?? []).length, 1);
+  assert.equal((logs.match(/PI_LARGE_MUTATION_ACTION_RETRY /g) ?? []).length, 1, 'only the first blocked repeat gets a retry');
+  assert.match(logs, /PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED .*"retryLimit":1/);
   assert.match(logs, /SCOPE_PRELUDE_CAP_OK/);
 });
 
