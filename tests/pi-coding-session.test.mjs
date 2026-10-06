@@ -33,7 +33,9 @@ test('coding-session guidance uses only exposed tools and routes missing evidenc
   assert.match(runtime, /if one concrete missing fact prevents the next safe action, call need_more_evidence/);
   assert.match(runtime, /action-required: read is not exposed now/);
   assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
-  assert.match(runtime, /bounded repair read access only for the failing\/changed paths/);
+  assert.match(runtime, /repair mode and may expose bounded read access only for the failing\/changed paths/);
+  assert.match(runtime, /In repair mode prefer structural_edit, safe_edit, or a small edit/);
+  assert.match(runtime, /CODING_REPAIR_REASONING_MAX_TOKENS = 4096/);
   assert.match(runtime, /Tests must prefer public behavior and public APIs/);
   assert.match(runtime, /do not mutate private\/internal implementation state merely to manufacture fixture state/);
 });
@@ -676,6 +678,8 @@ function runtimeScenario(mode) {
           assert.equal(repairFollowup.chat_template_kwargs.enable_thinking, false, 'repair reasoning is one request, not always-on');
           assert.equal(repairFollowup.max_completion_tokens, 16384, 'low-overhead follow-up keeps the coding payload budget');
           assert.ok(repairTools.includes('read'), 'bounded repair read is provider-visible');
+          assert.ok(repairTools.includes('safe_edit'), 'localized mutation remains provider-visible in repair');
+          assert.ok(repairTools.includes('structural_edit'), 'structural localized mutation remains provider-visible in repair');
           assert.ok(!repairTools.includes('repo_search'), 'repair does not reopen repository discovery');
           assert.ok(!repairTools.includes('need_more_evidence'), 'repair does not spend the generic evidence unlock');
 
