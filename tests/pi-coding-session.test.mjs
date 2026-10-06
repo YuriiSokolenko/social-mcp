@@ -296,7 +296,7 @@ function runtimeScenario(mode) {
         const childTools = new Map(); const childHandlers = new Map();
         let childAborts = 0;
         const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
-          if (!['tool-contract', 'repair-nonconvergent', 'repair-rewrite-limit', 'repair-reasoning-fallback-abort'].includes(mode)) throw new Error('fork aborted');
+          if (!['tool-contract', 'repair-nonconvergent', 'repair-rewrite-limit', 'repair-reasoning-fallback-abort', 'repair-provider-errors'].includes(mode)) throw new Error('fork aborted');
           childAborts += 1;
         },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
@@ -463,7 +463,7 @@ function runtimeScenario(mode) {
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
-          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details', 'repair-rewrite-limit', 'repair-reasoning-fallback', 'repair-reasoning-fallback-abort'].includes(mode) && params?.kind === 'pytest') {
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details', 'repair-rewrite-limit', 'repair-reasoning-fallback', 'repair-reasoning-fallback-abort', 'repair-reasoning-prose-fallback', 'repair-retryable-provider-error', 'repair-provider-errors'].includes(mode) && params?.kind === 'pytest') {
             const variant = mode === 'repair-volatile-message'
               ? 'volatile-a'
               : mode === 'repair-semantic-number'
@@ -665,7 +665,7 @@ function runtimeScenario(mode) {
         } else {
           await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
         }
-        if (mode === 'repair-reasoning-fallback' || mode === 'repair-reasoning-fallback-abort') {
+        if (['repair-reasoning-fallback', 'repair-reasoning-fallback-abort', 'repair-reasoning-prose-fallback', 'repair-retryable-provider-error', 'repair-provider-errors'].includes(mode)) {
           const repairPayload = {
             model: 'm',
             messages: [],
@@ -692,10 +692,41 @@ function runtimeScenario(mode) {
           assert.ok(!reasoningTools.includes('read'));
           assert.ok(!reasoningTools.includes('accept_mutation_scope'));
           assert.ok(!reasoningTools.includes('run_check'));
-          await childHandlers.get('turn_end')({
-            turnIndex: turn++,
-            message: { stopReason: 'length', usage: { input: 20, output: 4095, totalTokens: 4115 } },
-          }, childCtx);
+
+          if (mode === 'repair-retryable-provider-error') {
+            await childHandlers.get('turn_end')({
+              turnIndex: turn++,
+              message: { stopReason: 'error', errorMessage: '429: {"error":"rate limited"}', usage: { input: 10, output: 0, totalTokens: 10 } },
+            }, childCtx);
+            assert.equal(childAborts, 0);
+            childHandlers.get('turn_start')({ turnIndex: turn });
+            const retriedReasoning = providerPatch({ payload: repairPayload }, childCtx);
+            assert.equal(retriedReasoning.chat_template_kwargs.enable_thinking, true, 'retryable provider error re-arms the same reasoning phase');
+            assert.equal(retriedReasoning.max_completion_tokens, 4096);
+            assert.equal(retriedReasoning.tool_choice, 'required');
+            await childCall('safe_edit', {
+              path: 'test_generated.py',
+              operation: 'insert_after',
+              start_line: 4,
+              text: '# provider retry repair\\n',
+            });
+            console.log('CODING_REPAIR_PROVIDER_RETRY_OK');
+            return respond(request, { status: 'failed', error: 'simulated stop after provider retry proof', usage: { output: 500 } });
+          }
+
+          if (mode === 'repair-provider-errors') {
+            await childHandlers.get('turn_end')({
+              turnIndex: turn++,
+              message: { stopReason: 'error', errorMessage: '422: {"error":"rejected"}', usage: { input: 10, output: 0, totalTokens: 10 } },
+            }, childCtx);
+          } else {
+            await childHandlers.get('turn_end')({
+              turnIndex: turn++,
+              message: mode === 'repair-reasoning-prose-fallback'
+                ? { usage: { input: 20, output: 64, totalTokens: 84 } }
+                : { stopReason: 'length', usage: { input: 20, output: 4095, totalTokens: 4115 } },
+            }, childCtx);
+          }
 
           childHandlers.get('turn_start')({ turnIndex: turn });
           const fallbackRequest = providerPatch({ payload: repairPayload }, childCtx);
@@ -707,6 +738,16 @@ function runtimeScenario(mode) {
           assert.ok(!fallbackTools.includes('read'), 'repair evidence cannot reopen before mutation');
           assert.ok(!fallbackTools.includes('accept_mutation_scope'));
           assert.ok(!fallbackTools.includes('run_check'));
+
+          if (mode === 'repair-provider-errors') {
+            await childHandlers.get('turn_end')({
+              turnIndex: turn++,
+              message: { stopReason: 'error', errorMessage: '422: {"error":"rejected"}', usage: { input: 10, output: 0, totalTokens: 10 } },
+            }, childCtx);
+            assert.equal(childAborts, 1, 'non-retryable fallback provider rejection aborts deterministically');
+            console.log('CODING_REPAIR_PROVIDER_ERROR_ABORT_OK');
+            return respond(request, { status: 'failed', error: 'PI_CODING_REPAIR_ACTION_FALLBACK_FAILED', usage: { output: 100 } });
+          }
 
           if (mode === 'repair-reasoning-fallback-abort') {
             await childHandlers.get('turn_end')({
@@ -726,6 +767,11 @@ function runtimeScenario(mode) {
           });
           assert.equal(fallbackMutation.block, undefined, 'fallback action executes');
           assert.ok(childActive.includes('retry_last_failed_check'));
+
+          if (mode === 'repair-reasoning-prose-fallback') {
+            console.log('CODING_REPAIR_PROSE_FALLBACK_OK');
+            return respond(request, { status: 'failed', error: 'simulated stop after prose fallback proof', usage: { output: 500 } });
+          }
 
           const postMutationRequest = providerPatch({ payload: repairPayload }, childCtx);
           assert.equal(postMutationRequest.chat_template_kwargs.enable_thinking, false, 'successful mutation clears fallback obligation');
@@ -1838,6 +1884,28 @@ test('#511 an empty cheap repair fallback aborts once with the worktree preserve
   assert.match(logs, /CODING_REPAIR_FALLBACK_ABORT_OK/);
 });
 
+test('#511 a completed no-tool reasoning turn also enters the cheap fallback without waiting for a ceiling', () => {
+  const logs = runtimeScenario('repair-reasoning-prose-fallback');
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_ARMED .*"reason":"reasoning_completed_without_action"/);
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_OBSERVED .*"phase":"fallback".*"tool":"safe_edit"/);
+  assert.match(logs, /CODING_REPAIR_PROSE_FALLBACK_OK/);
+});
+
+test('#511 retryable provider errors retry reasoning instead of racing a fallback steer', () => {
+  const logs = runtimeScenario('repair-retryable-provider-error');
+  assert.match(logs, /PI_CODING_REPAIR_PROVIDER_RETRY .*"phase":"reasoning".*"status":429/);
+  assert.ok((logs.match(/PI_CODING_REPAIR_TOOL_SURFACE .*"phase":"reasoning_mutation"/g) ?? []).length >= 2, 'the same reasoning phase is rebuilt for the provider retry');
+  assert.doesNotMatch(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_ARMED/);
+  assert.match(logs, /CODING_REPAIR_PROVIDER_RETRY_OK/);
+});
+
+test('#511 non-retryable reasoning rejection arms fallback and fallback rejection aborts', () => {
+  const logs = runtimeScenario('repair-provider-errors');
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_ARMED .*"reason":"provider_error_422"/);
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_FAILED .*"reason":"fallback_provider_error_422".*"worktree_preserved":true/);
+  assert.match(logs, /CODING_REPAIR_PROVIDER_ERROR_ABORT_OK/);
+});
+
 test('#506 one syntax broad mutation is shared across write/safe_edit/edit and repeated bypass attempts fail closed', () => {
   const logs = runtimeScenario('repair-rewrite-limit');
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"rewriteEligiblePaths":\["test_generated.py"\].*"broadMutationLimit":1/);
@@ -1847,6 +1915,7 @@ test('#506 one syntax broad mutation is shared across write/safe_edit/edit and r
   assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"shape":"broad_edit".*"blockedAttempts":2/);
   assert.match(logs, /PI_CODING_REPAIR_MUTATION_GUARD .*"status":"limit_abort".*"shape":"broad_edit".*"blockedAttempts":3/);
   assert.match(logs, /PI_CODING_REPAIR_BROAD_MUTATION_LIMIT .*"worktree_preserved":true/);
+  assert.doesNotMatch(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_ARMED/, 'successful reasoning tool calls never invoke the fallback');
   assert.match(logs, /CODING_REPAIR_BROAD_MUTATION_LIMIT_OK/);
 });
 test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failure flip-flops', () => {
