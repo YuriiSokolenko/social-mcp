@@ -366,7 +366,7 @@ function runtimeScenario(mode) {
           duration_ms: 7,
           summary: variant === 'shrunk' ? '1 failed' : '2 failed',
           diagnostics: variant === 'shrunk'
-            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected public behavior after repair' }]
+            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
             : [
                 { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
                 { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
