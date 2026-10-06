@@ -4493,7 +4493,12 @@ export default function (pi) {
       await applyBudget(next.level, ctx);
     }
 
-    if (runtimeActionRequired && !controller.turnMadeProgress && !loopGuardSteeredThisTurn) {
+    if (
+      runtimeActionRequired &&
+      !controller.turnMadeProgress &&
+      !loopGuardSteeredThisTurn &&
+      !codingSessionArgumentCorrectionPending
+    ) {
       const activeToolNames = pi.getActiveTools();
       const currentToolGuidance = activeToolGuidance(activeToolNames);
       const semantics = taskSpecificToolGuidance(activeToolNames, {
