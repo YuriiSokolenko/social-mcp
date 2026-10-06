@@ -108,6 +108,8 @@ const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 const CODING_REPAIR_READ_LIMIT = 2;
 const CODING_REPAIR_IMPORT_PATH_LIMIT = 8;
 const CODING_REPAIR_WHOLE_REWRITE_LIMIT = 1;
+const CODING_REPAIR_BROAD_MUTATION_LIMIT = 1;
+const CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT = 3;
 const CODING_REPAIR_REASONING_MAX_TOKENS = 4096;
 const CODING_REPAIR_BROAD_EDIT_LINE_LIMIT = 80;
 const CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT = 12000;
@@ -411,6 +413,7 @@ export default function (pi) {
   const codingValidationRepairHistory = new Map();
   const codingRepairRewriteCounts = new Map();
   const codingRepairMutationShapeCounts = new Map();
+  const codingRepairBlockedMutationAttempts = new Map();
   const pendingCodingRepairReads = new Map();
 
   function normalizedCodingRepairPath(value, cwd) {
@@ -550,11 +553,11 @@ export default function (pi) {
   function codingRepairRewriteEligiblePaths(result, cwd) {
     const eligible = new Set();
     for (const diagnostic of Array.isArray(result?.diagnostics) ? result.diagnostics : []) {
-      const code = String(diagnostic?.code ?? '');
-      const message = String(diagnostic?.message ?? '');
+      const code = String(diagnostic?.code ?? '').trim();
+      const message = String(diagnostic?.message ?? '').trim();
       const wholeFileFailure =
         /^(?:SyntaxError|IndentationError|TabError|ParseError)$/i.test(code) ||
-        /\b(?:invalid syntax|parse error|parser error|unexpected (?:token|eof)|unterminated|malformed source)\b/i.test(message);
+        (!code && /^(?:SyntaxError|IndentationError|TabError|ParseError)\s*:/i.test(message));
       if (!wholeFileFailure) continue;
       const normalized = trustedCodingRepairReadPath(diagnostic?.file, cwd);
       if (normalized) eligible.add(normalized);
@@ -562,29 +565,32 @@ export default function (pi) {
     return [...eligible].sort();
   }
 
-  function mutationTextExtent(values) {
-    let chars = 0;
-    let lines = 0;
-    for (const value of values) {
-      if (typeof value !== 'string') continue;
-      chars = Math.max(chars, value.length);
-      lines = Math.max(lines, value.split('\n').length);
+  function mutationTextExtent(value, key = '') {
+    if (typeof value === 'string') {
+      if (!/(?:text|content|rewrite|replacement|old|new|insert|value|pattern)/i.test(key)) {
+        return { chars: 0, lines: 0 };
+      }
+      return { chars: value.length, lines: value.split('\n').length };
     }
-    return { chars, lines };
+    if (Array.isArray(value)) {
+      return value.reduce((extent, item) => {
+        const nested = mutationTextExtent(item, key);
+        return { chars: Math.max(extent.chars, nested.chars), lines: Math.max(extent.lines, nested.lines) };
+      }, { chars: 0, lines: 0 });
+    }
+    if (value && typeof value === 'object') {
+      return Object.entries(value).reduce((extent, [nestedKey, nestedValue]) => {
+        const nested = mutationTextExtent(nestedValue, nestedKey);
+        return { chars: Math.max(extent.chars, nested.chars), lines: Math.max(extent.lines, nested.lines) };
+      }, { chars: 0, lines: 0 });
+    }
+    return { chars: 0, lines: 0 };
   }
 
   function codingMutationShape(toolName, input, snapshot) {
     if (toolName === 'write') return snapshot?.existed ? 'whole_file_rewrite' : 'creation';
     if (!['edit', 'safe_edit', 'structural_edit'].includes(toolName)) return 'other';
-    const extent = mutationTextExtent([
-      input?.text,
-      input?.oldText,
-      input?.newText,
-      input?.old_text,
-      input?.new_text,
-      input?.pattern,
-      input?.rewrite,
-    ]);
+    const extent = mutationTextExtent(input);
     const safeEditSpan = toolName === 'safe_edit'
       ? Math.max(1, Number(input?.end_line ?? input?.start_line ?? 1) - Number(input?.start_line ?? 1) + 1)
       : 0;
@@ -595,8 +601,12 @@ export default function (pi) {
     ) ? 'broad_edit' : 'targeted_edit';
   }
 
-  function codingRepairWritePolicy(input, cwd) {
-    if (!codingRepairWindowActive()) return null;
+  function codingRepairBroadMutationCount(pathValue) {
+    return codingRepairMutationShapeCounts.get(`${pathValue}\0broad_total`) ?? 0;
+  }
+
+  function codingRepairMutationPolicy(toolName, input, cwd) {
+    if (!codingRepairWindowActive() || !CONTENT_MUTATION_TOOLS.has(toolName)) return null;
     let target;
     try {
       target = resolveMutationTarget(cwd, input?.path);
@@ -605,30 +615,31 @@ export default function (pi) {
     }
     const normalized = normalizedCodingRepairPath(input?.path, cwd);
     if (!normalized || !target.exists) return null; // First creation remains efficient.
-    const rewriteCount = codingRepairRewriteCounts.get(normalized) ?? 0;
-    if (rewriteCount >= CODING_REPAIR_WHOLE_REWRITE_LIMIT) {
-      return {
-        block: true,
-        abort: true,
-        path: normalized,
-        rewriteCount,
-        reason: `BLOCKED: repair whole-file rewrite limit reached for ${normalized}. The worktree is preserved; use a targeted structural_edit/safe_edit/edit instead of regenerating the file.`,
-      };
+    const shape = codingMutationShape(toolName, input ?? {}, { existed: true });
+    if (!['whole_file_rewrite', 'broad_edit'].includes(shape)) {
+      return { path: normalized, shape, broadCount: codingRepairBroadMutationCount(normalized) };
     }
-    if (codingValidationRepair.rewriteEligiblePaths.includes(normalized)) {
+
+    const broadCount = codingRepairBroadMutationCount(normalized);
+    const syntaxCorruption = codingValidationRepair.rewriteEligiblePaths.includes(normalized);
+    if (syntaxCorruption && broadCount < CODING_REPAIR_BROAD_MUTATION_LIMIT) {
       return {
-        allowRewrite: true,
+        allowBroad: true,
         path: normalized,
-        rewriteCount,
+        shape,
+        broadCount,
         reason: 'authoritative diagnostics indicate whole-file syntax/parse corruption',
       };
     }
+
     return {
       block: true,
-      abort: false,
       path: normalized,
-      rewriteCount,
-      reason: `BLOCKED: ${normalized} already exists and authoritative validation is in repair mode. Full write regeneration is not justified by the current diagnostics; use structural_edit, safe_edit, or a bounded edit.`,
+      shape,
+      broadCount,
+      reason: syntaxCorruption
+        ? `BLOCKED: repair broad-mutation limit reached for ${normalized}. Use a targeted structural_edit/safe_edit/edit; shrinking or changing failures do not reset the limit.`
+        : `BLOCKED: ${normalized} already exists and authoritative validation does not justify a broad repair. Use structural_edit, safe_edit, or a bounded edit that targets the reported diagnostics.`,
     };
   }
   function codingRepairScope(input, result, cwd) {
@@ -749,6 +760,7 @@ export default function (pi) {
         })}`);
         codingRepairRewriteCounts.clear();
         codingRepairMutationShapeCounts.clear();
+        codingRepairBlockedMutationAttempts.clear();
         codingValidationRepair = null;
       }
       return false;
@@ -792,8 +804,8 @@ export default function (pi) {
       readsRemaining: CODING_REPAIR_READ_LIMIT,
       readObserved: false,
       informedByDiagnostics,
-      readRequiredBeforeMutation: !informedByDiagnostics && scope.paths.length > 0,
-      evidenceGateReleased: !informedByDiagnostics && scope.paths.length === 0,
+      readRequiredBeforeMutation: scope.paths.length > 0,
+      evidenceGateReleased: scope.paths.length === 0,
       paths: scope.paths,
       diagnosticLines: scope.diagnosticLines,
       rewriteEligiblePaths,
@@ -815,7 +827,9 @@ export default function (pi) {
       evidenceGateReleased: codingValidationRepair.evidenceGateReleased,
       rewriteEligiblePaths: codingValidationRepair.rewriteEligiblePaths,
       wholeFileRewriteLimit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
-      thinkingPolicy: 'one_reasoning_request_per_validation_failure',
+      broadMutationLimit: CODING_REPAIR_BROAD_MUTATION_LIMIT,
+      blockedBroadAttemptLimit: CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT,
+      thinkingPolicy: 'one_reasoning_request_after_repair_read',
       reasoningMaxTokens: CODING_REPAIR_REASONING_MAX_TOKENS,
     })}`);
     // The next response must take a concrete repair step. Because bounded read is now part of
@@ -846,7 +860,7 @@ export default function (pi) {
       ? `You may read only these repair-relevant failing/changed/import paths before the next repair: ${codingValidationRepair.paths.join(', ')}.`
       : 'No trusted bounded repair path is available, so the read-before-mutation evidence gate is released rather than dead-ending the repair state.';
     await pi.sendUserMessage(
-      `RUNTIME REPAIR EVIDENCE: validation failed. ${evidenceGuidance} ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. Prefer structural_edit, safe_edit, or a bounded edit that directly addresses the current diagnostics. A whole-file write of an existing path is blocked unless authoritative syntax/parse diagnostics justify one bounded replacement, and shrinking/changing failures do not reset that rewrite bound. When a bounded read route exists, a semantic repair mutation without structured diagnostics must use it first. Repair convergence is tracked per kind+scope; a same-kind passing scope clears a failed scope only when coverage is provable, and only a strict reduction below the best failure set resets the non-improving counter.`,
+      `RUNTIME REPAIR EVIDENCE: validation failed. ${evidenceGuidance} ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. Prefer structural_edit, safe_edit, or a bounded edit that directly addresses the current diagnostics. A whole-file write of an existing path is blocked unless authoritative syntax/parse diagnostics justify one bounded replacement, and shrinking/changing failures do not reset that rewrite bound. When a bounded read route exists, read one repair-relevant path before mutation; the bounded reasoning request is reserved for the following mutation decision. Repair convergence is tracked per kind+scope; a same-kind passing scope clears a failed scope only when coverage is provable, and only a strict reduction below the best failure set resets the non-improving counter.`,
       { deliverAs: 'steer' },
     );
     return false;
