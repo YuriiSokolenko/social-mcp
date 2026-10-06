@@ -294,7 +294,7 @@ function runtimeScenario(mode) {
         const childTools = new Map(); const childHandlers = new Map();
         let childAborts = 0;
         const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
-          if (!['tool-contract', 'repair-nonconvergent'].includes(mode)) throw new Error('fork aborted');
+          if (!['tool-contract', 'repair-nonconvergent', 'repair-rewrite-limit'].includes(mode)) throw new Error('fork aborted');
           childAborts += 1;
         },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
@@ -364,19 +364,27 @@ function runtimeScenario(mode) {
         const repairFailure = variant => {
           const volatile = variant === 'volatile-a' || variant === 'volatile-b';
           const semanticNumber = variant === 'semantic-42' || variant === 'semantic-43';
+          const syntaxFailure = variant === 'syntax-initial' || variant === 'syntax-shrunk';
           const volatileMessage = variant === 'volatile-b'
             ? 'test_constant: mismatch at /tmp/pytest-987/result.txt after 84.75ms address 0xdeadbeef'
             : 'test_constant: mismatch at /tmp/pytest-123/result.txt after 12.50ms address 0xabc123';
-          let diagnostics = volatile
-            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
-            : semanticNumber
-              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected ' + (variant === 'semantic-43' ? '43' : '42') }]
-              : variant === 'shrunk'
-                ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
-                : [
-                    { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
-                    { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
-                  ];
+          let diagnostics = syntaxFailure
+            ? (variant === 'syntax-shrunk'
+              ? [{ file: 'test_generated.py', line: 1, column: null, code: 'SyntaxError', message: 'invalid syntax near token A' }]
+              : [
+                  { file: 'test_generated.py', line: 1, column: null, code: 'SyntaxError', message: 'invalid syntax near token A' },
+                  { file: 'test_generated.py', line: 2, column: null, code: 'SyntaxError', message: 'unexpected EOF while parsing' },
+                ])
+            : volatile
+              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+              : semanticNumber
+                ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected ' + (variant === 'semantic-43' ? '43' : '42') }]
+                : variant === 'shrunk'
+                  ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
+                  : [
+                      { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
+                      { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
+                    ];
           if (mode === 'repair-evidence' && variant === 'initial') {
             diagnostics = [...diagnostics, {
               file: 'link-source.py',
@@ -391,7 +399,7 @@ function runtimeScenario(mode) {
             kind: 'pytest',
             exit_code: 1,
             duration_ms: 7,
-            summary: variant === 'shrunk' || volatile || semanticNumber ? '1 failed' : '2 failed',
+            summary: variant === 'shrunk' || variant === 'syntax-shrunk' || volatile || semanticNumber ? '1 failed' : '2 failed',
             diagnostics,
             stdout_tail: '',
             stderr_tail: '',
@@ -450,12 +458,14 @@ function runtimeScenario(mode) {
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
-          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details'].includes(mode) && params?.kind === 'pytest') {
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details', 'repair-rewrite-limit'].includes(mode) && params?.kind === 'pytest') {
             const variant = mode === 'repair-volatile-message'
               ? 'volatile-a'
               : mode === 'repair-semantic-number'
                 ? 'semantic-42'
-                : 'initial';
+                : mode === 'repair-rewrite-limit'
+                  ? 'syntax-initial'
+                  : 'initial';
             const result = repairFailure(variant);
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
