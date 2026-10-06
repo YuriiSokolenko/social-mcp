@@ -194,6 +194,8 @@ function runtimeScenario(mode) {
     execFileSync('git', ['init', '-q', work]);
     execFileSync('git', ['-C', work, 'config', 'user.name', 'Coding Session Test']);
     execFileSync('git', ['-C', work, 'config', 'user.email', 'coding@example.invalid']);
+    fs.writeFileSync(path.join(work, 'unchanged_helper.py'), 'HELPER = 1\n');
+    execFileSync('git', ['-C', work, 'add', 'unchanged_helper.py']);
     execFileSync('git', ['-C', work, 'commit', '--allow-empty', '-qm', 'base']);
     execFileSync('git', ['-C', work, 'remote', 'add', 'origin', remote]);
     execFileSync('git', ['-C', work, 'push', '-q', 'origin', 'HEAD:refs/heads/dev']);
@@ -361,23 +363,36 @@ function runtimeScenario(mode) {
         // Executors stubbed; the runtime's gates around them are real.
         const repairFailure = variant => {
           const volatile = variant === 'volatile-a' || variant === 'volatile-b';
+          const semanticNumber = variant === 'semantic-42' || variant === 'semantic-43';
           const volatileMessage = variant === 'volatile-b'
             ? 'test_constant: mismatch at /tmp/pytest-987/result.txt after 84.75ms address 0xdeadbeef'
             : 'test_constant: mismatch at /tmp/pytest-123/result.txt after 12.50ms address 0xabc123';
-          return {
-            status: 'fail',
-            kind: 'pytest',
-            exit_code: 1,
-            duration_ms: 7,
-            summary: variant === 'shrunk' || volatile ? '1 failed' : '2 failed',
-            diagnostics: volatile
-              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+          let diagnostics = volatile
+            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+            : semanticNumber
+              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected ' + (variant === 'semantic-43' ? '43' : '42') }]
               : variant === 'shrunk'
                 ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
                 : [
                     { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
                     { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
-                  ],
+                  ];
+          if (mode === 'repair-evidence' && variant === 'initial') {
+            diagnostics = [...diagnostics, {
+              file: 'link-source.py',
+              line: 1,
+              column: null,
+              code: 'AssertionError',
+              message: 'symlinked source diagnostic',
+            }];
+          }
+          return {
+            status: 'fail',
+            kind: 'pytest',
+            exit_code: 1,
+            duration_ms: 7,
+            summary: variant === 'shrunk' || volatile || semanticNumber ? '1 failed' : '2 failed',
+            diagnostics,
             stdout_tail: '',
             stderr_tail: '',
             truncated: false,
@@ -402,7 +417,11 @@ function runtimeScenario(mode) {
             seq: records.length,
             timestamp: new Date().toISOString(),
             kind: result.kind,
-            scope: result.kind === 'pytest' ? { targets: params.targets } : { paths: params.paths },
+            scope: result.kind === 'pytest'
+              ? { targets: params.targets }
+              : result.kind === 'profile'
+                ? { profile: params.profile }
+                : { paths: params.paths },
             status: result.status,
             exit_code: result.exit_code,
             source: 'run_check',
@@ -416,8 +435,28 @@ function runtimeScenario(mode) {
           }) + '\\n');
         };
         childTools.get('run_check').execute = async (_toolCallId, params) => {
-          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message'].includes(mode) && params?.kind === 'pytest') {
-            const result = repairFailure(mode === 'repair-volatile-message' ? 'volatile-a' : 'initial');
+          if (mode === 'repair-empty-scope' && params?.kind === 'profile') {
+            const result = {
+              status: 'fail',
+              kind: 'profile',
+              exit_code: 1,
+              duration_ms: 3,
+              summary: 'profile failed without structured diagnostics',
+              diagnostics: [],
+              stdout_tail: '',
+              stderr_tail: '',
+              truncated: false,
+            };
+            appendRepairRecord(params, result);
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+          }
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details'].includes(mode) && params?.kind === 'pytest') {
+            const variant = mode === 'repair-volatile-message'
+              ? 'volatile-a'
+              : mode === 'repair-semantic-number'
+                ? 'semantic-42'
+                : 'initial';
+            const result = repairFailure(variant);
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
@@ -492,6 +531,14 @@ function runtimeScenario(mode) {
             if (childTools.has(name)) result = await childTools.get(name).execute(event.toolCallId, input, null, null, childCtx);
             else { if (name === 'write') fs.writeFileSync(cwd + '/' + input.path, input.content); result = { content: [{ type: 'text', text: 'ok' }] }; }
           } catch (error) { isError = true; result = { content: [{ type: 'text', text: String(error.message) }] }; }
+          if (
+            mode === 'repair-iserror-details' &&
+            name === 'run_check' &&
+            input?.kind === 'pytest' &&
+            result?.details?.status === 'fail'
+          ) {
+            isError = true;
+          }
           await childHandlers.get('tool_execution_end')({ ...event, isError, result }, childCtx);
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 3000 } } }, childCtx);
           return result;
