@@ -2847,6 +2847,9 @@ export default function (pi) {
     const repairReadPolicy = event.toolName === 'read'
       ? codingRepairReadPolicy(canonicalInput, ctx.cwd)
       : null;
+    const repairWritePolicy = event.toolName === 'write'
+      ? codingRepairWritePolicy(canonicalInput, ctx.cwd)
+      : null;
     if (
       event.toolName === ACCEPT_MUTATION_SCOPE_TOOL &&
       controller.largeMutationBudgetActive() &&
@@ -2889,6 +2892,8 @@ export default function (pi) {
       };
     } else if (repairReadPolicy?.block) {
       recoveryBlocked = repairReadPolicy;
+    } else if (repairWritePolicy?.block) {
+      recoveryBlocked = repairWritePolicy;
     } else if (
       codingRepairWindowActive() &&
       CONTENT_MUTATION_TOOLS.has(event.toolName) &&
@@ -2936,6 +2941,29 @@ export default function (pi) {
       actionTurnAttemptedTool = true;
     }
     if (blocked) {
+      if (repairWritePolicy?.block) {
+        console.warn(`PI_CODING_REPAIR_WRITE_GUARD ${JSON.stringify({
+          stage,
+          status: repairWritePolicy.abort ? 'limit_abort' : 'blocked',
+          path: repairWritePolicy.path,
+          rewriteCount: repairWritePolicy.rewriteCount,
+          limit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
+          reason: repairWritePolicy.reason,
+        })}`);
+        if (repairWritePolicy.abort) {
+          const details = {
+            path: repairWritePolicy.path,
+            rewrite_count: repairWritePolicy.rewriteCount,
+            limit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
+            validation_key: codingValidationRepair?.key ?? null,
+            checkpoint: { worktree_preserved: true },
+          };
+          recordRuntimeAbort('PI_CODING_REPAIR_REWRITE_LIMIT', repairWritePolicy.reason, details);
+          console.error(`PI_CODING_REPAIR_REWRITE_LIMIT ${JSON.stringify({ stage, reason: repairWritePolicy.reason, ...details })}`);
+          await ctx.abort();
+          return blocked;
+        }
+      }
       if (blocked.alreadySatisfied) {
         console.warn(`PI_ALREADY_SATISFIED ${JSON.stringify({ stage, ...controller.lastAlreadySatisfied, suppressed: true, productive: false })}`);
       }
@@ -3045,6 +3073,20 @@ export default function (pi) {
       }
     }
 
+    if (repairWritePolicy?.allowRewrite) {
+      const nextRewriteCount = repairWritePolicy.rewriteCount + 1;
+      codingRepairRewriteCounts.set(repairWritePolicy.path, nextRewriteCount);
+      console.warn(`PI_CODING_REPAIR_REWRITE ${JSON.stringify({
+        stage,
+        status: 'consumed',
+        path: repairWritePolicy.path,
+        reason: repairWritePolicy.reason,
+        rewriteCount: nextRewriteCount,
+        limit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
+        validationKey: codingValidationRepair?.key ?? null,
+      })}`);
+    }
+
     if (stage === 'implementer' && RECEIPT_INVALIDATING_TOOLS.has(event.toolName)) {
       invalidateTerminalReceipt(process.env);
     }
@@ -3064,6 +3106,8 @@ export default function (pi) {
           disposition: mutationAuthorization?.disposition ?? 'unknown',
           journalable: capacity.journalable,
           journalReason: capacity.reason,
+          shape: codingMutationShape(event.toolName, event.input ?? {}, snapshot),
+          repairPhase: codingRepairWindowActive(),
         });
         if (!capacity.journalable) {
           // Selective undo is a recovery convenience, never a prerequisite for productive work.
