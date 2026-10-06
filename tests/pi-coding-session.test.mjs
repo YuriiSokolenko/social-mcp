@@ -1480,9 +1480,17 @@ test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failu
   const logs = runtimeScenario('repair-nonconvergent');
   assert.ok((logs.match(/PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/g) ?? []).length >= 1);
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"strictReduction":false/);
-  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":3.*"strictReduction":false/);
-  assert.match(logs, /PI_CODING_VALIDATION_NON_CONVERGENT .*"seen_signatures":2.*"worktree_preserved":true/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":4.*"strictReduction":false/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":5.*"strictReduction":false.*"limit":5/);
+  assert.match(logs, /PI_CODING_VALIDATION_NON_CONVERGENT .*"seen_signatures":2.*"limit":5.*"worktree_preserved":true/);
   assert.match(logs, /CODING_REPAIR_NONCONVERGENT_OK/);
+});
+
+test('#499 volatile diagnostic values keep one semantic failure identity', () => {
+  const logs = runtimeScenario('repair-volatile-message');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"strictReduction":false.*"seenSignatures":1/);
+  assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /CODING_REPAIR_VOLATILE_MESSAGE_OK/);
 });
 
 test('#499 only a pass for the same kind+scope clears convergence history', () => {
