@@ -593,23 +593,53 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-nonconvergent') {
+          await settleSyntheticDifferentScopePass();
           await childCall('write', {
             path: 'test_generated.py',
             content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round 1\\n',
           });
           assert.ok(childActive.includes('retry_last_failed_check'));
-          await settleRepairRetry('initial');
-          assert.equal(childAborts, 0, 'second equivalent failure remains within the repair bound');
+          await settleRepairRetry('shrunk');
+          assert.equal(childAborts, 0, 'a strict reduction resets the non-improving count');
 
+          await settleSyntheticDifferentScopePass();
           await childCall('write', {
             path: 'test_generated.py',
             content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round 2\\n',
           });
           assert.ok(childActive.includes('retry_last_failed_check'));
           await settleRepairRetry('initial');
-          assert.equal(childAborts, 1, 'third equivalent failure aborts the coding session');
+          assert.equal(childAborts, 0, 'expanding back to a seen failure set is non-improving but still below the bound');
+
+          await settleSyntheticDifferentScopePass();
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# whole-file rewrite round 3\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('shrunk');
+          assert.equal(childAborts, 1, 'returning to the prior best set is not a new strict reduction and reaches the bound');
           console.log('CODING_REPAIR_NONCONVERGENT_OK');
           return respond(request, { status: 'failed', error: 'PI_CODING_VALIDATION_NON_CONVERGENT', usage: { output: 5000 } });
+        }
+
+        if (mode === 'repair-pass-reset') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# pass reset\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('pass');
+          assert.equal(childAborts, 0);
+
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# fail again after same-scope pass\\n',
+          });
+          await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+          assert.equal(childAborts, 0, 'same-scope pass clears prior convergence history');
+          console.log('CODING_REPAIR_PASS_RESET_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after same-scope reset proof', usage: { output: 3000 } });
         }
 
         if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
