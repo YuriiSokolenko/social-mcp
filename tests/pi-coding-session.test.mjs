@@ -51,6 +51,31 @@ test('coding-session prompt is a compact canonical subset, not the startup Imple
   assert.match(coding, /Tests should exercise public behavior and public APIs/);
 });
 
+test('coding-session prompt section extraction matches only level-2 headings at the start of a line', () => {
+  const workspace = tempDir();
+  try {
+    fs.mkdirSync(path.join(workspace, 'agents', 'implementer'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'agents', 'AGENTS.md'), 'Shared contract.\n');
+    fs.writeFileSync(path.join(workspace, 'agents', 'implementer', 'AGENTS.md'), `### Hard boundaries
+FALSE_PREFIX_BOUNDARY
+Inline mention: ## Coding-session contract
+## Hard boundaries
+REAL_BOUNDARY
+## Coding-session contract
+REAL_CODING_CONTRACT
+## Engineering constraints
+REAL_ENGINEERING_CONSTRAINTS
+`);
+    const coding = implementerCodingContractPrompt({ ...process.env, GITHUB_WORKSPACE: workspace });
+    assert.match(coding, /REAL_BOUNDARY/);
+    assert.match(coding, /REAL_CODING_CONTRACT/);
+    assert.match(coding, /REAL_ENGINEERING_CONSTRAINTS/);
+    assert.doesNotMatch(coding, /FALSE_PREFIX_BOUNDARY|Inline mention/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test('coding-session runtime keeps repair forcing and bounded evidence semantics', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(runtime, /action-required: read is not exposed now/);
@@ -1823,7 +1848,11 @@ function runtimeScenario(mode) {
       const expectError = { cancel: /aborted/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
       const result = await call('begin_coding_session', {
         reason: 'Implement generated.py and its test',
-        handoff: 'Current evidence established REQUIRED_CONSTANT = "abc123".',
+        handoff: mode === 'handoff-truncation'
+          ? 'Current evidence established REQUIRED_CONSTANT = "abc123". ' + 'a'.repeat(1140) + '🚀tail'
+          : mode === 'handoff-trailing-space-truncation'
+            ? 'Current evidence established REQUIRED_CONSTANT = "abc123". ' + 'a'.repeat(1140) + ' tail'
+            : '  Current evidence established REQUIRED_CONSTANT = "abc123". café 🚀  ',
       }, { expectError });
       if (mode === 'malformed-contract') {
         assert.equal(aborts, 0);
@@ -2017,6 +2046,8 @@ test('2K parent -> begin_coding_session -> isolated 16K coding child writes code
   assert.match(logs, /\[PI\]\[coding\] phase=agent_registered/);
   assert.match(logs, /"phase":"requested".*"parentMaxTokens":2048,"codingMaxTokens":16384/);
   assert.match(logs, /"phase":"started".*"context":"fresh","agent":"implementer-coding-session"/);
+  assert.match(logs, /"phase":"started"[^\n]*"handoffBytes":\d+,"parentHandoffBytes":69/);
+  assert.doesNotMatch(logs, /Current evidence established REQUIRED_CONSTANT/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_policy","side":"fork".*"policy":"normal_low_overhead".*"enableThinking":false,"maxTokens":16384/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"accept_mutation_scope"/);
@@ -2024,6 +2055,16 @@ test('2K parent -> begin_coding_session -> isolated 16K coding child writes code
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"shape":"creation"[^\n]*"changed":true/g)?.length, 2, 'initial large creation stays direct and is classified separately from repair rewrites');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_BUDGET|mutation-writer|PI_MUTATION_TURN/);
+});
+
+test('parent handoff truncation is code-point safe, bounded and re-trimmed', () => {
+  const unicodeLogs = runtimeScenario('handoff-truncation');
+  assert.match(unicodeLogs, /"phase":"started"[^\n]*"parentHandoffBytes":1203/);
+  assert.doesNotMatch(unicodeLogs, /🚀tail|Current evidence established REQUIRED_CONSTANT/);
+
+  const trailingSpaceLogs = runtimeScenario('handoff-trailing-space-truncation');
+  assert.match(trailingSpaceLogs, /"phase":"started"[^\n]*"parentHandoffBytes":1199/);
+  assert.doesNotMatch(trailingSpaceLogs, / tail|Current evidence established REQUIRED_CONSTANT/);
 });
 
 test('a valid blocked child terminal result propagates as blocked, never implementation success', () => {
@@ -2311,6 +2352,7 @@ test('coding session rejects an unavailable required capability before launching
 test('#440 an equivalent capability-incompatible fork is rejected without model-declared required_capability', () => {
   const logs = runtimeScenario('incapable-repeat');
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"bash"/);
+  assert.match(logs, /"phase":"started"[^\n]*"parentHandoffBytes":0/);
   assert.match(logs, /"phase":"ended_without_submit".*"unreachableCapabilities":\["bash"\]/);
   assert.match(logs, /"phase":"rejected".*"reason":"repeated_incapable_session".*"unreachable":\["bash"\]/);
   assert.match(logs, /INCAPABLE_FORK_REPEAT_REJECTED_OK/);
