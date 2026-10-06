@@ -646,7 +646,7 @@ function runtimeScenario(mode) {
         // The coding "model" gets only the compact task handoff; parent transcript is absent.
         assert.equal(inherited.length, 0, 'fresh coding child has no inherited parent entries');
         assert.doesNotMatch(request.task, /PARENT_TRANSCRIPT_ONLY_MARKER/);
-        const constant = /REQUIRED_CONSTANT = "([^"]+)"/.exec(request.task)?.[1];
+        const constant = request.task.includes('REQUIRED_CONSTANT = \\"abc123\\"') ? 'abc123' : undefined;
         if (mode === 'tampered') {
           assert.ok((await childCall('subagent', {})).block, 'worktree override cannot add subagent');
           assert.ok((await childCall('begin_coding_session', {})).block, 'no nested coding session');
