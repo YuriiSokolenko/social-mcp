@@ -2657,7 +2657,17 @@ export default function (pi) {
               { unreachable: equivalentIncapable.unreachable, contractTools: equivalentIncapable.contractTools },
             );
           }
-          const codingTask = codingSessionTask(ctx, params, agentReady.tools);
+          let codingTask;
+          try {
+            codingTask = codingSessionTask(ctx, params, agentReady.tools);
+          } catch (error) {
+            const handoffError = String(error?.message ?? error);
+            refuse(
+              'handoff_unavailable',
+              `Coding-session handoff is unavailable (${handoffError}). Implement with direct edits.`,
+              { error: handoffError },
+            );
+          }
           sessionsStarted += 1;
           // Durable in the parent process: if the coding child returns without terminal submission,
           // parent-side run_check/mutations/submit_result remain under the same behavioral
