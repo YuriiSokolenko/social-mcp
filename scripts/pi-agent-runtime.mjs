@@ -107,6 +107,9 @@ const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 const CODING_REPAIR_READ_LIMIT = 2;
 const CODING_REPAIR_IMPORT_PATH_LIMIT = 8;
+const CODING_REPAIR_WHOLE_REWRITE_LIMIT = 1;
+const CODING_REPAIR_BROAD_EDIT_LINE_LIMIT = 80;
+const CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT = 12000;
 // Five non-improving failures leaves room for bounded diagnostic phase changes
 // (for example collection/import -> assertions) without allowing an endless repair loop.
 const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
@@ -133,7 +136,7 @@ const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing y
 
 The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
 
-Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime; never invent helper names such as read_for_input. In action-required state, normal read may be hidden: if one concrete missing fact prevents the next safe action, call need_more_evidence with that missing fact and reason, then use the single evidence action the runtime exposes. After a failing run_check, the runtime may expose bounded repair read access only for the failing/changed paths; use it when current fixture/source state is needed before the next repair, and do not broaden that into repository discovery. Tests must prefer public behavior and public APIs; do not mutate private/internal implementation state merely to manufacture fixture state unless the task explicitly requires internal-state testing. Otherwise mutate, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime; never invent helper names such as read_for_input. In action-required state, normal read may be hidden: if one concrete missing fact prevents the next safe action, call need_more_evidence with that missing fact and reason, then use the single evidence action the runtime exposes. After a failing run_check, the runtime enters repair mode and may expose bounded read access only for the failing/changed paths; use it when current fixture/source state is needed before the next repair, and do not broaden that into repository discovery. In repair mode prefer structural_edit, safe_edit, or a small edit that addresses the current diagnostics. A full write of an already-existing file is exceptional and runtime-guarded; do not regenerate the file just because the failure signature changed or shrank. Tests must prefer public behavior and public APIs; do not mutate private/internal implementation state merely to manufacture fixture state unless the task explicitly requires internal-state testing. Otherwise mutate, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
 
 export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
   return {
@@ -164,12 +167,16 @@ export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS
 // "off" level sends no reasoning field for this provider's compat. The coding session therefore
 // disables thinking on every provider request itself; chat_template_kwargs.enable_thinking=false
 // is honored by the Laguna chat template (live probe: 0 reasoning chars, immediate tool call).
-export function disableThinkingInPayload(payload) {
+export function applyCodingThinkingPolicy(payload, { enableThinking = false } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.messages)) return payload;
   return {
     ...payload,
-    chat_template_kwargs: { ...(payload.chat_template_kwargs ?? {}), enable_thinking: false },
+    chat_template_kwargs: { ...(payload.chat_template_kwargs ?? {}), enable_thinking: enableThinking === true },
   };
+}
+
+export function disableThinkingInPayload(payload) {
+  return applyCodingThinkingPolicy(payload, { enableThinking: false });
 }
 
 // Both OpenAI-compatible Chat Completions and Responses requests accept tool_choice="required".
