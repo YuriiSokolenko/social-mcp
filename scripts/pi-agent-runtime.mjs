@@ -28,6 +28,7 @@ import {
   groupKey,
   latestUnresolvedRunCheckFailure,
   normalizeScope,
+  validationScopeCovers,
   readValidationLedger,
   resolveValidationRunId,
   runCheckRequestForRecord,
@@ -105,6 +106,7 @@ const RECEIPT_INVALIDATING_TOOLS = new Set([...CONTENT_MUTATION_TOOLS, 'bash']);
 const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 const CODING_REPAIR_READ_LIMIT = 2;
+const CODING_REPAIR_IMPORT_PATH_LIMIT = 8;
 // Five non-improving failures leaves room for bounded diagnostic phase changes
 // (for example collection/import -> assertions) without allowing an endless repair loop.
 const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
@@ -411,17 +413,90 @@ export default function (pi) {
     return relative.split(path.sep).join('/');
   }
 
+  function trustedCodingRepairReadPath(value, cwd) {
+    const normalized = normalizedCodingRepairPath(value, cwd);
+    if (!normalized) return null;
+    try {
+      const realRoot = fs.realpathSync(cwd);
+      const realCandidate = fs.realpathSync(path.resolve(cwd, normalized));
+      const relative = path.relative(realRoot, realCandidate);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+      return normalized;
+    } catch {
+      return null;
+    }
+  }
+
   function normalizeCodingRepairDiagnosticText(value) {
     return String(value ?? '')
       .trim()
       // Diagnostic text often embeds ephemeral paths, addresses and measured values.
-      // Keep the semantic wording while removing those volatile tokens from convergence identity.
+      // Keep semantic numbers such as "expected 42" while removing volatile measurements.
       .replace(/\b0x[0-9a-f]+\b/gi, '<hex>')
       .replace(/\b[0-9a-f]{12,}\b/gi, '<hex>')
       .replace(/[A-Za-z]:\\(?:[^\\\s"'():]+\\)+[^\\\s"'():]*/g, '<path>')
-      .replace(/\/(?:[^/\s"'():]+\/)+[^/\s"'():]*/g, '<path>')
-      .replace(/(^|[^\w])[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?:ns|us|µs|ms|s|bytes?|kb|mb|gb)?(?=$|[^\w])/gi, '$1<number>')
+      .replace(/(^|[\s"'(])\/(?:[^/\s"'():]+\/)+[^/\s"'():]*/g, '$1<path>')
+      .replace(/(^|[^\w])[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?:ns|us|µs|ms|s|bytes?|kb|mb|gb)(?=$|[^\w])/gi, '$1<number>')
       .replace(/\s+/g, ' ');
+  }
+
+  function codingRepairImportedPaths(seedPaths, cwd) {
+    const imported = new Set();
+    const seeds = new Set(seedPaths);
+    const maybeAdd = candidate => {
+      if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) return;
+      const normalized = trustedCodingRepairReadPath(candidate, cwd);
+      if (!normalized || seeds.has(normalized) || imported.has(normalized)) return;
+      try {
+        if (!fs.statSync(path.resolve(cwd, normalized)).isFile()) return;
+      } catch {
+        return;
+      }
+      imported.add(normalized);
+    };
+
+    for (const seed of seedPaths.slice(0, 40)) {
+      if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+      const safeSeed = trustedCodingRepairReadPath(seed, cwd);
+      if (!safeSeed) continue;
+      const absolute = path.resolve(cwd, safeSeed);
+      let source;
+      try {
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile() || stat.size > 256 * 1024) continue;
+        source = fs.readFileSync(absolute, 'utf8');
+      } catch {
+        continue;
+      }
+
+      if (/\.py$/i.test(safeSeed)) {
+        const importPattern = /^\s*(?:from\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\b|import\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*))/gm;
+        for (const match of source.matchAll(importPattern)) {
+          const moduleName = match[1] ?? match[2];
+          if (!moduleName) continue;
+          const modulePath = moduleName.split('.').join('/');
+          for (const base of ['', path.dirname(safeSeed)]) {
+            maybeAdd(path.join(base, `${modulePath}.py`));
+            maybeAdd(path.join(base, modulePath, '__init__.py'));
+            if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+          }
+          if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+        }
+      } else if (/\.(?:[cm]?js|jsx|ts|tsx)$/i.test(safeSeed)) {
+        const importPattern = /(?:from\s+|require\(\s*|import\(\s*)['"]([^'"]+)['"]/g;
+        for (const match of source.matchAll(importPattern)) {
+          const specifier = match[1];
+          if (!specifier?.startsWith('.')) continue;
+          const base = path.join(path.dirname(safeSeed), specifier);
+          for (const candidate of [base, `${base}.js`, `${base}.mjs`, `${base}.cjs`, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.js'), path.join(base, 'index.ts')]) {
+            maybeAdd(candidate);
+            if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+          }
+          if (imported.size >= CODING_REPAIR_IMPORT_PATH_LIMIT) break;
+        }
+      }
+    }
+    return [...imported];
   }
 
   function codingRepairFailureSet(result, cwd) {
@@ -501,8 +576,13 @@ export default function (pi) {
       })}`);
     }
 
+    for (const imported of codingRepairImportedPaths([...paths], cwd)) paths.add(imported);
+    const trustedPaths = [...paths]
+      .map(item => trustedCodingRepairReadPath(item, cwd))
+      .filter(Boolean);
+
     return {
-      paths: [...paths].sort().slice(0, 40),
+      paths: [...new Set(trustedPaths)].sort().slice(0, 40),
       diagnosticLines,
     };
   }
@@ -514,6 +594,7 @@ export default function (pi) {
   function codingRepairReadAvailable() {
     return Boolean(
       codingRepairWindowActive() &&
+      codingValidationRepair.paths.length > 0 &&
       codingValidationRepair.readsRemaining > 0 &&
       controller.productiveProgressState() === 'action_required'
     );
@@ -521,7 +602,7 @@ export default function (pi) {
 
   function codingRepairReadPolicy(input, cwd) {
     if (!codingRepairReadAvailable()) return null;
-    const requested = normalizedCodingRepairPath(input?.path, cwd);
+    const requested = trustedCodingRepairReadPath(input?.path, cwd);
     if (!requested || !codingValidationRepair.paths.includes(requested)) {
       return {
         block: true,
@@ -541,22 +622,42 @@ export default function (pi) {
     const identity = codingRepairIdentity(input, result, ctx.cwd);
 
     if (status === 'pass') {
-      const previous = codingValidationRepairHistory.get(identity.key) ?? null;
-      if (previous) codingValidationRepairHistory.delete(identity.key);
-      if (codingValidationRepair?.key === identity.key) {
+      const cleared = [];
+      let previousNonImprovingFailures = null;
+      for (const [key, history] of codingValidationRepairHistory.entries()) {
+        if (
+          history.kind === identity.kind &&
+          validationScopeCovers(identity.kind, identity.scope, history.scope)
+        ) {
+          if (key === codingValidationRepair?.key) {
+            previousNonImprovingFailures = history.nonImprovingFailures ?? null;
+          }
+          cleared.push(key);
+          codingValidationRepairHistory.delete(key);
+        }
+      }
+      const activeCovered = Boolean(
+        codingValidationRepair &&
+        codingValidationRepair.kind === identity.kind &&
+        validationScopeCovers(identity.kind, identity.scope, codingValidationRepair.scope)
+      );
+      if (activeCovered) {
         console.info(`PI_CODING_REPAIR_STATE ${JSON.stringify({
           stage,
           status: 'cleared',
-          reason: 'validation_pass_same_scope',
-          key: identity.key,
-          previousNonImprovingFailures: previous?.nonImprovingFailures ?? null,
+          reason: identity.key === codingValidationRepair.key
+            ? 'validation_pass_same_scope'
+            : 'validation_pass_covering_scope',
+          key: codingValidationRepair.key,
+          coveringKey: identity.key,
+          clearedHistoryKeys: cleared,
+          previousNonImprovingFailures,
         })}`);
         codingValidationRepair = null;
       }
       return false;
     }
-    // A pass/timeout/invalid/infra result for another kind+scope must not erase an unresolved
-    // pytest repair streak. Only a pass for the exact same kind+scope resolves that history.
+    // Timeout/invalid/infra or unrelated passes do not erase unresolved repair history.
     if (status !== 'fail') return false;
 
     const previous = codingValidationRepairHistory.get(identity.key) ?? null;
@@ -573,14 +674,19 @@ export default function (pi) {
     const seenSignatures = new Set(previous?.seenSignatures ?? []);
     seenSignatures.add(identity.signature);
     codingValidationRepairHistory.set(identity.key, {
+      kind: identity.kind,
+      scope: identity.scope,
       bestFailureSet,
       nonImprovingFailures,
       seenSignatures: [...seenSignatures].slice(-20),
     });
 
     const scope = codingRepairScope(input, result, ctx.cwd);
+    const informedByDiagnostics = Array.isArray(result.diagnostics) && result.diagnostics.length > 0;
     codingValidationRepair = {
       status: 'fail',
+      kind: identity.kind,
+      scope: identity.scope,
       key: identity.key,
       signature: identity.signature,
       nonImprovingFailures,
@@ -588,7 +694,9 @@ export default function (pi) {
       bestFailureSet,
       readsRemaining: CODING_REPAIR_READ_LIMIT,
       readObserved: false,
-      informedByDiagnostics: Array.isArray(result.diagnostics) && result.diagnostics.length > 0,
+      informedByDiagnostics,
+      readRequiredBeforeMutation: !informedByDiagnostics && scope.paths.length > 0,
+      evidenceGateReleased: !informedByDiagnostics && scope.paths.length === 0,
       paths: scope.paths,
       diagnosticLines: scope.diagnosticLines,
     };
@@ -604,6 +712,8 @@ export default function (pi) {
       paths: codingValidationRepair.paths,
       diagnosticLines: codingValidationRepair.diagnosticLines,
       informedByDiagnostics: codingValidationRepair.informedByDiagnostics,
+      readRequiredBeforeMutation: codingValidationRepair.readRequiredBeforeMutation,
+      evidenceGateReleased: codingValidationRepair.evidenceGateReleased,
     })}`);
     // The next response must take a concrete repair step. Because bounded read is now part of
     // the repair surface, provider-level required tool choice cannot force a blind mutation.
@@ -629,8 +739,11 @@ export default function (pi) {
     const neighborhoods = Object.entries(codingValidationRepair.diagnosticLines)
       .map(([file, lines]) => `${file}:${lines.join(',')}`)
       .join('; ');
+    const evidenceGuidance = codingValidationRepair.paths.length > 0
+      ? `You may read only these repair-relevant failing/changed/import paths before the next repair: ${codingValidationRepair.paths.join(', ')}.`
+      : 'No trusted bounded repair path is available, so the read-before-mutation evidence gate is released rather than dead-ending the repair state.';
     await pi.sendUserMessage(
-      `RUNTIME REPAIR EVIDENCE: validation failed. You may read only these repair-relevant paths before the next repair: ${codingValidationRepair.paths.join(', ') || '(none)'}. ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. A semantic repair mutation must be informed by the diagnostics above or by one of these bounded reads. Repair convergence is tracked per exact kind+scope; only a pass of that same scope clears its history, and only a strict reduction below the best failure set resets the non-improving counter.`,
+      `RUNTIME REPAIR EVIDENCE: validation failed. ${evidenceGuidance} ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. When a bounded read route exists, a semantic repair mutation without structured diagnostics must use it first. Repair convergence is tracked per kind+scope; a same-kind passing scope clears a failed scope only when coverage is provable, and only a strict reduction below the best failure set resets the non-improving counter.`,
       { deliverAs: 'steer' },
     );
     return false;
@@ -2665,7 +2778,7 @@ export default function (pi) {
     } else if (
       codingRepairWindowActive() &&
       CONTENT_MUTATION_TOOLS.has(event.toolName) &&
-      !codingValidationRepair.informedByDiagnostics &&
+      codingValidationRepair.readRequiredBeforeMutation &&
       !codingValidationRepair.readObserved
     ) {
       recoveryBlocked = {
@@ -2691,9 +2804,9 @@ export default function (pi) {
       };
     }
     const repairReadAccepted = repairReadPolicy?.allowed === true;
-    const blocked = recoveryBlocked ?? (repairReadAccepted
-      ? undefined
-      : controller.checkToolCall(canonicalToolName, canonicalInput));
+    const blocked = recoveryBlocked ?? controller.checkToolCall(canonicalToolName, canonicalInput, {
+      productiveEvidenceIndependent: repairReadAccepted,
+    });
     if (blocked?.alreadySatisfied) {
       blocked.reason = `ALREADY_SATISFIED: ${event.toolName} is single-shot and already completed; it did not execute. ${activeToolGuidance(activeToolNames)}`;
     }
@@ -3194,8 +3307,11 @@ export default function (pi) {
       }
     }
 
-    const codingValidationAbort = canonicalToolName === 'run_check' && !event.isError
-      ? await observeCodingValidationRepair(acceptedToolInput, event.result?.details ?? null, ctx)
+    const codingValidationDetails = canonicalToolName === 'run_check'
+      ? event.result?.details ?? null
+      : null;
+    const codingValidationAbort = codingValidationDetails && (!event.isError || codingValidationDetails.status === 'fail')
+      ? await observeCodingValidationRepair(acceptedToolInput, codingValidationDetails, ctx)
       : false;
     if (codingValidationAbort) return;
 

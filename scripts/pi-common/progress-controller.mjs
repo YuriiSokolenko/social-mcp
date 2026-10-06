@@ -565,7 +565,7 @@ export class ProgressController {
     this.turnUsedTool = false;
   }
 
-  checkToolCall(toolName, input) {
+  checkToolCall(toolName, input, { productiveEvidenceIndependent = false } = {}) {
     const recoveryVerificationCall =
       Boolean(this.productiveVerificationTool) &&
       toolName === this.productiveVerificationTool &&
@@ -715,7 +715,17 @@ export class ProgressController {
       };
     }
 
-    if (this.productiveProgress) {
+    if (productiveEvidenceIndependent && toolName !== 'read') {
+      return {
+        block: true,
+        reason: `BLOCKED: productiveEvidenceIndependent is reserved for bounded repair reads; ${toolName} did not execute.`,
+      };
+    }
+
+    // Repair reads may be admitted by the runtime without reopening or consuming the normal
+    // productive evidence window. Every generic controller invariant above and the repeat/turn
+    // guards below still applies; only productive-state evidence accounting is skipped.
+    if (this.productiveProgress && !productiveEvidenceIndependent) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const activatesOnRead =
         this.productiveState === 'inactive' &&

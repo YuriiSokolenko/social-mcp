@@ -10,6 +10,7 @@ import {
   resolveRunArtifactId,
   resolveValidationRunId,
   normalizeScope,
+  validationScopeCovers,
   reconcile,
   latestUnresolvedRunCheckFailure,
   runCheckRequestForRecord,
@@ -133,6 +134,59 @@ test('normalizeScope treats an absolute in-worktree path and the equivalent rela
   assert.deepEqual(absolute, relative);
 });
 
+test('#503 validationScopeCovers proves only conservative same-kind scope coverage', () => {
+  assert.equal(
+    validationScopeCovers('pytest', { whole_repo: true }, { targets: ['tests/test_a.py::test_case'] }),
+    true,
+    'whole-repo covers a narrower pytest target',
+  );
+  assert.equal(
+    validationScopeCovers('pytest', { targets: ['tests/test_a.py'] }, { whole_repo: true }),
+    false,
+    'a focused target never covers whole-repo',
+  );
+  assert.equal(
+    validationScopeCovers('pytest', { targets: ['tests/test_a.py'] }, { targets: ['tests/test_a.py::test_case'] }),
+    true,
+    'a pytest file target covers its node-id target',
+  );
+  assert.equal(
+    validationScopeCovers('pytest', { targets: ['tests'] }, { targets: ['tests/test_a.py'] }),
+    false,
+    'directory-like pytest targets are not inferred to cover files',
+  );
+
+  for (const kind of ['ruff', 'python_compile']) {
+    assert.equal(
+      validationScopeCovers(
+        kind,
+        { paths: ['src/a.py', 'src/b.py'] },
+        { paths: ['src/a.py'] },
+      ),
+      true,
+      `${kind} path supersets cover exact path subsets`,
+    );
+    assert.equal(
+      validationScopeCovers(
+        kind,
+        { paths: ['src'] },
+        { paths: ['src/a.py'] },
+      ),
+      false,
+      `${kind} directories are not inferred to cover files`,
+    );
+    assert.equal(
+      validationScopeCovers(
+        kind,
+        { paths: ['src/a.py'] },
+        { whole_repo: true },
+      ),
+      false,
+      `${kind} focused paths do not cover whole-repo`,
+    );
+  }
+});
+
 test('a passing focused check plus a completed final-checks pipeline yields VERIFIED', () => {
   const records = [focused({ status: 'pass' }), finalCheck({ status: 'pass' }), finalComplete()];
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.VERIFIED);
@@ -226,7 +280,7 @@ test('an unrelated broad pytest pass does not satisfy a failed/infra-error focus
   assert.equal(computeVerificationState(records), VERIFICATION_STATES.BLOCKED_INFRA);
 });
 
-test('#342 recovery keeps the exact failed pytest scope pending across a broader pass until that scope passes', () => {
+test('#503 a provably broader same-kind pytest pass resolves a narrower failed scope', () => {
   const failed = focused({
     kind: 'pytest',
     scope: { targets: ['tests/test_feature.py::test_exact_case'] },
@@ -239,21 +293,24 @@ test('#342 recovery keeps the exact failed pytest scope pending across a broader
   });
   const records = [failed, broaderPass];
 
-  assert.equal(computeVerificationState(records), VERIFICATION_STATES.FAILED);
-  assert.equal(latestUnresolvedRunCheckFailure(records), failed);
+  assert.equal(computeVerificationState(records), VERIFICATION_STATES.PENDING);
+  assert.equal(latestUnresolvedRunCheckFailure(records), null);
   assert.deepEqual(runCheckRequestForRecord(failed), {
     kind: 'pytest',
     targets: ['tests/test_feature.py::test_exact_case'],
   });
+  assert.equal(reconcile(records).some(record => record.status === 'fail'), false);
 
-  const exactPass = focused({
+  const unrelatedPass = focused({
     kind: 'pytest',
-    scope: { targets: ['tests/test_feature.py::test_exact_case'] },
+    scope: { targets: ['tests/test_other.py'] },
     status: 'pass',
   });
-  records.push(exactPass);
-  assert.equal(latestUnresolvedRunCheckFailure(records), null);
-  assert.equal(reconcile(records).find(record => record.scope.targets?.includes('tests/test_feature.py::test_exact_case'))?.status, 'pass');
+  assert.equal(
+    latestUnresolvedRunCheckFailure([failed, unrelatedPass]),
+    failed,
+    'an unrelated same-kind pass must not resolve the failed scope',
+  );
 });
 
 test('exact-scope timeout, invalid, and infra_error stop forced retry but remain fail-closed verification', () => {
@@ -318,8 +375,8 @@ test('multiple failed scopes remain independently recoverable within one workflo
   records.push(secondPass);
   assert.equal(
     latestUnresolvedRunCheckFailure(records, { runId: 'run-1' }),
-    firstFailure,
-    'resolving one scope exposes the remaining exact failure instead of dropping it',
+    null,
+    'the broader feature-file pass already resolved the first narrow failure',
   );
 });
 

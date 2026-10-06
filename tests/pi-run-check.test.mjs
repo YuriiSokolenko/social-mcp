@@ -177,6 +177,19 @@ test('paths outside the worktree, traversal, symlink escapes and option-like pat
   assert.equal(pytest.status, 'invalid');
 });
 
+test('#503 pytest focused-check scope has no hidden -k or marker filters', async () => {
+  const dir = worktree({ 'tests/test_a.py': 'def test_a():\n    assert True\n' });
+  for (const request of [
+    { kind: 'pytest', targets: ['tests/test_a.py'], k: 'test_a' },
+    { kind: 'pytest', targets: ['tests/test_a.py'], markers: 'slow' },
+    { kind: 'pytest', targets: ['tests/test_a.py'], marker: 'slow' },
+  ]) {
+    const result = await runCheck(dir, request);
+    assert.equal(result.status, 'invalid', JSON.stringify(request));
+    assert.match(result.summary, /unsupported field/);
+  }
+});
+
 test('no arbitrary command is expressible through the public contract', async () => {
   const dir = worktree({ 'ok.py': '' });
   assert.deepEqual(CHECK_KINDS, ['python_compile', 'ruff', 'pytest', 'profile']);

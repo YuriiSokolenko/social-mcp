@@ -194,6 +194,8 @@ function runtimeScenario(mode) {
     execFileSync('git', ['init', '-q', work]);
     execFileSync('git', ['-C', work, 'config', 'user.name', 'Coding Session Test']);
     execFileSync('git', ['-C', work, 'config', 'user.email', 'coding@example.invalid']);
+    fs.writeFileSync(path.join(work, 'unchanged_helper.py'), 'HELPER = 1\n');
+    execFileSync('git', ['-C', work, 'add', 'unchanged_helper.py']);
     execFileSync('git', ['-C', work, 'commit', '--allow-empty', '-qm', 'base']);
     execFileSync('git', ['-C', work, 'remote', 'add', 'origin', remote]);
     execFileSync('git', ['-C', work, 'push', '-q', 'origin', 'HEAD:refs/heads/dev']);
@@ -361,23 +363,36 @@ function runtimeScenario(mode) {
         // Executors stubbed; the runtime's gates around them are real.
         const repairFailure = variant => {
           const volatile = variant === 'volatile-a' || variant === 'volatile-b';
+          const semanticNumber = variant === 'semantic-42' || variant === 'semantic-43';
           const volatileMessage = variant === 'volatile-b'
             ? 'test_constant: mismatch at /tmp/pytest-987/result.txt after 84.75ms address 0xdeadbeef'
             : 'test_constant: mismatch at /tmp/pytest-123/result.txt after 12.50ms address 0xabc123';
-          return {
-            status: 'fail',
-            kind: 'pytest',
-            exit_code: 1,
-            duration_ms: 7,
-            summary: variant === 'shrunk' || volatile ? '1 failed' : '2 failed',
-            diagnostics: volatile
-              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+          let diagnostics = volatile
+            ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: volatileMessage }]
+            : semanticNumber
+              ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected ' + (variant === 'semantic-43' ? '43' : '42') }]
               : variant === 'shrunk'
                 ? [{ file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' }]
                 : [
                     { file: 'test_generated.py', line: 4, column: null, code: 'AssertionError', message: 'test_constant: expected required constant' },
                     { file: 'test_generated.py', line: 8, column: null, code: 'AssertionError', message: 'test_secondary: expected public restart behavior' },
-                  ],
+                  ];
+          if (mode === 'repair-evidence' && variant === 'initial') {
+            diagnostics = [...diagnostics, {
+              file: 'link-source.py',
+              line: 1,
+              column: null,
+              code: 'AssertionError',
+              message: 'symlinked source diagnostic',
+            }];
+          }
+          return {
+            status: 'fail',
+            kind: 'pytest',
+            exit_code: 1,
+            duration_ms: 7,
+            summary: variant === 'shrunk' || volatile || semanticNumber ? '1 failed' : '2 failed',
+            diagnostics,
             stdout_tail: '',
             stderr_tail: '',
             truncated: false,
@@ -402,7 +417,11 @@ function runtimeScenario(mode) {
             seq: records.length,
             timestamp: new Date().toISOString(),
             kind: result.kind,
-            scope: result.kind === 'pytest' ? { targets: params.targets } : { paths: params.paths },
+            scope: result.kind === 'pytest'
+              ? { targets: params.targets }
+              : result.kind === 'profile'
+                ? { profile: params.profile }
+                : { paths: params.paths },
             status: result.status,
             exit_code: result.exit_code,
             source: 'run_check',
@@ -416,8 +435,28 @@ function runtimeScenario(mode) {
           }) + '\\n');
         };
         childTools.get('run_check').execute = async (_toolCallId, params) => {
-          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message'].includes(mode) && params?.kind === 'pytest') {
-            const result = repairFailure(mode === 'repair-volatile-message' ? 'volatile-a' : 'initial');
+          if (mode === 'repair-empty-scope' && params?.kind === 'profile') {
+            const result = {
+              status: 'fail',
+              kind: 'profile',
+              exit_code: 1,
+              duration_ms: 3,
+              summary: 'profile failed without structured diagnostics',
+              diagnostics: [],
+              stdout_tail: '',
+              stderr_tail: '',
+              truncated: false,
+            };
+            appendRepairRecord(params, result);
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+          }
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details'].includes(mode) && params?.kind === 'pytest') {
+            const variant = mode === 'repair-volatile-message'
+              ? 'volatile-a'
+              : mode === 'repair-semantic-number'
+                ? 'semantic-42'
+                : 'initial';
+            const result = repairFailure(variant);
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
@@ -492,6 +531,14 @@ function runtimeScenario(mode) {
             if (childTools.has(name)) result = await childTools.get(name).execute(event.toolCallId, input, null, null, childCtx);
             else { if (name === 'write') fs.writeFileSync(cwd + '/' + input.path, input.content); result = { content: [{ type: 'text', text: 'ok' }] }; }
           } catch (error) { isError = true; result = { content: [{ type: 'text', text: String(error.message) }] }; }
+          if (
+            mode === 'repair-iserror-details' &&
+            name === 'run_check' &&
+            input?.kind === 'pytest' &&
+            result?.details?.status === 'fail'
+          ) {
+            isError = true;
+          }
           await childHandlers.get('tool_execution_end')({ ...event, isError, result }, childCtx);
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 3000 } } }, childCtx);
           return result;
@@ -535,6 +582,21 @@ function runtimeScenario(mode) {
           } }, childCtx);
           await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
         };
+        const settleSyntheticBroaderScopePass = async () => {
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const event = {
+            toolName: 'run_check',
+            toolCallId: 'broader-scope-pass-' + turn,
+            input: { kind: 'pytest', targets: ['test_generated.py', 'test_other.py'] },
+          };
+          const result = repairPass();
+          appendRepairRecord(event.input, result);
+          await childHandlers.get('tool_execution_end')({ ...event, isError: false, result: {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            details: result,
+          } }, childCtx);
+          await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, childCtx);
+        };
         if (mode === 'blocked') {
           await childCall('submit_result', { blocked_reason: 'A required behavior conflicts with a stated constraint.' });
           respond(request, { status: 'completed', result: { kind: 'text', value: 'blocked' }, usage: { output: 100 } });
@@ -568,8 +630,26 @@ function runtimeScenario(mode) {
           assert.equal(providerPatch({ payload: actionPayload }, childCtx).tool_choice, undefined, 'child tool call clears forcing');
         }
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
-        await childCall('write', { path: 'test_generated.py', content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n' });
-        await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+        const testSource = mode === 'repair-evidence'
+          ? 'from generated import REQUIRED_CONSTANT\\nfrom unchanged_helper import HELPER\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n'
+          : 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n';
+        await childCall('write', { path: 'test_generated.py', content: testSource });
+        if (mode === 'repair-evidence') {
+          const outside = cwd + '/../repair-outside-' + process.pid + '.py';
+          fs.writeFileSync(outside, 'OUTSIDE = true\\n');
+          fs.symlinkSync(outside, cwd + '/link-source.py');
+        }
+        if (mode === 'repair-empty-scope') {
+          const hiddenGit = cwd + '/.git-hidden-repair-empty';
+          fs.renameSync(cwd + '/.git', hiddenGit);
+          try {
+            await childCall('run_check', { kind: 'profile', profile: 'repair-empty' });
+          } finally {
+            fs.renameSync(hiddenGit, cwd + '/.git');
+          }
+        } else {
+          await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+        }
         if (mode === 'repair-evidence') {
           const repairPayload = {
             model: 'm',
@@ -586,8 +666,17 @@ function runtimeScenario(mode) {
           const unrelated = await childCall('read', { path: 'README.md' });
           assert.equal(unrelated.block, true);
           assert.match(unrelated.reason, /repair read is limited to the authoritative failing\\/changed paths/);
+
+          const symlinkEscape = await childCall('read', { path: 'link-source.py' });
+          assert.equal(symlinkEscape.block, true, 'diagnostic symlink escaping the worktree is never authorized');
+          assert.ok(!symlinkEscape.reason.includes('link-source.py'), 'symlink escape is removed from the trusted repair path set');
+
           const boundedRead = await childCall('read', { path: 'test_generated.py' });
           assert.equal(boundedRead.block, undefined, 'failing test file can be read directly');
+          const importedRead = await childCall('read', { path: 'unchanged_helper.py' });
+          assert.equal(importedRead.block, undefined, 'one-hop imported unchanged source is admitted as bounded repair evidence');
+          const exhaustedRead = await childCall('read', { path: 'generated.py' });
+          assert.equal(exhaustedRead.block, true, 'repair read allowance remains bounded after readsRemaining is exhausted');
 
           await childCall('write', {
             path: 'test_generated.py',
@@ -638,23 +727,61 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'simulated stop after volatile identity proof', usage: { output: 3000 } });
         }
 
+        if (mode === 'repair-semantic-number') {
+          await childCall('write', {
+            path: 'test_generated.py',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# semantic number retry\\n',
+          });
+          assert.ok(childActive.includes('retry_last_failed_check'));
+          await settleRepairRetry('semantic-43');
+          assert.equal(childAborts, 0);
+          console.log('CODING_REPAIR_SEMANTIC_NUMBER_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after semantic-number identity proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-iserror-details') {
+          assert.ok(childActive.includes('read'), 'structured fail details open repair evidence even when transport marks the tool errored');
+          const readAfterErroredFail = await childCall('read', { path: 'test_generated.py' });
+          assert.equal(readAfterErroredFail.block, undefined);
+          console.log('CODING_REPAIR_ISERROR_DETAILS_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after isError repair proof', usage: { output: 3000 } });
+        }
+
+        if (mode === 'repair-empty-scope') {
+          const repairPayload = {
+            model: 'm',
+            messages: [],
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const repairRequest = providerPatch({ payload: repairPayload }, childCtx);
+          const repairTools = repairRequest.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.ok(!repairTools.includes('read'), 'an empty trusted repair scope does not expose a read that can only dead-end');
+          const repairWrite = await childCall('write', {
+            path: 'test_generated.py',
+            content: testSource + '# repair without bounded evidence path\\n',
+          });
+          assert.equal(repairWrite.block, undefined, 'empty repair evidence releases the read-before-mutation gate');
+          console.log('CODING_REPAIR_EMPTY_SCOPE_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after empty-scope recovery proof', usage: { output: 3000 } });
+        }
+
         if (mode === 'repair-pass-reset') {
           await childCall('write', {
             path: 'test_generated.py',
             content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# pass reset\\n',
           });
           assert.ok(childActive.includes('retry_last_failed_check'));
-          await settleRepairRetry('pass');
+          await settleSyntheticBroaderScopePass();
           assert.equal(childAborts, 0);
 
           await childCall('write', {
             path: 'test_generated.py',
-            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# fail again after same-scope pass\\n',
+            content: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# fail again after covering pass\\n',
           });
           await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
-          assert.equal(childAborts, 0, 'same-scope pass clears prior convergence history');
+          assert.equal(childAborts, 0, 'provably covering same-kind pass clears prior convergence history');
           console.log('CODING_REPAIR_PASS_RESET_OK');
-          return respond(request, { status: 'failed', error: 'simulated stop after same-scope reset proof', usage: { output: 3000 } });
+          return respond(request, { status: 'failed', error: 'simulated stop after covering-scope reset proof', usage: { output: 3000 } });
         }
 
         if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
@@ -1471,6 +1598,8 @@ test('#499 failing pytest exposes bounded repair evidence and strict failure-set
   const logs = runtimeScenario('repair-evidence');
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
   assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
+  assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"unchanged_helper.py".*"readsRemaining":0.*"evidenceBudgetIndependent":true/);
+  assert.doesNotMatch(logs, /PI_CODING_REPAIR_READ .*"path":"link-source.py"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
@@ -1494,13 +1623,32 @@ test('#499 volatile diagnostic values keep one semantic failure identity', () =>
   assert.match(logs, /CODING_REPAIR_VOLATILE_MESSAGE_OK/);
 });
 
-test('#499 only a pass for the same kind+scope clears convergence history', () => {
+test('#503 a provably covering same-kind pass clears narrower coding repair history', () => {
   const logs = runtimeScenario('repair-pass-reset');
-  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"cleared".*"reason":"validation_pass_same_scope"/);
-  const postReset = logs.slice(logs.indexOf('validation_pass_same_scope'));
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"cleared".*"reason":"validation_pass_covering_scope"/);
+  const postReset = logs.slice(logs.indexOf('validation_pass_covering_scope'));
   assert.match(postReset, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
   assert.match(logs, /CODING_REPAIR_PASS_RESET_OK/);
+});
+
+test('#503 semantic diagnostic numbers remain distinct repair identities', () => {
+  const logs = runtimeScenario('repair-semantic-number');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"seenSignatures":2/);
+  assert.match(logs, /CODING_REPAIR_SEMANTIC_NUMBER_OK/);
+});
+
+test('#503 structured run_check failure details are observed even when isError is true', () => {
+  const logs = runtimeScenario('repair-iserror-details');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"fail"/);
+  assert.match(logs, /CODING_REPAIR_ISERROR_DETAILS_OK/);
+});
+
+test('#503 empty trusted repair scope releases the evidence gate instead of dead-ending', () => {
+  const logs = runtimeScenario('repair-empty-scope');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"evidenceGateReleased":true/);
+  assert.doesNotMatch(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
+  assert.match(logs, /CODING_REPAIR_EMPTY_SCOPE_OK/);
 });
 
 test('parent submit inherits accepted scope from a coding-session fork that ended without submit', () => {
