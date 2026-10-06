@@ -1408,6 +1408,21 @@ function runtimeScenario(mode) {
           assert.match(steers.at(-1), /handoff: must not have more than 1200 characters/);
           assert.match(steers.at(-1), /only new concrete facts or implementation decisions/);
 
+          // Real Pi emits a local synthetic error turn for the schema rejection after the
+          // provider response. It is not another provider failure and must not consume the
+          // elevated provider-retry allowance.
+          handlers.get('turn_start')({ turnIndex: turn });
+          await handlers.get('turn_end')({
+            turnIndex: turn++,
+            message: {
+              stopReason: 'error',
+              errorMessage: 'Validation failed for tool "begin_coding_session": handoff too long',
+              usage: { input: 0, output: 0, totalTokens: 0 },
+            },
+          }, ctx);
+          assert.equal(aborts, 0, 'the local validation error turn does not abort the stage');
+          assert.equal(caps.at(-1), 16384, 'the local validation error turn leaves the elevated grant untouched');
+
           handlers.get('turn_start')({ turnIndex: turn });
           const correctionRequest = handlers.get('before_provider_request')({
             payload: {
@@ -2334,7 +2349,9 @@ test('#523 oversized coding-session handoff gets one forced correction without c
   assert.match(logs, /PI_CODING_SESSION_ARGUMENT_CORRECTION .*"correction":1.*"largeMutationBudget":"active"/);
   assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"coding_session_argument_correction".*"preserved":true/);
   assert.match(logs, /PI_CODING_SESSION_ARGUMENT_TOOL_SURFACE .*"tools":\["begin_coding_session"\]/);
+  assert.match(logs, /PI_CODING_SESSION_ARGUMENT_VALIDATION_TURN .*"action":"ignored_for_provider_retry"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"source":"coding_session_argument_correction"/);
+  assert.doesNotMatch(logs, /PI_LARGE_MUTATION_PROVIDER_RETRY /);
   assert.match(logs, /PI_CODING_SESSION_ARGUMENT_CORRECTED/);
   assert.match(logs, /CODING_SESSION_ARGUMENT_CORRECTION_OK/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_ACTION_REQUIRED/);
