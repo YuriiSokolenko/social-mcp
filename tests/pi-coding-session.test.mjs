@@ -650,6 +650,22 @@ function runtimeScenario(mode) {
           : 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n';
         await childCall('write', { path: 'test_generated.py', content: testSource });
         if (mode === 'repair-evidence') {
+          const outside = cwd + '/../repair-outside-' + process.pid + '.py';
+          fs.writeFileSync(outside, 'OUTSIDE = true\\n');
+          fs.symlinkSync(outside, cwd + '/link-source.py');
+        }
+        if (mode === 'repair-empty-scope') {
+          const hiddenGit = cwd + '/.git-hidden-repair-empty';
+          fs.renameSync(cwd + '/.git', hiddenGit);
+          try {
+            await childCall('run_check', { kind: 'profile', profile: 'repair-empty' });
+          } finally {
+            fs.renameSync(hiddenGit, cwd + '/.git');
+          }
+        } else {
+          await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
+        }
+        if (mode === 'repair-evidence') {
           const repairPayload = {
             model: 'm',
             messages: [],
