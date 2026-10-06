@@ -296,7 +296,7 @@ function runtimeScenario(mode) {
         const childTools = new Map(); const childHandlers = new Map();
         let childAborts = 0;
         const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
-          if (!['tool-contract', 'repair-nonconvergent', 'repair-rewrite-limit'].includes(mode)) throw new Error('fork aborted');
+          if (!['tool-contract', 'repair-nonconvergent', 'repair-rewrite-limit', 'repair-reasoning-fallback-abort'].includes(mode)) throw new Error('fork aborted');
           childAborts += 1;
         },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
@@ -463,7 +463,7 @@ function runtimeScenario(mode) {
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
-          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details', 'repair-rewrite-limit'].includes(mode) && params?.kind === 'pytest') {
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details', 'repair-rewrite-limit', 'repair-reasoning-fallback', 'repair-reasoning-fallback-abort'].includes(mode) && params?.kind === 'pytest') {
             const variant = mode === 'repair-volatile-message'
               ? 'volatile-a'
               : mode === 'repair-semantic-number'
@@ -665,6 +665,85 @@ function runtimeScenario(mode) {
         } else {
           await childCall('run_check', { kind: 'pytest', targets: ['test_generated.py'] });
         }
+        if (mode === 'repair-reasoning-fallback' || mode === 'repair-reasoning-fallback-abort') {
+          const repairPayload = {
+            model: 'm',
+            messages: [],
+            max_completion_tokens: 16384,
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          };
+          const evidenceRequest = providerPatch({ payload: repairPayload }, childCtx);
+          assert.deepEqual(
+            evidenceRequest.tools.map(tool => tool.function?.name ?? tool.name),
+            ['read'],
+            'repair still starts with one bounded read',
+          );
+          await childCall('read', { path: 'test_generated.py' });
+
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const reasoningRequest = providerPatch({ payload: repairPayload }, childCtx);
+          const reasoningTools = reasoningRequest.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.equal(reasoningRequest.chat_template_kwargs.enable_thinking, true);
+          assert.equal(reasoningRequest.max_completion_tokens, 4096);
+          assert.equal(reasoningRequest.tool_choice, 'required');
+          assert.ok(reasoningTools.includes('safe_edit'));
+          assert.ok(reasoningTools.includes('structural_edit'));
+          assert.ok(reasoningTools.includes('submit_result'));
+          assert.ok(!reasoningTools.includes('read'));
+          assert.ok(!reasoningTools.includes('accept_mutation_scope'));
+          assert.ok(!reasoningTools.includes('run_check'));
+          await childHandlers.get('turn_end')({
+            turnIndex: turn++,
+            message: { stopReason: 'length', usage: { input: 20, output: 4095, totalTokens: 4115 } },
+          }, childCtx);
+
+          childHandlers.get('turn_start')({ turnIndex: turn });
+          const fallbackRequest = providerPatch({ payload: repairPayload }, childCtx);
+          const fallbackTools = fallbackRequest.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.equal(fallbackRequest.chat_template_kwargs.enable_thinking, false, 'fallback is low-overhead');
+          assert.equal(fallbackRequest.tool_choice, 'required', 'fallback remains provider action-forced');
+          assert.ok(fallbackTools.includes('safe_edit'));
+          assert.ok(fallbackTools.includes('submit_result'));
+          assert.ok(!fallbackTools.includes('read'), 'repair evidence cannot reopen before mutation');
+          assert.ok(!fallbackTools.includes('accept_mutation_scope'));
+          assert.ok(!fallbackTools.includes('run_check'));
+
+          if (mode === 'repair-reasoning-fallback-abort') {
+            await childHandlers.get('turn_end')({
+              turnIndex: turn++,
+              message: { usage: { input: 10, output: 64, totalTokens: 74 } },
+            }, childCtx);
+            assert.equal(childAborts, 1, 'one empty cheap fallback aborts deterministically');
+            console.log('CODING_REPAIR_FALLBACK_ABORT_OK');
+            return respond(request, { status: 'failed', error: 'PI_CODING_REPAIR_ACTION_FALLBACK_FAILED', usage: { output: 4200 } });
+          }
+
+          const fallbackMutation = await childCall('safe_edit', {
+            path: 'test_generated.py',
+            operation: 'insert_after',
+            start_line: 4,
+            text: '# repair fallback mutation\\n',
+          });
+          assert.equal(fallbackMutation.block, undefined, 'fallback action executes');
+          assert.ok(childActive.includes('retry_last_failed_check'));
+
+          const postMutationRequest = providerPatch({ payload: repairPayload }, childCtx);
+          assert.equal(postMutationRequest.chat_template_kwargs.enable_thinking, false, 'successful mutation clears fallback obligation');
+          assert.ok(!postMutationRequest.tools.some(tool => (tool.function?.name ?? tool.name) === 'read'), 'read stays closed until authoritative validation changes state');
+
+          await settleRepairRetry('shrunk');
+          const nextEvidence = providerPatch({ payload: repairPayload }, childCtx);
+          assert.deepEqual(nextEvidence.tools.map(tool => tool.function?.name ?? tool.name), ['read'], 'new validation failure re-arms one bounded read');
+          await childCall('read', { path: 'test_generated.py' });
+          const nextReasoning = providerPatch({ payload: repairPayload }, childCtx);
+          assert.equal(nextReasoning.chat_template_kwargs.enable_thinking, true, 'new validation state re-arms reasoning');
+          assert.equal(nextReasoning.tool_choice, 'required', 'new validation state re-arms action forcing');
+          assert.equal(nextReasoning.max_completion_tokens, 4096);
+
+          console.log('CODING_REPAIR_REASONING_FALLBACK_OK');
+          return respond(request, { status: 'failed', error: 'simulated stop after fallback proof', usage: { output: 5000 } });
+        }
+
         if (mode === 'repair-evidence') {
           const repairPayload = {
             model: 'm',
@@ -692,6 +771,7 @@ function runtimeScenario(mode) {
 
           const reasoningRequest = providerPatch({ payload: repairPayload }, childCtx);
           const reasoningTools = reasoningRequest.tools.map(tool => tool.function?.name ?? tool.name);
+          assert.equal(reasoningRequest.tool_choice, 'required', 'repair reasoning itself is action-forced after the read consumes the generic forcing flag');
           assert.equal(reasoningRequest.chat_template_kwargs.enable_thinking, true, 'thinking is reserved for the mutation decision after repair evidence');
           assert.equal(reasoningRequest.max_completion_tokens, 4096, 'repair reasoning has a small output ceiling');
           assert.ok(!reasoningTools.includes('read'), 'the reasoning request cannot spend itself on another read');
@@ -753,6 +833,7 @@ function runtimeScenario(mode) {
           await childCall('read', { path: 'test_generated.py' });
           const firstRepairRequest = providerPatch({ payload: repairPayload }, childCtx);
           assert.equal(firstRepairRequest.chat_template_kwargs.enable_thinking, true, 'syntax failure gets one repair reasoning request after evidence');
+          assert.equal(firstRepairRequest.tool_choice, 'required', 'successful repair reasoning is action-forced');
           assert.equal(firstRepairRequest.max_completion_tokens, 4096, 'syntax repair reasoning is bounded');
           assert.ok(!firstRepairRequest.tools.some(tool => (tool.function?.name ?? tool.name) === 'read'));
           const firstRewrite = await childCall('write', {
@@ -768,6 +849,7 @@ function runtimeScenario(mode) {
           await childCall('read', { path: 'test_generated.py' });
           const secondRepairRequest = providerPatch({ payload: { model: 'm', messages: [], tools: childActive.map(name => ({ type: 'function', function: { name } })) } }, childCtx);
           assert.equal(secondRepairRequest.chat_template_kwargs.enable_thinking, true, 'new authoritative failure re-arms one bounded repair reasoning request');
+          assert.equal(secondRepairRequest.tool_choice, 'required', 'new validation state re-arms action forcing with reasoning');
           assert.equal(secondRepairRequest.max_completion_tokens, 4096, 'missing provider token field is capped explicitly');
 
           const secondRewrite = await childCall('write', {
@@ -1733,6 +1815,27 @@ test('#499/#506 repair reads precede bounded reasoning and broad edits cannot by
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
   assert.match(logs, /CODING_REPAIR_EVIDENCE_OK/);
+});
+
+test('#511 repair reasoning length falls directly into one required low-overhead mutation fallback', () => {
+  const logs = runtimeScenario('repair-reasoning-fallback');
+  assert.match(logs, /PI_CODING_REPAIR_TOOL_SURFACE .*"phase":"reasoning_mutation"/);
+  assert.match(logs, /PI_CODING_REPAIR_TOOL_CHOICE_ARMED .*"phase":"reasoning"/);
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_ARMED .*"reason":"reasoning_output_ceiling_without_action"/);
+  assert.match(logs, /PI_CODING_REPAIR_TOOL_SURFACE .*"phase":"fallback_mutation"/);
+  assert.match(logs, /PI_CODING_REPAIR_TOOL_CHOICE_ARMED .*"phase":"fallback"/);
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_OBSERVED .*"phase":"fallback".*"tool":"safe_edit"/);
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_SATISFIED .*"tool":"safe_edit"/);
+  assert.equal((logs.match(/PI_CODING_REPAIR_ACTION_FALLBACK_ARMED/g) ?? []).length, 1, 'one validation state gets one cheap fallback');
+  assert.match(logs, /CODING_REPAIR_REASONING_FALLBACK_OK/);
+});
+
+test('#511 an empty cheap repair fallback aborts once with the worktree preserved', () => {
+  const logs = runtimeScenario('repair-reasoning-fallback-abort');
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_ARMED/);
+  assert.match(logs, /PI_CODING_REPAIR_ACTION_FALLBACK_FAILED .*"checkpoint":\{"worktree_preserved":true\}/);
+  assert.equal((logs.match(/PI_CODING_REPAIR_TOOL_SURFACE .*"phase":"fallback_mutation"/g) ?? []).length, 1, 'exactly one fallback provider request is attempted');
+  assert.match(logs, /CODING_REPAIR_FALLBACK_ABORT_OK/);
 });
 
 test('#506 one syntax broad mutation is shared across write/safe_edit/edit and repeated bypass attempts fail closed', () => {
