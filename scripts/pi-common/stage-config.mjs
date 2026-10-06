@@ -15,6 +15,8 @@ function loadPromptFile(relativePath, env = process.env) {
 
 const IMPLEMENTER_CODING_CONTRACT_HEADING = '## Coding-session contract';
 
+// Model contracts deliberately use canonical, unindented level-2 headings. Keep this
+// stricter than general Markdown parsing so inline text and deeper headings cannot match.
 function markdownSection(text, heading) {
   const lines = text.split('\n');
   const start = lines.findIndex(line => line.trimEnd() === heading);
