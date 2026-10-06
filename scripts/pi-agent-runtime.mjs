@@ -432,6 +432,10 @@ export default function (pi) {
   let codingValidationRepair = null;
   let codingRepairEntered = false;
   const codingValidationRepairHistory = new Map();
+  // Mutation-shape state belongs to the repair lifecycle/path, not a validation signature key.
+  // It survives strict reductions and scope changes while repair remains red, and is cleared only
+  // by a validation pass that provably covers the active repair scope.
+  const codingRepairMutationHistoryByPath = new Map();
   const pendingCodingRepairReads = new Map();
 
   function normalizedCodingRepairPath(value, cwd) {
@@ -644,19 +648,24 @@ export default function (pi) {
     return justifications;
   }
 
-  function codingRepairHistoryForActive() {
-    if (!codingValidationRepair?.key) return null;
-    return codingValidationRepairHistory.get(codingValidationRepair.key) ?? null;
+  function codingRepairMutationStats(pathname) {
+    return codingRepairMutationHistoryByPath.get(pathname) ?? null;
+  }
+
+  function codingRepairMutationCountSnapshot(field) {
+    return Object.fromEntries(
+      [...codingRepairMutationHistoryByPath.entries()]
+        .filter(([, stats]) => Number(stats?.[field] ?? 0) > 0)
+        .map(([pathname, stats]) => [pathname, Number(stats[field])]),
+    );
   }
 
   function codingRepairWholeRewriteCount(pathname) {
-    const history = codingRepairHistoryForActive();
-    return Number(history?.wholeFileRewritesByPath?.[pathname] ?? 0);
+    return Number(codingRepairMutationStats(pathname)?.wholeFileRewrites ?? 0);
   }
 
   function codingRepairBroadMutationCount(pathname) {
-    const history = codingRepairHistoryForActive();
-    return Number(history?.broadMutationsByPath?.[pathname] ?? 0);
+    return Number(codingRepairMutationStats(pathname)?.broadMutations ?? 0);
   }
 
   function codingRepairRequestedShape(toolName, input, cwd, pathname) {
@@ -810,28 +819,22 @@ export default function (pi) {
     if (!codingRepairWindowActive() || !before || !after) return null;
     const pathname = normalizedCodingRepairPath(before.path, cwd) ?? before.path;
     const shape = codingRepairMutationShape(toolName, before, after, input, result, cwd);
-    const history = codingRepairHistoryForActive();
-    if (history) {
-      history.wholeFileRewritesByPath ??= {};
-      history.broadMutationsByPath ??= {};
-      history.targetedMutationsByPath ??= {};
-      if (shape === 'whole_file_rewrite') {
-        history.wholeFileRewritesByPath[pathname] = Number(history.wholeFileRewritesByPath[pathname] ?? 0) + 1;
-      }
-      if (shape === 'whole_file_rewrite' || shape === 'broad_edit') {
-        history.broadMutationsByPath[pathname] = Number(history.broadMutationsByPath[pathname] ?? 0) + 1;
-      }
-      if (shape === 'targeted_edit') {
-        history.targetedMutationsByPath[pathname] = Number(history.targetedMutationsByPath[pathname] ?? 0) + 1;
-      }
-    }
+    const stats = codingRepairMutationStats(pathname) ?? {
+      wholeFileRewrites: 0,
+      broadMutations: 0,
+      targetedMutations: 0,
+    };
+    if (shape === 'whole_file_rewrite') stats.wholeFileRewrites += 1;
+    if (shape === 'whole_file_rewrite' || shape === 'broad_edit') stats.broadMutations += 1;
+    if (shape === 'targeted_edit') stats.targetedMutations += 1;
+    codingRepairMutationHistoryByPath.set(pathname, stats);
     codingValidationRepair.reasoningPending = false;
     return {
       path: pathname,
       shape,
-      wholeFileRewriteCount: codingRepairWholeRewriteCount(pathname),
-      broadMutationCount: codingRepairBroadMutationCount(pathname),
-      targetedMutationCount: Number(history?.targetedMutationsByPath?.[pathname] ?? 0),
+      wholeFileRewriteCount: stats.wholeFileRewrites,
+      broadMutationCount: stats.broadMutations,
+      targetedMutationCount: stats.targetedMutations,
     };
   }
 
@@ -898,6 +901,7 @@ export default function (pi) {
           previousNonImprovingFailures,
         })}`);
         codingValidationRepair = null;
+        codingRepairMutationHistoryByPath.clear();
       }
       return false;
     }
@@ -917,18 +921,15 @@ export default function (pi) {
       : previous.bestFailureSet;
     const seenSignatures = new Set(previous?.seenSignatures ?? []);
     seenSignatures.add(identity.signature);
-    const wholeFileRewritesByPath = { ...(previous?.wholeFileRewritesByPath ?? {}) };
-    const broadMutationsByPath = { ...(previous?.broadMutationsByPath ?? {}) };
-    const targetedMutationsByPath = { ...(previous?.targetedMutationsByPath ?? {}) };
+    const wholeFileRewritesByPath = codingRepairMutationCountSnapshot('wholeFileRewrites');
+    const broadMutationsByPath = codingRepairMutationCountSnapshot('broadMutations');
+    const targetedMutationsByPath = codingRepairMutationCountSnapshot('targetedMutations');
     codingValidationRepairHistory.set(identity.key, {
       kind: identity.kind,
       scope: identity.scope,
       bestFailureSet,
       nonImprovingFailures,
       seenSignatures: [...seenSignatures].slice(-20),
-      wholeFileRewritesByPath,
-      broadMutationsByPath,
-      targetedMutationsByPath,
     });
 
     const scope = codingRepairScope(input, result, ctx.cwd);
@@ -971,6 +972,8 @@ export default function (pi) {
       evidenceGateReleased: codingValidationRepair.evidenceGateReleased,
       rewriteJustificationPaths: Object.keys(codingValidationRepair.rewriteJustifications),
       wholeFileRewritesByPath,
+      broadMutationsByPath,
+      targetedMutationsByPath,
       thinkingPhase: codingRepairThinkingPhase(),
     })}`);
     // The next response must take a concrete repair step. Because bounded read is now part of
