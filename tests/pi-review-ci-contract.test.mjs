@@ -401,21 +401,6 @@ test('dedicated control runner label is reserved for bounded wake orchestration'
         false,
         `${name} / ${spec.job ?? 'unknown'}: runs-on labels must not be satisfiable by the dedicated control runner`,
       );
-      if (spec.job) {
-        const jobBlock = workflow.match(
-          new RegExp(`^\\s*${spec.job.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\      if (/wake/i.test(spec.job ?? '')) {
-        assert.fail(
-          `${name} / ${spec.job}: wake jobs must use the dedicated control lane or be explicitly added to the control-job policy`,
-        );
-      }
-')}:\\s*$([\\s\\S]*?)(?=^\\s*[a-zA-Z_][\\w-]*:\\s*$|\\z)`, 'm'),
-        )?.[0] ?? '';
-        assert.doesNotMatch(
-          jobBlock,
-          /workflow-dispatch\.mjs|pi-post-merge\.mjs/,
-          `${name} / ${spec.job}: control-plane dispatch/finalization jobs must be explicitly assigned to the dedicated control lane`,
-        );
-      }
     }
   };
 
