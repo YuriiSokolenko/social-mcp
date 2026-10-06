@@ -3309,10 +3309,25 @@ export default function (pi) {
 
     if (contentMutation) {
       let repairMutationCount = null;
+      let broadMutationCount = null;
+      let wholeFileRewriteCount = null;
+      const repairMutationPath = normalizedCodingRepairPath(mutationSnapshot?.path, ctx.cwd);
       if (pendingMutation?.repairPhase && !event.isError && mutationChanged !== false && pendingMutation?.shape) {
         const countKey = `${mutationSnapshot?.path ?? ''}\0${pendingMutation.shape}`;
         repairMutationCount = (codingRepairMutationShapeCounts.get(countKey) ?? 0) + 1;
         codingRepairMutationShapeCounts.set(countKey, repairMutationCount);
+        if (repairMutationPath && ['whole_file_rewrite', 'broad_edit'].includes(pendingMutation.shape)) {
+          const broadKey = `${repairMutationPath}\0broad_total`;
+          broadMutationCount = (codingRepairMutationShapeCounts.get(broadKey) ?? 0) + 1;
+          codingRepairMutationShapeCounts.set(broadKey, broadMutationCount);
+        }
+        if (repairMutationPath && pendingMutation.shape === 'whole_file_rewrite') {
+          wholeFileRewriteCount = (codingRepairRewriteCounts.get(repairMutationPath) ?? 0) + 1;
+          codingRepairRewriteCounts.set(repairMutationPath, wholeFileRewriteCount);
+        }
+        if (repairMutationPath && pendingMutation.shape === 'targeted_edit') {
+          codingRepairBlockedMutationAttempts.delete(`${repairMutationPath}\0broad_blocked`);
+        }
       }
       console.log(`PI_MUTATION ${JSON.stringify({
         stage,
@@ -3322,9 +3337,8 @@ export default function (pi) {
         shape: pendingMutation?.shape ?? null,
         repairPhase: pendingMutation?.repairPhase === true,
         repairMutationCount,
-        wholeFileRewriteCount: pendingMutation?.shape === 'whole_file_rewrite'
-          ? (codingRepairRewriteCounts.get(normalizedCodingRepairPath(mutationSnapshot?.path, ctx.cwd)) ?? 0)
-          : null,
+        broadMutationCount,
+        wholeFileRewriteCount,
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
