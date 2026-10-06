@@ -107,6 +107,12 @@ const RETRY_FAILED_CHECK_TOOL = 'retry_last_failed_check';
 const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 const CODING_REPAIR_READ_LIMIT = 2;
 const CODING_REPAIR_IMPORT_PATH_LIMIT = 8;
+const CODING_REPAIR_WHOLE_REWRITE_LIMIT = 1;
+const CODING_REPAIR_BROAD_MUTATION_LIMIT = 1;
+const CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT = 3;
+const CODING_REPAIR_REASONING_MAX_TOKENS = 4096;
+const CODING_REPAIR_BROAD_EDIT_LINE_LIMIT = 80;
+const CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT = 12000;
 // Five non-improving failures leaves room for bounded diagnostic phase changes
 // (for example collection/import -> assertions) without allowing an endless repair loop.
 const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
@@ -133,7 +139,7 @@ const CODING_SESSION_SYSTEM_PROMPT = `You are the same Implementer, continuing y
 
 The conversation above is your session: the issue, your contract, the evidence you gathered and the implementation you decided. Exploration and implementation decisions are already complete. Do not re-plan, design or draft code in prose. Start by calling the appropriate coding tool.
 
-Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime; never invent helper names such as read_for_input. In action-required state, normal read may be hidden: if one concrete missing fact prevents the next safe action, call need_more_evidence with that missing fact and reason, then use the single evidence action the runtime exposes. After a failing run_check, the runtime may expose bounded repair read access only for the failing/changed paths; use it when current fixture/source state is needed before the next repair, and do not broaden that into repository discovery. Tests must prefer public behavior and public APIs; do not mutate private/internal implementation state merely to manufacture fixture state unless the task explicitly requires internal-state testing. Otherwise mutate, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
+Your normal turns had a small output ceiling; this coding session has a large one only so large code fits in tool arguments. Finish the task here under your normal contract and runtime rules. Use only tools currently exposed by the runtime; never invent helper names such as read_for_input. In action-required state, normal read may be hidden: if one concrete missing fact prevents the next safe action, call need_more_evidence with that missing fact and reason, then use the single evidence action the runtime exposes. After a failing run_check, the runtime enters repair mode and may expose bounded read access only for the failing/changed paths; use it when current fixture/source state is needed before the next repair, and do not broaden that into repository discovery. In repair mode prefer structural_edit, safe_edit, or a small edit that addresses the current diagnostics. Broad replacement through write, safe_edit, structural_edit, or edit is exceptional and shares one runtime-owned budget; do not regenerate most of an existing file just because the failure signature changed or shrank. Tests must prefer public behavior and public APIs; do not mutate private/internal implementation state merely to manufacture fixture state unless the task explicitly requires internal-state testing. Otherwise mutate, verify when a verification tool is exposed, fix reported failures, and finish through the exposed terminal action.`;
 
 export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS_DIR) {
   return {
@@ -161,15 +167,19 @@ export function codingSessionAgentDefinition(tools, scriptsDir = CONTROL_SCRIPTS
 }
 
 // Laguna (llama-server, openai-completions) reasons by default once tools are present, and pi's
-// "off" level sends no reasoning field for this provider's compat. The coding session therefore
-// disables thinking on every provider request itself; chat_template_kwargs.enable_thinking=false
-// is honored by the Laguna chat template (live probe: 0 reasoning chars, immediate tool call).
-export function disableThinkingInPayload(payload) {
+// "off" level sends no reasoning field for this provider's compat. The runtime therefore owns
+// the provider wire policy: normal/creation requests stay off, while the first request after an
+// authoritative validation failure may opt into bounded reasoning before returning to low overhead.
+export function applyCodingThinkingPolicy(payload, { enableThinking = false } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.messages)) return payload;
   return {
     ...payload,
-    chat_template_kwargs: { ...(payload.chat_template_kwargs ?? {}), enable_thinking: false },
+    chat_template_kwargs: { ...(payload.chat_template_kwargs ?? {}), enable_thinking: enableThinking === true },
   };
+}
+
+export function disableThinkingInPayload(payload) {
+  return applyCodingThinkingPolicy(payload, { enableThinking: false });
 }
 
 // Both OpenAI-compatible Chat Completions and Responses requests accept tool_choice="required".
@@ -401,6 +411,9 @@ export default function (pi) {
   // changed publishable files, without touching the Planner/main evidence budget.
   let codingValidationRepair = null;
   const codingValidationRepairHistory = new Map();
+  const codingRepairRewriteCounts = new Map();
+  const codingRepairMutationShapeCounts = new Map();
+  const codingRepairBlockedMutationAttempts = new Map();
   const pendingCodingRepairReads = new Map();
 
   function normalizedCodingRepairPath(value, cwd) {
@@ -537,6 +550,98 @@ export default function (pi) {
     return current.every(item => bestSet.has(item));
   }
 
+  function codingRepairRewriteEligiblePaths(result, cwd) {
+    const eligible = new Set();
+    for (const diagnostic of Array.isArray(result?.diagnostics) ? result.diagnostics : []) {
+      const code = String(diagnostic?.code ?? '').trim();
+      const message = String(diagnostic?.message ?? '').trim();
+      const wholeFileFailure =
+        /^(?:SyntaxError|IndentationError|TabError|ParseError)$/i.test(code) ||
+        (!code && /^(?:SyntaxError|IndentationError|TabError|ParseError)\s*:/i.test(message));
+      if (!wholeFileFailure) continue;
+      const normalized = trustedCodingRepairReadPath(diagnostic?.file, cwd);
+      if (normalized) eligible.add(normalized);
+    }
+    return [...eligible].sort();
+  }
+
+  function mutationTextExtent(value, key = '') {
+    if (typeof value === 'string') {
+      if (!/(?:text|content|rewrite|replacement|old|new|insert|value|pattern)/i.test(key)) {
+        return { chars: 0, lines: 0 };
+      }
+      return { chars: value.length, lines: value.split('\n').length };
+    }
+    if (Array.isArray(value)) {
+      return value.reduce((extent, item) => {
+        const nested = mutationTextExtent(item, key);
+        return { chars: Math.max(extent.chars, nested.chars), lines: Math.max(extent.lines, nested.lines) };
+      }, { chars: 0, lines: 0 });
+    }
+    if (value && typeof value === 'object') {
+      return Object.entries(value).reduce((extent, [nestedKey, nestedValue]) => {
+        const nested = mutationTextExtent(nestedValue, nestedKey);
+        return { chars: Math.max(extent.chars, nested.chars), lines: Math.max(extent.lines, nested.lines) };
+      }, { chars: 0, lines: 0 });
+    }
+    return { chars: 0, lines: 0 };
+  }
+
+  function codingMutationShape(toolName, input, snapshot) {
+    if (toolName === 'write') return snapshot?.existed ? 'whole_file_rewrite' : 'creation';
+    if (!['edit', 'safe_edit', 'structural_edit'].includes(toolName)) return 'other';
+    const extent = mutationTextExtent(input);
+    const safeEditSpan = toolName === 'safe_edit'
+      ? Math.max(1, Number(input?.end_line ?? input?.start_line ?? 1) - Number(input?.start_line ?? 1) + 1)
+      : 0;
+    return (
+      extent.chars > CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT ||
+      extent.lines > CODING_REPAIR_BROAD_EDIT_LINE_LIMIT ||
+      safeEditSpan > CODING_REPAIR_BROAD_EDIT_LINE_LIMIT
+    ) ? 'broad_edit' : 'targeted_edit';
+  }
+
+  function codingRepairBroadMutationCount(pathValue) {
+    return codingRepairMutationShapeCounts.get(`${pathValue}\0broad_total`) ?? 0;
+  }
+
+  function codingRepairMutationPolicy(toolName, input, cwd) {
+    if (!codingRepairWindowActive() || !CONTENT_MUTATION_TOOLS.has(toolName)) return null;
+    let target;
+    try {
+      target = resolveMutationTarget(cwd, input?.path);
+    } catch {
+      return null; // containment/authorization below owns the authoritative rejection.
+    }
+    const normalized = normalizedCodingRepairPath(input?.path, cwd);
+    if (!normalized || !target.exists) return null; // First creation remains efficient.
+    const shape = codingMutationShape(toolName, input ?? {}, { existed: true });
+    if (!['whole_file_rewrite', 'broad_edit'].includes(shape)) {
+      return { path: normalized, shape, broadCount: codingRepairBroadMutationCount(normalized) };
+    }
+
+    const broadCount = codingRepairBroadMutationCount(normalized);
+    const syntaxCorruption = codingValidationRepair.rewriteEligiblePaths.includes(normalized);
+    if (syntaxCorruption && broadCount < CODING_REPAIR_BROAD_MUTATION_LIMIT) {
+      return {
+        allowBroad: true,
+        path: normalized,
+        shape,
+        broadCount,
+        reason: 'authoritative diagnostics indicate whole-file syntax/parse corruption',
+      };
+    }
+
+    return {
+      block: true,
+      path: normalized,
+      shape,
+      broadCount,
+      reason: syntaxCorruption
+        ? `BLOCKED: repair broad-mutation limit reached for ${normalized}. Use a targeted structural_edit/safe_edit/edit; shrinking or changing failures do not reset the limit.`
+        : `BLOCKED: ${normalized} already exists and authoritative validation does not justify a broad repair. Use structural_edit, safe_edit, or a bounded edit that targets the reported diagnostics.`,
+    };
+  }
   function codingRepairScope(input, result, cwd) {
     const paths = new Set();
     const diagnosticLines = {};
@@ -653,6 +758,9 @@ export default function (pi) {
           clearedHistoryKeys: cleared,
           previousNonImprovingFailures,
         })}`);
+        codingRepairRewriteCounts.clear();
+        codingRepairMutationShapeCounts.clear();
+        codingRepairBlockedMutationAttempts.clear();
         codingValidationRepair = null;
       }
       return false;
@@ -683,6 +791,7 @@ export default function (pi) {
 
     const scope = codingRepairScope(input, result, ctx.cwd);
     const informedByDiagnostics = Array.isArray(result.diagnostics) && result.diagnostics.length > 0;
+    const rewriteEligiblePaths = codingRepairRewriteEligiblePaths(result, ctx.cwd);
     codingValidationRepair = {
       status: 'fail',
       kind: identity.kind,
@@ -699,6 +808,8 @@ export default function (pi) {
       evidenceGateReleased: !informedByDiagnostics && scope.paths.length === 0,
       paths: scope.paths,
       diagnosticLines: scope.diagnosticLines,
+      rewriteEligiblePaths,
+      thinkingRequestUsed: false,
     };
 
     console.warn(`PI_CODING_REPAIR_STATE ${JSON.stringify({
@@ -714,6 +825,12 @@ export default function (pi) {
       informedByDiagnostics: codingValidationRepair.informedByDiagnostics,
       readRequiredBeforeMutation: codingValidationRepair.readRequiredBeforeMutation,
       evidenceGateReleased: codingValidationRepair.evidenceGateReleased,
+      rewriteEligiblePaths: codingValidationRepair.rewriteEligiblePaths,
+      wholeFileRewriteLimit: CODING_REPAIR_WHOLE_REWRITE_LIMIT,
+      broadMutationLimit: CODING_REPAIR_BROAD_MUTATION_LIMIT,
+      blockedBroadAttemptLimit: CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT,
+      thinkingPolicy: 'one_reasoning_request_after_repair_read',
+      reasoningMaxTokens: CODING_REPAIR_REASONING_MAX_TOKENS,
     })}`);
     // The next response must take a concrete repair step. Because bounded read is now part of
     // the repair surface, provider-level required tool choice cannot force a blind mutation.
@@ -743,7 +860,7 @@ export default function (pi) {
       ? `You may read only these repair-relevant failing/changed/import paths before the next repair: ${codingValidationRepair.paths.join(', ')}.`
       : 'No trusted bounded repair path is available, so the read-before-mutation evidence gate is released rather than dead-ending the repair state.';
     await pi.sendUserMessage(
-      `RUNTIME REPAIR EVIDENCE: validation failed. ${evidenceGuidance} ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. When a bounded read route exists, a semantic repair mutation without structured diagnostics must use it first. Repair convergence is tracked per kind+scope; a same-kind passing scope clears a failed scope only when coverage is provable, and only a strict reduction below the best failure set resets the non-improving counter.`,
+      `RUNTIME REPAIR EVIDENCE: validation failed. ${evidenceGuidance} ${neighborhoods ? `Diagnostic line neighborhoods: ${neighborhoods}. ` : ''}Do not reopen repository discovery. Prefer structural_edit, safe_edit, or a bounded edit that directly addresses the current diagnostics. A whole-file write of an existing path is blocked unless authoritative syntax/parse diagnostics justify one bounded replacement, and shrinking/changing failures do not reset that rewrite bound. When a bounded read route exists, read one repair-relevant path before mutation; the bounded reasoning request is reserved for the following mutation decision. Repair convergence is tracked per kind+scope; a same-kind passing scope clears a failed scope only when coverage is provable, and only a strict reduction below the best failure set resets the non-improving counter.`,
       { deliverAs: 'steer' },
     );
     return false;
@@ -1530,7 +1647,6 @@ export default function (pi) {
   let codingResponseNumber = 0;
   let codingProviderRequestStartedAt = null;
   if (stage === 'implementer') {
-    let patchedThinkingRequests = 0;
     pi.on('before_provider_request', (event) => {
       if (runCheckPreflightFailed) {
         console.error('PI_RUN_CHECK_PREFLIGHT_PROVIDER_BLOCKED');
@@ -1541,14 +1657,57 @@ export default function (pi) {
       const productiveState = syncProductiveState();
       syncActionToolSurface(productiveState);
 
-      let patched = codingSession ? disableThinkingInPayload(event.payload) : event.payload;
+      const repairReadGateOpen = Boolean(
+        codingSession &&
+        codingRepairWindowActive() &&
+        !codingValidationRepair.readObserved &&
+        codingRepairReadAvailable()
+      );
+      const repairThinkingRequest = Boolean(
+        codingSession &&
+        codingRepairWindowActive() &&
+        codingValidationRepair.thinkingRequestUsed !== true &&
+        !repairReadGateOpen
+      );
+      if (repairThinkingRequest) codingValidationRepair.thinkingRequestUsed = true;
+      let patched = codingSession
+        ? applyCodingThinkingPolicy(event.payload, { enableThinking: repairThinkingRequest })
+        : event.payload;
+      if (repairThinkingRequest) {
+        if (Number.isFinite(patched.max_completion_tokens)) {
+          patched = {
+            ...patched,
+            max_completion_tokens: Math.min(patched.max_completion_tokens, CODING_REPAIR_REASONING_MAX_TOKENS),
+          };
+        } else if (Number.isFinite(patched.max_tokens)) {
+          patched = {
+            ...patched,
+            max_tokens: Math.min(patched.max_tokens, CODING_REPAIR_REASONING_MAX_TOKENS),
+          };
+        } else if (Number.isFinite(patched.max_output_tokens)) {
+          patched = {
+            ...patched,
+            max_output_tokens: Math.min(patched.max_output_tokens, CODING_REPAIR_REASONING_MAX_TOKENS),
+          };
+        } else {
+          patched = { ...patched, max_completion_tokens: CODING_REPAIR_REASONING_MAX_TOKENS };
+        }
+      }
       if (terminalRecoveryState) {
         patched = compactTerminalRecoveryPayload(patched, terminalRecoveryState);
       }
-      if (codingSession && patched !== event.payload && ++patchedThinkingRequests === 1) {
-        codingSessionLog('thinking_disabled', {
+      if (codingSession && patched !== event.payload) {
+        codingSessionLog('thinking_policy', {
           side: 'fork',
           sessionId: codingSession.sessionId,
+          policy: repairThinkingRequest
+            ? 'repair_reasoning_once'
+            : repairReadGateOpen
+              ? 'repair_evidence_low_overhead'
+              : codingRepairWindowActive()
+                ? 'repair_followup_low_overhead'
+                : 'normal_low_overhead',
+          validationKey: codingValidationRepair?.key ?? null,
           enableThinking: patched.chat_template_kwargs.enable_thinking,
           maxTokens: patched.max_completion_tokens ?? patched.max_tokens ?? null,
         });
@@ -1557,6 +1716,13 @@ export default function (pi) {
       if (Array.isArray(patched?.tools)) {
         const active = new Set(pi.getActiveTools());
         let tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
+        if (!terminalRecoveryRequiredTool && repairReadGateOpen) {
+          tools = tools.filter(tool => (tool.function?.name ?? tool.name) === 'read');
+          console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({ stage, phase: 'evidence', tools: tools.map(tool => tool.function?.name ?? tool.name) })}`);
+        } else if (!terminalRecoveryRequiredTool && repairThinkingRequest) {
+          tools = tools.filter(tool => (tool.function?.name ?? tool.name) !== 'read');
+          console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({ stage, phase: 'reasoning_mutation', tools: tools.map(tool => tool.function?.name ?? tool.name) })}`);
+        }
         if (terminalRecoveryRequiredTool) {
           const selected = tools.filter(tool =>
             controllerToolName(tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
@@ -2733,6 +2899,9 @@ export default function (pi) {
     const repairReadPolicy = event.toolName === 'read'
       ? codingRepairReadPolicy(canonicalInput, ctx.cwd)
       : null;
+    const repairMutationPolicy = CONTENT_MUTATION_TOOLS.has(event.toolName)
+      ? codingRepairMutationPolicy(event.toolName, canonicalInput, ctx.cwd)
+      : null;
     if (
       event.toolName === ACCEPT_MUTATION_SCOPE_TOOL &&
       controller.largeMutationBudgetActive() &&
@@ -2775,6 +2944,8 @@ export default function (pi) {
       };
     } else if (repairReadPolicy?.block) {
       recoveryBlocked = repairReadPolicy;
+    } else if (repairMutationPolicy?.block) {
+      recoveryBlocked = repairMutationPolicy;
     } else if (
       codingRepairWindowActive() &&
       CONTENT_MUTATION_TOOLS.has(event.toolName) &&
@@ -2783,7 +2954,7 @@ export default function (pi) {
     ) {
       recoveryBlocked = {
         block: true,
-        reason: 'BLOCKED: the failed validation did not provide structured diagnostics. Read one repair-relevant failing/changed path first so the next mutation is evidence-driven.',
+        reason: 'BLOCKED: read one repair-relevant failing/changed path before mutation so the bounded reasoning request can decide the localized repair with current evidence.',
       };
     }
 
@@ -2822,6 +2993,39 @@ export default function (pi) {
       actionTurnAttemptedTool = true;
     }
     if (blocked) {
+      if (repairMutationPolicy?.block) {
+        const attemptKey = `${repairMutationPolicy.path}\0broad_blocked`;
+        const blockedAttempts = (codingRepairBlockedMutationAttempts.get(attemptKey) ?? 0) + 1;
+        codingRepairBlockedMutationAttempts.set(attemptKey, blockedAttempts);
+        const abort = blockedAttempts >= CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT;
+        console.warn(`PI_CODING_REPAIR_MUTATION_GUARD ${JSON.stringify({
+          stage,
+          status: abort ? 'limit_abort' : 'blocked',
+          path: repairMutationPolicy.path,
+          shape: repairMutationPolicy.shape,
+          broadCount: repairMutationPolicy.broadCount,
+          broadLimit: CODING_REPAIR_BROAD_MUTATION_LIMIT,
+          blockedAttempts,
+          blockedAttemptLimit: CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT,
+          reason: repairMutationPolicy.reason,
+        })}`);
+        if (abort) {
+          const details = {
+            path: repairMutationPolicy.path,
+            shape: repairMutationPolicy.shape,
+            broad_count: repairMutationPolicy.broadCount,
+            broad_limit: CODING_REPAIR_BROAD_MUTATION_LIMIT,
+            blocked_attempts: blockedAttempts,
+            blocked_attempt_limit: CODING_REPAIR_BLOCKED_BROAD_ATTEMPT_LIMIT,
+            validation_key: codingValidationRepair?.key ?? null,
+            checkpoint: { worktree_preserved: true },
+          };
+          recordRuntimeAbort('PI_CODING_REPAIR_BROAD_MUTATION_LIMIT', repairMutationPolicy.reason, details);
+          console.error(`PI_CODING_REPAIR_BROAD_MUTATION_LIMIT ${JSON.stringify({ stage, reason: repairMutationPolicy.reason, ...details })}`);
+          await ctx.abort();
+          return blocked;
+        }
+      }
       if (blocked.alreadySatisfied) {
         console.warn(`PI_ALREADY_SATISFIED ${JSON.stringify({ stage, ...controller.lastAlreadySatisfied, suppressed: true, productive: false })}`);
       }
@@ -2931,6 +3135,7 @@ export default function (pi) {
       }
     }
 
+
     if (stage === 'implementer' && RECEIPT_INVALIDATING_TOOLS.has(event.toolName)) {
       invalidateTerminalReceipt(process.env);
     }
@@ -2950,6 +3155,8 @@ export default function (pi) {
           disposition: mutationAuthorization?.disposition ?? 'unknown',
           journalable: capacity.journalable,
           journalReason: capacity.reason,
+          shape: codingMutationShape(event.toolName, event.input ?? {}, snapshot),
+          repairPhase: codingRepairWindowActive(),
         });
         if (!capacity.journalable) {
           // Selective undo is a recovery convenience, never a prerequisite for productive work.
@@ -3100,11 +3307,37 @@ export default function (pi) {
     }
 
     if (contentMutation) {
+      let repairMutationCount = null;
+      let broadMutationCount = null;
+      let wholeFileRewriteCount = null;
+      const repairMutationPath = normalizedCodingRepairPath(mutationSnapshot?.path, ctx.cwd);
+      if (pendingMutation?.repairPhase && !event.isError && mutationChanged !== false && pendingMutation?.shape) {
+        const countKey = `${mutationSnapshot?.path ?? ''}\0${pendingMutation.shape}`;
+        repairMutationCount = (codingRepairMutationShapeCounts.get(countKey) ?? 0) + 1;
+        codingRepairMutationShapeCounts.set(countKey, repairMutationCount);
+        if (repairMutationPath && ['whole_file_rewrite', 'broad_edit'].includes(pendingMutation.shape)) {
+          const broadKey = `${repairMutationPath}\0broad_total`;
+          broadMutationCount = (codingRepairMutationShapeCounts.get(broadKey) ?? 0) + 1;
+          codingRepairMutationShapeCounts.set(broadKey, broadMutationCount);
+        }
+        if (repairMutationPath && pendingMutation.shape === 'whole_file_rewrite') {
+          wholeFileRewriteCount = (codingRepairRewriteCounts.get(repairMutationPath) ?? 0) + 1;
+          codingRepairRewriteCounts.set(repairMutationPath, wholeFileRewriteCount);
+        }
+        if (repairMutationPath && pendingMutation.shape === 'targeted_edit') {
+          codingRepairBlockedMutationAttempts.delete(`${repairMutationPath}\0broad_blocked`);
+        }
+      }
       console.log(`PI_MUTATION ${JSON.stringify({
         stage,
         tool: event.toolName,
         mode: codingSession ? 'coding_session' : 'direct',
         path: mutationSnapshot?.path ?? null,
+        shape: pendingMutation?.shape ?? null,
+        repairPhase: pendingMutation?.repairPhase === true,
+        repairMutationCount,
+        broadMutationCount,
+        wholeFileRewriteCount,
         isError: event.isError === true,
         changed: mutationChanged,
       })}`);
