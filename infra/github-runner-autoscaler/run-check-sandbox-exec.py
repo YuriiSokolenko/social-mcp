@@ -11,6 +11,25 @@ import time
 from collections import deque
 
 TAIL_LIMIT = 4 * 1024 * 1024
+ALLOWED_ENVIRONMENT_KEYS = frozenset({
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "PYTHONPATH",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONIOENCODING",
+    "RUFF_CACHE_DIR",
+    "PI_TRUSTED_ACCEPTANCE_TARGETS",
+    "PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS",
+})
+
+
+def validate_environment(environment):
+    """Reject sandbox process environments outside the executor allowlist."""
+    if not isinstance(environment, dict) or any(key not in ALLOWED_ENVIRONMENT_KEYS for key in environment):
+        raise ValueError("invalid sandbox environment")
 
 
 class Tail:
@@ -54,8 +73,7 @@ def main():
         environment = payload["env"]
         if not isinstance(command, str) or not command or not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
             raise ValueError("invalid fixed command")
-        if not isinstance(environment, dict) or any(key not in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "PYTHONIOENCODING", "RUFF_CACHE_DIR"} for key in environment):
-            raise ValueError("invalid sandbox environment")
+        validate_environment(environment)
     except Exception as error:  # malformed trusted-executor payload is infrastructure failure
         print(json.dumps({"protocol_error": str(error)}))
         return 70
