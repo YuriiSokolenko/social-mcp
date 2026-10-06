@@ -13,9 +13,26 @@ function loadPromptFile(relativePath, env = process.env) {
   return fs.readFileSync(path.join(workspace, relativePath), 'utf8').trim();
 }
 
+const IMPLEMENTER_CODING_CONTRACT_HEADING = '## Coding-session contract';
+
+function markdownSection(text, heading) {
+  const start = text.indexOf(heading);
+  if (start < 0) throw new Error(`Missing model-facing contract section: ${heading}`);
+  const next = text.indexOf('\n## ', start + heading.length);
+  return text.slice(start, next < 0 ? text.length : next).trim();
+}
+
+function withoutMarkdownSection(text, heading) {
+  const section = markdownSection(text, heading);
+  return text.replace(section, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export function agentContractPrompt(name, env = process.env) {
   const shared = loadPromptFile(sharedPromptPath(), env);
-  const role = loadPromptFile(promptPath(name), env);
+  const rawRole = loadPromptFile(promptPath(name), env);
+  const role = name === 'implementer'
+    ? withoutMarkdownSection(rawRole, IMPLEMENTER_CODING_CONTRACT_HEADING)
+    : rawRole;
   return `<shared_agent_contract source="${sharedPromptPath()}">
 ${shared}
 </shared_agent_contract>
@@ -23,6 +40,23 @@ ${shared}
 <role_contract source="${promptPath(name)}">
 ${role}
 </role_contract>`;
+}
+
+export function implementerCodingContractPrompt(env = process.env) {
+  const shared = loadPromptFile(sharedPromptPath(), env);
+  const role = loadPromptFile(promptPath('implementer'), env);
+  const codingRole = [
+    markdownSection(role, '## Hard boundaries'),
+    markdownSection(role, IMPLEMENTER_CODING_CONTRACT_HEADING),
+    markdownSection(role, '## Engineering constraints'),
+  ].join('\n\n');
+  return `<shared_agent_contract source="${sharedPromptPath()}">
+${shared}
+</shared_agent_contract>
+
+<coding_role_contract source="${promptPath('implementer')}">
+${codingRole}
+</coding_role_contract>`;
 }
 
 function withContracts(name, env, trustedContext) {
