@@ -1607,10 +1607,10 @@ test('2K parent -> begin_coding_session -> 16K same-context fork writes code + t
   assert.match(logs, /"phase":"requested".*"parentMaxTokens":2048,"codingMaxTokens":16384/);
   assert.match(logs, /"phase":"started".*"context":"fork","agent":"implementer-coding-session"/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
-  assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_disabled","side":"fork".*"enableThinking":false,"maxTokens":16384/);
+  assert.match(logs, /PI_CODING_SESSION \{"phase":"thinking_policy","side":"fork".*"policy":"normal_low_overhead".*"enableThinking":false,"maxTokens":16384/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"first_tool_call","side":"fork".*"tool":"accept_mutation_scope"/);
   assert.match(logs, /PI_CODING_SESSION \{"phase":"first_response","side":"fork".*"attemptedTool":true/);
-  assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"changed":true/g)?.length, 2, 'several files in one session');
+  assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"shape":"creation"[^\n]*"changed":true/g)?.length, 2, 'initial large creation stays direct and is classified separately from repair rewrites');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_BUDGET|mutation-writer|PI_MUTATION_TURN/);
 });
@@ -1658,18 +1658,32 @@ test('#481 recovery guard fails closed after unrelated evidence when validation 
   assert.match(logs, /CODING_RECOVERY_FAIL_CLOSED_OK/);
 });
 
-test('#499 failing pytest exposes bounded repair evidence and strict failure-set reduction remains repairable', () => {
+test('#499/#506 failing pytest keeps bounded evidence but localizes repair and bounds thinking', () => {
   const logs = runtimeScenario('repair-evidence');
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"repair_evidence".*"read"/);
   assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"test_generated.py".*"evidenceBudgetIndependent":true/);
   assert.match(logs, /PI_CODING_REPAIR_READ .*"path":"unchanged_helper.py".*"readsRemaining":0.*"evidenceBudgetIndependent":true/);
   assert.doesNotMatch(logs, /PI_CODING_REPAIR_READ .*"path":"link-source.py"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required".*"read"/);
+  assert.match(logs, /PI_CODING_SESSION .*"phase":"thinking_policy".*"policy":"repair_reasoning_once".*"enableThinking":true/);
+  assert.match(logs, /PI_CODING_SESSION .*"phase":"thinking_policy".*"policy":"repair_followup_low_overhead".*"enableThinking":false/);
+  assert.match(logs, /PI_CODING_REPAIR_WRITE_GUARD .*"status":"blocked".*"path":"test_generated.py"/);
+  assert.match(logs, /PI_MUTATION .*"tool":"safe_edit".*"shape":"targeted_edit".*"repairPhase":true/);
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
   assert.match(logs, /CODING_REPAIR_EVIDENCE_OK/);
 });
 
+test('#506 syntax-corruption permits one full rewrite, but shrinking failures do not reset the rewrite bound', () => {
+  const logs = runtimeScenario('repair-rewrite-limit');
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"rewriteEligiblePaths":\["test_generated.py"\]/);
+  assert.match(logs, /PI_CODING_REPAIR_REWRITE .*"status":"consumed".*"path":"test_generated.py".*"rewriteCount":1.*"limit":1/);
+  assert.match(logs, /PI_MUTATION .*"tool":"write".*"shape":"whole_file_rewrite".*"repairPhase":true.*"wholeFileRewriteCount":1/);
+  assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/);
+  assert.match(logs, /PI_CODING_REPAIR_WRITE_GUARD .*"status":"limit_abort".*"rewriteCount":1.*"limit":1/);
+  assert.match(logs, /PI_CODING_REPAIR_REWRITE_LIMIT .*"worktree_preserved":true/);
+  assert.match(logs, /CODING_REPAIR_REWRITE_LIMIT_OK/);
+});
 test('#499 repair convergence survives unrelated passes and bounds A-B-A-B failure flip-flops', () => {
   const logs = runtimeScenario('repair-nonconvergent');
   assert.ok((logs.match(/PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1.*"strictReduction":true/g) ?? []).length >= 1);
@@ -1691,6 +1705,7 @@ test('#503 a provably covering same-kind pass clears narrower coding repair hist
   const logs = runtimeScenario('repair-pass-reset');
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"status":"cleared".*"reason":"validation_pass_covering_scope"/);
   const postReset = logs.slice(logs.indexOf('validation_pass_covering_scope'));
+  assert.match(postReset, /PI_CODING_SESSION .*"phase":"thinking_policy".*"policy":"normal_low_overhead".*"enableThinking":false/);
   assert.match(postReset, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
   assert.match(logs, /CODING_REPAIR_PASS_RESET_OK/);
