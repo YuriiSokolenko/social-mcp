@@ -196,6 +196,10 @@ export function requireToolChoiceInPayload(payload) {
   return { ...payload, tool_choice: 'required' };
 }
 
+export function retryableProviderErrorStatus(status) {
+  return status == null || status === 408 || status === 429 || status >= 500;
+}
+
 export function providerErrorStatus(message) {
   if (message?.stopReason !== 'error') return null;
 
@@ -1767,6 +1771,11 @@ export default function (pi) {
           tools = tools.filter(tool => (tool.function?.name ?? tool.name) === 'read');
           console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({ stage, phase: 'evidence', tools: tools.map(tool => tool.function?.name ?? tool.name) })}`);
         } else if (!terminalRecoveryRequiredTool && (repairThinkingRequest || repairFallbackRequest)) {
+          // #511 deliberately keeps these provider turns mutation/terminal-only. Scope acceptance
+          // is a prelude, not a repair action. Any existing path that reached authoritative
+          // validation has already passed accepted-scope authorization on its first mutation;
+          // introducing a brand-new publishable path from this fallback would violate that
+          // mutation-only contract and must be planned/accepted before the repair window.
           tools = tools.filter(tool => FINISH_TOOLS.has(tool.function?.name ?? tool.name));
           console.warn(`PI_CODING_REPAIR_TOOL_SURFACE ${JSON.stringify({
             stage,
@@ -1863,10 +1872,22 @@ export default function (pi) {
       }
 
       if (requireToolOnNextProviderRequest) {
-        if (productiveState !== 'action_required') {
+        const repairActionForced = Boolean(
+          codingRepairProviderRequestInFlight &&
+          codingRepairProviderRequestInFlight.request === providerCapabilitySnapshot?.request
+        );
+        if (!repairActionForced && productiveState !== 'action_required') {
           requireToolOnNextProviderRequest = false;
           console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
         } else {
+          if (repairActionForced && productiveState !== 'action_required') {
+            console.warn(`PI_CODING_REPAIR_FORCE_STATE_DRIFT ${JSON.stringify({
+              stage,
+              productiveState,
+              phase: codingRepairProviderRequestInFlight.phase,
+              request: codingRepairProviderRequestInFlight.request,
+            })}`);
+          }
           const constrained = requireToolChoiceInPayload(patched);
           if (constrained !== patched) {
             forcedProviderRequestInFlight = true;
@@ -1875,6 +1896,7 @@ export default function (pi) {
               mode: 'required',
               request: providerCapabilitySnapshot?.request ?? null,
               activeTools: providerCapabilitySnapshot?.executableTools ?? pi.getActiveTools(),
+              source: repairActionForced ? 'coding_repair' : 'productive_action',
             })}`);
             patched = constrained;
           }
@@ -3762,6 +3784,27 @@ export default function (pi) {
     forcedProviderRequestInFlight = false;
 
     if (event.message?.stopReason === 'error' && repairRequest) {
+      if (retryableProviderErrorStatus(status)) {
+        if (codingValidationRepair?.key === repairRequest.key) {
+          if (repairRequest.phase === 'reasoning') {
+            codingValidationRepair.thinkingRequestUsed = false;
+          } else {
+            codingValidationRepair.fallbackAttempted = false;
+          }
+        }
+        requireToolOnNextProviderRequest = true;
+        console.warn(`PI_CODING_REPAIR_PROVIDER_RETRY ${JSON.stringify({
+          stage,
+          phase: repairRequest.phase,
+          request: repairRequest.request,
+          status,
+          validationKey: repairRequest.key,
+        })}`);
+        // Transport/rate-limit/server failures are not model repair attempts. Do not convert
+        // them into the cheap fallback or consume that fallback; let Pi retry the same logical
+        // repair phase under the same action-only surface and required tool choice.
+        return undefined;
+      }
       requireToolOnNextProviderRequest = false;
       if (repairRequest.phase === 'reasoning') {
         await armCodingRepairActionFallback(
