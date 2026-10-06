@@ -3857,11 +3857,34 @@ export default function (pi) {
 
     if (event.message?.stopReason === 'error' && stage === 'implementer' && controller.largeMutationBudgetActive()) {
       if (retryableProviderErrorStatus(status)) {
+        largeMutationActionRetryCount += 1;
+        if (largeMutationActionRetryCount > LARGE_MUTATION_ACTION_RETRY_LIMIT) {
+          const reason = `retryable provider failure persisted after ${LARGE_MUTATION_ACTION_RETRY_LIMIT} bounded elevated retry`;
+          controller.resetLargeMutationBudget();
+          elevatedScopePreludeUsed = false;
+          recordRuntimeAbort('PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED', reason, {
+            status,
+            retries: largeMutationActionRetryCount,
+            retry_limit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+            checkpoint: { worktree_preserved: true },
+          });
+          console.error(`PI_LARGE_MUTATION_PROVIDER_RETRY_EXHAUSTED ${JSON.stringify({
+            stage,
+            status,
+            retries: largeMutationActionRetryCount,
+            retryLimit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+            checkpoint: { worktree_preserved: true },
+          })}`);
+          largeMutationActionRetryCount = 0;
+          ctx.abort();
+          return undefined;
+        }
         requireToolOnNextProviderRequest = true;
         console.warn(`PI_LARGE_MUTATION_PROVIDER_RETRY ${JSON.stringify({
           stage,
           status,
-          retryCount: largeMutationActionRetryCount,
+          retry: largeMutationActionRetryCount,
+          retryLimit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
           checkpoint: { worktree_preserved: true },
         })}`);
         return undefined;
@@ -3962,10 +3985,14 @@ export default function (pi) {
 
     // The elevated request is action-forced before it reaches the provider. A successful
     // mutation/terminal action consumes the one-shot grant. A successful scope declaration may
-    // preserve it once for the actual new-file write. An allowed action that fails locally gets
-    // one bounded retry; prose/no-action is a contract failure and never receives another 16K turn.
+    // preserve it once for the actual new-file write. An allowed action that fails locally, or
+    // a ceiling/length response whose tool JSON may have been truncated before tool_call, gets
+    // one bounded elevated retry. Genuine completed prose/no-action still fails closed immediately.
     let preserveElevatedAfterScopePrelude = false;
     let preserveElevatedAfterFailedAction = false;
+    const elevatedResponseHitCeiling = Boolean(
+      event.message?.stopReason === 'length' || responseHitOutputCeiling
+    );
     if (stage === 'implementer' && controller.largeMutationBudgetActive()) {
       if (elevatedTurnSuccessfulFinishTool) {
         console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
@@ -3989,21 +4016,31 @@ export default function (pi) {
           preserved: true,
           outputTokens,
         })}`);
-      } else if (elevatedTurnObservedActionTool) {
+      } else if (elevatedTurnObservedActionTool || elevatedResponseHitCeiling) {
+        const retryReason = elevatedTurnObservedActionTool
+          ? 'allowed_action_failed'
+          : 'output_ceiling_without_tool_call';
         largeMutationActionRetryCount += 1;
         if (largeMutationActionRetryCount > LARGE_MUTATION_ACTION_RETRY_LIMIT) {
-          const reason = `large-mutation action failed to execute after ${LARGE_MUTATION_ACTION_RETRY_LIMIT} bounded retry`;
+          const reason = elevatedTurnObservedActionTool
+            ? `large-mutation action failed to execute after ${LARGE_MUTATION_ACTION_RETRY_LIMIT} bounded retry`
+            : `large-mutation output hit the elevated ceiling without an executable tool call after ${LARGE_MUTATION_ACTION_RETRY_LIMIT} bounded retry`;
+          const failureCode = elevatedTurnObservedActionTool
+            ? 'PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED'
+            : 'PI_LARGE_MUTATION_TRUNCATION_RETRY_EXHAUSTED';
           controller.resetLargeMutationBudget();
           elevatedScopePreludeUsed = false;
-          recordRuntimeAbort('PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED', reason, {
+          recordRuntimeAbort(failureCode, reason, {
             retries: largeMutationActionRetryCount,
             retry_limit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+            retry_reason: retryReason,
             checkpoint: { worktree_preserved: true },
           });
-          console.error(`PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED ${JSON.stringify({
+          console.error(`${failureCode} ${JSON.stringify({
             stage,
             retries: largeMutationActionRetryCount,
             retryLimit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+            retryReason,
             checkpoint: { worktree_preserved: true },
           })}`);
           largeMutationActionRetryCount = 0;
@@ -4016,11 +4053,14 @@ export default function (pi) {
           stage,
           retry: largeMutationActionRetryCount,
           retryLimit: LARGE_MUTATION_ACTION_RETRY_LIMIT,
+          retryReason,
           outputTokens,
           checkpoint: { worktree_preserved: true },
         })}`);
         await pi.sendUserMessage(
-          'RUNTIME LARGE MUTATION RETRY: the required elevated action did not execute successfully. Do not read, inspect, or explain. In the next response call one exposed mutation, scope, rollback, or terminal tool immediately; provider-level tool choice remains required.',
+          elevatedTurnObservedActionTool
+            ? 'RUNTIME LARGE MUTATION RETRY: the required elevated action did not execute successfully. Do not read, inspect, or explain. In the next response call one exposed mutation, scope, rollback, or terminal tool immediately; provider-level tool choice remains required.'
+            : 'RUNTIME LARGE MUTATION RETRY: the elevated response hit its output ceiling before an executable tool call reached the runtime; tool arguments may have been truncated. Do not repeat reasoning or prose. Retry the intended exposed mutation/scope/rollback/terminal action once under the same required-tool 16K grant.',
           { deliverAs: 'steer' },
         );
       } else {
