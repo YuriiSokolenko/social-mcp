@@ -294,7 +294,7 @@ function runtimeScenario(mode) {
         const childTools = new Map(); const childHandlers = new Map();
         let childAborts = 0;
         const childCtx = { cwd, model: { maxTokens: 32000 }, abort: () => {
-          if (!['tool-contract', 'repair-nonconvergent', 'repair-broad-rewrite-limit'].includes(mode)) throw new Error('fork aborted');
+          if (!['tool-contract', 'repair-nonconvergent', 'repair-broad-rewrite-limit', 'repair-broad-edit-limit'].includes(mode)) throw new Error('fork aborted');
           childAborts += 1;
         },
           sessionManager: { getSessionId: () => 'fork', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({ parentSession: sessionFile }) } };
@@ -458,12 +458,12 @@ function runtimeScenario(mode) {
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
-          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details', 'repair-broad-rewrite-limit'].includes(mode) && params?.kind === 'pytest') {
+          if (['repair-evidence', 'repair-nonconvergent', 'repair-pass-reset', 'repair-volatile-message', 'repair-semantic-number', 'repair-iserror-details', 'repair-broad-rewrite-limit', 'repair-broad-edit-limit'].includes(mode) && params?.kind === 'pytest') {
             const variant = mode === 'repair-volatile-message'
               ? 'volatile-a'
               : mode === 'repair-semantic-number'
                 ? 'semantic-42'
-                : mode === 'repair-broad-rewrite-limit'
+                : ['repair-broad-rewrite-limit', 'repair-broad-edit-limit'].includes(mode)
                   ? 'malformed-initial'
                   : 'initial';
             const result = repairFailure(variant);
@@ -819,6 +819,33 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'PI_CODING_REPAIR_BROAD_REWRITE_LIMIT', usage: { output: 3500 } });
         }
 
+        if (mode === 'repair-broad-edit-limit') {
+          const repairRequest = providerPatch({ payload: {
+            model: 'm',
+            messages: [],
+            max_completion_tokens: 16384,
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          } }, childCtx);
+          assert.equal(repairRequest.chat_template_kwargs.enable_thinking, true);
+
+          const firstRewriteContent = 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# first broad repair\\n';
+          await childCall('write', { path: 'test_generated.py', content: firstRewriteContent });
+          await settleRepairRetry('malformed-shrunk');
+          assert.equal(childAborts, 0);
+
+          await childCall('safe_edit', {
+            path: 'test_generated.py',
+            operation: 'replace',
+            start_line: 1,
+            end_line: 5,
+            text: 'from generated import REQUIRED_CONSTANT\\n\\ndef test_constant():\\n    assert REQUIRED_CONSTANT == "' + constant + '"\\n# regenerated through safe_edit',
+          });
+          assert.equal(childAborts, 1, 'near-full safe_edit cannot bypass the broad mutation bound');
+          assert.equal(fs.readFileSync(cwd + '/test_generated.py', 'utf8'), firstRewriteContent, 'broad edit is rolled back to the last useful checkpoint');
+          console.log('CODING_REPAIR_BROAD_EDIT_LIMIT_OK');
+          return respond(request, { status: 'failed', error: 'PI_CODING_REPAIR_BROAD_REWRITE_LIMIT', usage: { output: 3500 } });
+        }
+
         if (mode === 'repair-empty-scope') {
           const repairPayload = {
             model: 'm',
@@ -847,6 +874,15 @@ function runtimeScenario(mode) {
           assert.ok(childActive.includes('retry_last_failed_check'));
           await settleSyntheticBroaderScopePass();
           assert.equal(childAborts, 0);
+          const postGreenRequest = providerPatch({ payload: {
+            model: 'm',
+            messages: [],
+            max_completion_tokens: 16384,
+            tools: childActive.map(name => ({ type: 'function', function: { name } })),
+          } }, childCtx);
+          assert.equal(postGreenRequest.chat_template_kwargs.enable_thinking, false, 'green repair returns to normal low-overhead policy');
+          assert.equal(postGreenRequest.max_completion_tokens, 16384);
+
 
           await childCall('write', {
             path: 'test_generated.py',
@@ -1705,6 +1741,12 @@ test('#506 systemic repair allows one whole-file rewrite, preserves its counter 
   assert.match(logs, /CODING_REPAIR_BROAD_REWRITE_LIMIT_OK/);
 });
 
+test('#506 broad safe_edit cannot bypass the repair regeneration limit', () => {
+  const logs = runtimeScenario('repair-broad-edit-limit');
+  assert.match(logs, /PI_CODING_REPAIR_ABORT .*"mutation_shape":"broad_edit".*"broad_mutation_count":1.*"worktree_preserved":true.*"reverted":true/);
+  assert.match(logs, /CODING_REPAIR_BROAD_EDIT_LIMIT_OK/);
+});
+
 test('#499 volatile diagnostic values keep one semantic failure identity', () => {
   const logs = runtimeScenario('repair-volatile-message');
   assert.match(logs, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":2.*"strictReduction":false.*"seenSignatures":1/);
@@ -1718,6 +1760,7 @@ test('#503 a provably covering same-kind pass clears narrower coding repair hist
   const postReset = logs.slice(logs.indexOf('validation_pass_covering_scope'));
   assert.match(postReset, /PI_CODING_REPAIR_STATE .*"nonImprovingFailures":1/);
   assert.doesNotMatch(logs, /PI_CODING_VALIDATION_NON_CONVERGENT/);
+  assert.match(logs, /PI_CODING_THINKING_POLICY .*"phase":"normal".*"enableThinking":false.*"maxTokens":16384/);
   assert.match(logs, /CODING_REPAIR_PASS_RESET_OK/);
 });
 
