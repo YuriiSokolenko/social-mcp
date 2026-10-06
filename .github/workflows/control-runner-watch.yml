@@ -1,0 +1,77 @@
+name: Control Runner Watch
+run-name: "🚨 Control runner queue watch"
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check-control-wake-queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Fail when post-dev wake waits too long for n150-control
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const thresholdMs = 10 * 60 * 1000;
+            const now = Date.now();
+            const { owner, repo } = context.repo;
+
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              {
+                owner,
+                repo,
+                workflow_id: 'ci.yml',
+                branch: 'dev',
+                event: 'push',
+                status: 'in_progress',
+                per_page: 100,
+              },
+            );
+
+            const stale = [];
+            for (const run of runs) {
+              const jobs = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                {
+                  owner,
+                  repo,
+                  run_id: run.id,
+                  filter: 'latest',
+                  per_page: 100,
+                },
+              );
+
+              for (const job of jobs) {
+                if (job.name !== 'wake-merge-gate' || job.status !== 'queued') continue;
+                const queuedAt = Date.parse(job.created_at ?? run.created_at);
+                if (!Number.isFinite(queuedAt) || now - queuedAt < thresholdMs) continue;
+                stale.push({
+                  runId: run.id,
+                  jobId: job.id,
+                  ageMinutes: Math.floor((now - queuedAt) / 60000),
+                  url: job.html_url ?? run.html_url,
+                });
+              }
+            }
+
+            if (!stale.length) {
+              core.info('No post-dev wake job has been queued for n150-control longer than 10 minutes.');
+              return;
+            }
+
+            for (const item of stale) {
+              core.error(
+                `wake-merge-gate has been queued for ${item.ageMinutes}m: ${item.url} (run ${item.runId}, job ${item.jobId})`,
+              );
+            }
+            core.setFailed(
+              `Detected ${stale.length} post-dev wake job(s) queued for n150-control longer than 10 minutes.`,
+            );

@@ -197,7 +197,21 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.doesNotMatch(ci, /contains\(github\.event\.head_commit\.message/);
 });
 
-test('dedicated control runner label is reserved for terminal-wake orchestration', () => {
+test('control runner watchdog alerts independently when the post-dev wake queue stalls', () => {
+  const workflow = fs.readFileSync('.github/workflows/control-runner-watch.yml', 'utf8');
+  assert.match(workflow, /cron: '\*\/5 \* \* \* \*'/);
+  assert.match(workflow, /runs-on: ubuntu-latest/);
+  assert.match(workflow, /thresholdMs = 10 \* 60 \* 1000/);
+  assert.match(workflow, /workflow_id: 'ci\.yml'/);
+  assert.match(workflow, /branch: 'dev'/);
+  assert.match(workflow, /event: 'push'/);
+  assert.match(workflow, /status: 'in_progress'/);
+  assert.match(workflow, /job\.name !== 'wake-merge-gate' \|\| job\.status !== 'queued'/);
+  assert.match(workflow, /core\.setFailed/);
+  assert.doesNotMatch(workflow, /runs-on:\s*\[?self-hosted/);
+});
+
+test('dedicated control runner label is reserved for bounded wake orchestration', () => {
   const workflowDir = '.github/workflows';
 
   const stripComment = (value) => value.replace(/\s+#.*$/, '').trim();
@@ -214,27 +228,53 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
   const runsOnSpecs = (workflow) => {
     const lines = workflow.split('\n');
     const specs = [];
+    let jobsIndent = null;
+    let jobIndent = null;
+    let currentJob = null;
 
     for (let i = 0; i < lines.length; i += 1) {
-      const match = /^(\s*)runs-on:\s*(.*)$/.exec(lines[i]);
+      const line = lines[i];
+      const indent = /^(\s*)/.exec(line)[1].length;
+      if (/^\s*jobs:\s*$/.test(line)) {
+        jobsIndent = indent;
+        jobIndent = null;
+        currentJob = null;
+        continue;
+      }
+      if (jobsIndent !== null && line.trim() && !line.trimStart().startsWith('#')) {
+        if (indent <= jobsIndent) {
+          jobsIndent = null;
+          jobIndent = null;
+          currentJob = null;
+        } else {
+          if (jobIndent === null) jobIndent = indent;
+          if (indent === jobIndent) {
+            const jobMatch = /^\s*([a-zA-Z_][\w-]*):\s*$/.exec(line);
+            if (jobMatch) currentJob = jobMatch[1];
+          }
+        }
+      }
+
+      const match = /^(\s*)runs-on:\s*(.*)$/.exec(line);
       if (!match) continue;
 
       const baseIndent = match[1].length;
       const inline = stripComment(match[2]);
       if (inline) {
         if (inline.includes('${{')) {
-          specs.push({ parsed: false, labels: [], group: null, raw: inline });
+          specs.push({ job: currentJob, parsed: false, labels: [], group: null, raw: inline });
           continue;
         }
 
         const list = parseList(inline);
         if (list) {
-          specs.push({ parsed: true, labels: list, group: null, raw: inline });
+          specs.push({ job: currentJob, parsed: true, labels: list, group: null, raw: inline });
           continue;
         }
 
         const scalar = normalizeLabel(inline);
         specs.push({
+          job: currentJob,
           parsed: simpleScalar.test(scalar),
           labels: simpleScalar.test(scalar) ? [scalar] : [],
           group: null,
@@ -253,7 +293,7 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
       }
 
       if (blockLines.some(line => line.includes('${{'))) {
-        specs.push({ parsed: false, labels: [], group: null, raw: blockLines.join(' ') });
+        specs.push({ job: currentJob, parsed: false, labels: [], group: null, raw: blockLines.join(' ') });
         continue;
       }
 
@@ -309,10 +349,53 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
       }
 
       if (labels.length === 0 && group === null) parsed = false;
-      specs.push({ parsed, labels, group, raw: blockLines.join(' ') });
+      specs.push({ job: currentJob, parsed, labels, group, raw: blockLines.join(' ') });
     }
 
     return specs;
+  };
+
+  const jobBlocks = (workflow) => {
+    const lines = workflow.split('\n');
+    const starts = [];
+    let jobsIndent = null;
+    let jobIndent = null;
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const indent = /^(\s*)/.exec(line)[1].length;
+      if (/^\s*jobs:\s*$/.test(line)) {
+        jobsIndent = indent;
+        jobIndent = null;
+        continue;
+      }
+      if (jobsIndent === null || !line.trim() || line.trimStart().startsWith('#')) continue;
+      if (indent <= jobsIndent) {
+        jobsIndent = null;
+        jobIndent = null;
+        continue;
+      }
+      if (jobIndent === null) jobIndent = indent;
+      if (indent !== jobIndent) continue;
+      const match = /^\s*([a-zA-Z_][\w-]*):\s*$/.exec(line);
+      if (match) starts.push({ job: match[1], start: i, indent });
+    }
+
+    const blocks = new Map();
+    for (const item of starts) {
+      let end = lines.length;
+      for (let i = item.start + 1; i < lines.length; i += 1) {
+        const line = lines[i];
+        if (!line.trim() || line.trimStart().startsWith('#')) continue;
+        const indent = /^(\s*)/.exec(line)[1].length;
+        if (indent <= item.indent) {
+          end = i;
+          break;
+        }
+      }
+      blocks.set(item.job, lines.slice(item.start, end).join('\n'));
+    }
+    return blocks;
   };
 
   const exactLabels = (labels, expected) =>
@@ -325,7 +408,7 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
     spec.labels.length > 0 &&
     spec.labels.every(label => controlRunnerLabels.has(label));
 
-  const assertWorkflowIsolation = (name, workflow, terminalWake = false) => {
+  const assertWorkflowIsolation = (name, workflow, controlJobs = new Set()) => {
     for (const line of workflow.split('\n')) {
       const code = stripComment(line);
       if (!/runs-on\s*:/.test(code) && !/["']runs-on["']\s*:/.test(code)) continue;
@@ -337,6 +420,7 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
     }
 
     const specs = runsOnSpecs(workflow);
+    const blocks = jobBlocks(workflow);
     for (const spec of specs) {
       assert.equal(
         spec.parsed,
@@ -345,24 +429,39 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
       );
     }
 
-    if (terminalWake) {
+    for (const job of controlJobs) {
       assert.ok(
-        specs.length > 0 &&
-          specs.every(spec => spec.group === null && exactLabels(spec.labels, ['self-hosted', 'n150', 'control'])),
-        `${name}: terminal wake must target exactly self-hosted,n150,control with no runner group`,
+        specs.some(spec => spec.job === job),
+        `${name}: declared control job ${job} must exist and define runs-on`,
       );
-      return;
     }
 
     for (const spec of specs) {
+      const isControlJob = controlJobs.has(spec.job);
+      if (isControlJob) {
+        assert.ok(
+          spec.group === null && exactLabels(spec.labels, ['self-hosted', 'n150', 'control']),
+          `${name} / ${spec.job}: control wake must target exactly self-hosted,n150,control with no runner group`,
+        );
+        continue;
+      }
+
       assert.ok(
         !spec.labels.includes('control'),
-        `${name}: control label must stay reserved for terminal-wake orchestration`,
+        `${name} / ${spec.job ?? 'unknown'}: control label must stay reserved for bounded wake orchestration`,
       );
       assert.equal(
         canMatchControlRunner(spec),
         false,
-        `${name}: runs-on labels must not be satisfiable by the dedicated control runner`,
+        `${name} / ${spec.job ?? 'unknown'}: runs-on labels must not be satisfiable by the dedicated control runner`,
+      );
+    }
+
+    for (const [job, block] of blocks) {
+      if (!/workflow-dispatch\.mjs|pi-post-merge\.mjs/.test(block)) continue;
+      assert.ok(
+        controlJobs.has(job),
+        `${name} / ${job}: workflow dispatch/finalization jobs require an explicit control-lane policy entry`,
       );
     }
   };
@@ -403,6 +502,11 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
     'label matching must be case-insensitive like GitHub',
   );
 
+  const indentedJob = runsOnSpecs(
+    'jobs:\n    heavy:\n        runs-on: [self-hosted, n150, general]',
+  )[0];
+  assert.equal(indentedJob.job, 'heavy', 'job tracking must not depend on exactly two spaces of indentation');
+
   const groupWithComment = runsOnSpecs(
     'jobs:\n  heavy:\n    runs-on:\n      group: control-machines\n      labels: [self-hosted, n150, general] # control only in comment',
   )[0];
@@ -412,14 +516,15 @@ test('dedicated control runner label is reserved for terminal-wake orchestration
     'runner group names and comments must not be mistaken for control labels',
   );
 
+  const controlJobsByWorkflow = new Map([
+    ['ci-terminal-wake.yml', new Set(['wake-pr-merge-gate'])],
+    ['ci.yml', new Set(['wake-merge-gate'])],
+  ]);
+
   const workflowNames = fs.readdirSync(workflowDir).filter(name => /\.ya?ml$/.test(name));
   for (const name of workflowNames) {
     const workflow = fs.readFileSync(`${workflowDir}/${name}`, 'utf8');
-    assertWorkflowIsolation(
-      name,
-      workflow,
-      name === 'ci-terminal-wake.yml' || name === 'ci-terminal-wake.yaml',
-    );
+    assertWorkflowIsolation(name, workflow, controlJobsByWorkflow.get(name) ?? new Set());
   }
 
   for (const name of ['ci.yml', 'pi-auto-merge.yml']) {

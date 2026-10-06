@@ -151,6 +151,16 @@ jobs:
           trap cleanup EXIT
 
           docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t "$base_image" .
+          docker run --rm --entrypoint bash "$base_image" -lc '
+            set -euo pipefail
+            git --version >/dev/null
+            node_version="$(node --version)"
+            case "$node_version" in
+              v24.*) ;;
+              *) echo "unexpected Node.js version: $node_version" >&2; exit 1 ;;
+            esac
+            test "$(./bin/Runner.Listener --version)" = "2.337.0"
+          '
           docker build --build-arg "BASE_IMAGE=$base_image" -t "$fixture_image" "$fixture"
 
           docker run -d --name "$container" \
@@ -251,7 +261,8 @@ jobs:
       needs.test.result == 'success' &&
       needs.docker.result == 'success'
     needs: [test, docker]
-    runs-on: [self-hosted, linux, x64, n150, general]
+    # Dedicated persistent control-plane lane; intentionally not n150/general.
+    runs-on: [self-hosted, n150, control]
     timeout-minutes: 2
     steps:
       - name: Checkout trusted control repository
