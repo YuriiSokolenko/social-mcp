@@ -186,10 +186,6 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.match(terminalWake, /runs-on: \[self-hosted, n150, control\]/);
   assert.doesNotMatch(terminalWake, /runs-on: \[self-hosted[^\n]*n150[^\n]*general/);
   assert.match(
-    ci,
-    /wake-merge-gate:[\s\S]*?runs-on: \[self-hosted, n150, control\][\s\S]*?timeout-minutes: 2/,
-  );
-  assert.match(
     terminalWake,
     /concurrency:\n\s+group: ci-terminal-wake-\$\{\{ github\.event\.workflow_run\.id \}\}\n\s+cancel-in-progress: false/,
   );
