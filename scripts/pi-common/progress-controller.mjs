@@ -966,6 +966,7 @@ export class ProgressController {
     input = null,
     strictBlockerEvidence = false,
     verificationEligible = madeProgress,
+    requiredAnchorMissing = false,
   } = {}) {
     if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
       const pending = this.pendingEvidenceUnlock;
@@ -997,9 +998,15 @@ export class ProgressController {
         this.preComplexityEvidenceRemaining + 1,
       );
     }
-    if (toolName === 'read' && !isError) {
+    if (toolName === 'read') {
       const anchor = normalizedRepositoryPath(input?.path);
-      if (anchor) this.requiredMutationAnchors.delete(anchor);
+      // A required anchor normally clears only after a successful read. If the runtime
+      // independently proves the path is absent after that exact read fails, the planner's
+      // "existing file" assumption is stale: release the anchor so the path can be treated as
+      // a new-file target instead of deadlocking mutation/coding-session startup.
+      if (anchor && (!isError || requiredAnchorMissing === true)) {
+        this.requiredMutationAnchors.delete(anchor);
+      }
     }
     if (toolName === 'lsp_start_server') {
       this.lspServerStartPending = false;
