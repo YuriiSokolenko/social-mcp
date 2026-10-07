@@ -229,7 +229,20 @@ test('canonical validation rejects relocated resolved targets but allows convent
       large_mutation: false,
       reason: 'Follow nearby tests.',
     }, { resolvedTargets }),
-    /resolved_target_mismatch: test target must remain exactly "tests\/test_smoke_labels\.py"; returned conflicting path "tests\/diagnostics\\/test_smoke_labels\.py"/,
+    /resolved_target_mismatch: test target must remain exactly "tests\/test_smoke_labels\.py"; returned conflicting path "tests\/diagnostics\/test_smoke_labels\.py"/,
+  );
+
+  assert.throws(
+    () => validateImplementationPreparation({
+      steps: ['Add smoke label regression coverage.'],
+      facts: [],
+      warnings: [],
+      complexity: 'nontrivial',
+      required_mutation_anchors: [],
+      large_mutation: false,
+      reason: 'Add the requested regression coverage.',
+    }, { resolvedTargets }),
+    /returned conflicting path "<missing>"/,
   );
 });
 
@@ -263,7 +276,7 @@ test('runtime resolved-target mismatch is a recoverable structured-output correc
   }, harness.abortContext);
   assert.match(rejected.content[0].text, /resolved_target_mismatch/);
   assert.match(rejected.content[0].text, /tests\/test_smoke_labels\.py/);
-  assert.match(rejected.content[0].text, /tests\/diagnostics\\/test_smoke_labels\.py/);
+  assert.match(rejected.content[0].text, /tests\/diagnostics\/test_smoke_labels\.py/);
   let state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
   assert.equal(state.repairStatus, 'correction_required');
   assert.equal(state.repairKind, 'resolved_target_mismatch');
