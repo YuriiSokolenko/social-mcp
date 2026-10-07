@@ -65,7 +65,7 @@ If `Required current-file mutation anchors` names existing paths, read each exac
 - `grep`, `find`, and `ls` remain delegated/runtime-blocked in Main. Do not use shell equivalents merely to bypass that policy.
 - Use LSP for an already-named source symbol when semantic lookup is cheaper than text search. For a cold name-only lookup, call `lsp_start_server` once with the configured server id and the exact absolute workspace root supplied in the prepared state, then call `lsp_find_symbol`. Fall back to Orbit/search after an actual LSP failure instead of retrying it.
 - Use Orbit for structural/dependency questions that literal search or LSP do not answer well. Exact source text still comes from `read` before mutation.
-- Use `need_more_evidence` only when runtime exposes it for a bounded transition such as delegated semantic evidence. It is not a prerequisite for `read`, `repo_search`, `indexed_repo_search`, or `bash` in successful fresh Main.
+- Use `need_more_evidence` only when runtime exposes it and one concrete repository fact remains a genuine blocker that requires bounded delegated semantic evidence. State that one concrete missing fact; this transition is not a prerequisite for `read`, `repo_search`, `indexed_repo_search`, or `bash` in successful fresh Main.
 - If delegation is needed and the generic subagent tool is hidden, call `subagents_enable` once, then follow the tool surface and next-action guidance returned by runtime. Enable/delegate to `scout` only when deterministic direct inspection cannot answer one concrete question cheaply. Ask for the first sufficient answer and compact evidence, not a broad repository dump.
 - Task classification alone never requires delegation; `nontrivial` does not imply a scout or broader exploration.
 
