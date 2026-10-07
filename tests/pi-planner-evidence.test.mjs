@@ -323,6 +323,254 @@ test('evidence tool turns do not trigger missing-result recovery while explorati
   assert.equal(harness.aborted(), false);
 });
 
+test('pre-validation schema rejections release the result slot and a corrected result is accepted', async (t) => {
+  const harness = extensionHarness(t);
+  const acceptedValue = {
+    steps: ['Update src/net.py'],
+    facts: ['src/net.py contains send().'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/net.py'],
+    large_mutation: false,
+    reason: 'Existing sender needs a bounded edit.',
+  };
+  const observePreValidationAttempt = async (id, args) => {
+    await harness.handlers.get('message_end')({
+      message: {
+        role: 'assistant',
+        stopReason: 'toolUse',
+        content: [{ type: 'toolCall', id, name: PLANNER_RESULT_TOOL, arguments: args }],
+      },
+    }, harness.abortContext);
+    return harness.handlers.get('before_provider_request')({
+      payload: {
+        tools: [
+          { type: 'function', function: { name: 'read' } },
+          { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
+        ],
+        tool_choice: 'auto',
+      },
+    }, harness.abortContext);
+  };
+
+  const firstRetry = await observePreValidationAttempt('missing-value', {});
+  assert.equal(firstRetry.tool_choice, 'required');
+  assert.deepEqual(firstRetry.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL]);
+
+  let state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 1);
+  assert.equal(state.structuredCorrections, 1);
+  assert.equal(state.repairStatus, 'correction_required');
+  assert.equal(state.repairKind, 'pre_validation_rejection');
+  assert.match(state.repairDiagnostic, /value is required/i);
+
+  const blockedEvidence = await harness.handlers.get('tool_call')({
+    toolName: 'read',
+    toolCallId: 'e-after-finalizing',
+    input: { path: 'src/a.py' },
+  }, harness.abortContext);
+  assert.equal(blockedEvidence.block, true);
+  assert.match(blockedEvidence.reason, /repository evidence is closed/i);
+
+  await observePreValidationAttempt('string-value', { value: 'not-an-object' });
+  state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 2);
+  assert.equal(state.structuredCorrections, 2);
+  assert.equal(state.repairStatus, 'correction_required');
+  assert.equal(state.repairKind, 'pre_validation_rejection');
+  assert.match(state.repairDiagnostic, /value must be an object/i);
+
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: 'corrected', name: PLANNER_RESULT_TOOL, arguments: { value: acceptedValue } }],
+    },
+  }, harness.abortContext);
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'corrected',
+    input: { value: acceptedValue },
+  }, harness.abortContext), undefined);
+  await harness.handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'corrected',
+    input: { value: acceptedValue },
+    isError: false,
+    content: [],
+  }, harness.abortContext);
+
+  state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 3);
+  assert.equal(state.structuredCorrections, 2);
+  assert.equal(state.repairStatus, 'accepted');
+  assert.deepEqual(state.acceptedResult, acceptedValue);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')).length, 0);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_CORRECTION ')).length, 2);
+});
+
+test('three equivalent pre-validation rejections trip semantic no-progress protection', async (t) => {
+  const harness = extensionHarness(t);
+  const payload = {
+    tools: [
+      { type: 'function', function: { name: 'read' } },
+      { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
+    ],
+    tool_choice: 'auto',
+  };
+
+  for (let index = 1; index <= 3; index += 1) {
+    await harness.handlers.get('message_end')({
+      message: {
+        role: 'assistant',
+        stopReason: 'toolUse',
+        content: [{ type: 'toolCall', id: `invalid-${index}`, name: PLANNER_RESULT_TOOL, arguments: {} }],
+      },
+    }, harness.abortContext);
+    await harness.handlers.get('before_provider_request')({ payload }, harness.abortContext);
+  }
+
+  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 3);
+  assert.equal(state.structuredCorrections, 3);
+  assert.equal(state.repairStatus, 'failed');
+  assert.equal(state.repairKind, 'pre_validation_rejection');
+  assert.equal(state.failureKind, 'semantic_no_progress');
+  assert.equal(harness.aborted(), true);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_CORRECTION ')).length, 2);
+  assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_NO_PROGRESS ')));
+});
+
+test('reused pre-validation tool-call id does not bind a corrected runtime call to stale rejection', async (t) => {
+  const harness = extensionHarness(t);
+  const acceptedValue = {
+    steps: ['Update src/net.py'],
+    facts: ['src/net.py contains send().'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/net.py'],
+    large_mutation: false,
+    reason: 'Existing sender needs a bounded edit.',
+  };
+  const payload = {
+    tools: [{ type: 'function', function: { name: PLANNER_RESULT_TOOL } }],
+    tool_choice: 'auto',
+  };
+
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: 'reused-id', name: PLANNER_RESULT_TOOL, arguments: {} }],
+    },
+  }, harness.abortContext);
+  await harness.handlers.get('before_provider_request')({ payload }, harness.abortContext);
+
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: 'reused-id', name: PLANNER_RESULT_TOOL, arguments: { value: acceptedValue } }],
+    },
+  }, harness.abortContext);
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'reused-id',
+    input: { value: acceptedValue },
+  }, harness.abortContext), undefined);
+  await harness.handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'reused-id',
+    input: { value: acceptedValue },
+    isError: false,
+    content: [],
+  }, harness.abortContext);
+
+  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 2);
+  assert.equal(state.structuredCorrections, 1);
+  assert.equal(state.repairStatus, 'accepted');
+  assert.deepEqual(state.acceptedResult, acceptedValue);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')).length, 0);
+});
+
+test('empty-id retry matches the fresh observation and is not double-counted as pre-validation rejection', async (t) => {
+  const harness = extensionHarness(t);
+  const payload = {
+    tools: [{ type: 'function', function: { name: PLANNER_RESULT_TOOL } }],
+    tool_choice: 'auto',
+  };
+
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: {} }],
+    },
+  }, harness.abortContext);
+  await harness.handlers.get('before_provider_request')({ payload }, harness.abortContext);
+
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: { value: {} } }],
+    },
+  }, harness.abortContext);
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    input: { value: {} },
+  }, harness.abortContext), undefined);
+  await harness.handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    input: { value: {} },
+    isError: true,
+    content: [{ type: 'text', text: 'Validation failed: value must have required property steps' }],
+  }, harness.abortContext);
+
+  let state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 2);
+  assert.equal(state.structuredCorrections, 2);
+  assert.equal(state.repairStatus, 'correction_required');
+  assert.equal(state.repairKind, 'schema_rejection');
+
+  await harness.handlers.get('before_provider_request')({ payload }, harness.abortContext);
+  state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.resultAttempts, 2);
+  assert.equal(state.structuredCorrections, 2);
+  assert.equal(state.repairKind, 'schema_rejection');
+});
+
+test('true parallel structured_output calls still share one runtime pending slot', async (t) => {
+  const harness = extensionHarness(t);
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'parallel-1',
+    input: { value: {} },
+  }, harness.abortContext), undefined);
+
+  const duplicate = await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'parallel-2',
+    input: { value: {} },
+  }, harness.abortContext);
+  assert.equal(duplicate.block, true);
+  assert.match(duplicate.reason, /one structured_output call at a time/i);
+  assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')));
+
+  await harness.handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'parallel-1',
+    input: { value: {} },
+    isError: true,
+    content: [{ type: 'text', text: 'Validation failed: value must have required property steps' }],
+  }, harness.abortContext);
+
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'corrected-after-runtime-rejection',
+    input: { value: {} },
+  }, harness.abortContext), undefined);
+});
+
 test('accepted structured output is terminal immediately and late duplicates stay harmless', async (t) => {
   const harness = extensionHarness(t);
   const acceptedValue = {
