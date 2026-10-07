@@ -1324,6 +1324,42 @@ test('successful prepared handoff enforces exact mutation anchors without a nume
   assert.equal(state.productiveProgressState(), 'action_required');
 });
 
+test('missing prepared mutation anchor is released only when runtime proves the file is absent', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  state.onTurnStart(0);
+  state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['Update src/new_target.py'],
+    complexity: 'nontrivial',
+    requiredMutationAnchors: ['src/new_target.py'],
+    largeMutation: true,
+    reason: 'Planner believed the target already existed.',
+  });
+
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false);
+  assert.equal(state.checkToolCall('read', { path: 'src/new_target.py' }), undefined);
+
+  // A generic read failure must keep the safety gate intact.
+  state.onToolExecutionEnd('read', true, {
+    input: { path: 'src/new_target.py' },
+    requiredAnchorMissing: false,
+  });
+  assert.deepEqual(state.pendingRequiredMutationAnchors(), ['src/new_target.py']);
+  assert.match(
+    state.checkToolCall('begin_coding_session', {}).reason,
+    /required mutation anchor/,
+  );
+
+  // If runtime independently verifies the exact path does not exist, the stale
+  // "existing file" assumption is released and action/coding can continue.
+  state.onToolExecutionEnd('read', true, {
+    input: { path: 'src/new_target.py' },
+    requiredAnchorMissing: true,
+  });
+  assert.deepEqual(state.pendingRequiredMutationAnchors(), []);
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true);
+});
+
 test('new-file-only successful prepared handoff proceeds directly to mutation', () => {
   const state = new ProgressController(stageConfig('implementer'), {});
   state.onTurnStart(0);
