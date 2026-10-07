@@ -12,22 +12,13 @@ import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs'
 // not a valid proxy for how many evidence actions the Implementer should be granted.
 export const MAX_PLANNER_EVIDENCE_BUDGET = 6;
 
+// Compact handoff ceilings are deterministic normalization only, not planner-behavior budgets.
 const MAX_PLANNER_STEP_LENGTH = 240;
 export const MAX_PLANNER_FACTS = 6;
 export const MAX_PLANNER_FACT_LENGTH = 200;
 
-// Planner evidence budget: how many read-only repository actions the planner itself may spend
-// while preparing the plan. Deliberately separate from the output `evidence_budget` above (the
-// planner's estimate for the main Implementer); neither value is ever derived from the other.
-export const MAX_PLANNER_REPOSITORY_EVIDENCE = 6;
-export const DEFAULT_PLANNER_EVIDENCE_BUDGET = MAX_PLANNER_REPOSITORY_EVIDENCE;
-export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
-export const PLANNER_OUTPUT_ONLY_ENV = 'PI_PLANNER_OUTPUT_ONLY';
 
-// Trusted read-only surface exposed inside the isolated implementation-planner child.
-// repo_search and planner_code_graph are registered by pi-planner-evidence.mjs in that same child;
-// the agent frontmatter, runtime registration and call-time gate are contract-tested together.
 export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
   'read',
   'grep',
@@ -36,39 +27,25 @@ export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
   'repo_search',
   'planner_code_graph',
 ]);
-// The structured-output call is the planner's result channel, never repository evidence.
 export const PLANNER_RESULT_TOOL = 'structured_output';
 
-export function plannerEvidenceBudget(config = {}) {
-  const configured = Number(config.implementationPlannerEvidenceBudget ?? DEFAULT_PLANNER_EVIDENCE_BUDGET);
-  if (!Number.isSafeInteger(configured) || configured < 0) {
-    throw new Error(`implementationPlannerEvidenceBudget must be a non-negative integer, got ${String(config.implementationPlannerEvidenceBudget)}`);
-  }
-  return Math.min(configured, MAX_PLANNER_REPOSITORY_EVIDENCE);
-}
-
-// Trusted, runtime-side admission for the planner's evidence actions. Every admitted evidence
-// call consumes one unit whether or not it later fails or returns nothing, there is no way to
-// extend the budget, and once exhausted no further repository exploration is admitted.
-export function createPlannerEvidenceGate(budget) {
-  const cap = Math.min(Math.max(Number.isSafeInteger(budget) ? budget : 0, 0), MAX_PLANNER_REPOSITORY_EVIDENCE);
+// Admission is allowlist-only. `used` is observability, never a cap or remaining budget.
+export function createPlannerEvidenceGate() {
   let used = 0;
   return {
-    cap,
     admit(toolName) {
-      if (toolName === PLANNER_RESULT_TOOL) return { allowed: true, evidence: false, used, remaining: cap - used };
+      if (toolName === PLANNER_RESULT_TOOL) return { allowed: true, evidence: false, used };
       if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) {
-        return { allowed: false, evidence: false, used, remaining: cap - used, reason: `${toolName} is not available to the implementation planner (read-only evidence tools only)` };
-      }
-      if (used >= cap) {
-        return { allowed: false, evidence: true, used, remaining: 0, reason: `Planner evidence budget of ${cap} is exhausted; return the structured plan now without further repository exploration` };
+        return {
+          allowed: false, evidence: false, used,
+          reason: toolName + ' is not available to the implementation planner (read-only evidence tools only)',
+        };
       }
       used += 1;
-      return { allowed: true, evidence: true, used, remaining: cap - used };
+      return { allowed: true, evidence: true, used };
     },
   };
 }
-
 function boundedPlannerFact(value) {
   if (typeof value !== 'string') return null;
   const fact = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
