@@ -326,7 +326,7 @@ test('runtime resolved-target mismatch is a recoverable structured-output correc
 
   const corrected = {
     ...wrong,
-    steps: ['Create tests/test_smoke_labels.py.'],
+    steps: ['   Create tests/test_smoke_labels.py.   '],
   };
   assert.equal(await harness.handlers.get('tool_call')({
     toolName: PLANNER_RESULT_TOOL, toolCallId: 'target-corrected', input: { value: corrected },
@@ -343,6 +343,23 @@ test('runtime resolved-target mismatch is a recoverable structured-output correc
   assert.equal(state.structuredCorrections, 1);
   assert.deepEqual(state.acceptedResult, corrected);
   assert.equal(harness.aborted(), true);
+});
+
+test('invalid resolved-target environment is surfaced without exposing raw payload', (t) => {
+  const previous = process.env[PLANNER_RESOLVED_TARGETS_ENV];
+  process.env[PLANNER_RESOLVED_TARGETS_ENV] = '{not-json';
+  const warnings = t.mock.method(console, 'warn', () => {});
+  t.after(() => {
+    if (previous === undefined) delete process.env[PLANNER_RESOLVED_TARGETS_ENV];
+    else process.env[PLANNER_RESOLVED_TARGETS_ENV] = previous;
+  });
+
+  extensionHarness(t);
+  assert.equal(warnings.mock.calls.length, 1);
+  const line = String(warnings.mock.calls[0].arguments[0]);
+  assert.match(line, /^PI_PLANNER_RESOLVED_TARGETS_INVALID /);
+  assert.match(line, /"reason":"invalid_json"/);
+  assert.doesNotMatch(line, /not-json/);
 });
 
 test('more than six distinct useful evidence actions are accepted and telemetry exposes only action count', async (t) => {
