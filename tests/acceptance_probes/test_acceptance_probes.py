@@ -318,6 +318,7 @@ def test_deferred_target_marker_exercises_the_missing_target_fail_path(tmp_path,
         }),
         "utf-8",
     )
+    monkeypatch.delenv(TRUSTED_TARGETS_ENV, raising=False)
     monkeypatch.setenv("PI_ISSUE_CONTEXT", str(context))
     monkeypatch.setattr(importlib.util, "find_spec", lambda _module: None)
 
