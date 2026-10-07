@@ -1,24 +1,41 @@
-FROM n150/github-pi-runner:0.87.1
+ARG RUNNER_PLATFORM=linux/amd64
+FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+
+ARG ACTIONS_RUNNER_VERSION=2.337.0
+ARG ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
+ARG DOCKER_BUILDX_VERSION=0.37.1-1~debian.12~bookworm
+ENV HOME=/home/runner \
+    ACTIONS_RUNNER_VERSION=${ACTIONS_RUNNER_VERSION}
 
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git gnupg jq python3 python3-venv sudo tar gzip \
+      libcurl4 libicu72 libkrb5-3 liblttng-ust1 libssl3 libunwind8 zlib1g \
     && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin=0.37.1-1~ubuntu.24.04~noble \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -g 983 hostdocker \
-    && usermod -aG hostdocker runner
-# GID 983 must match the `docker` group owning /var/run/docker.sock on the N150
-# host (verify with `stat -c %g /var/run/docker.sock` on beelink before reusing
-# this Dockerfile on a different host) -- the socket is bind-mounted into this
-# container so its CI jobs can run `docker compose`, sibling-container style.
+    && useradd --create-home --uid 1001 --shell /bin/bash runner \
+    && groupadd --gid 983 hostdocker \
+    && usermod --append --groups hostdocker runner \
+    && printf 'runner ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/runner \
+    && chmod 0440 /etc/sudoers.d/runner \
+    && install -d -o runner -g runner /home/runner/actions-runner
 
-COPY infra/github-runner-autoscaler/worker-entrypoint.sh /usr/local/bin/pi-runner-entrypoint
-RUN chmod +x /usr/local/bin/pi-runner-entrypoint
+RUN curl -fsSL \
+      "https://github.com/actions/runner/releases/download/v${ACTIONS_RUNNER_VERSION}/actions-runner-linux-x64-${ACTIONS_RUNNER_VERSION}.tar.gz" \
+      -o /tmp/actions-runner.tar.gz \
+    && echo "${ACTIONS_RUNNER_SHA256}  /tmp/actions-runner.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/actions-runner.tar.gz -C /home/runner/actions-runner \
+    && rm /tmp/actions-runner.tar.gz \
+    && chown -R runner:runner /home/runner/actions-runner
 
+COPY infra/github-runner-autoscaler/worker-entrypoint.sh /usr/local/bin/runner-entrypoint
+RUN chmod 0755 /usr/local/bin/runner-entrypoint
+
+WORKDIR /home/runner/actions-runner
 USER runner
-ENTRYPOINT ["/usr/local/bin/pi-runner-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/runner-entrypoint"]

@@ -40,6 +40,23 @@ grep -q '^FROM node:24-bookworm-slim$' <<<"$control_dockerfile" || fail 'control
 grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$control_dockerfile" || fail 'control runner Actions Runner version must be pinned'
 grep -q 'ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
 grep -q 'ENV ACTIONS_RUNNER_BASELINE_VERSION=' <<<"$control_dockerfile" || fail 'control image must expose its verified runner baseline version'
+
+general_worker_dockerfile="$(cat infra/github-runner-autoscaler/worker-general.Dockerfile)"
+pi_worker_dockerfile="$(cat infra/github-runner-autoscaler/worker.Dockerfile)"
+for worker_dockerfile in "$general_worker_dockerfile" "$pi_worker_dockerfile"; do
+  grep -q '^ARG RUNNER_PLATFORM=linux/amd64' <<<"$worker_dockerfile" || fail 'worker images must default to the supported amd64 runner platform'
+  grep -q '^FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:' <<<"$worker_dockerfile" || fail 'worker images must use a public, pinned base image'
+  grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$worker_dockerfile" || fail 'worker Actions Runner version must be pinned'
+  grep -q '70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$worker_dockerfile" || fail 'worker Actions Runner archive checksum must be pinned'
+  ! grep -q 'n150/github-pi-runner' <<<"$worker_dockerfile" || fail 'worker build must not depend on an unpublished N150 base image'
+done
+grep -q 'docker-ce-cli docker-compose-plugin' <<<"$general_worker_dockerfile" || fail 'general worker must include Docker CLI and Compose'
+grep -q 'docker-buildx-plugin' <<<"$general_worker_dockerfile" || fail 'general worker must include Buildx'
+grep -q 'groupadd --gid 983 hostdocker' <<<"$general_worker_dockerfile" || fail 'general worker socket group must preserve the host docker GID'
+grep -q '@gitlab/orbit@0.130.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must retain Orbit 0.130.0'
+grep -q '@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must install the pinned Pi runtime directly'
+grep -q "npm', \['root', '-g'\]" infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs || fail 'LSP wrapper must resolve the npm global path for the public Node base'
+grep -q 'RUNNER_IMAGE:.*github-general-runner-ephemeral:0.87.7' infra/github-runner-autoscaler/compose.yaml || fail 'Compose must use the rebuilt general worker tag'
 grep -q '/opt/actions-runner-baseline' <<<"$control_dockerfile" || fail 'control image must keep baseline package outside the persistent runner root'
 grep -q 'cp -a /opt/actions-runner-baseline/. /home/runner/actions-runner/' <<<"$control_dockerfile" || fail 'new control volume must be seeded with the runner package'
 
