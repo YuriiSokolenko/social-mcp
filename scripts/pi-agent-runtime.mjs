@@ -1054,17 +1054,20 @@ export default function (pi) {
     )];
   }
 
-  function codingRecoveryReadAvailable() {
+  function codingRecoveryReadWindowOpen() {
     return Boolean(
       codingRecoveryGuard?.changed_publishable_paths?.length &&
       codingRecoveryGuard.inspection_complete !== true &&
-      controller.productiveProgressState() === 'action_required' &&
-      codingRecoveryReadablePaths().length > 0
+      controller.productiveProgressState() === 'action_required'
     );
   }
 
+  function codingRecoveryReadAvailable() {
+    return codingRecoveryReadWindowOpen() && codingRecoveryReadablePaths().length > 0;
+  }
+
   function codingRecoveryReadPolicy(input, cwd) {
-    if (!codingRecoveryReadAvailable()) return null;
+    if (!codingRecoveryReadWindowOpen()) return null;
     const allowedPaths = codingRecoveryReadablePaths(cwd);
     if (allowedPaths.length === 0) {
       return {
