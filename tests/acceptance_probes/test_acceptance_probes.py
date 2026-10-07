@@ -11,13 +11,19 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+import math
 import os
+import re
 import subprocess
 import sys
+from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
+from itertools import islice
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -41,6 +47,10 @@ def _decode(value):
         if "$fraction" in value:
             numerator, denominator = value["$fraction"]
             return Fraction(numerator, denominator)
+        if "$tuple" in value:
+            return tuple(_decode(item) for item in value["$tuple"])
+        if "$iterator" in value:
+            return iter(_decode(value["$iterator"]))
         return {key: _decode(item) for key, item in value.items()}
     return value
 
@@ -139,32 +149,162 @@ def _target(criterion: str):
 def test_probe(probe) -> None:
     function = _target(probe["criterion"])
     args = [_decode(arg) for arg in probe["args"]]
+    kwargs = _decode(probe.get("kwargs", {}))
+    snapshot = deepcopy((args, kwargs)) if probe.get("input_unchanged") is True else None
+
     if "raises" in probe:
         with pytest.raises(ValueError):
-            function(*args)
+            function(*args, **kwargs)
     elif probe.get("accepts") is True:
-        function(*args)
+        function(*args, **kwargs)
     else:
-        result = function(*args)
-        assert result == (tuple(probe["returns"]) if isinstance(probe["returns"], list) else probe["returns"])
+        result = function(*args, **kwargs)
+        assert result == _decode(probe["returns"])
+
+    if snapshot is not None:
+        assert (args, kwargs) == snapshot
 
 
 def test_manifest_is_well_formed() -> None:
     ids = [probe["id"] for probe in PROBES]
     assert len(ids) == len(set(ids)), "probe ids must be unique"
+
+    pack_targets = MANIFEST.get("smoke_pack_targets")
+    assert isinstance(pack_targets, list) and len(pack_targets) == 8
+    assert len(pack_targets) == len(set(pack_targets)), "smoke pack targets must be unique"
+
     for probe in PROBES:
         assert probe["criterion"] in CRITERIA, probe["id"]
         outcomes = sum(key in probe for key in ("raises", "returns", "accepts"))
         assert outcomes == 1, probe["id"]
         assert probe.get("raises", "ValueError") == "ValueError", probe["id"]
+        assert isinstance(probe.get("kwargs", {}), dict), probe["id"]
+        if "input_unchanged" in probe:
+            assert probe["input_unchanged"] is True, probe["id"]
         if "accepts" in probe:
             assert probe["accepts"] is True, probe["id"]
+
+    covered_targets = set()
     for name, criterion in CRITERIA.items():
         assert criterion["status"] and criterion["source"], name
+        module, _, _symbol = criterion["target"].partition(":")
+        assert module and _symbol, name
+        covered_targets.add(module)
         if criterion.get("activation") == "when-target-present":
             assert criterion.get("issue_marker"), f"criterion {name} has no issue_marker"
             assert criterion.get("source_path"), f"criterion {name} has no source_path"
         assert any(p["criterion"] == name for p in PROBES), f"criterion {name} has no probe"
+
+    missing = set(pack_targets) - covered_targets
+    assert not missing, f"smoke pack targets without trusted criteria: {sorted(missing)}"
+
+
+# Reference implementations copied from the accepted smoke implementations in
+# PRs #409 (duration), #413 (chunking), and #414 (redaction). They intentionally
+# live only in the protected oracle test so deferred manifest probes execute in
+# ordinary CI even when the disposable production smoke modules are absent.
+_REFERENCE_DURATION_PATTERN = re.compile(
+    r"^(?P<number>\d+(?:\.\d+)?|\.\d+)\s*(?P<unit>ms|s|m|h)$"
+)
+_REFERENCE_UNIT_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+
+
+def _reference_parse_duration_seconds(value: str) -> float:
+    if not isinstance(value, str):
+        raise ValueError("duration must be a string")
+    text = value.strip()
+    if not text:
+        raise ValueError("duration must not be empty")
+    match = _REFERENCE_DURATION_PATTERN.match(text)
+    if match is None:
+        raise ValueError("invalid duration")
+    number = float(match.group("number"))
+    seconds = number * _REFERENCE_UNIT_SECONDS[match.group("unit")]
+    if not math.isfinite(number) or not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("duration must be finite and non-negative")
+    return seconds
+
+
+def _reference_chunked(iterable: Iterable[Any], size: int) -> list[list[Any]]:
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise ValueError("size must be a positive integer")
+    iterator = iter(iterable)
+    chunks = []
+    while True:
+        chunk = list(islice(iterator, size))
+        if not chunk:
+            return chunks
+        chunks.append(chunk)
+
+
+def _reference_redact_mapping(
+    mapping: Mapping[str, Any],
+    sensitive_keys: Iterable[str],
+    *,
+    replacement: str = "***",
+) -> dict[str, Any]:
+    lowered = {str(key).casefold() for key in sensitive_keys}
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                key: replacement if str(key).casefold() in lowered else visit(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(visit(item) for item in value)
+        return value
+
+    return visit(mapping)
+
+
+_REFERENCE_DEFERRED_TARGETS = {
+    "duration-contract": _reference_parse_duration_seconds,
+    "chunking-contract": _reference_chunked,
+    "redaction-contract": _reference_redact_mapping,
+}
+_REFERENCE_DEFERRED_PROBES = [
+    probe for probe in PROBES if probe["criterion"] in _REFERENCE_DEFERRED_TARGETS
+]
+
+
+@pytest.mark.parametrize(
+    "probe",
+    _REFERENCE_DEFERRED_PROBES,
+    ids=[probe["id"] for probe in _REFERENCE_DEFERRED_PROBES],
+)
+def test_deferred_probe_against_accepted_reference_implementation(probe, monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_target",
+        lambda criterion: _REFERENCE_DEFERRED_TARGETS[criterion],
+    )
+    test_probe(probe)
+
+
+def test_decode_preserves_lists_and_supports_explicit_tuple_and_iterator() -> None:
+    assert _decode([1, 2]) == [1, 2]
+    assert _decode({"$tuple": [1, 2]}) == (1, 2)
+
+    iterator = _decode({"$iterator": [1, 2]})
+    assert list(iterator) == [1, 2]
+    assert list(iterator) == []
+
+
+def test_probe_supports_kwargs_and_input_immutability(monkeypatch) -> None:
+    def helper(mapping, *, replacement):
+        return {"token": replacement, "safe": mapping["safe"]}
+
+    monkeypatch.setattr(sys.modules[__name__], "_target", lambda _criterion: helper)
+    test_probe({
+        "criterion": "synthetic",
+        "args": [{"token": "secret", "safe": "visible"}],
+        "kwargs": {"replacement": "[redacted]"},
+        "returns": {"token": "[redacted]", "safe": "visible"},
+        "input_unchanged": True,
+    })
 
 
 def test_deferred_target_marker_exercises_the_missing_target_fail_path(tmp_path, monkeypatch) -> None:

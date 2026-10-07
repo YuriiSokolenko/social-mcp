@@ -1,7 +1,17 @@
 {
-  "description": "Trusted acceptance-boundary probes (#427). Control-plane protected: implementers cannot edit or delete them. Each probe is tied to a criterion and records whether the behaviour is an acceptance requirement or a documented policy choice.",
+  "description": "Trusted acceptance-boundary probes for the eight-task workflow smoke pack (#427). Control-plane protected: implementers cannot edit or delete them. Each probe is tied to a criterion and records whether the behaviour is an acceptance requirement or a documented policy choice.",
   "deferred_activation": "For a rerun that must create a deferred target, put an exact line in the issue body: trusted-acceptance-target: <python.module>. Free-text mentions do not activate deferred targets.",
-  "args_encoding": "JSON values, plus {\"$float\": \"nan|inf|-inf|1.5\"}, {\"$datetime\": \"<ISO-8601>\"}, {\"$int\": \"1eN\"}, {\"$decimal\": \"<decimal>\"}, and {\"$fraction\": [numerator, denominator]} tags.",
+  "args_encoding": "JSON values, plus {\"$float\": \"nan|inf|-inf|1.5\"}, {\"$datetime\": \"<ISO-8601>\"}, {\"$int\": \"1eN\"}, {\"$decimal\": \"<decimal>\"}, {\"$fraction\": [numerator, denominator]}, {\"$tuple\": [...]}, and {\"$iterator\": [...]} tags.",
+  "smoke_pack_targets": [
+    "social_mcp.diagnostics.smoke_duration",
+    "social_mcp.diagnostics.smoke_chunks",
+    "social_mcp.diagnostics.smoke_redact",
+    "social_mcp.diagnostics.smoke_token_bucket",
+    "social_mcp.diagnostics.smoke_url",
+    "social_mcp.diagnostics.smoke_retry_after",
+    "social_mcp.diagnostics.smoke_intervals",
+    "social_mcp.diagnostics.smoke_lru"
+  ],
   "criteria": {
     "retry-after-delta-grammar": {
       "source": "RFC 9110 section 10.2.3 delay-seconds = 1*DIGIT; issues #345/#400",
@@ -39,9 +49,49 @@
       "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_intervals",
       "source_path": "src/social_mcp/diagnostics/smoke_intervals.py",
       "policy": "Reject bool and NaN; accept numbers.Real values (including Fraction) or Decimal bounds; ordered infinities are accepted. Cross-domain Decimal/float mixing is not asserted by this policy."
+    },
+    "duration-contract": {
+      "source": "issues #340/#395: ms/s/m/h conversions; integer/decimal values; empty, negative, non-finite, unknown-unit and malformed inputs are rejected",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_duration:parse_duration_seconds",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_duration",
+      "source_path": "src/social_mcp/diagnostics/smoke_duration.py"
+    },
+    "chunking-contract": {
+      "source": "issues #341/#396: preserve order and return a list of lists; support one-shot iterators and final partial chunks; reject non-positive or non-integer sizes; bool is not accepted as a semantic chunk size",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_chunks:chunked",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_chunks",
+      "source_path": "src/social_mcp/diagnostics/smoke_chunks.py"
+    },
+    "redaction-contract": {
+      "source": "issues #342/#397: exact case-insensitive sensitive-key matching, recursive dict/list traversal, configurable replacement with the task-specified default, and input immutability",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_redact:redact_mapping",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_redact",
+      "source_path": "src/social_mcp/diagnostics/smoke_redact.py"
     }
   },
   "probes": [
+    {"id": "duration-ms", "criterion": "duration-contract", "args": ["250ms"], "returns": 0.25},
+    {"id": "duration-decimal", "criterion": "duration-contract", "args": ["1.5s"], "returns": 1.5},
+    {"id": "duration-integer-seconds", "criterion": "duration-contract", "args": ["45s"], "returns": 45.0},
+    {"id": "duration-minutes", "criterion": "duration-contract", "args": ["2m"], "returns": 120.0},
+    {"id": "duration-hours", "criterion": "duration-contract", "args": ["1h"], "returns": 3600.0},
+    {"id": "duration-negative", "criterion": "duration-contract", "args": ["-1s"], "raises": "ValueError"},
+    {"id": "duration-non-finite", "criterion": "duration-contract", "args": ["NaNs"], "raises": "ValueError"},
+    {"id": "duration-unknown-unit", "criterion": "duration-contract", "args": ["1d"], "raises": "ValueError"},
+    {"id": "duration-empty", "criterion": "duration-contract", "args": [""], "raises": "ValueError"},
+    {"id": "chunks-order-partial", "criterion": "chunking-contract", "args": [[1, 2, 3, 4, 5], 2], "returns": [[1, 2], [3, 4], [5]]},
+    {"id": "chunks-one-shot-iterator", "criterion": "chunking-contract", "args": [{"$iterator": [1, 2, 3, 4, 5]}, 2], "returns": [[1, 2], [3, 4], [5]]},
+    {"id": "chunks-zero-size", "criterion": "chunking-contract", "args": [[1, 2, 3], 0], "raises": "ValueError"},
+    {"id": "chunks-float-size", "criterion": "chunking-contract", "args": [[1, 2, 3], 1.5], "raises": "ValueError"},
+    {"id": "chunks-bool-size", "criterion": "chunking-contract", "args": [[1, 2, 3], true], "raises": "ValueError"},
+    {"id": "redact-case-insensitive-exact", "criterion": "redaction-contract", "args": [{"Token": "secret", "tokens": "keep", "nested": [{"PASSWORD": "pw"}, {"safe": "visible"}]}, ["token", "password"]], "returns": {"Token": "***", "tokens": "keep", "nested": [{"PASSWORD": "***"}, {"safe": "visible"}]}, "input_unchanged": true},
+    {"id": "redact-custom-replacement", "criterion": "redaction-contract", "args": [{"token": "secret", "nested": {"TOKEN": "nested"}}, ["token"]], "kwargs": {"replacement": "[redacted]"}, "returns": {"token": "[redacted]", "nested": {"TOKEN": "[redacted]"}}, "input_unchanged": true},
     {"id": "ra-underscore", "criterion": "retry-after-delta-grammar", "args": ["1_0", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
     {"id": "ra-plus-sign", "criterion": "retry-after-delta-grammar", "args": ["+5", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
     {"id": "ra-arabic-indic-digits", "criterion": "retry-after-delta-grammar", "args": ["١٢", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
@@ -58,7 +108,7 @@
     {"id": "url-empty-query-no-marker", "criterion": "url-literal-preservation", "args": ["http://h/p?"], "returns": "http://h/p"},
     {"id": "bucket-bool-capacity", "criterion": "bucket-numeric-domain", "args": [0, true, 1, 1, 1], "raises": "ValueError"},
     {"id": "bucket-nan-tokens", "criterion": "bucket-numeric-domain", "args": [{"$float": "nan"}, 5, 1, 1, 1], "raises": "ValueError"},
-    {"id": "bucket-huge-int-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$int": "1e400"}, 1, 1, 1], "returns": [0, true]},
+    {"id": "bucket-huge-int-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$int": "1e400"}, 1, 1, 1], "returns": {"$tuple": [0, true]}},
     {"id": "bucket-inf-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$float": "inf"}, 1, 1, 1], "raises": "ValueError"},
     {"id": "lru-bool-capacity", "criterion": "lru-capacity-integer", "args": [true], "raises": "ValueError"},
     {"id": "lru-zero-capacity", "criterion": "lru-capacity-integer", "args": [0], "raises": "ValueError"},
