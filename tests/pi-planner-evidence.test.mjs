@@ -333,9 +333,10 @@ test('parent planner lifecycle records >6 actions, corrections, and CAT_PETTED o
     async driveChild(request) {
       assert.equal(request.timeoutMs, undefined);
       assert.equal(request.toolBudget, undefined);
-      assert.deepEqual(Object.keys(request.childEnv), [PLANNER_EVIDENCE_STATE_FILE_ENV]);
       assert.doesNotMatch(request.task, /at most 6 .*evidence/i);
-      fs.writeFileSync(request.childEnv[PLANNER_EVIDENCE_STATE_FILE_ENV], JSON.stringify({
+      const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+      assert.ok(evidenceStateFile, 'child state sidecar is available only through the inherited child environment');
+      fs.writeFileSync(evidenceStateFile, JSON.stringify({
         used: 8, facts: ['src/net.py contains send().'], structuredCorrections: 2, resultAttempts: 3, repairStatus: 'accepted',
       }));
       return {
