@@ -184,7 +184,7 @@ test('fallback preserves one-shot mutation budget and post-window evidence escap
   }
 });
 
-// Exercise the real runtime, including delegation retry and event-driven tool surfaces.
+// Exercise the real runtime, including planner delegation and event-driven tool surfaces.
 // Only typebox's schema builders are stubbed; no planner/state-machine logic is replaced.
 function runtimeScenario(mode) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-preparation-'));
@@ -320,16 +320,7 @@ function runtimeScenario(mode) {
               };
         const schemaError = 'Structured output validation failed: value: must have required properties value; steps: schema is false; root: must not have additional properties';
         let reply;
-        if (mode === 'envelope-retry') {
-          if (attempts === 1) assert.doesNotMatch(request.task, /REPAIR/);
-          else {
-            const repairAt = request.task.indexOf('REPAIR: the previous structured_output envelope was rejected');
-            const contractAt = request.task.indexOf('Output contract: call structured_output with exactly { "value": { "steps"');
-            assert.ok(repairAt >= 0, 'retry prompt carries repair guidance');
-            assert.ok(contractAt > repairAt, 'repair guidance immediately precedes the exact output contract');
-          }
-          reply = attempts === 2 ? { status: 'completed', result: { kind: 'structured', value: good } } : { status: 'failed', error: schemaError };
-        } else if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
+        if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
         else if (mode === 'timeout') reply = { status: 'failed', error: 'Subagent timed out after 120000ms.' };
         else if (mode === 'transport-timeout') reply = { status: 'timed_out', error: 'delegated planner transport timed out' };
         else if (mode === 'bad-output-schema') reply = { status: 'failed', error: 'invalid outputSchema: unsupported keyword' };
@@ -342,7 +333,7 @@ function runtimeScenario(mode) {
           reply = { status: 'completed', result: { kind: 'structured', value: withoutLargeMutation } };
         }
         else if (mode === 'invalid-large-mutation') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, large_mutation: 'true' } } };
-        else if (mode === 'success' || mode === 'layout-aware' || mode === 'non-additive-target' || mode === 'small-auto' || mode === 'retry-success' && attempts === 2) reply = { status: 'completed', result: { kind: 'structured', value: good } };
+        else if (mode === 'success' || mode === 'layout-aware' || mode === 'non-additive-target' || mode === 'small-auto') reply = { status: 'completed', result: { kind: 'structured', value: good } };
         else reply = { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' };
         if (attempts === 1) {
           const { steps, additionalProperties, required } = request.result.schema;
@@ -469,7 +460,7 @@ function runtimeScenario(mode) {
             assert.ok(active.includes('run_check'));
             await call('run_check', { kind: 'python_compile', scope: ['example.py'] });
             await call('submit_result');
-            // Past the startup deadline, a concrete missing fact still opens read/search.
+            // Later in the main session, a concrete missing fact still opens read/search.
             turn = 10;
             await call('need_more_evidence', { missing: 'Exact edit anchor', reason: 'Resolve target before editing' });
             assert.ok(active.includes('read'));
