@@ -1343,7 +1343,8 @@ test('runtime mock does not treat unknown repository state as a no-op', () => {
 });
 
 test('runtime mock classifies blocked tool calls without tool_execution_end', () => {
-  // Born prepared with zero evidence budget: the session starts action-required, so a read is blocked.
+  // Born prepared with zero evidence budget: fresh direct reads are allowed, so use a delegated tool
+  // that remains blocked to exercise the no-tool_execution_end loop classification path.
   const prepared = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-prepared-')), 'prepared-implementation.json');
   fs.writeFileSync(prepared, JSON.stringify({
     version: 1, status: 'prepared', plan: ['Write the file'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false,
@@ -1353,7 +1354,7 @@ test('runtime mock classifies blocked tool calls without tool_execution_end', ()
     const { default: install } = await import(RUNTIME_URL);
     install(pi);
     const result = await handlers.get('tool_call')(
-      { toolName: 'read', toolCallId: 'blocked-1', input: { path: 'other.md' } },
+      { toolName: 'grep', toolCallId: 'blocked-1', input: { pattern: 'other' } },
       { abort: () => {} },
     );
     assert.equal(result.block, true);
