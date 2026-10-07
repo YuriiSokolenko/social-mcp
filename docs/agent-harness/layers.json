@@ -69,6 +69,7 @@
     "scripts/pi-common/mutation-target.mjs",
     "scripts/pi-common/package-root-check.mjs",
     "scripts/pi-common/pi-stage-backend.mjs",
+    "scripts/pi-common/planner-orbit.mjs",
     "scripts/pi-common/progress-controller.mjs",
     "scripts/pi-common/repo-search.mjs",
     "scripts/pi-common/safe-edit.mjs",
