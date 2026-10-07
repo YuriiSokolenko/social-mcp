@@ -18,6 +18,7 @@ import {
 const PLANNER_GRAPH_MAX_CHARS = 16000;
 const PLANNER_GRAPH_COMMAND_TIMEOUT_MS = 5000;
 const RESULT_EQUIVALENT_NO_PROGRESS_LIMIT = 3;
+const EVIDENCE_NO_PROGRESS_STREAK_LIMIT = 4;
 const execFileAsync = promisify(execFile);
 async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
   const result = await execFileFn(command, args, {
@@ -238,6 +239,8 @@ export default function (pi) {
   const knownFacts = new Set();
   let lastEvidenceSignature = null;
   let lastEvidenceMadeProgress = true;
+  let consecutiveNoProgressEvidence = 0;
+  let missingResultRecoveryUsed = false;
   let lastResultFailureSignature = null;
   let equivalentResultFailureCount = 0;
 
@@ -288,9 +291,9 @@ export default function (pi) {
       return { block: true, reason: 'Planner result finalization has started; repository evidence is closed.' };
     }
 
-    const admission = gate.admit(event.toolName);
-    if (admission.evidence && admission.allowed) {
-      const signature = plannerActionSignature(event.toolName, event.input);
+    let signature = null;
+    if (PLANNER_EVIDENCE_TOOLS.includes(event.toolName)) {
+      signature = plannerActionSignature(event.toolName, event.input);
       if (signature === lastEvidenceSignature && lastEvidenceMadeProgress === false) {
         const diagnostic = `Repeated equivalent ${event.toolName} action produced no new planning information.`;
         recordPlannerResultState({
@@ -301,6 +304,10 @@ export default function (pi) {
         ctx?.abort?.();
         return { block: true, reason: `${diagnostic} Planner stopped by semantic no-progress protection.` };
       }
+    }
+
+    const admission = gate.admit(event.toolName);
+    if (admission.evidence && admission.allowed) {
       recordEvidenceState(admission);
       if (event.toolCallId) {
         pendingEvidence.set(event.toolCallId, { toolName: event.toolName, input: structuredClone(event.input ?? {}), admission, signature });
@@ -326,13 +333,19 @@ export default function (pi) {
     streamedResultArguments.set(key, (streamedResultArguments.get(key) ?? '') + String(update.delta ?? ''));
   });
 
-  pi.on('message_end', async (event) => {
+  pi.on('message_end', async (event, ctx) => {
     const message = event?.message;
     if (message?.role !== 'assistant' || !Array.isArray(message.content)) return;
     if (message.stopReason === 'error' || message.stopReason === 'aborted') return;
+
+    let sawAnyToolCall = false;
+    let sawResultCall = false;
     for (let index = 0; index < message.content.length; index += 1) {
       const block = message.content[index];
-      if (block?.type !== 'toolCall' || block.name !== PLANNER_RESULT_TOOL) continue;
+      if (block?.type !== 'toolCall') continue;
+      sawAnyToolCall = true;
+      if (block.name !== PLANNER_RESULT_TOOL) continue;
+      sawResultCall = true;
       const id = typeof block.id === 'string' && block.id ? block.id : null;
       if (id && observedResultCalls.some(call => call.id === id)) continue;
       const key = id || `index:${index}`;
@@ -342,6 +355,35 @@ export default function (pi) {
       reservePlannerResultCall({ id, rawArguments, message });
     }
     streamedResultArguments = new Map();
+
+    if (sawAnyToolCall || sawResultCall || resultSucceeded || resultCallPending) return;
+    const diagnostic = 'Assistant turn ended without calling structured_output.';
+    if (!missingResultRecoveryUsed && !finalizing) {
+      missingResultRecoveryUsed = true;
+      finalizing = true;
+      if (typeof pi.setActiveTools === 'function') pi.setActiveTools([PLANNER_RESULT_TOOL]);
+      recordPlannerResultState({
+        resultAttempts, structuredCorrections, repairStatus: 'correction_required',
+        repairDiagnostic: diagnostic, repairKind: 'missing_structured_output',
+      });
+      console.log(`PI_PLANNER_RESULT_RECOVERY ${JSON.stringify({ kind: 'missing_structured_output', forced: true })}`);
+      if (typeof pi.sendUserMessage === 'function') {
+        await pi.sendUserMessage(
+          'Your previous turn ended without structured_output. Repository evidence is now closed. Call structured_output now with the completed plan; do not answer with prose.',
+          { deliverAs: 'steer' },
+        );
+      }
+      return;
+    }
+
+    if (missingResultRecoveryUsed && finalizing) {
+      recordPlannerResultState({
+        resultAttempts, structuredCorrections, repairStatus: 'failed',
+        repairDiagnostic: diagnostic, repairKind: 'missing_structured_output', failureKind: 'semantic_no_progress',
+      });
+      console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'missing_structured_output', repeated: true })}`);
+      ctx?.abort?.();
+    }
   });
 
   pi.on('tool_result', async (event, ctx) => {
@@ -397,13 +439,14 @@ export default function (pi) {
     return undefined;
   });
 
-  pi.on('tool_execution_end', async (event) => {
+  pi.on('tool_execution_end', async (event, ctx) => {
     const pending = event.toolCallId ? pendingEvidence.get(event.toolCallId) : null;
     if (event.toolCallId) pendingEvidence.delete(event.toolCallId);
     if (!pending) return;
     const fact = event.isError ? null : plannerEvidenceFact(pending.toolName, pending.input, event.result);
     const madeProgress = Boolean(fact && !knownFacts.has(fact));
     if (madeProgress) {
+      consecutiveNoProgressEvidence = 0;
       knownFacts.add(fact);
       recordEvidenceState(pending.admission, { fact });
       console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
@@ -413,6 +456,19 @@ export default function (pi) {
           '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
           { deliverAs: 'steer' },
         );
+      }
+    } else {
+      consecutiveNoProgressEvidence += 1;
+      if (consecutiveNoProgressEvidence >= EVIDENCE_NO_PROGRESS_STREAK_LIMIT) {
+        const diagnostic = `${consecutiveNoProgressEvidence} consecutive repository actions produced no new compact planning fact.`;
+        recordPlannerResultState({
+          resultAttempts, structuredCorrections, repairStatus: 'failed',
+          repairDiagnostic: diagnostic, failureKind: 'semantic_no_progress',
+        });
+        console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({
+          kind: 'evidence_streak', actions: pending.admission.used, consecutiveNoProgressEvidence,
+        })}`);
+        ctx?.abort?.();
       }
     }
     lastEvidenceSignature = pending.signature;
