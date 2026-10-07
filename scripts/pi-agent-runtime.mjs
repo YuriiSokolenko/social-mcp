@@ -270,7 +270,7 @@ function codingPreparedState(prepared) {
       status: prepared.status,
       plan: prepared.plan,
       repositoryFacts: prepared.repositoryFacts ?? [],
-      layoutHint: prepared.layoutHint ?? null,
+      requiredMutationAnchors: prepared.requiredMutationAnchors ?? [],
     };
   }
   return {
@@ -391,8 +391,8 @@ function logPreparedImplementation(prepared, applied) {
       stage,
       steps: prepared.plan,
       repositoryFacts: prepared.repositoryFacts ?? [],
+      requiredMutationAnchors: prepared.requiredMutationAnchors ?? [],
       complexity: prepared.complexity,
-      evidenceBudget: prepared.evidenceBudget,
       largeMutation: prepared.largeMutation,
       largeMutationArmed: applied.largeMutationArmed,
       reason: prepared.reason,
@@ -408,7 +408,7 @@ function logPreparedImplementation(prepared, applied) {
     console.log(`PI_COMPLEXITY ${JSON.stringify({
       stage,
       complexity: prepared.complexity,
-      evidenceBudget: prepared.evidenceBudget,
+      requiredMutationAnchors: prepared.requiredMutationAnchors ?? [],
       largeMutation: prepared.largeMutation,
       reason: prepared.reason,
       usage,
@@ -1402,13 +1402,20 @@ export default function (pi) {
           });
       const repairReadAvailable = codingRepairReadAvailable();
       const recoveryReadAvailable = codingRecoveryReadAvailable();
-      const boundedReadAvailable = repairReadAvailable || recoveryReadAvailable;
+      const mutationAnchorReadAvailable = controller.pendingRequiredMutationAnchors().length > 0;
+      const boundedReadAvailable = repairReadAvailable || recoveryReadAvailable || mutationAnchorReadAvailable;
       const repairAwareRestricted = boundedReadAvailable && unrestrictedActiveTools.includes('read')
         ? unrestrictedActiveTools.filter(name => name === 'read' || restricted.includes(name))
         : restricted;
       applySurface(
         visible(repairAwareRestricted),
-        repairReadAvailable ? 'repair_evidence' : recoveryReadAvailable ? 'coding_recovery_evidence' : 'restricted',
+        repairReadAvailable
+          ? 'repair_evidence'
+          : recoveryReadAvailable
+            ? 'coding_recovery_evidence'
+            : mutationAnchorReadAvailable
+              ? 'required_mutation_anchor'
+              : 'restricted',
       );
       return;
     }
