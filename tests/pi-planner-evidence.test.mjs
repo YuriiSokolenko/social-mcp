@@ -19,6 +19,7 @@ import {
   validateImplementationPreparation,
 } from '../scripts/pi-common/implementation-planner.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+import { buildPlannerOrbitSeed, plannerOrbitSeedTargets } from '../scripts/pi-common/planner-orbit.mjs';
 
 const FORBIDDEN_TOOLS = [
   'bash', 'write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'submit_result', 'begin_coding_session',
@@ -706,4 +707,112 @@ test('planner evidence fact remains compact and redacted', () => {
   });
   assert.ok(fact.length <= 200);
   assert.doesNotMatch(fact, /super-secret|sk-/);
+});
+
+
+test('Planner Orbit target derivation is deterministic and has no numeric query cap', () => {
+  const issue = {
+    title: 'Update `symbol_0`',
+    body: [
+      'Touch `src/net.py` and tests/test_net.py.',
+      ...Array.from({ length: 8 }, (_, index) => `Inspect \`symbol_${index}\`.`),
+    ].join(' '),
+  };
+  const first = plannerOrbitSeedTargets(issue);
+  const second = plannerOrbitSeedTargets(issue);
+  assert.deepEqual(first, second);
+  assert.ok(first.length > 6);
+  assert.ok(first.includes('src/net.py'));
+  assert.ok(first.includes('tests/test_net.py'));
+});
+
+test('current indexed worktree produces deterministic Orbit seed from current HEAD only', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-seed-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const contextTargets = [];
+  const fakeExec = async (command, args) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') {
+      return { stdout: JSON.stringify([
+        { repo_path: dir, commit_sha: 'old999', status: 'indexed' },
+        { repo_path: dir, commit_sha: 'abc123', status: 'indexed' },
+      ]) };
+    }
+    if (args[0] === 'context') {
+      contextTargets.push(args[1]);
+      return { stdout: `graph relationship for ${args[1]}` };
+    }
+    throw new Error('unexpected command');
+  };
+  const issue = {
+    title: 'Update `src/net.py`',
+    body: Array.from({ length: 8 }, (_, index) => `Inspect \`symbol_${index}\`.`).join(' '),
+  };
+  const seed = await buildPlannerOrbitSeed(dir, issue, { execFile: fakeExec, maxChars: 100000 });
+
+  assert.equal(seed.present, true);
+  assert.equal(seed.fresh, true);
+  assert.equal(seed.currentHead, 'abc123');
+  assert.equal(seed.indexedHead, 'abc123');
+  assert.equal(seed.indexStatus, 'indexed');
+  assert.ok(seed.requestedTargets.length > 6);
+  assert.deepEqual(contextTargets, seed.requestedTargets);
+  assert.deepEqual(seed.targets, seed.requestedTargets);
+  assert.match(seed.text, /graph relationship for src\/net\.py/);
+  assert.equal(seed.truncated, false);
+});
+
+test('stale Orbit index is never injected and context is not queried', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-stale-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let contextCalls = 0;
+  const fakeExec = async (command, args) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') return { stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'old999', status: 'indexed' }]) };
+    if (args[0] === 'context') { contextCalls += 1; return { stdout: 'must not happen' }; }
+    throw new Error('unexpected command');
+  };
+  const seed = await buildPlannerOrbitSeed(dir, { title: 'Update `src/net.py`', body: '' }, { execFile: fakeExec });
+
+  assert.equal(seed.present, false);
+  assert.equal(seed.fresh, false);
+  assert.equal(seed.currentHead, 'abc123');
+  assert.equal(seed.indexedHead, 'old999');
+  assert.equal(seed.reason, 'stale_index');
+  assert.equal(contextCalls, 0);
+});
+
+test('missing Orbit degrades to absent seed without failing Planner preparation', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-missing-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fakeExec = async (command) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    throw new Error('orbit not installed');
+  };
+  const seed = await buildPlannerOrbitSeed(dir, { title: 'Update `src/net.py`', body: '' }, { execFile: fakeExec });
+  assert.equal(seed.present, false);
+  assert.equal(seed.reason, 'orbit_unavailable');
+  assert.equal(seed.serializedBytes, 0);
+});
+
+test('Orbit seed serialization is safety-bounded without limiting the number of graph queries', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-bound-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let contextCalls = 0;
+  const fakeExec = async (command, args) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') return { stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'abc123', status: 'indexed' }]) };
+    if (args[0] === 'context') { contextCalls += 1; return { stdout: `context ${args[1]} ${'x'.repeat(100)}` }; }
+    throw new Error('unexpected command');
+  };
+  const issue = {
+    title: 'Seed graph',
+    body: Array.from({ length: 8 }, (_, index) => `Inspect \`symbol_${index}\`.`).join(' '),
+  };
+  const seed = await buildPlannerOrbitSeed(dir, issue, { execFile: fakeExec, maxChars: 120 });
+  assert.equal(seed.present, true);
+  assert.equal(seed.truncated, true);
+  assert.equal(contextCalls, seed.requestedTargets.length);
+  assert.ok(contextCalls > 6);
+  assert.match(seed.text, /Orbit seed truncated for safety/);
 });
