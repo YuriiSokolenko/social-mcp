@@ -24,7 +24,7 @@ Structured-output serialization contract — read this before using repository e
     "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."],
     "facts": ["Both implementation targets are new files."],
     "complexity": "nontrivial",
-    "evidence_budget": 0,
+    "required_mutation_anchors": [],
     "large_mutation": false,
     "reason": "Both mutation targets are new files, so no current-file anchor is needed."
   }
@@ -62,7 +62,7 @@ Finalization:
 - There is no fixed result-attempt or repair-attempt budget. Keep correcting while the payload is materially improving.
 - Repeating a materially equivalent invalid payload/error without progress is a semantic deadlock and may be stopped by the runtime.
 
-The prepared handoff must carry forward useful facts you already established. Put concise repository-derived conventions, target paths/symbols, invariants, relationships, and verification locations into `facts` so the Implementer does not rediscover them. Facts must be synthesized: no raw reads, search results, graph dumps, tool history, transcript, or chain-of-thought. Runtime normalization keeps harmless serialization oversize compact; do not alter planning behavior to target a hidden size budget.
+The prepared handoff must carry forward useful facts you already established. Put concise repository-derived conventions, target paths/symbols, invariants, relationships, and verification locations into `facts` so the Implementer does not rediscover them. Facts must be synthesized: no raw reads, search results, graph dumps, tool history, transcript, or chain-of-thought. Preserve all useful semantic facts; there is no fact-count, step-count, or arbitrary character ceiling in the Planner → Main handoff.
 
 Use inherited skill guidance only as planning heuristics. Prefer KISS/YAGNI/SOLID-style simplicity, existing project conventions, and independently verifiable steps.
 
@@ -77,12 +77,11 @@ Classification:
 - `trivial` — exact tiny/static change with an explicit desired outcome and no behavior, architecture, dependency, migration, security, or conflict decision.
 - `nontrivial` — everything else. Dispatcher already owns Architect routing.
 
-Evidence budget (`evidence_budget`, integer 0-6):
-- This is ONLY repository evidence the main Implementer still needs after consuming this prepared handoff.
-- It is not related to how many evidence actions the planner used.
-- Planner-derived facts do not replace a current mutation anchor. If main must modify an existing file whose current text/AST it has not seen, reserve at least one evidence action for that file.
-- `0` is appropriate when all implementation targets are new files or no existing-file mutation needs a fresh anchor.
-- Increase it only for genuinely unresolved main-session evidence, up to the Implementer's existing downstream limit.
+Required mutation anchors (`required_mutation_anchors`):
+- Include the exact repository-relative path of every existing file the Implementer is expected to mutate.
+- Do not include new files. A new-file-only task should normally use an empty array and can proceed directly to action.
+- This is a semantic safety handoff, not an evidence-action allowance. The Implementer may read each named anchor directly before mutating it.
+- Do not estimate how many future repository actions Main might need. If a different unresolved fact later blocks a safe action, Main uses its semantic `need_more_evidence` transition.
 
 Large mutation (`large_mutation`):
 - true only when the next implementation mutation clearly needs the large coding-session/write budget.
@@ -92,6 +91,6 @@ Return only the requested structured result through `structured_output` with the
 - `steps`
 - `facts`
 - `complexity`: `trivial | nontrivial`
-- `evidence_budget`: integer 0-6
+- `required_mutation_anchors`: array of existing repository-relative files that must be read before mutation; empty when none
 - `large_mutation`: boolean
 - `reason`: one concise sentence
