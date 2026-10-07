@@ -52,11 +52,13 @@ function extensionHarness(t, { stateFile = stateFileFor(t), mockLog = true } = {
   const handlers = new Map();
   let activeTools = [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL];
   let aborted = false;
+  const messages = [];
   const logs = mockLog ? t.mock.method(console, 'log', () => {}) : null;
   plannerEvidenceExtension({
     on: (event, fn) => handlers.set(event, fn),
     getActiveTools: () => activeTools,
     setActiveTools: value => { activeTools = [...value]; },
+    sendUserMessage: async (message, options) => { messages.push({ message, options }); },
   });
   return {
     handlers,
@@ -64,6 +66,7 @@ function extensionHarness(t, { stateFile = stateFileFor(t), mockLog = true } = {
     activeTools: () => activeTools,
     abortContext: { abort: () => { aborted = true; } },
     aborted: () => aborted,
+    messages: () => [...messages],
     logs: () => logs?.mock.calls.map(call => String(call.arguments[0])) ?? [],
   };
 }
@@ -174,6 +177,8 @@ test('more than six distinct useful evidence actions are accepted and telemetry 
     8,
     'each distinct useful result may remind that the same waiting cat still exists without accumulating reward',
   );
+  assert.equal(harness.messages().length, 8);
+  assert.equal(new Set(harness.messages().map(item => item.message)).size, 1, 'the reminder is state-based and never accumulates points');
 });
 
 test('equivalent repository action is stopped only after it demonstrates no progress', async (t) => {
@@ -221,6 +226,10 @@ test('successful evidence stores compact redacted facts and emits neutral CAT_WA
   assert.ok(state.facts[0].length <= 200);
   assert.doesNotMatch(state.facts[0], /super-secret|sk-/);
   assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_CAT_WAITING') && line.includes('"event":"progress"')));
+  assert.deepEqual(harness.messages(), [{
+    message: '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
+    options: { deliverAs: 'steer' },
+  }]);
   assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
 });
 
