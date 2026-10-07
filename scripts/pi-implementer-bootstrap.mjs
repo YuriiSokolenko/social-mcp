@@ -28,7 +28,7 @@ export default function (pi) {
       const repositoryFactCount = Array.isArray(prepared.repositoryFacts) ? prepared.repositoryFacts.length : 0;
       const planStepCount = Array.isArray(prepared.plan) ? prepared.plan.length : 0;
       const evidenceToolTypes = Object.keys(prepared.plannerEvidenceToolCounts ?? {}).sort();
-      console.log(`[PI][planner] completed status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} evidence_tools=${evidenceToolTypes.join(',') || 'none'} corrections=${prepared.plannerStructuredCorrections ?? 0} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${prepared.plannerUsage?.input ?? 'unknown'} out=${prepared.plannerUsage?.output ?? 'unknown'} facts=${repositoryFactCount} bytes=${preparedImplementationBytes}`);
+      console.log(`[PI][planner] completed status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} evidence_tools=${evidenceToolTypes.join(',') || 'none'} finalization_attempts=${prepared.plannerFinalizationAttempts ?? 0} xml_repair=${prepared.plannerXmlRepairNeeded ? 'yes' : 'no'} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${prepared.plannerUsage?.input ?? 'unknown'} out=${prepared.plannerUsage?.output ?? 'unknown'} facts=${repositoryFactCount} bytes=${preparedImplementationBytes}`);
       console.log(`PI_BOOTSTRAP ${JSON.stringify({
         phase: 'planner_completed',
         status: prepared.status,
@@ -36,7 +36,8 @@ export default function (pi) {
         evidenceActions: prepared.plannerEvidenceActions ?? null,
         evidenceToolTypes,
         evidenceToolCounts: prepared.plannerEvidenceToolCounts ?? {},
-        structuredCorrections: prepared.plannerStructuredCorrections ?? 0,
+        finalizationAttempts: prepared.plannerFinalizationAttempts ?? 0,
+        xmlRepairNeeded: Boolean(prepared.plannerXmlRepairNeeded),
         providerTurns: prepared.plannerProviderTurns ?? null,
         inputTokens: prepared.plannerUsage?.input ?? null,
         outputTokens: prepared.plannerUsage?.output ?? null,
