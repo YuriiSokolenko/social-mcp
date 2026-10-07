@@ -13,6 +13,7 @@ import { buildPlannerOrbitSeed } from './planner-orbit.mjs';
 const PLANNER_EVIDENCE_FINGERPRINT_MAX_LENGTH = 200;
 
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
+export const PLANNER_RESOLVED_TARGETS_ENV = 'PI_PLANNER_RESOLVED_TARGETS';
 
 export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
   'read',
@@ -123,6 +124,10 @@ export const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
       items: { type: 'string', minLength: 1 },
     },
     facts: {
+      type: 'array',
+      items: { type: 'string', minLength: 1 },
+    },
+    warnings: {
       type: 'array',
       items: { type: 'string', minLength: 1 },
     },
@@ -310,21 +315,79 @@ export function discoverAdditivePythonLayout(cwd, issue) {
   return null;
 }
 
+export function plannerTargetPolicy(layoutHint) {
+  if (!layoutHint || typeof layoutHint !== 'object') {
+    return { resolvedTargets: {}, conventionHints: {} };
+  }
+  const resolvedTargets = {};
+  const conventionHints = {};
+  if (typeof layoutHint.sourceTarget === 'string' && layoutHint.sourceTarget.trim()) {
+    resolvedTargets.source = layoutHint.sourceTarget.trim();
+  }
+  if (layoutHint.testTargetRequired === true && typeof layoutHint.testTarget === 'string' && layoutHint.testTarget.trim()) {
+    resolvedTargets.test = layoutHint.testTarget.trim();
+  }
+  for (const key of ['sourceDirectory', 'sourceConvention', 'testDirectory', 'testConvention']) {
+    if (typeof layoutHint[key] === 'string' && layoutHint[key].trim()) conventionHints[key] = layoutHint[key].trim();
+  }
+  if (!resolvedTargets.test && typeof layoutHint.testTarget === 'string' && layoutHint.testTarget.trim()) {
+    conventionHints.testTarget = layoutHint.testTarget.trim();
+  }
+  return { resolvedTargets, conventionHints };
+}
+
+function plannerActionPaths(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const strings = [
+    ...(Array.isArray(value.steps) ? value.steps : []),
+    ...(Array.isArray(value.required_mutation_anchors) ? value.required_mutation_anchors : []),
+  ].filter(item => typeof item === 'string');
+  const paths = [];
+  const seen = new Set();
+  const pattern = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)/g;
+  for (const text of strings) {
+    for (const match of text.matchAll(pattern)) {
+      const candidate = match[2];
+      if (!candidate || candidate.includes('..') || candidate.includes('://') || seen.has(candidate)) continue;
+      seen.add(candidate);
+      paths.push(candidate);
+    }
+  }
+  return paths;
+}
+
+export function validateResolvedTargetPaths(value, resolvedTargets = {}) {
+  const returnedPaths = plannerActionPaths(value);
+  for (const [key, rawExpected] of Object.entries(resolvedTargets ?? {})) {
+    const expected = typeof rawExpected === 'string' ? rawExpected.trim() : '';
+    if (!expected) continue;
+    const basename = path.posix.basename(expected);
+    const conflicting = returnedPaths.find(candidate =>
+      candidate !== expected && path.posix.basename(candidate) === basename);
+    if (conflicting) {
+      throw new Error(
+        `resolved_target_mismatch: ${key} target must remain exactly "${expected}"; returned conflicting path "${conflicting}"`,
+      );
+    }
+  }
+}
+
 // Safe repairs only: trim strings and retain the complete semantic handoff. There are no
 // arbitrary fact/step/reason ceilings on a successful Planner -> Main result.
 export function normalizeImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const trim = item => typeof item === 'string' ? item.trim() : item;
   const normalized = {};
-  for (const key of ['steps', 'facts', 'complexity', 'required_mutation_anchors', 'large_mutation', 'reason']) {
+  for (const key of ['steps', 'facts', 'warnings', 'complexity', 'required_mutation_anchors', 'large_mutation', 'reason']) {
     if (!(key in value)) continue;
-    if ((key === 'steps' || key === 'facts' || key === 'required_mutation_anchors') && Array.isArray(value[key])) {
+    if ((key === 'steps' || key === 'facts' || key === 'warnings' || key === 'required_mutation_anchors') && Array.isArray(value[key])) {
       normalized[key] = value[key].map(trim);
     } else {
       normalized[key] = trim(value[key]);
     }
   }
   if (!('facts' in normalized)) normalized.facts = [];
+  if (!('warnings' in normalized)) normalized.warnings = [];
   if (!('required_mutation_anchors' in normalized)) normalized.required_mutation_anchors = [];
   if (!('large_mutation' in normalized)) normalized.large_mutation = false;
   return normalized;
@@ -338,13 +401,13 @@ function validMutationAnchorPath(value) {
   return path.posix.normalize(text) === text;
 }
 
-export function validateImplementationPreparation(value) {
+export function validateImplementationPreparation(value, { resolvedTargets = {} } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Implementation planner returned a non-object structured result');
   }
   const keys = Object.keys(value);
   const requiredKeys = ['steps', 'complexity', 'large_mutation', 'reason'];
-  const allowedKeys = new Set([...requiredKeys, 'facts', 'required_mutation_anchors']);
+  const allowedKeys = new Set([...requiredKeys, 'facts', 'warnings', 'required_mutation_anchors']);
   if (!requiredKeys.every(key => keys.includes(key)) || keys.some(key => !allowedKeys.has(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
@@ -363,6 +426,14 @@ export function validateImplementationPreparation(value) {
   if (facts.some(fact => !fact)) {
     throw new Error('Implementation planner returned an invalid repository fact');
   }
+  const warningsValue = value.warnings ?? [];
+  if (!Array.isArray(warningsValue)) {
+    throw new Error('Implementation planner returned an invalid warning list');
+  }
+  const warnings = warningsValue.map(warning => typeof warning === 'string' ? warning.trim() : '');
+  if (warnings.some(warning => !warning)) {
+    throw new Error('Implementation planner returned an invalid warning');
+  }
   if (!['trivial', 'nontrivial'].includes(value.complexity)) {
     throw new Error(`Implementation planner returned invalid complexity: ${String(value.complexity)}`);
   }
@@ -379,9 +450,11 @@ export function validateImplementationPreparation(value) {
   }
   const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
   if (!reason) throw new Error('Implementation planner returned an invalid reason');
+  validateResolvedTargetPaths({ ...value, steps, required_mutation_anchors: requiredMutationAnchors }, resolvedTargets);
   return {
     steps,
     facts,
+    warnings,
     complexity: value.complexity,
     requiredMutationAnchors: [...new Set(requiredMutationAnchors)],
     largeMutation: value.large_mutation,
@@ -391,8 +464,18 @@ export function validateImplementationPreparation(value) {
 
 export function plannerTask(env = process.env, { layoutHint = null, orbitSeed = null } = {}) {
   const issue = implementerIssueContext(env);
+  const targetPolicy = plannerTargetPolicy(layoutHint);
   const layoutGuidance = layoutHint
-    ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; test_target=${layoutHint.testTarget ?? 'unknown'}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat these resolved targets/directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
+    ? `\n\nTARGET SELECTION CONTRACT (runtime, current worktree):
+resolvedTargets=${JSON.stringify(targetPolicy.resolvedTargets)}
+conventionHints=${JSON.stringify(targetPolicy.conventionHints)}
+Precedence is resolvedTargets > conventionHints > discovered repository context.
+Resolved targets are constraints, not hints. Do not validate, relocate, normalize, improve, or replace them.
+Repository conventions are used only to choose a target when the corresponding resolved target does not exist.
+Repository evidence may explain how to modify a resolved target, but may not change which target is used.
+Do not spend repository evidence actions solely to re-decide or verify an authoritative resolved target.
+If a convention conflicts with a resolved target, keep the resolved target and report the disagreement in optional warnings instead of changing the path.
+Discovered repository context is supplied separately below through the Orbit seed and read-only evidence tools.`
     : '';
   const evidencePolicy = `Repository exploration has no action budget. Continue only while another read-only repository action is likely to materially change or improve the implementation plan. If the issue names an exact path/directory/symbol/test, target that location first. Prefer repo_search when an exact location is unknown, planner_code_graph for relationship/blast-radius questions, and read/grep/find/ls only when they are the narrowest useful action. Do not spend evidence re-proving fresh-worktree provenance already established by the runtime. Stop immediately once exact targets, conventions, invariants, blast radius, and verification scope are sufficiently clear. Repeated equivalent actions that produce no new planning information are treated as a semantic loop.`;
   const orbitSeedGuidance = orbitSeed?.present && typeof orbitSeed.text === 'string' && orbitSeed.text.trim()
@@ -408,10 +491,10 @@ Investigate only while additional evidence can materially improve the plan.
 Finish as soon as the plan is sufficiently grounded. Repository tool calls do not earn points or increase the reward.
 
 STRUCTURED_OUTPUT SERIALIZATION CONTRACT — read before repository evidence. This is a shape example only; replace the sample content with the real plan and pass this object directly as the arguments to structured_output:
-{ "value": { "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."], "facts": ["Both implementation targets are new files."], "complexity": "nontrivial", "required_mutation_anchors": [], "large_mutation": false, "reason": "Both mutation targets are new files, so no current-file anchor is needed." } }
+{ "value": { "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."], "facts": ["Both implementation targets are new files."], "warnings": [], "complexity": "nontrivial", "required_mutation_anchors": [], "large_mutation": false, "reason": "Both mutation targets are new files, so no current-file anchor is needed." } }
 Never add a second value wrapper such as { "value": { "value": { ... } } }. Never omit the outer value. Never stringify the payload as { "value": "{...}" }.
 
-MANDATORY COMPLETION: a successful planner lifecycle ends only by calling structured_output. Never finish with prose. Once finalization starts, repository evidence closes. If runtime validation rejects the structured result, correct only the reported shape/serialization problem and call structured_output again; there is no fixed repair-attempt budget.
+MANDATORY COMPLETION: a successful planner lifecycle ends only by calling structured_output. Never finish with prose. Once finalization starts, repository evidence closes. If runtime validation rejects the structured result, correct only the reported schema/serialization or resolved-target mismatch and call structured_output again; there is no fixed repair-attempt budget.
 ${evidencePolicy}${orbitSeedGuidance}
 
 Synthesize what you learn into concise repository-derived facts: observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. Preserve every useful semantic fact needed by Main; do not truncate or drop facts merely to hit a count/character target. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought.
@@ -424,7 +507,7 @@ Set large_mutation=true only when the next implementation work clearly needs the
 
 The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}
 
-Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "required_mutation_anchors": ["path/to/existing-file-if-needed"], "large_mutation": true|false, "reason": "..." } }. Use an empty required_mutation_anchors array for new-file-only work. The tool argument has exactly one top-level "value"; never wrap it again.
+Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "warnings": [...], "complexity": "trivial|nontrivial", "required_mutation_anchors": ["path/to/existing-file-if-needed"], "large_mutation": true|false, "reason": "..." } }. warnings is optional and should contain only non-blocking disagreements such as a convention conflicting with an immutable resolved target. Use an empty required_mutation_anchors array for new-file-only work. The tool argument has exactly one top-level "value"; never wrap it again.
 
 Issue title:
 ${issue.title}
@@ -450,6 +533,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
   orbitSeedBuilder = buildPlannerOrbitSeed,
 } = {}) {
   const issue = implementerIssueContext(env);
+  const targetPolicy = plannerTargetPolicy(layoutHint);
   let orbitSeed;
   try {
     orbitSeed = await orbitSeedBuilder(ctx.cwd, issue, { layoutHint, signal });
@@ -502,7 +586,10 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
 
   const evidenceStateDir = fs.mkdtempSync(path.join(tmpdir(), 'pi-planner-evidence-'));
   const evidenceStateFile = path.join(evidenceStateDir, `${randomUUID()}.json`);
-  request.childEnv = { [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile };
+  request.childEnv = {
+    [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
+    [PLANNER_RESOLVED_TARGETS_ENV]: JSON.stringify(targetPolicy.resolvedTargets),
+  };
 
   let usage = null;
   let status = 'error';
@@ -517,6 +604,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
         state,
         validated: validateImplementationPreparation(
           normalizeImplementationPreparation(state.acceptedResult),
+          { resolvedTargets: targetPolicy.resolvedTargets },
         ),
       };
     } catch (error) {
@@ -534,7 +622,9 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     usage = addUsage(usage, response.usage);
     const accepted = acceptedPlannerResult();
     const validated = accepted?.validated ??
-      validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
+      validateImplementationPreparation(normalizeImplementationPreparation(response.result.value), {
+        resolvedTargets: targetPolicy.resolvedTargets,
+      });
     const evidenceState = accepted?.state ?? readPlannerEvidenceState(evidenceStateFile);
     status = 'completed';
     return {
@@ -608,6 +698,8 @@ export async function prepareImplementation(pi, ctx, config, signal, {
       status: 'prepared',
       plan: planned.steps,
       repositoryFacts: planned.facts,
+      plannerWarnings: planned.warnings,
+      targetPolicy: plannerTargetPolicy(layoutHint),
       complexity: planned.complexity,
       requiredMutationAnchors: planned.requiredMutationAnchors,
       largeMutation: planned.largeMutation,
@@ -628,6 +720,7 @@ export async function prepareImplementation(pi, ctx, config, signal, {
       failureClass: error?.plannerFailureClass ?? 'preparation_infrastructure_failure',
       reason: String(error?.message ?? error),
       layoutHint,
+      targetPolicy: plannerTargetPolicy(layoutHint),
       plannerUsage: error?.delegationUsage ?? null,
       plannerEvidenceActions: Number.isSafeInteger(error?.plannerEvidenceActions) ? error.plannerEvidenceActions : null,
       plannerEvidenceToolCounts: error?.plannerEvidenceToolCounts && typeof error.plannerEvidenceToolCounts === 'object' ? error.plannerEvidenceToolCounts : {},
@@ -664,11 +757,12 @@ export function validatePreparedImplementation(value) {
     validateImplementationPreparation({
       steps: value.plan,
       facts: value.repositoryFacts ?? [],
+      warnings: value.plannerWarnings ?? [],
       complexity: value.complexity,
       required_mutation_anchors: value.requiredMutationAnchors ?? [],
       large_mutation: value.largeMutation,
       reason: value.reason,
-    });
+    }, { resolvedTargets: value.targetPolicy?.resolvedTargets ?? plannerTargetPolicy(value.layoutHint).resolvedTargets });
   } else if (typeof value.reason !== 'string' || !value.failureClass) {
     throw new Error('Prepared implementation fallback is missing its reason');
   }
@@ -688,10 +782,10 @@ export function readPreparedImplementation(file) {
   return validatePreparedImplementation(JSON.parse(fs.readFileSync(file, 'utf8')));
 }
 
-function layoutGuidance(layoutHint, { authoritative }) {
+function layoutGuidance(layoutHint) {
   if (!layoutHint) return '';
-  const source = `Repository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; source directory ${layoutHint.sourceDirectory}${layoutHint.sourceConvention ? `; nearest source convention ${layoutHint.sourceConvention}` : ''}; tests ${layoutHint.testDirectory}${layoutHint.testTarget ? `; new test target ${layoutHint.testTarget}` : ''}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
-  return `\n${source} ${authoritative}`;
+  const policy = plannerTargetPolicy(layoutHint);
+  return `\nRuntime target policy: resolvedTargets=${JSON.stringify(policy.resolvedTargets)}; conventionHints=${JSON.stringify(policy.conventionHints)}. Resolved targets are immutable runtime decisions. Convention hints are fallback guidance only for unresolved target keys.`;
 }
 
 // The compact, trusted block that replaces the old model-visible prepare_implementation exchange.
@@ -704,7 +798,7 @@ export function preparedImplementationBlock(prepared, { largeMutationArmed = fal
     return `Runtime-prepared implementation state (planner output unavailable):
 PREPARATION_FALLBACK: implementation planner infrastructure failed (${prepared.failureClass}). Preparation is already resolved before this session; no plan or complexity was recorded and there is nothing to prepare or retry.
 If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. You may use up to ${PREPARATION_FALLBACK_EVIDENCE_BUDGET} repository evidence attempts; every accepted non-control evidence action consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. Direct mutation remains allowed during the window and closes it on success. The coding-session action becomes valid only after the evidence window is closed. Focused verification becomes available only after a successful mutation. Final submission rules are unchanged. After the window closes, use only the blocker action exposed by the runtime when one concrete implementation fact is still missing.
-${provenance}${layoutGuidance(prepared.layoutHint, { authoritative: 'This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.' })}`;
+${provenance}${layoutGuidance(prepared.layoutHint)}`;
   }
   const numberedPlan = prepared.plan.map((step, index) => `${index + 1}. ${step}`).join('\n');
   const repositoryFacts = Array.isArray(prepared.repositoryFacts) && prepared.repositoryFacts.length > 0
@@ -713,10 +807,17 @@ ${provenance}${layoutGuidance(prepared.layoutHint, { authoritative: 'This curren
   const mutationAnchors = Array.isArray(prepared.requiredMutationAnchors) && prepared.requiredMutationAnchors.length > 0
     ? `Required current-file mutation anchors (read these exact files before mutating them; these reads are admitted directly and do not need need_more_evidence):\n${prepared.requiredMutationAnchors.map(anchor => `- ${anchor}`).join('\n')}\n`
     : 'Required current-file mutation anchors: none.\n';
+  const targetPolicy = prepared.targetPolicy ?? plannerTargetPolicy(prepared.layoutHint);
+  const targetPolicyBlock = Object.keys(targetPolicy.resolvedTargets ?? {}).length || Object.keys(targetPolicy.conventionHints ?? {}).length
+    ? `Target precedence: resolvedTargets > conventionHints > discovered repository context.\nResolved targets (immutable): ${JSON.stringify(targetPolicy.resolvedTargets ?? {})}\nConvention hints (fallback only when the corresponding resolved target is absent): ${JSON.stringify(targetPolicy.conventionHints ?? {})}\n`
+    : '';
+  const plannerWarnings = Array.isArray(prepared.plannerWarnings) && prepared.plannerWarnings.length > 0
+    ? `Planner warnings (informational only; never override resolved targets):\n${prepared.plannerWarnings.map(warning => `- ${warning}`).join('\n')}\n`
+    : '';
   return `Runtime-prepared implementation state:
 Implementation plan:
 ${numberedPlan}
-${repositoryFacts}${mutationAnchors}
+${targetPolicyBlock}${plannerWarnings}${repositoryFacts}${mutationAnchors}
 Complexity: ${prepared.complexity} — ${prepared.reason}
 Large mutation: ${largeMutationArmed ? 'auto-arm one-shot elevated mutation budget when action is ready' : 'normal mutation budget'}
 Preparation complete; start from the prepared facts and actions. Do not re-plan or re-discover resolved layout. If one genuinely unresolved repository fact blocks a safe action, use need_more_evidence for that concrete fact.
