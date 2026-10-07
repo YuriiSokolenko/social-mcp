@@ -297,27 +297,39 @@ function runtimeScenario(mode) {
         if (mode === 'abort') { signal.abort(); return; }
         const good = mode === 'layout-aware'
           ? {
-              steps: ['Read the nearest smoke convention once, then add the module and focused tests'],
+              steps: ['Add the module and focused tests using the verified diagnostics convention'],
+              facts: ['tests/diagnostics/test_smoke_chunks.py is the verified focused-test convention.'],
               complexity: 'nontrivial',
-              evidence_budget: 1,
+              required_mutation_anchors: [],
               large_mutation: true,
-              reason: 'Layout is resolved and the new module plus tests need a large write',
+              reason: 'Layout and sibling convention are resolved; both implementation targets are new files.',
             }
           : mode === 'small-auto'
             ? {
                 steps: ['Change the one config label'],
+                facts: ['config.py contains the current old label.'],
                 complexity: 'trivial',
-                evidence_budget: 0,
+                required_mutation_anchors: ['config.py'],
                 large_mutation: false,
-                reason: 'One bounded line replacement',
+                reason: 'One bounded existing-file replacement.',
               }
-            : {
-                steps: ['Implement example.py'],
-                complexity: 'nontrivial',
-                evidence_budget: 2,
-                large_mutation: false,
-                reason: 'Needs source evidence',
-              };
+            : mode === 'non-additive-target'
+              ? {
+                  steps: ['Update the existing diagnostics parser'],
+                  facts: ['The existing parser is defined in src/demo_pkg/diagnostics/__init__.py.'],
+                  complexity: 'nontrivial',
+                  required_mutation_anchors: ['src/demo_pkg/diagnostics/__init__.py'],
+                  large_mutation: false,
+                  reason: 'The exact existing mutation target is known.',
+                }
+              : {
+                  steps: ['Implement example.py'],
+                  facts: ['example.py is a new file requested by the issue.'],
+                  complexity: 'nontrivial',
+                  required_mutation_anchors: [],
+                  large_mutation: false,
+                  reason: 'The implementation target is new and needs no current-file anchor.',
+                };
         const schemaError = 'Structured output validation failed: value: must have required properties value; steps: schema is false; root: must not have additional properties';
         let reply;
         if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
@@ -325,9 +337,9 @@ function runtimeScenario(mode) {
         else if (mode === 'transport-timeout') reply = { status: 'timed_out', error: 'delegated planner transport timed out' };
         else if (mode === 'bad-output-schema') reply = { status: 'failed', error: 'invalid outputSchema: unsupported keyword' };
         else if (mode === 'overlong') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' } } };
-        else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
+        else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, ignored_note: 'extra' } } };
         else if (mode === 'invalid-complexity') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, complexity: 'medium' } } };
-        else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', evidence_budget: 1, large_mutation: false } } };
+        else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', required_mutation_anchors: [], large_mutation: false } } };
         else if (mode === 'missing-large-mutation') {
           const { large_mutation, ...withoutLargeMutation } = good;
           reply = { status: 'completed', result: { kind: 'structured', value: withoutLargeMutation } };
@@ -340,7 +352,9 @@ function runtimeScenario(mode) {
           assert.equal(steps, undefined);
           assert.equal(request.result.schema.properties.steps.items.maxLength, undefined);
           assert.equal(additionalProperties, true);
-          assert.deepEqual(required, ['steps', 'complexity', 'evidence_budget', 'reason']);
+          assert.deepEqual(required, ['steps', 'complexity', 'reason']);
+          assert.equal(request.result.schema.properties.required_mutation_anchors.type, 'array');
+          assert.equal('evidence_budget' in request.result.schema.properties, false);
           assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
           assert.match(request.task, /"value"/);
           assert.match(request.task, /large_mutation/);
@@ -370,7 +384,7 @@ function runtimeScenario(mode) {
         artifact = planner.readPreparedImplementation(artifactFile);
         assert.ok(artifact, 'bootstrap wrote the PreparedImplementation artifact');
         // Hard context boundary: only the normalized artifact crosses, never planner transcript/retries.
-        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceActions', 'plannerStructuredCorrections', 'plannerProviderTurns', 'failureClass'];
+        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'requiredMutationAnchors', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceActions', 'plannerStructuredCorrections', 'plannerProviderTurns', 'failureClass'];
         assert.deepEqual(Object.keys(artifact).filter(key => !allowed.includes(key)), []);
       } else {
         assert.equal(fs.existsSync(artifactFile), false, 'restored work never runs fresh planner bootstrap');
