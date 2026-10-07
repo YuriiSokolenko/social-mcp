@@ -267,7 +267,7 @@ export const STAGES = Object.freeze({
     // `request_large_mutation_budget` is LEGACY: kept only as a stage-1 compatibility fallback.
     implementationPlannerAgent: 'implementation-planner',
     // Response transport ceiling only. Planner exploration/result convergence has no numeric
-    // evidence budget, lifecycle deadline, or fixed structured-output retry count.
+    // evidence budget, lifecycle deadline, or model-format repair loop.
     implementationPlannerMaxTokens: 2048,
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
