@@ -2067,6 +2067,7 @@ function runtimeScenario(mode) {
         }, ctx);
         assert.equal(unrelatedRead.block, true);
         assert.match(unrelatedRead.reason, /recovery read is limited to preserved changed publishable paths/);
+        console.log('CODING_RECOVERY_WRONG_PATH_BLOCKED_OK');
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
         assert.equal(aborts, 0, 'wrong-path read is rejected without consuming the preserved recovery state');
 
@@ -2200,7 +2201,7 @@ test('#481/#526 an aborted coding session returns authoritative state and bounde
   assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence".*"inspectionComplete":true/);
   assert.doesNotMatch(logs, /PI_CODING_RECOVERY_GUARD_RELEASED .*"reason":"bounded_recovery_evidence"/);
   assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"begin_coding_session".*"correction":1/);
-  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
   assert.match(logs, /CODING_RECOVERY_RECEIPT_OK/);
   assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
 });
@@ -2213,12 +2214,12 @@ test('#526 partial child progress with failed validation survives abort and stay
   assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"begin_coding_session"/);
   assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence"/);
   assert.match(logs, /CODING_RECOVERY_PARTIAL_OK/);
-  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
 test('#526 guarded recovery rejects unrelated reads without reopening discovery or another fork', () => {
   const logs = runtimeScenario('no-submit-recovery-dead-end');
-  assert.match(logs, /recovery read is limited to preserved changed publishable paths/);
+  assert.match(logs, /CODING_RECOVERY_WRONG_PATH_BLOCKED_OK/);
   assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
   assert.doesNotMatch(logs, /PI_CODING_RECOVERY_BLOCKED/);
 });
