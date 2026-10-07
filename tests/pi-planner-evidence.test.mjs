@@ -11,7 +11,6 @@ import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
   PLANNER_RESULT_TOOL,
-  MAX_PLANNER_HANDOFF_STEPS,
   createPlannerEvidenceGate,
   normalizeImplementationPreparation,
   plannerEvidenceFact,
@@ -141,6 +140,7 @@ test('planner prompt and agent contract use cat completion incentive and no mode
     assert.match(text, /materially change or improve/i);
     assert.doesNotMatch(text, /at most 6 .*evidence/i);
     assert.doesNotMatch(text, /evidence actions remaining|minutes remaining|result attempts remaining|repair attempts remaining/i);
+    assert.doesNotMatch(text, /evidence_budget/);
   }
   assert.match(task, /there is no fixed repair-attempt budget/i);
   assert.match(agentSource(), /There is no fixed result-attempt or repair-attempt budget/i);
@@ -322,15 +322,26 @@ test('evidence tool turns do not trigger missing-result recovery while explorati
   assert.equal(harness.aborted(), false);
 });
 
-test('structured output corrections converge without a fixed attempt limit and evidence stays closed', async (t) => {
+test('accepted structured output is terminal immediately and late duplicates stay harmless', async (t) => {
   const harness = extensionHarness(t);
-  const resultCall = async (id, error, diagnostic) => {
-    const admitted = await harness.handlers.get('tool_call')({ toolName: PLANNER_RESULT_TOOL, toolCallId: id, input: { value: {} } }, harness.abortContext);
+  const acceptedValue = {
+    steps: ['Update src/net.py'],
+    facts: ['src/net.py contains send().'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/net.py'],
+    large_mutation: false,
+    reason: 'Existing sender needs a bounded edit.',
+  };
+  const resultCall = async (id, error, diagnostic, value = {}) => {
+    const input = { value };
+    const admitted = await harness.handlers.get('tool_call')({
+      toolName: PLANNER_RESULT_TOOL, toolCallId: id, input,
+    }, harness.abortContext);
     assert.equal(admitted, undefined);
     return harness.handlers.get('tool_result')({
       toolName: PLANNER_RESULT_TOOL,
       toolCallId: id,
-      input: { value: {} },
+      input,
       isError: error,
       content: diagnostic ? [{ type: 'text', text: diagnostic }] : [],
     }, harness.abortContext);
@@ -338,23 +349,36 @@ test('structured output corrections converge without a fixed attempt limit and e
 
   const first = await resultCall('r1', true, 'Validation failed: value must have required property steps');
   assert.match(first.content[0].text, /Repository evidence remains closed/);
-  const blockedEvidence = await harness.handlers.get('tool_call')({ toolName: 'read', input: { path: 'src/a.py' } }, harness.abortContext);
+  const blockedEvidence = await harness.handlers.get('tool_call')({
+    toolName: 'read', input: { path: 'src/a.py' },
+  }, harness.abortContext);
   assert.equal(blockedEvidence.block, true);
 
   const second = await resultCall('r2', true, 'Validation failed: value must have required property reason');
   assert.match(second.content[0].text, /call structured_output again/);
-  assert.equal(harness.aborted(), false, 'a second improving correction is not a failure');
-
   await resultCall('r3', true, 'Validation failed: complexity must be trivial or nontrivial');
-  await resultCall('r4', true, 'Validation failed: evidence_budget must be an integer');
+  await resultCall('r4', true, 'Validation failed: required_mutation_anchors must be an array');
   assert.equal(harness.aborted(), false, 'progressive corrections remain unbounded by result-attempt count');
 
-  await resultCall('r5', false, null);
+  await resultCall('r5', false, null, acceptedValue);
   const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
   assert.equal(state.resultAttempts, 5);
   assert.equal(state.structuredCorrections, 4);
   assert.equal(state.repairStatus, 'accepted');
-  assert.deepEqual(harness.activeTools(), [PLANNER_RESULT_TOOL]);
+  assert.deepEqual(state.acceptedResult, acceptedValue);
+  assert.equal(harness.aborted(), true, 'accepted result aborts the delegated lifecycle immediately');
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
+
+  const late = await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'late',
+    input: { value: acceptedValue },
+  }, harness.abortContext);
+  assert.equal(late.block, true);
+  assert.match(late.reason, /one structured_output call at a time/i);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
+  assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')));
 });
 
 test('three materially equivalent invalid structured outputs trip semantic no-progress protection', async (t) => {
@@ -377,79 +401,103 @@ test('three materially equivalent invalid structured outputs trip semantic no-pr
   assert.equal(harness.aborted(), true);
 });
 
-test('harmless plan oversize is normalized deterministically without restoring the old eight-step failure', () => {
+test('successful planner handoff preserves long semantic content without numeric ceilings', () => {
   const raw = {
     steps: Array.from({ length: 24 }, (_, index) => `Step ${index + 1} ${'x'.repeat(350)}`),
     facts: Array.from({ length: 8 }, (_, index) => `Fact ${index + 1} ${'y'.repeat(260)}`),
     complexity: 'nontrivial',
-    evidence_budget: 1,
+    required_mutation_anchors: ['src/existing.py', 'tests/existing.test.py'],
     large_mutation: false,
     reason: 'z'.repeat(500),
     ignored_extra_field: true,
   };
   const normalized = normalizeImplementationPreparation(raw);
-  assert.equal(normalized.steps.length, MAX_PLANNER_HANDOFF_STEPS);
-  assert.ok(normalized.steps.every(step => step.length <= 240));
-  assert.equal(normalized.facts.length, 6);
-  assert.ok(normalized.facts.every(fact => fact.length <= 200));
-  assert.ok(normalized.reason.length <= 300);
+  assert.equal(normalized.steps.length, 24);
+  assert.ok(normalized.steps.every(step => step.length > 240));
+  assert.equal(normalized.facts.length, 8);
+  assert.ok(normalized.facts.every(fact => fact.length > 200));
+  assert.equal(normalized.reason.length, 500);
   assert.equal('ignored_extra_field' in normalized, false);
-  const validated = validateImplementationPreparation(normalized);
-  assert.equal(validated.steps.length, MAX_PLANNER_HANDOFF_STEPS);
 
-  const nine = normalizeImplementationPreparation({ ...raw, steps: raw.steps.slice(0, 9) });
-  assert.equal(validateImplementationPreparation(nine).steps.length, 9);
+  const validated = validateImplementationPreparation(normalized);
+  assert.equal(validated.steps.length, 24);
+  assert.equal(validated.facts.length, 8);
+  assert.deepEqual(validated.requiredMutationAnchors, ['src/existing.py', 'tests/existing.test.py']);
+  assert.equal(validated.reason.length, 500);
 
   assert.equal(IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties.steps.maxItems, undefined);
   assert.equal(IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties.facts.maxItems, undefined);
   assert.equal(IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties.reason.maxLength, undefined);
+  assert.equal('evidence_budget' in IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties, false);
 });
 
-test('Implementer evidence_budget remains a separate downstream 0-6 contract', () => {
-  for (const evidenceBudget of [0, 1, 6]) {
-    const result = validateImplementationPreparation({
-      steps: ['Do it'], facts: [], complexity: 'nontrivial', evidence_budget: evidenceBudget, large_mutation: false, reason: 'ok',
-    });
-    assert.equal(result.evidenceBudget, evidenceBudget);
+test('planner handoff keeps structural validation while using semantic mutation anchors', () => {
+  const valid = validateImplementationPreparation({
+    steps: ['Do it'],
+    facts: ['Known fact'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/existing.py'],
+    large_mutation: false,
+    reason: 'ok',
+  });
+  assert.deepEqual(valid.requiredMutationAnchors, ['src/existing.py']);
+
+  for (const bad of [
+    { steps: [], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: 'ok' },
+    { steps: ['Do it'], facts: [''], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: 'ok' },
+    { steps: ['Do it'], facts: [], complexity: 'medium', required_mutation_anchors: [], large_mutation: false, reason: 'ok' },
+    { steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: ['../escape.py'], large_mutation: false, reason: 'ok' },
+    { steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: 'no', reason: 'ok' },
+    { steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: '' },
+  ]) {
+    assert.throws(() => validateImplementationPreparation(bad));
   }
-  assert.throws(() => validateImplementationPreparation({
-    steps: ['Do it'], facts: [], complexity: 'trivial', evidence_budget: 7, large_mutation: false, reason: 'ok',
-  }), /evidence_budget/);
 });
 
-test('parent planner lifecycle records >6 actions, corrections, and CAT_PETTED only after accepted normalized result', async (t) => {
+test('parent recovers the persisted accepted result when terminal child aborts immediately', async (t) => {
   const { dir, env } = fixture(t);
-  const logs = t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'log', () => {});
+  const acceptedResult = {
+    steps: Array.from({ length: 19 }, (_, index) => `Step ${index + 1}`),
+    facts: Array.from({ length: 8 }, (_, index) => `Repository fact ${index + 1}`),
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/net.py'],
+    large_mutation: false,
+    reason: 'grounded',
+  };
   const host = plannerHost({
     cwd: dir,
     async driveChild(request) {
       assert.equal(request.timeoutMs, undefined);
       assert.equal(request.toolBudget, undefined);
       assert.doesNotMatch(request.task, /at most 6 .*evidence/i);
+      assert.doesNotMatch(request.task, /evidence_budget/);
       const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-      assert.ok(evidenceStateFile, 'child state sidecar is available only through the inherited child environment');
+      assert.ok(evidenceStateFile);
       fs.writeFileSync(evidenceStateFile, JSON.stringify({
-        used: 8, facts: ['src/net.py contains send().'], structuredCorrections: 2, resultAttempts: 3, repairStatus: 'accepted',
+        used: 8,
+        facts: Array.from({ length: 8 }, (_, index) => `fact-${index}`),
+        structuredCorrections: 0,
+        resultAttempts: 1,
+        repairStatus: 'accepted',
+        acceptedResult,
       }));
       return {
-        status: 'completed',
-        usage: { input: 900, output: 700, turns: 4, toolCalls: 11 },
-        result: { kind: 'structured', value: {
-          steps: Array.from({ length: 9 }, (_, index) => `Step ${index + 1}`),
-          facts: ['src/net.py contains send().'],
-          complexity: 'nontrivial', evidence_budget: 1, large_mutation: false, reason: 'grounded',
-        } },
+        status: 'cancelled',
+        error: 'planner terminalized after accepted structured_output',
+        usage: { input: 900, output: 500, turns: 1, toolCalls: 9 },
       };
     },
   });
 
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
   assert.equal(prepared.status, 'prepared');
-  assert.equal(prepared.plan.length, 9);
+  assert.equal(prepared.plan.length, 19);
+  assert.equal(prepared.repositoryFacts.length, 8);
+  assert.deepEqual(prepared.requiredMutationAnchors, ['src/net.py']);
+  assert.equal('evidenceBudget' in prepared, false);
   assert.equal(prepared.plannerEvidenceActions, 8);
-  assert.equal(prepared.plannerStructuredCorrections, 2);
-  assert.equal(prepared.plannerProviderTurns, 4);
-  assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_CAT_PETTED ')));
+  assert.equal(prepared.plannerProviderTurns, 1);
 });
 
 test('unrecoverable missing structured result falls back truthfully without CAT_PETTED or deadline classification', async (t) => {
