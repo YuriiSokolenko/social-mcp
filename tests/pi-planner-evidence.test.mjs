@@ -256,10 +256,14 @@ test('structured output corrections converge without a fixed attempt limit and e
   assert.match(second.content[0].text, /call structured_output again/);
   assert.equal(harness.aborted(), false, 'a second improving correction is not a failure');
 
-  await resultCall('r3', false, null);
+  await resultCall('r3', true, 'Validation failed: complexity must be trivial or nontrivial');
+  await resultCall('r4', true, 'Validation failed: evidence_budget must be an integer');
+  assert.equal(harness.aborted(), false, 'progressive corrections remain unbounded by result-attempt count');
+
+  await resultCall('r5', false, null);
   const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 3);
-  assert.equal(state.structuredCorrections, 2);
+  assert.equal(state.resultAttempts, 5);
+  assert.equal(state.structuredCorrections, 4);
   assert.equal(state.repairStatus, 'accepted');
   assert.deepEqual(harness.activeTools(), [PLANNER_RESULT_TOOL]);
 });
