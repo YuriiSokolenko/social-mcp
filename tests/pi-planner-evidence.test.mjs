@@ -11,6 +11,7 @@ import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
   PLANNER_RESULT_TOOL,
+  MAX_PLANNER_HANDOFF_STEPS,
   createPlannerEvidenceGate,
   normalizeImplementationPreparation,
   plannerEvidenceFact,
@@ -204,8 +205,38 @@ test('equivalent repository action is stopped only after it demonstrates no prog
   assert.equal(blocked.block, true);
   assert.match(blocked.reason, /semantic no-progress/i);
   assert.equal(harness.aborted(), true);
-  assert.equal(JSON.parse(fs.readFileSync(harness.stateFile, 'utf8')).failureKind, 'semantic_no_progress');
+  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.failureKind, 'semantic_no_progress');
+  assert.equal(state.used, 2, 'the blocked third call is not counted as an admitted evidence action');
   assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_NO_PROGRESS ')));
+});
+
+test('alternating and slightly varied no-progress evidence cannot loop forever', async (t) => {
+  const harness = extensionHarness(t);
+  const run = async (toolCallId, pathName) => {
+    assert.equal(await harness.handlers.get('tool_call')({
+      toolName: 'read', toolCallId, input: { path: pathName },
+    }, harness.abortContext), undefined);
+    await harness.handlers.get('tool_execution_end')({
+      toolName: 'read',
+      toolCallId,
+      isError: false,
+      result: { content: [{ type: 'text', text: 'same stable content' }] },
+    }, harness.abortContext);
+  };
+
+  await run('a1', 'src/a.py');
+  await run('b1', 'src/b.py');
+  await run('a2', 'src/a.py');
+  await run('b2', 'src/b.py');
+  await run('a3', 'src/a.py');
+  await run('b3', 'src/b.py');
+
+  assert.equal(harness.aborted(), true);
+  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.failureKind, 'semantic_no_progress');
+  assert.equal(state.used, 6);
+  assert.ok(harness.logs().some(line => line.includes('"kind":"evidence_streak"')));
 });
 
 test('successful evidence stores compact redacted facts and emits neutral CAT_WAITING progress', async (t) => {
@@ -231,6 +262,64 @@ test('successful evidence stores compact redacted facts and emits neutral CAT_WA
     options: { deliverAs: 'steer' },
   }]);
   assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
+});
+
+test('prose-only planner completion gets one forced result-only recovery then fails closed on repetition', async (t) => {
+  const harness = extensionHarness(t);
+
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: 'The plan is ready.' }],
+    },
+  }, harness.abortContext);
+
+  assert.deepEqual(harness.activeTools(), [PLANNER_RESULT_TOOL]);
+  assert.equal(harness.aborted(), false);
+  assert.equal(harness.messages().length, 1);
+  assert.match(harness.messages()[0].message, /Call structured_output now/i);
+
+  const forced = harness.handlers.get('before_provider_request')({
+    payload: {
+      tools: [
+        { type: 'function', function: { name: 'read' } },
+        { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
+      ],
+      tool_choice: 'auto',
+    },
+  });
+  assert.equal(forced.tool_choice, 'required');
+  assert.deepEqual(forced.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL]);
+
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: 'Still prose.' }],
+    },
+  }, harness.abortContext);
+
+  assert.equal(harness.aborted(), true);
+  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.failureKind, 'semantic_no_progress');
+  assert.equal(state.repairKind, 'missing_structured_output');
+  assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_RESULT_RECOVERY ')));
+});
+
+test('evidence tool turns do not trigger missing-result recovery while exploration is active', async (t) => {
+  const harness = extensionHarness(t);
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: 'e1', name: 'read', arguments: { path: 'src/a.py' } }],
+    },
+  }, harness.abortContext);
+
+  assert.equal(harness.messages().length, 0);
+  assert.deepEqual(harness.activeTools(), [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL]);
+  assert.equal(harness.aborted(), false);
 });
 
 test('structured output corrections converge without a fixed attempt limit and evidence stays closed', async (t) => {
@@ -288,9 +377,9 @@ test('three materially equivalent invalid structured outputs trip semantic no-pr
   assert.equal(harness.aborted(), true);
 });
 
-test('harmless plan oversize is normalized: nine steps survive and long strings do not cause fallback validation', () => {
+test('harmless plan oversize is normalized deterministically without restoring the old eight-step failure', () => {
   const raw = {
-    steps: Array.from({ length: 9 }, (_, index) => `Step ${index + 1} ${'x'.repeat(350)}`),
+    steps: Array.from({ length: 24 }, (_, index) => `Step ${index + 1} ${'x'.repeat(350)}`),
     facts: Array.from({ length: 8 }, (_, index) => `Fact ${index + 1} ${'y'.repeat(260)}`),
     complexity: 'nontrivial',
     evidence_budget: 1,
@@ -299,14 +388,17 @@ test('harmless plan oversize is normalized: nine steps survive and long strings 
     ignored_extra_field: true,
   };
   const normalized = normalizeImplementationPreparation(raw);
-  assert.equal(normalized.steps.length, 9);
+  assert.equal(normalized.steps.length, MAX_PLANNER_HANDOFF_STEPS);
   assert.ok(normalized.steps.every(step => step.length <= 240));
   assert.equal(normalized.facts.length, 6);
   assert.ok(normalized.facts.every(fact => fact.length <= 200));
   assert.ok(normalized.reason.length <= 300);
   assert.equal('ignored_extra_field' in normalized, false);
   const validated = validateImplementationPreparation(normalized);
-  assert.equal(validated.steps.length, 9);
+  assert.equal(validated.steps.length, MAX_PLANNER_HANDOFF_STEPS);
+
+  const nine = normalizeImplementationPreparation({ ...raw, steps: raw.steps.slice(0, 9) });
+  assert.equal(validateImplementationPreparation(nine).steps.length, 9);
 
   assert.equal(IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties.steps.maxItems, undefined);
   assert.equal(IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties.facts.maxItems, undefined);
