@@ -161,11 +161,19 @@ test('planner prompt and agent contract use cat completion incentive and no mode
     assert.doesNotMatch(text, /evidence actions remaining|minutes remaining|result attempts remaining|repair attempts remaining/i);
     assert.doesNotMatch(text, /evidence_budget/);
   }
+  const agent = agentSource();
   assert.match(task, /plain XML document/i);
   assert.match(task, /Do not call a result tool or function/i);
-  assert.match(agentSource(), /exactly one finalization-only correction turn/i);
+  assert.match(task, /canonical valid XML example in your system finalization contract/i);
+  assert.match(agent, /exactly one finalization-only correction turn/i);
+  assert.match(agent, /Canonical valid XML example/);
+  assert.match(agent, /<step>Update the target implementation\.<\/step>/);
+  assert.match(agent, /<anchor>src\/example\.py<\/anchor>/);
+  assert.match(agent, /Follow this exact element structure and closing-tag names/);
+  assert.equal((agent.match(/<plan complexity=/g) ?? []).length, 1, 'system finalization contract owns one canonical XML example');
+  assert.equal((task.match(/<plan complexity=/g) ?? []).length, 0, 'per-request task references rather than duplicates the canonical example');
   assert.doesNotMatch(task, /outer value|value wrapper|call structured_output/i);
-  assert.doesNotMatch(agentSource(), /outer `value`|value wrapper/i);
+  assert.doesNotMatch(agent, /outer `value`|value wrapper/i);
 });
 
 test('planner target policy separates immutable resolved targets from convention fallbacks', () => {
@@ -442,6 +450,13 @@ test('finalization-only repair child closes tools only when the provider request
   assert.equal('tools' in request, false);
   assert.equal('tool_choice' in request, false);
   assert.equal(request.model, 'qwen');
+  const blocked = await harness.handlers.get('tool_call')({
+    toolName: 'read',
+    toolCallId: 'repair-must-not-reopen',
+    input: { path: 'src/net.py' },
+  }, harness.abortContext);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /repository evidence is closed/i);
   assert.ok(harness.logs().some(line => line.includes('"source":"finalization_only_retry"')));
 });
 
@@ -548,9 +563,10 @@ test('valid first XML finalization prepares once with no repair request', async 
   assert.equal(prepared.plannerEvidenceActions, 2);
 });
 
-test('malformed XML gets exactly one finalization-only repair and preserves the canonical handoff', async (t) => {
+test('malformed XML gets exactly one explicit error-directed repair and preserves the canonical handoff', async (t) => {
   const { dir, env } = fixture(t);
-  t.mock.method(console, 'log', () => {});
+  const logs = [];
+  t.mock.method(console, 'log', line => logs.push(String(line)));
   let call = 0;
   const host = plannerHost({
     cwd: dir,
@@ -565,13 +581,26 @@ test('malformed XML gets exactly one finalization-only repair and preserves the 
         }));
         return {
           status: 'completed',
-          result: { kind: 'text', text: '<plan complexity="nontrivial" large_mutation="false"><steps><step>Update src/net.py.</step></steps>' },
+          result: {
+            kind: 'text',
+            text: '<plan complexity="nontrivial" large_mutation="false"><steps><step>Update src/net.py.</step></steps><facts><fact>Existing sender convention is grounded.</f></facts><reason>Bounded edit.</reason></plan>',
+          },
           usage: { input: 400, output: 80, turns: 1 },
         };
       }
-      assert.match(request.task, /FINALIZATION-ONLY XML REPAIR/);
+      assert.match(request.task, /FINALIZATION-ONLY XML REPAIR — ONLY ATTEMPT/);
+      assert.match(request.task, /previous final XML was rejected and was not accepted/i);
+      assert.match(request.task, /Error class: xml_parse_or_shape/);
+      assert.match(request.task, /Error: Planner XML: unclosed <fact>/);
+      assert.match(request.task, /Repository investigation is finished and permanently closed/);
+      assert.match(request.task, /canonical XML structure in your system finalization contract/);
+      assert.match(request.task, /one complete corrected <plan> XML document now/);
+      assert.match(request.task, /exact element structure and closing-tag names/);
+      assert.match(request.task, /no prose, explanation, JSON, markdown fence, or tool call/i);
+      assert.match(request.task, /only and final repair attempt/i);
       assert.match(request.task, /existing sender convention is grounded/);
       assert.match(request.task, /Issue title:/);
+      assert.doesNotMatch(request.task, /cat is still waiting|finish the plan as soon|gather enough evidence/i);
       assert.equal(process.env[PLANNER_FINALIZATION_ONLY_ENV], '1');
       return {
         status: 'completed',
@@ -588,6 +617,63 @@ test('malformed XML gets exactly one finalization-only repair and preserves the 
   assert.equal(prepared.plannerFinalizationAttempts, 2);
   assert.equal(prepared.plannerXmlRepairNeeded, true);
   assert.equal(prepared.plannerProviderTurns, 2);
+  assert.ok(logs.some(line =>
+    line.startsWith('PI_PLANNER_XML_FINALIZATION_REJECTION ') &&
+    line.includes('"attempt":1') &&
+    line.includes('"errorClass":"xml_parse_or_shape"') &&
+    line.includes('unclosed <fact>')
+  ));
+  assert.ok(logs.some(line =>
+    line.startsWith('PI_PLANNER_XML_REPAIR_STARTED ') &&
+    line.includes('"attempt":2') &&
+    line.includes('"previousAttempt":1') &&
+    line.includes('"errorClass":"xml_parse_or_shape"')
+  ));
+  assert.ok(logs.some(line => line.startsWith('PI_PLANNER_XML_FINALIZATION_SUCCESS ') && line.includes('"attempt":2')));
+});
+
+test('repair diagnostic and retained XML context redact unsafe credential and internal-path text', async (t) => {
+  const { dir, env } = fixture(t);
+  const secret = 'sk-super-secret-credential-value';
+  const internalPath = '/home/runner/private/worktree/file.py';
+  const logs = [];
+  t.mock.method(console, 'log', line => logs.push(String(line)));
+  let call = 0;
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild(request) {
+      call += 1;
+      if (call === 1) {
+        return {
+          status: 'completed',
+          result: {
+            kind: 'text',
+            text: `<plan complexity="${secret}" large_mutation="false"><steps><step>Update src/net.py.</step></steps><facts><fact>Observed ${internalPath}.</fact></facts><reason>Bounded edit.</reason></plan>`,
+          },
+          usage: { input: 120, output: 60, turns: 1 },
+        };
+      }
+      assert.match(request.task, /Error class: xml_parse_or_shape/);
+      assert.match(request.task, /\[redacted credential\]/);
+      assert.match(request.task, /\[redacted path\]/);
+      assert.doesNotMatch(request.task, /sk-super-secret|\/home\/runner\/private/);
+      return {
+        status: 'completed',
+        result: { kind: 'text', text: validPlannerXml() },
+        usage: { input: 100, output: 80, turns: 1 },
+      };
+    },
+  });
+
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'prepared');
+  assert.equal(call, 2);
+  const rejectionLogs = logs.filter(line =>
+    line.startsWith('PI_PLANNER_XML_FINALIZATION_REJECTION ') ||
+    line.startsWith('PI_PLANNER_XML_REPAIR_STARTED ')
+  ).join('\n');
+  assert.match(rejectionLogs, /\[redacted credential\]/);
+  assert.doesNotMatch(rejectionLogs, /sk-super-secret|\/home\/runner\/private/);
 });
 
 test('missing text payload still consumes attempt one and receives the single XML repair', async (t) => {
@@ -650,7 +736,8 @@ test('missing fields and invalid root values each receive only one XML repair tu
 
 test('invalid XML repair fails closed after two attempts and never asks for a third', async (t) => {
   const { dir, env } = fixture(t);
-  t.mock.method(console, 'log', () => {});
+  const logs = [];
+  t.mock.method(console, 'log', line => logs.push(String(line)));
   let call = 0;
   const host = plannerHost({
     cwd: dir,
@@ -671,6 +758,11 @@ test('invalid XML repair fails closed after two attempts and never asks for a th
   assert.equal(prepared.plannerXmlRepairNeeded, true);
   assert.equal(call, 2);
   assert.equal(host.requests.length, 2);
+  assert.ok(logs.some(line =>
+    line.startsWith('PI_PLANNER_XML_FINALIZATION_FAILURE ') &&
+    line.includes('"attempts":2') &&
+    line.includes('"errorClass":"xml_parse_or_shape"')
+  ));
 });
 
 test('successful planner handoff preserves long semantic content without numeric ceilings', () => {

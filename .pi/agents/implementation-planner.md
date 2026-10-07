@@ -27,22 +27,23 @@ Target selection contract:
 
 XML finalization contract — read this before using repository evidence. When the plan is sufficiently grounded, stop repository investigation and return one plain XML document as normal assistant content. Do not call a result tool/function, do not wrap the XML in JSON or markdown fences, and do not add prose before or after it.
 
+Canonical valid XML example (values are illustrative only; do not copy them):
+
 <plan complexity="nontrivial" large_mutation="false">
   <steps>
-    <step>Create src/new_target.py.</step>
-    <step>Create tests/test_new_target.py.</step>
+    <step>Update the target implementation.</step>
+    <step>Add focused tests.</step>
   </steps>
   <facts>
-    <fact>Both implementation targets are new files.</fact>
+    <fact>Existing code follows the nearby convention.</fact>
   </facts>
-  <warnings>
-    <warning>Resolved test target differs from the nearest repository convention.</warning>
-  </warnings>
   <required_mutation_anchors>
+    <anchor>src/example.py</anchor>
   </required_mutation_anchors>
-  <reason>Both mutation targets are new files, so no current-file anchor is needed.</reason>
+  <reason>Localized change requiring implementation and tests.</reason>
 </plan>
 
+Follow this exact element structure and closing-tag names. Return one complete `<plan>` document only. Use the real plan values rather than copying the example. Optional `<warnings><warning>...</warning></warnings>` may be added only for non-blocking convention disagreements.
 Use only these structural elements. Escape XML text as valid XML: at minimum escape `&` as `&amp;` and `<` as `&lt;`; standard named or numeric XML entities are accepted. The root attributes are exactly `complexity="trivial|nontrivial"` and `large_mutation="true|false"`. `steps` and `reason` are required. `facts`, `warnings`, and `required_mutation_anchors` may be omitted when empty. Unknown, duplicate, or nested structural markup is invalid.
 
 Initial Orbit context:

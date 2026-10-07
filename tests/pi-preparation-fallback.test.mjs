@@ -311,9 +311,11 @@ function runtimeScenario(mode) {
             assert.match(request.task, /Implement example.py/);
           }
           } else {
-          assert.match(request.task, /FINALIZATION-ONLY XML REPAIR/);
-          assert.match(request.task, /Repository investigation is closed/);
-        }
+            assert.match(request.task, /FINALIZATION-ONLY XML REPAIR — ONLY ATTEMPT/);
+            assert.match(request.task, /previous final XML was rejected and was not accepted/i);
+            assert.match(request.task, /Repository investigation is finished and permanently closed/);
+            assert.match(request.task, /only and final repair attempt/i);
+          }
         assert.equal(request.ownerRunId, 'bootstrap-session', 'planner is hosted by the bootstrap session, never the main one');
         assert.equal('timeoutMs' in request, false, 'planner lifecycle has no wrapper deadline');
         assert.equal('toolBudget' in request, false, 'planner evidence is not controlled by a generic tool-count budget');
@@ -395,7 +397,8 @@ function runtimeScenario(mode) {
         if (attempts === 1) {
           assert.doesNotMatch(JSON.stringify(request), /structured_output/);
           assert.match(request.task, /plain XML document/i);
-          assert.match(request.task, /<plan complexity=/);
+          assert.match(request.task, /canonical valid XML example in your system finalization contract/i);
+          assert.doesNotMatch(request.task, /<plan complexity=/);
           assert.match(request.task, /large_mutation/);
           assert.match(request.task, /large_mutation="true"/);
           assert.doesNotMatch(request.task, /outer value|value wrapper|240 characters|at most 6 .*evidence|minutes remaining|attempts remaining/i);
