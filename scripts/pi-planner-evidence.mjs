@@ -54,7 +54,7 @@ function boundedGraphText(text) {
   };
 }
 
-export async function plannerCodeGraph(cwd, params, { execFile: execFileFn = execFileAsync } = {}) {
+export async function plannerCodeGraph(cwd, params, { execFile: execFileFn } = {}) {
   const target = String(params?.target ?? '').trim();
   const question = String(params?.question ?? '').trim();
   if (!target || target.length > 400 || target.startsWith('-') || /[\u0000-\u001f\u007f]/.test(target)) {
