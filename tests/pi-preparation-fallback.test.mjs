@@ -498,7 +498,7 @@ function runtimeScenario(mode) {
               testTargetRequired: false,
               testConvention: 'tests/diagnostics/test_smoke_chunks.py',
             });
-            assert.match(prepared.text, /tests\/diagnostics\/test_smoke_chunks\.py is the verified focused-test convention/);
+            assert.ok(prepared.text.includes('tests/diagnostics/test_smoke_chunks.py is the verified focused-test convention'));
             assert.doesNotMatch(prepared.text, /Repository layout hint|test_smoke_widget\.py/);
             assert.match(prepared.text, /Fresh worktree base: latest fetched/);
             assert.match(prepared.text, /Large mutation: auto-arm one-shot/);
