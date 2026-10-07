@@ -752,7 +752,7 @@ export class ProgressController {
       !this.directActionToolAllowed('bash') &&
       !isBoundedDirectBash(input?.command)
     ) {
-      return { block: true, reason: 'Direct main-agent bash is limited to a bounded git diff/status on one known path in this mode. Follow the current runtime tool surface for broader repository commands.' };
+      return { block: true, reason: 'Direct main-agent bash is limited to a bounded git diff/status on one known path. Delegate searches, tests, logs, and broader commands in this mode.' };
     }
 
     if (this.delegatedTools.has(toolName)) {
