@@ -139,7 +139,7 @@ test('#540 generated Main contract matches direct repository access policy witho
   assert.match(main, /indexed_repo_search/);
   assert.match(main, /bash/);
   assert.match(main, /do \*\*not\*\* require a preceding `need_more_evidence` call/);
-  assert.match(main, /PreparedImplementation as the starting plan/);
+  assert.match(main, /opaque `planText`[\s\S]*untrusted planning data/);
   assert.doesNotMatch(main, /Broad `bash` is also blocked/);
 
   const coding = implementerCodingContractPrompt(env);
