@@ -284,8 +284,11 @@ test('more than six distinct useful evidence actions are accepted and telemetry 
     8,
     'each distinct useful result may remind that the same waiting cat still exists without accumulating reward',
   );
-  assert.equal(harness.messages().length, 8);
-  assert.equal(new Set(harness.messages().map(item => item.message)).size, 1, 'the reminder is state-based and never accumulates points');
+  assert.equal(
+    harness.messages().length,
+    1,
+    'multiple useful evidence results in one provider turn coalesce to one queued progress steer',
+  );
 });
 
 test('equivalent repository action is stopped only after it demonstrates no progress', async (t) => {
@@ -368,6 +371,77 @@ test('successful evidence stores compact redacted facts and emits neutral CAT_WA
     options: { deliverAs: 'steer' },
   }]);
   assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
+});
+
+test('multiple evidence facts queue one continuation before terminal XML finalization', async (t) => {
+  const harness = extensionHarness(t);
+  let providerRequests = 0;
+  const providerRequest = async () => {
+    providerRequests += 1;
+    return harness.handlers.get('before_provider_request')({
+      payload: {
+        model: 'qwen',
+        tools: PLANNER_EVIDENCE_TOOLS.map(name => ({ type: 'function', function: { name } })),
+        tool_choice: 'auto',
+      },
+    }, harness.abortContext);
+  };
+
+  await providerRequest();
+  for (let index = 0; index < 3; index += 1) {
+    const toolCallId = `parallel-evidence-${index}`;
+    await harness.handlers.get('tool_call')({
+      toolName: 'read',
+      toolCallId,
+      input: { path: `src/evidence-${index}.py` },
+    }, harness.abortContext);
+    await harness.handlers.get('tool_execution_end')({
+      toolName: 'read',
+      toolCallId,
+      isError: false,
+      result: { content: [{ type: 'text', text: `fact ${index}` }] },
+    }, harness.abortContext);
+  }
+
+  assert.equal(harness.messages().length, 1, 'same-turn evidence must not build a steer backlog');
+  await providerRequest();
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: validPlannerXml() }],
+    },
+  }, harness.abortContext);
+
+  assert.equal(providerRequests, 2, 'evidence requires only one continuation request before terminal XML');
+  assert.equal(harness.messages().length, 1, 'terminal XML leaves no additional evidence steer queued');
+  assert.deepEqual(harness.activeTools(), []);
+  assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_FINALIZATION_TRANSITION') && line.includes('"source":"assistant_content"')));
+});
+
+test('evidence completion cannot queue a progress steer after finalization starts', async (t) => {
+  const harness = extensionHarness(t);
+  await harness.handlers.get('tool_call')({
+    toolName: 'read',
+    toolCallId: 'late-evidence',
+    input: { path: 'src/late.py' },
+  }, harness.abortContext);
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: validPlannerXml() }],
+    },
+  }, harness.abortContext);
+  await harness.handlers.get('tool_execution_end')({
+    toolName: 'read',
+    toolCallId: 'late-evidence',
+    isError: false,
+    result: { content: [{ type: 'text', text: 'late fact' }] },
+  }, harness.abortContext);
+
+  assert.equal(harness.messages().length, 0);
+  assert.deepEqual(harness.activeTools(), []);
 });
 
 test('assistant narration followed by a tool call keeps repository tools open', async (t) => {
