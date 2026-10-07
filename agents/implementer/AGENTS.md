@@ -63,9 +63,9 @@ If `Required current-file mutation anchors` names existing paths, read each exac
 - Prefer `read` for known paths, `indexed_repo_search` for fast literal/path discovery against the indexed dev snapshot, and `repo_search` when the current worktree must be authoritative.
 - `bash` is directly usable in successful fresh Main when exposed. Keep commands task-bounded and non-destructive. The runtime still owns timeout, sandbox, worktree mutation detection, tainting, and recovery requirements.
 - `grep`, `find`, and `ls` remain delegated/runtime-blocked in Main. Do not use shell equivalents merely to bypass that policy.
-- Use LSP for an already-named source symbol when semantic lookup is cheaper than text search. For a cold name-only lookup, call `lsp_start_server` once with the configured server id and the exact absolute workspace root supplied in the prepared state, then call `lsp_find_symbol`. Fall back to Orbit/search after an actual LSP failure instead of retrying it.
+- Use LSP for an already-named source symbol when semantic lookup is cheaper than text search. For a cold name-only lookup, do not call `lsp_server_status` first; call `lsp_start_server` once with the configured server id and the exact absolute workspace root supplied in the prepared state, then call `lsp_find_symbol`. Fall back to Orbit/search after an actual LSP failure instead of retrying it.
 - Use Orbit for structural/dependency questions that literal search or LSP do not answer well. Exact source text still comes from `read` before mutation.
-- Use `need_more_evidence` only when runtime exposes it and one concrete repository fact remains a genuine blocker that requires bounded delegated semantic evidence. State that one concrete missing fact; this transition is not a prerequisite for `read`, `repo_search`, `indexed_repo_search`, or `bash` in successful fresh Main.
+- When one concrete repository fact still blocks the next safe action and requires bounded delegated semantic evidence, use `need_more_evidence` only if runtime exposes it. State that one concrete missing fact; this transition is not a prerequisite for `read`, `repo_search`, `indexed_repo_search`, or `bash` in successful fresh Main.
 - If delegation is needed and the generic subagent tool is hidden, call `subagents_enable` once, then follow the tool surface and next-action guidance returned by runtime. Enable/delegate to `scout` only when deterministic direct inspection cannot answer one concrete question cheaply. Ask for the first sufficient answer and compact evidence, not a broad repository dump.
 - Task classification alone never requires delegation; `nontrivial` does not imply a scout or broader exploration.
 
@@ -98,7 +98,7 @@ Planner owns startup planning for fresh work. A scout gathers evidence only; do 
 
 Do not run full pytest, full-repository Ruff, or CI/control-plane suites before submission as a ritual.
 
-`submit_result` records that the agent considers implementation complete. It does not discard current changes. After the backend exits, the shared stage harness runs authoritative checks:
+`submit_result` records that the agent considers the implementation complete. It does not discard current changes. After the backend exits, the shared stage harness runs authoritative checks:
 
 - `git diff --check`;
 - the full product pytest suite;
