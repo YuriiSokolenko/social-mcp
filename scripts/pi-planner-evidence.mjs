@@ -7,15 +7,29 @@ import { plannerOrbitContext } from './pi-common/planner-orbit.mjs';
 // observability only; semantic no-progress guards, not numeric budgets, stop accidental loops.
 import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
+  PLANNER_RESOLVED_TARGETS_ENV,
   PLANNER_EVIDENCE_TOOLS,
   PLANNER_RESULT_TOOL,
   createPlannerEvidenceGate,
   plannerEvidenceFact,
+  validateResolvedTargetPaths,
 } from './pi-common/implementation-planner.mjs';
 
 const PLANNER_GRAPH_MAX_CHARS = 16000;
 const RESULT_EQUIVALENT_NO_PROGRESS_LIMIT = 3;
 const EVIDENCE_NO_PROGRESS_STREAK_LIMIT = 4;
+
+function plannerResolvedTargets(env = process.env) {
+  const raw = env[PLANNER_RESOLVED_TARGETS_ENV];
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === 'string' && value.trim()));
+  } catch {
+    return {};
+  }
+}
 
 function graphFocusTerms(question) {
   const raw = String(question ?? '').toLowerCase();
@@ -493,13 +507,35 @@ export default function (pi) {
       return { content: [{ type: 'text', text: `structured_output was rejected by runtime validation. ${diagnostic} Repository evidence remains closed. Correct only the reported shape/serialization problem and call structured_output again.` }] };
     }
 
-    resultSucceeded = true;
     const acceptedResult =
       event?.input?.value && typeof event.input.value === 'object' && !Array.isArray(event.input.value)
         ? structuredClone(event.input.value)
         : observed.rawArguments?.value && typeof observed.rawArguments.value === 'object' && !Array.isArray(observed.rawArguments.value)
           ? structuredClone(observed.rawArguments.value)
           : null;
+    try {
+      validateResolvedTargetPaths(acceptedResult, plannerResolvedTargets());
+    } catch (error) {
+      const diagnostic = String(error?.message ?? error);
+      const canCorrect = recordPlannerResultRejection({
+        repairKind: 'resolved_target_mismatch',
+        diagnostic,
+        rawArguments: observed.rawArguments ?? event.input,
+        source: 'runtime',
+        ctx,
+      });
+      if (!canCorrect) {
+        return { content: [{ type: 'text', text: `The same resolved-target mismatch repeated without material correction. Planner stopped by semantic no-progress protection. ${diagnostic}` }] };
+      }
+      return {
+        content: [{
+          type: 'text',
+          text: `structured_output was rejected by runtime validation. ${diagnostic} Repository evidence remains closed. Keep the authoritative resolved target unchanged, correct only the conflicting returned path, and call structured_output again.`,
+        }],
+      };
+    }
+
+    resultSucceeded = true;
     const acceptedResultPersisted = recordPlannerResultState({
       resultAttempts,
       structuredCorrections,
