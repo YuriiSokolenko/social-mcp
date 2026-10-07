@@ -432,7 +432,8 @@ export class ProgressController {
   maybeGrantAutomaticLargeMutationBudget() {
     if (!this.automaticLargeMutationBudgetArmed ||
         this.largeMutationBudgetState !== 'idle' ||
-        this.productiveState !== 'action_required') {
+        this.productiveState !== 'action_required' ||
+        this.requiredMutationAnchors.size > 0) {
       return false;
     }
     this.automaticLargeMutationBudgetArmed = false;
@@ -717,6 +718,12 @@ export class ProgressController {
         return {
           block: true,
           reason: `BLOCKED: ${toolName} did not execute. A large mutation budget can only be requested once productive progress is action_required; finish gathering evidence first.`,
+        };
+      }
+      if (this.requiredMutationAnchors.size > 0) {
+        return {
+          block: true,
+          reason: `BLOCKED: ${toolName} did not execute. Read required mutation anchor(s) first: ${this.pendingRequiredMutationAnchors().join(', ')}.`,
         };
       }
     }
