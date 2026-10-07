@@ -703,8 +703,6 @@ export async function prepareImplementation(pi, ctx, config, signal, {
       status: 'prepared',
       plan: planned.steps,
       repositoryFacts: planned.facts,
-      plannerWarnings: planned.warnings,
-      targetPolicy: plannerTargetPolicy(layoutHint),
       complexity: planned.complexity,
       requiredMutationAnchors: planned.requiredMutationAnchors,
       largeMutation: planned.largeMutation,
@@ -725,7 +723,6 @@ export async function prepareImplementation(pi, ctx, config, signal, {
       failureClass: error?.plannerFailureClass ?? 'preparation_infrastructure_failure',
       reason: String(error?.message ?? error),
       layoutHint,
-      targetPolicy: plannerTargetPolicy(layoutHint),
       plannerUsage: error?.delegationUsage ?? null,
       plannerEvidenceActions: Number.isSafeInteger(error?.plannerEvidenceActions) ? error.plannerEvidenceActions : null,
       plannerEvidenceToolCounts: error?.plannerEvidenceToolCounts && typeof error.plannerEvidenceToolCounts === 'object' ? error.plannerEvidenceToolCounts : {},
@@ -762,12 +759,11 @@ export function validatePreparedImplementation(value) {
     validateImplementationPreparation({
       steps: value.plan,
       facts: value.repositoryFacts ?? [],
-      warnings: value.plannerWarnings ?? [],
       complexity: value.complexity,
       required_mutation_anchors: value.requiredMutationAnchors ?? [],
       large_mutation: value.largeMutation,
       reason: value.reason,
-    }, { resolvedTargets: value.targetPolicy?.resolvedTargets ?? plannerTargetPolicy(value.layoutHint).resolvedTargets });
+    });
   } else if (typeof value.reason !== 'string' || !value.failureClass) {
     throw new Error('Prepared implementation fallback is missing its reason');
   }
@@ -787,10 +783,10 @@ export function readPreparedImplementation(file) {
   return validatePreparedImplementation(JSON.parse(fs.readFileSync(file, 'utf8')));
 }
 
-function layoutGuidance(layoutHint) {
+function layoutGuidance(layoutHint, { authoritative }) {
   if (!layoutHint) return '';
-  const policy = plannerTargetPolicy(layoutHint);
-  return `\nRuntime target policy: resolvedTargets=${JSON.stringify(policy.resolvedTargets)}; conventionHints=${JSON.stringify(policy.conventionHints)}. Resolved targets are immutable runtime decisions. Convention hints are fallback guidance only for unresolved target keys.`;
+  const source = `Repository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; source directory ${layoutHint.sourceDirectory}${layoutHint.sourceConvention ? `; nearest source convention ${layoutHint.sourceConvention}` : ''}; tests ${layoutHint.testDirectory}${layoutHint.testTarget ? `; new test target ${layoutHint.testTarget}` : ''}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
+  return `\n${source} ${authoritative}`;
 }
 
 // The compact, trusted block that replaces the old model-visible prepare_implementation exchange.
@@ -803,7 +799,7 @@ export function preparedImplementationBlock(prepared, { largeMutationArmed = fal
     return `Runtime-prepared implementation state (planner output unavailable):
 PREPARATION_FALLBACK: implementation planner infrastructure failed (${prepared.failureClass}). Preparation is already resolved before this session; no plan or complexity was recorded and there is nothing to prepare or retry.
 If the canonical source/test layout is not already clear, use the bounded fallback evidence window to orient before creating new files; this is guidance, not a mutation gate. You may use up to ${PREPARATION_FALLBACK_EVIDENCE_BUDGET} repository evidence attempts; every accepted non-control evidence action consumes one attempt even if it fails or returns no useful result. The window closes when the attempts are consumed or on the first successful mutation. Direct mutation remains allowed during the window and closes it on success. The coding-session action becomes valid only after the evidence window is closed. Focused verification becomes available only after a successful mutation. Final submission rules are unchanged. After the window closes, use only the blocker action exposed by the runtime when one concrete implementation fact is still missing.
-${provenance}${layoutGuidance(prepared.layoutHint)}`;
+${provenance}${layoutGuidance(prepared.layoutHint, { authoritative: 'This current-worktree hint is authoritative layout evidence; do not broad-search to re-prove it.' })}`;
   }
   const numberedPlan = prepared.plan.map((step, index) => `${index + 1}. ${step}`).join('\n');
   const repositoryFacts = Array.isArray(prepared.repositoryFacts) && prepared.repositoryFacts.length > 0
@@ -812,17 +808,10 @@ ${provenance}${layoutGuidance(prepared.layoutHint)}`;
   const mutationAnchors = Array.isArray(prepared.requiredMutationAnchors) && prepared.requiredMutationAnchors.length > 0
     ? `Required current-file mutation anchors (read these exact files before mutating them; these reads are admitted directly and do not need need_more_evidence):\n${prepared.requiredMutationAnchors.map(anchor => `- ${anchor}`).join('\n')}\n`
     : 'Required current-file mutation anchors: none.\n';
-  const targetPolicy = prepared.targetPolicy ?? plannerTargetPolicy(prepared.layoutHint);
-  const targetPolicyBlock = Object.keys(targetPolicy.resolvedTargets ?? {}).length || Object.keys(targetPolicy.conventionHints ?? {}).length
-    ? `Target precedence: resolvedTargets > conventionHints > discovered repository context.\nResolved targets (immutable): ${JSON.stringify(targetPolicy.resolvedTargets ?? {})}\nConvention hints (fallback only when the corresponding resolved target is absent): ${JSON.stringify(targetPolicy.conventionHints ?? {})}\n`
-    : '';
-  const plannerWarnings = Array.isArray(prepared.plannerWarnings) && prepared.plannerWarnings.length > 0
-    ? `Planner warnings (informational only; never override resolved targets):\n${prepared.plannerWarnings.map(warning => `- ${warning}`).join('\n')}\n`
-    : '';
   return `Runtime-prepared implementation state:
 Implementation plan:
 ${numberedPlan}
-${targetPolicyBlock}${plannerWarnings}${repositoryFacts}${mutationAnchors}
+${repositoryFacts}${mutationAnchors}
 Complexity: ${prepared.complexity} — ${prepared.reason}
 Large mutation: ${largeMutationArmed ? 'auto-arm one-shot elevated mutation budget when action is ready' : 'normal mutation budget'}
 Preparation complete; start from the prepared facts and actions. Do not re-plan or re-discover resolved layout. If one genuinely unresolved repository fact blocks a safe action, use need_more_evidence for that concrete fact.
