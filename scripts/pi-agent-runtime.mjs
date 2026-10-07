@@ -517,10 +517,10 @@ export default function (pi) {
   // permit may restore it only in that case; unrelated removals stay removed.
   let verificationToolHiddenByPermitGate = false;
   let deterministicVerificationInfrastructure = null;
-  // After a fork returns with trusted publishable mutations, prevent a blind second fork or
-  // rewrite of preserved child work. Release only after a bounded read inspects one protected path
-  // or authoritative validation settles; if neither route remains reachable, preserve the
-  // worktree and fail closed instead of reopening mutation/fork capabilities.
+  // After an aborted fork returns with trusted publishable mutations, prevent a blind second fork
+  // or rewrite of preserved child work. A bounded read advances the guard into local-repair mode;
+  // validation may advance the remaining obligation, but only terminal success releases the guard.
+  // If no bounded recovery route remains reachable, preserve the worktree and fail closed.
   let codingRecoveryGuard = null;
 
   // Ordinary validation repair inside a still-live coding-session fork is intentionally separate
@@ -2939,7 +2939,11 @@ export default function (pi) {
           const submitted = outcome.successful_final_submission;
           const terminalSubmitted = outcome.submitted;
           const recoveryReceipt = terminalSubmitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
-          if (recoveryReceipt?.changed_publishable_paths?.length) {
+          const recoverableSessionAbort = Boolean(
+            sessionError &&
+            recoveryReceipt?.changed_publishable_paths?.length > 0
+          );
+          if (recoverableSessionAbort) {
             codingRecoveryGuard = {
               ...recoveryReceipt,
               inspection_complete: false,
@@ -3005,7 +3009,7 @@ export default function (pi) {
             ? 'Coding session ended without submit_result'
             : 'Coding session ended without a terminal result';
           const terminalDiagnostic = sessionError ?? receiptError;
-          const recoveryGuidance = recoveryReceipt
+          const recoveryGuidance = recoverableSessionAbort
             ? ` Trusted recovery receipt: ${JSON.stringify(recoveryReceipt)} Resume from these existing worktree mutations; do not discard or blindly regenerate preserved child changes. If one concrete fact must be inspected, use the bounded recovery read exposed by the parent rather than restarting a coding session from memory.`
             : '';
           const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}.${recoveryGuidance} ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
@@ -3013,10 +3017,6 @@ export default function (pi) {
           // A stale/invalid receipt is recoverable: return control so the parent
           // can submit the current tree again instead of converting consistency
           // drift into an execution failure.
-          const recoverableSessionAbort = Boolean(
-            sessionError &&
-            recoveryReceipt?.changed_publishable_paths?.length > 0
-          );
           if (sessionError && !recoverableSessionAbort) throw new Error(message);
           if (recoverableSessionAbort) {
             console.warn(`PI_CODING_RECOVERY_HANDOFF ${JSON.stringify({
