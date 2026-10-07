@@ -292,7 +292,7 @@ function runtimeScenario(mode) {
       const registered = new Map();
       let aborts = 0;
       let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence',
-        'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'subagents_enable'];
+        'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'indexed_repo_search', 'subagents_enable'];
       if (mode === 'no-submit-recovery-dead-end') {
         active = active.filter(name => name !== 'run_check');
       }
@@ -2034,6 +2034,7 @@ function runtimeScenario(mode) {
         assert.ok(!active.includes('write'), 'parent cannot mutate before inspecting preserved child work');
         assert.ok(!active.includes('bash'), 'raw shell never becomes a recovery capability');
         assert.ok(!active.includes('repo_search'), 'broad discovery stays closed during recovery');
+        assert.ok(!active.includes('indexed_repo_search'), 'indexed discovery stays closed during recovery');
         if (partialRecovery) {
           assert.ok(active.includes('retry_last_failed_check'), 'authoritative failed validation exposes its exact retry');
           const accepted = JSON.parse(fs.readFileSync(scopeFile, 'utf8')).accepted.map(entry => entry.path).sort();
