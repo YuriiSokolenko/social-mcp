@@ -272,7 +272,8 @@ function runtimeScenario(mode) {
         assert.equal(request.agent, 'implementation-planner');
         if (mode === 'layout-aware') {
           assert.match(request.task, /Add smoke widget parser/);
-          assert.ok(request.task.includes('resolvedTargets={"source":"src/demo_pkg/diagnostics/smoke_widget.py"}'));
+          assert.ok(request.task.includes('resolvedTargets={}'));
+          assert.ok(request.task.includes('"sourceTarget":"src/demo_pkg/diagnostics/smoke_widget.py"'));
           assert.ok(request.task.includes('"sourceConvention":"src/demo_pkg/diagnostics/smoke_chunks.py"'));
           assert.ok(request.task.includes('"testDirectory":"tests/diagnostics"'));
           assert.ok(request.task.includes('"testConvention":"tests/diagnostics/test_smoke_chunks.py"'));
