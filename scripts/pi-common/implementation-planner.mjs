@@ -7,19 +7,9 @@ import { recordDescendantMetric, runStructuredSubagent } from './structured-suba
 import { baseRef } from './project-config.mjs';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs';
 
-// Evidence needs are reported independently of complexity: a nontrivial task can still need
-// zero repository evidence (a fresh standalone file from a complete spec), so complexity is
-// not a valid proxy for how many evidence actions the Implementer should be granted.
-export const MAX_PLANNER_EVIDENCE_BUDGET = 6;
-
-// Compact handoff ceilings are deterministic normalization only, not planner-behavior budgets.
-const MAX_PLANNER_STEP_LENGTH = 240;
-// This is a downstream handoff-size boundary, not a planner behavior budget. It keeps the
-// PreparedImplementation block compact for the main Implementer while allowing #528-style
-// plans with more than eight substantive steps to pass unchanged.
-export const MAX_PLANNER_HANDOFF_STEPS = 16;
-export const MAX_PLANNER_FACTS = 6;
-export const MAX_PLANNER_FACT_LENGTH = 200;
+// Internal semantic-progress fingerprints remain bounded so a repository tool result can never
+// turn the planner sidecar into a raw transcript. This is not a Planner -> Main handoff limit.
+const PLANNER_EVIDENCE_FINGERPRINT_MAX_LENGTH = 200;
 
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
 
@@ -54,7 +44,7 @@ export function createPlannerEvidenceGate() {
 function boundedPlannerFact(value) {
   if (typeof value !== 'string') return null;
   const fact = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return fact ? fact.slice(0, MAX_PLANNER_FACT_LENGTH).trim() : null;
+  return fact ? fact.slice(0, PLANNER_EVIDENCE_FINGERPRINT_MAX_LENGTH).trim() : null;
 }
 
 function plannerResultText(value) {
@@ -86,7 +76,7 @@ export function plannerEvidenceFact(toolName, input, result) {
   const rawTarget = input?.path ?? input?.file ?? input?.query ?? input?.target ?? input?.pattern ?? input?.glob ?? '';
   const target = redactPlannerEvidence(rawTarget).slice(0, 80);
   const prefix = `${toolName}${target ? ` ${target}` : ''}: `;
-  const room = Math.max(0, MAX_PLANNER_FACT_LENGTH - prefix.length);
+  const room = Math.max(0, PLANNER_EVIDENCE_FINGERPRINT_MAX_LENGTH - prefix.length);
   return boundedPlannerFact(prefix + observed.slice(0, room));
 }
 
@@ -97,7 +87,7 @@ export function readPlannerEvidenceState(file) {
     const used = Number(state?.used);
     if (!Number.isSafeInteger(used) || used < 0) return null;
     const facts = Array.isArray(state?.facts)
-      ? state.facts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS)
+      ? state.facts.map(boundedPlannerFact).filter(Boolean)
       : [];
     return {
       used, facts,
@@ -107,6 +97,9 @@ export function readPlannerEvidenceState(file) {
       ...(typeof state?.repairDiagnostic === 'string' ? { repairDiagnostic: state.repairDiagnostic.slice(0, 400) } : {}),
       ...(typeof state?.repairKind === 'string' ? { repairKind: state.repairKind } : {}),
       ...(typeof state?.failureKind === 'string' ? { failureKind: state.failureKind } : {}),
+      ...(state?.acceptedResult && typeof state.acceptedResult === 'object' && !Array.isArray(state.acceptedResult)
+        ? { acceptedResult: state.acceptedResult }
+        : {}),
     };
   } catch {
     return null;
@@ -129,11 +122,14 @@ export const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
       items: { type: 'string', minLength: 1 },
     },
     complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
-    evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
+    required_mutation_anchors: {
+      type: 'array',
+      items: { type: 'string', minLength: 1 },
+    },
     large_mutation: { type: 'boolean' },
     reason: { type: 'string', minLength: 1 },
   },
-  required: ['steps', 'complexity', 'evidence_budget', 'reason'],
+  required: ['steps', 'complexity', 'reason'],
   additionalProperties: true,
 });
 
@@ -309,33 +305,32 @@ export function discoverAdditivePythonLayout(cwd, issue) {
   return null;
 }
 
-// Safe repairs only: keep the canonical fields, trim strings, and bound the compact handoff
-// deterministically. These are serialization/handoff ceilings, never planner behavior budgets.
-// facts is a compact repository-derived handoff, never raw evidence or planner transcript.
-// large_mutation is an optional planner hint: omission safely defaults to false, while an
-// explicitly present non-boolean value is preserved so strict validation rejects it.
+// Safe repairs only: trim strings and retain the complete semantic handoff. There are no
+// arbitrary fact/step/reason ceilings on a successful Planner -> Main result.
 export function normalizeImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const trim = item => typeof item === 'string' ? item.trim() : item;
   const normalized = {};
-  for (const key of ['steps', 'facts', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
+  for (const key of ['steps', 'facts', 'complexity', 'required_mutation_anchors', 'large_mutation', 'reason']) {
     if (!(key in value)) continue;
-    if (key === 'steps' && Array.isArray(value.steps)) {
-      normalized.steps = value.steps.slice(0, MAX_PLANNER_HANDOFF_STEPS).map(step =>
-        typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step
-      );
-    } else if (key === 'facts' && Array.isArray(value.facts)) {
-      normalized.facts = value.facts.slice(0, MAX_PLANNER_FACTS)
-        .map(fact => typeof fact === 'string' ? fact.trim().slice(0, MAX_PLANNER_FACT_LENGTH).trim() : fact);
-    } else if (key === 'reason' && typeof value.reason === 'string') {
-      normalized.reason = value.reason.trim().slice(0, 300).trim();
+    if ((key === 'steps' || key === 'facts' || key === 'required_mutation_anchors') && Array.isArray(value[key])) {
+      normalized[key] = value[key].map(trim);
     } else {
       normalized[key] = trim(value[key]);
     }
   }
   if (!('facts' in normalized)) normalized.facts = [];
+  if (!('required_mutation_anchors' in normalized)) normalized.required_mutation_anchors = [];
   if (!('large_mutation' in normalized)) normalized.large_mutation = false;
   return normalized;
+}
+
+function validMutationAnchorPath(value) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (!text || text.length > 1000 || text.startsWith('/') || text.startsWith('./') || /\\/.test(text)) return false;
+  if (/(^|\/)\.\.(\/|$)/.test(text) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return false;
+  return path.posix.normalize(text) === text;
 }
 
 export function validateImplementationPreparation(value) {
@@ -343,39 +338,50 @@ export function validateImplementationPreparation(value) {
     throw new Error('Implementation planner returned a non-object structured result');
   }
   const keys = Object.keys(value);
-  const requiredKeys = ['steps', 'complexity', 'evidence_budget', 'large_mutation', 'reason'];
-  const allowedKeys = new Set([...requiredKeys, 'facts']);
+  const requiredKeys = ['steps', 'complexity', 'large_mutation', 'reason'];
+  const allowedKeys = new Set([...requiredKeys, 'facts', 'required_mutation_anchors']);
   if (!requiredKeys.every(key => keys.includes(key)) || keys.some(key => !allowedKeys.has(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
-  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > MAX_PLANNER_HANDOFF_STEPS) {
+  if (!Array.isArray(value.steps) || value.steps.length < 1) {
     throw new Error('Implementation planner returned an invalid step list');
   }
   const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
-  if (steps.some(step => !step || step.length > MAX_PLANNER_STEP_LENGTH)) {
+  if (steps.some(step => !step)) {
     throw new Error('Implementation planner returned an invalid plan step');
   }
   const factsValue = value.facts ?? [];
-  if (!Array.isArray(factsValue) || factsValue.length > MAX_PLANNER_FACTS) {
+  if (!Array.isArray(factsValue)) {
     throw new Error('Implementation planner returned an invalid repository facts list');
   }
   const facts = factsValue.map(fact => typeof fact === 'string' ? fact.trim() : '');
-  if (facts.some(fact => !fact || fact.length > MAX_PLANNER_FACT_LENGTH)) {
+  if (facts.some(fact => !fact)) {
     throw new Error('Implementation planner returned an invalid repository fact');
   }
   if (!['trivial', 'nontrivial'].includes(value.complexity)) {
     throw new Error(`Implementation planner returned invalid complexity: ${String(value.complexity)}`);
   }
-  const evidenceBudget = Number(value.evidence_budget);
-  if (!Number.isSafeInteger(evidenceBudget) || evidenceBudget < 0 || evidenceBudget > MAX_PLANNER_EVIDENCE_BUDGET) {
-    throw new Error(`Implementation planner returned invalid evidence_budget: ${String(value.evidence_budget)}`);
+  const anchorsValue = value.required_mutation_anchors ?? [];
+  if (!Array.isArray(anchorsValue)) {
+    throw new Error('Implementation planner returned an invalid required mutation anchor list');
+  }
+  const requiredMutationAnchors = anchorsValue.map(anchor => typeof anchor === 'string' ? anchor.trim() : '');
+  if (requiredMutationAnchors.some(anchor => !validMutationAnchorPath(anchor))) {
+    throw new Error('Implementation planner returned an invalid required mutation anchor');
   }
   if (typeof value.large_mutation !== 'boolean') {
     throw new Error(`Implementation planner returned invalid large_mutation: ${String(value.large_mutation)}`);
   }
   const reason = typeof value.reason === 'string' ? value.reason.trim() : '';
-  if (!reason || reason.length > 300) throw new Error('Implementation planner returned an invalid reason');
-  return { steps, facts, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
+  if (!reason) throw new Error('Implementation planner returned an invalid reason');
+  return {
+    steps,
+    facts,
+    complexity: value.complexity,
+    requiredMutationAnchors: [...new Set(requiredMutationAnchors)],
+    largeMutation: value.large_mutation,
+    reason,
+  };
 }
 
 export function plannerTask(env = process.env, { layoutHint = null } = {}) {
@@ -394,23 +400,23 @@ Investigate only while additional evidence can materially improve the plan.
 Finish as soon as the plan is sufficiently grounded. Repository tool calls do not earn points or increase the reward.
 
 STRUCTURED_OUTPUT SERIALIZATION CONTRACT — read before repository evidence. This is a shape example only; replace the sample content with the real plan and pass this object directly as the arguments to structured_output:
-{ "value": { "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."], "facts": ["Both implementation targets are new files."], "complexity": "nontrivial", "evidence_budget": 0, "large_mutation": false, "reason": "Both mutation targets are new files, so no current-file anchor is needed." } }
+{ "value": { "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."], "facts": ["Both implementation targets are new files."], "complexity": "nontrivial", "required_mutation_anchors": [], "large_mutation": false, "reason": "Both mutation targets are new files, so no current-file anchor is needed." } }
 Never add a second value wrapper such as { "value": { "value": { ... } } }. Never omit the outer value. Never stringify the payload as { "value": "{...}" }.
 
 MANDATORY COMPLETION: a successful planner lifecycle ends only by calling structured_output. Never finish with prose. Once finalization starts, repository evidence closes. If runtime validation rejects the structured result, correct only the reported shape/serialization problem and call structured_output again; there is no fixed repair-attempt budget.
 ${evidencePolicy}
 
-Synthesize what you learn into a small set of concise repository-derived facts: observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought. Runtime normalization keeps this handoff compact; do not optimize exploration around serialization ceilings.
+Synthesize what you learn into concise repository-derived facts: observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. Preserve every useful semantic fact needed by Main; do not truncate or drop facts merely to hit a count/character target. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought.
 
-Keep the plan concise and ordered. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
+Keep the plan ordered and implementation-oriented. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
 
-Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository evidence main still needs after consuming your handoff. Resolved discovery/convention facts cost main 0, but they do not replace a current mutation anchor: reserve at least one action for each existing file main must modify and has not itself seen. New-file-only work may use 0. Complexity is independent of evidence needs.
+For every existing repository file that Main is expected to mutate, include its exact repository-relative path in required_mutation_anchors. Do not include new files. These anchors are semantic safety requirements: Main may read each named current file directly before mutating it. Do not estimate or allocate a numeric evidence-action budget. If some other repository fact remains genuinely unresolved later, Main has its own need_more_evidence transition.
 
 Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget, not merely because complexity is nontrivial. Do not implement the task.
 
 The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}
 
-Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. The tool argument has exactly one top-level "value"; never wrap it again.
+Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "required_mutation_anchors": ["path/to/existing-file-if-needed"], "large_mutation": true|false, "reason": "..." } }. Use an empty required_mutation_anchors array for new-file-only work. The tool argument has exactly one top-level "value"; never wrap it again.
 
 Issue title:
 ${issue.title}
@@ -452,13 +458,21 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
   let usage = null;
   let status = 'error';
   const childSession = randomUUID();
+
+  const acceptedPlannerResult = () => {
+    const state = readPlannerEvidenceState(evidenceStateFile);
+    if (state?.repairStatus !== 'accepted' || !state.acceptedResult) return null;
+    return { state, validated: validateImplementationPreparation(normalizeImplementationPreparation(state.acceptedResult)) };
+  };
+
   try {
     const response = await runStructuredSubagent(pi, ctx, request, signal);
     usage = addUsage(usage, response.usage);
-    const validated = validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
-    const evidenceState = readPlannerEvidenceState(evidenceStateFile);
+    const accepted = acceptedPlannerResult();
+    const validated = accepted?.validated ??
+      validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
+    const evidenceState = accepted?.state ?? readPlannerEvidenceState(evidenceStateFile);
     status = 'completed';
-    console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted', message: '🐈 You pet the cat. Planner complete.' })}`);
     return {
       ...validated, usage, layoutHint,
       evidenceActions: evidenceState?.used ?? null,
@@ -466,6 +480,16 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     };
   } catch (error) {
     usage = addUsage(usage, error?.delegationUsage);
+    const accepted = acceptedPlannerResult();
+    if (accepted) {
+      status = 'completed';
+      return {
+        ...accepted.validated, usage, layoutHint,
+        evidenceActions: accepted.state.used ?? null,
+        structuredCorrections: accepted.state.structuredCorrections ?? 0,
+      };
+    }
+
     const evidenceState = readPlannerEvidenceState(evidenceStateFile);
     const message = String(error?.message ?? error);
     const plannerFailureClass = evidenceState?.failureKind === 'semantic_no_progress'
@@ -507,7 +531,7 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       plan: planned.steps,
       repositoryFacts: planned.facts,
       complexity: planned.complexity,
-      evidenceBudget: planned.evidenceBudget,
+      requiredMutationAnchors: planned.requiredMutationAnchors,
       largeMutation: planned.largeMutation,
       reason: planned.reason,
       layoutHint,
@@ -558,8 +582,12 @@ export function validatePreparedImplementation(value) {
   }
   if (value.status === 'prepared') {
     validateImplementationPreparation({
-      steps: value.plan, facts: value.repositoryFacts ?? [], complexity: value.complexity, evidence_budget: value.evidenceBudget,
-      large_mutation: value.largeMutation, reason: value.reason,
+      steps: value.plan,
+      facts: value.repositoryFacts ?? [],
+      complexity: value.complexity,
+      required_mutation_anchors: value.requiredMutationAnchors ?? [],
+      large_mutation: value.largeMutation,
+      reason: value.reason,
     });
   } else if (typeof value.reason !== 'string' || !value.failureClass) {
     throw new Error('Prepared implementation fallback is missing its reason');
@@ -600,15 +628,17 @@ ${provenance}${layoutGuidance(prepared.layoutHint, { authoritative: 'This curren
   }
   const numberedPlan = prepared.plan.map((step, index) => `${index + 1}. ${step}`).join('\n');
   const repositoryFacts = Array.isArray(prepared.repositoryFacts) && prepared.repositoryFacts.length > 0
-    ? `\nRepository facts already established by planner (treat these as completed discovery; do not re-read their source files unless a current mutation anchor is explicitly required or new evidence shows a fact is stale):\n${prepared.repositoryFacts.map(fact => `- ${fact}`).join('\n')}\n`
+    ? `\nRepository facts already established by planner (treat these as completed discovery; do not re-read their source files unless a required mutation anchor names that exact file or new evidence shows a fact is stale):\n${prepared.repositoryFacts.map(fact => `- ${fact}`).join('\n')}\n`
     : '\n';
+  const mutationAnchors = Array.isArray(prepared.requiredMutationAnchors) && prepared.requiredMutationAnchors.length > 0
+    ? `Required current-file mutation anchors (read these exact files before mutating them; these reads are admitted directly and do not need need_more_evidence):\n${prepared.requiredMutationAnchors.map(anchor => `- ${anchor}`).join('\n')}\n`
+    : 'Required current-file mutation anchors: none.\n';
   return `Runtime-prepared implementation state:
 Implementation plan:
 ${numberedPlan}
-${repositoryFacts}
+${repositoryFacts}${mutationAnchors}
 Complexity: ${prepared.complexity} — ${prepared.reason}
-Evidence budget: ${prepared.evidenceBudget}
-Large mutation: ${largeMutationArmed ? 'auto-arm one-shot elevated mutation budget when evidence is complete' : 'normal mutation budget'}
-Preparation complete; do not re-plan unless concrete repository evidence invalidates a plan assumption.
-${provenance}${layoutGuidance(prepared.layoutHint, { authoritative: 'This bounded current-worktree lookup is authoritative layout evidence. Prefer one targeted convention read if needed; do not broad-search or re-prove the fresh-worktree provenance.' })}`;
+Large mutation: ${largeMutationArmed ? 'auto-arm one-shot elevated mutation budget when action is ready' : 'normal mutation budget'}
+Preparation complete; start from the prepared facts and actions. Do not re-plan or re-discover resolved layout. If one genuinely unresolved repository fact blocks a safe action, use need_more_evidence for that concrete fact.
+${provenance}`;
 }
