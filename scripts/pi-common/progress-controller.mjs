@@ -542,10 +542,10 @@ export class ProgressController {
   }
 
   // Installs a PreparedImplementation artifact resolved by the runtime bootstrap before the main
-  // session's first provider request. New handoffs are action-oriented: repository facts are already
-  // resolved, exact existing-file mutation anchors may be read directly, and every other unresolved
-  // repository fact goes through need_more_evidence. Legacy artifacts with evidenceBudget retain the
-  // previous numeric startup window only for compatibility.
+  // session's first provider request. New handoffs are action-oriented: the prepared plan/facts are
+  // trusted, while the configured directActionTools remain available for execution-time repository
+  // inspection in action_required. Legacy artifacts with evidenceBudget retain their previous numeric
+  // startup window only for compatibility before entering the same successful-prepared action state.
   applyPreparedImplementation(prepared) {
     if (prepared.status === 'fallback') {
       this.preparedDirectActionToolsEnabled = false;
@@ -875,7 +875,7 @@ export class ProgressController {
           return {
             block: true,
             reason: this.productiveBlockerTool
-              ? `BLOCKED: productive progress requires an action now. ${toolName} did not execute. Use structural_edit/safe_edit/edit/write/submit_result, or call ${this.productiveBlockerTool} with one concrete missing fact to unlock exactly one evidence action.`
+              ? `BLOCKED: ${toolName} did not execute in the current productive-progress state. Use an exposed mutation/submission action or direct repository tool; call ${this.productiveBlockerTool} only for one concrete fact that requires a bounded evidence transition.`
               : `BLOCKED: classification evidence is complete. ${toolName} did not execute. Call submit_result now.`,
           };
         }
