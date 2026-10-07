@@ -2042,17 +2042,18 @@ function runtimeScenario(mode) {
         assert.ok(!recoveryRequest.tools.some(tool => ['bash', 'repo_search', 'begin_coding_session'].includes(tool.function.name)));
 
         handlers.get('turn_start')({ turnIndex: turn });
-        const blindFork = await handlers.get('tool_call')({
-          toolName: 'begin_coding_session',
-          toolCallId: 'blind-recovery-fork-' + turn,
+        const unavailableRecoveryTool = partialRecovery ? 'bash' : 'begin_coding_session';
+        const unavailableRecoveryAttempt = await handlers.get('tool_call')({
+          toolName: unavailableRecoveryTool,
+          toolCallId: 'unavailable-recovery-tool-' + turn,
           input: {},
         }, ctx);
-        assert.equal(blindFork.block, true);
-        assert.match(blindFork.reason, /not currently exposed|capability lifecycle changed/);
+        assert.equal(unavailableRecoveryAttempt.block, true);
+        assert.match(unavailableRecoveryAttempt.reason, /not currently exposed|capability lifecycle changed/);
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
         assert.equal(aborts, 0, 'first unavailable recovery tool gets a bounded correction instead of a prose abort');
         assert.match(steers.at(-1), /RUNTIME UNAVAILABLE CAPABILITY CORRECTION/);
-        assert.match(steers.at(-1), /begin_coding_session/);
+        assert.match(steers.at(-1), new RegExp(unavailableRecoveryTool));
 
         const correctedRequest = handlers.get('before_provider_request')({
           payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
@@ -2079,6 +2080,24 @@ function runtimeScenario(mode) {
         assert.ok(!active.includes('need_more_evidence'), 'inspection does not reopen broad evidence');
         if (partialRecovery) {
           assert.ok(active.includes('retry_last_failed_check'), 'exact failed-check retry remains available after inspection');
+          const localRepair = await call('safe_edit', {
+            path: 'generated.py',
+            operation: 'insert_after',
+            start_line: 1,
+            text: '# parent recovery repair\n',
+          });
+          assert.equal(localRepair.block, undefined, 'parent can mutate an accepted preserved path after bounded inspection');
+          assert.equal(aborts, 0, 'local parent repair remains recoverable');
+          assert.ok(active.includes('retry_last_failed_check'), 'successful local repair preserves the exact failed-check retry path');
+
+          handlers.get('turn_start')({ turnIndex: turn });
+          const retryCall = await handlers.get('tool_call')({
+            toolName: 'retry_last_failed_check',
+            toolCallId: 'parent-recovery-retry-' + turn,
+            input: {},
+          }, ctx);
+          assert.equal(retryCall, undefined, 'parent accepts the exact failed-check retry after local recovery repair');
+          console.log('CODING_RECOVERY_RETRY_ACCEPTED_OK');
         }
         console.log('CODING_RECOVERY_RECEIPT_OK ' + JSON.stringify(result.details.recovery_receipt));
         console.log(partialRecovery ? 'CODING_RECOVERY_PARTIAL_OK' : 'CODING_RECOVERY_BOUNDED_INSPECTION_OK');
@@ -2211,8 +2230,9 @@ test('#526 partial child progress with failed validation survives abort and stay
   assert.match(logs, /PI_CODING_RECOVERY_GUARD .*"preparedOutputsPresent":\{"source":false,"test":false\}.*"status":"fail"/);
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"coding_recovery_evidence".*"read".*"retry_last_failed_check"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"begin_coding_session"/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"bash"/);
   assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence"/);
+  assert.match(logs, /CODING_RECOVERY_RETRY_ACCEPTED_OK/);
   assert.match(logs, /CODING_RECOVERY_PARTIAL_OK/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
