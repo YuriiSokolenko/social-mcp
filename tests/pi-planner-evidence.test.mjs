@@ -142,24 +142,38 @@ test('planner prompt and agent contract use cat completion incentive and no mode
   assert.match(agentSource(), /There is no fixed result-attempt or repair-attempt budget/i);
 });
 
-test('more than six distinct evidence actions are accepted and telemetry exposes only action count', async (t) => {
+test('more than six distinct useful evidence actions are accepted and telemetry exposes only action count', async (t) => {
   const harness = extensionHarness(t);
   for (let index = 0; index < 8; index += 1) {
-    const tool = PLANNER_EVIDENCE_TOOLS[index % PLANNER_EVIDENCE_TOOLS.length];
+    const tool = 'read';
+    const toolCallId = `e-${index}`;
+    const input = { path: `src/useful-${index}.mjs` };
     const result = await harness.handlers.get('tool_call')({
       toolName: tool,
-      toolCallId: `e-${index}`,
-      input: { path: `path-${index}`, query: `query-${index}` },
+      toolCallId,
+      input,
     }, harness.abortContext);
     assert.equal(result, undefined);
+    await harness.handlers.get('tool_execution_end')({
+      toolName: tool,
+      toolCallId,
+      isError: false,
+      result: { content: [{ type: 'text', text: `export const useful${index} = ${index};` }] },
+    });
   }
   const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
   assert.equal(state.used, 8);
   assert.equal('cap' in state, false);
+  assert.equal(harness.aborted(), false);
   const markers = harness.logs().filter(line => line.startsWith('PI_PLANNER_EVIDENCE '));
   assert.equal(markers.length, 8);
   assert.ok(markers.every(line => !/remaining|cap/.test(line)));
   assert.match(markers[7], /"action":8/);
+  assert.equal(
+    harness.logs().filter(line => line.includes('PI_PLANNER_CAT_WAITING') && line.includes('"event":"progress"')).length,
+    8,
+    'each distinct useful result may remind that the same waiting cat still exists without accumulating reward',
+  );
 });
 
 test('equivalent repository action is stopped only after it demonstrates no progress', async (t) => {
