@@ -65,6 +65,14 @@ export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMIN
 // an elevated mutation budget is active, but must not consume that budget before the real edit.
 export const ELEVATED_MUTATION_TURN_TOOLS = new Set([...FINISH_TOOLS, ACCEPT_MUTATION_SCOPE_TOOL]);
 const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
+const ANCHOR_GATED_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
+
+function normalizedRepositoryPath(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || text.startsWith('/') || text.startsWith('./') || /\\/.test(text)) return null;
+  if (/(^|\/)\.\.(\/|$)/.test(text) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return null;
+  return text.replace(/\/{2,}/g, '/');
+}
 
 function positiveInteger(value, name) {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
@@ -277,10 +285,11 @@ export class ProgressController {
       ]),
     );
     this.productiveEvidenceRemaining = 0;
-    // Set by `setEvidenceBudget` from the planner's own per-task estimate. When present it
-    // takes priority over the by-complexity table: complexity is not a valid proxy for how
-    // much repository evidence a task actually needs before it is safe to mutate.
+    // Legacy/direct-classification compatibility only. Successful PreparedImplementation
+    // handoffs do not install a numeric evidence allowance; they start action-oriented and use
+    // explicit required mutation anchors plus need_more_evidence for unresolved facts.
     this.productiveEvidenceBudgetOverride = null;
+    this.requiredMutationAnchors = new Set();
     this.lastEvidenceRequestSignature = null;
     this.evidenceUnlockUsedSinceProgress = false;
     // Snapshot only an accepted need_more_evidence transition. Blocked attempts may still
@@ -346,9 +355,7 @@ export class ProgressController {
     return { complexity: name, previous, changed: previous !== name };
   }
 
-  // Records the planner's own bounded evidence estimate for this task, independent of the
-  // trivial/nontrivial complexity classification. `null` clears any override and restores
-  // the by-complexity table as a fallback.
+  // Legacy/direct-classification evidence override. New successful Planner handoffs do not use it.
   setEvidenceBudget(value) {
     if (value == null) {
       this.productiveEvidenceBudgetOverride = null;
@@ -360,6 +367,23 @@ export class ProgressController {
     }
     this.productiveEvidenceBudgetOverride = budget;
     return budget;
+  }
+
+  installRequiredMutationAnchors(paths = []) {
+    if (!Array.isArray(paths)) throw new Error('required mutation anchors must be an array');
+    const normalized = paths.map(normalizedRepositoryPath);
+    if (normalized.some(path => !path)) throw new Error('required mutation anchor must be a safe repository-relative path');
+    this.requiredMutationAnchors = new Set(normalized);
+    return this.pendingRequiredMutationAnchors();
+  }
+
+  pendingRequiredMutationAnchors() {
+    return [...this.requiredMutationAnchors].sort();
+  }
+
+  isRequiredMutationAnchorRead(toolName, input) {
+    const candidate = toolName === 'read' ? normalizedRepositoryPath(input?.path) : null;
+    return Boolean(candidate && this.requiredMutationAnchors.has(candidate));
   }
 
   verificationPermitted() {
@@ -512,25 +536,41 @@ export class ProgressController {
   }
 
   // Installs a PreparedImplementation artifact resolved by the runtime bootstrap before the main
-  // session's first provider request. Produces the same state a successful prepare_implementation
-  // tool call used to produce: complexity, planner evidence budget, armed large-mutation intent and
-  // the initial productive-progress state.
+  // session's first provider request. New handoffs are action-oriented: repository facts are already
+  // resolved, exact existing-file mutation anchors may be read directly, and every other unresolved
+  // repository fact goes through need_more_evidence. Legacy artifacts with evidenceBudget retain the
+  // previous numeric startup window only for compatibility.
   applyPreparedImplementation(prepared) {
     if (prepared.status === 'fallback') {
       return { ...this.installPreparationFallback(), largeMutationArmed: false };
     }
     this.setComplexity(prepared.complexity);
-    this.setEvidenceBudget(prepared.evidenceBudget);
+    this.installRequiredMutationAnchors(prepared.requiredMutationAnchors ?? []);
     const largeMutationArmed = this.armAutomaticLargeMutationBudget(prepared.largeMutation);
-    const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
-    this.productiveEvidenceRemaining = evidenceBudget;
-    // Zero planner-reported evidence need goes straight to action_required.
-    this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
+    const legacyEvidenceBudget = Object.hasOwn(prepared, 'evidenceBudget');
+    if (legacyEvidenceBudget) {
+      this.setEvidenceBudget(prepared.evidenceBudget);
+      const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
+      this.productiveEvidenceRemaining = evidenceBudget;
+      this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
+      this.evidenceUnlockUsedSinceProgress = false;
+      return {
+        preparationState: this.preparationState,
+        complexity: this.complexity,
+        evidenceBudget,
+        requiredMutationAnchors: this.pendingRequiredMutationAnchors(),
+        largeMutationArmed,
+      };
+    }
+
+    this.setEvidenceBudget(null);
+    this.productiveEvidenceRemaining = 0;
+    this.productiveState = 'action_required';
     this.evidenceUnlockUsedSinceProgress = false;
     return {
       preparationState: this.preparationState,
       complexity: this.complexity,
-      evidenceBudget,
+      requiredMutationAnchors: this.pendingRequiredMutationAnchors(),
       largeMutationArmed,
     };
   }
@@ -722,9 +762,22 @@ export class ProgressController {
       };
     }
 
-    // Repair reads may be admitted by the runtime without reopening or consuming the normal
-    // productive evidence window. Every generic controller invariant above and the repeat/turn
-    // guards below still applies; only productive-state evidence accounting is skipped.
+    const requiredAnchorRead = this.isRequiredMutationAnchorRead(toolName, input);
+    if (ANCHOR_GATED_MUTATION_TOOLS.has(toolName) && this.requiredMutationAnchors.size > 0) {
+      const mutationPath = normalizedRepositoryPath(input?.path);
+      const blocksSpecificAnchor = mutationPath && this.requiredMutationAnchors.has(mutationPath);
+      const blocksCodingSession = toolName === 'begin_coding_session';
+      if (blocksSpecificAnchor || blocksCodingSession) {
+        return {
+          block: true,
+          reason: `BLOCKED: read required mutation anchor(s) before this mutation: ${this.pendingRequiredMutationAnchors().join(', ')}.`,
+        };
+      }
+    }
+
+    // Repair reads and exact PreparedImplementation mutation-anchor reads may be admitted without
+    // reopening a general repository evidence window. Every generic controller invariant and
+    // repeat/turn guard still applies.
     if (this.productiveProgress && !productiveEvidenceIndependent) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const activatesOnRead =
@@ -783,7 +836,7 @@ export class ProgressController {
                 : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
             };
           }
-        } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
+        } else if (!requiredAnchorRead && !this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
           return {
             block: true,
             reason: this.productiveBlockerTool
@@ -936,6 +989,10 @@ export class ProgressController {
         this.preComplexityEvidenceBudget,
         this.preComplexityEvidenceRemaining + 1,
       );
+    }
+    if (toolName === 'read' && !isError) {
+      const anchor = normalizedRepositoryPath(input?.path);
+      if (anchor) this.requiredMutationAnchors.delete(anchor);
     }
     if (toolName === 'lsp_start_server') {
       this.lspServerStartPending = false;
