@@ -135,9 +135,14 @@ function usageWithProviderCacheTelemetry(value, providerTelemetry) {
   ) {
     usage.cacheRead = providerTelemetry.cached_tokens;
     usage.cacheReadKnown = true;
+  } else if (providerTelemetry) {
+    // A traced provider response is authoritative. If its cache field is absent, Pi/SDK
+    // defaults (including a numeric cacheRead) cannot upgrade "unknown" into a cache hit.
+    delete usage.cacheRead;
+    usage.cacheReadKnown = false;
   } else if (Number.isFinite(usage.cacheRead) && usage.cacheRead > 0) {
-    // Preserve a positive SDK value if another compatible provider surfaces one even when
-    // transport tracing is unavailable. A synthetic/default zero is never authoritative.
+    // If transport tracing itself is unavailable, preserve an explicitly positive SDK value.
+    // A zero remains ambiguous because compatible clients commonly synthesize it.
     usage.cacheReadKnown = true;
   } else {
     delete usage.cacheRead;
