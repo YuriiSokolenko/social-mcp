@@ -6,9 +6,10 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const PLANNER_ORBIT_COMMAND_TIMEOUT_MS = 5000;
 
-// Safety-only serialization boundary for model input. This is not an evidence-action,
-// Orbit-query, repository-fact, or Planner -> Main handoff limit.
+// Safety-only boundaries for the pre-request seed. Neither value limits Planner evidence,
+// later planner_code_graph calls, repository facts, or the Planner -> Main handoff.
 export const PLANNER_ORBIT_SEED_MAX_CHARS = 48000;
+export const PLANNER_ORBIT_SEED_TIME_BUDGET_MS = 30000;
 
 function canonicalPath(value) {
   const raw = String(value ?? '').trim();
@@ -21,14 +22,35 @@ function canonicalPath(value) {
   }
 }
 
-async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
+function abortError(signal) {
+  if (!signal?.aborted) return null;
+  return signal.reason instanceof Error ? signal.reason : new Error('Planner Orbit operation aborted');
+}
+
+function remainingBudgetMs(deadlineAt, now = Date.now) {
+  if (!Number.isFinite(deadlineAt)) return PLANNER_ORBIT_COMMAND_TIMEOUT_MS;
+  return Math.max(0, Math.min(PLANNER_ORBIT_COMMAND_TIMEOUT_MS, Math.ceil(deadlineAt - now())));
+}
+
+async function localCommand(command, args, cwd, execFileFn = execFileAsync, {
+  signal = null,
+  timeoutMs = PLANNER_ORBIT_COMMAND_TIMEOUT_MS,
+} = {}) {
+  const aborted = abortError(signal);
+  if (aborted) throw aborted;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    const error = new Error('Planner Orbit seed time budget exhausted');
+    error.code = 'PI_PLANNER_ORBIT_SEED_BUDGET_EXHAUSTED';
+    throw error;
+  }
   const result = await execFileFn(command, args, {
     cwd,
     encoding: 'utf8',
-    timeout: PLANNER_ORBIT_COMMAND_TIMEOUT_MS,
+    timeout: Math.min(PLANNER_ORBIT_COMMAND_TIMEOUT_MS, Math.ceil(timeoutMs)),
     maxBuffer: 1024 * 1024,
     env: { ...process.env, ORBIT_TELEMETRY_ENABLED: 'false' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    ...(signal ? { signal } : {}),
   });
   return typeof result === 'string' ? result : result?.stdout ?? '';
 }
@@ -43,41 +65,62 @@ function sanitizeTarget(value) {
   return target;
 }
 
+function looksLikeOrbitTarget(value) {
+  if (value.includes('/')) return true;
+  if (value.includes('_')) return true;
+  if (/[A-Z]/.test(value)) return true;
+  if (/^[A-Za-z_]\w*(?:(?:\.|::|#)[A-Za-z_]\w*)+$/.test(value)) return true;
+  return false;
+}
+
 export function plannerOrbitSeedTargets(issue, { layoutHint = null } = {}) {
   const text = `${String(issue?.title ?? '')}\n${String(issue?.body ?? '')}`;
   const targets = [];
   const seen = new Set();
-  const add = value => {
+  const add = (value, { trustedHint = false } = {}) => {
     const target = sanitizeTarget(value);
-    if (!target || seen.has(target)) return;
+    if (!target || (!trustedHint && !looksLikeOrbitTarget(target)) || seen.has(target)) return;
     seen.add(target);
     targets.push(target);
   };
 
-  for (const match of text.matchAll(/`([^`\r\n]{1,400})`/g)) add(match[1]);
-  for (const match of text.matchAll(/\b((?:[A-Za-z0-9_.@+-]+\/)+[A-Za-z0-9_.@+-]+)\b/g)) add(match[1]);
+  for (const match of text.matchAll(/\`([^\`\r\n]{1,400})\`/g)) add(match[1]);
+  for (const match of text.matchAll(/\b((?:[A-Za-z0-9_.@+-]+\/)+[A-Za-z0-9_.@+-]+)\b/g)) add(match[1], { trustedHint: true });
 
   for (const key of ['dottedTarget', 'sourceTarget', 'sourceConvention', 'testTarget', 'testConvention']) {
-    add(layoutHint?.[key]);
+    add(layoutHint?.[key], { trustedHint: true });
   }
   return targets;
 }
 
-export async function plannerOrbitIndexState(cwd, { execFile: execFileFn = execFileAsync } = {}) {
+export async function plannerOrbitIndexState(cwd, {
+  execFile: execFileFn = execFileAsync,
+  signal = null,
+  deadlineAt = null,
+  now = Date.now,
+} = {}) {
   const root = canonicalPath(cwd);
   let currentHead = null;
   let rows;
   try {
-    currentHead = String(await localCommand('git', ['rev-parse', 'HEAD'], cwd, execFileFn)).trim() || null;
-    rows = JSON.parse(await localCommand('orbit', ['list', '-F', 'json'], cwd, execFileFn));
+    const commandOptions = () => ({
+      signal,
+      timeoutMs: remainingBudgetMs(deadlineAt, now),
+    });
+    currentHead = String(await localCommand('git', ['rev-parse', 'HEAD'], cwd, execFileFn, commandOptions())).trim() || null;
+    rows = JSON.parse(await localCommand('orbit', ['list', '-F', 'json'], cwd, execFileFn, commandOptions()));
   } catch (error) {
+    const aborted = abortError(signal);
+    if (aborted) throw aborted;
+    const budgetExpired = error?.code === 'PI_PLANNER_ORBIT_SEED_BUDGET_EXHAUSTED' ||
+      (Number.isFinite(deadlineAt) && now() >= deadlineAt);
     return {
       available: false,
       fresh: false,
       currentHead,
       indexedHead: null,
       indexStatus: null,
-      reason: 'orbit_unavailable',
+      reason: budgetExpired ? 'seed_time_budget_exhausted' : 'orbit_unavailable',
       diagnostic: String(error?.message ?? error).split('\n')[0].slice(0, 200),
     };
   }
@@ -135,13 +178,16 @@ function graphUnavailableMessage(state) {
   return state.diagnostic || 'Orbit index is unavailable';
 }
 
-export async function plannerOrbitContext(cwd, target, { execFile: execFileFn = execFileAsync } = {}) {
-  const state = await plannerOrbitIndexState(cwd, { execFile: execFileFn });
+export async function plannerOrbitContext(cwd, target, {
+  execFile: execFileFn = execFileAsync,
+  signal = null,
+} = {}) {
+  const state = await plannerOrbitIndexState(cwd, { execFile: execFileFn, signal });
   if (!state.fresh) {
     throw new Error(`planner_code_graph unavailable: ${graphUnavailableMessage(state)}`);
   }
   try {
-    const text = String(await localCommand('orbit', ['context', target], cwd, execFileFn)).trim();
+    const text = String(await localCommand('orbit', ['context', target], cwd, execFileFn, { signal })).trim();
     return {
       text,
       currentHead: state.currentHead,
@@ -149,27 +195,73 @@ export async function plannerOrbitContext(cwd, target, { execFile: execFileFn = 
       indexStatus: state.indexStatus,
     };
   } catch (error) {
+    const aborted = abortError(signal);
+    if (aborted) throw aborted;
     throw new Error(`planner_code_graph query failed: ${String(error?.message ?? error).split('\n')[0]}`);
   }
+}
+
+function serializeSeedSections(sections, maxChars) {
+  const serialized = sections
+    .map(section => `### Orbit target: ${section.target}\n${section.text}`)
+    .join('\n\n');
+  const limit = Number.isSafeInteger(maxChars) && maxChars > 0 ? maxChars : PLANNER_ORBIT_SEED_MAX_CHARS;
+  if (serialized.length <= limit) {
+    return {
+      text: serialized,
+      targets: sections.map(section => section.target),
+      truncated: false,
+    };
+  }
+
+  const marker = '\n[Orbit seed truncated for safety]';
+  const contentLimit = Math.max(0, limit - marker.length);
+  let text = '';
+  const targets = [];
+  for (const section of sections) {
+    const chunk = `${text ? '\n\n' : ''}### Orbit target: ${section.target}\n${section.text}`;
+    if (text.length + chunk.length <= contentLimit) {
+      text += chunk;
+      targets.push(section.target);
+      continue;
+    }
+    if (!text && contentLimit > 0) {
+      text = chunk.slice(0, contentLimit);
+      targets.push(section.target);
+    }
+    break;
+  }
+  return { text: `${text}${marker}`, targets, truncated: true };
 }
 
 export async function buildPlannerOrbitSeed(cwd, issue, {
   layoutHint = null,
   execFile: execFileFn = execFileAsync,
   maxChars = PLANNER_ORBIT_SEED_MAX_CHARS,
+  timeBudgetMs = PLANNER_ORBIT_SEED_TIME_BUDGET_MS,
+  signal = null,
+  now = Date.now,
 } = {}) {
+  const startedAt = now();
+  const boundedBudgetMs = Number.isFinite(timeBudgetMs) && timeBudgetMs > 0
+    ? Math.ceil(timeBudgetMs)
+    : PLANNER_ORBIT_SEED_TIME_BUDGET_MS;
+  const deadlineAt = startedAt + boundedBudgetMs;
   const requestedTargets = plannerOrbitSeedTargets(issue, { layoutHint });
-  const initial = await plannerOrbitIndexState(cwd, { execFile: execFileFn });
+  const initial = await plannerOrbitIndexState(cwd, { execFile: execFileFn, signal, deadlineAt, now });
   const base = {
     fresh: initial.fresh,
     currentHead: initial.currentHead,
     indexedHead: initial.indexedHead,
     indexStatus: initial.indexStatus,
     requestedTargets,
+    queriedTargets: [],
     targets: [],
     serializedBytes: 0,
     truncated: false,
     queryFailures: 0,
+    timeBudgetMs: boundedBudgetMs,
+    durationMs: Math.max(0, now() - startedAt),
   };
   if (!initial.fresh) return { ...base, present: false, reason: initial.reason };
   if (requestedTargets.length === 0) return { ...base, present: false, reason: 'no_task_targets' };
@@ -177,21 +269,58 @@ export async function buildPlannerOrbitSeed(cwd, issue, {
   const sections = [];
   let queryFailures = 0;
   for (const target of requestedTargets) {
+    const aborted = abortError(signal);
+    if (aborted) throw aborted;
+    const remaining = remainingBudgetMs(deadlineAt, now);
+    if (remaining <= 0) {
+      return {
+        ...base,
+        present: false,
+        queryFailures,
+        durationMs: Math.max(0, now() - startedAt),
+        reason: 'seed_time_budget_exhausted',
+      };
+    }
     try {
-      const raw = String(await localCommand('orbit', ['context', target], cwd, execFileFn)).trim();
+      const raw = String(await localCommand('orbit', ['context', target], cwd, execFileFn, {
+        signal,
+        timeoutMs: remaining,
+      })).trim();
       if (!raw) {
         queryFailures += 1;
         continue;
       }
       sections.push({ target, text: raw });
-    } catch {
+    } catch (error) {
+      const externalAbort = abortError(signal);
+      if (externalAbort) throw externalAbort;
+      if (now() >= deadlineAt || error?.code === 'PI_PLANNER_ORBIT_SEED_BUDGET_EXHAUSTED') {
+        return {
+          ...base,
+          present: false,
+          queriedTargets: sections.map(section => section.target),
+          queryFailures,
+          durationMs: Math.max(0, now() - startedAt),
+          reason: 'seed_time_budget_exhausted',
+        };
+      }
       queryFailures += 1;
     }
   }
 
   // HEAD/index may change while context queries are running. Discard the whole seed rather than
   // mixing graph data from different repository states.
-  const finalState = await plannerOrbitIndexState(cwd, { execFile: execFileFn });
+  const finalState = await plannerOrbitIndexState(cwd, { execFile: execFileFn, signal, deadlineAt, now });
+  if (finalState.reason === 'seed_time_budget_exhausted') {
+    return {
+      ...base,
+      present: false,
+      queriedTargets: sections.map(section => section.target),
+      queryFailures,
+      durationMs: Math.max(0, now() - startedAt),
+      reason: 'seed_time_budget_exhausted',
+    };
+  }
   if (!finalState.fresh || finalState.currentHead !== initial.currentHead) {
     return {
       ...base,
@@ -199,34 +328,36 @@ export async function buildPlannerOrbitSeed(cwd, issue, {
       fresh: false,
       indexedHead: finalState.indexedHead,
       indexStatus: finalState.indexStatus,
+      queriedTargets: sections.map(section => section.target),
       queryFailures,
+      durationMs: Math.max(0, now() - startedAt),
       reason: 'head_or_index_changed',
     };
   }
   if (sections.length === 0) {
-    return { ...base, present: false, queryFailures, reason: 'context_unavailable' };
+    return {
+      ...base,
+      present: false,
+      queryFailures,
+      durationMs: Math.max(0, now() - startedAt),
+      reason: 'context_unavailable',
+    };
   }
 
-  const serialized = sections
-    .map(section => `### Orbit target: ${section.target}\n${section.text}`)
-    .join('\n\n');
-  const limit = Number.isSafeInteger(maxChars) && maxChars > 0 ? maxChars : PLANNER_ORBIT_SEED_MAX_CHARS;
-  const truncated = serialized.length > limit;
-  const text = truncated
-    ? `${serialized.slice(0, limit)}\n[Orbit seed truncated for safety]`
-    : serialized;
-
+  const serialized = serializeSeedSections(sections, maxChars);
   return {
     ...base,
     present: true,
     fresh: true,
     indexedHead: finalState.indexedHead,
     indexStatus: finalState.indexStatus,
-    targets: sections.map(section => section.target),
-    serializedBytes: Buffer.byteLength(text, 'utf8'),
-    truncated,
+    queriedTargets: sections.map(section => section.target),
+    targets: serialized.targets,
+    serializedBytes: Buffer.byteLength(serialized.text, 'utf8'),
+    truncated: serialized.truncated,
     queryFailures,
+    durationMs: Math.max(0, now() - startedAt),
     reason: null,
-    text,
+    text: serialized.text,
   };
 }
