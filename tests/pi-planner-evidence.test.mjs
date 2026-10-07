@@ -724,6 +724,8 @@ test('Planner Orbit target derivation is deterministic and has no numeric query 
   assert.ok(first.length > 6);
   assert.ok(first.includes('src/net.py'));
   assert.ok(first.includes('tests/test_net.py'));
+  assert.ok(first.includes('symbol_7'));
+  assert.ok(first.every(target => !/[`"',;:)\]}>]$/.test(target)));
 });
 
 test('current indexed worktree produces deterministic Orbit seed from current HEAD only', async (t) => {
