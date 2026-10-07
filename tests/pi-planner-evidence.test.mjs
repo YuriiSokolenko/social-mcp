@@ -167,13 +167,16 @@ test('planner target policy separates immutable resolved targets from convention
   assert.equal('testTarget' in explicit.conventionHints, false);
 
   const fallback = plannerTargetPolicy({
+    dottedTarget: 'social_mcp.diagnostics.smoke_labels.parse_labels',
     sourceTarget: 'src/social_mcp/diagnostics/smoke_labels.py',
     testTarget: 'tests/diagnostics/test_smoke_labels.py',
     testTargetRequired: false,
     testDirectory: 'tests/diagnostics',
     testConvention: 'tests/diagnostics/test_smoke_retry_after.py',
   });
+  assert.equal(fallback.resolvedTargets.source, undefined);
   assert.equal(fallback.resolvedTargets.test, undefined);
+  assert.equal(fallback.conventionHints.sourceTarget, 'src/social_mcp/diagnostics/smoke_labels.py');
   assert.equal(fallback.conventionHints.testTarget, 'tests/diagnostics/test_smoke_labels.py');
 });
 
@@ -244,6 +247,44 @@ test('canonical validation rejects relocated resolved targets but allows convent
     }, { resolvedTargets }),
     /returned conflicting path "<missing>"/,
   );
+});
+
+
+test('resolved target validation accepts root paths and same-basename references once the exact target is present', () => {
+  const root = validateImplementationPreparation({
+    steps: ['Update setup.py for the package metadata.'],
+    facts: [],
+    warnings: [],
+    complexity: 'trivial',
+    required_mutation_anchors: ['setup.py'],
+    large_mutation: false,
+    reason: 'Edit the authoritative root-level target.',
+  }, { resolvedTargets: { source: 'setup.py' } });
+  assert.deepEqual(root.requiredMutationAnchors, ['setup.py']);
+
+  assert.doesNotThrow(() => validateImplementationPreparation({
+    steps: [
+      'Update src/x/__init__.py.',
+      'Adjust tests/__init__.py only as supporting test-package context.',
+    ],
+    facts: [],
+    warnings: [],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/x/__init__.py'],
+    large_mutation: false,
+    reason: 'Keep the authoritative source target and related test package aligned.',
+  }, { resolvedTargets: { source: 'src/x/__init__.py' } }));
+
+  assert.throws(() => validateImplementationPreparation({
+    steps: ['Update config/setup.py instead.'],
+    facts: [],
+    warnings: [],
+    complexity: 'trivial',
+    required_mutation_anchors: [],
+    large_mutation: false,
+    reason: 'Relocate the package metadata.',
+  }, { resolvedTargets: { source: 'setup.py' } }),
+  /returned conflicting path "config\/setup\.py"/);
 });
 
 test('runtime resolved-target mismatch is a recoverable structured-output correction', async (t) => {
