@@ -58,6 +58,9 @@ test('#540 successful PreparedImplementation keeps direct repository tools visib
 
   const current = surface(state);
   for (const tool of ['read', 'repo_search', 'indexed_repo_search', 'bash']) assert.ok(current.includes(tool), tool);
+  for (const tool of ['safe_edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'submit_result', 'request_large_mutation_budget']) {
+    assert.ok(current.includes(tool), `existing action/control tool missing: ${tool}`);
+  }
   assert.ok(!current.includes('run_check'));
   assert.match(activeToolGuidance(current), /read/);
   assert.match(activeToolGuidance(current), /repo_search/);
