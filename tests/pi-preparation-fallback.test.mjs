@@ -250,7 +250,7 @@ function runtimeScenario(mode) {
       const handlers = new Map();
       const messages = [];
       const caps = [];
-      let active = ['read', 'write', 'edit', 'safe_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence', 'request_large_mutation_budget'];
+      let active = ['read', 'repo_search', 'indexed_repo_search', 'bash', 'write', 'edit', 'safe_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence', 'request_large_mutation_budget'];
       let attempts = 0;
       let aborts = 0;
       let shutdowns = 0;
