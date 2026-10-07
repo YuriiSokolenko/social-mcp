@@ -462,7 +462,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     const message = String(error?.message ?? error);
     const plannerFailureClass = evidenceState?.failureKind === 'semantic_no_progress'
       ? 'planner_semantic_no_progress'
-      : /Missing structured_output call|Structured output validation failed:/i.test(message)
+      : /Missing structured_output call|Structured output validation failed:|Implementation planner returned|did not return a structured result/i.test(message)
         ? 'structured_result_unrecoverable'
         : error?.delegationStatus === 'timed_out'
           ? 'planner_transport_timeout'
