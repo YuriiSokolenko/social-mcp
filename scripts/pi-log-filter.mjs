@@ -39,6 +39,8 @@ let assistantMessageStarted = false;
 let runtimeFailureSignatureSeen = null;
 let runtimeFailureSettlementClaimed = false;
 const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+let cacheReadKnownResponses = 0;
+let cacheReadUnknownResponses = 0;
 let measuredResponses = 0;
 let totalResponseMs = 0;
 const activeTools = new Map();
@@ -100,6 +102,46 @@ function normalizedUsage(value) {
   if (!Number.isFinite(usage.totalTokens)) {
     usage.totalTokens = (usage.input ?? 0) + (usage.output ?? 0)
       + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+  }
+  return usage;
+}
+
+function providerTelemetryFor(logicalCall, logicalResponse) {
+  const file = process.env.PI_METRICS_FILE;
+  if (!file || !existsSync(file)) return null;
+  try {
+    const lines = readFileSync(file, "utf8").split("\n");
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      if (!lines[index]) continue;
+      let record;
+      try { record = JSON.parse(lines[index]); } catch { continue; }
+      if (
+        record?.record_type === "provider_response" &&
+        record?.logical_call === logicalCall &&
+        record?.logical_response === logicalResponse
+      ) return record;
+    }
+  } catch { /* provider tracing is best effort */ }
+  return null;
+}
+
+function usageWithProviderCacheTelemetry(value, providerTelemetry) {
+  const usage = normalizedUsage(value);
+  if (!usage) return null;
+  if (
+    providerTelemetry?.cache_telemetry === "reported" &&
+    Number.isSafeInteger(providerTelemetry.cached_tokens) &&
+    providerTelemetry.cached_tokens >= 0
+  ) {
+    usage.cacheRead = providerTelemetry.cached_tokens;
+    usage.cacheReadKnown = true;
+  } else if (Number.isFinite(usage.cacheRead) && usage.cacheRead > 0) {
+    // Preserve a positive SDK value if another compatible provider surfaces one even when
+    // transport tracing is unavailable. A synthetic/default zero is never authoritative.
+    usage.cacheReadKnown = true;
+  } else {
+    delete usage.cacheRead;
+    usage.cacheReadKnown = false;
   }
   return usage;
 }
@@ -265,9 +307,23 @@ function usageSummary(usage) {
   if (!usage || !["input", "output", "cacheRead", "cacheWrite", "totalTokens"].some((key) => Number.isFinite(usage[key]))) {
     return "tokens unavailable";
   }
-  const fields = [["input", "in"], ["output", "out"], ["cacheRead", "cache read"], ["cacheWrite", "cache write"], ["totalTokens", "total"]];
-  return fields.filter(([key]) => Number.isFinite(usage[key]))
-    .map(([key, label]) => `${label} ${usage[key].toLocaleString("en-US")}`).join(" · ");
+  const parts = [];
+  if (Number.isFinite(usage.input)) parts.push(`in ${usage.input.toLocaleString("en-US")}`);
+  if (Number.isFinite(usage.output)) parts.push(`out ${usage.output.toLocaleString("en-US")}`);
+  if (Number.isSafeInteger(usage.cacheReadUnknownResponses) && usage.cacheReadUnknownResponses > 0) {
+    parts.push(
+      Number.isSafeInteger(usage.cacheReadKnownResponses) && usage.cacheReadKnownResponses > 0
+        ? `cache read ${(usage.cacheRead ?? 0).toLocaleString("en-US")} + unknown`
+        : "cache read unknown"
+    );
+  } else if (usage.cacheReadKnown === false) {
+    parts.push("cache read unknown");
+  } else if (Number.isFinite(usage.cacheRead)) {
+    parts.push(`cache read ${usage.cacheRead.toLocaleString("en-US")}`);
+  }
+  if (Number.isFinite(usage.cacheWrite)) parts.push(`cache write ${usage.cacheWrite.toLocaleString("en-US")}`);
+  if (Number.isFinite(usage.totalTokens)) parts.push(`total ${usage.totalTokens.toLocaleString("en-US")}`);
+  return parts.join(" · ");
 }
 
 function heading(icon, text, color = C.cyan) {
@@ -406,7 +462,7 @@ function reportFinal(status) {
   closeGroup();
   const elapsed = Date.now() - sessionStarted;
   heading(status === "completed" ? "■" : "◼", `Agent ${status} · ${duration(elapsed)}`, status === "completed" ? C.green : C.yellow);
-  console.log(C.gray + `Model totals (${measuredResponses} responses): ${measuredResponses ? usageSummary(totals) : "tokens unavailable"} · response time ${duration(totalResponseMs)} · tools ${toolCount}` + C.reset);
+  console.log(C.gray + `Model totals (${measuredResponses} responses): ${measuredResponses ? usageSummary({ ...totals, cacheReadKnownResponses, cacheReadUnknownResponses }) : "tokens unavailable"} · response time ${duration(totalResponseMs)} · tools ${toolCount}` + C.reset);
   if (status !== "completed") {
     console.log(C.yellow + "Only completed model responses are counted." + C.reset);
     reportFailureDiagnostic(status);
@@ -456,7 +512,7 @@ function buildJobSummary(status) {
   const lines = [];
   lines.push(`## Pi agent run${issue != null ? ` · issue #${issue}` : ""} · ${phase}/${call}`, "");
   lines.push(`**Status:** ${status} · **Duration:** ${duration(elapsed)} · **Responses:** ${measuredResponses} · **Tools:** ${toolCount}`);
-  lines.push(`**Tokens:** ${measuredResponses ? usageSummary(totals) : "tokens unavailable"}`, "");
+  lines.push(`**Tokens:** ${measuredResponses ? usageSummary({ ...totals, cacheReadKnownResponses, cacheReadUnknownResponses }) : "tokens unavailable"}`, "");
   for (const turn of turns) {
     lines.push("<details>", `<summary>◉ Model #${turn.number}${turn.metaLine ? " · " + escHtml(turn.metaLine) : ""}</summary>`, "");
     const thinking = redact(turn.thinking).trim();
@@ -563,11 +619,15 @@ for await (const line of rl) {
           turn.response = appendCapped(turn.response, response);
         }
       }
-      const usage = message.usage ?? lastUsage;
+      const rawUsage = message.usage ?? lastUsage;
+      const providerTelemetry = providerTelemetryFor(call, responseNumber);
+      const usage = usageWithProviderCacheTelemetry(rawUsage, providerTelemetry);
       if (usage && Object.values(usage).some(Number.isFinite)) {
         for (const key of Object.keys(totals)) {
           if (Number.isFinite(usage[key])) totals[key] += usage[key];
         }
+        if (usage.cacheReadKnown === true) cacheReadKnownResponses += 1;
+        else cacheReadUnknownResponses += 1;
         measuredResponses += 1;
       }
       const elapsed = responseStarted == null ? null : Date.now() - responseStarted;
@@ -579,7 +639,10 @@ for await (const line of rl) {
       turn.metaLine = metaLine;
       heading("✓", `Model #${responseNumber} · ${metaLine}`, C.yellow);
       if (usage && Object.values(usage).some(Number.isFinite)) {
-        const fields = Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]]));
+        const fields = {
+          ...Object.fromEntries(Object.keys(totals).filter((key) => Number.isFinite(usage[key])).map((key) => [key, usage[key]])),
+          cacheReadKnown: usage.cacheReadKnown === true,
+        };
         const failureSignature = runtimeFailureSignature();
         if (failureSignature !== runtimeFailureSignatureSeen) {
           runtimeFailureSignatureSeen = failureSignature;
@@ -601,10 +664,24 @@ for await (const line of rl) {
           response: responseNumber,
           usage: fields,
           responseMs: elapsed,
+          ttftMs: firstTokenAt == null || responseStarted == null ? null : Math.max(0, firstTokenAt - responseStarted),
+          providerPromptTokens: providerTelemetry?.prompt_tokens ?? null,
+          providerCachedTokens: providerTelemetry?.cached_tokens ?? null,
+          cacheTelemetry: providerTelemetry?.cache_telemetry ?? (usage.cacheReadKnown ? "sdk-reported" : "unknown"),
           ...(syntheticSettlement
             ? { synthetic: true, record_type: 'synthetic_settlement' }
             : {}),
         });
+        if (call === "main") {
+          console.log(`PI_MAIN_PROVIDER_TELEMETRY ${JSON.stringify({
+            request: responseNumber,
+            promptTokens: providerTelemetry?.prompt_tokens ?? usage.input ?? null,
+            cachedTokens: providerTelemetry?.cached_tokens ?? (usage.cacheReadKnown ? usage.cacheRead ?? null : null),
+            cacheTelemetry: providerTelemetry?.cache_telemetry ?? (usage.cacheReadKnown ? "sdk-reported" : "unknown"),
+            ttftMs: firstTokenAt == null || responseStarted == null ? null : Math.max(0, firstTokenAt - responseStarted),
+            responseMs: elapsed,
+          })}`);
+        }
       } else {
         // A completed response with no provider usage is an unknown, not an absent record.
         recordMetric({ issue: issue ?? 0, phase, call, response: responseNumber, usage: null, reason: "provider_usage_unavailable", responseMs: elapsed });
