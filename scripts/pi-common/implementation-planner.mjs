@@ -322,10 +322,14 @@ export function normalizeImplementationPreparation(value) {
   for (const key of ['steps', 'facts', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
     if (!(key in value)) continue;
     if (key === 'steps' && Array.isArray(value.steps)) {
-      normalized.steps = value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step);
+      normalized.steps = value.steps.map(step =>
+        typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step
+      );
     } else if (key === 'facts' && Array.isArray(value.facts)) {
       normalized.facts = value.facts.slice(0, MAX_PLANNER_FACTS)
         .map(fact => typeof fact === 'string' ? fact.trim().slice(0, MAX_PLANNER_FACT_LENGTH).trim() : fact);
+    } else if (key === 'reason' && typeof value.reason === 'string') {
+      normalized.reason = value.reason.trim().slice(0, 300).trim();
     } else {
       normalized[key] = trim(value[key]);
     }
@@ -334,7 +338,6 @@ export function normalizeImplementationPreparation(value) {
   if (!('large_mutation' in normalized)) normalized.large_mutation = false;
   return normalized;
 }
-
 export function validateImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Implementation planner returned a non-object structured result');
@@ -345,7 +348,7 @@ export function validateImplementationPreparation(value) {
   if (!requiredKeys.every(key => keys.includes(key)) || keys.some(key => !allowedKeys.has(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
-  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 8) {
+  if (!Array.isArray(value.steps) || value.steps.length < 1) {
     throw new Error('Implementation planner returned an invalid step list');
   }
   const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
