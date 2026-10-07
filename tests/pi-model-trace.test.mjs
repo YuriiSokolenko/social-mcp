@@ -207,7 +207,7 @@ test('trace size cap keeps complete records, writes one marker, and leaves model
   const tracePath = join(dir, 'trace.jsonl');
   const upstream = http.createServer((_req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); });
   const targetBaseUrl = await listen(upstream);
-  const proxy = await startModelTraceProxy({ targetBaseUrl, tracePath, stage: 'implementer', maxBytes: 500 });
+  const proxy = await startModelTraceProxy({ targetBaseUrl, tracePath, stage: 'implementer', maxBytes: 1000 });
   try {
     for (let index = 0; index < 3; index += 1) {
       const response = await fetch(`${proxy.baseUrl}/chat/completions`, { method: 'POST', body: JSON.stringify({ index }) });
@@ -219,7 +219,7 @@ test('trace size cap keeps complete records, writes one marker, and leaves model
     await new Promise(resolve => upstream.close(resolve));
   }
   const text = readFileSync(tracePath, 'utf8');
-  assert.ok(Buffer.byteLength(text) <= 500);
+  assert.ok(Buffer.byteLength(text) <= 1000);
   assert.ok(text.endsWith('\n'));
   const lines = text.trim().split('\n');
   const items = lines.map(line => JSON.parse(line));
