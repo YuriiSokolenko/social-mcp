@@ -522,6 +522,7 @@ export default function (pi) {
   // validation may advance the remaining obligation, but only terminal success releases the guard.
   // If no bounded recovery route remains reachable, preserve the worktree and fail closed.
   let codingRecoveryGuard = null;
+  let codingRecoveryWorktreeRoot = null;
 
   // Ordinary validation repair inside a still-live coding-session fork is intentionally separate
   // from codingRecoveryGuard, which protects parent-side recovery only after the fork has ended.
@@ -1044,21 +1045,22 @@ export default function (pi) {
     return normalizedRecoveryEvidencePaths(input, cwd).some(item => protectedPaths.has(item));
   }
 
-  function codingRecoveryReadAvailable() {
-    return Boolean(
-      codingRecoveryGuard?.changed_publishable_paths?.length &&
-      codingRecoveryGuard.inspection_complete !== true &&
-      controller.productiveProgressState() === 'action_required'
-    );
-  }
-
-  function codingRecoveryReadablePaths(cwd) {
-    if (!codingRecoveryGuard?.changed_publishable_paths?.length) return [];
+  function codingRecoveryReadablePaths(cwd = codingRecoveryWorktreeRoot) {
+    if (!cwd || !codingRecoveryGuard?.changed_publishable_paths?.length) return [];
     return [...new Set(
       codingRecoveryGuard.changed_publishable_paths
         .map(item => trustedCodingRepairReadPath(item, cwd))
         .filter(Boolean),
     )];
+  }
+
+  function codingRecoveryReadAvailable() {
+    return Boolean(
+      codingRecoveryGuard?.changed_publishable_paths?.length &&
+      codingRecoveryGuard.inspection_complete !== true &&
+      controller.productiveProgressState() === 'action_required' &&
+      codingRecoveryReadablePaths().length > 0
+    );
   }
 
   function codingRecoveryReadPolicy(input, cwd) {
@@ -1086,9 +1088,8 @@ export default function (pi) {
     };
   }
 
-  function codingRecoveryEvidenceAvailable(cwd) {
+  function codingRecoveryEvidenceAvailable() {
     if (!codingRecoveryReadAvailable()) return false;
-    if (codingRecoveryReadablePaths(cwd).length === 0) return false;
     const inventory = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name })))
       .map(tool => typeof tool === 'string' ? tool : tool?.name);
     return inventory.includes('read');
@@ -2957,6 +2958,7 @@ export default function (pi) {
             recoveryReceipt?.changed_publishable_paths?.length > 0
           );
           if (recoverableSessionAbort) {
+            codingRecoveryWorktreeRoot = ctx.cwd;
             codingRecoveryGuard = {
               ...recoveryReceipt,
               inspection_complete: false,
@@ -3350,8 +3352,12 @@ export default function (pi) {
     }
     if (blocked) {
       if (repairReadPolicy?.recoveryDeadEnd) {
-        abortBlockedCodingRecovery(ctx, repairReadPolicy.reason);
-        return blocked;
+        if (!codingRecoveryValidationAvailable()) {
+          abortBlockedCodingRecovery(ctx, repairReadPolicy.reason);
+          return blocked;
+        }
+        requireToolOnNextProviderRequest = true;
+        syncActionToolSurface(productiveState);
       }
       if (repairMutationPolicy?.block) {
         const attemptKey = `${repairMutationPolicy.path}\0broad_blocked`;
@@ -3946,6 +3952,7 @@ export default function (pi) {
           changedPublishablePaths: codingRecoveryGuard.changed_publishable_paths,
         })}`);
         codingRecoveryGuard = null;
+        codingRecoveryWorktreeRoot = null;
       }
     }
 
@@ -4025,7 +4032,7 @@ export default function (pi) {
 
     if (
       codingRecoveryGuard &&
-      !codingRecoveryEvidenceAvailable(ctx.cwd) &&
+      !codingRecoveryEvidenceAvailable() &&
       !codingRecoveryValidationAvailable()
     ) {
       abortBlockedCodingRecovery(
