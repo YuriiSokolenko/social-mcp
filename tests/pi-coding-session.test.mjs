@@ -212,14 +212,14 @@ function runtimeScenario(mode) {
       workspaceRoot: dir,
       freshBaseCommit: '',
       baseRef: 'origin/dev',
-      layoutHint: ['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)
+      layoutHint: ['no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)
         ? {
             sourceRoot: '.',
             sourceDirectory: '.',
-            sourceTarget: 'generated.py',
+            sourceTarget: mode === 'no-submit-recovery-partial' ? 'expected_generated.py' : 'generated.py',
             sourceConvention: null,
             testDirectory: '.',
-            testTarget: 'test_generated.py',
+            testTarget: mode === 'no-submit-recovery-partial' ? 'test_expected_generated.py' : 'test_generated.py',
             testTargetRequired: true,
             testConvention: null,
           }
@@ -524,6 +524,11 @@ function runtimeScenario(mode) {
                   ? 'syntax-initial'
                   : 'initial';
             const result = repairFailure(variant);
+            appendRepairRecord(params, result);
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+          }
+          if (mode === 'no-submit-recovery-partial' && params?.kind === 'pytest') {
+            const result = repairFailure('initial');
             appendRepairRecord(params, result);
             return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
           }
@@ -1087,8 +1092,8 @@ function runtimeScenario(mode) {
           return respond(request, { status: 'failed', error: 'simulated stop after covering-scope reset proof', usage: { output: 3000 } });
         }
 
-        if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
-        if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) {
+        if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
+        if (['no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)) {
           respond(request, {
             status: 'failed',
             error: 'PI_ACTION_REQUIRED_ABORT: simulated child abort after deterministic CHECK_ENV',
@@ -1811,6 +1816,12 @@ function runtimeScenario(mode) {
             }
             assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
             await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+            if (index === 2) {
+              const correctionRequest = handlers.get('before_provider_request')({
+                payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+              }, ctx);
+              assert.equal(correctionRequest.tool_choice, 'required', 'bounded wrong-tool correction is provider-forced');
+            }
             assert.equal(
               aborts,
               index === staleAttempts.length - 1 ? 1 : 0,
@@ -1995,45 +2006,40 @@ function runtimeScenario(mode) {
         // must honor the run-wide terminal marker instead of restarting the parent.
         assert.equal(handlers.get('agent_before_settle')(), undefined, 'no submit nudge after the fork submitted');
       }
-      if (['no-submit-recovery', 'no-submit-recovery-dead-end'].includes(mode)) {
+      if (['no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)) {
+        const partialRecovery = mode === 'no-submit-recovery-partial';
         assert.notEqual(result.terminate, true);
         assert.deepEqual(result.details.recovery_receipt, {
           coding_session_status: 'aborted',
           changed_publishable_paths: ['generated.py', 'test_generated.py'],
-          prepared_outputs_present: { source: true, test: true },
-          last_validation: { kind: 'pytest', status: 'infra_error', infrastructure_code: 'CHECK_ENV' },
-          remaining_terminal_obligation: 'validation',
+          prepared_outputs_present: partialRecovery ? { source: false, test: false } : { source: true, test: true },
+          last_validation: partialRecovery
+            ? { kind: 'pytest', status: 'fail', infrastructure_code: null }
+            : { kind: 'pytest', status: 'infra_error', infrastructure_code: 'CHECK_ENV' },
+          remaining_terminal_obligation: partialRecovery ? 'prepared_outputs' : 'validation',
         });
         assert.match(result.content[0].text, /Trusted recovery receipt/);
-        assert.match(result.content[0].text, /do not rewrite completed prepared outputs/);
+        assert.match(result.content[0].text, /do not discard or blindly regenerate preserved child changes/);
         assert.doesNotMatch(result.content[0].text, /You may call begin_coding_session once more/);
-        assert.ok(active.includes('need_more_evidence'), 'parent retains a bounded evidence path for one concrete recovery inspection');
-        assert.ok(!active.includes('begin_coding_session'), 'parent cannot blindly launch a second fork while complete child outputs are protected');
-        assert.ok(!active.includes('write'), 'parent cannot blindly rewrite complete child outputs');
+        assert.ok(active.includes('read'), 'parent exposes one direct bounded recovery read');
+        assert.ok(!active.includes('need_more_evidence'), 'generic evidence unlock stays closed during coding recovery');
+        assert.ok(!active.includes('begin_coding_session'), 'parent cannot blindly launch a second fork while child work is protected');
+        assert.ok(!active.includes('write'), 'parent cannot mutate before inspecting preserved child work');
+        assert.ok(!active.includes('bash'), 'raw shell never becomes a recovery capability');
+        assert.ok(!active.includes('repo_search'), 'broad discovery stays closed during recovery');
+        if (partialRecovery) {
+          assert.ok(active.includes('retry_last_failed_check'), 'authoritative failed validation exposes its exact retry');
+          const accepted = JSON.parse(fs.readFileSync(scopeFile, 'utf8')).accepted.map(entry => entry.path).sort();
+          assert.deepEqual(accepted, ['generated.py', 'test_generated.py'], 'accepted mutation scope survives the child abort');
+        }
         assert.equal(sessionRequests.length, 1, 'recovery does not blindly launch another coding session');
 
-        handlers.get('turn_start')({ turnIndex: turn });
-        const genericSubmit = {
-          toolName: 'submit_result',
-          toolCallId: 'generic-recovery-submit-' + turn,
-          input: {
-            title: 'Recovered child work',
-            summary: 'Attempt publication without new evidence.',
-            changes: ['Keep existing recovered source and test.'],
-            files: ['generated.py', 'test_generated.py'],
-            security_notes: 'No security impact.',
-            limitations: 'Validation infrastructure is unavailable.',
-          },
-        };
-        assert.equal(await handlers.get('tool_call')(genericSubmit, ctx), undefined);
-        await handlers.get('tool_execution_end')({
-          ...genericSubmit,
-          isError: true,
-          result: { content: [{ type: 'text', text: 'transient terminal submission failure' }] },
+        const recoveryRequest = handlers.get('before_provider_request')({
+          payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
         }, ctx);
-        assert.ok(!active.includes('begin_coding_session'), 'generic terminal errors do not release the recovery guard');
-        assert.ok(!active.includes('write'), 'generic terminal errors do not reopen blind mutation');
-        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(recoveryRequest.tool_choice, 'required', 'guarded action-required recovery stays provider-forced');
+        assert.ok(recoveryRequest.tools.some(tool => tool.function.name === 'read'));
+        assert.ok(!recoveryRequest.tools.some(tool => ['bash', 'repo_search', 'begin_coding_session'].includes(tool.function.name)));
 
         handlers.get('turn_start')({ turnIndex: turn });
         const blindFork = await handlers.get('tool_call')({
@@ -2044,33 +2050,37 @@ function runtimeScenario(mode) {
         assert.equal(blindFork.block, true);
         assert.match(blindFork.reason, /not currently exposed|capability lifecycle changed/);
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(aborts, 0, 'first unavailable recovery tool gets a bounded correction instead of a prose abort');
+        assert.match(steers.at(-1), /RUNTIME UNAVAILABLE CAPABILITY CORRECTION/);
+        assert.match(steers.at(-1), /begin_coding_session/);
 
-        if (mode === 'no-submit-recovery-dead-end') {
-          active = active.filter(name => name !== 'run_check');
-          pi.setActiveTools(active);
-          await call('need_more_evidence', {
-            missing: 'Inspect the recovered implementation before deciding whether any rewrite is required.',
-            reason: 'Exercise the single recovery evidence permit with validation unavailable.',
-          });
-          await call('read', { path: 'README.md' });
-          assert.equal(aborts, 1, 'unrelated evidence plus unavailable validation fails closed instead of reopening mutation');
-          const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
-          assert.equal(failure.failure_code, 'PI_CODING_RECOVERY_BLOCKED');
-          assert.equal(failure.checkpoint.worktree_preserved, true);
-          assert.ok(!active.includes('begin_coding_session'));
-          assert.ok(!active.includes('write'));
-          console.log('CODING_RECOVERY_FAIL_CLOSED_OK ' + JSON.stringify(failure));
-          process.exit(0);
-        }
+        const correctedRequest = handlers.get('before_provider_request')({
+          payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+        }, ctx);
+        assert.equal(correctedRequest.tool_choice, 'required', 'wrong-tool correction keeps provider action forcing');
 
-        await call('need_more_evidence', {
-          missing: 'Inspect the already-created source before deciding whether any parent-side mutation is required.',
-          reason: 'The child left complete prepared outputs; one bounded read is enough to recover exact state.',
-        });
+        handlers.get('turn_start')({ turnIndex: turn });
+        const unrelatedRead = await handlers.get('tool_call')({
+          toolName: 'read',
+          toolCallId: 'unrelated-recovery-read-' + turn,
+          input: { path: 'README.md' },
+        }, ctx);
+        assert.equal(unrelatedRead.block, true);
+        assert.match(unrelatedRead.reason, /recovery read is limited to preserved changed publishable paths/);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(aborts, 0, 'wrong-path read is rejected without consuming the preserved recovery state');
+
         const recovered = await call('read', { path: 'generated.py' });
         assert.match(recovered.content[0].text, /REQUIRED_CONSTANT/);
+        assert.ok(active.includes('safe_edit') || active.includes('edit'), 'bounded inspection opens local accepted-scope repair');
+        assert.ok(!active.includes('begin_coding_session'), 'inspection does not reopen a second coding fork');
+        assert.ok(!active.includes('bash'), 'inspection does not reopen raw shell');
+        assert.ok(!active.includes('need_more_evidence'), 'inspection does not reopen broad evidence');
+        if (partialRecovery) {
+          assert.ok(active.includes('retry_last_failed_check'), 'exact failed-check retry remains available after inspection');
+        }
         console.log('CODING_RECOVERY_RECEIPT_OK ' + JSON.stringify(result.details.recovery_receipt));
-        console.log('CODING_RECOVERY_BOUNDED_INSPECTION_OK');
+        console.log(partialRecovery ? 'CODING_RECOVERY_PARTIAL_OK' : 'CODING_RECOVERY_BOUNDED_INSPECTION_OK');
       }
       if (mode === 'no-submit-parent-submit') {
         assert.notEqual(result.terminate, true);
@@ -2181,24 +2191,36 @@ test('a session that ends without submit returns control at 2K, with a bounded n
   assert.match(logs, /"phase":"rejected".*"reason":"max_sessions"/);
 });
 
-test('#481 an aborted coding session returns authoritative state and bounded parent inspection', () => {
+test('#481/#526 an aborted coding session returns authoritative state and bounded parent inspection', () => {
   const logs = runtimeScenario('no-submit-recovery');
   assert.match(logs, /"phase":"ended_without_submit".*"recoveryReceipt":\{/);
   assert.match(logs, /"infrastructure_code":"CHECK_ENV"/);
   assert.match(logs, /PI_CODING_RECOVERY_HANDOFF/);
   assert.match(logs, /PI_CODING_RECOVERY_GUARD /);
-  assert.match(logs, /PI_CODING_RECOVERY_GUARD_RELEASED .*"reason":"bounded_recovery_evidence"/);
-  assert.doesNotMatch(logs, /"reason":"terminal_diagnosis"/);
+  assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence".*"inspectionComplete":true/);
+  assert.doesNotMatch(logs, /PI_CODING_RECOVERY_GUARD_RELEASED .*"reason":"bounded_recovery_evidence"/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"begin_coding_session".*"correction":1/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
   assert.match(logs, /CODING_RECOVERY_RECEIPT_OK/);
   assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
 });
 
-test('#481 recovery guard fails closed after unrelated evidence when validation is unavailable', () => {
+test('#526 partial child progress with failed validation survives abort and stays locally recoverable', () => {
+  const logs = runtimeScenario('no-submit-recovery-partial');
+  assert.match(logs, /PI_CODING_RECOVERY_GUARD .*"preparedOutputsPresent":\{"source":false,"test":false\}.*"status":"fail"/);
+  assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"coding_recovery_evidence".*"read".*"retry_last_failed_check"/);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"begin_coding_session"/);
+  assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence"/);
+  assert.match(logs, /CODING_RECOVERY_PARTIAL_OK/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
+});
+
+test('#526 guarded recovery rejects unrelated reads without reopening discovery or another fork', () => {
   const logs = runtimeScenario('no-submit-recovery-dead-end');
-  assert.match(logs, /PI_CODING_RECOVERY_GUARD /);
-  assert.doesNotMatch(logs, /PI_CODING_RECOVERY_GUARD_RELEASED/);
-  assert.match(logs, /PI_CODING_RECOVERY_BLOCKED/);
-  assert.match(logs, /CODING_RECOVERY_FAIL_CLOSED_OK/);
+  assert.match(logs, /recovery read is limited to preserved changed publishable paths/);
+  assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
+  assert.doesNotMatch(logs, /PI_CODING_RECOVERY_BLOCKED/);
 });
 
 test('#499/#506 repair reads precede bounded reasoning and broad edits cannot bypass localization', () => {
@@ -2353,6 +2375,7 @@ test('#523 oversized coding-session handoff gets one forced correction without c
   assert.match(logs, /PI_CODING_SESSION_ARGUMENT_VALIDATION_TURN .*"action":"ignored_for_provider_retry"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"source":"coding_session_argument_correction"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_PROVIDER_RETRY /);
+  assert.doesNotMatch(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION|PI_UNAVAILABLE_CAPABILITY_ABORT/, 'invalid arguments remain distinct from unavailable capability');
   assert.match(logs, /PI_CODING_SESSION_ARGUMENT_CORRECTED/);
   assert.match(logs, /CODING_SESSION_ARGUMENT_CORRECTION_OK/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_ACTION_REQUIRED/);
@@ -2507,8 +2530,9 @@ test('#469 evidence unlock is single-use; stale lifecycle races reset strikes be
   assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"need_more_evidence"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: second consecutive unavailable capability turn/);
-  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
+  assert.ok((logs.match(/PI_UNAVAILABLE_CAPABILITY_CORRECTION /g) ?? []).length >= 1, 'an unavailable tool gets a bounded correction before abort');
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: unavailable capability repeated after 1 bounded correction turn/);
+  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT".*"worktree_preserved":true/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
