@@ -1101,8 +1101,10 @@ test('mini-swe trajectory usage maps into the shared PI_METRIC schema', () => {
 // ---- #456: planner bootstrap runs in its own pi process before the main Implementer session ----
 
 const PREPARED_ARTIFACT = {
-  version: 1, status: 'prepared', plan: ['Locate the target', 'Apply the bounded change'], complexity: 'nontrivial',
-  evidenceBudget: 2, largeMutation: false, reason: 'Needs one lookup', workspaceRoot: '/work', freshBaseCommit: 'abc123',
+  version: 1, status: 'prepared', plan: ['Locate the target', 'Apply the bounded change'],
+  repositoryFacts: ['The planner resolved the requested target.'], complexity: 'nontrivial',
+  requiredMutationAnchors: [], largeMutation: false, reason: 'Target is already resolved',
+  workspaceRoot: '/work', freshBaseCommit: 'abc123',
   baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 1200,
 };
 
@@ -1191,7 +1193,8 @@ test('fresh Implementer: bootstrap pi completes first, then the main session sta
   assert.match(prompt, /Issue text/);
   assert.match(prompt, /Runtime-prepared implementation state/);
   assert.match(prompt, /1\. Locate the target\n2\. Apply the bounded change/);
-  assert.match(prompt, /Evidence budget: 2/);
+  assert.match(prompt, /Required current-file mutation anchors: none/);
+  assert.doesNotMatch(prompt, /Evidence budget|evidence_budget/);
   assert.doesNotMatch(prompt, /prepare_implementation|runtime_prepared_implementation_state/);
   assert.ok(main.args.includes('--session-dir'), 'main Implementer keeps its forkable session');
   assert.ok(!bootstrap.args.includes('--session-dir'));
