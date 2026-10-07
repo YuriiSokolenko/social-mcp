@@ -14,6 +14,7 @@ import { writeImplementerResult } from '../scripts/pi-common/implementer-result.
 import { createStageRunResult, createStageRunSpec } from '../scripts/pi-common/stage-run-contract.mjs';
 import { createValidationRepairSpec, runStageWithValidationRecovery, validationErrorWithMutationCleanup, validationRepairHandoff, validationRepairPrompt } from '../scripts/pi-common/stage-validation-recovery.mjs';
 import { captureMutationSnapshot } from '../scripts/pi-common/mutation-snapshot.mjs';
+import { mainPromptRequestMetadata, assertMainPromptComposition } from '../scripts/pi-common/main-prompt-observability.mjs';
 import { recordSuccessfulMutation } from '../scripts/pi-common/mutation-journal.mjs';
 import { issueWorktreePatchPath } from '../scripts/pi-common/issue-worktree.mjs';
 import {
@@ -67,6 +68,47 @@ function implementerStartup(t, extraEnv = {}) {
     ...extraEnv,
   });
 }
+
+test('#561 validation repair preserves Main contracts, task and bounded repair context', (t) => {
+  const { spec } = implementerStartup(t);
+  const originalTask = spec.prompt.match(/<untrusted_task_input>[\\s\\S]*?<\\/untrusted_task_input>/)?.[0];
+  assert.ok(originalTask);
+  const repair = createValidationRepairSpec(spec, new Error('ruff F841'), 1);
+  assert.equal(repair.prompt.includes(PREPARED_IMPLEMENTATION_PLACEHOLDER), false);
+  assert.ok(repair.prompt.includes(originalTask));
+  assert.match(repair.prompt, /ruff F841/);
+  assert.match(repair.prompt, /Do not restart or re-plan/);
+  const payload = {
+    messages: [{ role: 'system', content: 'Pi system' }, { role: 'user', content: repair.prompt }],
+    tools: [{ type: 'function', function: { name: 'submit_result', parameters: { type: 'object', properties: {} } } }],
+    tool_choice: 'required',
+  };
+  const metadata = mainPromptRequestMetadata(payload);
+  assert.equal(metadata.sharedContractCount, 1);
+  assert.equal(metadata.roleContractCount, 1);
+  assert.doesNotThrow(() => assertMainPromptComposition(metadata));
+  const followUp = mainPromptRequestMetadata({
+    ...payload,
+    messages: [...payload.messages, { role: 'assistant', content: 'repair underway' }],
+  }, metadata);
+  assert.equal(followUp.sharedContractCount, 1);
+  assert.equal(followUp.roleContractCount, 1);
+  assert.equal(followUp.changedFromPrevious.initialUserContext, false);
+  assert.doesNotThrow(() => assertMainPromptComposition(followUp));
+});
+
+test('#561 resumed validation repair appends context without duplicating contracts', (t) => {
+  const { spec } = implementerStartup(t, { PI_RESUME_ACTIVE: 'true' });
+  const repair = createValidationRepairSpec(spec, new Error('pytest failed'), 1);
+  assert.match(repair.prompt, /pytest failed/);
+  const metadata = mainPromptRequestMetadata({
+    messages: [{ role: 'system', content: 'Pi system' }, { role: 'user', content: repair.prompt }],
+    tools: [],
+  });
+  assert.equal(metadata.sharedContractCount, 1);
+  assert.equal(metadata.roleContractCount, 1);
+  assert.doesNotThrow(() => assertMainPromptComposition(metadata));
+});
 
 test('implementer spec preserves issue context for authoritative final validation', (t) => {
   const { spec } = implementerStartup(t);
