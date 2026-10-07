@@ -204,7 +204,7 @@ def test_manifest_is_well_formed() -> None:
 # live only in the protected oracle test so deferred manifest probes execute in
 # ordinary CI even when the disposable production smoke modules are absent.
 _REFERENCE_DURATION_PATTERN = re.compile(
-    r"^(?P<number>\\d+(?:\\.\\d+)?|\\.\\d+)\\s*(?P<unit>ms|s|m|h)$"
+    r"^(?P<number>\d+(?:\.\d+)?|\.\d+)\s*(?P<unit>ms|s|m|h)$"
 )
 _REFERENCE_UNIT_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 
