@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+from copy import deepcopy
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
@@ -41,6 +42,10 @@ def _decode(value):
         if "$fraction" in value:
             numerator, denominator = value["$fraction"]
             return Fraction(numerator, denominator)
+        if "$tuple" in value:
+            return tuple(_decode(item) for item in value["$tuple"])
+        if "$iterator" in value:
+            return iter(_decode(value["$iterator"]))
         return {key: _decode(item) for key, item in value.items()}
     return value
 
@@ -139,32 +144,77 @@ def _target(criterion: str):
 def test_probe(probe) -> None:
     function = _target(probe["criterion"])
     args = [_decode(arg) for arg in probe["args"]]
+    kwargs = _decode(probe.get("kwargs", {}))
+    snapshot = deepcopy((args, kwargs)) if probe.get("input_unchanged") is True else None
+
     if "raises" in probe:
         with pytest.raises(ValueError):
-            function(*args)
+            function(*args, **kwargs)
     elif probe.get("accepts") is True:
-        function(*args)
+        function(*args, **kwargs)
     else:
-        result = function(*args)
-        assert result == (tuple(probe["returns"]) if isinstance(probe["returns"], list) else probe["returns"])
+        result = function(*args, **kwargs)
+        assert result == _decode(probe["returns"])
+
+    if snapshot is not None:
+        assert (args, kwargs) == snapshot
 
 
 def test_manifest_is_well_formed() -> None:
     ids = [probe["id"] for probe in PROBES]
     assert len(ids) == len(set(ids)), "probe ids must be unique"
+
+    pack_targets = MANIFEST.get("smoke_pack_targets")
+    assert isinstance(pack_targets, list) and len(pack_targets) == 8
+    assert len(pack_targets) == len(set(pack_targets)), "smoke pack targets must be unique"
+
     for probe in PROBES:
         assert probe["criterion"] in CRITERIA, probe["id"]
         outcomes = sum(key in probe for key in ("raises", "returns", "accepts"))
         assert outcomes == 1, probe["id"]
         assert probe.get("raises", "ValueError") == "ValueError", probe["id"]
+        assert isinstance(probe.get("kwargs", {}), dict), probe["id"]
+        if "input_unchanged" in probe:
+            assert probe["input_unchanged"] is True, probe["id"]
         if "accepts" in probe:
             assert probe["accepts"] is True, probe["id"]
+
+    covered_targets = set()
     for name, criterion in CRITERIA.items():
         assert criterion["status"] and criterion["source"], name
+        module, _, _symbol = criterion["target"].partition(":")
+        assert module and _symbol, name
+        covered_targets.add(module)
         if criterion.get("activation") == "when-target-present":
             assert criterion.get("issue_marker"), f"criterion {name} has no issue_marker"
             assert criterion.get("source_path"), f"criterion {name} has no source_path"
         assert any(p["criterion"] == name for p in PROBES), f"criterion {name} has no probe"
+
+    missing = set(pack_targets) - covered_targets
+    assert not missing, f"smoke pack targets without trusted criteria: {sorted(missing)}"
+
+
+def test_decode_preserves_lists_and_supports_explicit_tuple_and_iterator() -> None:
+    assert _decode([1, 2]) == [1, 2]
+    assert _decode({"$tuple": [1, 2]}) == (1, 2)
+
+    iterator = _decode({"$iterator": [1, 2]})
+    assert list(iterator) == [1, 2]
+    assert list(iterator) == []
+
+
+def test_probe_supports_kwargs_and_input_immutability(monkeypatch) -> None:
+    def helper(mapping, *, replacement):
+        return {"token": replacement, "safe": mapping["safe"]}
+
+    monkeypatch.setattr(sys.modules[__name__], "_target", lambda _criterion: helper)
+    test_probe({
+        "criterion": "synthetic",
+        "args": [{"token": "secret", "safe": "visible"}],
+        "kwargs": {"replacement": "[redacted]"},
+        "returns": {"token": "[redacted]", "safe": "visible"},
+        "input_unchanged": True,
+    })
 
 
 def test_deferred_target_marker_exercises_the_missing_target_fail_path(tmp_path, monkeypatch) -> None:
