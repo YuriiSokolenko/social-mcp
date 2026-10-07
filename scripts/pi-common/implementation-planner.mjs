@@ -437,119 +437,47 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     nodeId: 'implementation-plan',
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
+    // No planner lifecycle wall-clock budget. Transport/process hang protection remains in
+    // the lower-level delegation/provider layers where genuine hangs can be interrupted.
     timeoutMs: 0,
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
   };
-  const evidenceCap = plannerEvidenceBudget(config);
-  // Keep the sidecar inside a lifecycle-owned directory. If the parent times out/aborts before
-  // the delegated child has actually stopped, removing the directory prevents a late child write
-  // from recreating an orphaned state file directly under the shared tmpdir.
+
   const evidenceStateDir = fs.mkdtempSync(path.join(tmpdir(), 'pi-planner-evidence-'));
   const evidenceStateFile = path.join(evidenceStateDir, `${randomUUID()}.json`);
-  // Every attempt is a fresh child with a fresh gate, so the cap must be spent across the whole
-  // planning lifecycle, not per attempt. The parent cannot see how much a failed child used, so
-  // fail closed: only the first attempt may gather evidence; a retry gets 0 (structured_output
-  // stays available) and can never push the lifecycle past the hard cap.
-  const applyEvidenceCap = attempt => {
-    const cap = attempt === 0 ? evidenceCap : 0;
-    // Backstop only: retain one spare unit for framework-counted blocked calls. The authoritative
-    // evidence/result counters are child-side because generic toolBudget accounting is not reliable
-    // for structured_output.
-    request.toolBudget = { hard: cap + 3 };
-    // Output-only retry deliberately gets exactly one result call. If that structured_output call
-    // is still schema-invalid, fail closed instead of opening another provider/tool turn.
-    if (attempt > 0) request.toolBudget = { hard: 1 };
-    request.childEnv = {
-      [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap),
-      [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
-      [PLANNER_OUTPUT_ONLY_ENV]: attempt > 0 ? 'true' : 'false',
-    };
-  };
-  const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
-  // One hard deadline for the whole planning lifecycle: retries only get the remaining time.
-  const deadlineMs = Number(config.implementationPlannerTimeoutMs ?? 45000);
-  const startedAt = Date.now();
-  let response;
-  // Planner usage is one lifecycle-level record: attempts are summed and recorded exactly once.
+  request.childEnv = { [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile };
+
   let usage = null;
   let status = 'error';
   const childSession = randomUUID();
   try {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        applyEvidenceCap(attempt);
-        if (attempt > 0) resetPlannerRepairStatus(evidenceStateFile);
-        request.timeoutMs = deadlineMs - (Date.now() - startedAt);
-        if (request.timeoutMs <= 0) {
-          throw Object.assign(new Error(`${config.implementationPlannerAgent} planning deadline of ${deadlineMs} ms exhausted`), { delegationStatus: 'timed_out' });
-        }
-        response = await runStructuredSubagent(pi, ctx, request, signal);
-        usage = addUsage(usage, response.usage);
-        if (attempt > 0 && (Number(response.usage?.turns ?? 0) > 1 || Number(response.usage?.toolCalls ?? 0) > 1)) {
-          console.warn(`PI_PLANNER_OUTPUT_ONLY_ANOMALY ${JSON.stringify({
-            providerTurns: response.usage?.turns ?? null,
-            toolCalls: response.usage?.toolCalls ?? null,
-            handling: 'retry_completed_but_output_only_surface_was_not_single_turn',
-          })}`);
-        }
-        break;
-      } catch (error) {
-        usage = addUsage(usage, error?.delegationUsage);
-        const message = String(error?.message ?? error);
-        const resultState = readPlannerEvidenceState(evidenceStateFile, evidenceCap);
-        const missing = message.includes('Missing structured_output call');
-        const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
-        const outputOnlyInvalidTool = attempt > 0 && /(?:tool .* not found|unknown tool|tool budget)/i.test(message);
-        const childRepairFailed = resultState?.repairStatus === 'failed';
-        const retryable = !outputOnlyInvalidTool && (missing || schemaFailure || childRepairFailed);
-        const reason = outputOnlyInvalidTool
-          ? 'output_only_invalid_tool'
-          : childRepairFailed ? 'structured_output_repair_failed'
-            : missing ? 'missing_structured_output'
-              : schemaFailure ? 'structured_output_schema_failure'
-                : 'planner_infrastructure_failure';
-        if (retryable && attempt < retries) {
-          const evidenceState = resultState ?? readPlannerEvidenceState(evidenceStateFile, evidenceCap);
-          request.task = plannerTask(process.env, {
-            repair: schemaFailure || childRepairFailed,
-            layoutHint,
-            outputOnly: true,
-            retryFacts: evidenceState?.facts ?? [],
-            evidenceUsed: evidenceState?.used ?? null,
-            repairError: schemaFailure || childRepairFailed
-              ? [message, evidenceState?.repairKind ? `(${evidenceState.repairKind})` : null, evidenceState?.repairDiagnostic].filter(Boolean).join(' ')
-              : null,
-          });
-        }
-        console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
-          agent: config.implementationPlannerAgent,
-          reason,
-          attempt: attempt + 1,
-          retriesExhausted: retryable && attempt >= retries,
-          error: message,
-        })}`);
-        if (!retryable || attempt >= retries) throw error;
-        console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
-          agent: config.implementationPlannerAgent,
-          reason,
-          attempt: attempt + 1,
-        })}`);
-      }
-    }
+    const response = await runStructuredSubagent(pi, ctx, request, signal);
+    usage = addUsage(usage, response.usage);
     const validated = validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
+    const evidenceState = readPlannerEvidenceState(evidenceStateFile);
     status = 'completed';
+    console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted' })}`);
     return {
-      ...validated,
-      usage,
-      layoutHint,
-      evidenceUsed: readPlannerEvidenceUsed(evidenceStateFile, evidenceCap),
-      evidenceCap,
+      ...validated, usage, layoutHint,
+      evidenceActions: evidenceState?.used ?? null,
+      structuredCorrections: evidenceState?.structuredCorrections ?? 0,
     };
   } catch (error) {
+    usage = addUsage(usage, error?.delegationUsage);
+    const evidenceState = readPlannerEvidenceState(evidenceStateFile);
+    const message = String(error?.message ?? error);
+    const plannerFailureClass = evidenceState?.failureKind === 'semantic_no_progress'
+      ? 'planner_semantic_no_progress'
+      : /Missing structured_output call|Structured output validation failed:/i.test(message)
+        ? 'structured_result_unrecoverable'
+        : error?.delegationStatus === 'timed_out'
+          ? 'planner_transport_timeout'
+          : 'preparation_infrastructure_failure';
     if (error && typeof error === 'object') {
       error.delegationUsage = usage;
-      error.plannerEvidenceUsed = readPlannerEvidenceUsed(evidenceStateFile, evidenceCap);
-      error.plannerEvidenceCap = evidenceCap;
+      error.plannerEvidenceActions = evidenceState?.used ?? null;
+      error.plannerStructuredCorrections = evidenceState?.structuredCorrections ?? 0;
+      error.plannerFailureClass = plannerFailureClass;
       status = error.delegationStatus ?? 'error';
     }
     throw error;
@@ -560,11 +488,6 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     fs.rmSync(evidenceStateDir, { recursive: true, force: true });
   }
 }
-
-// Hard maximum for the bootstrap planner (not an expected duration). A healthy-but-slow planner
-// behind a shared model endpoint must not be cancelled early; a genuine timeout falls back.
-export const IMPLEMENTATION_PLANNER_DEADLINE_MS = 15 * 60 * 1000;
-
 // Resolves fresh-work preparation before any main Implementer session exists. Returns the explicit
 // PreparedImplementation artifact: either a validated planner result or a resolved fallback.
 // Cancellation is never a recovery request and propagates.
