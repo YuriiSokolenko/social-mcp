@@ -11,7 +11,6 @@ import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
   PLANNER_RESULT_TOOL,
-  MAX_PLANNER_FACTS,
   createPlannerEvidenceGate,
   plannerEvidenceFact,
 } from './pi-common/implementation-planner.mjs';
@@ -192,10 +191,10 @@ function recordEvidenceState(admission, { fact = null, env = process.env } = {})
     try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first write */ }
     const previousUsed = Number.isSafeInteger(previous?.used) && previous.used >= 0 ? previous.used : 0;
     const previousFacts = Array.isArray(previous?.facts)
-      ? previous.facts.filter(item => typeof item === 'string' && item.trim()).slice(0, MAX_PLANNER_FACTS)
+      ? previous.facts.filter(item => typeof item === 'string' && item.trim())
       : [];
     const facts = [...previousFacts];
-    if (fact && !facts.includes(fact) && facts.length < MAX_PLANNER_FACTS) facts.push(fact);
+    if (fact && !facts.includes(fact)) facts.push(fact);
     const state = {
       ...previous,
       used: Math.max(previousUsed, Number.isSafeInteger(admission?.used) ? admission.used : 0),
@@ -278,6 +277,9 @@ export default function (pi) {
       else {
         observed = reservePlannerResultCall({ id: event.toolCallId ?? null });
         observed.toolCallSeen = true;
+      }
+      if (event.input && typeof event.input === 'object' && !Array.isArray(event.input)) {
+        observed.rawArguments = structuredClone(event.input);
       }
       finalizing = true;
       if (typeof pi.setActiveTools === 'function') pi.setActiveTools([PLANNER_RESULT_TOOL]);
@@ -436,8 +438,24 @@ export default function (pi) {
     }
 
     resultSucceeded = true;
-    recordPlannerResultState({ resultAttempts, structuredCorrections, repairStatus: 'accepted' });
+    const acceptedResult =
+      event?.input?.value && typeof event.input.value === 'object' && !Array.isArray(event.input.value)
+        ? structuredClone(event.input.value)
+        : observed.rawArguments?.value && typeof observed.rawArguments.value === 'object' && !Array.isArray(observed.rawArguments.value)
+          ? structuredClone(observed.rawArguments.value)
+          : null;
+    recordPlannerResultState({
+      resultAttempts,
+      structuredCorrections,
+      repairStatus: 'accepted',
+      acceptedResult,
+    });
     console.log(`PI_PLANNER_RESULT_SUCCESS ${JSON.stringify({ resultAttempts, structuredCorrections })}`);
+    console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted', message: '🐈 You pet the cat. Planner complete.' })}`);
+    // The accepted result is persisted in the sidecar before aborting. The parent recovers that
+    // terminal value even when pi-subagents reports the child as cancelled, so no follow-up model
+    // request is needed merely to notice completion.
+    ctx?.abort?.();
     return undefined;
   });
 
@@ -514,6 +532,7 @@ function recordPlannerResultState({
   repairDiagnostic = null,
   repairKind = null,
   failureKind = null,
+  acceptedResult = null,
 }) {
   const file = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   if (!file) return;
@@ -525,6 +544,9 @@ function recordPlannerResultState({
     if (repairDiagnostic) next.repairDiagnostic = sanitizeDiagnosticText(repairDiagnostic, 400);
     if (repairKind) next.repairKind = repairKind;
     if (failureKind) next.failureKind = failureKind;
+    if (acceptedResult && typeof acceptedResult === 'object' && !Array.isArray(acceptedResult)) {
+      next.acceptedResult = structuredClone(acceptedResult);
+    }
     fs.writeFileSync(file, `${JSON.stringify(next)}\n`, { mode: 0o600 });
   } catch (error) {
     console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);

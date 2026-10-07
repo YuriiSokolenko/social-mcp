@@ -297,27 +297,39 @@ function runtimeScenario(mode) {
         if (mode === 'abort') { signal.abort(); return; }
         const good = mode === 'layout-aware'
           ? {
-              steps: ['Read the nearest smoke convention once, then add the module and focused tests'],
+              steps: ['Add the module and focused tests using the verified diagnostics convention'],
+              facts: ['tests/diagnostics/test_smoke_chunks.py is the verified focused-test convention.'],
               complexity: 'nontrivial',
-              evidence_budget: 1,
+              required_mutation_anchors: [],
               large_mutation: true,
-              reason: 'Layout is resolved and the new module plus tests need a large write',
+              reason: 'Layout and sibling convention are resolved; both implementation targets are new files.',
             }
           : mode === 'small-auto'
             ? {
                 steps: ['Change the one config label'],
+                facts: ['config.py contains the current old label.'],
                 complexity: 'trivial',
-                evidence_budget: 0,
+                required_mutation_anchors: ['config.py'],
                 large_mutation: false,
-                reason: 'One bounded line replacement',
+                reason: 'One bounded existing-file replacement.',
               }
-            : {
-                steps: ['Implement example.py'],
-                complexity: 'nontrivial',
-                evidence_budget: 2,
-                large_mutation: false,
-                reason: 'Needs source evidence',
-              };
+            : mode === 'non-additive-target'
+              ? {
+                  steps: ['Update the existing diagnostics parser'],
+                  facts: ['The existing parser is defined in src/demo_pkg/diagnostics/__init__.py.'],
+                  complexity: 'nontrivial',
+                  required_mutation_anchors: ['src/demo_pkg/diagnostics/__init__.py'],
+                  large_mutation: false,
+                  reason: 'The exact existing mutation target is known.',
+                }
+              : {
+                  steps: ['Implement example.py'],
+                  facts: ['example.py is a new file requested by the issue.'],
+                  complexity: 'nontrivial',
+                  required_mutation_anchors: [],
+                  large_mutation: false,
+                  reason: 'The implementation target is new and needs no current-file anchor.',
+                };
         const schemaError = 'Structured output validation failed: value: must have required properties value; steps: schema is false; root: must not have additional properties';
         let reply;
         if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
@@ -325,9 +337,9 @@ function runtimeScenario(mode) {
         else if (mode === 'transport-timeout') reply = { status: 'timed_out', error: 'delegated planner transport timed out' };
         else if (mode === 'bad-output-schema') reply = { status: 'failed', error: 'invalid outputSchema: unsupported keyword' };
         else if (mode === 'overlong') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' } } };
-        else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
+        else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, ignored_note: 'extra' } } };
         else if (mode === 'invalid-complexity') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, complexity: 'medium' } } };
-        else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', evidence_budget: 1, large_mutation: false } } };
+        else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', required_mutation_anchors: [], large_mutation: false } } };
         else if (mode === 'missing-large-mutation') {
           const { large_mutation, ...withoutLargeMutation } = good;
           reply = { status: 'completed', result: { kind: 'structured', value: withoutLargeMutation } };
@@ -340,7 +352,9 @@ function runtimeScenario(mode) {
           assert.equal(steps, undefined);
           assert.equal(request.result.schema.properties.steps.items.maxLength, undefined);
           assert.equal(additionalProperties, true);
-          assert.deepEqual(required, ['steps', 'complexity', 'evidence_budget', 'reason']);
+          assert.deepEqual(required, ['steps', 'complexity', 'reason']);
+          assert.equal(request.result.schema.properties.required_mutation_anchors.type, 'array');
+          assert.equal('evidence_budget' in request.result.schema.properties, false);
           assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
           assert.match(request.task, /"value"/);
           assert.match(request.task, /large_mutation/);
@@ -370,7 +384,7 @@ function runtimeScenario(mode) {
         artifact = planner.readPreparedImplementation(artifactFile);
         assert.ok(artifact, 'bootstrap wrote the PreparedImplementation artifact');
         // Hard context boundary: only the normalized artifact crosses, never planner transcript/retries.
-        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceActions', 'plannerStructuredCorrections', 'plannerProviderTurns', 'failureClass'];
+        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'requiredMutationAnchors', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceActions', 'plannerStructuredCorrections', 'plannerProviderTurns', 'failureClass'];
         assert.deepEqual(Object.keys(artifact).filter(key => !allowed.includes(key)), []);
       } else {
         assert.equal(fs.existsSync(artifactFile), false, 'restored work never runs fresh planner bootstrap');
@@ -382,7 +396,12 @@ function runtimeScenario(mode) {
       assert.equal(tools.has('declare_task_complexity'), false);
       assert.equal(active.includes('prepare_implementation'), false);
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
-      let turn = 0;
+
+      // Synchronize the prepared productive surface without invoking the real run_check sandbox
+      // preflight; sandbox identity is integration-tested elsewhere and is intentionally absent
+      // from this unit harness. Dedicated #512 coverage exercises the real first-request 16K path.
+      handlers.get('turn_start')({ turnIndex: 0 });
+      let turn = 1;
       async function call(name, input = {}) {
         handlers.get('turn_start')({ turnIndex: turn });
         const event = { toolName: name, toolCallId: name + turn, input };
@@ -470,8 +489,8 @@ function runtimeScenario(mode) {
           }
         } else {
           if (mode === 'layout-aware') {
-            assert.deepEqual(prepared.details.plan, ['Read the nearest smoke convention once, then add the module and focused tests']);
-            assert.equal(prepared.details.evidenceBudget, 1);
+            assert.deepEqual(prepared.details.plan, ['Add the module and focused tests using the verified diagnostics convention']);
+            assert.deepEqual(prepared.details.requiredMutationAnchors, []);
             assert.equal(prepared.details.largeMutation, true);
             assert.deepEqual(prepared.details.layoutHint, {
               dottedTarget: 'demo_pkg.diagnostics.smoke_widget.parse_widget',
@@ -484,24 +503,21 @@ function runtimeScenario(mode) {
               testTargetRequired: false,
               testConvention: 'tests/diagnostics/test_smoke_chunks.py',
             });
-            assert.match(prepared.text, /Repository layout hint: source root src/);
-            assert.match(prepared.text, /Prefer one targeted convention read if needed/);
-            assert.match(prepared.text, /do not broad-search or re-prove the fresh-worktree provenance/);
+            assert.ok(prepared.text.includes('tests/diagnostics/test_smoke_chunks.py is the verified focused-test convention'));
+            assert.doesNotMatch(prepared.text, /Repository layout hint|test_smoke_widget\.py/);
             assert.match(prepared.text, /Fresh worktree base: latest fetched/);
             assert.match(prepared.text, /Large mutation: auto-arm one-shot/);
-            assert.ok(active.includes('read'));
-            await call('read', { path: 'src/demo_pkg/diagnostics/smoke_chunks.py' });
-            assert.equal(caps.at(-1), 16384, 'new module plus tests is elevated after its evidence read');
+            assert.ok(!active.includes('read'), 'new-file-only prepared work does not expose unrelated discovery');
             assert.ok(active.includes('write'));
-            assert.ok(!active.includes('read'));
             await call('write', { path: 'example.py', content: 'print("large")\\n' });
-            assert.equal(caps.at(-1), 2048, 'automatic grant collapses after one mutation response');
           } else if (mode === 'small-auto') {
             assert.deepEqual(prepared.details.plan, ['Change the one config label']);
-            assert.equal(prepared.details.evidenceBudget, 0);
+            assert.deepEqual(prepared.details.requiredMutationAnchors, ['config.py']);
             assert.equal(prepared.details.largeMutation, false);
             assert.equal(prepared.details.complexity, 'trivial');
             assert.ok(!caps.includes(16384), 'small edit does not receive the elevated budget');
+            assert.ok(active.includes('read'), 'the exact required mutation anchor read is exposed');
+            await call('read', { path: 'config.py' });
             await call('safe_edit', {
               path: 'config.py',
               operation: 'replace',
@@ -513,17 +529,17 @@ function runtimeScenario(mode) {
           } else if (mode === 'non-additive-target') {
             assert.equal(prepared.details.layoutHint, null);
             assert.doesNotMatch(prepared.text, /Repository layout hint:/);
-            assert.equal(prepared.details.evidenceBudget, 2);
+            assert.deepEqual(prepared.details.requiredMutationAnchors, ['src/demo_pkg/diagnostics/__init__.py']);
             assert.equal(prepared.details.largeMutation, false);
             assert.equal(prepared.details.complexity, 'nontrivial');
             assert.ok(active.includes('read'));
           } else {
             assert.deepEqual(prepared.details.plan, mode === 'overlong'
-              ? ['x'.repeat(240), 'short step'] : ['Implement example.py']);
-            assert.equal(prepared.details.evidenceBudget, 2);
+              ? ['x'.repeat(300), 'short step'] : ['Implement example.py']);
+            assert.deepEqual(prepared.details.requiredMutationAnchors, []);
             assert.equal(prepared.details.largeMutation, false);
             assert.equal(prepared.details.complexity, 'nontrivial');
-            assert.ok(active.includes('read'));
+            assert.ok(!active.includes('read'), 'new-file-only handoff starts action-oriented');
           }
         }
       }
@@ -571,12 +587,10 @@ for (const mode of ['success', 'layout-aware', 'non-additive-target', 'small-aut
   });
 }
 
-test('new module plus tests automatically receives one elevated mutation response', () => {
+test('new module plus tests carries automatic large-mutation intent without synthetic evidence', () => {
   const logs = runtimeScenario('layout-aware');
   assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"auto_armed"/);
-  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"auto_pending"/);
-  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"granted","maxTokens":16384/);
-  assert.match(logs, /PI_LARGE_MUTATION_BUDGET .*"phase":"consumed","attemptedFinishTool":true/);
+  assert.doesNotMatch(logs, /PI_EVIDENCE_PERMIT_CONSUMED/);
 });
 
 test('genuinely small edit stays on the normal mutation budget', () => {
@@ -639,7 +653,8 @@ test('bootstrap completes and the prepared state is applied before the main sess
   const completed = logs.indexOf('"phase":"planner_completed"');
   const applied = logs.indexOf('"phase":"prepared_state_applied"');
   assert.ok(completed >= 0 && applied > completed, 'planner bootstrap completed BEFORE prepared state applied to the main session');
-  assert.match(logs, /PI_PLAN .*"evidenceBudget":2/);
+  assert.match(logs, /PI_PLAN .*"requiredMutationAnchors":\[\]/);
+  assert.doesNotMatch(logs, /PI_PLAN .*"evidenceBudget"/);
   assert.match(logs, /\[PI\]\[planner\] prepared status=prepared/);
   assert.match(logs, /PI_COMPLEXITY .*"complexity":"nontrivial"/);
   assert.match(logs, /"beforeFirstProviderRequest":true/);

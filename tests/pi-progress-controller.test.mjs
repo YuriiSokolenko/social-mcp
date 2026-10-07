@@ -206,7 +206,7 @@ test('Implementer model-visible transition rules match the runtime action surfac
     assert.match(prompt, /subagents_enable[\s\S]{0,20}once[\s\S]*follow the tool surface/i);
     assert.doesNotMatch(prompt, /subagent\(action:"list"\)/i);
     assert.match(prompt, /lsp_start_server[\s\S]*lsp_find_symbol/i);
-    assert.match(prompt, /need_more_evidence[\s\S]*one concrete fact/i);
+    assert.match(prompt, /one concrete repository fact[\s\S]*need_more_evidence/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -622,7 +622,8 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.doesNotMatch(runtime, /name: 'prepare_implementation'|runStructuredImplementationPlanner/, 'main runtime no longer registers or runs the planner');
   assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
   assert.match(bootstrapPlanner, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
-  assert.match(bootstrapPlanner, /evidence_budget: \{ type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET \}/);
+  assert.match(bootstrapPlanner, /required_mutation_anchors:[\s\S]*type: 'array'/);
+  assert.doesNotMatch(bootstrapPlanner, /evidence_budget/);
   assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 2048/);
   assert.match(bootstrapPlanner, /timeoutMs: null[\s\S]*toolBudget: null/);
   assert.doesNotMatch(bootstrapPlanner, /request\.toolBudget = \{ hard:|plannerEvidenceBudget|planner_deadline_timeout/);
@@ -651,7 +652,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(bootstrapPlanner, /Fresh worktree base: latest fetched/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
-  assert.match(bootstrapPlanner, /Preparation complete; do not re-plan unless concrete repository evidence invalidates a plan assumption/);
+  assert.match(bootstrapPlanner, /Preparation complete; start from the prepared facts and actions/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /trivial \| nontrivial/);
   assert.match(planner, /Dispatcher already owns Architect routing/);
@@ -700,7 +701,8 @@ test('runtime action-forces the elevated large-mutation request and preserves on
     blockedReturn >= 0 && evidenceNotice > blockedReturn && finishAttempt > evidenceNotice,
     'finish-tool attempt accounting happens only after controller-blocked calls return',
   );
-  assert.match(planner, /evidence_budget/);
+  assert.match(planner, /required_mutation_anchors/);
+  assert.doesNotMatch(planner, /evidence_budget/);
 });
 
 test('repo search performs deterministic path and content discovery without a child model', () => {
@@ -1276,6 +1278,110 @@ test('a large mutation grant that ends without a finish-tool attempt still colla
   assert.equal(state.largeMutationBudgetState, 'idle');
   // Collapsing an already-idle budget reports no active grant was consumed.
   assert.equal(state.resetLargeMutationBudget(), false);
+});
+
+test('successful prepared handoff enforces exact mutation anchors without a numeric evidence window', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.onTurnStart(0);
+  const applied = state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['Update the existing sender'],
+    complexity: 'nontrivial',
+    requiredMutationAnchors: ['src/net.py'],
+    largeMutation: false,
+    reason: 'Planner resolved the target and invariant.',
+  });
+
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.deepEqual(applied.requiredMutationAnchors, ['src/net.py']);
+  assert.equal('evidenceBudget' in applied, false);
+  assert.match(state.checkToolCall('read', { path: 'src/other.py' }).reason, /productive progress requires an action now/);
+  assert.match(state.checkToolCall('safe_edit', {
+    path: 'src/net.py',
+    operation: 'replace',
+    start_line: 1,
+    text: 'replacement',
+  }).reason, /required mutation anchor/);
+  assert.match(state.checkToolCall('begin_coding_session', {}).reason, /required mutation anchor/);
+
+  assert.equal(state.checkToolCall('read', { path: 'src/net.py' }), undefined);
+  state.onToolExecutionEnd('read', false, { input: { path: 'src/net.py' } });
+  assert.deepEqual(state.pendingRequiredMutationAnchors(), []);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('safe_edit', {
+    path: 'src/net.py',
+    operation: 'replace',
+    start_line: 1,
+    text: 'replacement',
+  }), undefined);
+
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'exact registration caller',
+    reason: 'needed before touching the separately discovered registration file',
+  }), undefined);
+  assert.equal(state.checkToolCall('repo_search', { query: 'register sender' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+});
+
+test('missing prepared mutation anchor is released only when runtime proves the file is absent', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  state.onTurnStart(0);
+  state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['Update src/new_target.py'],
+    complexity: 'nontrivial',
+    requiredMutationAnchors: ['src/new_target.py'],
+    largeMutation: true,
+    reason: 'Planner believed the target already existed.',
+  });
+
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), false);
+  assert.equal(state.checkToolCall('read', { path: 'src/new_target.py' }), undefined);
+
+  // A generic read failure must keep the safety gate intact.
+  state.onToolExecutionEnd('read', true, {
+    input: { path: 'src/new_target.py' },
+    requiredAnchorMissing: false,
+  });
+  assert.deepEqual(state.pendingRequiredMutationAnchors(), ['src/new_target.py']);
+  assert.match(
+    state.checkToolCall('begin_coding_session', {}).reason,
+    /required mutation anchor/,
+  );
+
+  // If runtime independently verifies the exact path does not exist, the stale
+  // "existing file" assumption is released and action/coding can continue.
+  state.onToolExecutionEnd('read', true, {
+    input: { path: 'src/new_target.py' },
+    requiredAnchorMissing: true,
+  });
+  assert.deepEqual(state.pendingRequiredMutationAnchors(), []);
+  assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true);
+});
+
+test('new-file-only successful prepared handoff proceeds directly to mutation', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  state.onTurnStart(0);
+  const applied = state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['Create src/new_target.py'],
+    complexity: 'nontrivial',
+    requiredMutationAnchors: [],
+    largeMutation: false,
+    reason: 'All implementation targets are new files.',
+  });
+
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.deepEqual(applied.requiredMutationAnchors, []);
+  assert.equal('evidenceBudget' in applied, false);
+  assert.equal(state.checkToolCall('write', { path: 'src/new_target.py', content: 'x' }), undefined);
+});
+
+test('runtime keeps read visible only while a prepared mutation anchor remains', () => {
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /controller\.pendingRequiredMutationAnchors\(\)\.length > 0/);
+  assert.match(runtime, /required_mutation_anchor/);
 });
 
 test('a zero evidence_budget preparation transitions directly to action_required', () => {

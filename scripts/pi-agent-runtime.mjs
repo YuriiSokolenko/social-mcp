@@ -270,7 +270,7 @@ function codingPreparedState(prepared) {
       status: prepared.status,
       plan: prepared.plan,
       repositoryFacts: prepared.repositoryFacts ?? [],
-      layoutHint: prepared.layoutHint ?? null,
+      requiredMutationAnchors: prepared.requiredMutationAnchors ?? [],
     };
   }
   return {
@@ -391,8 +391,8 @@ function logPreparedImplementation(prepared, applied) {
       stage,
       steps: prepared.plan,
       repositoryFacts: prepared.repositoryFacts ?? [],
+      requiredMutationAnchors: prepared.requiredMutationAnchors ?? [],
       complexity: prepared.complexity,
-      evidenceBudget: prepared.evidenceBudget,
       largeMutation: prepared.largeMutation,
       largeMutationArmed: applied.largeMutationArmed,
       reason: prepared.reason,
@@ -408,7 +408,7 @@ function logPreparedImplementation(prepared, applied) {
     console.log(`PI_COMPLEXITY ${JSON.stringify({
       stage,
       complexity: prepared.complexity,
-      evidenceBudget: prepared.evidenceBudget,
+      requiredMutationAnchors: prepared.requiredMutationAnchors ?? [],
       largeMutation: prepared.largeMutation,
       reason: prepared.reason,
       usage,
@@ -1402,13 +1402,20 @@ export default function (pi) {
           });
       const repairReadAvailable = codingRepairReadAvailable();
       const recoveryReadAvailable = codingRecoveryReadAvailable();
-      const boundedReadAvailable = repairReadAvailable || recoveryReadAvailable;
+      const mutationAnchorReadAvailable = controller.pendingRequiredMutationAnchors().length > 0;
+      const boundedReadAvailable = repairReadAvailable || recoveryReadAvailable || mutationAnchorReadAvailable;
       const repairAwareRestricted = boundedReadAvailable && unrestrictedActiveTools.includes('read')
         ? unrestrictedActiveTools.filter(name => name === 'read' || restricted.includes(name))
         : restricted;
       applySurface(
         visible(repairAwareRestricted),
-        repairReadAvailable ? 'repair_evidence' : recoveryReadAvailable ? 'coding_recovery_evidence' : 'restricted',
+        repairReadAvailable
+          ? 'repair_evidence'
+          : recoveryReadAvailable
+            ? 'coding_recovery_evidence'
+            : mutationAnchorReadAvailable
+              ? 'required_mutation_anchor'
+              : 'restricted',
       );
       return;
     }
@@ -2216,6 +2223,32 @@ export default function (pi) {
     }
     if (stage === 'implementer' && config.productiveProgress?.codingSessionTool) ensureCodingSessionAgent();
     await applyBudget('short', ctx);
+
+    // A successful prepared handoff with no required mutation anchors is action-ready before
+    // the first Main provider request. Promote planner-owned large-mutation intent here so the
+    // one-shot 16k mutation response applies to that first real request rather than requiring
+    // a synthetic evidence/control turn merely to activate it.
+    const startupAutoLargeMutationPending =
+      stage === 'implementer' && controller.maybeGrantAutomaticLargeMutationBudget();
+    if (startupAutoLargeMutationPending) {
+      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+        stage,
+        phase: 'auto_pending',
+        source: 'implementation-planner',
+        startup: true,
+      })}`);
+      if (controller.activateLargeMutationBudget()) {
+        appliedActionCap = controller.largeMutationBudgetMaxTokens;
+        await applyTokenCap(appliedActionCap, ctx);
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'granted',
+          maxTokens: appliedActionCap,
+          startup: true,
+        })}`);
+      }
+    }
+
     syncActionToolSurface(syncProductiveState());
     if (codingSession) {
       const entries = ctx.sessionManager?.getEntries?.() ?? [];
@@ -3926,11 +3959,25 @@ export default function (pi) {
           ctx.cwd,
         )
       );
+    const requiredAnchorMissing =
+      canonicalToolName === 'read' &&
+      event.isError === true &&
+      controller.isRequiredMutationAnchorRead('read', acceptedToolInput) &&
+      typeof acceptedToolInput?.path === 'string' &&
+      !fs.existsSync(path.resolve(ctx.cwd, acceptedToolInput.path));
+    if (requiredAnchorMissing) {
+      console.warn(`PI_REQUIRED_MUTATION_ANCHOR_ABSENT ${JSON.stringify({
+        stage,
+        path: acceptedToolInput.path,
+        action: 'release_anchor_as_new_file',
+      })}`);
+    }
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
       madeProgress: effectiveProgress,
       input: acceptedToolInput,
       strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
       verificationEligible,
+      requiredAnchorMissing,
     });
 
     if (codingRecoveryGuard) {

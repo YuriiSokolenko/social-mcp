@@ -970,7 +970,7 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.match(agent, /zero diff[\s\S]*records the issue as already satisfied automatically/);
   assert.match(agent, /### Fresh work[\s\S]*runtime has already prepared the top-level implementation plan before this session started/);
   assert.match(agent, /Task classification alone never requires delegation/);
-  assert.match(agent, /2 actions for trivial[\s\S]*6 for nontrivial/);
+  assert.match(agent, /Required current-file mutation anchors[\s\S]*need_more_evidence/);
   assert.match(agent, /submit_result[\s\S]*records that the agent considers the implementation complete/);
   assert.match(agent, /shared stage harness runs the authoritative checks/);
   assert.doesNotMatch(agent, /trivial_repo_lookup|RepoMap|repo map orientation|complexity-classifier/);
