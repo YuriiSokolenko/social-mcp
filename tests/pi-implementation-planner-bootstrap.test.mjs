@@ -17,8 +17,10 @@ import {
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 const prepared = {
-  version: 1, status: 'prepared', plan: ['Inspect the module', 'Add the regression test'], complexity: 'trivial',
-  evidenceBudget: 1, largeMutation: false, reason: 'One bounded edit', workspaceRoot: '/work/tree', freshBaseCommit: 'deadbeef',
+  version: 1, status: 'prepared', plan: ['Inspect the module', 'Add the regression test'],
+  repositoryFacts: ['src/net.py uses send().'], complexity: 'trivial',
+  requiredMutationAnchors: ['src/net.py'], largeMutation: false, reason: 'One bounded edit',
+  workspaceRoot: '/work/tree', freshBaseCommit: 'deadbeef',
   baseRef: 'origin/dev', layoutHint: null, plannerUsage: { output: 40 }, plannerDurationMs: 900,
   plannerEvidenceActions: 3, plannerStructuredCorrections: 1,
 };
@@ -66,7 +68,7 @@ test('malformed artifacts fail closed instead of being applied', (t) => {
     { ...prepared, status: 'unknown' },
     { ...prepared, plan: [] },
     { ...prepared, complexity: 'medium' },
-    { ...prepared, evidenceBudget: 9 },
+    { ...prepared, requiredMutationAnchors: ['../escape.py'] },
     { ...prepared, largeMutation: 'yes' },
     { ...prepared, reason: '' },
     { version: 1, status: 'fallback', reason: 'x' },
@@ -88,9 +90,39 @@ test('the prepared block carries only normalized result and fresh-work provenanc
   const block = preparedImplementationBlock(prepared);
   assert.match(block, /1\. Inspect the module\n2\. Add the regression test/);
   assert.match(block, /Complexity: trivial — One bounded edit/);
-  assert.match(block, /Evidence budget: 1/);
+  assert.match(block, /Required current-file mutation anchors[\s\S]*src\/net\.py/);
   assert.match(block, /origin\/dev at deadbeef/);
-  assert.doesNotMatch(block, /structured_output|plannerStructuredCorrections|plannerEvidenceActions/);
+  assert.doesNotMatch(block, /Evidence budget|evidence_budget|structured_output|plannerStructuredCorrections|plannerEvidenceActions/);
+});
+
+test('planner facts win over conflicting runtime layout hints in the Main-visible handoff', () => {
+  const conflicting = {
+    ...prepared,
+    repositoryFacts: ['Use tests/diagnostics/test_smoke_keypaths.py as the verified sibling convention.'],
+    layoutHint: {
+      sourceRoot: 'src',
+      sourceTarget: 'src/new_target.py',
+      sourceDirectory: 'src',
+      sourceConvention: 'src/sibling.py',
+      testDirectory: 'tests',
+      testTarget: 'tests/test_smoke_keypaths.py',
+      testTargetRequired: false,
+      testConvention: 'tests/test_other.py',
+    },
+  };
+  const block = preparedImplementationBlock(conflicting);
+  assert.match(block, /tests\/diagnostics\/test_smoke_keypaths\.py/);
+  assert.doesNotMatch(block, /Repository layout hint|tests\/test_smoke_keypaths\.py/);
+});
+
+test('model-visible successful preparation contract has no stale deadline or evidence-budget wording', () => {
+  const implementer = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
+  const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  const block = preparedImplementationBlock(prepared);
+  for (const text of [implementer, planner, block]) {
+    assert.doesNotMatch(text, /evidence_budget/);
+    assert.doesNotMatch(text, /bounded retries|hard deadline/i);
+  }
 });
 
 test('fallback remains resolved before main and never invents a planner deadline class', () => {
@@ -113,21 +145,21 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
       status: 'completed',
       usage: { turns: 1, output: 10 },
       result: { kind: 'structured', value: {
-        steps: ['Do it'], facts: [], complexity: 'trivial', evidence_budget: 0, large_mutation: false, reason: 'done',
+        steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: 'done',
       } },
     });
   });
   const pi = { events: { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) } };
   const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
   const env = plannerEnv(t);
-  const logs = t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'log', () => {});
   const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
 
   assert.equal(result.status, 'prepared');
   assert.equal(requests.length, 1);
   assert.equal(requests[0].timeoutMs, undefined);
   assert.equal(requests[0].toolBudget, undefined);
-  assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_CAT_PETTED ')));
+  assert.equal('evidenceBudget' in result, false);
 });
 
 test('bootstrap launches planner only after session_start handlers have installed delegation context', async (t) => {
@@ -152,7 +184,7 @@ test('bootstrap launches planner only after session_start handlers have installe
   bus.on('prompt-template:subagent:request', request => {
     bus.emit('prompt-template:subagent:response', lastUiContext
       ? { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'completed', usage: { output: 5 },
-          result: { kind: 'structured', value: { steps: ['Do it'], facts: [], complexity: 'trivial', evidence_budget: 0, large_mutation: false, reason: 'tiny' } } }
+          result: { kind: 'structured', value: { steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: 'tiny' } } }
       : { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'unavailable_context',
           error: 'No active extension context for delegated subagent execution.' });
   });
