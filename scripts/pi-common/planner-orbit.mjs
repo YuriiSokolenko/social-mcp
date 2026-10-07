@@ -36,7 +36,7 @@ async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
 function sanitizeTarget(value) {
   const target = String(value ?? '').trim()
     .replace(/^[`"'([{<]+/, '')
-    .replace(/[`"',;:)]}>]+$/, '');
+    .replace(/[`"',;:)\]}>]+$/, '');
   if (!target || target.length > 400 || target.startsWith('-') || /[\u0000-\u001f\u007f\s]/.test(target)) return null;
   if (/^(?:https?:|github\.com\/|api\.github\.com\/|raw\.githubusercontent\.com\/)/i.test(target)) return null;
   if (target.split('/').includes('..')) return null;
