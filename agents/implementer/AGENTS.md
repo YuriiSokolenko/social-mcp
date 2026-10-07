@@ -35,11 +35,11 @@ If saved checkpoint or issue-branch changes were replayed into the worktree:
 2. Do **not** inspect repository files, summarize restored changes, validate, or plan the restored work before that first call.
 3. If `submit_result` reports a concrete integration/metadata problem, fix only that problem and retry.
 
-Do not pass `already_satisfied` for restored work. Runtime handles a zero-diff replay automatically. Authoritative product validation runs outside the agent and may start one focused validation-repair attempt with exact diagnostics.
+Do not pass `already_satisfied` for restored work. If replayed saved work is already contained in latest dev, a zero diff records the issue as already satisfied automatically; that is a runtime recovery, not a model claim. Authoritative product validation runs outside the agent and may start one focused validation-repair attempt with exact diagnostics.
 
 ### Fresh work
 
-Runtime has already prepared the top-level implementation plan before this session started through the separate `implementation-planner`, including its `trivial | nontrivial` classification, and normalized the accepted output into the trusted `Runtime-prepared implementation state`. Before that Planner's first provider request, runtime may seed it with task-relevant Orbit structural context when the index matches the exact current worktree HEAD; Main receives only the normalized PreparedImplementation, not the private Planner context. Treat the issue as the requested outcome and that PreparedImplementation as the starting plan. Do not recreate the Planner conversation, repeat task-level classification, or re-prove repository facts merely because inspection is available.
+For fresh work, runtime has already prepared the top-level implementation plan before this session started through the separate `implementation-planner`, including its `trivial | nontrivial` classification, and normalized the accepted output into the trusted `Runtime-prepared implementation state`. For observability context only: before that Planner's first provider request, runtime may seed it with task-relevant Orbit structural context when the index matches the exact current worktree HEAD; Main receives only the normalized PreparedImplementation, not the private Planner context. Treat the issue as the requested outcome and that PreparedImplementation as the starting plan. Do not recreate the Planner conversation, repeat task-level classification, or re-prove repository facts merely because inspection is available.
 
 Fresh worktrees are created from the latest fetched `origin/dev`. Until the first successful mutation, direct current-worktree reads are authoritative for that fresh base; do not spend repository calls re-proving its provenance.
 
@@ -68,6 +68,10 @@ If `Required current-file mutation anchors` names existing paths, read each exac
 - Use `need_more_evidence` only when runtime exposes it for a bounded transition such as delegated semantic evidence. It is not a prerequisite for `read`, `repo_search`, `indexed_repo_search`, or `bash` in successful fresh Main.
 - If delegation is needed and the generic subagent tool is hidden, call `subagents_enable` once, then follow the tool surface and next-action guidance returned by runtime. Enable/delegate to `scout` only when deterministic direct inspection cannot answer one concrete question cheaply. Ask for the first sufficient answer and compact evidence, not a broad repository dump.
 - Task classification alone never requires delegation; `nontrivial` does not imply a scout or broader exploration.
+
+### Available delegated agents
+
+Use `scout` for narrow repository reconnaissance only when direct deterministic tools are insufficient. `reviewer` and `oracle` are read-only advisors for a concrete review or consistency question; they do not own Main's mutations.
 - Prefer `structural_edit` for one exact AST rewrite, `safe_edit` for bounded line/range or non-code changes, and `edit`/`write` when simpler.
 - Prefer `rollback_last_mutation` when the latest mutation is demonstrably the wrong approach. Use `undo_mutation`/`recover_worktree` only for the exact recovery state they describe.
 - After a successful mutation, use focused `run_check` when exposed. A check infrastructure error is not a product failure and is not a reason to invent a shell workaround.
