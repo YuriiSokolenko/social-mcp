@@ -450,7 +450,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     const validated = validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
     const evidenceState = readPlannerEvidenceState(evidenceStateFile);
     status = 'completed';
-    console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted' })}`);
+    console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted', message: '🐈 You pet the cat. Planner complete.' })}`);
     return {
       ...validated, usage, layoutHint,
       evidenceActions: evidenceState?.used ?? null,
