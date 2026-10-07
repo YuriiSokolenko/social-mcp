@@ -198,7 +198,7 @@ export default function (pi) {
   const pendingEvidence = new Map();
   const knownFacts = new Set();
   let finalizing = process.env[PLANNER_FINALIZATION_ONLY_ENV] === '1';
-  let evidenceProgressSteerPending = false;
+  let evidenceProgressContinuationPending = false;
   let lastEvidenceSignature = null;
   let lastEvidenceMadeProgress = true;
   let consecutiveNoProgressEvidence = 0;
@@ -206,6 +206,10 @@ export default function (pi) {
   const closeForFinalization = (source) => {
     if (finalizing) return;
     finalizing = true;
+    if (evidenceProgressContinuationPending) {
+      evidenceProgressContinuationPending = false;
+      console.log(`PI_PLANNER_EVIDENCE_CONTINUATION ${JSON.stringify({ action: 'cancelled', source })}`);
+    }
     if (typeof pi.setActiveTools === 'function') pi.setActiveTools([]);
     console.log(`PI_PLANNER_FINALIZATION_TRANSITION ${JSON.stringify({ from: 'planning', to: 'finalizing', source })}`);
   };
@@ -218,13 +222,7 @@ export default function (pi) {
 
   pi.on('before_provider_request', (event) => {
     const payload = event?.payload;
-    if (!finalizing) {
-      // A queued evidence steer is consumed by the provider request it triggers. Reset the
-      // per-turn latch here so a later evidence-producing turn may enqueue one fresh reminder,
-      // while parallel evidence results from the same turn cannot build a steer backlog.
-      evidenceProgressSteerPending = false;
-      return payload;
-    }
+    if (!finalizing) return payload;
     if (!payload) return payload;
     // The repair child may be loaded before Pi has bound the session. Deactivate tools only
     // once a provider request is actually being built, then omit tool fields entirely so
@@ -281,6 +279,29 @@ export default function (pi) {
     if (text) closeForFinalization('assistant_content');
   });
 
+  pi.on('turn_end', (event) => {
+    if (finalizing) {
+      evidenceProgressContinuationPending = false;
+      return undefined;
+    }
+    if (!evidenceProgressContinuationPending) return undefined;
+
+    evidenceProgressContinuationPending = false;
+    console.log(`PI_PLANNER_EVIDENCE_CONTINUATION ${JSON.stringify({ action: 'delivered', source: 'turn_end' })}`);
+    return {
+      entries: [
+        ...(Array.isArray(event?.entries) ? event.entries : []),
+        {
+          type: 'custom_message',
+          customType: 'planner-evidence-progress',
+          content: '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
+          display: false,
+        },
+      ],
+      continue: true,
+    };
+  });
+
   pi.on('tool_execution_end', async (event, ctx) => {
     const pending = event.toolCallId ? pendingEvidence.get(event.toolCallId) : null;
     if (event.toolCallId) pendingEvidence.delete(event.toolCallId);
@@ -294,20 +315,12 @@ export default function (pi) {
       recordEvidenceState(pending.admission, { fact, toolName: pending.toolName });
       console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
       console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'progress' })}`);
-      if (!finalizing && !evidenceProgressSteerPending && typeof pi.sendUserMessage === 'function') {
-        // Multiple evidence tools can finish in one provider turn. Queue at most one progress
-        // steer for that turn; otherwise identical queued steers survive into finalization and
-        // force repeated provider calls after the first terminal XML response.
-        evidenceProgressSteerPending = true;
-        try {
-          await pi.sendUserMessage(
-            '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
-            { deliverAs: 'steer' },
-          );
-        } catch (error) {
-          evidenceProgressSteerPending = false;
-          throw error;
-        }
+      if (!finalizing && !evidenceProgressContinuationPending) {
+        // Defer the reminder to the turn_end lifecycle boundary instead of Pi's steer queue.
+        // That keeps one continuation per evidence-producing turn while allowing terminal
+        // assistant content to invalidate it before another provider request can be scheduled.
+        evidenceProgressContinuationPending = true;
+        console.log(`PI_PLANNER_EVIDENCE_CONTINUATION ${JSON.stringify({ action: 'queued', source: 'evidence_progress' })}`);
       }
     } else {
       consecutiveNoProgressEvidence += 1;

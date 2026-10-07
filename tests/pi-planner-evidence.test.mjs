@@ -284,11 +284,14 @@ test('more than six distinct useful evidence actions are accepted and telemetry 
     8,
     'each distinct useful result may remind that the same waiting cat still exists without accumulating reward',
   );
+  const continuation = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
+  assert.equal(continuation.continue, true);
   assert.equal(
-    harness.messages().length,
+    continuation.entries.filter(entry => entry.type === 'custom_message' && entry.customType === 'planner-evidence-progress').length,
     1,
-    'multiple useful evidence results in one provider turn coalesce to one queued progress steer',
+    'multiple useful evidence results in one provider turn coalesce to one lifecycle continuation',
   );
+  assert.equal(harness.messages().length, 0, 'evidence progress no longer enters Pi\'s steer queue');
 });
 
 test('equivalent repository action is stopped only after it demonstrates no progress', async (t) => {
@@ -366,10 +369,16 @@ test('successful evidence stores compact redacted facts and emits neutral CAT_WA
   assert.ok(state.facts[0].length <= 200);
   assert.doesNotMatch(state.facts[0], /super-secret|sk-/);
   assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_CAT_WAITING') && line.includes('"event":"progress"')));
-  assert.deepEqual(harness.messages(), [{
-    message: '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
-    options: { deliverAs: 'steer' },
-  }]);
+  const continuation = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
+  assert.equal(continuation.continue, true);
+  assert.deepEqual(continuation.entries.at(-1), {
+    type: 'custom_message',
+    customType: 'planner-evidence-progress',
+    content: '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
+    display: false,
+  });
+  assert.deepEqual(harness.messages(), []);
+  assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_EVIDENCE_CONTINUATION') && line.includes('"action":"delivered"')));
   assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
 });
 
@@ -403,8 +412,63 @@ test('multiple evidence facts queue one continuation before terminal XML finaliz
     }, harness.abortContext);
   }
 
-  assert.equal(harness.messages().length, 1, 'same-turn evidence must not build a steer backlog');
+  assert.equal(harness.messages().length, 0, 'same-turn evidence must not enter Pi\'s steer queue');
+  const continuation = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
+  assert.equal(continuation.continue, true);
+  assert.equal(
+    continuation.entries.filter(entry => entry.type === 'custom_message' && entry.customType === 'planner-evidence-progress').length,
+    1,
+    'same-turn evidence coalesces to one lifecycle continuation',
+  );
+  if (continuation.continue) await providerRequest();
+
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: validPlannerXml() }],
+    },
+  }, harness.abortContext);
+  const afterTerminal = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
+  if (afterTerminal?.continue) await providerRequest();
+
+  assert.equal(providerRequests, 2, 'terminal XML cannot schedule an additional provider request');
+  assert.equal(afterTerminal, undefined);
+  assert.deepEqual(harness.activeTools(), []);
+  assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_FINALIZATION_TRANSITION') && line.includes('"source":"assistant_content"')));
+});
+
+test('terminal assistant XML explicitly cancels a pending evidence continuation before another provider request', async (t) => {
+  const harness = extensionHarness(t);
+  let providerRequests = 0;
+  const providerRequest = async () => {
+    providerRequests += 1;
+    return harness.handlers.get('before_provider_request')({
+      payload: {
+        model: 'qwen',
+        tools: PLANNER_EVIDENCE_TOOLS.map(name => ({ type: 'function', function: { name } })),
+        tool_choice: 'auto',
+      },
+    }, harness.abortContext);
+  };
+
   await providerRequest();
+  await harness.handlers.get('tool_call')({
+    toolName: 'read',
+    toolCallId: 'pre-finalization-evidence',
+    input: { path: 'src/pre-finalization.py' },
+  }, harness.abortContext);
+  await harness.handlers.get('tool_execution_end')({
+    toolName: 'read',
+    toolCallId: 'pre-finalization-evidence',
+    isError: false,
+    result: { content: [{ type: 'text', text: 'grounded fact' }] },
+  }, harness.abortContext);
+
+  assert.ok(harness.logs().some(line =>
+    line.includes('PI_PLANNER_EVIDENCE_CONTINUATION') && line.includes('"action":"queued"')
+  ));
+
   await harness.handlers.get('message_end')({
     message: {
       role: 'assistant',
@@ -413,10 +477,22 @@ test('multiple evidence facts queue one continuation before terminal XML finaliz
     },
   }, harness.abortContext);
 
-  assert.equal(providerRequests, 2, 'evidence requires only one continuation request before terminal XML');
-  assert.equal(harness.messages().length, 1, 'terminal XML leaves no additional evidence steer queued');
+  assert.ok(harness.logs().some(line =>
+    line.includes('PI_PLANNER_EVIDENCE_CONTINUATION') &&
+    line.includes('"action":"cancelled"') &&
+    line.includes('"source":"assistant_content"')
+  ));
+
+  const afterTerminal = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
+  if (afterTerminal?.continue) await providerRequest();
+
+  assert.equal(afterTerminal, undefined, 'the pre-finalization continuation is invalidated before turn_end');
+  assert.equal(providerRequests, 1, 'terminal XML does not trigger another provider request');
+  assert.ok(!harness.logs().some(line =>
+    line.includes('PI_PLANNER_EVIDENCE_CONTINUATION') && line.includes('"action":"delivered"')
+  ));
+  assert.deepEqual(harness.messages(), []);
   assert.deepEqual(harness.activeTools(), []);
-  assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_FINALIZATION_TRANSITION') && line.includes('"source":"assistant_content"')));
 });
 
 test('evidence completion cannot queue a progress steer after finalization starts', async (t) => {
@@ -440,6 +516,8 @@ test('evidence completion cannot queue a progress steer after finalization start
     result: { content: [{ type: 'text', text: 'late fact' }] },
   }, harness.abortContext);
 
+  const continuation = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
+  assert.equal(continuation, undefined);
   assert.equal(harness.messages().length, 0);
   assert.deepEqual(harness.activeTools(), []);
 });
