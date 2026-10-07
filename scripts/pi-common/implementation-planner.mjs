@@ -430,9 +430,10 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     nodeId: 'implementation-plan',
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
-    // No planner lifecycle wall-clock budget. Transport/process hang protection remains in
-    // the lower-level delegation/provider layers where genuine hangs can be interrupted.
-    timeoutMs: 0,
+    // No planner lifecycle wall-clock budget and no generic tool-count budget. Lower-level
+    // provider/process hang guards remain responsible for genuinely stuck infrastructure.
+    timeoutMs: null,
+    toolBudget: null,
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
   };
 
