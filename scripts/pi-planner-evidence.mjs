@@ -443,22 +443,24 @@ function sanitizeDiagnosticText(value, maxLength) {
     .slice(0, maxLength);
 }
 
-function recordPlannerResultState({ resultAttempts, repairStatus, repairDiagnostic = null, repairKind = null }) {
+function recordPlannerResultState({
+  resultAttempts,
+  structuredCorrections = 0,
+  repairStatus,
+  repairDiagnostic = null,
+  repairKind = null,
+  failureKind = null,
+}) {
   const file = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   if (!file) return;
   try {
     let previous = {};
     try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* state is initialized above */ }
-    const next = { ...previous, resultAttempts };
+    const next = { ...previous, resultAttempts, structuredCorrections };
     if (repairStatus) next.repairStatus = repairStatus;
-    if (repairDiagnostic) {
-      const combined = previous.repairDiagnostic && !previous.repairDiagnostic.includes(repairDiagnostic)
-        ? `${previous.repairDiagnostic} | ${repairDiagnostic}`
-        : repairDiagnostic;
-      next.repairDiagnostic = combined.slice(0, 400);
-    }
-    if (repairKind && !next.repairKind) next.repairKind = repairKind;
-    if (repairKind && repairStatus === 'failed') next.repairFailureKind = repairKind;
+    if (repairDiagnostic) next.repairDiagnostic = sanitizeDiagnosticText(repairDiagnostic, 400);
+    if (repairKind) next.repairKind = repairKind;
+    if (failureKind) next.failureKind = failureKind;
     fs.writeFileSync(file, `${JSON.stringify(next)}\n`, { mode: 0o600 });
   } catch (error) {
     console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);
