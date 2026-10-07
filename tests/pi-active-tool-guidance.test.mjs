@@ -144,7 +144,7 @@ test('#540 direct repository tools need no evidence unlock after a successful fr
   assert.equal(state.checkToolCall('read', { path: 'src/example.py' }), undefined);
   assert.equal(state.checkToolCall('repo_search', { query: 'Example' }), undefined);
   assert.equal(state.checkToolCall('indexed_repo_search', { query: 'Example' }), undefined);
-  assert.equal(state.checkToolCall('bash', { command: 'git status --short' }), undefined);
+  assert.equal(state.checkToolCall('bash', { command: 'python -m pytest tests/example.py' }), undefined, 'fresh Main bypasses the old bounded-diff-only policy while runtime bash safety remains separate');
 });
 
 test('#540 resume/repair-style direct action does not inherit fresh Main repository-tool broadening', () => {
