@@ -2223,6 +2223,32 @@ export default function (pi) {
     }
     if (stage === 'implementer' && config.productiveProgress?.codingSessionTool) ensureCodingSessionAgent();
     await applyBudget('short', ctx);
+
+    // A successful prepared handoff with no required mutation anchors is action-ready before
+    // the first Main provider request. Promote planner-owned large-mutation intent here so the
+    // one-shot 16k mutation response applies to that first real request rather than requiring
+    // a synthetic evidence/control turn merely to activate it.
+    const startupAutoLargeMutationPending =
+      stage === 'implementer' && controller.maybeGrantAutomaticLargeMutationBudget();
+    if (startupAutoLargeMutationPending) {
+      console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+        stage,
+        phase: 'auto_pending',
+        source: 'implementation-planner',
+        startup: true,
+      })}`);
+      if (controller.activateLargeMutationBudget()) {
+        appliedActionCap = controller.largeMutationBudgetMaxTokens;
+        await applyTokenCap(appliedActionCap, ctx);
+        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
+          stage,
+          phase: 'granted',
+          maxTokens: appliedActionCap,
+          startup: true,
+        })}`);
+      }
+    }
+
     syncActionToolSurface(syncProductiveState());
     if (codingSession) {
       const entries = ctx.sessionManager?.getEntries?.() ?? [];
