@@ -302,6 +302,8 @@ test('Planner docs and agent instructions describe Orbit seed and no superseded 
   assert.match(implementer, /before that Planner's first provider request/);
   assert.match(rules, /PI_PLANNER_ORBIT_SEED/);
   assert.match(rules, /no Planner evidence-action budget/i);
+  assert.match(planner, /30-second pre-request infrastructure safety budget/i);
+  assert.match(rules, /not a Planner lifecycle deadline or Orbit-query-count cap/i);
   assert.doesNotMatch(rules, /planner separately returns its own per-task `evidence_budget` estimate/i);
   assert.doesNotMatch(rules, /repository facts remain capped for prompt hygiene/i);
   assert.doesNotMatch(rules, /keeps up to 16 ordered steps/i);
