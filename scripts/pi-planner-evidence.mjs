@@ -24,9 +24,16 @@ function plannerResolvedTargets(env = process.env) {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      console.warn(`PI_PLANNER_RESOLVED_TARGETS_INVALID ${JSON.stringify({ reason: 'non_object' })}`);
+      return {};
+    }
     return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === 'string' && value.trim()));
-  } catch {
+  } catch (error) {
+    console.warn(`PI_PLANNER_RESOLVED_TARGETS_INVALID ${JSON.stringify({
+      reason: 'invalid_json',
+      error: String(error?.message ?? error).slice(0, 200),
+    })}`);
     return {};
   }
 }
@@ -198,6 +205,7 @@ function plannerResultFailureSignature(kind, diagnostic, rawArguments) {
 
 export default function (pi) {
   registerPlannerEvidenceTools(pi);
+  const resolvedTargets = plannerResolvedTargets();
 
   let finalizing = false;
   let resultAttempts = 0;
@@ -514,7 +522,7 @@ export default function (pi) {
           ? structuredClone(observed.rawArguments.value)
           : null;
     try {
-      validateResolvedTargetPaths(acceptedResult, plannerResolvedTargets());
+      validateResolvedTargetPaths(acceptedResult, resolvedTargets);
     } catch (error) {
       const diagnostic = String(error?.message ?? error);
       const canCorrect = recordPlannerResultRejection({
