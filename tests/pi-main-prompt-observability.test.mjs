@@ -85,6 +85,18 @@ test('#540 duplicate system or contract composition fails deterministically', ()
   };
   assert.doesNotThrow(() => assertMainPromptComposition(mainPromptRequestMetadata(valid)));
 
+  const missingContracts = {
+    ...valid,
+    messages: [
+      { role: 'system', content: 'base' },
+      { role: 'user', content: '<trusted_context>prepared</trusted_context>' },
+    ],
+  };
+  assert.throws(
+    () => assertMainPromptComposition(mainPromptRequestMetadata(missingContracts)),
+    /exactly one shared contract and one Implementer role contract/,
+  );
+
   const missingSystem = {
     ...valid,
     messages: [initialUser],
