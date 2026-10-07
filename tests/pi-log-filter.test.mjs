@@ -505,7 +505,7 @@ test('#540 Main log telemetry correlates provider cache state without manufactur
       { type: 'message_end', message: {
         role: 'assistant',
         content: [],
-        usage: { input: 1234, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 1254 },
+        usage: { input: 1234, output: 20, cacheRead: 77, cacheWrite: 0, totalTokens: 1254 },
       } },
       { type: 'agent_end', messages: [] },
     ], { PI_ISSUE: '540', PI_PHASE: 'implementation', PI_CALL: 'main', PI_METRICS_FILE: metricsFile });
