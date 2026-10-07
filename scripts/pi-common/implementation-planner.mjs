@@ -322,7 +322,13 @@ export function plannerTargetPolicy(layoutHint) {
   const resolvedTargets = {};
   const conventionHints = {};
   if (typeof layoutHint.sourceTarget === 'string' && layoutHint.sourceTarget.trim()) {
-    resolvedTargets.source = layoutHint.sourceTarget.trim();
+    const sourceTarget = layoutHint.sourceTarget.trim();
+    const inferredFromDottedTarget = typeof layoutHint.dottedTarget === 'string' && layoutHint.dottedTarget.trim();
+    if (layoutHint.sourceTargetRequired === false || (layoutHint.sourceTargetRequired !== true && inferredFromDottedTarget)) {
+      conventionHints.sourceTarget = sourceTarget;
+    } else {
+      resolvedTargets.source = sourceTarget;
+    }
   }
   if (layoutHint.testTargetRequired === true && typeof layoutHint.testTarget === 'string' && layoutHint.testTarget.trim()) {
     resolvedTargets.test = layoutHint.testTarget.trim();
@@ -336,44 +342,63 @@ export function plannerTargetPolicy(layoutHint) {
   return { resolvedTargets, conventionHints };
 }
 
-function plannerActionPaths(value) {
+function plannerActionStrings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-  const strings = [
+  return [
     ...(Array.isArray(value.steps) ? value.steps : []),
     ...(Array.isArray(value.required_mutation_anchors) ? value.required_mutation_anchors : []),
-  ].filter(item => typeof item === 'string');
-  const paths = [];
-  const seen = new Set();
-  const pattern = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)/g;
+  ].filter(item => typeof item === 'string').map(item => item.trim()).filter(Boolean);
+}
+
+function isPathContinuationCharacter(character) {
+  return Boolean(character) && /[A-Za-z0-9_@+.\[\]\/\\-]/.test(character);
+}
+
+function mentionsExactResolvedTarget(text, expected) {
+  let offset = 0;
+  while (offset <= text.length - expected.length) {
+    const index = text.indexOf(expected, offset);
+    if (index < 0) return false;
+    const before = index > 0 ? text[index - 1] : '';
+    const afterIndex = index + expected.length;
+    const after = afterIndex < text.length ? text[afterIndex] : '';
+    if (!isPathContinuationCharacter(before) && !isPathContinuationCharacter(after)) return true;
+    offset = index + 1;
+  }
+  return false;
+}
+
+function conflictingResolvedTarget(strings, expected) {
+  const basename = path.posix.basename(expected);
   for (const text of strings) {
-    for (const match of text.matchAll(pattern)) {
-      const candidate = match[2].replace(/[.,;:!?]+$/, '');
-      if (!candidate || candidate.includes('..') || candidate.includes('://') || seen.has(candidate)) continue;
-      seen.add(candidate);
-      paths.push(candidate);
+    let offset = 0;
+    while (offset <= text.length - basename.length) {
+      const index = text.indexOf(basename, offset);
+      if (index < 0) break;
+      let start = index;
+      let finish = index + basename.length;
+      while (start > 0 && isPathContinuationCharacter(text[start - 1])) start -= 1;
+      while (finish < text.length && isPathContinuationCharacter(text[finish])) finish += 1;
+      const candidate = text.slice(start, finish);
+      if (candidate !== expected && candidate.endsWith(basename) && (candidate.includes('/') || basename === expected)) {
+        return candidate;
+      }
+      offset = index + 1;
     }
   }
-  return paths;
+  return null;
 }
 
 export function validateResolvedTargetPaths(value, resolvedTargets = {}) {
-  const returnedPaths = plannerActionPaths(value);
+  const actionStrings = plannerActionStrings(value);
   for (const [key, rawExpected] of Object.entries(resolvedTargets ?? {})) {
     const expected = typeof rawExpected === 'string' ? rawExpected.trim() : '';
     if (!expected) continue;
-    const basename = path.posix.basename(expected);
-    const conflicting = returnedPaths.find(candidate =>
-      candidate !== expected && path.posix.basename(candidate) === basename);
-    if (conflicting) {
-      throw new Error(
-        `resolved_target_mismatch: ${key} target must remain exactly "${expected}"; returned conflicting path "${conflicting}"`,
-      );
-    }
-    if (!returnedPaths.includes(expected)) {
-      throw new Error(
-        `resolved_target_mismatch: ${key} target must remain exactly "${expected}"; returned conflicting path "<missing>"`,
-      );
-    }
+    if (actionStrings.some(text => mentionsExactResolvedTarget(text, expected))) continue;
+    const conflicting = conflictingResolvedTarget(actionStrings, expected);
+    throw new Error(
+      `resolved_target_mismatch: ${key} target must remain exactly "${expected}"; returned conflicting path "${conflicting ?? '<missing>'}"`,
+    );
   }
 }
 
