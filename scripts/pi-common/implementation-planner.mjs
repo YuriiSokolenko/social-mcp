@@ -376,11 +376,10 @@ function conflictingResolvedTarget(strings, expected) {
       const index = text.indexOf(basename, offset);
       if (index < 0) break;
       let start = index;
-      let finish = index + basename.length;
+      const finish = index + basename.length;
       while (start > 0 && isPathContinuationCharacter(text[start - 1])) start -= 1;
-      while (finish < text.length && isPathContinuationCharacter(text[finish])) finish += 1;
       const candidate = text.slice(start, finish);
-      if (candidate !== expected && candidate.endsWith(basename) && (candidate.includes('/') || basename === expected)) {
+      if (candidate !== expected && (candidate.includes('/') || basename === expected)) {
         return candidate;
       }
       offset = index + 1;
