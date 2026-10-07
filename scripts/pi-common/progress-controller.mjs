@@ -195,12 +195,12 @@ export function nextCeilingWithoutToolTurns(
 
 export function actionRequiredToolNames(
   activeToolNames,
-  { actionTools = [], controlTools = [], blockerTool = null, verificationTools = [] } = {},
+  { actionTools = [], controlTools = [], directTools = [], blockerTool = null, verificationTools = [] } = {},
 ) {
   if (!Array.isArray(activeToolNames)) {
     throw new Error('activeToolNames must be an array');
   }
-  const allowed = new Set([...actionTools, ...controlTools, ...verificationTools]);
+  const allowed = new Set([...actionTools, ...controlTools, ...directTools, ...verificationTools]);
   if (blockerTool) allowed.add(blockerTool);
   return activeToolNames.filter(name => allowed.has(name));
 }
@@ -261,6 +261,11 @@ export class ProgressController {
     this.productiveBlockerTool = this.productiveProgress?.blockerTool ?? null;
     this.productiveActionTools = new Set(this.productiveProgress?.actionTools ?? []);
     this.productiveControlTools = new Set(this.productiveProgress?.controlTools ?? []);
+    this.productiveDirectActionTools = new Set(this.productiveProgress?.directActionTools ?? []);
+    // Enabled only by a successful fresh PreparedImplementation handoff. Resumed work,
+    // validation repair and coding sessions enter action_required without calling
+    // applyPreparedImplementation(), so their existing tool policies stay unchanged.
+    this.preparedDirectActionToolsEnabled = false;
     // Focused verification (run_check) is evidence about a mutation, not progress:
     // one permit is granted per successful mutation, so it cannot become an
     // unlimited escape hatch from the action-required state.
@@ -543,8 +548,10 @@ export class ProgressController {
   // previous numeric startup window only for compatibility.
   applyPreparedImplementation(prepared) {
     if (prepared.status === 'fallback') {
+      this.preparedDirectActionToolsEnabled = false;
       return { ...this.installPreparationFallback(), largeMutationArmed: false };
     }
+    this.preparedDirectActionToolsEnabled = true;
     this.setComplexity(prepared.complexity);
     this.installRequiredMutationAnchors(prepared.requiredMutationAnchors ?? []);
     const largeMutationArmed = this.armAutomaticLargeMutationBudget(prepared.largeMutation);
@@ -574,6 +581,17 @@ export class ProgressController {
       requiredMutationAnchors: this.pendingRequiredMutationAnchors(),
       largeMutationArmed,
     };
+  }
+
+  directActionToolNames() {
+    if (!this.preparedDirectActionToolsEnabled || this.productiveState !== 'action_required') return [];
+    return [...this.productiveDirectActionTools];
+  }
+
+  directActionToolAllowed(toolName) {
+    return this.preparedDirectActionToolsEnabled &&
+      this.productiveState === 'action_required' &&
+      this.productiveDirectActionTools.has(toolName);
   }
 
   preComplexityActionRequired() {
@@ -728,8 +746,13 @@ export class ProgressController {
       }
     }
 
-    if (toolName === 'bash' && this.boundedDirectBash && !isBoundedDirectBash(input?.command)) {
-      return { block: true, reason: 'Direct main-agent bash is limited to a bounded git diff/status on one known path. Delegate searches, tests, logs, and broader commands.' };
+    if (
+      toolName === 'bash' &&
+      this.boundedDirectBash &&
+      !this.directActionToolAllowed('bash') &&
+      !isBoundedDirectBash(input?.command)
+    ) {
+      return { block: true, reason: 'Direct main-agent bash is limited to a bounded git diff/status on one known path in this mode. Follow the current runtime tool surface for broader repository commands.' };
     }
 
     if (this.delegatedTools.has(toolName)) {
@@ -843,7 +866,12 @@ export class ProgressController {
                 : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
             };
           }
-        } else if (!requiredAnchorRead && !this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
+        } else if (
+          !requiredAnchorRead &&
+          !this.productiveActionTools.has(toolName) &&
+          !this.productiveControlTools.has(toolName) &&
+          !this.directActionToolAllowed(toolName)
+        ) {
           return {
             block: true,
             reason: this.productiveBlockerTool
