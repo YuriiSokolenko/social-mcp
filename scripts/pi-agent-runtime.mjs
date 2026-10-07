@@ -2160,10 +2160,10 @@ export default function (pi) {
 
       if (!codingSession) {
         const metadata = mainPromptRequestMetadata(patched, previousMainPromptMetadata);
-        // Runtime-scenario tests intentionally use minimal provider payloads with no prompt
-        // envelope. Enforce composition whenever this is a real Main contract request; the
-        // pure helper tests cover malformed/empty envelopes deterministically.
-        if (metadata.sharedContractCount > 0 || metadata.roleContractCount > 0) {
+        // Runtime-scenario tests intentionally use minimal provider payloads with no messages.
+        // Every real Main chat request has a non-empty message envelope, so enforce the full
+        // system/shared/role composition there, including the zero-contract regression case.
+        if (Array.isArray(patched?.messages) && patched.messages.length > 0) {
           assertMainPromptComposition(metadata);
         }
         const request = ++mainPromptRequestSequence;
