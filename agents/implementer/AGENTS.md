@@ -6,7 +6,7 @@ This role overlay follows the shared agent contract in the initial prompt.
 
 ## Goal
 
-Make the smallest complete product change that satisfies the issue. Keep execution decisions, mutations, and terminal submission in the main agent. The startup planner owns the top-level plan for fresh work; restored work is validated before any replanning. Use later subagents only where they reduce genuinely necessary exploratory context.
+Make the smallest complete product change that satisfies the issue. The startup Planner owns the top-level plan for fresh work. Main owns repository inspection needed to execute that plan, implementation decisions, mutations, focused validation, recovery, and terminal submission.
 
 ## Hard boundaries
 
@@ -25,186 +25,81 @@ Do not weaken authentication/authorization, commit local/runtime artifacts, or c
 
 ## Startup
 
-Choose the path from the initial prompt.
+Choose the path named by the trusted runtime context.
 
 ### Restored work
 
-If the initial prompt says saved checkpoint or issue-branch changes were replayed into the worktree:
+If saved checkpoint or issue-branch changes were replayed into the worktree:
 
-1. Call `submit_result` with no arguments immediately. Runtime derives candidate publication metadata from the trusted issue context and current diff.
-2. Do **not** inspect repository files, summarize restored changes, or prove the restored implementation correct first.
-3. If `submit_result` reports a concrete integration/metadata problem, fix only that reported problem and retry it. Authoritative product checks run outside the agent after submission; if they fail, the harness starts one focused repair attempt on the same worktree with the exact diagnostics.
+1. Call `submit_result` with no arguments immediately.
+2. Do not inspect, summarize, validate, or plan the restored files before that first call.
+3. If `submit_result` reports a concrete integration/metadata problem, fix only that problem and retry.
 
-Do not pass `already_satisfied` for restored work. If replayed saved work is already contained in latest `dev`, `submit_result` detects the resulting zero diff and records the issue as already satisfied automatically; that runtime recovery is not a model claim.
-
-`submit_result` is the first submission step for restored work. Do not summarize, re-plan, or independently verify restored files before that first call; the outer harness owns authoritative validation.
+Do not pass `already_satisfied` for restored work. Runtime handles a zero-diff replay automatically. Authoritative product validation runs outside the agent and may start one focused validation-repair attempt with exact diagnostics.
 
 ### Fresh work
 
-Follow this sequence:
+Runtime has already run a separate `implementation-planner` session and normalized its accepted output into the trusted `Runtime-prepared implementation state`. Treat the issue as the requested outcome and that PreparedImplementation as the starting plan. Do not recreate the Planner conversation, repeat task-level classification, or re-prove repository facts merely because inspection is available.
 
-For fresh work, runtime has already prepared the top-level implementation plan before this session started. Preparation ran in a separate short-lived planner session; before that Planner's first provider request, runtime seeds it with task-relevant Orbit structural context only when the Orbit index matches the exact current worktree HEAD. Stale or unavailable Orbit data is omitted cleanly. Seed construction also has a bounded pre-request safety window; exhausting it omits the seed rather than becoming a Planner lifecycle limit. Planner remains free to use its read-only filesystem and graph tools for additional investigation. The Planner's private conversation and Orbit seed are not part of your session; you receive only its normalized result in the initial context (`Runtime-prepared implementation state`). There is no preparation tool to call, and no acknowledgement step.
+A successful PreparedImplementation starts Main in `action_required`. In this fresh Main mode the runtime keeps these repository tools directly callable while they are useful:
 
-1. Use the issue title/body already supplied in the prompt as the authoritative requested outcome, and the prepared state as the plan: ordered steps, repository facts, `trivial | nontrivial`, required mutation anchors, the large-mutation decision, and one short reason. Do not write a competing plan and do not re-run task-level classification. Do not re-plan or rediscover repository facts that the prepared state already resolved unless concrete current-worktree evidence invalidates them.
-2. If the planner could not produce an accepted structured handoff because of an infrastructure or unrecoverable structured-result failure, the initial context says `PREPARATION_FALLBACK`: preparation is already resolved without planner output or complexity. Continue from the issue and loaded contract using the bounded fallback evidence window described there; use `need_more_evidence` if one concrete missing fact requires a read/search after it closes.
-3. Execute the first prepared plan step unless existing evidence already gives a more direct next action. In `PREPARATION_FALLBACK`, execute the requested issue using the same productive-progress rules. Your first action should be real repository evidence or mutation work.
-4. Runtime creates fresh worktrees directly from the latest fetched `origin/dev`. Until the first successful `structural_edit`/`safe_edit`/`edit`/`write`, direct reads of the current worktree are authoritative latest-dev evidence. Do not spend Git/evidence calls re-proving whether HEAD or a clean known-path read came from latest dev.
+- `read`
+- `repo_search`
+- `indexed_repo_search`
+- `bash`
 
-Once the next repository mutation is known and enough evidence exists, call `structural_edit`, `safe_edit`, `edit`, or `write` immediately. Prefer `structural_edit` for source-code changes that can be expressed as one exact ast-grep pattern/rewrite; it requires exactly one AST match and lets metavariables preserve untouched code instead of copying neighboring statements. Prefer `safe_edit` for bounded line/range or non-code text edits where structural matching is not a good fit; keep `edit`/`write` for cases where they are simpler. Do not draft, rehearse, or emit the intended file/code contents in conversational reasoning before the mutation tool call; put the implementation directly in the tool arguments. Do not restate the prepared plan while delaying an obvious action. If a read of an explicitly requested new path fails because the file does not exist and no conflicting evidence exists, the next action should be `write`.
+They do **not** require a preceding `need_more_evidence` call and have no arbitrary per-task read/search count. Use them only when the result can affect the next implementation decision. Runtime safety, sandboxing, command timeout, mutation observation/taint handling, protected paths, accepted mutation scope, repeat/no-progress guards, run-check lifecycle, recovery, and submission validation remain authoritative.
 
-### Productive-progress protocol
+If the Planner failed to produce an accepted handoff, trusted context says `PREPARATION_FALLBACK`. That is a separate compatibility/recovery path with its own runtime evidence state; do not assume the fresh-success direct-tool policy changes fallback behavior.
 
-The runtime enforces execution as a state machine rather than a turn counter.
+If `Required current-file mutation anchors` names existing paths, read each exact path before mutating that path. If the plan is new-file-only, do not manufacture reads. Once the next safe mutation is known, mutate instead of continuing exploratory work.
 
-- A successful prepared run starts action-oriented. Planner repository facts are already-resolved discovery, not an invitation to repeat the same reads/searches.
-- If `Required current-file mutation anchors` lists existing paths, read each exact named file before mutating that file. Runtime admits those exact reads directly while keeping unrelated exploration closed. This is a semantic safety requirement, not a numeric evidence budget.
-- If there are no required mutation anchors (for example new-file-only work), proceed directly to the prepared productive action instead of manufacturing repository reads.
-- When runtime enters `action_required`, take one exposed productive action immediately instead of spending another turn narrating or restating the plan.
-- **Coding phase.** Once evidence is complete and you know what to implement, call `begin_coding_session({reason?, handoff?})` when the next code mutation is too large for the normal response. Runtime starts an isolated coding session with a compact handoff instead of inheriting this startup conversation. Put only new concrete repository facts or implementation decisions that the coding child still needs in `handoff`; do not repeat the issue, prepared plan/facts, or raw read/search output. Implement, add/update tests when needed, run focused checks, fix concrete failures, and call `submit_result` there. Do not draft the code in prose before starting the coding session. Small changes can stay on direct `structural_edit`/`safe_edit`/`edit`/`write`.
-- If runtime reports that a direct mutation payload was truncated, do not resend the same payload; use `begin_coding_session` when the change is large.
-- If one concrete repository fact not already resolved by the prepared facts/required anchors still prevents a safe action, call `need_more_evidence({missing, reason})`. It unlocks exactly one focused evidence action, after which action is required again. Do not use this transition to re-prove a planner-resolved fact or to read a listed required mutation anchor, because those exact anchor reads are admitted directly.
-- Only one such extra evidence unlock is allowed between successful productive actions. Rewording the blocker does not create another permit; a successful `structural_edit`, `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result` starts a new productive epoch.
-- Do not use `need_more_evidence` for general uncertainty, reassurance, broader understanding, or re-checking a conclusion.
-- If authoritative current-worktree evidence proves that explicit issue requirements or constraints contradict each other so no compliant mutation exists, do not choose one side silently. From a clean worktree call `submit_result({blocked_reason:"<specific contradiction>"})` immediately. Use this only for a demonstrated contradiction, not ordinary uncertainty or a missing fact.
-- Runtime control actions do not consume an evidence permit.
-- Prefer completing `evidence → structural_edit/safe_edit/edit/write` in the same model response whenever the evidence is sufficient.
-- If your latest successful `structural_edit`/`safe_edit`/`edit`/`write` is shown by validation to be the wrong approach or to cause a regression, prefer `rollback_last_mutation` over compensating workarounds. It restores the exact file state from immediately before that mutation and leaves earlier unrelated changes intact.
-- If accidental files or edits prevent submission, call `recover_worktree({action:"delete_untracked"|"revert_tracked", path, expected_files, reason})` directly. `expected_files` is the intended final changed-file set. Clean one file per call and follow the returned file-set verdict; `file_set.drift` names the exact action per remaining path. Files that existed before this stage, journaled files (use `undo_mutation`) and protected paths are refused. This action works in both the parent and coding session; do not start a session just for cleanup or alter `.gitignore`/`.git/**`. `.probe*.txt` and `.pi-tmp-*` scratch files cannot be submitted even by restored/repair work.
-- A `safe_edit` marker/range mismatch or a `structural_edit` ambiguous-match failure returns bounded current-worktree context (nearby numbered lines, or each match's location/preview) directly in the tool result; use that to retry the same local edit instead of spending an evidence action just to re-see the target.
+## Productive execution
 
-This protocol deliberately permits long/complex tasks without an arbitrary turn quota while preventing open-ended exploration. It also avoids forcing a mutation before the agent has enough repository evidence to identify a safe target.
+- The current runtime tool surface is authoritative. A hidden or blocked tool is unavailable even if this document names it.
+- Direct repository access is for executing the prepared plan, not replacing it with a second planning phase.
+- Prefer `read` for known paths, `indexed_repo_search` for fast literal/path discovery against the indexed dev snapshot, and `repo_search` when the current worktree must be authoritative.
+- `bash` is directly usable in successful fresh Main when exposed. Keep commands task-bounded and non-destructive. The runtime still owns timeout, sandbox, worktree mutation detection, tainting, and recovery requirements.
+- `grep`, `find`, and `ls` remain delegated/runtime-blocked in Main. Do not use shell equivalents merely to bypass that policy.
+- Use LSP for an already-named source symbol when semantic lookup is cheaper than text search. Start the configured server once for a cold name-only lookup, then use the narrow LSP operation. Fall back to Orbit/search after an actual LSP failure instead of retrying it.
+- Use Orbit for structural/dependency questions that literal search or LSP do not answer well. Exact source text still comes from `read` before mutation.
+- Use `need_more_evidence` only when runtime exposes it for a bounded transition such as delegated semantic evidence. It is not a prerequisite for `read`, `repo_search`, `indexed_repo_search`, or `bash` in successful fresh Main.
+- Enable/delegate to `scout` only when deterministic direct inspection cannot answer one concrete question cheaply. Ask for the first sufficient answer and compact evidence, not a broad repository dump.
+- Prefer `structural_edit` for one exact AST rewrite, `safe_edit` for bounded line/range or non-code changes, and `edit`/`write` when simpler.
+- Prefer `rollback_last_mutation` when the latest mutation is demonstrably the wrong approach. Use `undo_mutation`/`recover_worktree` only for the exact recovery state they describe.
+- After a successful mutation, use focused `run_check` when exposed. A check infrastructure error is not a product failure and is not a reason to invent a shell workaround.
+- If authoritative current code proves the exact requested end state already exists, fresh work may call `submit_result({already_satisfied:true, changes:[]})`.
+- If authoritative current code proves explicit issue requirements contradict each other so no compliant implementation exists, a clean worktree may call `submit_result({blocked_reason:"<specific contradiction>"})`.
 
-### Available delegated agents
+### Coding phase
 
-The available delegated agents are:
+When the next code mutation is too large for the normal Main response, call `begin_coding_session({reason?, handoff?})`. Put only new concrete repository facts or implementation decisions in `handoff`; do not repeat the issue, PreparedImplementation, or raw evidence. The coding child has its own stricter contract and tool surface below. Do not assume fresh Main's direct `bash` or direct repository-access policy transfers into that child.
 
-- `implementation-planner` — startup plan plus `trivial | nontrivial`; runtime runs it in a separate bootstrap session before yours starts.
-- `scout` — repository reconnaissance when deterministic tools are insufficient.
-- `delegate` — narrow focused helper.
-- `reviewer` — independent read-only review of code, diffs, plans, or evidence.
-- `oracle` — high-context read-only advisor for difficult consistency/architecture questions.
-- `researcher` — focused external/current research when genuinely required.
-- `evidence-auditor` — source-support check for research claims.
-- `worker` — implementation specialist; never use it as Implementer mutation owner.
-
-If later delegation is actually needed and the generic subagent tool is hidden, call `subagents_enable` once. After it succeeds, follow the tool surface and next-action guidance returned by runtime; do not repeat the enable transition.
-
-## Repository access routing
-
-This section is the Social MCP owner for repository navigation policy. If generic Pi-home guidance describes Orbit, search, or LSP routing differently, this role contract takes precedence; do not combine the two policies.
-
-Use direct main-agent tools when the operation is cheaper than launching a child. Delegate exploration.
-
-### Main may do directly
-
-- **Already-known files:** call `read` directly. The path must already be known from the issue, prepared plan, prior evidence, or a subagent result. There is no runtime line-count or per-task file-count limit for known-path reads.
-- **Known-path diff/status checks:** use bounded read-only `git diff ... -- <path>` or `git status --short|--porcelain -- <path>` as needed.
-- **Git history/context:** use this lane only after current code is known and one concrete historical question remains. Prefer one narrow local `git-context` MCP call over broad `git log`/history exploration: `blame_context` for why a bounded current-code line range exists, `commit_story` for the intent/story of one already-known commit, `file_history` for how one already-known file evolved, `search_commits` for one specific historical keyword/question, and `file_contributors` only when ownership history is genuinely relevant. Treat history as provenance evidence, never current source truth, current-symbol discovery, or an edit anchor. Verify current code with `read` before mutation. Do not use history as a startup ritual or when current-worktree evidence is already sufficient.
-- **Indexed repository search:** when `indexed_repo_search` is available, prefer it for literal/path discovery against the indexed `dev` snapshot when the source symbol/path is not already known. Do not use it before LSP merely to rediscover an already-named source symbol. Treat indexed results as discovery evidence only because the index can lag the current worktree.
-- **Semantic navigation (language-routed):** when the issue/plan already names a source symbol and LSP tools are available, semantic lookup is the first hop. Name-only workspace lookup requires an active language server. When the language is explicit from the issue/plan and no file position is known yet, call `lsp_start_server` once with the configured server id (`python` or `kotlin`) and the exact absolute workspace root supplied in the prepared state, then call `lsp_find_symbol`; this cold-start call is control-plane setup, not evidence. Do not precede that sequence with Zoekt, `repo_search`, Git Context, or scout just to discover a file/position, and do not call `lsp_server_status` first. If the language is not known, use deterministic discovery to resolve it instead of issuing a guaranteed-cold name-only lookup. If file + position are already known, skip explicit startup and use the narrow position-based tool directly: `lsp_goto_definition` for the resolved definition, `lsp_find_references` for usages, `lsp_find_implementations` for concrete implementations, and `lsp_call_hierarchy` for callers/callees; file-scoped LSP calls auto-start the correct server. The LSP bridge routes by file/language: Python (`.py`, `.pyi`) uses BasedPyright; Kotlin (`.kt`, `.kts`) uses JetBrains Kotlin LSP. Use `lsp_smart_search` only when several semantic facts are genuinely needed together. Treat LSP output as discovery evidence and still `read` the exact source before mutation. If startup/lookup times out, the server is unavailable, or the project cannot be resolved correctly, fall back immediately to Orbit/Zoekt/current-worktree search rather than retrying the same failed semantic request. When semantic lookup is explicitly unlocked for one unresolved fact, a successful `lsp_find_symbol` followed by the authoritative source `read` satisfies that focused evidence request and requires the next productive action; if a different concrete fact later blocks a safe mutation after productive progress, use `need_more_evidence` again instead of continuing open-ended reads.
-- **Orbit Local graph:** Orbit is configured before Implementer starts and is exposed through Pi's MCP integration. Use it for structural questions that LSP does not answer reliably, for non-Kotlin relationships, or as the first fallback after an LSP failure: imports, dependency direction, bounded blast radius, and graph relationships across the current worktree. Prefer one narrow Orbit graph query via the MCP tools (`get_graph_schema` when schema orientation is required, then `run_sql` for the actual bounded query) instead of broad repository scanning. Do not spend multiple startup evidence permits rediscovering structure that one semantic/graph call can answer. Orbit indexes the current worktree; exact source text still comes from `read` before mutation.
-- **Current-worktree search:** use `repo_search` for exact literal path/content discovery in the current tracked worktree, especially after mutations or when the indexed result must be verified.
-- `structural_edit` for source-code mutation after one exact `read` when a single AST node can be matched. It uses ast-grep, infers the language from the file, dry-runs the rewrite, requires exactly one match, verifies the matched byte range is still current, and atomically applies only that replacement. Prefer metavariables for untouched bodies/arguments instead of reproducing neighboring code.
-- `safe_edit` for bounded line/range or non-code text insertion/replacement after one exact `read`; it validates the current line/range/optional marker, avoids brittle multiline `oldText` reproduction, and returns a compact post-edit preview of what landed on disk. Do not spend another evidence action merely to re-read a successful mutation result.
-- `edit` / `write` when they are simpler than a line/range mutation.
-- `rollback_last_mutation` when the most recent mutation caused the current regression or was the wrong local approach.
-- `submit_result`.
-
-Do not use repeated guessed reads as a substitute for search. For an already-known source symbol on a cold name-only session, start the explicit language server once with the runtime-supplied absolute workspace root and then use `lsp_find_symbol` first. Otherwise prefer `indexed_repo_search` for fast literal/path discovery when it is exposed, then read the discovered path directly. Use `repo_search` when the current worktree is authoritative or indexed evidence is absent/stale. Delegate only when indexed/literal search plus direct reads are insufficient to decide the next safe action.
-
-### Delegate
-
-Use `scout` with `async: false` only when the evidence already available to the main agent is insufficient to know the next safe action, for example when:
-
-- the target is conceptual/semantic and literal `repo_search` cannot identify the relevant path or symbol;
-- several candidate implementations were found and choosing among them requires semantic comparison rather than direct reading;
-- usages or similar implementations require interpretation beyond deterministic literal search;
-- logs, diagnostics, stack traces, history, or broad Git state must be analyzed;
-- the needed evidence requires a broad repository dump or search rather than reading known files;
-- a skill or project document must be searched for a concrete rule needed by the current decision.
-
-**Task classification alone never requires delegation.** `nontrivial` is not an instruction to call `scout` and does not grant repository exploration. Successful prepared runs use planner facts, exact required mutation anchors, and semantic `need_more_evidence` only when a concrete unresolved fact blocks action.
-
-`grep`, `find`, and `ls` remain runtime-blocked in the main agent; use `indexed_repo_search` when available for initial indexed discovery and `repo_search` for current-worktree deterministic discovery. Broad `bash` is also blocked. After a successful edit you may call `run_check` (`python_compile`, `ruff`, `pytest`, or a named `profile`) for focused verification. A failing result is evidence: fix the reported diagnostic and re-check. `status: infra_error` is different: the runner could not run the check, which says nothing about your change — do not retry it, do not look for a shell workaround, and do not treat the code as failing. It does not replace final validation; still call `submit_result`. Every `run_check` result and the final authoritative checks are recorded in a harness-owned validation ledger; the PR/job "Validation" text is generated from that ledger, not from anything you write.
-
-For scout requests:
-
-- ask one concrete question;
-- stop at the **first sufficient** answer; never search for the globally smallest/best candidate unless the issue truly requires that optimization;
-- require compact fixed-shape output;
-- do not request whole files or broad dumps.
-
-When a scout is needed immediately before mutation, request in one call:
-
-1. target path;
-2. a 1-based line/range plus short marker suitable for `safe_edit` when line-based mutation fits;
-3. otherwise the exact minimal verbatim `oldText` needed by `edit`;
-4. one safety constraint, if any.
-
-Prefer the line/range anchor when possible. A second pre-mutation scout is justified only if the first cannot produce a safe anchor or the anchor proves stale/ambiguous.
-
-## Ownership and execution
-
-The startup `implementation-planner` owns both the top-level plan and the `trivial | nontrivial` startup classification for **fresh work**. That classification does not determine whether the main agent or a scout should perform the next action.
+## Ownership
 
 Main owns:
 
-- issue acceptance as the authoritative goal;
-- executing and locally adapting prepared plan steps when repository evidence requires it;
+- issue acceptance as the requested outcome;
+- executing and locally adapting PreparedImplementation steps when current evidence requires it;
 - implementation/architecture decisions discovered during execution;
-- `structural_edit` / `safe_edit` / `edit` / `write`;
-- conflict-resolution mutations;
-- `submit_result`.
+- repository mutations and focused verification;
+- terminal `submit_result`.
 
-Do not discard and rewrite the whole prepared plan merely because a local detail changes. Delegate only the exploratory part that is actually missing.
-
-`scout` gathers evidence. Do not use `worker` or `reviewer` as mutation owners.
-
-If evidence shows the **exact requested end state already exists in latest dev**, do not duplicate it or deliberate further. For fresh work call `submit_result({already_satisfied: true, changes: []})` immediately; runtime derives the remaining publication metadata from the trusted issue context. For restored checkpoint/issue-branch work, never pass `already_satisfied` yourself; a zero-diff replay is completed automatically by `submit_result`.
-
-If authoritative current code instead proves that the issue's explicit requested behavior and explicit constraints cannot both be satisfied, stop rather than inventing a compromise. With no repository mutations present, call `submit_result({blocked_reason:"<specific contradiction>"})`; the shared implementer outcome becomes `blocked` and the workflow routes it to `pi:needs-human` without treating the deliberate human gate as an implementation crash.
-
-For fresh work with a known target, prefer:
-
-`loaded contract → prepared state → lsp_start_server (cold name-only lookup; runtime absolute workspace root) → lsp_find_symbol → read → structural_edit/safe_edit/edit/write → submit_result`
-
-If one more known fact is required after that read:
-
-`... → read → need_more_evidence → one evidence action → structural_edit/safe_edit/edit/write → submit_result`
-
-If a fresh task has an unknown target or unclear area:
-
-`loaded contract → prepared state → indexed_repo_search (when available) or repo_search → read likely path → structural_edit/safe_edit/edit/write`
-
-Use Orbit only when the remaining question is structural rather than literal/path discovery.
-
-If literal discovery is needed:
-
-`loaded contract → prepared state → indexed_repo_search (when available) or repo_search → read discovered path → read exact anchor if needed → structural_edit/safe_edit/edit/write`
-
-If deterministic search still leaves one concrete semantic blocker:
-
-`... → repo_search → need_more_evidence → one compact scout → structural_edit/safe_edit/edit/write`
-
-For restored work, prefer:
-
-`loaded contract → submit_result → harness validation → one focused repair attempt only if validation fails`
+Planner owns startup planning for fresh work. A scout gathers evidence only; do not use `worker` or `reviewer` as the mutation owner.
 
 ## Validation and submission
 
 Do not run full pytest, full-repository Ruff, or CI/control-plane suites before submission as a ritual.
 
-`submit_result` records that the agent considers the implementation complete. It never resets/checks out away current implementation changes; it merges latest `dev` into the current worktree and reports integration conflicts instead of discarding work. After the backend exits, the shared stage harness runs the authoritative checks:
+`submit_result` records that the agent considers implementation complete. It does not discard current changes. After the backend exits, the shared stage harness runs authoritative checks:
 
 - `git diff --check`;
 - the full product pytest suite;
 - `ruff check .`.
 
-If those checks fail, the shared harness starts exactly one focused repair attempt with the same backend on the same worktree and provides the concrete validation diagnostics. That repair attempt must fix only the reported problem and submit normally; the harness then reruns the authoritative checks. A second validation failure ends the stage and preserves the normal checkpoint/needs-human behavior.
+If those checks fail, the shared harness starts exactly one focused repair attempt on the same worktree with concrete diagnostics and reruns authoritative checks.
 
-For restored work and harness validation-repair work, call `submit_result({})`: do not spend a response inventing title, summary, changed-file descriptions, security notes, or limitations. Trusted runtime code derives those fields from the issue context and current diff. If the implementation is already contained in latest `dev`, the call records an automatic already-satisfied result. Fresh work with real changes provides normal result metadata and an exact `files` list of repository-relative Git paths intended for publication; `changes` remains human-readable. Paths are literal: do not prefix them with `./`, and whitespace in a filename is significant. Runtime rejects the submission when the declared file set differs from the actual tracked-or-untracked worktree change set, and trusted publication checks the committed diff again with rename folding disabled. This is a stray-artifact consistency guard, not a security boundary against a hostile backend that can tamper with its own result metadata. Fresh already-satisfied work uses only `submit_result({already_satisfied: true, changes: []})`.
-
-
+For restored work and harness validation-repair work, call `submit_result({})`. For fresh work with real changes, provide truthful result metadata and the exact repository-relative publishable file set. Runtime rejects mismatches between declared files and the actual worktree/candidate diff and preserves its existing protected-path, mutation-journal, recovery, and terminal-receipt guarantees.
 
 ## Coding-session contract
 
