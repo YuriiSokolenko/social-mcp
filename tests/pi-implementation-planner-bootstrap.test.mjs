@@ -17,12 +17,13 @@ import {
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 const prepared = {
-  version: 1, status: 'prepared', plan: ['Inspect the module', 'Add the regression test'],
-  repositoryFacts: ['src/net.py uses send().'], complexity: 'trivial',
-  requiredMutationAnchors: ['src/net.py'], largeMutation: false, reason: 'One bounded edit',
+  version: 1, status: 'prepared',
+  planText: '1. Inspect the module.\n2. Add the regression test for `social_mcp.diagnostics.<module>`.',
+  complexity: 'nontrivial', requiredMutationAnchors: [], largeMutation: false,
+  reason: 'Planner completed with a plain-text handoff.',
   workspaceRoot: '/work/tree', freshBaseCommit: 'deadbeef',
   baseRef: 'origin/dev', layoutHint: null, plannerUsage: { output: 40 }, plannerDurationMs: 900,
-  plannerEvidenceActions: 3, plannerFinalizationAttempts: 2, plannerXmlRepairNeeded: true,
+  plannerEvidenceActions: 3,
 };
 
 function tempFile(t) {
@@ -45,15 +46,11 @@ function plannerEnv(t) {
   return { PI_ISSUE_CONTEXT: issue, PI_IMPLEMENTER_START_COMMIT: 'abc123' };
 }
 
-function xmlPlan({
-  steps = ['Do it'], facts = [], complexity = 'trivial', anchors = [], largeMutation = false, reason = 'done',
-} = {}) {
-  const stepsXml = steps.map(step => `<step>${step}</step>`).join('');
-  const factsXml = facts.length ? `<facts>${facts.map(fact => `<fact>${fact}</fact>`).join('')}</facts>` : '';
-  const anchorsXml = anchors.length ? `<required_mutation_anchors>${anchors.map(anchor => `<anchor>${anchor}</anchor>`).join('')}</required_mutation_anchors>` : '';
-  return `<plan complexity="${complexity}" large_mutation="${largeMutation ? 'true' : 'false'}"><steps>${stepsXml}</steps>${factsXml}${anchorsXml}<reason>${reason}</reason></plan>`;
+function textPlan({ steps = ['Do it'], facts = [], reason = 'done' } = {}) {
+  return [...steps, ...facts.map(fact => `Repository observation: ${fact}`), `Reason: ${reason}`].join('\n');
 }
-test('implementer stage has no planner evidence cap, lifecycle deadline, or configurable XML retry knob', () => {
+
+test('implementer stage has no planner evidence cap, lifecycle deadline, or configurable format-retry knob', () => {
   const config = stageConfig('implementer');
   assert.equal(config.implementationPlannerMaxTokens, 2048);
   assert.equal('implementationPlannerEvidenceBudget' in config, false);
@@ -72,13 +69,10 @@ test('PreparedImplementation artifact round-trips and a missing file means no bo
 test('malformed artifacts fail closed instead of being applied', (t) => {
   const file = tempFile(t);
   for (const bad of [
-    { ...prepared, version: 2 },
-    { ...prepared, status: 'unknown' },
-    { ...prepared, plan: [] },
-    { ...prepared, complexity: 'medium' },
-    { ...prepared, requiredMutationAnchors: ['../escape.py'] },
-    { ...prepared, largeMutation: 'yes' },
-    { ...prepared, reason: '' },
+    { ...prepared, version: 2 }, { ...prepared, status: 'unknown' },
+    { ...prepared, planText: '' }, { ...prepared, planText: '   ' },
+    { ...prepared, complexity: 'medium' }, { ...prepared, requiredMutationAnchors: ['src/net.py'] },
+    { ...prepared, largeMutation: true }, { ...prepared, reason: '' },
     { version: 1, status: 'fallback', reason: 'x' },
   ]) {
     assert.throws(() => validatePreparedImplementation(bad), /./, JSON.stringify(bad).slice(0, 60));
@@ -87,40 +81,35 @@ test('malformed artifacts fail closed instead of being applied', (t) => {
   }
 });
 
-test('a nine-step prepared plan is valid and the main block preserves every normalized step', () => {
-  const nine = { ...prepared, plan: Array.from({ length: 9 }, (_, i) => `Step ${i + 1}`) };
-  validatePreparedImplementation(nine);
-  const block = preparedImplementationBlock(nine);
-  assert.match(block, /9\. Step 9/);
+test('a long plain-text prepared plan is valid and Main receives every byte without a handoff cap', () => {
+  const planText = `# Plan\n${'x'.repeat(14000)}\n\`social_mcp.diagnostics.<module>\``;
+  const long = { ...prepared, planText };
+  validatePreparedImplementation(long);
+  const block = preparedImplementationBlock(long);
+  assert.match(block, /social_mcp\.diagnostics\.\\u003cmodule\\u003e/);
+  assert.ok(block.includes('x'.repeat(14000)));
 });
 
-test('the prepared block carries only normalized result and fresh-work provenance', () => {
+test('the prepared block keeps Planner text complete but explicitly untrusted', () => {
   const block = preparedImplementationBlock(prepared);
-  assert.match(block, /1\. Inspect the module\n2\. Add the regression test/);
-  assert.match(block, /Complexity: trivial — One bounded edit/);
-  assert.match(block, /Required current-file mutation anchors[\s\S]*src\/net\.py/);
+  assert.match(block, /untrusted task data/i);
+  assert.match(block, /<untrusted_planner_handoff_json>/);
+  assert.match(block, /social_mcp\.diagnostics\.\\u003cmodule\\u003e/);
+  assert.match(block, /Runtime startup class: nontrivial \(conservative harness default\)/);
   assert.match(block, /origin\/dev at deadbeef/);
-  assert.doesNotMatch(block, /Evidence budget|evidence_budget|structured_output|plannerFinalizationAttempts|plannerXmlRepairNeeded|plannerEvidenceActions/);
+  assert.doesNotMatch(block, /plannerFinalizationAttempts|plannerXmlRepairNeeded|plannerEvidenceActions/);
 });
 
-test('planner facts win over conflicting runtime layout hints in the Main-visible handoff', () => {
-  const conflicting = {
-    ...prepared,
-    repositoryFacts: ['Use tests/diagnostics/test_smoke_keypaths.py as the verified sibling convention.'],
-    layoutHint: {
-      sourceRoot: 'src',
-      sourceTarget: 'src/new_target.py',
-      sourceDirectory: 'src',
-      sourceConvention: 'src/sibling.py',
-      testDirectory: 'tests',
-      testTarget: 'tests/test_smoke_keypaths.py',
-      testTargetRequired: false,
-      testConvention: 'tests/test_other.py',
-    },
-  };
+test('runtime layout hints do not rewrite opaque Planner text in the Main-visible handoff', () => {
+  const planText = 'Use tests/diagnostics/test_smoke_keypaths.py because that is the verified sibling convention.';
+  const conflicting = { ...prepared, planText, layoutHint: {
+    sourceRoot: 'src', sourceTarget: 'src/new_target.py', sourceDirectory: 'src',
+    sourceConvention: 'src/sibling.py', testDirectory: 'tests',
+    testTarget: 'tests/test_smoke_keypaths.py', testTargetRequired: false, testConvention: 'tests/test_other.py',
+  }};
   const block = preparedImplementationBlock(conflicting);
   assert.match(block, /tests\/diagnostics\/test_smoke_keypaths\.py/);
-  assert.doesNotMatch(block, /Repository layout hint|tests\/test_smoke_keypaths\.py/);
+  assert.doesNotMatch(block, /Repository layout hint/);
 });
 
 test('model-visible successful preparation contract has no stale deadline or evidence-budget wording', () => {
@@ -152,7 +141,7 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
       nodeId: request.nodeId,
       status: 'completed',
       usage: { turns: 1, output: 10 },
-      result: { kind: 'text', text: xmlPlan() },
+      result: { kind: 'text', text: textPlan() },
     });
   });
   const pi = { events: { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) } };
@@ -190,7 +179,7 @@ test('bootstrap launches planner only after session_start handlers have installe
   bus.on('prompt-template:subagent:request', request => {
     bus.emit('prompt-template:subagent:response', lastUiContext
       ? { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'completed', usage: { output: 5 },
-          result: { kind: 'text', text: xmlPlan({ reason: 'tiny' }) } }
+          result: { kind: 'text', text: textPlan({ reason: 'tiny' }) } }
       : { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'unavailable_context',
           error: 'No active extension context for delegated subagent execution.' });
   });
@@ -221,7 +210,7 @@ test('Orbit seed is resolved and embedded before Planner provider request #1', a
       nodeId: request.nodeId,
       status: 'completed',
       usage: { turns: 1, input: 20, output: 10 },
-      result: { kind: 'text', text: xmlPlan({
+      result: { kind: 'text', text: textPlan({
         steps: ['Update src/net.py'], facts: ['src/net.py is the target'], anchors: ['src/net.py'], reason: 'one bounded edit',
       }) },
     });
@@ -284,7 +273,7 @@ test('absent Orbit seed still delegates Planner and returns PreparedImplementati
       nodeId: request.nodeId,
       status: 'completed',
       usage: { turns: 1, input: 12, output: 8 },
-      result: { kind: 'text', text: xmlPlan({ steps: ['Use filesystem evidence as needed'], reason: 'Orbit is optional' }) },
+      result: { kind: 'text', text: textPlan({ steps: ['Use filesystem evidence as needed'], reason: 'Orbit is optional' }) },
     });
   });
   const pi = { events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) } };
