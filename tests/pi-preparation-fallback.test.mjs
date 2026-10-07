@@ -653,7 +653,7 @@ test('bootstrap completes and the prepared state is applied before the main sess
   const completed = logs.indexOf('"phase":"planner_completed"');
   const applied = logs.indexOf('"phase":"prepared_state_applied"');
   assert.ok(completed >= 0 && applied > completed, 'planner bootstrap completed BEFORE prepared state applied to the main session');
-  assert.match(logs, /PI_PLAN .*"requiredMutationAnchors":\\[\\]/);
+  assert.match(logs, /PI_PLAN .*"requiredMutationAnchors":\[\]/);
   assert.doesNotMatch(logs, /PI_PLAN .*"evidenceBudget"/);
   assert.match(logs, /\[PI\]\[planner\] prepared status=prepared/);
   assert.match(logs, /PI_COMPLEXITY .*"complexity":"nontrivial"/);
