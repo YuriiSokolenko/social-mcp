@@ -818,3 +818,39 @@ test('Orbit seed serialization is safety-bounded without limiting the number of 
   assert.ok(contextCalls > 6);
   assert.match(seed.text, /Orbit seed truncated for safety/);
 });
+
+
+test('Orbit seed does not replace filesystem evidence or later planner_code_graph queries', async (t) => {
+  for (const tool of ['read', 'grep', 'find', 'ls', 'repo_search', 'planner_code_graph']) {
+    assert.ok(PLANNER_EVIDENCE_TOOLS.includes(tool), `${tool} remains available`);
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-followup-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let contextCalls = 0;
+  const fakeExec = async (command, args) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') return { stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'abc123', status: 'indexed' }]) };
+    if (args[0] === 'context') {
+      contextCalls += 1;
+      return { stdout: args[1] === 'src/net.py' ? 'caller alpha -> send\n' : 'reference beta -> send\n' };
+    }
+    throw new Error('unexpected command');
+  };
+
+  const seed = await buildPlannerOrbitSeed(
+    dir,
+    { title: 'Update `src/net.py`', body: '' },
+    { execFile: fakeExec, maxChars: 100000 },
+  );
+  assert.equal(seed.present, true);
+
+  const graph = await plannerCodeGraph(
+    dir,
+    { target: 'send', question: 'Which references use send?' },
+    { execFile: fakeExec },
+  );
+  assert.match(graph.text, /reference beta/);
+  assert.equal(graph.head, 'abc123');
+  assert.equal(contextCalls, 2, 'one seed query plus one later planner_code_graph query');
+});
