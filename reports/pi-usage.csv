@@ -69,6 +69,7 @@ issue,518,all,,,,4,logical,6,55479,2918,0,0,58397,84.4,258,false,1,https://githu
 issue,525,all,,,,32,logical,37,499918,18198,0,0,518116,1025.2,1266,false,1,https://github.com/YuriiSokolenko/social-mcp/issues/525,1047.6
 issue,531,all,,,,6,logical,6,116567,3156,0,0,119723,222.5,512,false,1,https://github.com/YuriiSokolenko/social-mcp/issues/531,0.0
 issue,536,all,,,,10,logical,15,179890,6435,0,0,186325,272.0,513,false,1,https://github.com/YuriiSokolenko/social-mcp/issues/536,145.0
+issue,541,all,,,,16,logical,20,241757,13646,0,0,255403,706.2,918,false,1,https://github.com/YuriiSokolenko/social-mcp/issues/541,121.0
 attempt,25,implementation,36039015936,1,cancelled,10,legacy_unknown,,19537,2657,89273,0,111467,165.6,266,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36039015936/attempts/1,
 attempt,10,implementation,36093253439,1,success,14,legacy_unknown,,32423,59901,296631,0,388955,7281.5,7339,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093253439/attempts/1,
 attempt,18,implementation,36093256959,1,success,78,legacy_unknown,,61865,30747,2878475,0,2971087,3027.9,3130,unknown,,https://github.com/YuriiSokolenko/social-mcp/actions/runs/36093256959/attempts/1,
@@ -550,3 +551,4 @@ attempt,0,dispatcher,37610519781,1,success,0,logical,0,0,0,0,0,0,0.0,14,true,0,h
 attempt,0,dispatcher,37610524088,1,success,0,logical,0,0,0,0,0,0,0.0,14,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37610524088/attempts/1,0.0
 attempt,0,triage,37610524308,1,success,0,logical,0,0,0,0,0,0,0.0,15,true,0,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37610524308/attempts/1,0.0
 attempt,536,implementation,37611100193,1,cancelled,10,logical,15,179890,6435,0,0,186325,272.0,513,false,1,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37611100193/attempts/1,145.0
+attempt,541,implementation,37619938649,1,failure,16,logical,20,241757,13646,0,0,255403,706.2,918,false,1,https://github.com/YuriiSokolenko/social-mcp/actions/runs/37619938649/attempts/1,121.0
