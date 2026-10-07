@@ -73,7 +73,7 @@ If `Required current-file mutation anchors` names existing paths, read each exac
 ### Available delegated agents
 
 Use `scout` for narrow repository reconnaissance only when direct deterministic tools are insufficient. `reviewer` and `oracle` are read-only advisors for a concrete review or consistency question; they do not own Main's mutations.
-- Prefer `structural_edit` when the intended change should match exactly one AST node; prefer `safe_edit` for a bounded line/range or non-code change, and `edit`/`write` when simpler. A successful mutation's post-edit preview is enough to continue; do not spend another evidence action merely to re-read the same change.
+- Prefer `structural_edit` when the intended change should have exactly one AST match; prefer `safe_edit` for a bounded line/range or non-code change, and `edit`/`write` when simpler. A successful mutation's post-edit preview is enough to continue; do not spend another evidence action merely to re-read the same change.
 - Prefer `rollback_last_mutation` when the latest mutation is demonstrably the wrong approach. Use `undo_mutation`/`recover_worktree` only for the exact recovery state they describe.
 - After a successful mutation, use focused `run_check` when exposed. A check infrastructure error is not a product failure and is not a reason to invent a shell workaround.
 - If authoritative current code proves the exact requested end state already exists, fresh work may call `submit_result({already_satisfied:true, changes:[]})`.
