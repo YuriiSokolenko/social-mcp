@@ -268,8 +268,8 @@ function runtimeScenario(mode) {
         assert.doesNotMatch(request.task, /<plan|XML REPAIR|canonical valid XML/i);
         if (mode === 'layout-aware') {
           assert.match(request.task, /Add smoke widget parser/);
-          assert.match(request.task, /src\/demo_pkg\/diagnostics\/smoke_widget\.py/);
-          assert.match(request.task, /tests\/diagnostics\/test_smoke_chunks\.py/);
+          assert.ok(request.task.includes('src/demo_pkg/diagnostics/smoke_widget.py'));
+          assert.ok(request.task.includes('tests/diagnostics/test_smoke_chunks.py'));
         }
         if (mode === 'abort') {
           signal.abort();
