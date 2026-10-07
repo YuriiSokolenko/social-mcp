@@ -54,7 +54,7 @@ function boundedGraphText(text) {
   };
 }
 
-export async function plannerCodeGraph(cwd, params, { execFile: execFileFn } = {}) {
+export async function plannerCodeGraph(cwd, params, { execFile: execFileFn, signal = null } = {}) {
   const target = String(params?.target ?? '').trim();
   const question = String(params?.question ?? '').trim();
   if (!target || target.length > 400 || target.startsWith('-') || /[\u0000-\u001f\u007f]/.test(target)) {
@@ -66,7 +66,7 @@ export async function plannerCodeGraph(cwd, params, { execFile: execFileFn } = {
 
   let graph;
   try {
-    graph = await plannerOrbitContext(cwd, target, { execFile: execFileFn });
+    graph = await plannerOrbitContext(cwd, target, { execFile: execFileFn, signal });
   } catch (error) {
     const diagnostic = sanitizeDiagnosticText(error?.message ?? error, 240);
     console.log(`PI_PLANNER_CODE_GRAPH ${JSON.stringify({ status: 'unavailable', target, diagnostic })}`);
@@ -130,8 +130,8 @@ export function registerPlannerEvidenceTools(pi, {
       required: ['target', 'question'],
       additionalProperties: false,
     },
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await plannerCodeGraphFn(ctx.cwd, params);
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const result = await plannerCodeGraphFn(ctx.cwd, params, { signal });
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
     },
   });
