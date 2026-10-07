@@ -477,3 +477,20 @@ test('#481 exact completed responses beat inflated child roll-up turns while can
   ));
   assert.ok(!ledger.unknown.some(entry => entry.reason === 'provider_trace_incomplete'));
 });
+
+
+test('#540 cache read accounting preserves unknown, explicit zero, and positive provider values', () => {
+  const ledger = summarizeUsage([
+    main(1, u(100, 10, 110, { cacheReadKnown: false })),
+    main(2, u(100, 10, 110, { cacheRead: 0, cacheReadKnown: true })),
+    main(3, u(100, 10, 174, { cacheRead: 64, cacheReadKnown: true })),
+  ]);
+  const row = ledger.calls.get('main');
+  assert.equal(row.cacheRead, 64);
+  assert.equal(row.cacheReadUnknownResponses, 1);
+  assert.equal(row.cacheReadKnownResponses, 2);
+  assert.equal(ledger.totals.cacheRead, 64);
+  assert.equal(ledger.totals.cacheReadUnknownResponses, 1);
+  assert.equal(ledger.totals.cacheReadKnownResponses, 2);
+  assert.equal(ledger.complete, true, 'unknown cache telemetry is not the same as unknown whole-response usage');
+});
