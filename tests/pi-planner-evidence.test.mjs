@@ -431,6 +431,51 @@ test('accepted structured output uses direct handoff when accepted sidecar persi
   assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
 });
 
+test('accepted structured output without a sidecar does not abort direct handoff', async (t) => {
+  const previousStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  t.after(() => {
+    if (previousStateFile === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+    else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousStateFile;
+  });
+
+  const harness = extensionHarness(t, { stateFile: null });
+  const acceptedValue = {
+    steps: ['Update src/net.py'],
+    facts: ['src/net.py contains send().'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/net.py'],
+    large_mutation: false,
+    reason: 'Existing sender needs a bounded edit.',
+  };
+
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'r1',
+    input: { value: acceptedValue },
+  }, harness.abortContext), undefined);
+  await harness.handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'r1',
+    input: { value: acceptedValue },
+    isError: false,
+    content: [],
+  }, harness.abortContext);
+
+  assert.equal(harness.aborted(), false, 'no sidecar means the accepted direct handoff must remain alive');
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
+
+  const late = await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'late',
+    input: { value: acceptedValue },
+  }, harness.abortContext);
+  assert.equal(late.block, true);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
+});
+
 test('three materially equivalent invalid structured outputs trip semantic no-progress protection', async (t) => {
   const harness = extensionHarness(t);
   for (let index = 1; index <= 3; index += 1) {
