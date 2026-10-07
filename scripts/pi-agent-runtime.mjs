@@ -371,7 +371,7 @@ ${escapedJson({
 function logPreparedImplementation(prepared, applied) {
   const stage = 'implementer';
   const usage = prepared.plannerUsage ?? null;
-  console.log(`[PI][planner] prepared status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence=${prepared.plannerEvidenceUsed ?? 'unknown'}/${prepared.plannerEvidenceCap ?? 'unknown'} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${usage?.input ?? 'unknown'} out=${usage?.output ?? 'unknown'}`);
+  console.log(`[PI][planner] prepared status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} corrections=${prepared.plannerStructuredCorrections ?? 0} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${usage?.input ?? 'unknown'} out=${usage?.output ?? 'unknown'}`);
   if (prepared.status === 'fallback') {
     console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
       stage,
@@ -382,8 +382,8 @@ function logPreparedImplementation(prepared, applied) {
       recovery: 'continue_without_planner_output',
       reason: prepared.reason,
       plannerDurationMs: prepared.plannerDurationMs,
-      evidenceUsed: prepared.plannerEvidenceUsed ?? null,
-      evidenceCap: prepared.plannerEvidenceCap ?? null,
+      evidenceActions: prepared.plannerEvidenceActions ?? null,
+      structuredCorrections: prepared.plannerStructuredCorrections ?? 0,
       providerTurns: prepared.plannerProviderTurns ?? null,
     })}`);
   } else {
@@ -398,8 +398,8 @@ function logPreparedImplementation(prepared, applied) {
       reason: prepared.reason,
       usage,
       plannerDurationMs: prepared.plannerDurationMs,
-      evidenceUsed: prepared.plannerEvidenceUsed ?? null,
-      evidenceCap: prepared.plannerEvidenceCap ?? null,
+      evidenceActions: prepared.plannerEvidenceActions ?? null,
+      structuredCorrections: prepared.plannerStructuredCorrections ?? 0,
       providerTurns: prepared.plannerProviderTurns ?? null,
     })}`);
     if (applied.largeMutationArmed) {
