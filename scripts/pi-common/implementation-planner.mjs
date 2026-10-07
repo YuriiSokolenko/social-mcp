@@ -354,6 +354,15 @@ function isPathContinuationCharacter(character) {
   return Boolean(character) && /[A-Za-z0-9_@+.\[\]\/\\-]/.test(character);
 }
 
+function hasPathContinuationAfter(text, index) {
+  const character = index < text.length ? text[index] : '';
+  if (!character) return false;
+  if (character !== '.') return isPathContinuationCharacter(character);
+  let cursor = index;
+  while (cursor < text.length && text[cursor] === '.') cursor += 1;
+  return cursor < text.length && isPathContinuationCharacter(text[cursor]);
+}
+
 function mentionsExactResolvedTarget(text, expected) {
   let offset = 0;
   while (offset <= text.length - expected.length) {
@@ -361,8 +370,7 @@ function mentionsExactResolvedTarget(text, expected) {
     if (index < 0) return false;
     const before = index > 0 ? text[index - 1] : '';
     const afterIndex = index + expected.length;
-    const after = afterIndex < text.length ? text[afterIndex] : '';
-    if (!isPathContinuationCharacter(before) && !isPathContinuationCharacter(after)) return true;
+    if (!isPathContinuationCharacter(before) && !hasPathContinuationAfter(text, afterIndex)) return true;
     offset = index + 1;
   }
   return false;
