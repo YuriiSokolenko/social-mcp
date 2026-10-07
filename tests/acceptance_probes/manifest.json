@@ -78,6 +78,9 @@
   "probes": [
     {"id": "duration-ms", "criterion": "duration-contract", "args": ["250ms"], "returns": 0.25},
     {"id": "duration-decimal", "criterion": "duration-contract", "args": ["1.5s"], "returns": 1.5},
+    {"id": "duration-integer-seconds", "criterion": "duration-contract", "args": ["45s"], "returns": 45.0},
+    {"id": "duration-minutes", "criterion": "duration-contract", "args": ["2m"], "returns": 120.0},
+    {"id": "duration-hours", "criterion": "duration-contract", "args": ["1h"], "returns": 3600.0},
     {"id": "duration-negative", "criterion": "duration-contract", "args": ["-1s"], "raises": "ValueError"},
     {"id": "duration-non-finite", "criterion": "duration-contract", "args": ["NaNs"], "raises": "ValueError"},
     {"id": "duration-unknown-unit", "criterion": "duration-contract", "args": ["1d"], "raises": "ValueError"},
