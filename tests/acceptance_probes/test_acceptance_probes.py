@@ -11,10 +11,15 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+import math
 import os
+import re
 import subprocess
 import sys
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
+from itertools import islice
+from typing import Any
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
@@ -192,6 +197,91 @@ def test_manifest_is_well_formed() -> None:
 
     missing = set(pack_targets) - covered_targets
     assert not missing, f"smoke pack targets without trusted criteria: {sorted(missing)}"
+
+
+# Reference implementations copied from the accepted smoke implementations in
+# PRs #409 (duration), #413 (chunking), and #414 (redaction). They intentionally
+# live only in the protected oracle test so deferred manifest probes execute in
+# ordinary CI even when the disposable production smoke modules are absent.
+_REFERENCE_DURATION_PATTERN = re.compile(
+    r"^(?P<number>\\d+(?:\\.\\d+)?|\\.\\d+)\\s*(?P<unit>ms|s|m|h)$"
+)
+_REFERENCE_UNIT_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+
+
+def _reference_parse_duration_seconds(value: str) -> float:
+    if not isinstance(value, str):
+        raise ValueError("duration must be a string")
+    text = value.strip()
+    if not text:
+        raise ValueError("duration must not be empty")
+    match = _REFERENCE_DURATION_PATTERN.match(text)
+    if match is None:
+        raise ValueError("invalid duration")
+    number = float(match.group("number"))
+    seconds = number * _REFERENCE_UNIT_SECONDS[match.group("unit")]
+    if not math.isfinite(number) or not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("duration must be finite and non-negative")
+    return seconds
+
+
+def _reference_chunked(iterable: Iterable[Any], size: int) -> list[list[Any]]:
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise ValueError("size must be a positive integer")
+    iterator = iter(iterable)
+    chunks = []
+    while True:
+        chunk = list(islice(iterator, size))
+        if not chunk:
+            return chunks
+        chunks.append(chunk)
+
+
+def _reference_redact_mapping(
+    mapping: Mapping[str, Any],
+    sensitive_keys: Iterable[str],
+    *,
+    replacement: str = "***",
+) -> dict[str, Any]:
+    lowered = {str(key).casefold() for key in sensitive_keys}
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                key: replacement if str(key).casefold() in lowered else visit(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(visit(item) for item in value)
+        return value
+
+    return visit(mapping)
+
+
+_REFERENCE_DEFERRED_TARGETS = {
+    "duration-contract": _reference_parse_duration_seconds,
+    "chunking-contract": _reference_chunked,
+    "redaction-contract": _reference_redact_mapping,
+}
+_REFERENCE_DEFERRED_PROBES = [
+    probe for probe in PROBES if probe["criterion"] in _REFERENCE_DEFERRED_TARGETS
+]
+
+
+@pytest.mark.parametrize(
+    "probe",
+    _REFERENCE_DEFERRED_PROBES,
+    ids=[probe["id"] for probe in _REFERENCE_DEFERRED_PROBES],
+)
+def test_deferred_probe_against_accepted_reference_implementation(probe, monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_target",
+        lambda criterion: _REFERENCE_DEFERRED_TARGETS[criterion],
+    )
+    test_probe(probe)
 
 
 def test_decode_preserves_lists_and_supports_explicit_tuple_and_iterator() -> None:
