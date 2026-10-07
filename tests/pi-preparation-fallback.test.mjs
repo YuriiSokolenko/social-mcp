@@ -253,7 +253,7 @@ function runtimeScenario(mode) {
 
       const finalText = mode === 'layout-aware'
         ? 'Create src/demo_pkg/diagnostics/smoke_widget.py and focused tests. Follow tests/diagnostics/test_smoke_chunks.py. Literal type: social_mcp.diagnostics.<module>.'
-        : '## Plan\nImplement example.py. Preserve "quoted" values and \`social_mcp.diagnostics.<module>\`.';
+        : '## Plan\\nImplement example.py. Preserve "quoted" values and \`social_mcp.diagnostics.<module>\`.';
 
       bus.on('prompt-template:subagent:request', request => {
         attempts++;
