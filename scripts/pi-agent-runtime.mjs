@@ -1052,18 +1052,30 @@ export default function (pi) {
     );
   }
 
-  function codingRecoveryReadPolicy(input, cwd) {
-    if (!codingRecoveryReadAvailable()) return null;
-    const allowedPaths = [...new Set(
+  function codingRecoveryReadablePaths(cwd) {
+    if (!codingRecoveryGuard?.changed_publishable_paths?.length) return [];
+    return [...new Set(
       codingRecoveryGuard.changed_publishable_paths
         .map(item => trustedCodingRepairReadPath(item, cwd))
         .filter(Boolean),
     )];
+  }
+
+  function codingRecoveryReadPolicy(input, cwd) {
+    if (!codingRecoveryReadAvailable()) return null;
+    const allowedPaths = codingRecoveryReadablePaths(cwd);
+    if (allowedPaths.length === 0) {
+      return {
+        block: true,
+        recoveryDeadEnd: true,
+        reason: 'Coding-session recovery has no readable preserved changed path. Preserving the worktree and refusing a forced read loop.',
+      };
+    }
     const requested = trustedCodingRepairReadPath(input?.path, cwd);
     if (!requested || !allowedPaths.includes(requested)) {
       return {
         block: true,
-        reason: `BLOCKED: coding-session recovery read is limited to preserved changed publishable paths: ${allowedPaths.join(', ') || '(none)'}. Broad repository discovery remains closed.`,
+        reason: `BLOCKED: coding-session recovery read is limited to preserved changed publishable paths: ${allowedPaths.join(', ')}. Broad repository discovery remains closed.`,
       };
     }
     return {
@@ -1074,8 +1086,9 @@ export default function (pi) {
     };
   }
 
-  function codingRecoveryEvidenceAvailable() {
+  function codingRecoveryEvidenceAvailable(cwd) {
     if (!codingRecoveryReadAvailable()) return false;
+    if (codingRecoveryReadablePaths(cwd).length === 0) return false;
     const inventory = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name })))
       .map(tool => typeof tool === 'string' ? tool : tool?.name);
     return inventory.includes('read');
@@ -3336,6 +3349,10 @@ export default function (pi) {
       actionTurnAttemptedTool = true;
     }
     if (blocked) {
+      if (repairReadPolicy?.recoveryDeadEnd) {
+        abortBlockedCodingRecovery(ctx, repairReadPolicy.reason);
+        return blocked;
+      }
       if (repairMutationPolicy?.block) {
         const attemptKey = `${repairMutationPolicy.path}\0broad_blocked`;
         const blockedAttempts = (codingRepairBlockedMutationAttempts.get(attemptKey) ?? 0) + 1;
@@ -4008,7 +4025,7 @@ export default function (pi) {
 
     if (
       codingRecoveryGuard &&
-      !codingRecoveryEvidenceAvailable() &&
+      !codingRecoveryEvidenceAvailable(ctx.cwd) &&
       !codingRecoveryValidationAvailable()
     ) {
       abortBlockedCodingRecovery(
@@ -4446,7 +4463,10 @@ export default function (pi) {
       // benign lifecycle race, not a model-error strike.
       consecutiveUnavailableCapabilityTurns = 0;
     }
-    if (unavailableCapabilityStrike && consecutiveUnavailableCapabilityTurns === 1) {
+    if (
+      unavailableCapabilityStrike &&
+      consecutiveUnavailableCapabilityTurns <= UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT
+    ) {
       const activeToolNames = pi.getActiveTools();
       if (activeToolNames.length === 0) {
         const reason = `unavailable capability ${unavailableCapabilityToolThisTurn ?? '(unknown)'} was attempted and no executable recovery capability remains`;
@@ -4467,7 +4487,7 @@ export default function (pi) {
         stage,
         attemptedTool: unavailableCapabilityToolThisTurn,
         unavailableCapabilityKind: unavailableCapabilityKindThisTurn,
-        correction: 1,
+        correction: consecutiveUnavailableCapabilityTurns,
         correctionLimit: UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT,
         executableTools: activeToolNames,
         checkpoint: { worktree_preserved: true },
