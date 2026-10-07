@@ -116,6 +116,7 @@ const CODING_REPAIR_BROAD_EDIT_LINE_LIMIT = 80;
 const CODING_REPAIR_BROAD_EDIT_CHAR_LIMIT = 12000;
 const CODING_SESSION_HANDOFF_MAX_LENGTH = 1200;
 const CODING_SESSION_ARGUMENT_CORRECTION_LIMIT = 1;
+const UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT = 1;
 const LARGE_MUTATION_ACTION_RETRY_LIMIT = 1;
 // Five non-improving failures leaves room for bounded diagnostic phase changes
 // (for example collection/import -> assertions) without allowing an endless repair loop.
@@ -504,6 +505,7 @@ export default function (pi) {
   let unavailableToolAttempts = 0;
   let unavailableCapabilityAttemptedThisTurn = false;
   let unavailableCapabilityKindThisTurn = null;
+  let unavailableCapabilityToolThisTurn = null;
   let consecutiveUnavailableCapabilityTurns = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
@@ -516,7 +518,7 @@ export default function (pi) {
   let verificationToolHiddenByPermitGate = false;
   let deterministicVerificationInfrastructure = null;
   // After a fork returns with trusted publishable mutations, prevent a blind second fork or
-  // rewrite of those completed outputs. Release only after evidence inspects one protected path
+  // rewrite of preserved child work. Release only after a bounded read inspects one protected path
   // or authoritative validation settles; if neither route remains reachable, preserve the
   // worktree and fail closed instead of reopening mutation/fork capabilities.
   let codingRecoveryGuard = null;
@@ -1042,11 +1044,37 @@ export default function (pi) {
     return normalizedRecoveryEvidencePaths(input, cwd).some(item => protectedPaths.has(item));
   }
 
+  function codingRecoveryReadAvailable() {
+    return Boolean(
+      codingRecoveryGuard?.changed_publishable_paths?.length &&
+      controller.productiveProgressState() === 'action_required'
+    );
+  }
+
+  function codingRecoveryReadPolicy(input, cwd) {
+    if (!codingRecoveryReadAvailable()) return null;
+    const allowedPaths = [...new Set(
+      codingRecoveryGuard.changed_publishable_paths
+        .map(item => trustedCodingRepairReadPath(item, cwd))
+        .filter(Boolean),
+    )];
+    const requested = trustedCodingRepairReadPath(input?.path, cwd);
+    if (!requested || !allowedPaths.includes(requested)) {
+      return {
+        block: true,
+        reason: `BLOCKED: coding-session recovery read is limited to preserved changed publishable paths: ${allowedPaths.join(', ') || '(none)'}. Broad repository discovery remains closed.`,
+      };
+    }
+    return {
+      allowed: true,
+      path: requested,
+      diagnosticLines: [],
+      recoveryRead: true,
+    };
+  }
+
   function codingRecoveryEvidenceAvailable() {
-    const evidenceWindowReachable =
-      controller.evidenceUnlockAvailable() ||
-      controller.productiveProgressState() === 'evidence_allowed';
-    if (!evidenceWindowReachable) return false;
+    if (!codingRecoveryReadAvailable()) return false;
     const inventory = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name })))
       .map(tool => typeof tool === 'string' ? tool : tool?.name);
     return inventory.includes('read');
@@ -1290,7 +1318,8 @@ export default function (pi) {
       (
         CONTENT_MUTATION_TOOLS.has(name) ||
         name === 'bash' ||
-        name === config.productiveProgress?.codingSessionTool
+        name === config.productiveProgress?.codingSessionTool ||
+        name === config.productiveProgress?.blockerTool
       )
     );
     const codingRepairBlocked = name => Boolean(
@@ -1346,10 +1375,16 @@ export default function (pi) {
                 ? [config.productiveProgress.verificationTool].filter(Boolean)
                 : [],
           });
-      const repairAwareRestricted = codingRepairReadAvailable() && unrestrictedActiveTools.includes('read')
+      const repairReadAvailable = codingRepairReadAvailable();
+      const recoveryReadAvailable = codingRecoveryReadAvailable();
+      const boundedReadAvailable = repairReadAvailable || recoveryReadAvailable;
+      const repairAwareRestricted = boundedReadAvailable && unrestrictedActiveTools.includes('read')
         ? unrestrictedActiveTools.filter(name => name === 'read' || restricted.includes(name))
         : restricted;
-      applySurface(visible(repairAwareRestricted), codingRepairReadAvailable() ? 'repair_evidence' : 'restricted');
+      applySurface(
+        visible(repairAwareRestricted),
+        repairReadAvailable ? 'repair_evidence' : recoveryReadAvailable ? 'coding_recovery_evidence' : 'restricted',
+      );
       return;
     }
 
@@ -1462,6 +1497,11 @@ export default function (pi) {
         );
       }
       if (kind === 'unavailable') unavailableToolAttempts += 1;
+      unavailableCapabilityAttemptedThisTurn = true;
+      unavailableCapabilityToolThisTurn = event.toolName;
+      unavailableCapabilityKindThisTurn = kind === 'deferred'
+        ? 'stale_after_capability_transition'
+        : 'executor_not_found';
       console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
         kind: kind === 'deferred' ? 'deferred_tool_called' : 'executor_not_found',
@@ -2898,16 +2938,14 @@ export default function (pi) {
           const submitted = outcome.successful_final_submission;
           const terminalSubmitted = outcome.submitted;
           const recoveryReceipt = terminalSubmitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
-          if (
-            recoveryReceipt?.changed_publishable_paths?.length &&
-            recoveryReceipt.prepared_outputs_present?.source === true &&
-            recoveryReceipt.prepared_outputs_present?.test === true
-          ) {
+          if (recoveryReceipt?.changed_publishable_paths?.length) {
             codingRecoveryGuard = recoveryReceipt;
             console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
               stage,
               sessionId,
               changedPublishablePaths: recoveryReceipt.changed_publishable_paths,
+              preparedOutputsPresent: recoveryReceipt.prepared_outputs_present,
+              lastValidation: recoveryReceipt.last_validation,
               remainingTerminalObligation: recoveryReceipt.remaining_terminal_obligation,
             })}`);
           }
@@ -3063,6 +3101,7 @@ export default function (pi) {
     actionTurnAttemptedTool = false;
     unavailableCapabilityAttemptedThisTurn = false;
     unavailableCapabilityKindThisTurn = null;
+    unavailableCapabilityToolThisTurn = null;
     elevatedTurnObservedActionTool = false;
     elevatedTurnAttemptedFinishTool = false;
     elevatedTurnSuccessfulFinishTool = false;
@@ -3121,6 +3160,7 @@ export default function (pi) {
     if (enforceActiveSurface) {
       unavailableToolAttempts += 1;
       unavailableCapabilityAttemptedThisTurn = true;
+      unavailableCapabilityToolThisTurn = event.toolName;
       const presentAtRequestStart = providerCapabilitySnapshot?.executableTools?.includes(event.toolName) === true;
       unavailableCapabilityKindThisTurn = presentAtRequestStart
         ? 'stale_after_capability_transition'
@@ -3195,7 +3235,7 @@ export default function (pi) {
     let recoveryBlocked = null;
     let canonicalInput = event.input ?? {};
     const repairReadPolicy = event.toolName === 'read'
-      ? codingRepairReadPolicy(canonicalInput, ctx.cwd)
+      ? (codingRepairReadPolicy(canonicalInput, ctx.cwd) ?? codingRecoveryReadPolicy(canonicalInput, ctx.cwd))
       : null;
     const repairMutationPolicy = CONTENT_MUTATION_TOOLS.has(event.toolName)
       ? codingRepairMutationPolicy(event.toolName, canonicalInput, ctx.cwd)
@@ -3848,7 +3888,7 @@ export default function (pi) {
     if (codingRecoveryGuard) {
       const validationStatus = event.result?.details?.status ?? null;
       const informedByEvidence = Boolean(
-        consumedEvidence &&
+        canonicalToolName === 'read' &&
         !event.isError &&
         codingRecoveryEvidenceTouchesGuard(codingRecoveryGuard, acceptedToolInput, ctx.cwd)
       );
@@ -4390,8 +4430,40 @@ export default function (pi) {
       // benign lifecycle race, not a model-error strike.
       consecutiveUnavailableCapabilityTurns = 0;
     }
-    if (consecutiveUnavailableCapabilityTurns >= 2) {
-      const reason = `second consecutive unavailable capability turn (${unavailableCapabilityKindThisTurn ?? 'unknown'}); aborting stage`;
+    if (unavailableCapabilityStrike && consecutiveUnavailableCapabilityTurns === 1) {
+      const activeToolNames = pi.getActiveTools();
+      if (activeToolNames.length === 0) {
+        const reason = `unavailable capability ${unavailableCapabilityToolThisTurn ?? '(unknown)'} was attempted and no executable recovery capability remains`;
+        recordRuntimeAbort('PI_UNAVAILABLE_CAPABILITY_ABORT', reason, {
+          unavailableToolAttempts,
+          consecutiveUnavailableCapabilityTurns,
+          unavailableCapabilityKind: unavailableCapabilityKindThisTurn,
+          attemptedTool: unavailableCapabilityToolThisTurn,
+          executableTools: activeToolNames,
+          checkpoint: { worktree_preserved: true },
+        });
+        console.error(`PI_UNAVAILABLE_CAPABILITY_ABORT: ${reason}`);
+        ctx.abort();
+        return;
+      }
+      requireToolOnNextProviderRequest = true;
+      console.warn(`PI_UNAVAILABLE_CAPABILITY_CORRECTION ${JSON.stringify({
+        stage,
+        attemptedTool: unavailableCapabilityToolThisTurn,
+        unavailableCapabilityKind: unavailableCapabilityKindThisTurn,
+        correction: 1,
+        correctionLimit: UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT,
+        executableTools: activeToolNames,
+        checkpoint: { worktree_preserved: true },
+      })}`);
+      await pi.sendUserMessage(
+        `RUNTIME UNAVAILABLE CAPABILITY CORRECTION: ${unavailableCapabilityToolThisTurn ?? 'the attempted tool'} did not execute because it is unavailable on the current request surface. Do not retry that unavailable tool and do not narrate. Call one currently executable tool now. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
+        { deliverAs: 'steer' },
+      );
+    }
+    if (consecutiveUnavailableCapabilityTurns > UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT) {
+      const activeToolNames = pi.getActiveTools();
+      const reason = `unavailable capability repeated after ${UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT} bounded correction turn; aborting stage`;
       recordRuntimeAbort(
         'PI_UNAVAILABLE_CAPABILITY_ABORT',
         reason,
@@ -4399,6 +4471,10 @@ export default function (pi) {
           unavailableToolAttempts,
           consecutiveUnavailableCapabilityTurns,
           unavailableCapabilityKind: unavailableCapabilityKindThisTurn,
+          attemptedTool: unavailableCapabilityToolThisTurn,
+          executableTools: activeToolNames,
+          correction_limit: UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT,
+          checkpoint: { worktree_preserved: true },
         },
       );
       console.error(`PI_UNAVAILABLE_CAPABILITY_ABORT: ${reason}`);
@@ -4465,7 +4541,7 @@ export default function (pi) {
           baseCap: actionCap,
           retryCap: actionRetryCap,
           actionRequired: runtimeActionRequired,
-          attemptedTool: actionTurnAttemptedTool,
+          attemptedTool: effectiveAttemptedTool,
           madeProgress: controller.turnMadeProgress,
         })
       : 0;
@@ -4507,7 +4583,8 @@ export default function (pi) {
       runtimeActionRequired &&
       !controller.turnMadeProgress &&
       !loopGuardSteeredThisTurn &&
-      !codingSessionArgumentCorrectionPending
+      !codingSessionArgumentCorrectionPending &&
+      !unavailableCapabilityStrike
     ) {
       const activeToolNames = pi.getActiveTools();
       const currentToolGuidance = activeToolGuidance(activeToolNames);
