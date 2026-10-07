@@ -347,7 +347,7 @@ function plannerActionPaths(value) {
   const pattern = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)/g;
   for (const text of strings) {
     for (const match of text.matchAll(pattern)) {
-      const candidate = match[2];
+      const candidate = match[2].replace(/[.,;:!?]+$/, '');
       if (!candidate || candidate.includes('..') || candidate.includes('://') || seen.has(candidate)) continue;
       seen.add(candidate);
       paths.push(candidate);
