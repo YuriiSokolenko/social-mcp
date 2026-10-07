@@ -1242,7 +1242,7 @@ test('fresh Implementer: bootstrap pi completes first, then the main session sta
   const prompt = main.args.at(-1);
   assert.match(prompt, /Issue text/);
   assert.match(prompt, /Runtime-prepared implementation state/);
-  assert.match(prompt, /1\. Locate the target\n2\. Apply the bounded change/);
+  assert.ok(prompt.includes('1. Locate the target\\n2. Apply the bounded change'));
   assert.match(prompt, /<untrusted_planner_handoff_json>/);
   assert.match(prompt, /Runtime startup class: nontrivial/);
   assert.doesNotMatch(prompt, /Evidence budget|evidence_budget/);
