@@ -199,8 +199,8 @@ function validationRepairMainPrompt(spec, error, handoff) {
   const taskClose = '</untrusted_task_input>';
   const end = original.indexOf(taskClose);
   const envelope = end >= 0 ? original.slice(0, end + taskClose.length).trim() : '';
-  const shared = (envelope.match(/<shared_agent_contract\\b/g) ?? []).length;
-  const role = (envelope.match(/<role_contract\\b/g) ?? []).length;
+  const shared = (envelope.match(/<shared_agent_contract\b/g) ?? []).length;
+  const role = (envelope.match(/<role_contract\b/g) ?? []).length;
   if (shared === 1 && role === 1) {
     return `${envelope}\n\n<trusted_context>\n${instructions}\n</trusted_context>`;
   }
