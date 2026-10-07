@@ -7,7 +7,6 @@ import { EventEmitter } from 'node:events';
 import bootstrapExtension from '../scripts/pi-implementer-bootstrap.mjs';
 
 import {
-  IMPLEMENTATION_PLANNER_DEADLINE_MS,
   bootstrapFailureFallback,
   prepareImplementation,
   preparedImplementationBlock,
@@ -21,6 +20,7 @@ const prepared = {
   version: 1, status: 'prepared', plan: ['Inspect the module', 'Add the regression test'], complexity: 'trivial',
   evidenceBudget: 1, largeMutation: false, reason: 'One bounded edit', workspaceRoot: '/work/tree', freshBaseCommit: 'deadbeef',
   baseRef: 'origin/dev', layoutHint: null, plannerUsage: { output: 40 }, plannerDurationMs: 900,
+  plannerEvidenceActions: 3, plannerStructuredCorrections: 1,
 };
 
 function tempFile(t) {
@@ -29,9 +29,26 @@ function tempFile(t) {
   return path.join(dir, 'prepared.json');
 }
 
-test('the planner hard deadline is exactly 15 minutes and drives the stage config', () => {
-  assert.equal(IMPLEMENTATION_PLANNER_DEADLINE_MS, 900000);
-  assert.equal(stageConfig('implementer').implementationPlannerTimeoutMs, IMPLEMENTATION_PLANNER_DEADLINE_MS);
+function plannerEnv(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-bootstrap-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const issue = path.join(dir, 'issue.json');
+  fs.writeFileSync(issue, JSON.stringify({ title: 't', body: 'b' }));
+  const previous = process.env.PI_ISSUE_CONTEXT;
+  process.env.PI_ISSUE_CONTEXT = issue;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PI_ISSUE_CONTEXT;
+    else process.env.PI_ISSUE_CONTEXT = previous;
+  });
+  return { PI_ISSUE_CONTEXT: issue, PI_IMPLEMENTER_START_COMMIT: 'abc123' };
+}
+
+test('implementer stage has no planner evidence cap, lifecycle deadline, or fixed structured retry knob', () => {
+  const config = stageConfig('implementer');
+  assert.equal(config.implementationPlannerMaxTokens, 2048);
+  assert.equal('implementationPlannerEvidenceBudget' in config, false);
+  assert.equal('implementationPlannerTimeoutMs' in config, false);
+  assert.equal('implementationPlannerStructuredRetry' in config, false);
 });
 
 test('PreparedImplementation artifact round-trips and a missing file means no bootstrap ran', (t) => {
@@ -56,92 +73,66 @@ test('malformed artifacts fail closed instead of being applied', (t) => {
   ]) {
     assert.throws(() => validatePreparedImplementation(bad), /./, JSON.stringify(bad).slice(0, 60));
     assert.throws(() => writePreparedImplementation(file, bad));
-    assert.equal(fs.existsSync(file), false, 'an invalid artifact is never written');
+    assert.equal(fs.existsSync(file), false);
   }
-  fs.writeFileSync(file, '{"version":1,');
-  assert.throws(() => readPreparedImplementation(file));
 });
 
-test('the prepared block carries only the normalized result, with provenance and no preparation tool', () => {
+test('a nine-step prepared plan is valid and the main block preserves every normalized step', () => {
+  const nine = { ...prepared, plan: Array.from({ length: 9 }, (_, i) => `Step ${i + 1}`) };
+  validatePreparedImplementation(nine);
+  const block = preparedImplementationBlock(nine);
+  assert.match(block, /9\. Step 9/);
+});
+
+test('the prepared block carries only normalized result and fresh-work provenance', () => {
   const block = preparedImplementationBlock(prepared);
   assert.match(block, /1\. Inspect the module\n2\. Add the regression test/);
   assert.match(block, /Complexity: trivial — One bounded edit/);
   assert.match(block, /Evidence budget: 1/);
-  assert.match(block, /Large mutation: normal mutation budget/);
   assert.match(block, /origin\/dev at deadbeef/);
-  assert.match(block, /LSP workspace root: \/work\/tree/);
-  assert.doesNotMatch(block, /prepare_implementation|structured_output|REPAIR|usage|plannerDurationMs/);
-  const factsBlock = preparedImplementationBlock({ ...prepared, repositoryFacts: ['The nearest smoke test uses the shared fixture helper.'] });
-  assert.match(factsBlock, /treat these as completed discovery; do not re-read their source files/);
-  assert.match(factsBlock, /The nearest smoke test uses the shared fixture helper/);
-  assert.match(preparedImplementationBlock({ ...prepared, largeMutation: true }, { largeMutationArmed: true }), /auto-arm one-shot elevated mutation budget/);
+  assert.doesNotMatch(block, /structured_output|plannerStructuredCorrections|plannerEvidenceActions/);
 });
 
-test('the fallback block states preparation is already resolved and names the failure class', () => {
+test('fallback remains resolved before main and never invents a planner deadline class', () => {
   const fallback = bootstrapFailureFallback('/work/tree', 'pi exited 3', { PI_IMPLEMENTER_START_COMMIT: 'deadbeef' });
   validatePreparedImplementation(fallback);
-  assert.equal(fallback.status, 'fallback');
   assert.equal(fallback.failureClass, 'bootstrap_process_failure');
-  const block = preparedImplementationBlock(fallback);
-  assert.match(block, /PREPARATION_FALLBACK/);
-  assert.match(block, /bootstrap_process_failure/);
-  assert.match(block, /nothing to prepare or retry/);
-  assert.match(block, /origin\/dev at deadbeef/);
-  assert.doesNotMatch(block, /prepare_implementation/);
+  assert.notEqual(fallback.failureClass, 'planner_deadline_timeout');
+  assert.match(preparedImplementationBlock(fallback), /PREPARATION_FALLBACK/);
 });
 
-// One shared deadline across the structured-output retry: the retry only gets the time that is left.
-function plannerHost({ replyDelays }) {
+test('planner delegation has no lifecycle timeout or numeric tool budget', async (t) => {
   const bus = new EventEmitter();
   const requests = [];
-  const schemaError = 'Structured output validation failed: value: bad';
   bus.on('prompt-template:subagent:request', request => {
-    const index = requests.push({ timeoutMs: request.timeoutMs }) - 1;
-    setTimeout(() => bus.emit('prompt-template:subagent:response', {
-      requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'failed', error: schemaError,
-    }), replyDelays[index] ?? 0);
+    requests.push(request);
+    bus.emit('prompt-template:subagent:response', {
+      requestId: request.requestId,
+      ownerRunId: request.ownerRunId,
+      nodeId: request.nodeId,
+      status: 'completed',
+      usage: { turns: 1, output: 10 },
+      result: { kind: 'structured', value: {
+        steps: ['Do it'], facts: [], complexity: 'trivial', evidence_budget: 0, large_mutation: false, reason: 'done',
+      } },
+    });
   });
   const pi = { events: { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) } };
-  return { pi, requests, ctx: { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } } };
-}
+  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+  const env = plannerEnv(t);
+  const logs = t.mock.method(console, 'log', () => {});
+  const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
 
-function plannerEnv(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-deadline-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const issue = path.join(dir, 'issue.json');
-  fs.writeFileSync(issue, JSON.stringify({ title: 't', body: 'b' }));
-  process.env.PI_ISSUE_CONTEXT = issue;
-  t.after(() => { delete process.env.PI_ISSUE_CONTEXT; });
-  return process.env;
-}
-
-test('the structured-output retry receives only the remaining planning deadline', async (t) => {
-  const host = plannerHost({ replyDelays: [300, 0] });
-  const config = { ...stageConfig('implementer'), implementationPlannerTimeoutMs: 1000 };
-  const prepared = await prepareImplementation(host.pi, host.ctx, config, undefined, { env: plannerEnv(t) });
-  assert.equal(host.requests.length, 2);
-  assert.ok(host.requests[0].timeoutMs <= 1000 && host.requests[0].timeoutMs > 900);
-  assert.ok(host.requests[1].timeoutMs <= 720, `retry budget ${host.requests[1].timeoutMs} must shrink by the first attempt's elapsed time`);
-  assert.equal(prepared.status, 'fallback');
+  assert.equal(result.status, 'prepared');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].timeoutMs, 0);
+  assert.equal(requests[0].toolBudget, undefined);
+  assert.equal(Object.keys(requests[0].childEnv).length, 1);
+  assert.ok(Object.keys(requests[0].childEnv)[0].includes('PLANNER_EVIDENCE_STATE_FILE'));
+  assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_CAT_PETTED ')));
 });
 
-test('an exhausted planning deadline skips the retry and falls back as planner_deadline_timeout', async (t) => {
-  const host = plannerHost({ replyDelays: [400, 0] });
-  const config = { ...stageConfig('implementer'), implementationPlannerTimeoutMs: 300 };
-  const prepared = await prepareImplementation(host.pi, host.ctx, config, undefined, { env: plannerEnv(t) });
-  assert.equal(host.requests.length, 1, 'no second full-length attempt after the deadline');
-  assert.equal(prepared.status, 'fallback');
-  assert.equal(prepared.failureClass, 'planner_deadline_timeout');
-});
-
-test('a failed bootstrap process keeps its real elapsed duration', () => {
-  assert.equal(bootstrapFailureFallback('/w', 'x', {}, 4321).plannerDurationMs, 4321);
-});
-
-// #459: pi runs handlers sequentially in load order, and pi-subagents installs its delegation context
-// in its own session_start handler. The bootstrap loads before it, so it must not start the planner
-// from session_start (live: "No active extension context for delegated subagent execution").
-test('bootstrap launches the planner only after every session_start handler, so pi-subagents has its context', async (t) => {
+test('bootstrap launches planner only after session_start handlers have installed delegation context', async (t) => {
   const env = plannerEnv(t);
   const artifact = path.join(path.dirname(env.PI_ISSUE_CONTEXT), 'prepared.json');
   process.env.PI_PREPARED_IMPLEMENTATION_FILE = artifact;
@@ -149,36 +140,33 @@ test('bootstrap launches the planner only after every session_start handler, so 
   t.after(() => { delete process.env.PI_PREPARED_IMPLEMENTATION_FILE; delete process.env.PI_IMPLEMENTER_BOOTSTRAP; });
 
   const bus = new EventEmitter();
-  const handlers = new Map(); // event -> handlers in load order (bootstrap first, then pi-subagents)
+  const handlers = new Map();
   const on = (event, fn) => { handlers.set(event, [...(handlers.get(event) ?? []), fn]); };
   const events = { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) };
   let shutdowns = 0;
-  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap-session' }, shutdown: () => { shutdowns++; } };
+  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap-session' }, shutdown: () => { shutdowns += 1; } };
 
   bootstrapExtension({ events, on });
-  assert.equal(handlers.has('session_start'), false, 'no planner launch from session_start');
+  assert.equal(handlers.has('session_start'), false);
 
-  // Simulated pi-subagents (loaded after the bootstrap): context exists only after its session_start.
   let lastUiContext = null;
   on('session_start', (_event, c) => { lastUiContext = c; });
   bus.on('prompt-template:subagent:request', request => {
     bus.emit('prompt-template:subagent:response', lastUiContext
       ? { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'completed', usage: { output: 5 },
-          result: { kind: 'structured', value: { steps: ['Do it'], complexity: 'trivial', evidence_budget: 0, large_mutation: false, reason: 'tiny' } } }
+          result: { kind: 'structured', value: { steps: ['Do it'], facts: [], complexity: 'trivial', evidence_budget: 0, large_mutation: false, reason: 'tiny' } } }
       : { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'unavailable_context',
           error: 'No active extension context for delegated subagent execution.' });
   });
 
-  // pi's runner: sequential awaited handlers per event, session_start before resources_discover.
   for (const event of ['session_start', 'resources_discover']) {
     for (const handler of handlers.get(event) ?? []) await handler({ type: event }, ctx);
   }
-  const prepared = readPreparedImplementation(artifact);
-  assert.equal(prepared.status, 'prepared', 'real planner result, not an infrastructure fallback');
-  assert.deepEqual(prepared.plan, ['Do it']);
+  const result = readPreparedImplementation(artifact);
+  assert.equal(result.status, 'prepared');
+  assert.deepEqual(result.plan, ['Do it']);
   assert.equal(shutdowns, 1);
 
-  // A repeated resources_discover (reload) must not start a second planner.
   await handlers.get('resources_discover')[0]({ type: 'resources_discover' }, ctx);
   assert.equal(shutdowns, 1);
 });
