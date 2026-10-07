@@ -162,6 +162,49 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
   assert.equal('evidenceBudget' in result, false);
 });
 
+test('malformed accepted planner sidecar falls back as structured-result failure instead of escaping recovery', async (t) => {
+  const bus = new EventEmitter();
+  bus.on('prompt-template:subagent:request', request => {
+    const sidecar = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
+    assert.ok(sidecar, 'planner sidecar path must be installed in child env');
+    fs.writeFileSync(sidecar, JSON.stringify({
+      used: 1,
+      repairStatus: 'accepted',
+      acceptedResult: {
+        steps: [],
+        facts: [],
+        complexity: 'trivial',
+        required_mutation_anchors: [],
+        large_mutation: false,
+        reason: 'invalid accepted payload',
+      },
+    }));
+    bus.emit('prompt-template:subagent:response', {
+      requestId: request.requestId,
+      ownerRunId: request.ownerRunId,
+      nodeId: request.nodeId,
+      status: 'cancelled',
+      error: 'child aborted after terminal result',
+      usage: { turns: 1, output: 5 },
+    });
+  });
+  const pi = {
+    events: {
+      on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); },
+      emit: (...args) => bus.emit(...args),
+    },
+  };
+  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+  const env = plannerEnv(t);
+  t.mock.method(console, 'log', () => {});
+
+  const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
+
+  assert.equal(result.status, 'fallback');
+  assert.equal(result.failureClass, 'structured_result_unrecoverable');
+  assert.match(result.reason, /invalid step list/);
+});
+
 test('bootstrap launches planner only after session_start handlers have installed delegation context', async (t) => {
   const env = plannerEnv(t);
   const artifact = path.join(path.dirname(env.PI_ISSUE_CONTEXT), 'prepared.json');
