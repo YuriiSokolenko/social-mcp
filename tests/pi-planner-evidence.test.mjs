@@ -1037,7 +1037,8 @@ test('parent consumes direct structured result when no accepted sidecar is persi
   assert.equal(prepared.status, 'prepared');
   assert.deepEqual(prepared.plan, acceptedResult.steps);
   assert.deepEqual(prepared.repositoryFacts, acceptedResult.facts);
-  assert.deepEqual(prepared.plannerWarnings, acceptedResult.warnings);
+  assert.equal('plannerWarnings' in prepared, false);
+  assert.equal('targetPolicy' in prepared, false);
   assert.deepEqual(prepared.requiredMutationAnchors, acceptedResult.required_mutation_anchors);
   assert.equal(prepared.plannerEvidenceActions, 3);
   assert.equal(prepared.plannerProviderTurns, 1);
