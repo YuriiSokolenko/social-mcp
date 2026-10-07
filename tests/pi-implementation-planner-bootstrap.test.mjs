@@ -22,7 +22,7 @@ const prepared = {
   requiredMutationAnchors: ['src/net.py'], largeMutation: false, reason: 'One bounded edit',
   workspaceRoot: '/work/tree', freshBaseCommit: 'deadbeef',
   baseRef: 'origin/dev', layoutHint: null, plannerUsage: { output: 40 }, plannerDurationMs: 900,
-  plannerEvidenceActions: 3, plannerStructuredCorrections: 1,
+  plannerEvidenceActions: 3, plannerFinalizationAttempts: 2, plannerXmlRepairNeeded: true,
 };
 
 function tempFile(t) {
@@ -45,7 +45,15 @@ function plannerEnv(t) {
   return { PI_ISSUE_CONTEXT: issue, PI_IMPLEMENTER_START_COMMIT: 'abc123' };
 }
 
-test('implementer stage has no planner evidence cap, lifecycle deadline, or fixed structured retry knob', () => {
+function xmlPlan({
+  steps = ['Do it'], facts = [], complexity = 'trivial', anchors = [], largeMutation = false, reason = 'done',
+} = {}) {
+  const stepsXml = steps.map(step => `<step>${step}</step>`).join('');
+  const factsXml = facts.length ? `<facts>${facts.map(fact => `<fact>${fact}</fact>`).join('')}</facts>` : '';
+  const anchorsXml = anchors.length ? `<required_mutation_anchors>${anchors.map(anchor => `<anchor>${anchor}</anchor>`).join('')}</required_mutation_anchors>` : '';
+  return `<plan complexity="${complexity}" large_mutation="${largeMutation ? 'true' : 'false'}"><steps>${stepsXml}</steps>${factsXml}${anchorsXml}<reason>${reason}</reason></plan>`;
+}
+test('implementer stage has no planner evidence cap, lifecycle deadline, or configurable XML retry knob', () => {
   const config = stageConfig('implementer');
   assert.equal(config.implementationPlannerMaxTokens, 2048);
   assert.equal('implementationPlannerEvidenceBudget' in config, false);
@@ -92,7 +100,7 @@ test('the prepared block carries only normalized result and fresh-work provenanc
   assert.match(block, /Complexity: trivial — One bounded edit/);
   assert.match(block, /Required current-file mutation anchors[\s\S]*src\/net\.py/);
   assert.match(block, /origin\/dev at deadbeef/);
-  assert.doesNotMatch(block, /Evidence budget|evidence_budget|structured_output|plannerStructuredCorrections|plannerEvidenceActions/);
+  assert.doesNotMatch(block, /Evidence budget|evidence_budget|structured_output|plannerFinalizationAttempts|plannerXmlRepairNeeded|plannerEvidenceActions/);
 });
 
 test('planner facts win over conflicting runtime layout hints in the Main-visible handoff', () => {
@@ -144,9 +152,7 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
       nodeId: request.nodeId,
       status: 'completed',
       usage: { turns: 1, output: 10 },
-      result: { kind: 'structured', value: {
-        steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: 'done',
-      } },
+      result: { kind: 'text', text: xmlPlan() },
     });
   });
   const pi = { events: { on: (e, fn) => { bus.on(e, fn); return () => bus.off(e, fn); }, emit: (...a) => bus.emit(...a) } };
@@ -160,49 +166,6 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
   assert.equal(requests[0].timeoutMs, undefined);
   assert.equal(requests[0].toolBudget, undefined);
   assert.equal('evidenceBudget' in result, false);
-});
-
-test('malformed accepted planner sidecar falls back as structured-result failure instead of escaping recovery', async (t) => {
-  const bus = new EventEmitter();
-  bus.on('prompt-template:subagent:request', request => {
-    const sidecar = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
-    assert.ok(sidecar, 'planner sidecar path must be installed in child env');
-    fs.writeFileSync(sidecar, JSON.stringify({
-      used: 1,
-      repairStatus: 'accepted',
-      acceptedResult: {
-        steps: [],
-        facts: [],
-        complexity: 'trivial',
-        required_mutation_anchors: [],
-        large_mutation: false,
-        reason: 'invalid accepted payload',
-      },
-    }));
-    bus.emit('prompt-template:subagent:response', {
-      requestId: request.requestId,
-      ownerRunId: request.ownerRunId,
-      nodeId: request.nodeId,
-      status: 'cancelled',
-      error: 'child aborted after terminal result',
-      usage: { turns: 1, output: 5 },
-    });
-  });
-  const pi = {
-    events: {
-      on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); },
-      emit: (...args) => bus.emit(...args),
-    },
-  };
-  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
-  const env = plannerEnv(t);
-  t.mock.method(console, 'log', () => {});
-
-  const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
-
-  assert.equal(result.status, 'fallback');
-  assert.equal(result.failureClass, 'structured_result_unrecoverable');
-  assert.match(result.reason, /invalid step list/);
 });
 
 test('bootstrap launches planner only after session_start handlers have installed delegation context', async (t) => {
@@ -227,7 +190,7 @@ test('bootstrap launches planner only after session_start handlers have installe
   bus.on('prompt-template:subagent:request', request => {
     bus.emit('prompt-template:subagent:response', lastUiContext
       ? { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'completed', usage: { output: 5 },
-          result: { kind: 'structured', value: { steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: 'tiny' } } }
+          result: { kind: 'text', text: xmlPlan({ reason: 'tiny' }) } }
       : { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'unavailable_context',
           error: 'No active extension context for delegated subagent execution.' });
   });
@@ -258,10 +221,9 @@ test('Orbit seed is resolved and embedded before Planner provider request #1', a
       nodeId: request.nodeId,
       status: 'completed',
       usage: { turns: 1, input: 20, output: 10 },
-      result: { kind: 'structured', value: {
-        steps: ['Update src/net.py'], facts: ['src/net.py is the target'], complexity: 'trivial',
-        required_mutation_anchors: ['src/net.py'], large_mutation: false, reason: 'one bounded edit',
-      } },
+      result: { kind: 'text', text: xmlPlan({
+        steps: ['Update src/net.py'], facts: ['src/net.py is the target'], anchors: ['src/net.py'], reason: 'one bounded edit',
+      }) },
     });
   });
   const pi = { events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) } };
@@ -322,10 +284,7 @@ test('absent Orbit seed still delegates Planner and returns PreparedImplementati
       nodeId: request.nodeId,
       status: 'completed',
       usage: { turns: 1, input: 12, output: 8 },
-      result: { kind: 'structured', value: {
-        steps: ['Use filesystem evidence as needed'], facts: [], complexity: 'trivial',
-        required_mutation_anchors: [], large_mutation: false, reason: 'Orbit is optional',
-      } },
+      result: { kind: 'text', text: xmlPlan({ steps: ['Use filesystem evidence as needed'], reason: 'Orbit is optional' }) },
     });
   });
   const pi = { events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) } };

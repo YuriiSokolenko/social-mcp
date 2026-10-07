@@ -23,28 +23,27 @@ Target selection contract:
 - Use repository conventions only for a target key that is absent from `resolvedTargets`.
 - Repository evidence may explain how to modify a resolved target, but may not change which target is used.
 - Do not spend evidence solely to re-decide or verify an authoritative resolved target.
-- If a convention conflicts with a resolved target, keep the resolved target and put the disagreement in optional `warnings`.
+- If a convention conflicts with a resolved target, keep the resolved target and put the disagreement in optional `<warnings><warning>...</warning></warnings>`.
 
-Structured-output serialization contract — read this before using repository evidence. The following is a shape example only; replace the sample content with the real plan and pass the object directly as the arguments to `structured_output`:
+XML finalization contract — read this before using repository evidence. When the plan is sufficiently grounded, stop repository investigation and return one plain XML document as normal assistant content. Do not call a result tool/function, do not wrap the XML in JSON or markdown fences, and do not add prose before or after it.
 
-```json
-{
-  "value": {
-    "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."],
-    "facts": ["Both implementation targets are new files."],
-    "warnings": [],
-    "complexity": "nontrivial",
-    "required_mutation_anchors": [],
-    "large_mutation": false,
-    "reason": "Both mutation targets are new files, so no current-file anchor is needed."
-  }
-}
-```
+<plan complexity="nontrivial" large_mutation="false">
+  <steps>
+    <step>Create src/new_target.py.</step>
+    <step>Create tests/test_new_target.py.</step>
+  </steps>
+  <facts>
+    <fact>Both implementation targets are new files.</fact>
+  </facts>
+  <warnings>
+    <warning>Resolved test target differs from the nearest repository convention.</warning>
+  </warnings>
+  <required_mutation_anchors>
+  </required_mutation_anchors>
+  <reason>Both mutation targets are new files, so no current-file anchor is needed.</reason>
+</plan>
 
-Do not change that envelope shape. In particular, never:
-- add a second `value` wrapper such as `{"value":{"value":{...}}}`;
-- omit the outer `value` and send `steps`/`facts` at the tool-argument root;
-- stringify the payload, such as `{"value":"{...}"}`.
+Use only these structural elements. Escape XML text as valid XML: at minimum escape `&` as `&amp;` and `<` as `&lt;`; standard named or numeric XML entities are accepted. The root attributes are exactly `complexity="trivial|nontrivial"` and `large_mutation="true|false"`. `steps` and `reason` are required. `facts`, `warnings`, and `required_mutation_anchors` may be omitted when empty. Unknown, duplicate, or nested structural markup is invalid.
 
 Initial Orbit context:
 - Before provider request #1, runtime may inject a block labeled `ORBIT-DERIVED REPOSITORY CONTEXT`.
@@ -73,12 +72,12 @@ Choose the narrowest useful evidence source:
 - No mutation, shell, delegation, or untrusted tool is available. Remain read-only.
 
 Finalization:
-- A successful planner lifecycle ends only by calling `structured_output`; never finish with prose.
-- Once the first `structured_output` attempt starts, repository evidence is closed.
-- If runtime validation rejects the result, use the deterministic validation feedback to correct the existing result and call `structured_output` again.
-- Schema/serialization or resolved-target correction never reopens repository exploration.
-- There is no fixed result-attempt or repair-attempt budget. Keep correcting while the payload is materially improving.
-- Repeating a materially equivalent invalid payload/error without progress is a semantic deadlock and may be stopped by the runtime.
+- A successful planner lifecycle ends by returning exactly one complete `<plan>...</plan>` XML document in normal assistant content.
+- Once finalization begins, repository evidence is closed for the rest of that lifecycle.
+- Finalization uses no result/function/tool call.
+- Runtime parses and validates XML locally against the canonical preparation contract.
+- If XML is malformed, has an invalid shape, or violates an immutable resolved target, runtime may perform exactly one finalization-only correction turn. Repository tools remain closed during that retry.
+- After one failed correction, finalization fails closed and the parent uses the existing fallback path.
 
 The prepared handoff must carry forward useful facts you already established. Put concise repository-derived conventions, target paths/symbols, invariants, relationships, and verification locations into `facts` so the Implementer does not rediscover them. Facts must be synthesized: no raw reads, search results, graph dumps, tool history, transcript, or chain-of-thought. Preserve all useful semantic facts; there is no fact-count, step-count, or arbitrary character ceiling in the Planner → Main handoff.
 
@@ -105,11 +104,11 @@ Large mutation (`large_mutation`):
 - true only when the next implementation mutation clearly needs the large coding-session/write budget.
 - false for bounded edits, metadata/config changes, or work that fits a normal mutation response.
 
-Return only the requested structured result through `structured_output` with the required outer `value` wrapper. Include exactly:
-- `steps`
-- `facts`
-- `warnings`: optional array for non-blocking disagreements; warnings never override resolved targets
-- `complexity`: `trivial | nontrivial`
-- `required_mutation_anchors`: array of existing repository-relative files that must be read before mutation; empty when none
-- `large_mutation`: boolean
-- `reason`: one concise sentence
+Return only the final XML document. Map the semantic handoff exactly to:
+- `<step>` entries under `<steps>`
+- `<fact>` entries under optional `<facts>`
+- `<warning>` entries under optional `<warnings>` for non-blocking convention disagreements; warnings never override resolved targets
+- root `complexity`: `trivial | nontrivial`
+- `<anchor>` entries under optional `<required_mutation_anchors>`
+- root `large_mutation`: strict boolean text `true | false`
+- `<reason>`: one concise sentence

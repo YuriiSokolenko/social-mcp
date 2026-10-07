@@ -976,8 +976,14 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.doesNotMatch(agent, /trivial_repo_lookup|RepoMap|repo map orientation|complexity-classifier/);
 
   const bootstrapPlanner = readScript('scripts/pi-common/implementation-planner.mjs', 'utf8');
-  assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
-  assert.match(bootstrapPlanner, /enum: \['trivial', 'nontrivial'\]/);
+  const plannerXml = readScript('scripts/pi-common/planner-xml.mjs', 'utf8');
+  assert.match(bootstrapPlanner, /runTextSubagent/);
+  assert.match(bootstrapPlanner, /parsePlannerXml/);
+  assert.doesNotMatch(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA|PLANNER_RESULT_TOOL/);
+  assert.match(plannerXml, /\['trivial', 'nontrivial'\]/);
+  assert.match(plannerXml, /large_mutation/);
+  assert.match(bootstrapPlanner, /FINALIZATION-ONLY XML REPAIR/);
+  assert.match(bootstrapPlanner, /planner_xml_finalization_failed/);
   assert.match(runtime, /controller\.applyPreparedImplementation\(preparedImplementation\)/);
   assert.doesNotMatch(runtime, /prepare_implementation/);
   assert.doesNotMatch(runtime, /trivial_repo_lookup|trivialRepoLookup|runStructuredComplexityClassifier|complexityClassifierAgent/);

@@ -611,18 +611,22 @@ test('triage closes exploration after prepared context is loaded', () => {
   }), undefined);
 });
 
-test('runtime-owned preparation uses one structured planner for plan and startup class', () => {
+test('runtime-owned preparation uses one text/XML planner for plan and startup class', () => {
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
   const delegation = fs.readFileSync('scripts/pi-common/structured-subagent.mjs', 'utf8');
   assert.match(delegation, /prompt-template:subagent:request/);
   assert.match(delegation, /prompt-template:subagent:response/);
+  assert.match(delegation, /runTextSubagent/);
   const bootstrapPlanner = fs.readFileSync('scripts/pi-common/implementation-planner.mjs', 'utf8');
+  const plannerXml = fs.readFileSync('scripts/pi-common/planner-xml.mjs', 'utf8');
   assert.doesNotMatch(runtime, /name: 'prepare_implementation'|runStructuredImplementationPlanner/, 'main runtime no longer registers or runs the planner');
-  assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
-  assert.match(bootstrapPlanner, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
-  assert.match(bootstrapPlanner, /required_mutation_anchors:[\s\S]*type: 'array'/);
+  assert.match(bootstrapPlanner, /runTextSubagent/);
+  assert.match(bootstrapPlanner, /parsePlannerXml/);
+  assert.doesNotMatch(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA|PLANNER_RESULT_TOOL/);
+  assert.match(plannerXml, /\['trivial', 'nontrivial'\]/);
+  assert.match(plannerXml, /required_mutation_anchors/);
   assert.doesNotMatch(bootstrapPlanner, /evidence_budget/);
   assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 2048/);
   assert.match(bootstrapPlanner, /timeoutMs: null[\s\S]*toolBudget: null/);

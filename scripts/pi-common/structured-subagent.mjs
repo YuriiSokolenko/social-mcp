@@ -17,6 +17,10 @@ export function recordDescendantMetric(record, env = process.env) {
 
 // `context: 'fork'` branches the parent's persisted session transcript into the child
 // (pi-subagents createBranchedSession); `childEnv` is visible only while the child runs.
+export function runTextSubagent(pi, ctx, request, signal) {
+  return runStructuredSubagent(pi, ctx, { ...request, schema: null }, signal);
+}
+
 export async function runStructuredSubagent(pi, ctx, {
   agent, nodeId, task, schema = null, timeoutMs = null, maxTokens = null, toolBudget = { hard: 1 },
   context = 'fresh', childEnv = {}, thinking = null, metricCall = null,

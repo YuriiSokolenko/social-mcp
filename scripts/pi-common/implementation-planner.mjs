@@ -3,17 +3,18 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 
-import { recordDescendantMetric, runStructuredSubagent } from './structured-subagent.mjs';
+import { recordDescendantMetric, runTextSubagent } from './structured-subagent.mjs';
 import { baseRef } from './project-config.mjs';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs';
 import { buildPlannerOrbitSeed } from './planner-orbit.mjs';
+import { parsePlannerXml, plannerXmlContractExample } from './planner-xml.mjs';
 
 // Internal semantic-progress fingerprints remain bounded so a repository tool result can never
 // turn the planner sidecar into a raw transcript. This is not a Planner -> Main handoff limit.
 const PLANNER_EVIDENCE_FINGERPRINT_MAX_LENGTH = 200;
 
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
-export const PLANNER_RESOLVED_TARGETS_ENV = 'PI_PLANNER_RESOLVED_TARGETS';
+export const PLANNER_FINALIZATION_ONLY_ENV = 'PI_PLANNER_FINALIZATION_ONLY';
 
 export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
   'read',
@@ -23,14 +24,12 @@ export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
   'repo_search',
   'planner_code_graph',
 ]);
-export const PLANNER_RESULT_TOOL = 'structured_output';
 
 // Admission is allowlist-only. `used` is observability, never a cap or remaining budget.
 export function createPlannerEvidenceGate() {
   let used = 0;
   return {
     admit(toolName) {
-      if (toolName === PLANNER_RESULT_TOOL) return { allowed: true, evidence: false, used };
       if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) {
         return {
           allowed: false, evidence: false, used,
@@ -97,51 +96,13 @@ export function readPlannerEvidenceState(file) {
     }
     return {
       used, facts, toolCounts,
-      ...(Number.isSafeInteger(state?.resultAttempts) ? { resultAttempts: state.resultAttempts } : {}),
-      ...(Number.isSafeInteger(state?.structuredCorrections) ? { structuredCorrections: state.structuredCorrections } : {}),
-      ...(typeof state?.repairStatus === 'string' ? { repairStatus: state.repairStatus } : {}),
-      ...(typeof state?.repairDiagnostic === 'string' ? { repairDiagnostic: state.repairDiagnostic.slice(0, 400) } : {}),
-      ...(typeof state?.repairKind === 'string' ? { repairKind: state.repairKind } : {}),
       ...(typeof state?.failureKind === 'string' ? { failureKind: state.failureKind } : {}),
-      ...(state?.acceptedResult && typeof state.acceptedResult === 'object' && !Array.isArray(state.acceptedResult)
-        ? { acceptedResult: state.acceptedResult }
-        : {}),
+      ...(typeof state?.failureDiagnostic === 'string' ? { failureDiagnostic: state.failureDiagnostic.slice(0, 400) } : {}),
     };
   } catch {
     return null;
   }
 }
-
-// Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
-// reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
-// The strict canonical contract is enforced locally by validateImplementationPreparation().
-export const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    steps: {
-      type: 'array',
-      minItems: 1,
-      items: { type: 'string', minLength: 1 },
-    },
-    facts: {
-      type: 'array',
-      items: { type: 'string', minLength: 1 },
-    },
-    warnings: {
-      type: 'array',
-      items: { type: 'string', minLength: 1 },
-    },
-    complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
-    required_mutation_anchors: {
-      type: 'array',
-      items: { type: 'string', minLength: 1 },
-    },
-    large_mutation: { type: 'boolean' },
-    reason: { type: 'string', minLength: 1 },
-  },
-  required: ['steps', 'complexity', 'reason'],
-  additionalProperties: true,
-});
 
 export function implementerIssueContext(env = process.env) {
   const contextFile = env.PI_ISSUE_CONTEXT;
@@ -440,13 +401,13 @@ function validMutationAnchorPath(value) {
 
 export function validateImplementationPreparation(value, { resolvedTargets = {} } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Implementation planner returned a non-object structured result');
+    throw new Error('Implementation planner returned a non-object canonical result');
   }
   const keys = Object.keys(value);
   const requiredKeys = ['steps', 'complexity', 'large_mutation', 'reason'];
   const allowedKeys = new Set([...requiredKeys, 'facts', 'warnings', 'required_mutation_anchors']);
   if (!requiredKeys.every(key => keys.includes(key)) || keys.some(key => !allowedKeys.has(key))) {
-    throw new Error('Implementation planner returned unexpected structured fields');
+    throw new Error('Implementation planner returned unexpected canonical fields');
   }
   if (!Array.isArray(value.steps) || value.steps.length < 1) {
     throw new Error('Implementation planner returned an invalid step list');
@@ -511,7 +472,7 @@ Resolved targets are constraints, not hints. Do not validate, relocate, normaliz
 Repository conventions are used only to choose a target when the corresponding resolved target does not exist.
 Repository evidence may explain how to modify a resolved target, but may not change which target is used.
 Do not spend repository evidence actions solely to re-decide or verify an authoritative resolved target.
-If a convention conflicts with a resolved target, keep the resolved target and report the disagreement in optional warnings instead of changing the path.
+If a convention conflicts with a resolved target, keep the resolved target and report the disagreement in optional <warnings> instead of changing the path.
 Discovered repository context is supplied separately below through the Orbit seed and read-only evidence tools.`
     : '';
   const evidencePolicy = `Repository exploration has no action budget. Continue only while another read-only repository action is likely to materially change or improve the implementation plan. If the issue names an exact path/directory/symbol/test, target that location first. Prefer repo_search when an exact location is unknown, planner_code_graph for relationship/blast-radius questions, and read/grep/find/ls only when they are the narrowest useful action. Do not spend evidence re-proving fresh-worktree provenance already established by the runtime. Stop immediately once exact targets, conventions, invariants, blast radius, and verification scope are sufficiently clear. Repeated equivalent actions that produce no new planning information are treated as a semantic loop.`;
@@ -527,24 +488,22 @@ You may pet it only after the implementation plan has been completed and accepte
 Investigate only while additional evidence can materially improve the plan.
 Finish as soon as the plan is sufficiently grounded. Repository tool calls do not earn points or increase the reward.
 
-STRUCTURED_OUTPUT SERIALIZATION CONTRACT — read before repository evidence. This is a shape example only; replace the sample content with the real plan and pass this object directly as the arguments to structured_output:
-{ "value": { "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."], "facts": ["Both implementation targets are new files."], "warnings": [], "complexity": "nontrivial", "required_mutation_anchors": [], "large_mutation": false, "reason": "Both mutation targets are new files, so no current-file anchor is needed." } }
-Never add a second value wrapper such as { "value": { "value": { ... } } }. Never omit the outer value. Never stringify the payload as { "value": "{...}" }.
-
-MANDATORY COMPLETION: a successful planner lifecycle ends only by calling structured_output. Never finish with prose. Once finalization starts, repository evidence closes. If runtime validation rejects the structured result, correct only the reported schema/serialization or resolved-target mismatch and call structured_output again; there is no fixed repair-attempt budget.
+FINALIZATION CONTRACT:
+When the plan is sufficiently grounded, stop repository investigation and return exactly one plain XML document as normal assistant content. Do not call a result tool or function. Do not wrap the XML in JSON or markdown fences, and do not add prose before or after it.
+Use this exact structural vocabulary:
+${plannerXmlContractExample()}
+Escape XML text as valid XML: at minimum escape & as &amp; and < as &lt; inside steps, facts, warnings, anchors, and reason text; standard named or numeric XML entities are accepted. The root must contain exactly complexity="trivial|nontrivial" and large_mutation="true|false". <steps> and <reason> are required. <facts>, <warnings>, and <required_mutation_anchors> may be omitted when empty. Unknown, duplicate, or nested structural elements are invalid.
 ${evidencePolicy}${orbitSeedGuidance}
 
-Synthesize what you learn into concise repository-derived facts: observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. Preserve every useful semantic fact needed by Main; do not truncate or drop facts merely to hit a count/character target. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought.
+Synthesize what you learn into concise repository-derived facts: observed conventions, resolved paths/symbols, invariants, or verification locations that reduce Main uncertainty. Preserve every useful semantic fact needed by Main; do not truncate or drop facts merely to hit a count/character target. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought.
 
-Keep the plan ordered and implementation-oriented. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
+Keep the plan ordered and implementation-oriented. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Any returned path for a resolved target must match the runtime path exactly. Use <warnings><warning>...</warning></warnings> only for non-blocking disagreements such as a convention conflicting with an immutable resolved target. Do not name evidence tools or routing tools in steps.
 
-For every existing repository file that Main is expected to mutate, include its exact repository-relative path in required_mutation_anchors. Do not include new files. These anchors are semantic safety requirements: Main may read each named current file directly before mutating it. Do not estimate or allocate a numeric evidence-action budget. If some other repository fact remains genuinely unresolved later, Main has its own need_more_evidence transition.
+For every existing repository file that Main is expected to mutate, include its exact repository-relative path in <required_mutation_anchors>. Do not include new files. These anchors are semantic safety requirements: Main may read each named current file directly before mutating it. Do not estimate or allocate a numeric evidence-action budget. If some other repository fact remains genuinely unresolved later, Main has its own need_more_evidence transition.
 
-Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget, not merely because complexity is nontrivial. Do not implement the task.
+Set large_mutation="true" only when the next implementation work clearly needs the large coding/write budget, not merely because complexity is nontrivial. Do not implement the task.
 
-The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}
-
-Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "warnings": [...], "complexity": "trivial|nontrivial", "required_mutation_anchors": ["path/to/existing-file-if-needed"], "large_mutation": true|false, "reason": "..." } }. warnings is optional and should contain only non-blocking disagreements such as a convention conflicting with an immutable resolved target. Use an empty required_mutation_anchors array for new-file-only work. The tool argument has exactly one top-level "value"; never wrap it again.
+The 2048-token ceiling exists only to avoid response truncation. Return the smallest complete XML document that preserves the semantic handoff.${layoutGuidance}
 
 Issue title:
 ${issue.title}
@@ -552,6 +511,63 @@ ${issue.title}
 Issue body:
 ${issue.body}`;
 }
+
+function plannerTextResult(response) {
+  const result = response?.result;
+  if (typeof result === 'string') return result;
+  if (result?.kind === 'text') {
+    if (typeof result.text === 'string') return result.text;
+    if (typeof result.value === 'string') return result.value;
+    if (typeof result.content === 'string') return result.content;
+    if (Array.isArray(result.content)) {
+      return result.content.map(item => typeof item === 'string' ? item : typeof item?.text === 'string' ? item.text : '').join('');
+    }
+  }
+  if (typeof response?.text === 'string') return response.text;
+  throw new Error('Implementation planner did not return plain assistant text');
+}
+
+function plannerXmlRepairTask(xml, error, {
+  issue = null,
+  layoutHint = null,
+  orbitSeed = null,
+  evidenceFacts = [],
+} = {}) {
+  const diagnostic = String(error?.message ?? error).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const retainedFacts = Array.isArray(evidenceFacts) && evidenceFacts.length
+    ? evidenceFacts.map(fact => `- ${String(fact)}`).join('\n')
+    : '- none recorded';
+  const retainedLayout = layoutHint ? JSON.stringify(layoutHint) : 'none';
+  const retainedOrbit = orbitSeed?.present && typeof orbitSeed.text === 'string' && orbitSeed.text.trim()
+    ? orbitSeed.text
+    : 'none';
+  return `FINALIZATION-ONLY XML REPAIR.
+Repository investigation is closed and no repository tools are available.
+The previous Planner XML was rejected: ${diagnostic}
+Return one complete corrected <plan> XML document only. Preserve the already-grounded plan and facts; correct only the XML shape or canonical field problem. Do not answer with prose, JSON, markdown fences, or tool calls.
+
+Retained task context:
+Issue title: ${String(issue?.title ?? '')}
+Issue body:
+${String(issue?.body ?? '')}
+Runtime layout hint: ${retainedLayout}
+Resolved targets: ${JSON.stringify(plannerTargetPolicy(layoutHint).resolvedTargets)}
+Retained compact repository facts:
+${retainedFacts}
+Retained fresh Orbit seed:
+${retainedOrbit}
+
+Rejected XML:
+${String(xml ?? '').trim() || '[no text XML payload returned]'}`;
+}
+
+function validatePlannerXml(xml, resolvedTargets = {}) {
+  return validateImplementationPreparation(
+    normalizeImplementationPreparation(parsePlannerXml(xml)),
+    { resolvedTargets },
+  );
+}
+
 // Sums numeric usage fields (recursively) across planner attempts; null when nothing was reported.
 export function addUsage(total, next) {
   if (!next || typeof next !== 'object') return total ?? null;
@@ -565,7 +581,7 @@ export function addUsage(total, next) {
   return sum;
 }
 
-export async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null, {
+export async function runImplementationPlanner(pi, ctx, config, signal, layoutHint = null, {
   env = process.env,
   orbitSeedBuilder = buildPlannerOrbitSeed,
 } = {}) {
@@ -594,7 +610,6 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     attemptedTargets: Array.isArray(orbitSeed?.attemptedTargets) ? orbitSeed.attemptedTargets : [],
     attemptedTargetCount: Number.isSafeInteger(orbitSeed?.attemptedTargetCount) ? orbitSeed.attemptedTargetCount : 0,
     successfulTargets: Array.isArray(orbitSeed?.successfulTargets) ? orbitSeed.successfulTargets : [],
-    // Compatibility field: successful non-empty context queries, not every attempted query.
     queriedTargets: Array.isArray(orbitSeed?.queriedTargets) ? orbitSeed.queriedTargets : [],
     targets: Array.isArray(orbitSeed?.targets) ? orbitSeed.targets : [],
     serializedBytes: Number.isSafeInteger(orbitSeed?.serializedBytes) ? orbitSeed.serializedBytes : 0,
@@ -608,107 +623,140 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     reason: orbitSeed?.reason ?? null,
   })}`);
 
-  const request = {
-    agent: config.implementationPlannerAgent,
-    nodeId: 'implementation-plan',
-    task: plannerTask(env, { layoutHint, orbitSeed }),
-    schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
-    // No planner-specific lifecycle wall-clock budget and no generic tool-count budget.
-    // Omitting timeoutMs delegates genuine hang protection to pi-subagents/provider/process
-    // infrastructure rather than turning elapsed planning time into a behavioral failure.
-    timeoutMs: null,
-    toolBudget: null,
-    maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
-  };
-
   const evidenceStateDir = fs.mkdtempSync(path.join(tmpdir(), 'pi-planner-evidence-'));
   const evidenceStateFile = path.join(evidenceStateDir, `${randomUUID()}.json`);
-  request.childEnv = {
-    [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
-    [PLANNER_RESOLVED_TARGETS_ENV]: JSON.stringify(targetPolicy.resolvedTargets),
-  };
-
   let usage = null;
   let status = 'error';
+  let finalizationAttempts = 0;
+  let repairNeeded = false;
   const childSession = randomUUID();
 
-  let acceptedPlannerValidationError = null;
-  const acceptedPlannerResult = () => {
-    const state = readPlannerEvidenceState(evidenceStateFile);
-    if (state?.repairStatus !== 'accepted' || !state.acceptedResult) return null;
+  const runAttempt = async ({ task, finalizationOnly = false, nodeId }) => {
+    const request = {
+      agent: config.implementationPlannerAgent,
+      nodeId,
+      task,
+      timeoutMs: null,
+      toolBudget: null,
+      maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
+      childEnv: {
+        [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
+        ...(finalizationOnly ? { [PLANNER_FINALIZATION_ONLY_ENV]: '1' } : {}),
+      },
+    };
     try {
-      return {
-        state,
-        validated: validateImplementationPreparation(
-          normalizeImplementationPreparation(state.acceptedResult),
-          { resolvedTargets: targetPolicy.resolvedTargets },
-        ),
-      };
+      const response = await runTextSubagent(pi, ctx, request, signal);
+      usage = addUsage(usage, response.usage);
+      return response;
     } catch (error) {
-      // Sidecar acceptance is transport evidence, not a reason to bypass the parent contract.
-      // Never let recovery validation throw from inside the catch path and mask the original
-      // delegation failure. Remember the structured validation error so fallback classification
-      // remains deterministic.
-      acceptedPlannerValidationError = error;
-      return null;
+      usage = addUsage(usage, error?.delegationUsage);
+      if (error && typeof error === 'object') error.delegationUsage = usage;
+      throw error;
+    }
+  };
+
+  const parseAttempt = (response, attempt) => {
+    finalizationAttempts = attempt;
+    console.log(`PI_PLANNER_XML_FINALIZATION_ATTEMPT ${JSON.stringify({ attempt, repair: attempt > 1 })}`);
+    let xml = '';
+    try {
+      xml = plannerTextResult(response);
+      const previewLimit = 2000;
+      console.log(`PI_PLANNER_XML_FINAL ${JSON.stringify({
+        attempt,
+        preview: xml.slice(0, previewLimit),
+        truncated: xml.length > previewLimit,
+        serializedBytes: Buffer.byteLength(xml, 'utf8'),
+      })}`);
+      const validated = validatePlannerXml(xml, targetPolicy.resolvedTargets);
+      console.log(`PI_PLANNER_XML_FINALIZATION_SUCCESS ${JSON.stringify({
+        attempt,
+        repairNeeded,
+        steps: validated.steps.length,
+        facts: validated.facts.length,
+        serializedBytes: Buffer.byteLength(xml, 'utf8'),
+      })}`);
+      console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted', message: '🐈 You pet the cat. Planner complete.' })}`);
+      return { xml, validated };
+    } catch (error) {
+      console.log(`PI_PLANNER_XML_FINALIZATION_REJECTION ${JSON.stringify({
+        attempt,
+        diagnostic: String(error?.message ?? error).slice(0, 400),
+      })}`);
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { plannerXml: xml });
     }
   };
 
   try {
-    const response = await runStructuredSubagent(pi, ctx, request, signal);
-    usage = addUsage(usage, response.usage);
-    const accepted = acceptedPlannerResult();
-    const validated = accepted?.validated ??
-      validateImplementationPreparation(normalizeImplementationPreparation(response.result.value), {
-        resolvedTargets: targetPolicy.resolvedTargets,
+    const first = await runAttempt({
+      task: plannerTask(env, { layoutHint, orbitSeed }),
+      finalizationOnly: false,
+      nodeId: 'implementation-plan',
+    });
+
+    let parsed;
+    try {
+      parsed = parseAttempt(first, 1);
+    } catch (firstError) {
+      repairNeeded = true;
+      console.log(`PI_PLANNER_XML_REPAIR_STARTED ${JSON.stringify({
+        attempt: 2,
+        diagnostic: String(firstError?.message ?? firstError).slice(0, 400),
+      })}`);
+      const repairEvidenceState = readPlannerEvidenceState(evidenceStateFile);
+      const second = await runAttempt({
+        task: plannerXmlRepairTask(firstError.plannerXml, firstError, {
+          issue,
+          layoutHint,
+          orbitSeed,
+          evidenceFacts: repairEvidenceState?.facts ?? [],
+        }),
+        finalizationOnly: true,
+        nodeId: 'implementation-plan-xml-repair',
       });
-    const evidenceState = accepted?.state ?? readPlannerEvidenceState(evidenceStateFile);
-    status = 'completed';
-    return {
-      ...validated, usage, layoutHint,
-      evidenceActions: evidenceState?.used ?? null,
-      evidenceToolCounts: evidenceState?.toolCounts ?? {},
-      structuredCorrections: evidenceState?.structuredCorrections ?? 0,
-    };
-  } catch (error) {
-    usage = addUsage(usage, error?.delegationUsage);
-    const accepted = acceptedPlannerResult();
-    if (accepted) {
-      status = 'completed';
-      return {
-        ...accepted.validated, usage, layoutHint,
-        evidenceActions: accepted.state.used ?? null,
-        evidenceToolCounts: accepted.state.toolCounts ?? {},
-        structuredCorrections: accepted.state.structuredCorrections ?? 0,
-      };
+      try {
+        parsed = parseAttempt(second, 2);
+      } catch (secondError) {
+        console.log(`PI_PLANNER_XML_FINALIZATION_FAILURE ${JSON.stringify({
+          attempts: 2,
+          diagnostic: String(secondError?.message ?? secondError).slice(0, 400),
+        })}`);
+        throw Object.assign(new Error(`Planner XML finalization failed after one repair: ${String(secondError?.message ?? secondError)}`), {
+          plannerFailureClass: 'planner_xml_finalization_failed',
+          delegationUsage: usage,
+        });
+      }
     }
 
     const evidenceState = readPlannerEvidenceState(evidenceStateFile);
-    const failure = acceptedPlannerValidationError ?? error;
-    if (acceptedPlannerValidationError && acceptedPlannerValidationError !== error) {
-      console.warn(`PI_PLANNER_ACCEPTED_RESULT_INVALID ${JSON.stringify({
-        validationError: String(acceptedPlannerValidationError?.message ?? acceptedPlannerValidationError).slice(0, 400),
-        delegationError: String(error?.message ?? error).slice(0, 400),
-        delegationStatus: error?.delegationStatus ?? null,
-      })}`);
-    }
-    const message = String(failure?.message ?? failure);
-    const plannerFailureClass = evidenceState?.failureKind === 'semantic_no_progress'
-      ? 'planner_semantic_no_progress'
-      : /Missing structured_output call|Structured output validation failed:|Implementation planner returned|resolved_target_mismatch|did not return a structured result/i.test(message)
-        ? 'structured_result_unrecoverable'
+    status = 'completed';
+    return {
+      ...parsed.validated,
+      usage,
+      layoutHint,
+      evidenceActions: evidenceState?.used ?? null,
+      evidenceToolCounts: evidenceState?.toolCounts ?? {},
+      finalizationAttempts,
+      xmlRepairNeeded: repairNeeded,
+    };
+  } catch (error) {
+    const evidenceState = readPlannerEvidenceState(evidenceStateFile);
+    const plannerFailureClass = error?.plannerFailureClass
+      ?? (evidenceState?.failureKind === 'semantic_no_progress'
+        ? 'planner_semantic_no_progress'
         : error?.delegationStatus === 'timed_out'
           ? 'planner_transport_timeout'
-          : 'preparation_infrastructure_failure';
-    if (failure && typeof failure === 'object') {
-      failure.delegationUsage = usage;
-      failure.plannerEvidenceActions = evidenceState?.used ?? null;
-      failure.plannerEvidenceToolCounts = evidenceState?.toolCounts ?? {};
-      failure.plannerStructuredCorrections = evidenceState?.structuredCorrections ?? 0;
-      failure.plannerFailureClass = plannerFailureClass;
+          : 'preparation_infrastructure_failure');
+    if (error && typeof error === 'object') {
+      error.delegationUsage = usage ?? error.delegationUsage ?? null;
+      error.plannerEvidenceActions = evidenceState?.used ?? null;
+      error.plannerEvidenceToolCounts = evidenceState?.toolCounts ?? {};
+      error.plannerFinalizationAttempts = finalizationAttempts;
+      error.plannerXmlRepairNeeded = repairNeeded;
+      error.plannerFailureClass = plannerFailureClass;
       status = error?.delegationStatus ?? 'error';
     }
-    throw failure;
+    throw error;
   } finally {
     recordDescendantMetric({
       call: 'planner', scope: 'session', childSession, parentSession: ctx.sessionManager.getSessionId(), status, usage,
@@ -716,6 +764,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     fs.rmSync(evidenceStateDir, { recursive: true, force: true });
   }
 }
+
 // Resolves fresh-work preparation before any main Implementer session exists. Returns the explicit
 // PreparedImplementation artifact: either a validated planner result or a resolved fallback.
 // Cancellation is never a recovery request and propagates.
@@ -729,7 +778,7 @@ export async function prepareImplementation(pi, ctx, config, signal, {
   let layoutHint = null;
   try {
     layoutHint = discoverAdditivePythonLayout(ctx.cwd, implementerIssueContext(env));
-    const planned = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint, { env, orbitSeedBuilder });
+    const planned = await runImplementationPlanner(pi, ctx, config, signal, layoutHint, { env, orbitSeedBuilder });
     return {
       ...common,
       status: 'prepared',
@@ -743,7 +792,8 @@ export async function prepareImplementation(pi, ctx, config, signal, {
       plannerUsage: planned.usage,
       plannerEvidenceActions: planned.evidenceActions,
       plannerEvidenceToolCounts: planned.evidenceToolCounts ?? {},
-      plannerStructuredCorrections: planned.structuredCorrections,
+      plannerFinalizationAttempts: planned.finalizationAttempts,
+      plannerXmlRepairNeeded: planned.xmlRepairNeeded,
       plannerProviderTurns: Number.isSafeInteger(planned.usage?.turns) ? planned.usage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
@@ -758,7 +808,8 @@ export async function prepareImplementation(pi, ctx, config, signal, {
       plannerUsage: error?.delegationUsage ?? null,
       plannerEvidenceActions: Number.isSafeInteger(error?.plannerEvidenceActions) ? error.plannerEvidenceActions : null,
       plannerEvidenceToolCounts: error?.plannerEvidenceToolCounts && typeof error.plannerEvidenceToolCounts === 'object' ? error.plannerEvidenceToolCounts : {},
-      plannerStructuredCorrections: Number.isSafeInteger(error?.plannerStructuredCorrections) ? error.plannerStructuredCorrections : 0,
+      plannerFinalizationAttempts: Number.isSafeInteger(error?.plannerFinalizationAttempts) ? error.plannerFinalizationAttempts : 0,
+      plannerXmlRepairNeeded: Boolean(error?.plannerXmlRepairNeeded),
       plannerProviderTurns: Number.isSafeInteger(error?.delegationUsage?.turns) ? error.delegationUsage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };

@@ -237,9 +237,10 @@ Issue
   ▼
 Planner
   │
-  ├── inspect repo
-  ├── <= 6 evidence
-  ├── repositoryFacts
+  ├── inspect repo with read-only evidence
+  ├── finalize as plain <plan> XML
+  ├── local canonical validation
+  ├── at most one XML-only repair
   └── PreparedImplementation
   │
   ▼
@@ -372,14 +373,10 @@ MERGE
 
 Planner and Implementer are deliberately separated.
 
-The Planner only inspects the repository and produces a bounded handoff:
+The Planner only inspects the repository with its read-only evidence surface. There is no numeric evidence-action or repository-fact budget; semantic no-progress guards stop useless loops. When sufficiently grounded, it returns one plain `<plan>...</plan>` XML document in assistant content. Runtime parses and canonically validates that XML locally; malformed XML gets at most one finalization-only correction turn with repository tools closed.
 
-- a prepared implementation plan;
-- up to six repository facts;
-- affected files;
-- expected checks;
-- mutation intent and size.
+The normalized `PreparedImplementation` carries the ordered plan, synthesized repository facts, `trivial | nontrivial` classification, required mutation anchors, large-mutation decision, and reason. A valid first XML result completes without an extra provider turn, result tool, accepted-result sidecar recovery, or terminal-abort bookkeeping.
 
-The Implementer then starts a fresh coding session. It does not inherit the parent transcript, project context, or global context. Its first prompt receives the Issue together with `PreparedImplementation`.
+The Implementer then starts a fresh coding session. It does not inherit the Planner transcript or repair dialogue. Its first prompt receives the Issue together with `PreparedImplementation`.
 
-This separation keeps repository discovery bounded, reduces repeated context injection, and gives the coding session a focused starting state before mutation begins.
+This separation keeps discovery isolated from mutation while preserving all useful semantic facts needed by Main.

@@ -245,6 +245,24 @@ function runtimeScenario(mode) {
       const { stageConfig } = await import(${JSON.stringify(new URL('../scripts/pi-common/stage-config.mjs', import.meta.url).href)});
       const mode = ${JSON.stringify(mode)};
       const fallbackEvidenceBudget = ${PREPARATION_FALLBACK_EVIDENCE_BUDGET};
+      const escapeXml = value => String(value)
+        .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+      const xmlFor = (value, { omitLargeMutation = false, omitReason = false, extra = '', rawLargeMutation = null } = {}) => {
+        const largeMutationAttribute = omitLargeMutation
+          ? ''
+          : ' large_mutation="' + (rawLargeMutation ?? (value.large_mutation ? 'true' : 'false')) + '"';
+        const facts = Array.isArray(value.facts) && value.facts.length
+          ? '<facts>' + value.facts.map(fact => '<fact>' + escapeXml(fact) + '</fact>').join('') + '</facts>'
+          : '';
+        const anchors = Array.isArray(value.required_mutation_anchors) && value.required_mutation_anchors.length
+          ? '<required_mutation_anchors>' + value.required_mutation_anchors.map(anchor => '<anchor>' + escapeXml(anchor) + '</anchor>').join('') + '</required_mutation_anchors>'
+          : '';
+        const reason = omitReason ? '' : '<reason>' + escapeXml(value.reason) + '</reason>';
+        return '<plan complexity="' + escapeXml(value.complexity) + '"' + largeMutationAttribute + '><steps>'
+          + value.steps.map(step => '<step>' + escapeXml(step) + '</step>').join('')
+          + '</steps>' + facts + anchors + extra + reason + '</plan>';
+      };
       const bus = new EventEmitter();
       const tools = new Map();
       const handlers = new Map();
@@ -270,26 +288,31 @@ function runtimeScenario(mode) {
       bus.on('prompt-template:subagent:request', request => {
         attempts++;
         assert.equal(request.agent, 'implementation-planner');
-        if (mode === 'layout-aware') {
-          assert.match(request.task, /Add smoke widget parser/);
-          assert.ok(request.task.includes('resolvedTargets={}'));
-          assert.ok(request.task.includes('"sourceTarget":"src/demo_pkg/diagnostics/smoke_widget.py"'));
-          assert.ok(request.task.includes('"sourceConvention":"src/demo_pkg/diagnostics/smoke_chunks.py"'));
-          assert.ok(request.task.includes('"testDirectory":"tests/diagnostics"'));
-          assert.ok(request.task.includes('"testConvention":"tests/diagnostics/test_smoke_chunks.py"'));
-          assert.ok(request.task.includes('resolvedTargets > conventionHints > discovered repository context'));
-          assert.ok(request.task.includes('Do not spend repository evidence actions solely to re-decide or verify'));
-          assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/i);
-        } else if (mode === 'non-additive-target') {
-          assert.match(request.task, /Adjust existing parser/);
-          assert.doesNotMatch(request.task, /Runtime repository layout hint/);
-          assert.doesNotMatch(request.task, /source_target=/);
-        } else if (mode === 'small-auto') {
-          assert.match(request.task, /Rename one config label/);
-          assert.match(request.task, /single label in config\.py/);
-        } else {
-          assert.match(request.task, /Example task/);
-          assert.match(request.task, /Implement example.py/);
+        if (attempts === 1) {
+          if (mode === 'layout-aware') {
+            assert.match(request.task, /Add smoke widget parser/);
+            assert.ok(request.task.includes('resolvedTargets={}'));
+            assert.ok(request.task.includes('"sourceTarget":"src/demo_pkg/diagnostics/smoke_widget.py"'));
+            assert.ok(request.task.includes('"sourceConvention":"src/demo_pkg/diagnostics/smoke_chunks.py"'));
+            assert.ok(request.task.includes('"testDirectory":"tests/diagnostics"'));
+            assert.ok(request.task.includes('"testConvention":"tests/diagnostics/test_smoke_chunks.py"'));
+            assert.ok(request.task.includes('resolvedTargets > conventionHints > discovered repository context'));
+            assert.ok(request.task.includes('Do not spend repository evidence actions solely to re-decide or verify'));
+            assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/i);
+          } else if (mode === 'non-additive-target') {
+            assert.match(request.task, /Adjust existing parser/);
+            assert.doesNotMatch(request.task, /Runtime repository layout hint/);
+            assert.doesNotMatch(request.task, /source_target=/);
+          } else if (mode === 'small-auto') {
+            assert.match(request.task, /Rename one config label/);
+            assert.match(request.task, /single label in config\.py/);
+          } else {
+            assert.match(request.task, /Example task/);
+            assert.match(request.task, /Implement example.py/);
+          }
+          } else {
+          assert.match(request.task, /FINALIZATION-ONLY XML REPAIR/);
+          assert.match(request.task, /Repository investigation is closed/);
         }
         assert.equal(request.ownerRunId, 'bootstrap-session', 'planner is hosted by the bootstrap session, never the main one');
         assert.equal('timeoutMs' in request, false, 'planner lifecycle has no wrapper deadline');
@@ -331,36 +354,51 @@ function runtimeScenario(mode) {
                   large_mutation: false,
                   reason: 'The implementation target is new and needs no current-file anchor.',
                 };
-        const schemaError = 'Structured output validation failed: value: must have required properties value; steps: schema is false; root: must not have additional properties';
         let reply;
-        if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
-        else if (mode === 'timeout') reply = { status: 'failed', error: 'Subagent timed out after 120000ms.' };
+        const xmlRepairModes = new Set([
+          'failure', 'xml-exhausted', 'extra-fields', 'missing-large-mutation',
+          'invalid-complexity', 'invalid-large-mutation', 'missing-reason',
+        ]);
+
+        if (mode === 'timeout') reply = { status: 'failed', error: 'Subagent timed out after 120000ms.' };
         else if (mode === 'transport-timeout') reply = { status: 'timed_out', error: 'delegated planner transport timed out' };
-        else if (mode === 'bad-output-schema') reply = { status: 'failed', error: 'invalid outputSchema: unsupported keyword' };
-        else if (mode === 'overlong') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' } } };
-        else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, ignored_note: 'extra' } } };
-        else if (mode === 'invalid-complexity') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, complexity: 'medium' } } };
-        else if (mode === 'missing-reason') reply = { status: 'completed', result: { kind: 'structured', value: { steps: good.steps, complexity: 'trivial', required_mutation_anchors: [], large_mutation: false } } };
-        else if (mode === 'missing-large-mutation') {
-          const { large_mutation, ...withoutLargeMutation } = good;
-          reply = { status: 'completed', result: { kind: 'structured', value: withoutLargeMutation } };
+        else if (mode === 'provider-error') reply = { status: 'failed', error: 'provider rejected delegated planner request' };
+        else if (mode === 'prose') reply = { status: 'failed', error: 'planner process failed before final XML' };
+        else if (attempts === 1 && mode === 'failure') {
+          reply = { status: 'completed', result: { kind: 'text', text: 'not XML' } };
+        } else if (attempts === 1 && mode === 'xml-exhausted') {
+          reply = { status: 'completed', result: { kind: 'text', text: '<plan complexity="trivial" large_mutation="false"><steps>' } };
+        } else if (attempts === 1 && mode === 'extra-fields') {
+          reply = { status: 'completed', result: { kind: 'text', text: xmlFor(good, { extra: '<ignored_note>extra</ignored_note>' }) } };
+        } else if (attempts === 1 && mode === 'missing-large-mutation') {
+          reply = { status: 'completed', result: { kind: 'text', text: xmlFor(good, { omitLargeMutation: true }) } };
+        } else if (attempts === 1 && mode === 'invalid-complexity') {
+          reply = { status: 'completed', result: { kind: 'text', text: xmlFor({ ...good, complexity: 'medium' }) } };
+        } else if (attempts === 1 && mode === 'invalid-large-mutation') {
+          reply = { status: 'completed', result: { kind: 'text', text: xmlFor(good, { rawLargeMutation: 'yes' }) } };
+        } else if (attempts === 1 && mode === 'missing-reason') {
+          reply = { status: 'completed', result: { kind: 'text', text: xmlFor(good, { omitReason: true }) } };
+        } else if (attempts === 2 && ['failure', 'xml-exhausted'].includes(mode)) {
+          reply = { status: 'completed', result: { kind: 'text', text: '<plan complexity="trivial" large_mutation="false"><steps>' } };
+        } else if (attempts === 2 && xmlRepairModes.has(mode)) {
+          reply = { status: 'completed', result: { kind: 'text', text: xmlFor(good) } };
+        } else if (mode === 'overlong') {
+          reply = { status: 'completed', result: { kind: 'text', text: xmlFor({ ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' }) } };
+        } else if (mode === 'success' || mode === 'layout-aware' || mode === 'non-additive-target' || mode === 'small-auto') {
+          reply = { status: 'completed', result: { kind: 'text', text: xmlFor(good) } };
+        } else {
+          reply = { status: 'failed', error: 'unexpected planner fixture mode: ' + mode };
         }
-        else if (mode === 'invalid-large-mutation') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, large_mutation: 'true' } } };
-        else if (mode === 'success' || mode === 'layout-aware' || mode === 'non-additive-target' || mode === 'small-auto') reply = { status: 'completed', result: { kind: 'structured', value: good } };
-        else reply = { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' };
+
+        assert.equal(request.result.kind, 'text');
+        assert.equal('schema' in request.result, false);
         if (attempts === 1) {
-          const { steps, additionalProperties, required } = request.result.schema;
-          assert.equal(steps, undefined);
-          assert.equal(request.result.schema.properties.steps.items.maxLength, undefined);
-          assert.equal(additionalProperties, true);
-          assert.deepEqual(required, ['steps', 'complexity', 'reason']);
-          assert.equal(request.result.schema.properties.required_mutation_anchors.type, 'array');
-          assert.equal('evidence_budget' in request.result.schema.properties, false);
-          assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
-          assert.match(request.task, /"value"/);
+          assert.doesNotMatch(JSON.stringify(request), /structured_output/);
+          assert.match(request.task, /plain XML document/i);
+          assert.match(request.task, /<plan complexity=/);
           assert.match(request.task, /large_mutation/);
-          assert.match(request.task, /large_mutation=true only/);
-          assert.doesNotMatch(request.task, /240 characters|at most 6 .*evidence|minutes remaining|attempts remaining/i);
+          assert.match(request.task, /large_mutation="true"/);
+          assert.doesNotMatch(request.task, /outer value|value wrapper|240 characters|at most 6 .*evidence|minutes remaining|attempts remaining/i);
         }
         bus.emit('prompt-template:subagent:response', {
           requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, ...reply,
@@ -385,7 +423,7 @@ function runtimeScenario(mode) {
         artifact = planner.readPreparedImplementation(artifactFile);
         assert.ok(artifact, 'bootstrap wrote the PreparedImplementation artifact');
         // Hard context boundary: only the normalized artifact crosses, never planner transcript/retries.
-        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'requiredMutationAnchors', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceActions', 'plannerEvidenceToolCounts', 'plannerStructuredCorrections', 'plannerProviderTurns', 'failureClass'];
+        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'requiredMutationAnchors', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceActions', 'plannerEvidenceToolCounts', 'plannerFinalizationAttempts', 'plannerXmlRepairNeeded', 'plannerProviderTurns', 'failureClass'];
         assert.deepEqual(Object.keys(artifact).filter(key => !allowed.includes(key)), []);
       } else {
         assert.equal(fs.existsSync(artifactFile), false, 'restored work never runs fresh planner bootstrap');
@@ -432,13 +470,14 @@ function runtimeScenario(mode) {
         const prepared = { details: artifact, text: block };
         assert.doesNotMatch(block, /prepare_implementation|REPAIR|structured_output/);
         assert.match(block, /Runtime-prepared implementation state/);
-        assert.equal(attempts, 1, 'bootstrap uses one planner child lifecycle; result convergence happens inside that child');
-        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'transport-timeout', 'bad-output-schema', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)) {
+        const expectedPlannerAttempts = ['failure', 'xml-exhausted', 'extra-fields', 'missing-large-mutation', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode) ? 2 : 1;
+        assert.equal(attempts, expectedPlannerAttempts, 'valid XML is one child request; XML repair adds exactly one finalization-only request');
+        if (['failure', 'prose', 'xml-exhausted', 'timeout', 'transport-timeout', 'provider-error'].includes(mode)) {
           assert.equal(artifact.status, 'fallback');
           const expectedFailureClass = mode === 'transport-timeout'
             ? 'planner_transport_timeout'
-            : ['failure', 'prose', 'envelope-exhausted', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)
-              ? 'structured_result_unrecoverable'
+            : ['failure', 'xml-exhausted'].includes(mode)
+              ? 'planner_xml_finalization_failed'
               : 'preparation_infrastructure_failure';
           assert.equal(artifact.failureClass, expectedFailureClass);
           assert.equal('plan' in artifact, false);
@@ -575,15 +614,17 @@ test('invalid issue context still enters preparation fallback', () => {
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-test('missing structured output falls back once with structured-result classification', () => {
+test('invalid Planner XML falls back after exactly one finalization-only repair', () => {
   const logs = runtimeScenario('failure');
   assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
-  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"structured_result_unrecoverable"/);
+  assert.match(logs, /PI_PLANNER_XML_REPAIR_STARTED/);
+  assert.match(logs, /PI_PLANNER_XML_FINALIZATION_FAILURE/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_xml_finalization_failed"/);
   assert.match(logs, /PI_PREPARATION_FALLBACK .*"recovery":"continue_without_planner_output"/);
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-for (const mode of ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'abort', 'restored', 'overlong', 'extra-fields']) {
+for (const mode of ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason', 'abort', 'restored', 'overlong', 'extra-fields']) {
   test('runtime preserves preparation behavior: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
@@ -615,28 +656,30 @@ test('fallback keeps the execution prose-only guard bounded', () => {
   assert.match(runtimeScenario('prose'), /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only/);
 });
 
-test('unrecoverable structured-result channel failure falls back without parent retry', () => {
-  const logs = runtimeScenario('envelope-exhausted');
+test('a second invalid XML result fails closed without a third planner request', () => {
+  const logs = runtimeScenario('xml-exhausted');
   assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
-  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"structured_result_unrecoverable"/);
+  assert.match(logs, /PI_PLANNER_XML_FINALIZATION_FAILURE .*"attempts":2/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_xml_finalization_failed"/);
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
 for (const [mode, pattern] of [
   ['invalid-complexity', /invalid complexity/],
   ['invalid-large-mutation', /invalid large_mutation/],
-  ['missing-reason', /unexpected structured fields/],
+  ['missing-reason', /missing <reason>/],
 ]) {
-  test('normalization fails closed without inventing fields: ' + mode, () => {
+  test('invalid XML field is repaired once without reopening repository evidence: ' + mode, () => {
     const logs = runtimeScenario(mode);
-    assert.match(logs, /PI_PREPARATION_FALLBACK .*/);
+    assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
     assert.match(logs, pattern);
-    assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
+    assert.match(logs, /PI_PLANNER_XML_REPAIR_STARTED/);
+    assert.match(logs, /PI_PLANNER_XML_FINALIZATION_SUCCESS .*"attempt":2/);
   });
 }
 
-for (const [mode, pattern] of [['timeout', /timed out after 120000ms/], ['bad-output-schema', /invalid outputSchema/]]) {
-  test('provider or output-schema infrastructure failure is not parent-retried: ' + mode, () => {
+for (const [mode, pattern] of [['timeout', /timed out after 120000ms/], ['provider-error', /provider rejected delegated planner request/]]) {
+  test('provider infrastructure failure is not parent-retried: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
     assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"preparation_infrastructure_failure"/);

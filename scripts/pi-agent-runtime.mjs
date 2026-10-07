@@ -372,7 +372,7 @@ ${escapedJson({
 function logPreparedImplementation(prepared, applied) {
   const stage = 'implementer';
   const usage = prepared.plannerUsage ?? null;
-  console.log(`[PI][planner] prepared status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} corrections=${prepared.plannerStructuredCorrections ?? 0} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${usage?.input ?? 'unknown'} out=${usage?.output ?? 'unknown'}`);
+  console.log(`[PI][planner] prepared status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} finalization_attempts=${prepared.plannerFinalizationAttempts ?? 0} xml_repair=${prepared.plannerXmlRepairNeeded ? 'yes' : 'no'} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${usage?.input ?? 'unknown'} out=${usage?.output ?? 'unknown'}`);
   if (prepared.status === 'fallback') {
     console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
       stage,
@@ -384,7 +384,8 @@ function logPreparedImplementation(prepared, applied) {
       reason: prepared.reason,
       plannerDurationMs: prepared.plannerDurationMs,
       evidenceActions: prepared.plannerEvidenceActions ?? null,
-      structuredCorrections: prepared.plannerStructuredCorrections ?? 0,
+      finalizationAttempts: prepared.plannerFinalizationAttempts ?? 0,
+      xmlRepairNeeded: Boolean(prepared.plannerXmlRepairNeeded),
       providerTurns: prepared.plannerProviderTurns ?? null,
     })}`);
   } else {
@@ -400,7 +401,8 @@ function logPreparedImplementation(prepared, applied) {
       usage,
       plannerDurationMs: prepared.plannerDurationMs,
       evidenceActions: prepared.plannerEvidenceActions ?? null,
-      structuredCorrections: prepared.plannerStructuredCorrections ?? 0,
+      finalizationAttempts: prepared.plannerFinalizationAttempts ?? 0,
+      xmlRepairNeeded: Boolean(prepared.plannerXmlRepairNeeded),
       providerTurns: prepared.plannerProviderTurns ?? null,
     })}`);
     if (applied.largeMutationArmed) {
