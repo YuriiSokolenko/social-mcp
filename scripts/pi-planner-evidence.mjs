@@ -203,17 +203,61 @@ export default function (pi) {
   let lastResultFailureSignature = null;
   let equivalentResultFailureCount = 0;
 
-  function reservePlannerResultCall({ id = null, rawArguments, message = null } = {}) {
+  function observePlannerResultCall({ id = null, rawArguments, message = null } = {}) {
     resultAttempts += 1;
-    const allowed = !resultSucceeded && !resultCallPending;
-    const siblingOfAdmittedCall = !allowed && resultCallPending && Boolean(message);
-    const call = { id, rawArguments, allowed, siblingOfAdmittedCall, message, toolCallSeen: false, toolResultSeen: false };
+    const call = {
+      id,
+      rawArguments,
+      message,
+      admissionDecided: false,
+      allowed: false,
+      preValidationRejected: false,
+      toolCallSeen: false,
+      toolResultSeen: false,
+    };
     observedResultCalls.push(call);
     finalizing = true;
-    if (allowed) resultCallPending = true;
     console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, structuredCorrections, source: message ? 'pre_validation_message' : 'runtime' })}`);
-    if (allowed) recordPlannerResultState({ resultAttempts, structuredCorrections, repairStatus: 'finalizing' });
     return call;
+  }
+
+  function admitPlannerResultCall(call) {
+    if (call.admissionDecided) return call.allowed;
+    call.admissionDecided = true;
+    call.allowed = !resultSucceeded && !resultCallPending;
+    if (call.allowed) {
+      resultCallPending = true;
+      recordPlannerResultState({ resultAttempts, structuredCorrections, repairStatus: 'finalizing' });
+    }
+    return call.allowed;
+  }
+
+  function reconcilePreValidationRejections() {
+    for (const call of observedResultCalls) {
+      if (!call.message || call.admissionDecided || call.preValidationRejected || call.toolCallSeen || call.toolResultSeen) continue;
+      call.preValidationRejected = true;
+      structuredCorrections += 1;
+      const diagnostic = 'structured_output was rejected before runtime tool execution.';
+      recordPlannerResultState({
+        resultAttempts,
+        structuredCorrections,
+        repairStatus: 'correction_required',
+        repairDiagnostic: diagnostic,
+        repairKind: 'pre_validation_rejection',
+      });
+      console.log(`PI_PLANNER_RESULT_REJECTION ${JSON.stringify({
+        resultAttempts,
+        structuredCorrections,
+        kind: 'pre_validation_rejection',
+        source: 'pre_validation_message',
+        diagnostic,
+      })}`);
+      console.log(`PI_PLANNER_RESULT_CORRECTION ${JSON.stringify({
+        resultAttempts,
+        structuredCorrections,
+        kind: 'pre_validation_rejection',
+      })}`);
+    }
   }
 
   recordEvidenceState({ used: 0 });
@@ -222,6 +266,7 @@ export default function (pi) {
   pi.on('before_provider_request', (event) => {
     const payload = event?.payload;
     if (!finalizing || !payload || !Array.isArray(payload.tools)) return payload;
+    reconcilePreValidationRejections();
     const tools = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === PLANNER_RESULT_TOOL);
     if (!tools.length) return payload;
     return { ...payload, tools, tool_choice: 'required' };
@@ -233,7 +278,7 @@ export default function (pi) {
       if (!observed) observed = observedResultCalls.find(call => !call.toolCallSeen && !call.id);
       if (observed) observed.toolCallSeen = true;
       else {
-        observed = reservePlannerResultCall({ id: event.toolCallId ?? null });
+        observed = observePlannerResultCall({ id: event.toolCallId ?? null });
         observed.toolCallSeen = true;
       }
       if (event.input && typeof event.input === 'object' && !Array.isArray(event.input)) {
@@ -241,7 +286,7 @@ export default function (pi) {
       }
       finalizing = true;
       if (typeof pi.setActiveTools === 'function') pi.setActiveTools([PLANNER_RESULT_TOOL]);
-      if (!observed.allowed) {
+      if (!admitPlannerResultCall(observed)) {
         if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
         console.log(`PI_PLANNER_RESULT_DUPLICATE_BLOCKED ${JSON.stringify({ resultAttempts, reason: 'parallel_or_post_success_result' })}`);
         return { block: true, reason: 'Planner accepts one structured_output call at a time; wait for its validation result before correcting.' };
@@ -314,7 +359,7 @@ export default function (pi) {
       const rawArguments = streamedResultArguments.has(key)
         ? streamedResultArguments.get(key)
         : Object.hasOwn(block, 'arguments') ? block.arguments : undefined;
-      reservePlannerResultCall({ id, rawArguments, message });
+      observePlannerResultCall({ id, rawArguments, message });
     }
     streamedResultArguments = new Map();
 
@@ -355,9 +400,9 @@ export default function (pi) {
     let observed = observedResultCalls.find(call => !call.toolResultSeen && event.toolCallId && call.id === event.toolCallId);
     if (!observed && event.toolCallId) observed = observedResultCalls.find(call => !call.toolResultSeen && !call.id);
     if (!observed) observed = observedResultCalls.find(call => !call.toolResultSeen && call.toolCallSeen);
-    if (!observed) observed = reservePlannerResultCall({ id: event.toolCallId ?? null });
+    if (!observed) observed = observePlannerResultCall({ id: event.toolCallId ?? null });
     observed.toolResultSeen = true;
-    if (!observed.allowed || resultSucceeded) return undefined;
+    if (!admitPlannerResultCall(observed) || resultSucceeded) return undefined;
     resultCallPending = false;
 
     if (event.isError) {
