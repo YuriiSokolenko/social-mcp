@@ -2084,7 +2084,7 @@ function runtimeScenario(mode) {
             path: 'generated.py',
             operation: 'insert_after',
             start_line: 1,
-            text: '# parent recovery repair\n',
+            text: '# parent recovery repair\\n',
           });
           assert.equal(localRepair.block, undefined, 'parent can mutate an accepted preserved path after bounded inspection');
           assert.equal(aborts, 0, 'local parent repair remains recoverable');
