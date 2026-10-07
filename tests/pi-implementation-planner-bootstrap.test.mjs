@@ -189,7 +189,7 @@ test('bootstrap launches planner only after session_start handlers have installe
   }
   const result = readPreparedImplementation(artifact);
   assert.equal(result.status, 'prepared');
-  assert.deepEqual(result.plan, ['Do it']);
+  assert.equal(result.planText, textPlan({ reason: 'tiny' }));
   assert.equal(shutdowns, 1);
 
   await handlers.get('resources_discover')[0]({ type: 'resources_discover' }, ctx);
