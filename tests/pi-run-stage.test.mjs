@@ -71,7 +71,7 @@ function implementerStartup(t, extraEnv = {}) {
 
 test('#561 validation repair preserves Main contracts, task and bounded repair context', (t) => {
   const { spec } = implementerStartup(t);
-  const originalTask = spec.prompt.match(/<untrusted_task_input>[\\s\\S]*?<\\/untrusted_task_input>/)?.[0];
+  const originalTask = spec.prompt.match(/<untrusted_task_input>[\s\S]*?<\/untrusted_task_input>/)?.[0];
   assert.ok(originalTask);
   const repair = createValidationRepairSpec(spec, new Error('ruff F841'), 1);
   assert.equal(repair.prompt.includes(PREPARED_IMPLEMENTATION_PLACEHOLDER), false);
