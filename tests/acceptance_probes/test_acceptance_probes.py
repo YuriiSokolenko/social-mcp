@@ -318,12 +318,29 @@ def test_deferred_target_marker_exercises_the_missing_target_fail_path(tmp_path,
         }),
         "utf-8",
     )
+    # Simulate an inherited empty trusted-target environment before isolating this marker path.
+    monkeypatch.setenv(TRUSTED_TARGETS_ENV, "")
+    monkeypatch.delenv(TRUSTED_TARGETS_ENV, raising=False)
     monkeypatch.setenv("PI_ISSUE_CONTEXT", str(context))
     monkeypatch.setattr(importlib.util, "find_spec", lambda _module: None)
 
     assert _current_issue_requires(CRITERIA["lru-capacity-integer"])
     with pytest.raises(pytest.fail.Exception, match="trusted acceptance target required"):
         _target("lru-capacity-integer")
+
+
+def test_empty_trusted_targets_environment_takes_precedence_over_issue_marker(tmp_path, monkeypatch) -> None:
+    context = tmp_path / "issue.json"
+    context.write_text(
+        json.dumps({
+            "body": "trusted-acceptance-target: social_mcp.diagnostics.smoke_lru\n",
+        }),
+        "utf-8",
+    )
+    monkeypatch.setenv(TRUSTED_TARGETS_ENV, "")
+    monkeypatch.setenv("PI_ISSUE_CONTEXT", str(context))
+
+    assert not _current_issue_requires(CRITERIA["lru-capacity-integer"])
 
 
 def test_free_text_module_mentions_do_not_activate_deferred_targets(tmp_path, monkeypatch) -> None:
