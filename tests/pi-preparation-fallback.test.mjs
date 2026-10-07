@@ -339,7 +339,8 @@ function runtimeScenario(mode) {
         assert.equal(artifact.largeMutation, false);
         const block = planner.preparedImplementationBlock(artifact);
         assert.match(block, /untrusted task data/i);
-        assert.ok(block.includes('social_mcp.diagnostics.\\u003cmodule\\u003e'));
+        assert.ok(block.includes('social_mcp.diagnostics.'));
+        assert.equal(block.includes('social_mcp.diagnostics.<module>'), false, 'tag-like Planner text stays encoded inside the trusted envelope');
         assert.doesNotMatch(block, /Repository layout hint/);
       }
 
