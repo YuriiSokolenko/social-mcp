@@ -9,11 +9,13 @@ import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTool
 import {
   IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
   PLANNER_EVIDENCE_STATE_FILE_ENV,
+  PLANNER_RESOLVED_TARGETS_ENV,
   PLANNER_EVIDENCE_TOOLS,
   PLANNER_RESULT_TOOL,
   createPlannerEvidenceGate,
   normalizeImplementationPreparation,
   plannerEvidenceFact,
+  plannerTargetPolicy,
   plannerTask,
   prepareImplementation,
   validateImplementationPreparation,
@@ -145,6 +147,148 @@ test('planner prompt and agent contract use cat completion incentive and no mode
   }
   assert.match(task, /there is no fixed repair-attempt budget/i);
   assert.match(agentSource(), /There is no fixed result-attempt or repair-attempt budget/i);
+});
+
+test('planner target policy separates immutable resolved targets from convention fallbacks', () => {
+  const explicit = plannerTargetPolicy({
+    sourceTarget: 'src/social_mcp/diagnostics/smoke_labels.py',
+    sourceDirectory: 'src/social_mcp/diagnostics',
+    sourceConvention: 'src/social_mcp/diagnostics/smoke_retry_after.py',
+    testTarget: 'tests/test_smoke_labels.py',
+    testTargetRequired: true,
+    testDirectory: 'tests/diagnostics',
+    testConvention: 'tests/diagnostics/test_smoke_retry_after.py',
+  });
+  assert.deepEqual(explicit.resolvedTargets, {
+    source: 'src/social_mcp/diagnostics/smoke_labels.py',
+    test: 'tests/test_smoke_labels.py',
+  });
+  assert.equal(explicit.conventionHints.testDirectory, 'tests/diagnostics');
+  assert.equal('testTarget' in explicit.conventionHints, false);
+
+  const fallback = plannerTargetPolicy({
+    sourceTarget: 'src/social_mcp/diagnostics/smoke_labels.py',
+    testTarget: 'tests/diagnostics/test_smoke_labels.py',
+    testTargetRequired: false,
+    testDirectory: 'tests/diagnostics',
+    testConvention: 'tests/diagnostics/test_smoke_retry_after.py',
+  });
+  assert.equal(fallback.resolvedTargets.test, undefined);
+  assert.equal(fallback.conventionHints.testTarget, 'tests/diagnostics/test_smoke_labels.py');
+});
+
+test('planner prompt makes resolved target precedence explicit and forbids evidence-driven relocation', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-target-policy-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const issue = path.join(dir, 'issue.json');
+  fs.writeFileSync(issue, JSON.stringify({
+    title: 'Add smoke labels',
+    body: 'Create src/social_mcp/diagnostics/smoke_labels.py and tests/test_smoke_labels.py.',
+  }));
+  const task = plannerTask({ PI_ISSUE_CONTEXT: issue }, {
+    layoutHint: {
+      sourceRoot: 'src',
+      sourceTarget: 'src/social_mcp/diagnostics/smoke_labels.py',
+      sourceDirectory: 'src/social_mcp/diagnostics',
+      sourceConvention: 'src/social_mcp/diagnostics/smoke_retry_after.py',
+      testDirectory: 'tests/diagnostics',
+      testTarget: 'tests/test_smoke_labels.py',
+      testTargetRequired: true,
+      testConvention: 'tests/diagnostics/test_smoke_retry_after.py',
+    },
+  });
+  assert.match(task, /resolvedTargets=.*tests\\/test_smoke_labels\.py/s);
+  assert.match(task, /conventionHints=.*tests\\/diagnostics/s);
+  assert.match(task, /resolvedTargets > conventionHints > discovered repository context/);
+  assert.match(task, /Do not validate, relocate, normalize, improve, or replace them/);
+  assert.match(task, /Do not spend repository evidence actions solely to re-decide or verify/);
+});
+
+test('canonical validation rejects relocated resolved targets but allows convention disagreement as warning', () => {
+  const resolvedTargets = { test: 'tests/test_smoke_labels.py' };
+  const matching = validateImplementationPreparation({
+    steps: ['Create tests/test_smoke_labels.py with smoke label coverage.'],
+    facts: ['Sibling diagnostics tests live under tests/diagnostics/.'],
+    warnings: ['Resolved test target differs from nearby repository convention tests/diagnostics/test_smoke_labels.py.'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: [],
+    large_mutation: false,
+    reason: 'Add the requested regression coverage.',
+  }, { resolvedTargets });
+  assert.deepEqual(matching.warnings, [
+    'Resolved test target differs from nearby repository convention tests/diagnostics/test_smoke_labels.py.',
+  ]);
+
+  assert.throws(
+    () => validateImplementationPreparation({
+      steps: ['Create tests/diagnostics/test_smoke_labels.py with smoke label coverage.'],
+      facts: [],
+      warnings: [],
+      complexity: 'nontrivial',
+      required_mutation_anchors: [],
+      large_mutation: false,
+      reason: 'Follow nearby tests.',
+    }, { resolvedTargets }),
+    /resolved_target_mismatch: test target must remain exactly "tests\\/test_smoke_labels\.py"; returned conflicting path "tests\\/diagnostics\\/test_smoke_labels\.py"/,
+  );
+});
+
+test('runtime resolved-target mismatch is a recoverable structured-output correction', async (t) => {
+  const previous = process.env[PLANNER_RESOLVED_TARGETS_ENV];
+  process.env[PLANNER_RESOLVED_TARGETS_ENV] = JSON.stringify({ test: 'tests/test_smoke_labels.py' });
+  t.after(() => {
+    if (previous === undefined) delete process.env[PLANNER_RESOLVED_TARGETS_ENV];
+    else process.env[PLANNER_RESOLVED_TARGETS_ENV] = previous;
+  });
+
+  const harness = extensionHarness(t);
+  const wrong = {
+    steps: ['Create tests/diagnostics/test_smoke_labels.py.'],
+    facts: [],
+    warnings: ['Nearby diagnostics tests use tests/diagnostics/.'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: [],
+    large_mutation: false,
+    reason: 'Add smoke label tests.',
+  };
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL, toolCallId: 'target-wrong', input: { value: wrong },
+  }, harness.abortContext), undefined);
+  const rejected = await harness.handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'target-wrong',
+    input: { value: wrong },
+    isError: false,
+    content: [],
+  }, harness.abortContext);
+  assert.match(rejected.content[0].text, /resolved_target_mismatch/);
+  assert.match(rejected.content[0].text, /tests\\/test_smoke_labels\.py/);
+  assert.match(rejected.content[0].text, /tests\\/diagnostics\\/test_smoke_labels\.py/);
+  let state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.repairStatus, 'correction_required');
+  assert.equal(state.repairKind, 'resolved_target_mismatch');
+  assert.equal(state.structuredCorrections, 1);
+  assert.equal(harness.aborted(), false);
+
+  const corrected = {
+    ...wrong,
+    steps: ['Create tests/test_smoke_labels.py.'],
+  };
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL, toolCallId: 'target-corrected', input: { value: corrected },
+  }, harness.abortContext), undefined);
+  await harness.handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'target-corrected',
+    input: { value: corrected },
+    isError: false,
+    content: [],
+  }, harness.abortContext);
+  state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.repairStatus, 'accepted');
+  assert.equal(state.structuredCorrections, 1);
+  assert.deepEqual(state.acceptedResult, corrected);
+  assert.equal(harness.aborted(), true);
 });
 
 test('more than six distinct useful evidence actions are accepted and telemetry exposes only action count', async (t) => {
@@ -850,6 +994,7 @@ test('parent consumes direct structured result when no accepted sidecar is persi
   const acceptedResult = {
     steps: ['Update src/net.py'],
     facts: ['src/net.py contains send().'],
+    warnings: ['Keep the runtime-resolved target even if a sibling convention differs.'],
     complexity: 'nontrivial',
     required_mutation_anchors: ['src/net.py'],
     large_mutation: false,
@@ -879,6 +1024,7 @@ test('parent consumes direct structured result when no accepted sidecar is persi
   assert.equal(prepared.status, 'prepared');
   assert.deepEqual(prepared.plan, acceptedResult.steps);
   assert.deepEqual(prepared.repositoryFacts, acceptedResult.facts);
+  assert.deepEqual(prepared.plannerWarnings, acceptedResult.warnings);
   assert.deepEqual(prepared.requiredMutationAnchors, acceptedResult.required_mutation_anchors);
   assert.equal(prepared.plannerEvidenceActions, 3);
   assert.equal(prepared.plannerProviderTurns, 1);
