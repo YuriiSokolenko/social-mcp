@@ -7,11 +7,9 @@ import { EventEmitter } from 'node:events';
 
 import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTools } from '../scripts/pi-planner-evidence.mjs';
 import {
-  IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
   PLANNER_EVIDENCE_STATE_FILE_ENV,
-  PLANNER_RESOLVED_TARGETS_ENV,
   PLANNER_EVIDENCE_TOOLS,
-  PLANNER_RESULT_TOOL,
+  PLANNER_FINALIZATION_ONLY_ENV,
   createPlannerEvidenceGate,
   normalizeImplementationPreparation,
   plannerEvidenceFact,
@@ -22,6 +20,7 @@ import {
 } from '../scripts/pi-common/implementation-planner.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { buildPlannerOrbitSeed, plannerOrbitSeedTargets } from '../scripts/pi-common/planner-orbit.mjs';
+import { parsePlannerXml } from '../scripts/pi-common/planner-xml.mjs';
 
 const FORBIDDEN_TOOLS = [
   'bash', 'write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'submit_result', 'begin_coding_session',
@@ -53,7 +52,7 @@ function stateFileFor(t, prefix = 'pi-planner-state') {
 
 function extensionHarness(t, { stateFile = stateFileFor(t), mockLog = true } = {}) {
   const handlers = new Map();
-  let activeTools = [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL];
+  let activeTools = [...PLANNER_EVIDENCE_TOOLS];
   let aborted = false;
   const messages = [];
   const logs = mockLog ? t.mock.method(console, 'log', () => {}) : null;
@@ -112,6 +111,24 @@ function plannerHost({ cwd, driveChild }) {
   return { pi, requests, ctx: { cwd, sessionManager: { getSessionId: () => 'bootstrap' } } };
 }
 
+function validPlannerXml({
+  step = 'Update src/net.py.',
+  fact = 'src/net.py contains send().',
+  warning = null,
+  complexity = 'nontrivial',
+  anchor = 'src/net.py',
+  largeMutation = false,
+  reason = 'Existing sender needs a bounded edit.',
+} = {}) {
+  const warnings = warning ? `\n  <warnings><warning>${warning}</warning></warnings>` : '';
+  return `<plan complexity="${complexity}" large_mutation="${largeMutation ? 'true' : 'false'}">
+  <steps><step>${step}</step></steps>
+  <facts><fact>${fact}</fact></facts>${warnings}
+  <required_mutation_anchors><anchor>${anchor}</anchor></required_mutation_anchors>
+  <reason>${reason}</reason>
+</plan>`;
+}
+
 test('planner surface remains strictly read-only while evidence admission has no numeric cap', () => {
   assert.deepEqual(agentTools(), [...PLANNER_EVIDENCE_TOOLS]);
   const gate = createPlannerEvidenceGate();
@@ -127,7 +144,6 @@ test('planner surface remains strictly read-only while evidence admission has no
     assert.equal(verdict.allowed, false, forbidden);
     assert.match(verdict.reason, /read-only evidence tools only/);
   }
-  assert.equal(gate.admit(PLANNER_RESULT_TOOL).allowed, true);
 });
 
 test('planner prompt and agent contract use cat completion incentive and no model-visible planner budget', (t) => {
@@ -145,8 +161,11 @@ test('planner prompt and agent contract use cat completion incentive and no mode
     assert.doesNotMatch(text, /evidence actions remaining|minutes remaining|result attempts remaining|repair attempts remaining/i);
     assert.doesNotMatch(text, /evidence_budget/);
   }
-  assert.match(task, /there is no fixed repair-attempt budget/i);
-  assert.match(agentSource(), /There is no fixed result-attempt or repair-attempt budget/i);
+  assert.match(task, /plain XML document/i);
+  assert.match(task, /Do not call a result tool or function/i);
+  assert.match(agentSource(), /exactly one finalization-only correction turn/i);
+  assert.doesNotMatch(task, /outer value|value wrapper|call structured_output/i);
+  assert.doesNotMatch(agentSource(), /outer `value`|value wrapper/i);
 });
 
 test('planner target policy separates immutable resolved targets from convention fallbacks', () => {
@@ -166,200 +185,63 @@ test('planner target policy separates immutable resolved targets from convention
   assert.equal(explicit.conventionHints.testDirectory, 'tests/diagnostics');
   assert.equal('testTarget' in explicit.conventionHints, false);
 
-  const fallback = plannerTargetPolicy({
+  const inferred = plannerTargetPolicy({
     dottedTarget: 'social_mcp.diagnostics.smoke_labels.parse_labels',
     sourceTarget: 'src/social_mcp/diagnostics/smoke_labels.py',
     testTarget: 'tests/diagnostics/test_smoke_labels.py',
     testTargetRequired: false,
     testDirectory: 'tests/diagnostics',
-    testConvention: 'tests/diagnostics/test_smoke_retry_after.py',
   });
-  assert.equal(fallback.resolvedTargets.source, undefined);
-  assert.equal(fallback.resolvedTargets.test, undefined);
-  assert.equal(fallback.conventionHints.sourceTarget, 'src/social_mcp/diagnostics/smoke_labels.py');
-  assert.equal(fallback.conventionHints.testTarget, 'tests/diagnostics/test_smoke_labels.py');
+  assert.deepEqual(inferred.resolvedTargets, {});
+  assert.equal(inferred.conventionHints.sourceTarget, 'src/social_mcp/diagnostics/smoke_labels.py');
+  assert.equal(inferred.conventionHints.testTarget, 'tests/diagnostics/test_smoke_labels.py');
 });
 
-test('planner prompt makes resolved target precedence explicit and forbids evidence-driven relocation', (t) => {
+test('planner prompt keeps resolved targets immutable and convention conflicts non-blocking', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-target-policy-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const issue = path.join(dir, 'issue.json');
-  fs.writeFileSync(issue, JSON.stringify({
-    title: 'Add smoke labels',
-    body: 'Create src/social_mcp/diagnostics/smoke_labels.py and tests/test_smoke_labels.py.',
-  }));
+  fs.writeFileSync(issue, JSON.stringify({ title: 'Target', body: 'Create tests/test_smoke_labels.py.' }));
   const task = plannerTask({ PI_ISSUE_CONTEXT: issue }, {
     layoutHint: {
       sourceRoot: 'src',
       sourceTarget: 'src/social_mcp/diagnostics/smoke_labels.py',
       sourceDirectory: 'src/social_mcp/diagnostics',
       sourceConvention: 'src/social_mcp/diagnostics/smoke_retry_after.py',
-      testDirectory: 'tests/diagnostics',
       testTarget: 'tests/test_smoke_labels.py',
       testTargetRequired: true,
+      testDirectory: 'tests/diagnostics',
       testConvention: 'tests/diagnostics/test_smoke_retry_after.py',
     },
   });
   assert.match(task, /resolvedTargets=.*tests\/test_smoke_labels\.py/s);
-  assert.match(task, /conventionHints=.*tests\/diagnostics/s);
   assert.match(task, /resolvedTargets > conventionHints > discovered repository context/);
   assert.match(task, /Do not validate, relocate, normalize, improve, or replace them/);
-  assert.match(task, /Do not spend repository evidence actions solely to re-decide or verify/);
+  assert.match(task, /optional <warnings>/);
 });
 
-test('canonical validation rejects relocated resolved targets but allows convention disagreement as warning', () => {
+test('canonical validation rejects relocated resolved targets and preserves warnings', () => {
   const resolvedTargets = { test: 'tests/test_smoke_labels.py' };
   const matching = validateImplementationPreparation({
     steps: ['Create tests/test_smoke_labels.py with smoke label coverage.'],
-    facts: ['Sibling diagnostics tests live under tests/diagnostics/.'],
-    warnings: ['Resolved test target differs from nearby repository convention tests/diagnostics/test_smoke_labels.py.'],
+    facts: [],
+    warnings: ['Nearest convention is tests/diagnostics/test_smoke_labels.py.'],
     complexity: 'nontrivial',
     required_mutation_anchors: [],
     large_mutation: false,
-    reason: 'Add the requested regression coverage.',
+    reason: 'Add focused regression coverage.',
   }, { resolvedTargets });
-  assert.deepEqual(matching.warnings, [
-    'Resolved test target differs from nearby repository convention tests/diagnostics/test_smoke_labels.py.',
-  ]);
-
-  assert.throws(
-    () => validateImplementationPreparation({
-      steps: ['Create tests/diagnostics/test_smoke_labels.py with smoke label coverage.'],
-      facts: [],
-      warnings: [],
-      complexity: 'nontrivial',
-      required_mutation_anchors: [],
-      large_mutation: false,
-      reason: 'Follow nearby tests.',
-    }, { resolvedTargets }),
-    /resolved_target_mismatch: test target must remain exactly "tests\/test_smoke_labels\.py"; returned conflicting path "tests\/diagnostics\/test_smoke_labels\.py"/,
-  );
-
-  assert.throws(
-    () => validateImplementationPreparation({
-      steps: ['Add smoke label regression coverage.'],
-      facts: [],
-      warnings: [],
-      complexity: 'nontrivial',
-      required_mutation_anchors: [],
-      large_mutation: false,
-      reason: 'Add the requested regression coverage.',
-    }, { resolvedTargets }),
-    /returned conflicting path "<missing>"/,
-  );
-});
-
-
-test('resolved target validation accepts root paths and same-basename references once the exact target is present', () => {
-  const root = validateImplementationPreparation({
-    steps: ['Update setup.py for the package metadata.'],
-    facts: [],
-    warnings: [],
-    complexity: 'trivial',
-    required_mutation_anchors: ['setup.py'],
-    large_mutation: false,
-    reason: 'Edit the authoritative root-level target.',
-  }, { resolvedTargets: { source: 'setup.py' } });
-  assert.deepEqual(root.requiredMutationAnchors, ['setup.py']);
-
-  assert.doesNotThrow(() => validateImplementationPreparation({
-    steps: [
-      'Update src/x/__init__.py.',
-      'Adjust tests/__init__.py only as supporting test-package context.',
-    ],
-    facts: [],
-    warnings: [],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/x/__init__.py'],
-    large_mutation: false,
-    reason: 'Keep the authoritative source target and related test package aligned.',
-  }, { resolvedTargets: { source: 'src/x/__init__.py' } }));
+  assert.equal(matching.warnings.length, 1);
 
   assert.throws(() => validateImplementationPreparation({
-    steps: ['Update config/setup.py instead.'],
-    facts: [],
-    warnings: [],
-    complexity: 'trivial',
-    required_mutation_anchors: [],
-    large_mutation: false,
-    reason: 'Relocate the package metadata.',
-  }, { resolvedTargets: { source: 'setup.py' } }),
-  /returned conflicting path "config\/setup\.py"/);
-});
-
-test('runtime resolved-target mismatch is a recoverable structured-output correction', async (t) => {
-  const previous = process.env[PLANNER_RESOLVED_TARGETS_ENV];
-  process.env[PLANNER_RESOLVED_TARGETS_ENV] = JSON.stringify({ test: 'tests/test_smoke_labels.py' });
-  t.after(() => {
-    if (previous === undefined) delete process.env[PLANNER_RESOLVED_TARGETS_ENV];
-    else process.env[PLANNER_RESOLVED_TARGETS_ENV] = previous;
-  });
-
-  const harness = extensionHarness(t);
-  const wrong = {
     steps: ['Create tests/diagnostics/test_smoke_labels.py.'],
     facts: [],
-    warnings: ['Nearby diagnostics tests use tests/diagnostics/.'],
+    warnings: [],
     complexity: 'nontrivial',
     required_mutation_anchors: [],
     large_mutation: false,
-    reason: 'Add smoke label tests.',
-  };
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL, toolCallId: 'target-wrong', input: { value: wrong },
-  }, harness.abortContext), undefined);
-  const rejected = await harness.handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'target-wrong',
-    input: { value: wrong },
-    isError: false,
-    content: [],
-  }, harness.abortContext);
-  assert.match(rejected.content[0].text, /resolved_target_mismatch/);
-  assert.match(rejected.content[0].text, /tests\/test_smoke_labels\.py/);
-  assert.match(rejected.content[0].text, /tests\/diagnostics\/test_smoke_labels\.py/);
-  let state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.repairStatus, 'correction_required');
-  assert.equal(state.repairKind, 'resolved_target_mismatch');
-  assert.equal(state.structuredCorrections, 1);
-  assert.equal(harness.aborted(), false);
-
-  const corrected = {
-    ...wrong,
-    steps: ['   Create tests/test_smoke_labels.py.   '],
-  };
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL, toolCallId: 'target-corrected', input: { value: corrected },
-  }, harness.abortContext), undefined);
-  await harness.handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'target-corrected',
-    input: { value: corrected },
-    isError: false,
-    content: [],
-  }, harness.abortContext);
-  state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.repairStatus, 'accepted');
-  assert.equal(state.structuredCorrections, 1);
-  assert.deepEqual(state.acceptedResult, corrected);
-  assert.equal(harness.aborted(), true);
-});
-
-test('invalid resolved-target environment is surfaced without exposing raw payload', (t) => {
-  const previous = process.env[PLANNER_RESOLVED_TARGETS_ENV];
-  process.env[PLANNER_RESOLVED_TARGETS_ENV] = '{not-json';
-  const warnings = t.mock.method(console, 'warn', () => {});
-  t.after(() => {
-    if (previous === undefined) delete process.env[PLANNER_RESOLVED_TARGETS_ENV];
-    else process.env[PLANNER_RESOLVED_TARGETS_ENV] = previous;
-  });
-
-  extensionHarness(t);
-  assert.equal(warnings.mock.calls.length, 1);
-  const line = String(warnings.mock.calls[0].arguments[0]);
-  assert.match(line, /^PI_PLANNER_RESOLVED_TARGETS_INVALID /);
-  assert.match(line, /"reason":"invalid_json"/);
-  assert.doesNotMatch(line, /not-json/);
+    reason: 'Follow nearby tests.',
+  }, { resolvedTargets }), /resolved_target_mismatch/);
 });
 
 test('more than six distinct useful evidence actions are accepted and telemetry exposes only action count', async (t) => {
@@ -480,484 +362,315 @@ test('successful evidence stores compact redacted facts and emits neutral CAT_WA
   assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
 });
 
-test('prose-only planner completion gets one forced result-only recovery then fails closed on repetition', async (t) => {
+test('assistant narration followed by a tool call keeps repository tools open', async (t) => {
   const harness = extensionHarness(t);
+  assert.equal(harness.handlers.has('message_update'), false, 'streaming text must not trigger finalization');
 
   await harness.handlers.get('message_end')({
     message: {
       role: 'assistant',
-      stopReason: 'stop',
-      content: [{ type: 'text', text: 'The plan is ready.' }],
+      stopReason: 'toolUse',
+      content: [
+        { type: 'text', text: 'Let me inspect src/net.py first.' },
+        { type: 'toolCall', id: 'inspect-net', name: 'read', arguments: { path: 'src/net.py' } },
+      ],
     },
   }, harness.abortContext);
 
-  assert.deepEqual(harness.activeTools(), [PLANNER_RESULT_TOOL]);
-  assert.equal(harness.aborted(), false);
-  assert.equal(harness.messages().length, 1);
-  assert.match(harness.messages()[0].message, /Call structured_output now/i);
+  assert.deepEqual(harness.activeTools(), PLANNER_EVIDENCE_TOOLS);
+  assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_FINALIZATION_TRANSITION ')));
 
-  const forced = harness.handlers.get('before_provider_request')({
+  const admitted = await harness.handlers.get('tool_call')({
+    toolName: 'read',
+    toolCallId: 'inspect-net',
+    input: { path: 'src/net.py' },
+  }, harness.abortContext);
+  assert.equal(admitted, undefined);
+});
+
+test('completed assistant XML closes repository tools at message end and strips provider tool fields', async (t) => {
+  const harness = extensionHarness(t);
+  await harness.handlers.get('message_end')({
+    message: {
+      role: 'assistant',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: validPlannerXml() }],
+    },
+  }, harness.abortContext);
+
+  assert.deepEqual(harness.activeTools(), []);
+  assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_FINALIZATION_TRANSITION') && line.includes('"source":"assistant_content"')));
+
+  const blocked = await harness.handlers.get('tool_call')({
+    toolName: 'read',
+    toolCallId: 'after-finalization',
+    input: { path: 'src/net.py' },
+  }, harness.abortContext);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /repository evidence is closed/i);
+
+  const request = await harness.handlers.get('before_provider_request')({
     payload: {
-      tools: [
-        { type: 'function', function: { name: 'read' } },
-        { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
-      ],
+      model: 'qwen',
+      tools: PLANNER_EVIDENCE_TOOLS.map(name => ({ type: 'function', function: { name } })),
       tool_choice: 'auto',
     },
-  });
-  assert.equal(forced.tool_choice, 'required');
-  assert.deepEqual(forced.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL]);
-
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'stop',
-      content: [{ type: 'text', text: 'Still prose.' }],
-    },
   }, harness.abortContext);
-
-  assert.equal(harness.aborted(), true);
-  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.failureKind, 'semantic_no_progress');
-  assert.equal(state.repairKind, 'missing_structured_output');
-  assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_RESULT_RECOVERY ')));
+  assert.equal('tools' in request, false);
+  assert.equal('tool_choice' in request, false);
+  assert.equal(request.model, 'qwen');
 });
 
-test('evidence tool turns do not trigger missing-result recovery while exploration is active', async (t) => {
-  const harness = extensionHarness(t);
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'toolUse',
-      content: [{ type: 'toolCall', id: 'e1', name: 'read', arguments: { path: 'src/a.py' } }],
-    },
-  }, harness.abortContext);
-
-  assert.equal(harness.messages().length, 0);
-  assert.deepEqual(harness.activeTools(), [...PLANNER_EVIDENCE_TOOLS, PLANNER_RESULT_TOOL]);
-  assert.equal(harness.aborted(), false);
-});
-
-test('pre-validation schema rejections release the result slot and a corrected result is accepted', async (t) => {
-  const harness = extensionHarness(t);
-  const acceptedValue = {
-    steps: ['Update src/net.py'],
-    facts: ['src/net.py contains send().'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/net.py'],
-    large_mutation: false,
-    reason: 'Existing sender needs a bounded edit.',
-  };
-  const observePreValidationAttempt = async (id, args) => {
-    await harness.handlers.get('message_end')({
-      message: {
-        role: 'assistant',
-        stopReason: 'toolUse',
-        content: [{ type: 'toolCall', id, name: PLANNER_RESULT_TOOL, arguments: args }],
-      },
-    }, harness.abortContext);
-    return harness.handlers.get('before_provider_request')({
-      payload: {
-        tools: [
-          { type: 'function', function: { name: 'read' } },
-          { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
-        ],
-        tool_choice: 'auto',
-      },
-    }, harness.abortContext);
-  };
-
-  const firstRetry = await observePreValidationAttempt('missing-value', {});
-  assert.equal(firstRetry.tool_choice, 'required');
-  assert.deepEqual(firstRetry.tools.map(tool => tool.function.name), [PLANNER_RESULT_TOOL]);
-
-  let state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 1);
-  assert.equal(state.structuredCorrections, 1);
-  assert.equal(state.repairStatus, 'correction_required');
-  assert.equal(state.repairKind, 'pre_validation_rejection');
-  assert.match(state.repairDiagnostic, /value is required/i);
-
-  const blockedEvidence = await harness.handlers.get('tool_call')({
-    toolName: 'read',
-    toolCallId: 'e-after-finalizing',
-    input: { path: 'src/a.py' },
-  }, harness.abortContext);
-  assert.equal(blockedEvidence.block, true);
-  assert.match(blockedEvidence.reason, /repository evidence is closed/i);
-
-  await observePreValidationAttempt('string-value', { value: 'not-an-object' });
-  state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 2);
-  assert.equal(state.structuredCorrections, 2);
-  assert.equal(state.repairStatus, 'correction_required');
-  assert.equal(state.repairKind, 'pre_validation_rejection');
-  assert.match(state.repairDiagnostic, /value must be an object/i);
-
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'toolUse',
-      content: [{ type: 'toolCall', id: 'corrected', name: PLANNER_RESULT_TOOL, arguments: { value: acceptedValue } }],
-    },
-  }, harness.abortContext);
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'corrected',
-    input: { value: acceptedValue },
-  }, harness.abortContext), undefined);
-  await harness.handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'corrected',
-    input: { value: acceptedValue },
-    isError: false,
-    content: [],
-  }, harness.abortContext);
-
-  state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 3);
-  assert.equal(state.structuredCorrections, 2);
-  assert.equal(state.repairStatus, 'accepted');
-  assert.deepEqual(state.acceptedResult, acceptedValue);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')).length, 0);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_CORRECTION ')).length, 2);
-});
-
-test('three equivalent pre-validation rejections trip semantic no-progress protection', async (t) => {
-  const harness = extensionHarness(t);
-  const payload = {
-    tools: [
-      { type: 'function', function: { name: 'read' } },
-      { type: 'function', function: { name: PLANNER_RESULT_TOOL } },
-    ],
-    tool_choice: 'auto',
-  };
-
-  for (let index = 1; index <= 3; index += 1) {
-    await harness.handlers.get('message_end')({
-      message: {
-        role: 'assistant',
-        stopReason: 'toolUse',
-        content: [{ type: 'toolCall', id: `invalid-${index}`, name: PLANNER_RESULT_TOOL, arguments: {} }],
-      },
-    }, harness.abortContext);
-    await harness.handlers.get('before_provider_request')({ payload }, harness.abortContext);
-  }
-
-  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 3);
-  assert.equal(state.structuredCorrections, 3);
-  assert.equal(state.repairStatus, 'failed');
-  assert.equal(state.repairKind, 'pre_validation_rejection');
-  assert.equal(state.failureKind, 'semantic_no_progress');
-  assert.equal(harness.aborted(), true);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_CORRECTION ')).length, 2);
-  assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_NO_PROGRESS ')));
-});
-
-test('reused pre-validation tool-call id does not bind a corrected runtime call to stale rejection', async (t) => {
-  const harness = extensionHarness(t);
-  const acceptedValue = {
-    steps: ['Update src/net.py'],
-    facts: ['src/net.py contains send().'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/net.py'],
-    large_mutation: false,
-    reason: 'Existing sender needs a bounded edit.',
-  };
-  const payload = {
-    tools: [{ type: 'function', function: { name: PLANNER_RESULT_TOOL } }],
-    tool_choice: 'auto',
-  };
-
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'toolUse',
-      content: [{ type: 'toolCall', id: 'reused-id', name: PLANNER_RESULT_TOOL, arguments: {} }],
-    },
-  }, harness.abortContext);
-  await harness.handlers.get('before_provider_request')({ payload }, harness.abortContext);
-
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'toolUse',
-      content: [{ type: 'toolCall', id: 'reused-id', name: PLANNER_RESULT_TOOL, arguments: { value: acceptedValue } }],
-    },
-  }, harness.abortContext);
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'reused-id',
-    input: { value: acceptedValue },
-  }, harness.abortContext), undefined);
-  await harness.handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'reused-id',
-    input: { value: acceptedValue },
-    isError: false,
-    content: [],
-  }, harness.abortContext);
-
-  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 2);
-  assert.equal(state.structuredCorrections, 1);
-  assert.equal(state.repairStatus, 'accepted');
-  assert.deepEqual(state.acceptedResult, acceptedValue);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')).length, 0);
-});
-
-test('empty-id retry matches the fresh observation and is not double-counted as pre-validation rejection', async (t) => {
-  const harness = extensionHarness(t);
-  const payload = {
-    tools: [{ type: 'function', function: { name: PLANNER_RESULT_TOOL } }],
-    tool_choice: 'auto',
-  };
-
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'toolUse',
-      content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: {} }],
-    },
-  }, harness.abortContext);
-  await harness.handlers.get('before_provider_request')({ payload }, harness.abortContext);
-
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'toolUse',
-      content: [{ type: 'toolCall', name: PLANNER_RESULT_TOOL, arguments: { value: {} } }],
-    },
-  }, harness.abortContext);
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    input: { value: {} },
-  }, harness.abortContext), undefined);
-  await harness.handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    input: { value: {} },
-    isError: true,
-    content: [{ type: 'text', text: 'Validation failed: value must have required property steps' }],
-  }, harness.abortContext);
-
-  let state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 2);
-  assert.equal(state.structuredCorrections, 2);
-  assert.equal(state.repairStatus, 'correction_required');
-  assert.equal(state.repairKind, 'schema_rejection');
-
-  await harness.handlers.get('before_provider_request')({ payload }, harness.abortContext);
-  state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 2);
-  assert.equal(state.structuredCorrections, 2);
-  assert.equal(state.repairKind, 'schema_rejection');
-});
-
-test('true parallel structured_output calls still share one runtime pending slot', async (t) => {
-  const harness = extensionHarness(t);
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'parallel-1',
-    input: { value: {} },
-  }, harness.abortContext), undefined);
-
-  const duplicate = await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'parallel-2',
-    input: { value: {} },
-  }, harness.abortContext);
-  assert.equal(duplicate.block, true);
-  assert.match(duplicate.reason, /one structured_output call at a time/i);
-  assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')));
-
-  await harness.handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'parallel-1',
-    input: { value: {} },
-    isError: true,
-    content: [{ type: 'text', text: 'Validation failed: value must have required property steps' }],
-  }, harness.abortContext);
-
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'corrected-after-runtime-rejection',
-    input: { value: {} },
-  }, harness.abortContext), undefined);
-});
-
-test('accepted structured output is terminal immediately and late duplicates stay harmless', async (t) => {
-  const harness = extensionHarness(t);
-  const acceptedValue = {
-    steps: ['Update src/net.py'],
-    facts: ['src/net.py contains send().'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/net.py'],
-    large_mutation: false,
-    reason: 'Existing sender needs a bounded edit.',
-  };
-  const resultCall = async (id, error, diagnostic, value = {}) => {
-    const input = { value };
-    const admitted = await harness.handlers.get('tool_call')({
-      toolName: PLANNER_RESULT_TOOL, toolCallId: id, input,
-    }, harness.abortContext);
-    assert.equal(admitted, undefined);
-    return harness.handlers.get('tool_result')({
-      toolName: PLANNER_RESULT_TOOL,
-      toolCallId: id,
-      input,
-      isError: error,
-      content: diagnostic ? [{ type: 'text', text: diagnostic }] : [],
-    }, harness.abortContext);
-  };
-
-  const first = await resultCall('r1', true, 'Validation failed: value must have required property steps');
-  assert.match(first.content[0].text, /Repository evidence remains closed/);
-  const blockedEvidence = await harness.handlers.get('tool_call')({
-    toolName: 'read', input: { path: 'src/a.py' },
-  }, harness.abortContext);
-  assert.equal(blockedEvidence.block, true);
-
-  const second = await resultCall('r2', true, 'Validation failed: value must have required property reason');
-  assert.match(second.content[0].text, /call structured_output again/);
-  await resultCall('r3', true, 'Validation failed: complexity must be trivial or nontrivial');
-  await resultCall('r4', true, 'Validation failed: required_mutation_anchors must be an array');
-  assert.equal(harness.aborted(), false, 'progressive corrections remain unbounded by result-attempt count');
-
-  await resultCall('r5', false, null, acceptedValue);
-  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.resultAttempts, 5);
-  assert.equal(state.structuredCorrections, 4);
-  assert.equal(state.repairStatus, 'accepted');
-  assert.deepEqual(state.acceptedResult, acceptedValue);
-  assert.equal(harness.aborted(), true, 'accepted result aborts the delegated lifecycle immediately');
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
-
-  const late = await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'late',
-    input: { value: acceptedValue },
-  }, harness.abortContext);
-  assert.equal(late.block, true);
-  assert.match(late.reason, /one structured_output call at a time/i);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
-  assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')));
-});
-
-test('accepted structured output uses direct handoff when accepted sidecar persistence fails', async (t) => {
-  const harness = extensionHarness(t);
-  const acceptedValue = {
-    steps: ['Update src/net.py'],
-    facts: ['src/net.py contains send().'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/net.py'],
-    large_mutation: false,
-    reason: 'Existing sender needs a bounded edit.',
-  };
-  const originalWriteFileSync = fs.writeFileSync.bind(fs);
-  const warnings = t.mock.method(console, 'warn', () => {});
-  t.mock.method(fs, 'writeFileSync', (file, data, options) => {
-    if (file === harness.stateFile && String(data).includes('"repairStatus":"accepted"')) {
-      throw new Error('simulated accepted sidecar write failure');
-    }
-    return originalWriteFileSync(file, data, options);
-  });
-
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'r1',
-    input: { value: acceptedValue },
-  }, harness.abortContext), undefined);
-  await harness.handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'r1',
-    input: { value: acceptedValue },
-    isError: false,
-    content: [],
-  }, harness.abortContext);
-
-  assert.equal(harness.aborted(), false, 'failed accepted-result persistence must not abort direct structured handoff');
-  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.repairStatus, 'finalizing');
-  assert.equal('acceptedResult' in state, false, 'failed persistence must not advertise sidecar recovery');
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
-  assert.ok(warnings.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_EVIDENCE_STATE_FAILED ')));
-
-  const late = await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'late',
-    input: { value: acceptedValue },
-  }, harness.abortContext);
-  assert.equal(late.block, true);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
-});
-
-test('accepted structured output without a sidecar does not abort direct handoff', async (t) => {
-  const previousStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-  delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+test('finalization-only repair child closes tools only when the provider request is bound', async (t) => {
+  const previous = process.env[PLANNER_FINALIZATION_ONLY_ENV];
+  process.env[PLANNER_FINALIZATION_ONLY_ENV] = '1';
   t.after(() => {
-    if (previousStateFile === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-    else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previousStateFile;
+    if (previous === undefined) delete process.env[PLANNER_FINALIZATION_ONLY_ENV];
+    else process.env[PLANNER_FINALIZATION_ONLY_ENV] = previous;
   });
 
-  const harness = extensionHarness(t, { stateFile: null });
-  const acceptedValue = {
-    steps: ['Update src/net.py'],
-    facts: ['src/net.py contains send().'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/net.py'],
-    large_mutation: false,
-    reason: 'Existing sender needs a bounded edit.',
-  };
-
-  assert.equal(await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'r1',
-    input: { value: acceptedValue },
-  }, harness.abortContext), undefined);
-  await harness.handlers.get('tool_result')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'r1',
-    input: { value: acceptedValue },
-    isError: false,
-    content: [],
+  const harness = extensionHarness(t);
+  assert.deepEqual(harness.activeTools(), PLANNER_EVIDENCE_TOOLS, 'extension load must not call Pi session actions');
+  const request = await harness.handlers.get('before_provider_request')({
+    payload: {
+      model: 'qwen',
+      tools: PLANNER_EVIDENCE_TOOLS.map(name => ({ type: 'function', function: { name } })),
+      tool_choice: 'auto',
+    },
   }, harness.abortContext);
-
-  assert.equal(harness.aborted(), false, 'no sidecar means the accepted direct handoff must remain alive');
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
-
-  const late = await harness.handlers.get('tool_call')({
-    toolName: PLANNER_RESULT_TOOL,
-    toolCallId: 'late',
-    input: { value: acceptedValue },
-  }, harness.abortContext);
-  assert.equal(late.block, true);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
-  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
+  assert.deepEqual(harness.activeTools(), []);
+  assert.equal('tools' in request, false);
+  assert.equal('tool_choice' in request, false);
+  assert.equal(request.model, 'qwen');
+  assert.ok(harness.logs().some(line => line.includes('"source":"finalization_only_retry"')));
 });
 
-test('three materially equivalent invalid structured outputs trip semantic no-progress protection', async (t) => {
-  const harness = extensionHarness(t);
-  for (let index = 1; index <= 3; index += 1) {
-    assert.equal(await harness.handlers.get('tool_call')({
-      toolName: PLANNER_RESULT_TOOL, toolCallId: `r${index}`, input: { value: {} },
-    }, harness.abortContext), undefined);
-    await harness.handlers.get('tool_result')({
-      toolName: PLANNER_RESULT_TOOL,
-      toolCallId: `r${index}`,
-      input: { value: {} },
-      isError: true,
-      content: [{ type: 'text', text: 'Validation failed: value must have required property steps' }],
-    }, harness.abortContext);
+test('Planner XML maps all canonical fields and decodes XML text safely', () => {
+  const parsed = parsePlannerXml(`<plan complexity="nontrivial" large_mutation="true">
+  <steps><step>Update A &amp; B &lt;safely&gt;.</step><step>Add focused tests.</step></steps>
+  <facts><fact>send() returns &quot;ok&quot; &amp; logs it.</fact></facts>
+  <required_mutation_anchors><anchor>src/net.py</anchor><anchor>tests/net.test.mjs</anchor></required_mutation_anchors>
+  <reason>Preserve caller&apos;s behavior.</reason>
+</plan>`);
+  assert.deepEqual(parsed, {
+    steps: ['Update A & B <safely>.', 'Add focused tests.'],
+    facts: ['send() returns "ok" & logs it.'],
+    warnings: [],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/net.py', 'tests/net.test.mjs'],
+    large_mutation: true,
+    reason: "Preserve caller's behavior.",
+  });
+});
+
+test('Planner XML accepts one surrounding xml fence and standard numeric entities', () => {
+  const parsed = parsePlannerXml([
+    '```xml',
+    '<plan complexity="trivial" large_mutation="false">',
+    '  <steps><step>Use List&lt;str&gt; and preserve A &#38; B.</step></steps>',
+    '  <reason>Keep caller&#39;s behavior &#x26; tests.</reason>',
+    '</plan>',
+    '```',
+  ].join('\n'));
+  assert.deepEqual(parsed.steps, ['Use List<str> and preserve A & B.']);
+  assert.equal(parsed.reason, "Keep caller's behavior & tests.");
+});
+
+test('Planner XML maps optional warnings without weakening resolved targets', () => {
+  const parsed = parsePlannerXml(validPlannerXml({
+    warning: 'Resolved test target differs from the nearest convention.',
+  }));
+  assert.deepEqual(parsed.warnings, ['Resolved test target differs from the nearest convention.']);
+});
+
+test('Planner XML normalizes omitted or self-closing optional facts and anchors to empty arrays', () => {
+  for (const xml of [
+    `<plan complexity="trivial" large_mutation="false">
+  <steps><step>Update metadata.</step></steps>
+  <reason>One static edit.</reason>
+</plan>`,
+    `<plan complexity='trivial' large_mutation='false'>
+  <steps><step>Update metadata.</step></steps>
+  <facts/>
+  <required_mutation_anchors />
+  <reason>One static edit.</reason>
+</plan>`,
+  ]) {
+    const parsed = parsePlannerXml(xml);
+    assert.deepEqual(parsed.facts, []);
+    assert.deepEqual(parsed.warnings, []);
+    assert.deepEqual(parsed.required_mutation_anchors, []);
   }
-  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.structuredCorrections, 3);
-  assert.equal(state.failureKind, 'semantic_no_progress');
-  assert.equal(harness.aborted(), true);
+});
+
+test('Planner XML rejects malformed structure, invalid root values, and nested markup', () => {
+  for (const xml of [
+    '<plan complexity="trivial" large_mutation="false"><steps><step>x</step></steps>',
+    '<plan complexity="medium" large_mutation="false"><steps><step>x</step></steps><reason>r</reason></plan>',
+    '<plan complexity="trivial" large_mutation="yes"><steps><step>x</step></steps><reason>r</reason></plan>',
+    '<plan complexity="trivial" large_mutation="false"><steps></steps><reason>r</reason></plan>',
+    '<plan complexity="trivial" large_mutation="false"><steps><step><b>x</b></step></steps><reason>r</reason></plan>',
+    '<plan complexity="trivial" large_mutation="false"><steps><step>A & B</step></steps><reason>r</reason></plan>',
+    '<plan complexity="trivial" large_mutation="false"><steps><step>x</step></steps><reason>bad < text</reason></plan>',
+    '<!DOCTYPE plan><plan complexity="trivial" large_mutation="false"><steps><step>x</step></steps><reason>r</reason></plan>',
+  ]) {
+    assert.throws(() => parsePlannerXml(xml), /Planner XML:/);
+  }
+});
+
+test('valid first XML finalization prepares once with no repair request', async (t) => {
+  const { dir, env } = fixture(t);
+  t.mock.method(console, 'log', () => {});
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild(request) {
+      assert.equal(request.result.kind, 'text');
+      assert.equal('schema' in request.result, false);
+      assert.doesNotMatch(JSON.stringify(request), /structured_output/);
+      const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+      fs.writeFileSync(evidenceStateFile, JSON.stringify({ used: 2, facts: ['f1'], toolCounts: { read: 2 } }));
+      return {
+        status: 'completed',
+        result: { kind: 'text', text: validPlannerXml() },
+        usage: { input: 500, output: 180, turns: 1, toolCalls: 2 },
+      };
+    },
+  });
+
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'prepared');
+  assert.equal(host.requests.length, 1);
+  assert.equal(prepared.plannerFinalizationAttempts, 1);
+  assert.equal(prepared.plannerXmlRepairNeeded, false);
+  assert.deepEqual(prepared.plan, ['Update src/net.py.']);
+  assert.deepEqual(prepared.repositoryFacts, ['src/net.py contains send().']);
+  assert.deepEqual(prepared.requiredMutationAnchors, ['src/net.py']);
+  assert.equal(prepared.plannerEvidenceActions, 2);
+});
+
+test('malformed XML gets exactly one finalization-only repair and preserves the canonical handoff', async (t) => {
+  const { dir, env } = fixture(t);
+  t.mock.method(console, 'log', () => {});
+  let call = 0;
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild(request) {
+      call += 1;
+      if (call === 1) {
+        const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+        fs.writeFileSync(evidenceStateFile, JSON.stringify({
+          used: 1,
+          facts: ['read src/net.py: existing sender convention is grounded'],
+          toolCounts: { read: 1 },
+        }));
+        return {
+          status: 'completed',
+          result: { kind: 'text', text: '<plan complexity="nontrivial" large_mutation="false"><steps><step>Update src/net.py.</step></steps>' },
+          usage: { input: 400, output: 80, turns: 1 },
+        };
+      }
+      assert.match(request.task, /FINALIZATION-ONLY XML REPAIR/);
+      assert.match(request.task, /existing sender convention is grounded/);
+      assert.match(request.task, /Issue title:/);
+      assert.equal(process.env[PLANNER_FINALIZATION_ONLY_ENV], '1');
+      return {
+        status: 'completed',
+        result: { kind: 'text', text: validPlannerXml() },
+        usage: { input: 180, output: 120, turns: 1 },
+      };
+    },
+  });
+
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'prepared');
+  assert.equal(call, 2);
+  assert.equal(host.requests.length, 2);
+  assert.equal(prepared.plannerFinalizationAttempts, 2);
+  assert.equal(prepared.plannerXmlRepairNeeded, true);
+  assert.equal(prepared.plannerProviderTurns, 2);
+});
+
+test('missing text payload still consumes attempt one and receives the single XML repair', async (t) => {
+  const { dir, env } = fixture(t);
+  t.mock.method(console, 'log', () => {});
+  let call = 0;
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild(request) {
+      call += 1;
+      if (call === 1) {
+        return {
+          status: 'completed',
+          result: { kind: 'text' },
+          usage: { input: 120, output: 0, turns: 1 },
+        };
+      }
+      assert.match(request.task, /\[no text XML payload returned\]/);
+      return {
+        status: 'completed',
+        result: { kind: 'text', text: validPlannerXml() },
+        usage: { input: 100, output: 80, turns: 1 },
+      };
+    },
+  });
+
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'prepared');
+  assert.equal(call, 2);
+  assert.equal(prepared.plannerFinalizationAttempts, 2);
+  assert.equal(prepared.plannerXmlRepairNeeded, true);
+});
+
+test('missing fields and invalid root values each receive only one XML repair turn', async (t) => {
+  const cases = [
+    '<plan complexity="trivial" large_mutation="false"><reason>missing steps</reason></plan>',
+    '<plan complexity="medium" large_mutation="false"><steps><step>x</step></steps><reason>bad complexity</reason></plan>',
+    '<plan complexity="trivial" large_mutation="yes"><steps><step>x</step></steps><reason>bad bool</reason></plan>',
+  ];
+  for (const [index, firstXml] of cases.entries()) {
+    const { dir, env } = fixture(t);
+    let call = 0;
+    const host = plannerHost({
+      cwd: dir,
+      async driveChild() {
+        call += 1;
+        return {
+          status: 'completed',
+          result: { kind: 'text', text: call === 1 ? firstXml : validPlannerXml() },
+          usage: { input: 100 + index, output: 50, turns: 1 },
+        };
+      },
+    });
+    const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+    assert.equal(prepared.status, 'prepared');
+    assert.equal(call, 2);
+    assert.equal(prepared.plannerFinalizationAttempts, 2);
+  }
+});
+
+test('invalid XML repair fails closed after two attempts and never asks for a third', async (t) => {
+  const { dir, env } = fixture(t);
+  t.mock.method(console, 'log', () => {});
+  let call = 0;
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      call += 1;
+      return {
+        status: 'completed',
+        result: { kind: 'text', text: '<plan complexity="trivial" large_mutation="false"><steps>' },
+        usage: { input: 100, output: 30, turns: 1 },
+      };
+    },
+  });
+
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'fallback');
+  assert.equal(prepared.failureClass, 'planner_xml_finalization_failed');
+  assert.equal(prepared.plannerFinalizationAttempts, 2);
+  assert.equal(prepared.plannerXmlRepairNeeded, true);
+  assert.equal(call, 2);
+  assert.equal(host.requests.length, 2);
 });
 
 test('successful planner handoff preserves long semantic content without numeric ceilings', () => {
@@ -984,10 +697,6 @@ test('successful planner handoff preserves long semantic content without numeric
   assert.deepEqual(validated.requiredMutationAnchors, ['src/existing.py', 'tests/existing.test.py']);
   assert.equal(validated.reason.length, 500);
 
-  assert.equal(IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties.steps.maxItems, undefined);
-  assert.equal(IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties.facts.maxItems, undefined);
-  assert.equal(IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties.reason.maxLength, undefined);
-  assert.equal('evidence_budget' in IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA.properties, false);
 });
 
 test('planner handoff keeps structural validation while using semantic mutation anchors', () => {
@@ -1013,120 +722,14 @@ test('planner handoff keeps structural validation while using semantic mutation 
   }
 });
 
-test('parent recovers the persisted accepted result when terminal child aborts immediately', async (t) => {
-  const { dir, env } = fixture(t);
-  t.mock.method(console, 'log', () => {});
-  const acceptedResult = {
-    steps: Array.from({ length: 19 }, (_, index) => `Step ${index + 1}`),
-    facts: Array.from({ length: 8 }, (_, index) => `Repository fact ${index + 1}`),
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/net.py'],
-    large_mutation: false,
-    reason: 'grounded',
-  };
-  const host = plannerHost({
-    cwd: dir,
-    async driveChild(request) {
-      assert.equal(request.timeoutMs, undefined);
-      assert.equal(request.toolBudget, undefined);
-      assert.doesNotMatch(request.task, /at most 6 .*evidence/i);
-      assert.doesNotMatch(request.task, /evidence_budget/);
-      const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-      assert.ok(evidenceStateFile);
-      fs.writeFileSync(evidenceStateFile, JSON.stringify({
-        used: 8,
-        facts: Array.from({ length: 8 }, (_, index) => `fact-${index}`),
-        structuredCorrections: 0,
-        resultAttempts: 1,
-        repairStatus: 'accepted',
-        acceptedResult,
-      }));
-      return {
-        status: 'cancelled',
-        error: 'planner terminalized after accepted structured_output',
-        usage: { input: 900, output: 500, turns: 1, toolCalls: 9 },
-      };
-    },
-  });
-
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'prepared');
-  assert.equal(prepared.plan.length, 19);
-  assert.equal(prepared.repositoryFacts.length, 8);
-  assert.deepEqual(prepared.requiredMutationAnchors, ['src/net.py']);
-  assert.equal('evidenceBudget' in prepared, false);
-  assert.equal(prepared.plannerEvidenceActions, 8);
-  assert.equal(prepared.plannerProviderTurns, 1);
-});
-
-test('parent consumes direct structured result when no accepted sidecar is persisted', async (t) => {
-  const { dir, env } = fixture(t);
-  t.mock.method(console, 'log', () => {});
-  const acceptedResult = {
-    steps: ['Update src/net.py'],
-    facts: ['src/net.py contains send().'],
-    warnings: ['Keep the runtime-resolved target even if a sibling convention differs.'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/net.py'],
-    large_mutation: false,
-    reason: 'grounded',
-  };
-  const host = plannerHost({
-    cwd: dir,
-    async driveChild() {
-      const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-      assert.ok(evidenceStateFile);
-      fs.writeFileSync(evidenceStateFile, JSON.stringify({
-        used: 3,
-        facts: ['fact-1'],
-        structuredCorrections: 0,
-        resultAttempts: 1,
-        repairStatus: 'finalizing',
-      }));
-      return {
-        status: 'completed',
-        result: { kind: 'structured', value: acceptedResult },
-        usage: { input: 500, output: 200, turns: 1, toolCalls: 4 },
-      };
-    },
-  });
-
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'prepared');
-  assert.deepEqual(prepared.plan, acceptedResult.steps);
-  assert.deepEqual(prepared.repositoryFacts, acceptedResult.facts);
-  assert.equal('plannerWarnings' in prepared, false);
-  assert.equal('targetPolicy' in prepared, false);
-  assert.deepEqual(prepared.requiredMutationAnchors, acceptedResult.required_mutation_anchors);
-  assert.equal(prepared.plannerEvidenceActions, 3);
-  assert.equal(prepared.plannerProviderTurns, 1);
-});
-
-test('unrecoverable missing structured result falls back truthfully without CAT_PETTED or deadline classification', async (t) => {
-  const { dir, env } = fixture(t);
-  const logs = t.mock.method(console, 'log', () => {});
-  t.mock.method(console, 'warn', () => {});
-  const host = plannerHost({
-    cwd: dir,
-    driveChild: async () => ({
-      status: 'failed',
-      error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.',
-      usage: { input: 100, output: 20, turns: 1 },
-    }),
-  });
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'fallback');
-  assert.equal(prepared.failureClass, 'structured_result_unrecoverable');
-  assert.notEqual(prepared.failureClass, 'planner_deadline_timeout');
-  assert.ok(!logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_CAT_PETTED ')));
-});
-
-test('planner observability uses action/correction fields and has no cap telemetry', () => {
+test('planner observability uses XML finalization fields and has no cap telemetry', () => {
   const bootstrap = fs.readFileSync('scripts/pi-implementer-bootstrap.mjs', 'utf8');
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
   const combined = `${bootstrap}\n${runtime}`;
   assert.match(combined, /plannerEvidenceActions/);
-  assert.match(combined, /plannerStructuredCorrections/);
+  assert.match(combined, /plannerFinalizationAttempts/);
+  assert.match(combined, /plannerXmlRepairNeeded/);
+  assert.doesNotMatch(combined, /plannerStructuredCorrections|structuredCorrections/);
   assert.doesNotMatch(combined, /plannerEvidenceCap|evidenceCap:/);
   assert.doesNotMatch(combined, /plannerEvidenceUsed|evidenceUsed:/);
 });
