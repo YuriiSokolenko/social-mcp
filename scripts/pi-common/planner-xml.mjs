@@ -171,21 +171,3 @@ export function parsePlannerXml(input) {
   };
 }
 
-export function plannerXmlContractExample() {
-  return `<plan complexity="nontrivial" large_mutation="false">
-  <steps>
-    <step>Create src/foo.py.</step>
-    <step>Add focused tests.</step>
-  </steps>
-  <facts>
-    <fact>Existing convention is in src/bar.py.</fact>
-  </facts>
-  <warnings>
-    <warning>Resolved test target differs from the nearest convention.</warning>
-  </warnings>
-  <required_mutation_anchors>
-    <anchor>src/existing.py</anchor>
-  </required_mutation_anchors>
-  <reason>Small localized change.</reason>
-</plan>`;
-}
