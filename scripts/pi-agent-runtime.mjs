@@ -1344,6 +1344,8 @@ export default function (pi) {
       (
         (CONTENT_MUTATION_TOOLS.has(name) && codingRecoveryGuard.inspection_complete !== true) ||
         name === 'bash' ||
+        name === 'repo_search' ||
+        name === 'indexed_repo_search' ||
         name === config.productiveProgress?.codingSessionTool ||
         name === config.productiveProgress?.blockerTool
       )
