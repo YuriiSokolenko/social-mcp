@@ -5,6 +5,7 @@ import {
   assertMainPromptComposition,
   mainPromptRequestMetadata,
 } from '../scripts/pi-common/main-prompt-observability.mjs';
+import { agentContractPrompt, implementerCodingContractPrompt } from '../scripts/pi-common/stage-config.mjs';
 
 const initialUser = {
   role: 'user',
@@ -99,4 +100,24 @@ test('#540 duplicate system or contract composition fails deterministically', ()
     () => assertMainPromptComposition(mainPromptRequestMetadata(duplicateContract)),
     /exactly one shared contract and one Implementer role contract/,
   );
+});
+
+
+test('#540 generated Main contract matches direct repository access policy without leaking it into coding overlay', () => {
+  const env = { ...process.env, GITHUB_WORKSPACE: process.cwd() };
+  const main = agentContractPrompt('implementer', env);
+  assert.equal((main.match(/<shared_agent_contract\b/g) ?? []).length, 1);
+  assert.equal((main.match(/<role_contract\b/g) ?? []).length, 1);
+  assert.match(main, /read/);
+  assert.match(main, /repo_search/);
+  assert.match(main, /indexed_repo_search/);
+  assert.match(main, /bash/);
+  assert.match(main, /do \*\*not\*\* require a preceding `need_more_evidence` call/);
+  assert.match(main, /PreparedImplementation as the starting plan/);
+  assert.doesNotMatch(main, /Broad `bash` is also blocked/);
+
+  const coding = implementerCodingContractPrompt(env);
+  assert.match(coding, /<coding_role_contract/);
+  assert.doesNotMatch(coding, /In this fresh Main mode the runtime keeps these repository tools directly callable/);
+  assert.match(coding, /one concrete fact blocks the next safe action.*need_more_evidence/s);
 });
