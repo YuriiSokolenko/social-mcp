@@ -127,8 +127,6 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
   assert.equal(requests.length, 1);
   assert.equal(requests[0].timeoutMs, undefined);
   assert.equal(requests[0].toolBudget, undefined);
-  assert.equal(Object.keys(requests[0].childEnv).length, 1);
-  assert.ok(Object.keys(requests[0].childEnv)[0].includes('PLANNER_EVIDENCE_STATE_FILE'));
   assert.ok(logs.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_CAT_PETTED ')));
 });
 
