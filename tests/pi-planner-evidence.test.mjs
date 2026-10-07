@@ -529,7 +529,7 @@ test('completed assistant text closes repository tools at message end and strips
 });
 
 test('plain Planner final text is preserved verbatim with Markdown, Unicode, quotes, and angle brackets', async (t) => {
-  const { dir, env } = plannerEnv(t);
+  const { dir, env } = fixture(t);
   const planText = ['## Plan — naïve Ω', '', '- Update `social_mcp.diagnostics.<module>` without escaping it.', '- Preserve "quoted values", <tag-like-text>, ampersands & Markdown **bold**.', '- Run the focused diagnostics tests.'].join('\n');
   let calls = 0;
   const logs = [];
@@ -553,7 +553,7 @@ test('plain Planner final text is preserved verbatim with Markdown, Unicode, quo
 });
 
 test('successful Planner handoff has no harness character or byte cap', async (t) => {
-  const { dir, env } = plannerEnv(t);
+  const { dir, env } = fixture(t);
   const planText = `# Plan\n${'x'.repeat(20000)}\nKeep \`social_mcp.diagnostics.<module>\` literal.`;
   const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', finishReason: 'stop', usage: { turns: 1, output: 1000 }, result: { kind: 'text', text: planText } }) });
   t.mock.method(console, 'log', () => {});
@@ -564,7 +564,7 @@ test('successful Planner handoff has no harness character or byte cap', async (t
 });
 
 test('empty Planner final text fails closed without a format-repair request', async (t) => {
-  const { dir, env } = plannerEnv(t); let calls = 0;
+  const { dir, env } = fixture(t); let calls = 0;
   const host = plannerHost({ cwd: dir, driveChild: async () => { calls += 1; return { status: 'completed', finishReason: 'stop', usage: { turns: 1, output: 1 }, result: { kind: 'text', text: '   \n\t' } }; } });
   t.mock.method(console, 'log', () => {});
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
@@ -572,7 +572,7 @@ test('empty Planner final text fails closed without a format-repair request', as
 });
 
 test('explicit provider length termination is rejected as truncated with one Planner request', async (t) => {
-  const { dir, env } = plannerEnv(t); let calls = 0;
+  const { dir, env } = fixture(t); let calls = 0;
   const host = plannerHost({ cwd: dir, driveChild: async () => { calls += 1; return { status: 'completed', finishReason: 'length', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: 'partial plan' } }; } });
   t.mock.method(console, 'log', () => {});
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
@@ -580,7 +580,7 @@ test('explicit provider length termination is rejected as truncated with one Pla
 });
 
 test('completed envelope at the token ceiling without a stop reason is conservatively rejected', async (t) => {
-  const { dir, env } = plannerEnv(t);
+  const { dir, env } = fixture(t);
   const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: 'possibly truncated plan' } }) });
   t.mock.method(console, 'log', () => {});
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
@@ -588,7 +588,7 @@ test('completed envelope at the token ceiling without a stop reason is conservat
 });
 
 test('an explicit successful stop remains authoritative even when usage equals the transport ceiling', async (t) => {
-  const { dir, env } = plannerEnv(t); const planText = 'Complete plan at the provider accounting boundary.';
+  const { dir, env } = fixture(t); const planText = 'Complete plan at the provider accounting boundary.';
   const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', stopReason: 'stop', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: planText } }) });
   t.mock.method(console, 'log', () => {});
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
@@ -596,7 +596,7 @@ test('an explicit successful stop remains authoritative even when usage equals t
 });
 
 test('explicit non-success termination fails closed as an incomplete final', async (t) => {
-  const { dir, env } = plannerEnv(t);
+  const { dir, env } = fixture(t);
   const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', finish_reason: 'tool_calls', usage: { turns: 1, output: 20 }, result: { kind: 'text', text: 'not actually final' } }) });
   t.mock.method(console, 'log', () => {});
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
