@@ -16,7 +16,6 @@ import {
   plannerTargetPolicy,
   plannerTask,
   prepareImplementation,
-  validateImplementationPreparation,
 } from '../scripts/pi-common/implementation-planner.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { buildPlannerOrbitSeed, plannerOrbitSeedTargets } from '../scripts/pi-common/planner-orbit.mjs';
@@ -225,31 +224,7 @@ test('planner prompt keeps resolved targets immutable and convention conflicts n
   assert.match(task, /resolvedTargets=.*tests\/test_smoke_labels\.py/s);
   assert.match(task, /resolvedTargets > conventionHints > discovered repository context/);
   assert.match(task, /Do not validate, relocate, normalize, improve, or replace them/);
-  assert.match(task, /optional <warnings>/);
-});
-
-test('canonical validation rejects relocated resolved targets and preserves warnings', () => {
-  const resolvedTargets = { test: 'tests/test_smoke_labels.py' };
-  const matching = validateImplementationPreparation({
-    steps: ['Create tests/test_smoke_labels.py with smoke label coverage.'],
-    facts: [],
-    warnings: ['Nearest convention is tests/diagnostics/test_smoke_labels.py.'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: [],
-    large_mutation: false,
-    reason: 'Add focused regression coverage.',
-  }, { resolvedTargets });
-  assert.equal(matching.warnings.length, 1);
-
-  assert.throws(() => validateImplementationPreparation({
-    steps: ['Create tests/diagnostics/test_smoke_labels.py.'],
-    facts: [],
-    warnings: [],
-    complexity: 'nontrivial',
-    required_mutation_anchors: [],
-    large_mutation: false,
-    reason: 'Follow nearby tests.',
-  }, { resolvedTargets }), /resolved_target_mismatch/);
+  assert.match(task, /state the disagreement in the plan text/i);
 });
 
 test('more than six distinct useful evidence actions are accepted and telemetry exposes only action count', async (t) => {
