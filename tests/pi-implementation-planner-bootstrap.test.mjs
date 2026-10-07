@@ -243,3 +243,106 @@ test('bootstrap launches planner only after session_start handlers have installe
   await handlers.get('resources_discover')[0]({ type: 'resources_discover' }, ctx);
   assert.equal(shutdowns, 1);
 });
+
+
+test('Orbit seed is resolved and embedded before Planner provider request #1', async (t) => {
+  const bus = new EventEmitter();
+  let seedResolved = false;
+  let requestSeen = null;
+  bus.on('prompt-template:subagent:request', request => {
+    requestSeen = request;
+    assert.equal(seedResolved, true, 'seed must be ready before delegation/provider request');
+    bus.emit('prompt-template:subagent:response', {
+      requestId: request.requestId,
+      ownerRunId: request.ownerRunId,
+      nodeId: request.nodeId,
+      status: 'completed',
+      usage: { turns: 1, input: 20, output: 10 },
+      result: { kind: 'structured', value: {
+        steps: ['Update src/net.py'], facts: ['src/net.py is the target'], complexity: 'trivial',
+        required_mutation_anchors: ['src/net.py'], large_mutation: false, reason: 'one bounded edit',
+      } },
+    });
+  });
+  const pi = { events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) } };
+  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+  const env = plannerEnv(t);
+  const logs = [];
+  t.mock.method(console, 'log', line => logs.push(String(line)));
+
+  const preparedResult = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, {
+    env,
+    orbitSeedBuilder: async () => {
+      seedResolved = true;
+      return {
+        present: true, fresh: true, currentHead: 'abc123', indexedHead: 'abc123', indexStatus: 'indexed',
+        requestedTargets: ['src/net.py'], targets: ['src/net.py'], serializedBytes: 52,
+        truncated: false, queryFailures: 0, reason: null,
+        text: '### Orbit target: src/net.py\ngraph relationship for send',
+      };
+    },
+  });
+
+  assert.equal(preparedResult.status, 'prepared');
+  assert.ok(requestSeen);
+  assert.match(requestSeen.task, /ORBIT-DERIVED REPOSITORY CONTEXT/);
+  assert.match(requestSeen.task, /seeded before provider request #1/i);
+  assert.match(requestSeen.task, /graph relationship for send/);
+  assert.match(requestSeen.task, /starting point only/i);
+  assert.ok(logs.some(line => line.startsWith('PI_PLANNER_ORBIT_SEED ') && line.includes('"present":true')));
+});
+
+test('Planner docs and agent instructions describe Orbit seed and no superseded numeric handoff limits', () => {
+  const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  const implementer = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
+  const rules = fs.readFileSync('docs/CI_RULES.md', 'utf8');
+
+  assert.match(planner, /ORBIT-DERIVED REPOSITORY CONTEXT/);
+  assert.match(planner, /current HEAD/);
+  assert.match(implementer, /before that Planner's first provider request/);
+  assert.match(rules, /PI_PLANNER_ORBIT_SEED/);
+  assert.match(rules, /no Planner evidence-action budget/i);
+  assert.match(planner, /30-second pre-request infrastructure safety budget/i);
+  assert.match(rules, /not a Planner lifecycle deadline or Orbit-query-count cap/i);
+  assert.doesNotMatch(rules, /planner separately returns its own per-task `evidence_budget` estimate/i);
+  assert.doesNotMatch(rules, /repository facts remain capped for prompt hygiene/i);
+  assert.doesNotMatch(rules, /keeps up to 16 ordered steps/i);
+  assert.doesNotMatch(rules, /15-minute planner deadline/i);
+});
+
+
+test('absent Orbit seed still delegates Planner and returns PreparedImplementation', async (t) => {
+  const bus = new EventEmitter();
+  let requestSeen = null;
+  bus.on('prompt-template:subagent:request', request => {
+    requestSeen = request;
+    bus.emit('prompt-template:subagent:response', {
+      requestId: request.requestId,
+      ownerRunId: request.ownerRunId,
+      nodeId: request.nodeId,
+      status: 'completed',
+      usage: { turns: 1, input: 12, output: 8 },
+      result: { kind: 'structured', value: {
+        steps: ['Use filesystem evidence as needed'], facts: [], complexity: 'trivial',
+        required_mutation_anchors: [], large_mutation: false, reason: 'Orbit is optional',
+      } },
+    });
+  });
+  const pi = { events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) } };
+  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+  const env = plannerEnv(t);
+  t.mock.method(console, 'log', () => {});
+
+  const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, {
+    env,
+    orbitSeedBuilder: async () => ({
+      present: false, fresh: false, currentHead: 'abc123', indexedHead: 'old999', indexStatus: 'indexed',
+      requestedTargets: ['src/net.py'], targets: [], serializedBytes: 0, truncated: false,
+      queryFailures: 0, reason: 'stale_index',
+    }),
+  });
+
+  assert.equal(result.status, 'prepared');
+  assert.ok(requestSeen, 'Planner delegation still occurs');
+  assert.doesNotMatch(requestSeen.task, /ORBIT-DERIVED REPOSITORY CONTEXT/);
+});

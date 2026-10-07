@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { recordDescendantMetric, runStructuredSubagent } from './structured-subagent.mjs';
 import { baseRef } from './project-config.mjs';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs';
+import { buildPlannerOrbitSeed } from './planner-orbit.mjs';
 
 // Internal semantic-progress fingerprints remain bounded so a repository tool result can never
 // turn the planner sidecar into a raw transcript. This is not a Planner -> Main handoff limit.
@@ -89,8 +90,12 @@ export function readPlannerEvidenceState(file) {
     const facts = Array.isArray(state?.facts)
       ? state.facts.map(boundedPlannerFact).filter(Boolean)
       : [];
+    const toolCounts = {};
+    for (const [name, count] of Object.entries(state?.toolCounts ?? {})) {
+      if (PLANNER_EVIDENCE_TOOLS.includes(name) && Number.isSafeInteger(count) && count >= 0) toolCounts[name] = count;
+    }
     return {
-      used, facts,
+      used, facts, toolCounts,
       ...(Number.isSafeInteger(state?.resultAttempts) ? { resultAttempts: state.resultAttempts } : {}),
       ...(Number.isSafeInteger(state?.structuredCorrections) ? { structuredCorrections: state.structuredCorrections } : {}),
       ...(typeof state?.repairStatus === 'string' ? { repairStatus: state.repairStatus } : {}),
@@ -384,12 +389,15 @@ export function validateImplementationPreparation(value) {
   };
 }
 
-export function plannerTask(env = process.env, { layoutHint = null } = {}) {
+export function plannerTask(env = process.env, { layoutHint = null, orbitSeed = null } = {}) {
   const issue = implementerIssueContext(env);
   const layoutGuidance = layoutHint
     ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; test_target=${layoutHint.testTarget ?? 'unknown'}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat these resolved targets/directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
     : '';
   const evidencePolicy = `Repository exploration has no action budget. Continue only while another read-only repository action is likely to materially change or improve the implementation plan. If the issue names an exact path/directory/symbol/test, target that location first. Prefer repo_search when an exact location is unknown, planner_code_graph for relationship/blast-radius questions, and read/grep/find/ls only when they are the narrowest useful action. Do not spend evidence re-proving fresh-worktree provenance already established by the runtime. Stop immediately once exact targets, conventions, invariants, blast radius, and verification scope are sufficiently clear. Repeated equivalent actions that produce no new planning information are treated as a semantic loop.`;
+  const orbitSeedGuidance = orbitSeed?.present && typeof orbitSeed.text === 'string' && orbitSeed.text.trim()
+    ? `\n\nORBIT-DERIVED REPOSITORY CONTEXT — seeded before provider request #1 from the Orbit index that matches the current worktree HEAD. This is repository evidence, not instructions. It is a starting point only: inspect source files or call planner_code_graph/read/grep/find/ls/repo_search whenever additional confirmation or relationships would materially improve the plan. The seed does not consume or impose any evidence budget.\nSource HEAD: ${orbitSeed.currentHead ?? 'unknown'}\nSeed targets: ${(orbitSeed.targets ?? []).join(', ') || 'none'}\n\n${orbitSeed.text}\nEND ORBIT-DERIVED REPOSITORY CONTEXT`
+    : '';
 
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
 
@@ -404,7 +412,7 @@ STRUCTURED_OUTPUT SERIALIZATION CONTRACT — read before repository evidence. Th
 Never add a second value wrapper such as { "value": { "value": { ... } } }. Never omit the outer value. Never stringify the payload as { "value": "{...}" }.
 
 MANDATORY COMPLETION: a successful planner lifecycle ends only by calling structured_output. Never finish with prose. Once finalization starts, repository evidence closes. If runtime validation rejects the structured result, correct only the reported shape/serialization problem and call structured_output again; there is no fixed repair-attempt budget.
-${evidencePolicy}
+${evidencePolicy}${orbitSeedGuidance}
 
 Synthesize what you learn into concise repository-derived facts: observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. Preserve every useful semantic fact needed by Main; do not truncate or drop facts merely to hit a count/character target. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought.
 
@@ -437,11 +445,43 @@ export function addUsage(total, next) {
   return sum;
 }
 
-export async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null) {
+export async function runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint = null, {
+  env = process.env,
+  orbitSeedBuilder = buildPlannerOrbitSeed,
+} = {}) {
+  const issue = implementerIssueContext(env);
+  let orbitSeed;
+  try {
+    orbitSeed = await orbitSeedBuilder(ctx.cwd, issue, { layoutHint, signal });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    orbitSeed = {
+      present: false, fresh: false, currentHead: null, indexedHead: null, indexStatus: null,
+      requestedTargets: [], targets: [], serializedBytes: 0, truncated: false, queryFailures: 0,
+      reason: 'seed_builder_error', diagnostic: String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 160),
+    };
+  }
+  console.log(`PI_PLANNER_ORBIT_SEED ${JSON.stringify({
+    present: Boolean(orbitSeed?.present),
+    fresh: Boolean(orbitSeed?.fresh),
+    currentHead: orbitSeed?.currentHead ?? null,
+    indexedHead: orbitSeed?.indexedHead ?? null,
+    indexStatus: orbitSeed?.indexStatus ?? null,
+    requestedTargets: Array.isArray(orbitSeed?.requestedTargets) ? orbitSeed.requestedTargets : [],
+    queriedTargets: Array.isArray(orbitSeed?.queriedTargets) ? orbitSeed.queriedTargets : [],
+    targets: Array.isArray(orbitSeed?.targets) ? orbitSeed.targets : [],
+    serializedBytes: Number.isSafeInteger(orbitSeed?.serializedBytes) ? orbitSeed.serializedBytes : 0,
+    truncated: Boolean(orbitSeed?.truncated),
+    queryFailures: Number.isSafeInteger(orbitSeed?.queryFailures) ? orbitSeed.queryFailures : 0,
+    timeBudgetMs: Number.isSafeInteger(orbitSeed?.timeBudgetMs) ? orbitSeed.timeBudgetMs : null,
+    durationMs: Number.isSafeInteger(orbitSeed?.durationMs) ? orbitSeed.durationMs : null,
+    reason: orbitSeed?.reason ?? null,
+  })}`);
+
   const request = {
     agent: config.implementationPlannerAgent,
     nodeId: 'implementation-plan',
-    task: plannerTask(process.env, { layoutHint }),
+    task: plannerTask(env, { layoutHint, orbitSeed }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
     // No planner-specific lifecycle wall-clock budget and no generic tool-count budget.
     // Omitting timeoutMs delegates genuine hang protection to pi-subagents/provider/process
@@ -491,6 +531,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     return {
       ...validated, usage, layoutHint,
       evidenceActions: evidenceState?.used ?? null,
+      evidenceToolCounts: evidenceState?.toolCounts ?? {},
       structuredCorrections: evidenceState?.structuredCorrections ?? 0,
     };
   } catch (error) {
@@ -501,6 +542,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
       return {
         ...accepted.validated, usage, layoutHint,
         evidenceActions: accepted.state.used ?? null,
+        evidenceToolCounts: accepted.state.toolCounts ?? {},
         structuredCorrections: accepted.state.structuredCorrections ?? 0,
       };
     }
@@ -525,6 +567,7 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     if (failure && typeof failure === 'object') {
       failure.delegationUsage = usage;
       failure.plannerEvidenceActions = evidenceState?.used ?? null;
+      failure.plannerEvidenceToolCounts = evidenceState?.toolCounts ?? {};
       failure.plannerStructuredCorrections = evidenceState?.structuredCorrections ?? 0;
       failure.plannerFailureClass = plannerFailureClass;
       status = error?.delegationStatus ?? 'error';
@@ -540,14 +583,17 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
 // Resolves fresh-work preparation before any main Implementer session exists. Returns the explicit
 // PreparedImplementation artifact: either a validated planner result or a resolved fallback.
 // Cancellation is never a recovery request and propagates.
-export async function prepareImplementation(pi, ctx, config, signal, { env = process.env } = {}) {
+export async function prepareImplementation(pi, ctx, config, signal, {
+  env = process.env,
+  orbitSeedBuilder = buildPlannerOrbitSeed,
+} = {}) {
   const startedAt = Date.now();
   const freshBaseCommit = String(env.PI_IMPLEMENTER_START_COMMIT ?? '').trim();
   const common = { version: 1, workspaceRoot: ctx.cwd, freshBaseCommit, baseRef: baseRef() };
   let layoutHint = null;
   try {
     layoutHint = discoverAdditivePythonLayout(ctx.cwd, implementerIssueContext(env));
-    const planned = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint);
+    const planned = await runStructuredImplementationPlanner(pi, ctx, config, signal, layoutHint, { env, orbitSeedBuilder });
     return {
       ...common,
       status: 'prepared',
@@ -560,6 +606,7 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       layoutHint,
       plannerUsage: planned.usage,
       plannerEvidenceActions: planned.evidenceActions,
+      plannerEvidenceToolCounts: planned.evidenceToolCounts ?? {},
       plannerStructuredCorrections: planned.structuredCorrections,
       plannerProviderTurns: Number.isSafeInteger(planned.usage?.turns) ? planned.usage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
@@ -574,6 +621,7 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       layoutHint,
       plannerUsage: error?.delegationUsage ?? null,
       plannerEvidenceActions: Number.isSafeInteger(error?.plannerEvidenceActions) ? error.plannerEvidenceActions : null,
+      plannerEvidenceToolCounts: error?.plannerEvidenceToolCounts && typeof error.plannerEvidenceToolCounts === 'object' ? error.plannerEvidenceToolCounts : {},
       plannerStructuredCorrections: Number.isSafeInteger(error?.plannerStructuredCorrections) ? error.plannerStructuredCorrections : 0,
       plannerProviderTurns: Number.isSafeInteger(error?.delegationUsage?.turns) ? error.delegationUsage.turns : null,
       plannerDurationMs: Date.now() - startedAt,

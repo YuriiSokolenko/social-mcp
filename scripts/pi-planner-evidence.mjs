@@ -1,8 +1,6 @@
 import fs from 'node:fs';
-import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { repoSearch } from './pi-common/repo-search.mjs';
+import { plannerOrbitContext } from './pi-common/planner-orbit.mjs';
 
 // Loaded only inside the implementation-planner pi-subagents child via .pi/settings.json.
 // Enforces the trusted read-only surface at tool-call time. Evidence action counts are
@@ -16,33 +14,8 @@ import {
 } from './pi-common/implementation-planner.mjs';
 
 const PLANNER_GRAPH_MAX_CHARS = 16000;
-const PLANNER_GRAPH_COMMAND_TIMEOUT_MS = 5000;
 const RESULT_EQUIVALENT_NO_PROGRESS_LIMIT = 3;
 const EVIDENCE_NO_PROGRESS_STREAK_LIMIT = 4;
-const execFileAsync = promisify(execFile);
-
-async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
-  const result = await execFileFn(command, args, {
-    cwd,
-    encoding: 'utf8',
-    timeout: PLANNER_GRAPH_COMMAND_TIMEOUT_MS,
-    maxBuffer: 512 * 1024,
-    env: { ...process.env, ORBIT_TELEMETRY_ENABLED: 'false' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  return typeof result === 'string' ? result : result?.stdout ?? '';
-}
-
-function canonicalPath(value) {
-  const raw = String(value ?? '').trim();
-  if (!raw) return null;
-  const resolved = path.resolve(raw);
-  try {
-    return fs.realpathSync(resolved);
-  } catch {
-    return resolved;
-  }
-}
 
 function graphFocusTerms(question) {
   const raw = String(question ?? '').toLowerCase();
@@ -81,7 +54,7 @@ function boundedGraphText(text) {
   };
 }
 
-export async function plannerCodeGraph(cwd, params, { execFile: execFileFn = execFileAsync } = {}) {
+export async function plannerCodeGraph(cwd, params, { execFile: execFileFn, signal = null } = {}) {
   const target = String(params?.target ?? '').trim();
   const question = String(params?.question ?? '').trim();
   if (!target || target.length > 400 || target.startsWith('-') || /[\u0000-\u001f\u007f]/.test(target)) {
@@ -91,48 +64,29 @@ export async function plannerCodeGraph(cwd, params, { execFile: execFileFn = exe
     throw new Error('planner_code_graph question must be one concise planning question (1-400 printable characters)');
   }
 
-  const root = canonicalPath(cwd);
-  let head;
-  let rows;
+  let graph;
   try {
-    head = String(await localCommand('git', ['rev-parse', 'HEAD'], cwd, execFileFn)).trim();
-    rows = JSON.parse(await localCommand('orbit', ['list', '-F', 'json'], cwd, execFileFn));
+    graph = await plannerOrbitContext(cwd, target, { execFile: execFileFn, signal });
   } catch (error) {
-    throw new Error(`planner_code_graph unavailable: ${String(error?.message ?? error).split('\n')[0]}`);
+    const diagnostic = sanitizeDiagnosticText(error?.message ?? error, 240);
+    console.log(`PI_PLANNER_CODE_GRAPH ${JSON.stringify({ status: 'unavailable', target, diagnostic })}`);
+    throw error;
   }
-
-  const worktreeRows = Array.isArray(rows)
-    ? rows.filter(row => canonicalPath(row?.repo_path) === root)
-    : [];
-  if (worktreeRows.length === 0) {
-    throw new Error('planner_code_graph unavailable: current worktree is not present in the Orbit index');
-  }
-  if (!head) {
-    throw new Error('planner_code_graph unavailable: current worktree HEAD is unavailable');
-  }
-  const headRows = worktreeRows.filter(row => String(row?.commit_sha ?? '') === head);
-  if (headRows.length === 0) {
-    throw new Error('planner_code_graph unavailable: Orbit index is stale for the current worktree HEAD');
-  }
-  const indexed = headRows.find(row => row?.status === 'indexed');
-  if (!indexed) {
-    throw new Error(`planner_code_graph unavailable: Orbit index status is ${String(headRows[0]?.status ?? 'unknown')}`);
-  }
-
-  let raw;
-  try {
-    raw = await localCommand('orbit', ['context', target], cwd, execFileFn);
-  } catch (error) {
-    throw new Error(`planner_code_graph query failed: ${String(error?.message ?? error).split('\n')[0]}`);
-  }
-  const focused = focusedGraphText(raw, question);
+  const focused = focusedGraphText(graph.text, question);
   const bounded = boundedGraphText(focused);
-  return {
+  const result = {
     target,
     question,
     text: bounded.text,
     truncated: bounded.truncated,
+    head: graph.currentHead,
+    indexStatus: graph.indexStatus,
   };
+  console.log(`PI_PLANNER_CODE_GRAPH ${JSON.stringify({
+    status: 'success', target, head: graph.currentHead, indexStatus: graph.indexStatus,
+    serializedBytes: Buffer.byteLength(result.text, 'utf8'), truncated: result.truncated,
+  })}`);
+  return result;
 }
 
 export function registerPlannerEvidenceTools(pi, {
@@ -176,30 +130,34 @@ export function registerPlannerEvidenceTools(pi, {
       required: ['target', 'question'],
       additionalProperties: false,
     },
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await plannerCodeGraphFn(ctx.cwd, params);
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const result = await plannerCodeGraphFn(ctx.cwd, params, { signal });
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
     },
   });
 }
 
-function recordEvidenceState(admission, { fact = null, env = process.env } = {}) {
+function recordEvidenceState(admission, { fact = null, toolName = null, env = process.env } = {}) {
   const file = env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   if (!file) return;
   try {
     let previous = null;
     try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first write */ }
     const previousUsed = Number.isSafeInteger(previous?.used) && previous.used >= 0 ? previous.used : 0;
+    const nextUsed = Math.max(previousUsed, Number.isSafeInteger(admission?.used) ? admission.used : 0);
     const previousFacts = Array.isArray(previous?.facts)
       ? previous.facts.filter(item => typeof item === 'string' && item.trim())
       : [];
     const facts = [...previousFacts];
     if (fact && !facts.includes(fact)) facts.push(fact);
-    const state = {
-      ...previous,
-      used: Math.max(previousUsed, Number.isSafeInteger(admission?.used) ? admission.used : 0),
-      facts,
-    };
+    const toolCounts = {};
+    for (const [name, count] of Object.entries(previous?.toolCounts ?? {})) {
+      if (PLANNER_EVIDENCE_TOOLS.includes(name) && Number.isSafeInteger(count) && count >= 0) toolCounts[name] = count;
+    }
+    if (nextUsed > previousUsed && PLANNER_EVIDENCE_TOOLS.includes(toolName)) {
+      toolCounts[toolName] = (toolCounts[toolName] ?? 0) + 1;
+    }
+    const state = { ...previous, used: nextUsed, facts, toolCounts };
     delete state.cap;
     fs.writeFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   } catch (error) {
@@ -312,7 +270,7 @@ export default function (pi) {
 
     const admission = gate.admit(event.toolName);
     if (admission.evidence && admission.allowed) {
-      recordEvidenceState(admission);
+      recordEvidenceState(admission, { toolName: event.toolName });
       if (event.toolCallId) {
         pendingEvidence.set(event.toolCallId, { toolName: event.toolName, input: structuredClone(event.input ?? {}), admission, signature });
       }
@@ -468,7 +426,7 @@ export default function (pi) {
     if (madeProgress) {
       consecutiveNoProgressEvidence = 0;
       knownFacts.add(fact);
-      recordEvidenceState(pending.admission, { fact });
+      recordEvidenceState(pending.admission, { fact, toolName: pending.toolName });
       console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
       console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'progress' })}`);
       if (typeof pi.sendUserMessage === 'function') {

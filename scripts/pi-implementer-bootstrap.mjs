@@ -24,16 +24,25 @@ export default function (pi) {
     try {
       const prepared = await prepareImplementation(pi, ctx, config, undefined);
       writePreparedImplementation(file, prepared);
-      console.log(`[PI][planner] completed status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} corrections=${prepared.plannerStructuredCorrections ?? 0} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${prepared.plannerUsage?.input ?? 'unknown'} out=${prepared.plannerUsage?.output ?? 'unknown'}`);
+      const preparedImplementationBytes = Buffer.byteLength(JSON.stringify(prepared), 'utf8');
+      const repositoryFactCount = Array.isArray(prepared.repositoryFacts) ? prepared.repositoryFacts.length : 0;
+      const planStepCount = Array.isArray(prepared.plan) ? prepared.plan.length : 0;
+      const evidenceToolTypes = Object.keys(prepared.plannerEvidenceToolCounts ?? {}).sort();
+      console.log(`[PI][planner] completed status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} evidence_tools=${evidenceToolTypes.join(',') || 'none'} corrections=${prepared.plannerStructuredCorrections ?? 0} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${prepared.plannerUsage?.input ?? 'unknown'} out=${prepared.plannerUsage?.output ?? 'unknown'} facts=${repositoryFactCount} bytes=${preparedImplementationBytes}`);
       console.log(`PI_BOOTSTRAP ${JSON.stringify({
         phase: 'planner_completed',
         status: prepared.status,
         plannerDurationMs: prepared.plannerDurationMs,
         evidenceActions: prepared.plannerEvidenceActions ?? null,
+        evidenceToolTypes,
+        evidenceToolCounts: prepared.plannerEvidenceToolCounts ?? {},
         structuredCorrections: prepared.plannerStructuredCorrections ?? 0,
         providerTurns: prepared.plannerProviderTurns ?? null,
         inputTokens: prepared.plannerUsage?.input ?? null,
         outputTokens: prepared.plannerUsage?.output ?? null,
+        repositoryFactCount,
+        planStepCount,
+        preparedImplementationBytes,
         ...(prepared.status === 'fallback' ? { failureClass: prepared.failureClass } : {}),
       })}`);
     } catch (error) {

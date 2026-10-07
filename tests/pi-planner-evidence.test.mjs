@@ -19,6 +19,7 @@ import {
   validateImplementationPreparation,
 } from '../scripts/pi-common/implementation-planner.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+import { buildPlannerOrbitSeed, plannerOrbitSeedTargets } from '../scripts/pi-common/planner-orbit.mjs';
 
 const FORBIDDEN_TOOLS = [
   'bash', 'write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'submit_result', 'begin_coding_session',
@@ -706,4 +707,232 @@ test('planner evidence fact remains compact and redacted', () => {
   });
   assert.ok(fact.length <= 200);
   assert.doesNotMatch(fact, /super-secret|sk-/);
+});
+
+
+test('Planner Orbit target derivation is deterministic and has no numeric query cap', () => {
+  const issue = {
+    title: 'Update `symbol_0`',
+    body: [
+      'Touch `src/net.py` and tests/test_net.py.',
+      ...Array.from({ length: 8 }, (_, index) => `Inspect \`symbol_${index}\`.`),
+    ].join(' '),
+  };
+  const first = plannerOrbitSeedTargets(issue);
+  const second = plannerOrbitSeedTargets(issue);
+  assert.deepEqual(first, second);
+  assert.ok(first.length > 6);
+  assert.ok(first.includes('src/net.py'));
+  assert.ok(first.includes('tests/test_net.py'));
+  assert.ok(first.includes('symbol_7'));
+  assert.ok(first.every(target => !/[`"',;:)\]}>]$/.test(target)));
+});
+
+test('current indexed worktree produces deterministic Orbit seed from current HEAD only', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-seed-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const contextTargets = [];
+  const fakeExec = async (command, args) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') {
+      return { stdout: JSON.stringify([
+        { repo_path: dir, commit_sha: 'old999', status: 'indexed' },
+        { repo_path: dir, commit_sha: 'abc123', status: 'indexed' },
+      ]) };
+    }
+    if (args[0] === 'context') {
+      contextTargets.push(args[1]);
+      return { stdout: `graph relationship for ${args[1]}` };
+    }
+    throw new Error('unexpected command');
+  };
+  const issue = {
+    title: 'Update `src/net.py`',
+    body: Array.from({ length: 8 }, (_, index) => `Inspect \`symbol_${index}\`.`).join(' '),
+  };
+  const seed = await buildPlannerOrbitSeed(dir, issue, { execFile: fakeExec, maxChars: 100000 });
+
+  assert.equal(seed.present, true);
+  assert.equal(seed.fresh, true);
+  assert.equal(seed.currentHead, 'abc123');
+  assert.equal(seed.indexedHead, 'abc123');
+  assert.equal(seed.indexStatus, 'indexed');
+  assert.ok(seed.requestedTargets.length > 6);
+  assert.deepEqual(contextTargets, seed.requestedTargets);
+  assert.deepEqual(seed.targets, seed.requestedTargets);
+  assert.match(seed.text, /graph relationship for src\/net\.py/);
+  assert.equal(seed.truncated, false);
+});
+
+test('stale Orbit index is never injected and context is not queried', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-stale-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let contextCalls = 0;
+  const fakeExec = async (command, args) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') return { stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'old999', status: 'indexed' }]) };
+    if (args[0] === 'context') { contextCalls += 1; return { stdout: 'must not happen' }; }
+    throw new Error('unexpected command');
+  };
+  const seed = await buildPlannerOrbitSeed(dir, { title: 'Update `src/net.py`', body: '' }, { execFile: fakeExec });
+
+  assert.equal(seed.present, false);
+  assert.equal(seed.fresh, false);
+  assert.equal(seed.currentHead, 'abc123');
+  assert.equal(seed.indexedHead, 'old999');
+  assert.equal(seed.reason, 'stale_index');
+  assert.equal(contextCalls, 0);
+});
+
+test('missing Orbit degrades to absent seed without failing Planner preparation', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-missing-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fakeExec = async (command) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    throw new Error('orbit not installed');
+  };
+  const seed = await buildPlannerOrbitSeed(dir, { title: 'Update `src/net.py`', body: '' }, { execFile: fakeExec });
+  assert.equal(seed.present, false);
+  assert.equal(seed.reason, 'orbit_unavailable');
+  assert.equal(seed.serializedBytes, 0);
+});
+
+test('Orbit seed serialization is safety-bounded without limiting the number of graph queries', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-bound-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let contextCalls = 0;
+  const fakeExec = async (command, args) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') return { stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'abc123', status: 'indexed' }]) };
+    if (args[0] === 'context') { contextCalls += 1; return { stdout: `context ${args[1]} ${'x'.repeat(100)}` }; }
+    throw new Error('unexpected command');
+  };
+  const issue = {
+    title: 'Seed graph',
+    body: Array.from({ length: 8 }, (_, index) => `Inspect \`symbol_${index}\`.`).join(' '),
+  };
+  const seed = await buildPlannerOrbitSeed(dir, issue, { execFile: fakeExec, maxChars: 120 });
+  assert.equal(seed.present, true);
+  assert.equal(seed.truncated, true);
+  assert.equal(contextCalls, seed.requestedTargets.length);
+  assert.ok(contextCalls > 6);
+  assert.deepEqual(seed.queriedTargets, seed.requestedTargets);
+  assert.deepEqual(seed.targets, [seed.requestedTargets[0]], 'telemetry lists only targets that actually reached the serialized seed');
+  assert.match(seed.text, /Orbit seed truncated for safety/);
+  assert.doesNotMatch(seed.text, new RegExp(seed.requestedTargets[1]));
+});
+
+
+test('Orbit seed does not replace filesystem evidence or later planner_code_graph queries', async (t) => {
+  for (const tool of ['read', 'grep', 'find', 'ls', 'repo_search', 'planner_code_graph']) {
+    assert.ok(PLANNER_EVIDENCE_TOOLS.includes(tool), `${tool} remains available`);
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-followup-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let contextCalls = 0;
+  const fakeExec = async (command, args) => {
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') return { stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'abc123', status: 'indexed' }]) };
+    if (args[0] === 'context') {
+      contextCalls += 1;
+      return { stdout: args[1] === 'src/net.py' ? 'caller alpha -> send\n' : 'reference beta -> send\n' };
+    }
+    throw new Error('unexpected command');
+  };
+
+  const seed = await buildPlannerOrbitSeed(
+    dir,
+    { title: 'Update `src/net.py`', body: '' },
+    { execFile: fakeExec, maxChars: 100000 },
+  );
+  assert.equal(seed.present, true);
+
+  const graph = await plannerCodeGraph(
+    dir,
+    { target: 'send', question: 'Which references use send?' },
+    { execFile: fakeExec },
+  );
+  assert.match(graph.text, /reference beta/);
+  assert.equal(graph.head, 'abc123');
+  assert.equal(contextCalls, 2, 'one seed query plus one later planner_code_graph query');
+});
+
+
+test('Planner Orbit seed ignores obvious command-like backticks but keeps structural targets', () => {
+  const targets = plannerOrbitSeedTargets({
+    title: 'Run `pytest` for `flatten_keypaths`',
+    body: 'Inspect `src/social_mcp/diagnostics/smoke_keypaths.py`, `KeyPathResolver`, `pkg.module.symbol`, `--verbose`, and `dev`.',
+  });
+  assert.ok(targets.includes('flatten_keypaths'));
+  assert.ok(targets.includes('src/social_mcp/diagnostics/smoke_keypaths.py'));
+  assert.ok(targets.includes('KeyPathResolver'));
+  assert.ok(targets.includes('pkg.module.symbol'));
+  assert.ok(!targets.includes('pytest'));
+  assert.ok(!targets.includes('--verbose'));
+  assert.ok(!targets.includes('dev'));
+});
+
+test('Planner Orbit seed has a total time budget without imposing a query-count cap', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-budget-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let clock = 0;
+  let contextCalls = 0;
+  const fakeExec = async (command, args, options) => {
+    assert.ok(options.timeout > 0 && options.timeout <= 5000);
+    if (command === 'git') { clock += 1; return { stdout: 'abc123\n' }; }
+    if (args[0] === 'list') {
+      clock += 1;
+      return { stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'abc123', status: 'indexed' }]) };
+    }
+    if (args[0] === 'context') {
+      contextCalls += 1;
+      clock += 10;
+      return { stdout: `context for ${args[1]}` };
+    }
+    throw new Error('unexpected command');
+  };
+  const issue = {
+    title: 'Seed graph',
+    body: Array.from({ length: 12 }, (_, index) => `Inspect \`symbol_${index}\`.`).join(' '),
+  };
+  const seed = await buildPlannerOrbitSeed(dir, issue, {
+    execFile: fakeExec,
+    timeBudgetMs: 25,
+    now: () => clock,
+  });
+
+  assert.equal(seed.present, false);
+  assert.equal(seed.reason, 'seed_time_budget_exhausted');
+  assert.ok(contextCalls > 0);
+  assert.ok(contextCalls < seed.requestedTargets.length);
+  assert.deepEqual(seed.queriedTargets, seed.requestedTargets.slice(0, contextCalls));
+  assert.equal(seed.targets.length, 0, 'a timed-out seed is discarded instead of becoming timing-dependent partial context');
+});
+
+test('Planner Orbit seed propagates cancellation to subprocess execution', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-orbit-abort-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const controller = new AbortController();
+  let sawSignal = false;
+  const fakeExec = async (command, args, options) => {
+    sawSignal ||= options.signal === controller.signal;
+    if (command === 'git') return { stdout: 'abc123\n' };
+    if (args[0] === 'list') return { stdout: JSON.stringify([{ repo_path: dir, commit_sha: 'abc123', status: 'indexed' }]) };
+    if (args[0] === 'context') {
+      controller.abort(new Error('cancelled by parent'));
+      throw controller.signal.reason;
+    }
+    throw new Error('unexpected command');
+  };
+
+  await assert.rejects(
+    buildPlannerOrbitSeed(
+      dir,
+      { title: 'Update `src/net.py`', body: '' },
+      { execFile: fakeExec, signal: controller.signal },
+    ),
+    /cancelled by parent/,
+  );
+  assert.equal(sawSignal, true);
 });
