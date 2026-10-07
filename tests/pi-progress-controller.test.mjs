@@ -1278,6 +1278,74 @@ test('a large mutation grant that ends without a finish-tool attempt still colla
   assert.equal(state.resetLargeMutationBudget(), false);
 });
 
+test('successful prepared handoff enforces exact mutation anchors without a numeric evidence window', () => {
+  const cfg = stageConfig('implementer');
+  const state = new ProgressController(cfg, {});
+  state.onTurnStart(0);
+  const applied = state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['Update the existing sender'],
+    complexity: 'nontrivial',
+    requiredMutationAnchors: ['src/net.py'],
+    largeMutation: false,
+    reason: 'Planner resolved the target and invariant.',
+  });
+
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.deepEqual(applied.requiredMutationAnchors, ['src/net.py']);
+  assert.equal('evidenceBudget' in applied, false);
+  assert.match(state.checkToolCall('read', { path: 'src/other.py' }).reason, /productive progress requires an action now/);
+  assert.match(state.checkToolCall('safe_edit', {
+    path: 'src/net.py',
+    operation: 'replace',
+    start_line: 1,
+    text: 'replacement',
+  }).reason, /required mutation anchor/);
+  assert.match(state.checkToolCall('begin_coding_session', {}).reason, /required mutation anchor/);
+
+  assert.equal(state.checkToolCall('read', { path: 'src/net.py' }), undefined);
+  state.onToolExecutionEnd('read', false, { input: { path: 'src/net.py' } });
+  assert.deepEqual(state.pendingRequiredMutationAnchors(), []);
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.equal(state.checkToolCall('safe_edit', {
+    path: 'src/net.py',
+    operation: 'replace',
+    start_line: 1,
+    text: 'replacement',
+  }), undefined);
+
+  assert.equal(state.checkToolCall('need_more_evidence', {
+    missing: 'exact registration caller',
+    reason: 'needed before touching the separately discovered registration file',
+  }), undefined);
+  assert.equal(state.checkToolCall('repo_search', { query: 'register sender' }), undefined);
+  assert.equal(state.productiveProgressState(), 'action_required');
+});
+
+test('new-file-only successful prepared handoff proceeds directly to mutation', () => {
+  const state = new ProgressController(stageConfig('implementer'), {});
+  state.onTurnStart(0);
+  const applied = state.applyPreparedImplementation({
+    status: 'prepared',
+    plan: ['Create src/new_target.py'],
+    complexity: 'nontrivial',
+    requiredMutationAnchors: [],
+    largeMutation: false,
+    reason: 'All implementation targets are new files.',
+  });
+
+  assert.equal(state.productiveProgressState(), 'action_required');
+  assert.deepEqual(applied.requiredMutationAnchors, []);
+  assert.equal('evidenceBudget' in applied, false);
+  assert.equal(state.checkToolCall('write', { path: 'src/new_target.py', content: 'x' }), undefined);
+});
+
+test('runtime keeps read visible only while a prepared mutation anchor remains', () => {
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /controller\.pendingRequiredMutationAnchors\(\)\.length > 0/);
+  assert.match(runtime, /required_mutation_anchor/);
+});
+
 test('a zero evidence_budget preparation transitions directly to action_required', () => {
   const cfg = stageConfig('implementer');
   const state = new ProgressController(cfg, {});
