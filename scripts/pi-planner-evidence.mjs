@@ -444,7 +444,7 @@ export default function (pi) {
         : observed.rawArguments?.value && typeof observed.rawArguments.value === 'object' && !Array.isArray(observed.rawArguments.value)
           ? structuredClone(observed.rawArguments.value)
           : null;
-    recordPlannerResultState({
+    const acceptedResultPersisted = recordPlannerResultState({
       resultAttempts,
       structuredCorrections,
       repairStatus: 'accepted',
@@ -452,10 +452,10 @@ export default function (pi) {
     });
     console.log(`PI_PLANNER_RESULT_SUCCESS ${JSON.stringify({ resultAttempts, structuredCorrections })}`);
     console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted', message: '🐈 You pet the cat. Planner complete.' })}`);
-    // The accepted result is persisted in the sidecar before aborting. The parent recovers that
-    // terminal value even when pi-subagents reports the child as cancelled, so no follow-up model
-    // request is needed merely to notice completion.
-    ctx?.abort?.();
+    // Abort only when the accepted result is durably recoverable from the sidecar. If persistence
+    // failed, leave the successful structured_output lifecycle intact so pi-subagents can deliver
+    // the accepted result directly without another provider request.
+    if (acceptedResultPersisted) ctx?.abort?.();
     return undefined;
   });
 
@@ -535,7 +535,7 @@ function recordPlannerResultState({
   acceptedResult = null,
 }) {
   const file = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-  if (!file) return;
+  if (!file) return false;
   try {
     let previous = {};
     try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* state is initialized above */ }
@@ -548,7 +548,9 @@ function recordPlannerResultState({
       next.acceptedResult = structuredClone(acceptedResult);
     }
     fs.writeFileSync(file, `${JSON.stringify(next)}\n`, { mode: 0o600 });
+    return true;
   } catch (error) {
     console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);
+    return false;
   }
 }

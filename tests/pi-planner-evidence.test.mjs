@@ -381,6 +381,56 @@ test('accepted structured output is terminal immediately and late duplicates sta
   assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_RESULT_DUPLICATE_BLOCKED ')));
 });
 
+test('accepted structured output uses direct handoff when accepted sidecar persistence fails', async (t) => {
+  const harness = extensionHarness(t);
+  const acceptedValue = {
+    steps: ['Update src/net.py'],
+    facts: ['src/net.py contains send().'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/net.py'],
+    large_mutation: false,
+    reason: 'Existing sender needs a bounded edit.',
+  };
+  const originalWriteFileSync = fs.writeFileSync.bind(fs);
+  const warnings = t.mock.method(console, 'warn', () => {});
+  t.mock.method(fs, 'writeFileSync', (file, data, options) => {
+    if (file === harness.stateFile && String(data).includes('"repairStatus":"accepted"')) {
+      throw new Error('simulated accepted sidecar write failure');
+    }
+    return originalWriteFileSync(file, data, options);
+  });
+
+  assert.equal(await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'r1',
+    input: { value: acceptedValue },
+  }, harness.abortContext), undefined);
+  await harness.handlers.get('tool_result')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'r1',
+    input: { value: acceptedValue },
+    isError: false,
+    content: [],
+  }, harness.abortContext);
+
+  assert.equal(harness.aborted(), false, 'failed accepted-result persistence must not abort direct structured handoff');
+  const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
+  assert.equal(state.repairStatus, 'finalizing');
+  assert.equal('acceptedResult' in state, false, 'failed persistence must not advertise sidecar recovery');
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
+  assert.ok(warnings.mock.calls.some(call => String(call.arguments[0]).startsWith('PI_PLANNER_EVIDENCE_STATE_FAILED ')));
+
+  const late = await harness.handlers.get('tool_call')({
+    toolName: PLANNER_RESULT_TOOL,
+    toolCallId: 'late',
+    input: { value: acceptedValue },
+  }, harness.abortContext);
+  assert.equal(late.block, true);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_RESULT_SUCCESS ')).length, 1);
+  assert.equal(harness.logs().filter(line => line.startsWith('PI_PLANNER_CAT_PETTED ')).length, 1);
+});
+
 test('three materially equivalent invalid structured outputs trip semantic no-progress protection', async (t) => {
   const harness = extensionHarness(t);
   for (let index = 1; index <= 3; index += 1) {
@@ -497,6 +547,46 @@ test('parent recovers the persisted accepted result when terminal child aborts i
   assert.deepEqual(prepared.requiredMutationAnchors, ['src/net.py']);
   assert.equal('evidenceBudget' in prepared, false);
   assert.equal(prepared.plannerEvidenceActions, 8);
+  assert.equal(prepared.plannerProviderTurns, 1);
+});
+
+test('parent consumes direct structured result when no accepted sidecar is persisted', async (t) => {
+  const { dir, env } = fixture(t);
+  t.mock.method(console, 'log', () => {});
+  const acceptedResult = {
+    steps: ['Update src/net.py'],
+    facts: ['src/net.py contains send().'],
+    complexity: 'nontrivial',
+    required_mutation_anchors: ['src/net.py'],
+    large_mutation: false,
+    reason: 'grounded',
+  };
+  const host = plannerHost({
+    cwd: dir,
+    async driveChild() {
+      const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+      assert.ok(evidenceStateFile);
+      fs.writeFileSync(evidenceStateFile, JSON.stringify({
+        used: 3,
+        facts: ['fact-1'],
+        structuredCorrections: 0,
+        resultAttempts: 1,
+        repairStatus: 'finalizing',
+      }));
+      return {
+        status: 'completed',
+        result: { kind: 'structured', value: acceptedResult },
+        usage: { input: 500, output: 200, turns: 1, toolCalls: 4 },
+      };
+    },
+  });
+
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'prepared');
+  assert.deepEqual(prepared.plan, acceptedResult.steps);
+  assert.deepEqual(prepared.repositoryFacts, acceptedResult.facts);
+  assert.deepEqual(prepared.requiredMutationAnchors, acceptedResult.required_mutation_anchors);
+  assert.equal(prepared.plannerEvidenceActions, 3);
   assert.equal(prepared.plannerProviderTurns, 1);
 });
 
