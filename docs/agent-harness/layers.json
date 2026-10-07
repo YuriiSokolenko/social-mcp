@@ -64,6 +64,7 @@
     "scripts/pi-common/coding-session-outcome.mjs",
     "scripts/pi-common/coding-session-validation.mjs",
     "scripts/pi-common/implementation-planner.mjs",
+    "scripts/pi-common/main-prompt-observability.mjs",
     "scripts/pi-common/model-trace-proxy.mjs",
     "scripts/pi-common/mutation-snapshot.mjs",
     "scripts/pi-common/mutation-target.mjs",

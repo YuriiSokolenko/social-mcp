@@ -117,7 +117,7 @@ test('final failure summary carries lifecycle, latest check, checkpoint and usag
   ], { PI_PHASE: 'implementer', PI_CALL: 'main', PI_RUNTIME_FAILURE_FILE: failureFile, PI_DIAGNOSTICS_FILE: diagnosticsFile });
   assert.match(output, /\[PI\]\[check\] pytest fail exit=1 failures=5 duration=8\.2 s/);
   assert.match(output, /\[PI\]\[failure\] lifecycle=implementer\/main status=blocked category=PI_TERMINAL_RECOVERY_BLOCKED/);
-  assert.match(output, /last_check=pytest:fail worktree_preserved=true usage="in 120 · out 30 · cache read 0 · cache write 0 · total 150" diagnostics=diagnostics\.jsonl#runtime-failure-/);
+  assert.match(output, /last_check=pytest:fail worktree_preserved=true usage="in 120 · out 30 · cache read unknown · cache write 0 · total 150" diagnostics=diagnostics\.jsonl#runtime-failure-/);
 });
 
 test('interrupted run still ends with a failure summary when runtime metadata is missing', () => {
@@ -477,6 +477,49 @@ test('#469 abort settlement is explicitly synthetic without retyping ordinary ze
       } } },
     ], { PI_ISSUE: '469', PI_CALL: 'repair' });
     assert.doesNotMatch(ordinary, /"synthetic":true/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test('#540 Main log telemetry correlates provider cache state without manufacturing zero', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-log-filter-cache-'));
+  try {
+    const metricsFile = join(dir, 'metrics.jsonl');
+    writeFileSync(metricsFile, JSON.stringify({
+      call: 'provider',
+      record_type: 'provider_response',
+      provider_response: true,
+      logical_call: 'main',
+      logical_response: 1,
+      prompt_tokens: 1234,
+      cached_tokens: null,
+      cache_telemetry: 'unknown',
+      ttftMs: 321,
+      responseMs: 1500,
+    }) + '\n');
+    const output = render([
+      { type: 'turn_start' },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'ok' } },
+      { type: 'message_end', message: {
+        role: 'assistant',
+        content: [],
+        usage: { input: 1234, output: 20, cacheRead: 77, cacheWrite: 0, totalTokens: 1254 },
+      } },
+      { type: 'agent_end', messages: [] },
+    ], { PI_ISSUE: '540', PI_PHASE: 'implementation', PI_CALL: 'main', PI_METRICS_FILE: metricsFile });
+
+    assert.match(output, /cache read unknown/);
+    assert.match(output, /PI_MAIN_PROVIDER_TELEMETRY .*"request":1.*"promptTokens":1234.*"cachedTokens":null.*"cacheTelemetry":"unknown"/);
+    const records = readFileSync(metricsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const main = records.find(record => record.call === 'main' && record.response === 1);
+    assert.equal(main.usage.cacheReadKnown, false);
+    assert.equal('cacheRead' in main.usage, false);
+    assert.equal(main.providerPromptTokens, 1234);
+    assert.equal(main.providerCachedTokens, null);
+    assert.equal(main.cacheTelemetry, 'unknown');
+    assert.ok(Number.isFinite(main.ttftMs));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

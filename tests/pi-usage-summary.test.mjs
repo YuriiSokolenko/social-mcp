@@ -101,3 +101,28 @@ test("the CLI labels totals as a known lower bound when child usage is unavailab
   assert.match(stdout, /Pi usage \(INCOMPLETE, known lower bound\): 1 logical usage records · 1 provider responses/);
   assert.match(stdout, /::warning::INCOMPLETE: usage unavailable.*coding\/s1/);
 });
+
+
+test('#540 the CLI never renders missing cache telemetry as a real zero', () => {
+  const unknown = run([{
+    call: 'main', response: 1,
+    usage: { input: 100, output: 10, totalTokens: 110, cacheReadKnown: false },
+    responseMs: 1000,
+  }]);
+  assert.match(unknown, /cache read unknown/);
+  assert.doesNotMatch(unknown, /cache read 0(?:\D|$)/);
+
+  const explicitZero = run([{
+    call: 'main', response: 1,
+    usage: { input: 100, output: 10, cacheRead: 0, totalTokens: 110, cacheReadKnown: true },
+    responseMs: 1000,
+  }]);
+  assert.match(explicitZero, /cache read 0/);
+
+  const positive = run([{
+    call: 'main', response: 1,
+    usage: { input: 100, output: 10, cacheRead: 64, totalTokens: 174, cacheReadKnown: true },
+    responseMs: 1000,
+  }]);
+  assert.match(positive, /cache read 64/);
+});

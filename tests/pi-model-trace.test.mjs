@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { startModelTraceProxy } from '../scripts/pi-common/model-trace-proxy.mjs';
+import { classifyProviderRequest, providerUsageTelemetry, startModelTraceProxy } from '../scripts/pi-common/model-trace-proxy.mjs';
 
 async function listen(server) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -207,7 +207,7 @@ test('trace size cap keeps complete records, writes one marker, and leaves model
   const tracePath = join(dir, 'trace.jsonl');
   const upstream = http.createServer((_req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); });
   const targetBaseUrl = await listen(upstream);
-  const proxy = await startModelTraceProxy({ targetBaseUrl, tracePath, stage: 'implementer', maxBytes: 500 });
+  const proxy = await startModelTraceProxy({ targetBaseUrl, tracePath, stage: 'implementer', maxBytes: 1000 });
   try {
     for (let index = 0; index < 3; index += 1) {
       const response = await fetch(`${proxy.baseUrl}/chat/completions`, { method: 'POST', body: JSON.stringify({ index }) });
@@ -219,7 +219,7 @@ test('trace size cap keeps complete records, writes one marker, and leaves model
     await new Promise(resolve => upstream.close(resolve));
   }
   const text = readFileSync(tracePath, 'utf8');
-  assert.ok(Buffer.byteLength(text) <= 500);
+  assert.ok(Buffer.byteLength(text) <= 1000);
   assert.ok(text.endsWith('\n'));
   const lines = text.trim().split('\n');
   const items = lines.map(line => JSON.parse(line));
@@ -282,4 +282,53 @@ test('#469 model trace emits one timing callback per real provider exchange', as
   assert.ok(observed.every(item => item.requestPath === '/v1/chat/completions'));
   assert.ok(observed.every(item => item.status === 200 && item.elapsedMs >= 0 && item.transportError === false));
   rmSync(dir, { recursive: true, force: true });
+});
+
+
+test('#540 provider cache telemetry distinguishes missing, explicit zero, and positive cached tokens', () => {
+  assert.deepEqual(providerUsageTelemetry(JSON.stringify({
+    usage: { prompt_tokens: 100, completion_tokens: 5 },
+  })), {
+    promptTokens: 100,
+    outputTokens: 5,
+    cachedTokens: null,
+    cacheTelemetry: 'unknown',
+  });
+
+  assert.deepEqual(providerUsageTelemetry(JSON.stringify({
+    usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 0 } },
+  })), {
+    promptTokens: 100,
+    outputTokens: 5,
+    cachedTokens: 0,
+    cacheTelemetry: 'reported',
+  });
+
+  assert.deepEqual(providerUsageTelemetry([
+    'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":64}}}',
+    'data: [DONE]',
+    '',
+  ].join('\n')), {
+    promptTokens: 100,
+    outputTokens: 5,
+    cachedTokens: 64,
+    cacheTelemetry: 'reported',
+  });
+});
+
+test('#540 provider request classification identifies Planner, Main, and coding traffic', () => {
+  assert.equal(classifyProviderRequest({
+    messages: [{ role: 'system', content: '<active_agent name="implementation-planner"/>' }],
+  }, 'implementer'), 'planner');
+
+  assert.equal(classifyProviderRequest({
+    messages: [
+      { role: 'system', content: 'pi base system' },
+      { role: 'user', content: '<shared_agent_contract source="agents/AGENTS.md">x</shared_agent_contract>\n<role_contract source="agents/implementer/AGENTS.md">y</role_contract>' },
+    ],
+  }, 'implementer'), 'main');
+
+  assert.equal(classifyProviderRequest({
+    messages: [{ role: 'system', content: '<coding_role_contract source="agents/implementer/AGENTS.md">x</coding_role_contract>' }],
+  }, 'implementer'), 'coding');
 });

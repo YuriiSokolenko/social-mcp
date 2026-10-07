@@ -89,9 +89,84 @@ function parseBody(buffer) {
   try { return redact(JSON.parse(text)); } catch { return redact(text); }
 }
 
+function parsedProviderPayloads(value) {
+  const text = Buffer.isBuffer(value) ? value.toString('utf8') : String(value ?? '');
+  try { return [JSON.parse(text)]; } catch { /* SSE or non-JSON response */ }
+  return text.split(/\r?\n/)
+    .filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trim())
+    .filter(data => data && data !== '[DONE]')
+    .flatMap(data => {
+      try { return [JSON.parse(data)]; } catch { return []; }
+    });
+}
+
+function nonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function usageCandidate(payload) {
+  return payload?.usage ?? payload?.response?.usage ?? payload?.data?.usage ?? null;
+}
+
+export function providerUsageTelemetry(value) {
+  let promptTokens = null;
+  let outputTokens = null;
+  let cachedTokens = null;
+  let cacheReported = false;
+  for (const payload of parsedProviderPayloads(value)) {
+    const usage = usageCandidate(payload);
+    if (!usage || typeof usage !== 'object') continue;
+    const prompt = nonNegativeInteger(usage.prompt_tokens) ?? nonNegativeInteger(usage.input_tokens);
+    const output = nonNegativeInteger(usage.completion_tokens) ?? nonNegativeInteger(usage.output_tokens);
+    if (prompt != null) promptTokens = prompt;
+    if (output != null) outputTokens = output;
+    const cacheCandidates = [
+      usage?.prompt_tokens_details?.cached_tokens,
+      usage?.input_tokens_details?.cached_tokens,
+      usage?.cache_read_input_tokens,
+      usage?.cached_tokens,
+      usage?.cacheRead,
+    ];
+    for (const candidate of cacheCandidates) {
+      const cached = nonNegativeInteger(candidate);
+      if (cached != null) {
+        cachedTokens = cached;
+        cacheReported = true;
+        break;
+      }
+    }
+  }
+  return {
+    promptTokens,
+    outputTokens,
+    cachedTokens: cacheReported ? cachedTokens : null,
+    cacheTelemetry: cacheReported ? 'reported' : 'unknown',
+  };
+}
+
+function messageContentText(message) {
+  if (typeof message?.content === 'string') return message.content;
+  if (!Array.isArray(message?.content)) return '';
+  return message.content.map(part => typeof part === 'string' ? part : String(part?.text ?? '')).join('\n');
+}
+
+export function classifyProviderRequest(body, stage) {
+  if (stage !== 'implementer' || !body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const system = messages.filter(message => message?.role === 'system').map(messageContentText).join('\n');
+  const firstUser = messages.find(message => message?.role === 'user');
+  const user = messageContentText(firstUser);
+  if (system.includes('<active_agent name="implementation-planner"/>')) return 'planner';
+  if (system.includes('<coding_role_contract') || user.includes('<coding_role_contract')) return 'coding';
+  if (user.includes('<role_contract source="agents/implementer/AGENTS.md">')) return 'main';
+  return null;
+}
+
 /** A local OpenAI-compatible forwarding proxy that records one JSONL exchange per call. */
 export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES, traceSession = randomUUID(), onExchange = null }) {
   let nextSequence = 0;
+  const logicalSequences = new Map();
   let writtenBytes = 0;
   let traceDisabled = false;
   try {
@@ -108,6 +183,9 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
     let responseBody = Buffer.alloc(0);
     let error = null;
     let transportError = false;
+    let firstResponseByteAt = null;
+    let logicalCall = null;
+    let logicalResponse = null;
     const controller = new AbortController();
     const disconnectError = Object.assign(new Error('Client disconnected'), { name: 'AbortError' });
     const abortOnRequestClose = () => { if (!incoming.complete) controller.abort(disconnectError); };
@@ -120,6 +198,12 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
     outgoing.on('error', abortOnError);
     try {
       requestBody = await collect(incoming, controller.signal);
+      const parsedRequest = parseBody(requestBody);
+      logicalCall = classifyProviderRequest(parsedRequest, stage);
+      if (logicalCall) {
+        logicalResponse = (logicalSequences.get(logicalCall) ?? 0) + 1;
+        logicalSequences.set(logicalCall, logicalResponse);
+      }
       const base = new URL(targetBaseUrl);
       const requestUrl = new URL(incoming.url || '/', 'http://trace-proxy.invalid');
       const basePath = base.pathname.replace(/\/$/, '');
@@ -145,6 +229,7 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       const chunks = [];
       if (response.body) {
         for await (const chunk of response.body) {
+          if (firstResponseByteAt == null) firstResponseByteAt = Date.now();
           const bytes = Buffer.from(chunk);
           chunks.push(bytes);
           if (!outgoing.write(bytes)) await once(outgoing, 'drain');
@@ -174,6 +259,10 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       outgoing.off('error', abortOnError);
     }
 
+    const telemetry = transportError
+      ? { promptTokens: null, outputTokens: null, cachedTokens: null, cacheTelemetry: 'unknown' }
+      : providerUsageTelemetry(responseBody);
+    const ttftMs = firstResponseByteAt == null ? null : Math.max(0, firstResponseByteAt - started);
     const record = {
       sequence,
       traceSession,
@@ -185,6 +274,10 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       response: transportError ? null : parseBody(responseBody),
       status,
       elapsedMs: Date.now() - started,
+      ttftMs,
+      logicalCall,
+      logicalResponse,
+      telemetry,
       ...(error ? { error } : {}),
     };
     if (typeof onExchange === 'function') {
@@ -198,6 +291,13 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
           requestPath: record.request.path,
           status: record.status,
           elapsedMs: record.elapsedMs,
+          ttftMs: record.ttftMs,
+          logicalCall: record.logicalCall,
+          logicalResponse: record.logicalResponse,
+          promptTokens: record.telemetry.promptTokens,
+          outputTokens: record.telemetry.outputTokens,
+          cachedTokens: record.telemetry.cachedTokens,
+          cacheTelemetry: record.telemetry.cacheTelemetry,
           transportError,
         });
       } catch {

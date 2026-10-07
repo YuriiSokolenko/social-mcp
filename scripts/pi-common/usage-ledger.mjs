@@ -18,6 +18,8 @@ export function normalizeUsage(value) {
   if (!Number.isSafeInteger(usage.totalTokens)) {
     usage.totalTokens = USAGE_KEYS.reduce((sum, key) => sum + (usage[key] ?? 0), 0);
   }
+  if (value.cacheReadKnown === true || value.cacheReadKnown === false) usage.cacheReadKnown = value.cacheReadKnown;
+  else if (Number.isSafeInteger(usage.cacheRead)) usage.cacheReadKnown = true;
   if (Number.isSafeInteger(value.turns) && value.turns >= 0) usage.turns = value.turns;
   if (Number.isFinite(value.durationMs) && value.durationMs >= 0) usage.durationMs = value.durationMs;
   return usage;
@@ -40,6 +42,8 @@ export function emptyTotals() {
     output: 0,
     cacheRead: 0,
     cacheWrite: 0,
+    cacheReadKnownResponses: 0,
+    cacheReadUnknownResponses: 0,
     total: 0,
     responseMs: 0,
     providerResponseMs: 0,
@@ -72,6 +76,8 @@ function add(target, usage, responseMs, {
   target.output += usage.output ?? 0;
   target.cacheRead += usage.cacheRead ?? 0;
   target.cacheWrite += usage.cacheWrite ?? 0;
+  if (usage.cacheReadKnown === true) target.cacheReadKnownResponses += 1;
+  else if (usage.cacheReadKnown === false) target.cacheReadUnknownResponses += 1;
   target.total += usage.totalTokens;
   target.responseMs += Number.isFinite(responseMs) ? responseMs : 0;
   target.responses += 1;

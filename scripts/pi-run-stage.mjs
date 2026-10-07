@@ -361,6 +361,13 @@ export async function runStage(options, env = process.env) {
               transport_error: exchange.transportError === true,
               request_method: exchange.requestMethod ?? null,
               request_path: exchange.requestPath ?? null,
+              logical_call: exchange.logicalCall ?? null,
+              logical_response: exchange.logicalResponse ?? null,
+              prompt_tokens: exchange.promptTokens ?? null,
+              output_tokens: exchange.outputTokens ?? null,
+              cached_tokens: exchange.cachedTokens ?? null,
+              cache_telemetry: exchange.cacheTelemetry ?? 'unknown',
+              ttftMs: exchange.ttftMs ?? null,
             };
             const line = JSON.stringify(metric);
             fs.appendFileSync(spec.artifacts.metricsPath, `${line}\n`);

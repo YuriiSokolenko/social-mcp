@@ -308,6 +308,9 @@ export const STAGES = Object.freeze({
         'accept_mutation_scope', 'run_check', 'retry_last_failed_check', 'repo_search', 'indexed_repo_search', 'need_more_evidence', 'submit_result',
       ],
       actionTools: ['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation', 'submit_result'],
+      // Fresh Main only: ProgressController enables these after a successful PreparedImplementation
+      // handoff. Resumed/repair/coding modes enter action_required without that opt-in.
+      directActionTools: ['read', 'repo_search', 'indexed_repo_search', 'bash'],
       controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'],
     },
     prompt: promptBuilders.implementer,

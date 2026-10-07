@@ -20,6 +20,7 @@ import {
   truncatedToolCallGuidance,
 } from './pi-common/progress-controller.mjs';
 import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-config.mjs';
+import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
@@ -1343,6 +1344,8 @@ export default function (pi) {
       (
         (CONTENT_MUTATION_TOOLS.has(name) && codingRecoveryGuard.inspection_complete !== true) ||
         name === 'bash' ||
+        name === 'repo_search' ||
+        name === 'indexed_repo_search' ||
         name === config.productiveProgress?.codingSessionTool ||
         name === config.productiveProgress?.blockerTool
       )
@@ -1391,6 +1394,7 @@ export default function (pi) {
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
+            directTools: controller.directActionToolNames(),
             blockerTool: controller.evidenceUnlockAvailable()
               ? config.productiveProgress.blockerTool
               : null,
@@ -1881,6 +1885,8 @@ export default function (pi) {
   let codingFirstResponseLogged = false;
   let codingResponseNumber = 0;
   let codingProviderRequestStartedAt = null;
+  let previousMainPromptMetadata = null;
+  let mainPromptRequestSequence = 0;
   if (stage === 'implementer') {
     pi.on('before_provider_request', (event) => {
       if (runCheckPreflightFailed) {
@@ -2150,6 +2156,23 @@ export default function (pi) {
             patched = constrained;
           }
         }
+      }
+
+      if (!codingSession) {
+        const metadata = mainPromptRequestMetadata(patched, previousMainPromptMetadata);
+        // Runtime-scenario tests may use synthetic history-only payloads with no prompt
+        // envelope at all. Enforce composition as soon as any real Main envelope component is
+        // present. In particular, system=1 with shared=0/role=0 must fail instead of passing.
+        if (
+          metadata.systemMessageCount > 0 ||
+          metadata.sharedContractCount > 0 ||
+          metadata.roleContractCount > 0
+        ) {
+          assertMainPromptComposition(metadata);
+        }
+        const request = ++mainPromptRequestSequence;
+        console.log(`PI_MAIN_PROMPT_METADATA ${JSON.stringify({ stage, request, ...metadata })}`);
+        previousMainPromptMetadata = metadata;
       }
       return patched;
     });
@@ -4052,7 +4075,7 @@ export default function (pi) {
         activeTools: activeToolNames,
       })}`);
       await pi.sendUserMessage(
-        `RUNTIME EVIDENCE PERMIT CONSUMED: the one evidence action (${consumedEvidence.tool}) is complete. read/search evidence and repeated need_more_evidence are unavailable until successful productive progress. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
+        `RUNTIME EVIDENCE PERMIT CONSUMED: the one bounded evidence action (${consumedEvidence.tool}) is complete. Repeated need_more_evidence is unavailable until successful productive progress. Direct repository tools remain governed by the authoritative current surface. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
         { deliverAs: 'steer' },
       );
     }

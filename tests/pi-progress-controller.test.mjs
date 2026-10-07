@@ -1296,7 +1296,11 @@ test('successful prepared handoff enforces exact mutation anchors without a nume
   assert.equal(state.productiveProgressState(), 'action_required');
   assert.deepEqual(applied.requiredMutationAnchors, ['src/net.py']);
   assert.equal('evidenceBudget' in applied, false);
-  assert.match(state.checkToolCall('read', { path: 'src/other.py' }).reason, /productive progress requires an action now/);
+  assert.equal(
+    state.checkToolCall('read', { path: 'src/other.py' }),
+    undefined,
+    '#540 successful fresh handoff allows direct inspection beyond the required mutation anchor',
+  );
   assert.match(state.checkToolCall('safe_edit', {
     path: 'src/net.py',
     operation: 'replace',
@@ -1390,8 +1394,8 @@ test('a zero evidence_budget preparation transitions directly to action_required
   state.onTurnStart(0);
   state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false, reason: 'test' });
   assert.equal(state.productiveProgressState(), 'action_required');
-  // No incidental evidence action slips through: a non-action tool is blocked immediately.
-  assert.match(state.checkToolCall('read', { path: 'README.md' }).reason, /productive progress requires an action now/);
+  // #540: action_required no longer hides fresh Main repository inspection tools.
+  assert.equal(state.checkToolCall('read', { path: 'README.md' }), undefined);
 });
 
 test('a positive planner evidence_budget overrides the by-complexity table and still allows gathering it', () => {
