@@ -50,6 +50,11 @@ export function mainPromptRequestMetadata(payload, previous = null) {
     toolSchemaHash: toolSchema.hash,
     historyBytes: conversation.bytes,
     requestBodyBytes: request.bytes,
+    previousHashes: {
+      systemPromptHash: previous?.systemPromptHash ?? null,
+      initialUserContextHash: previous?.initialUserContextHash ?? null,
+      toolSchemaHash: previous?.toolSchemaHash ?? null,
+    },
     changedFromPrevious: {
       system: previous ? previous.systemPromptHash !== system.hash : null,
       initialUserContext: previous ? previous.initialUserContextHash !== user.hash : null,
