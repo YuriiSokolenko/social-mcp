@@ -507,6 +507,13 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
 
     const evidenceState = readPlannerEvidenceState(evidenceStateFile);
     const failure = acceptedPlannerValidationError ?? error;
+    if (acceptedPlannerValidationError && acceptedPlannerValidationError !== error) {
+      console.warn(`PI_PLANNER_ACCEPTED_RESULT_INVALID ${JSON.stringify({
+        validationError: String(acceptedPlannerValidationError?.message ?? acceptedPlannerValidationError).slice(0, 400),
+        delegationError: String(error?.message ?? error).slice(0, 400),
+        delegationStatus: error?.delegationStatus ?? null,
+      })}`);
+    }
     const message = String(failure?.message ?? failure);
     const plannerFailureClass = evidenceState?.failureKind === 'semantic_no_progress'
       ? 'planner_semantic_no_progress'
