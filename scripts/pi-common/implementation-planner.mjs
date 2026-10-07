@@ -457,7 +457,9 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     if (signal?.aborted) throw error;
     orbitSeed = {
       present: false, fresh: false, currentHead: null, indexedHead: null, indexStatus: null,
-      requestedTargets: [], targets: [], serializedBytes: 0, truncated: false, queryFailures: 0,
+      requestedTargets: [], attemptedTargets: [], attemptedTargetCount: 0, successfulTargets: [],
+      queriedTargets: [], targets: [], serializedBytes: 0, truncated: false, queryFailures: 0,
+      failureCategoryCounts: {}, failureDiagnostics: [],
       reason: 'seed_builder_error', diagnostic: String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 160),
     };
   }
@@ -468,11 +470,18 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     indexedHead: orbitSeed?.indexedHead ?? null,
     indexStatus: orbitSeed?.indexStatus ?? null,
     requestedTargets: Array.isArray(orbitSeed?.requestedTargets) ? orbitSeed.requestedTargets : [],
+    attemptedTargets: Array.isArray(orbitSeed?.attemptedTargets) ? orbitSeed.attemptedTargets : [],
+    attemptedTargetCount: Number.isSafeInteger(orbitSeed?.attemptedTargetCount) ? orbitSeed.attemptedTargetCount : 0,
+    successfulTargets: Array.isArray(orbitSeed?.successfulTargets) ? orbitSeed.successfulTargets : [],
+    // Compatibility field: successful non-empty context queries, not every attempted query.
     queriedTargets: Array.isArray(orbitSeed?.queriedTargets) ? orbitSeed.queriedTargets : [],
     targets: Array.isArray(orbitSeed?.targets) ? orbitSeed.targets : [],
     serializedBytes: Number.isSafeInteger(orbitSeed?.serializedBytes) ? orbitSeed.serializedBytes : 0,
     truncated: Boolean(orbitSeed?.truncated),
     queryFailures: Number.isSafeInteger(orbitSeed?.queryFailures) ? orbitSeed.queryFailures : 0,
+    failureCategoryCounts: orbitSeed?.failureCategoryCounts && typeof orbitSeed.failureCategoryCounts === 'object'
+      ? orbitSeed.failureCategoryCounts : {},
+    failureDiagnostics: Array.isArray(orbitSeed?.failureDiagnostics) ? orbitSeed.failureDiagnostics : [],
     timeBudgetMs: Number.isSafeInteger(orbitSeed?.timeBudgetMs) ? orbitSeed.timeBudgetMs : null,
     durationMs: Number.isSafeInteger(orbitSeed?.durationMs) ? orbitSeed.durationMs : null,
     reason: orbitSeed?.reason ?? null,
