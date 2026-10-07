@@ -7,7 +7,7 @@ import { recordDescendantMetric, runTextSubagent } from './structured-subagent.m
 import { baseRef } from './project-config.mjs';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs';
 import { buildPlannerOrbitSeed } from './planner-orbit.mjs';
-import { parsePlannerXml, plannerXmlContractExample } from './planner-xml.mjs';
+import { parsePlannerXml } from './planner-xml.mjs';
 
 // Internal semantic-progress fingerprints remain bounded so a repository tool result can never
 // turn the planner sidecar into a raw transcript. This is not a Planner -> Main handoff limit.
@@ -490,8 +490,7 @@ Finish as soon as the plan is sufficiently grounded. Repository tool calls do no
 
 FINALIZATION CONTRACT:
 When the plan is sufficiently grounded, stop repository investigation and return exactly one plain XML document as normal assistant content. Do not call a result tool or function. Do not wrap the XML in JSON or markdown fences, and do not add prose before or after it.
-Use this exact structural vocabulary:
-${plannerXmlContractExample()}
+Follow the exact element structure and closing-tag names from the canonical valid XML example in your system finalization contract. Return one complete <plan> document only; use the real plan values rather than copying the example.
 Escape XML text as valid XML: at minimum escape & as &amp; and < as &lt; inside steps, facts, warnings, anchors, and reason text; standard named or numeric XML entities are accepted. The root must contain exactly complexity="trivial|nontrivial" and large_mutation="true|false". <steps> and <reason> are required. <facts>, <warnings>, and <required_mutation_anchors> may be omitted when empty. Unknown, duplicate, or nested structural elements are invalid.
 ${evidencePolicy}${orbitSeedGuidance}
 
@@ -527,13 +526,58 @@ function plannerTextResult(response) {
   throw new Error('Implementation planner did not return plain assistant text');
 }
 
+const PLANNER_XML_REJECTION_DIAGNOSTIC_MAX_LENGTH = 320;
+const PLANNER_XML_REPAIR_CONTEXT_MAX_LENGTH = 12000;
+
+function redactPlannerXmlRepairText(value) {
+  return String(value ?? '')
+    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, '[redacted pem]')
+    .replace(/\b(?:gh[pousr]_|sk-)[A-Za-z0-9_-]{12,}\b/g, '[redacted credential]')
+    .replace(/((?:api[_-]?key|token|password|secret)\s*[:=]\s*)["']?[^,\s"']+["']?/gi, '$1[redacted]')
+    .replace(/\b[A-Za-z]:\\(?:[^\\\s]+\\)*[^\\\s]*/g, '[redacted path]')
+    .replace(/\/(?:Users|home|tmp|var|private|root)\/[^\s"'<>]+/g, '[redacted path]');
+}
+
+function sanitizePlannerXmlRejection(value, maxLength = PLANNER_XML_REJECTION_DIAGNOSTIC_MAX_LENGTH) {
+  const compact = redactPlannerXmlRepairText(value)
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (compact || 'Planner XML was rejected without a diagnostic').slice(0, maxLength);
+}
+
+function plannerXmlRejection(error) {
+  const raw = String(error?.message ?? error ?? '');
+  const errorClass = raw.startsWith('Planner XML:')
+    ? 'xml_parse_or_shape'
+    : raw.startsWith('resolved_target_mismatch:')
+      ? 'canonical_semantic_validation'
+      : /plain assistant text/i.test(raw)
+        ? 'response_shape'
+        : 'canonical_validation';
+  return {
+    errorClass,
+    diagnostic: sanitizePlannerXmlRejection(raw),
+  };
+}
+
+function rejectedXmlRepairContext(xml) {
+  const sanitized = redactPlannerXmlRepairText(String(xml ?? ''))
+    .replace(/[^\S\r\n\t]+/g, ' ')
+    .trim();
+  if (!sanitized) return '[no text XML payload returned]';
+  if (sanitized.length <= PLANNER_XML_REPAIR_CONTEXT_MAX_LENGTH) return sanitized;
+  return `${sanitized.slice(0, PLANNER_XML_REPAIR_CONTEXT_MAX_LENGTH)}
+[rejected XML truncated for repair context]`;
+}
+
 function plannerXmlRepairTask(xml, error, {
   issue = null,
   layoutHint = null,
   orbitSeed = null,
   evidenceFacts = [],
 } = {}) {
-  const diagnostic = String(error?.message ?? error).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const rejection = error?.plannerXmlRejection ?? plannerXmlRejection(error);
   const retainedFacts = Array.isArray(evidenceFacts) && evidenceFacts.length
     ? evidenceFacts.map(fact => `- ${String(fact)}`).join('\n')
     : '- none recorded';
@@ -541,10 +585,16 @@ function plannerXmlRepairTask(xml, error, {
   const retainedOrbit = orbitSeed?.present && typeof orbitSeed.text === 'string' && orbitSeed.text.trim()
     ? orbitSeed.text
     : 'none';
-  return `FINALIZATION-ONLY XML REPAIR.
-Repository investigation is closed and no repository tools are available.
-The previous Planner XML was rejected: ${diagnostic}
-Return one complete corrected <plan> XML document only. Preserve the already-grounded plan and facts; correct only the XML shape or canonical field problem. Do not answer with prose, JSON, markdown fences, or tool calls.
+  return `FINALIZATION-ONLY XML REPAIR — ONLY ATTEMPT.
+Your previous final XML was rejected and was not accepted.
+
+Error class: ${rejection.errorClass}
+Error: ${rejection.diagnostic}
+
+Repository investigation is finished and permanently closed. Do not call tools, gather more evidence, or follow any generic completion/evidence incentive.
+Using the canonical XML structure in your system finalization contract, emit one complete corrected <plan> XML document now. Follow the exact element structure and closing-tag names.
+Emit XML only: no prose, explanation, JSON, markdown fence, or tool call.
+This is the only and final repair attempt. Preserve the already-grounded plan and facts; correct only the XML/shape/canonical validation problem.
 
 Retained task context:
 Issue title: ${String(issue?.title ?? '')}
@@ -557,8 +607,8 @@ ${retainedFacts}
 Retained fresh Orbit seed:
 ${retainedOrbit}
 
-Rejected XML:
-${String(xml ?? '').trim() || '[no text XML payload returned]'}`;
+Previous rejected XML content (sanitized and bounded; reuse its plan content, not its invalid serialization):
+${rejectedXmlRepairContext(xml)}`;
 }
 
 function validatePlannerXml(xml, resolvedTargets = {}) {
@@ -679,11 +729,16 @@ export async function runImplementationPlanner(pi, ctx, config, signal, layoutHi
       console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted', message: '🐈 You pet the cat. Planner complete.' })}`);
       return { xml, validated };
     } catch (error) {
+      const rejection = plannerXmlRejection(error);
       console.log(`PI_PLANNER_XML_FINALIZATION_REJECTION ${JSON.stringify({
         attempt,
-        diagnostic: String(error?.message ?? error).slice(0, 400),
+        errorClass: rejection.errorClass,
+        diagnostic: rejection.diagnostic,
       })}`);
-      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { plannerXml: xml });
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
+        plannerXml: xml,
+        plannerXmlRejection: rejection,
+      });
     }
   };
 
@@ -699,9 +754,12 @@ export async function runImplementationPlanner(pi, ctx, config, signal, layoutHi
       parsed = parseAttempt(first, 1);
     } catch (firstError) {
       repairNeeded = true;
+      const firstRejection = firstError?.plannerXmlRejection ?? plannerXmlRejection(firstError);
       console.log(`PI_PLANNER_XML_REPAIR_STARTED ${JSON.stringify({
         attempt: 2,
-        diagnostic: String(firstError?.message ?? firstError).slice(0, 400),
+        previousAttempt: 1,
+        errorClass: firstRejection.errorClass,
+        diagnostic: firstRejection.diagnostic,
       })}`);
       const repairEvidenceState = readPlannerEvidenceState(evidenceStateFile);
       const second = await runAttempt({
@@ -717,9 +775,11 @@ export async function runImplementationPlanner(pi, ctx, config, signal, layoutHi
       try {
         parsed = parseAttempt(second, 2);
       } catch (secondError) {
+        const secondRejection = secondError?.plannerXmlRejection ?? plannerXmlRejection(secondError);
         console.log(`PI_PLANNER_XML_FINALIZATION_FAILURE ${JSON.stringify({
           attempts: 2,
-          diagnostic: String(secondError?.message ?? secondError).slice(0, 400),
+          errorClass: secondRejection.errorClass,
+          diagnostic: secondRejection.diagnostic,
         })}`);
         throw Object.assign(new Error(`Planner XML finalization failed after one repair: ${String(secondError?.message ?? secondError)}`), {
           plannerFailureClass: 'planner_xml_finalization_failed',
