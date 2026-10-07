@@ -293,6 +293,9 @@ function runtimeScenario(mode) {
       let aborts = 0;
       let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence',
         'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'subagents_enable'];
+      if (mode === 'no-submit-recovery-dead-end') {
+        active = active.filter(name => name !== 'run_check');
+      }
       const persist = entry => fs.appendFileSync(sessionFile, JSON.stringify(entry) + '\\n');
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
@@ -1094,9 +1097,6 @@ function runtimeScenario(mode) {
 
         if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
         if (['no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)) {
-          if (mode === 'no-submit-recovery-dead-end') {
-            active = active.filter(name => !['run_check', 'retry_last_failed_check'].includes(name));
-          }
           respond(request, {
             status: 'failed',
             error: 'PI_ACTION_REQUIRED_ABORT: simulated child abort after deterministic CHECK_ENV',
@@ -1799,7 +1799,7 @@ function runtimeScenario(mode) {
               },
               kind: 'stale',
             },
-            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectCorrection: true },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectCorrection: true, assertForcedCorrection: true },
             { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectAbort: true },
           ];
           for (let index = 0; index < staleAttempts.length; index += 1) {
@@ -1819,11 +1819,14 @@ function runtimeScenario(mode) {
             }
             assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
             await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-            if (attempt.expectCorrection) {
+            if (attempt.assertForcedCorrection) {
               const correctionRequest = handlers.get('before_provider_request')({
                 payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
               }, ctx);
-              assert.equal(correctionRequest.tool_choice, 'required', 'each bounded wrong-tool correction is provider-forced');
+              assert.equal(correctionRequest.tool_choice, 'required', 'the bounded wrong-tool correction is provider-forced');
+            }
+            if (attempt.expectCorrection) {
+              assert.match(steers.at(-1), /RUNTIME UNAVAILABLE CAPABILITY CORRECTION/);
             }
             assert.equal(
               aborts,
