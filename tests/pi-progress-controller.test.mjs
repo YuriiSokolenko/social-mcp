@@ -206,7 +206,7 @@ test('Implementer model-visible transition rules match the runtime action surfac
     assert.match(prompt, /subagents_enable[\s\S]{0,20}once[\s\S]*follow the tool surface/i);
     assert.doesNotMatch(prompt, /subagent\(action:"list"\)/i);
     assert.match(prompt, /lsp_start_server[\s\S]*lsp_find_symbol/i);
-    assert.match(prompt, /need_more_evidence[\s\S]*one concrete fact/i);
+    assert.match(prompt, /one concrete repository fact[\s\S]*need_more_evidence/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -622,7 +622,8 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.doesNotMatch(runtime, /name: 'prepare_implementation'|runStructuredImplementationPlanner/, 'main runtime no longer registers or runs the planner');
   assert.match(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA/);
   assert.match(bootstrapPlanner, /complexity: \{ type: 'string', enum: \['trivial', 'nontrivial'\] \}/);
-  assert.match(bootstrapPlanner, /evidence_budget: \{ type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET \}/);
+  assert.match(bootstrapPlanner, /required_mutation_anchors:[\s\S]*type: 'array'/);
+  assert.doesNotMatch(bootstrapPlanner, /evidence_budget/);
   assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 2048/);
   assert.match(bootstrapPlanner, /timeoutMs: null[\s\S]*toolBudget: null/);
   assert.doesNotMatch(bootstrapPlanner, /request\.toolBudget = \{ hard:|plannerEvidenceBudget|planner_deadline_timeout/);
@@ -651,7 +652,7 @@ test('runtime-owned preparation uses one structured planner for plan and startup
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(bootstrapPlanner, /Fresh worktree base: latest fetched/);
   assert.doesNotMatch(runtime, /Execute step 1 now/);
-  assert.match(bootstrapPlanner, /Preparation complete; do not re-plan unless concrete repository evidence invalidates a plan assumption/);
+  assert.match(bootstrapPlanner, /Preparation complete; start from the prepared facts and actions/);
   assert.match(planner, /inheritSkills: true/);
   assert.match(planner, /trivial \| nontrivial/);
   assert.match(planner, /Dispatcher already owns Architect routing/);
@@ -700,7 +701,8 @@ test('runtime action-forces the elevated large-mutation request and preserves on
     blockedReturn >= 0 && evidenceNotice > blockedReturn && finishAttempt > evidenceNotice,
     'finish-tool attempt accounting happens only after controller-blocked calls return',
   );
-  assert.match(planner, /evidence_budget/);
+  assert.match(planner, /required_mutation_anchors/);
+  assert.doesNotMatch(planner, /evidence_budget/);
 });
 
 test('repo search performs deterministic path and content discovery without a child model', () => {
