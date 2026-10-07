@@ -875,7 +875,7 @@ export class ProgressController {
           return {
             block: true,
             reason: this.productiveBlockerTool
-              ? `BLOCKED: ${toolName} did not execute in the current productive-progress state. Use an exposed mutation/submission action or direct repository tool; call ${this.productiveBlockerTool} only for one concrete fact that requires a bounded evidence transition.`
+              ? `BLOCKED: productive progress requires an action now. ${toolName} did not execute. Use structural_edit/safe_edit/edit/write/submit_result, or call ${this.productiveBlockerTool} with one concrete missing fact to unlock exactly one evidence action.`
               : `BLOCKED: classification evidence is complete. ${toolName} did not execute. Call submit_result now.`,
           };
         }
