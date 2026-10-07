@@ -678,8 +678,8 @@ for await (const line of rl) {
             promptTokens: providerTelemetry?.prompt_tokens ?? usage.input ?? null,
             cachedTokens: providerTelemetry?.cached_tokens ?? (usage.cacheReadKnown ? usage.cacheRead ?? null : null),
             cacheTelemetry: providerTelemetry?.cache_telemetry ?? (usage.cacheReadKnown ? "sdk-reported" : "unknown"),
-            ttftMs: firstTokenAt == null || responseStarted == null ? null : Math.max(0, firstTokenAt - responseStarted),
-            responseMs: elapsed,
+            ttftMs: providerTelemetry?.ttftMs ?? (firstTokenAt == null || responseStarted == null ? null : Math.max(0, firstTokenAt - responseStarted)),
+            responseMs: providerTelemetry?.responseMs ?? elapsed,
           })}`);
         }
       } else {
