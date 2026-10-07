@@ -197,8 +197,8 @@ test('planner prompt makes resolved target precedence explicit and forbids evide
       testConvention: 'tests/diagnostics/test_smoke_retry_after.py',
     },
   });
-  assert.match(task, /resolvedTargets=.*tests\\/test_smoke_labels\.py/s);
-  assert.match(task, /conventionHints=.*tests\\/diagnostics/s);
+  assert.match(task, /resolvedTargets=.*tests\/test_smoke_labels\.py/s);
+  assert.match(task, /conventionHints=.*tests\/diagnostics/s);
   assert.match(task, /resolvedTargets > conventionHints > discovered repository context/);
   assert.match(task, /Do not validate, relocate, normalize, improve, or replace them/);
   assert.match(task, /Do not spend repository evidence actions solely to re-decide or verify/);
@@ -229,7 +229,7 @@ test('canonical validation rejects relocated resolved targets but allows convent
       large_mutation: false,
       reason: 'Follow nearby tests.',
     }, { resolvedTargets }),
-    /resolved_target_mismatch: test target must remain exactly "tests\\/test_smoke_labels\.py"; returned conflicting path "tests\\/diagnostics\\/test_smoke_labels\.py"/,
+    /resolved_target_mismatch: test target must remain exactly "tests\/test_smoke_labels\.py"; returned conflicting path "tests\/diagnostics\\/test_smoke_labels\.py"/,
   );
 });
 
@@ -262,8 +262,8 @@ test('runtime resolved-target mismatch is a recoverable structured-output correc
     content: [],
   }, harness.abortContext);
   assert.match(rejected.content[0].text, /resolved_target_mismatch/);
-  assert.match(rejected.content[0].text, /tests\\/test_smoke_labels\.py/);
-  assert.match(rejected.content[0].text, /tests\\/diagnostics\\/test_smoke_labels\.py/);
+  assert.match(rejected.content[0].text, /tests\/test_smoke_labels\.py/);
+  assert.match(rejected.content[0].text, /tests\/diagnostics\\/test_smoke_labels\.py/);
   let state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
   assert.equal(state.repairStatus, 'correction_required');
   assert.equal(state.repairKind, 'resolved_target_mismatch');
