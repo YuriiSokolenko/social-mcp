@@ -9,6 +9,7 @@ import { repoSearch } from './pi-common/repo-search.mjs';
 // observability only; semantic no-progress guards, not numeric budgets, stop accidental loops.
 import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
+  PLANNER_EVIDENCE_TOOLS,
   PLANNER_RESULT_TOOL,
   MAX_PLANNER_FACTS,
   createPlannerEvidenceGate,
