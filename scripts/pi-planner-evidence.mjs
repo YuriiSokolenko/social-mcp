@@ -21,6 +21,7 @@ const PLANNER_GRAPH_COMMAND_TIMEOUT_MS = 5000;
 const RESULT_EQUIVALENT_NO_PROGRESS_LIMIT = 3;
 const EVIDENCE_NO_PROGRESS_STREAK_LIMIT = 4;
 const execFileAsync = promisify(execFile);
+
 async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
   const result = await execFileFn(command, args, {
     cwd,
