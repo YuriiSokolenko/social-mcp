@@ -206,7 +206,15 @@ export function createValidationRepairSpec(
   return createStageRunSpec({
     stage: spec.stage,
     cwd: spec.cwd,
-    prompt: validationRepairPrompt(error, handoff),
+    // Keep the original Implementer Main envelope (contracts and task input).
+    // Only the fresh-work placeholder is replaced with the repair handoff; a
+    // resumed/custom prompt without that placeholder gets an additive context.
+    prompt: spec.prompt.includes('<runtime_prepared_implementation_state/>')
+      ? spec.prompt.replace(
+          '<runtime_prepared_implementation_state/>',
+          () => validationRepairPrompt(error, handoff),
+        )
+      : `${spec.prompt}\n\n<trusted_context>\n${validationRepairPrompt(error, handoff)}\n</trusted_context>`,
     model: spec.model,
     environment: {
       ...spec.environment,
