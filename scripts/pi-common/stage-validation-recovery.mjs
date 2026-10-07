@@ -190,6 +190,26 @@ The harness then ran the authoritative final product validation and it failed.
 Fix only the concrete validation failures below. Do not restart or re-plan the task. Do not run the full product validation suite yourself; finish normally when the reported problems are fixed and the harness will run the authoritative checks again.${handoffText}`;
 }
 
+function validationRepairMainPrompt(spec, error, handoff) {
+  const instructions = validationRepairPrompt(error, handoff);
+  const original = String(spec.prompt ?? '');
+  // Main's stable context ends with the untrusted issue input. The following
+  // trusted_context may hold a fresh-work placeholder, resume commands or a
+  // large prior transcript: none belongs in the focused repair request.
+  const taskClose = '</untrusted_task_input>';
+  const end = original.indexOf(taskClose);
+  const envelope = end >= 0 ? original.slice(0, end + taskClose.length).trim() : '';
+  const shared = (envelope.match(/<shared_agent_contract\\b/g) ?? []).length;
+  const role = (envelope.match(/<role_contract\\b/g) ?? []).length;
+  if (shared === 1 && role === 1) {
+    return `${envelope}\\n\\n<trusted_context>\\n${instructions}\\n</trusted_context>`;
+  }
+  // Legacy/synthetic stage specs have no Main contract envelope. Keep their
+  // bounded repair handoff independent of arbitrary parent prompt contents.
+  if (shared === 0 && role === 0) return instructions;
+  throw new Error('Validation repair received an incomplete Implementer Main prompt envelope');
+}
+
 export function createValidationRepairSpec(
   spec,
   error,
@@ -206,15 +226,7 @@ export function createValidationRepairSpec(
   return createStageRunSpec({
     stage: spec.stage,
     cwd: spec.cwd,
-    // Keep the original Implementer Main envelope (contracts and task input).
-    // Only the fresh-work placeholder is replaced with the repair handoff; a
-    // resumed/custom prompt without that placeholder gets an additive context.
-    prompt: spec.prompt.includes('<runtime_prepared_implementation_state/>')
-      ? spec.prompt.replace(
-          '<runtime_prepared_implementation_state/>',
-          () => validationRepairPrompt(error, handoff),
-        )
-      : `${spec.prompt}\n\n<trusted_context>\n${validationRepairPrompt(error, handoff)}\n</trusted_context>`,
+    prompt: validationRepairMainPrompt(spec, error, handoff),
     model: spec.model,
     environment: {
       ...spec.environment,
