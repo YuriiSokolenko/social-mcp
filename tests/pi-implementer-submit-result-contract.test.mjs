@@ -273,9 +273,12 @@ test('a real failed submit_result call leaves ProgressController on the terminal
       state.onToolExecutionEnd('submit_result', true);
       assert.equal(state.productiveProgressState(), 'action_required');
 
-      const evidence = state.checkToolCall('read', { path: 'README.md' });
-      assert.equal(evidence.block, true);
-      assert.match(evidence.reason, /productive progress requires an action now/);
+      assert.equal(
+        state.checkToolCall('read', { path: 'README.md' }),
+        undefined,
+        '#540 fresh Main keeps direct repository inspection available after a failed submit',
+      );
+      assert.equal(state.productiveProgressState(), 'action_required');
 
       const corrected = {
         title: 'Contract fix',
