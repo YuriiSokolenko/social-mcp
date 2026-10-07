@@ -307,3 +307,40 @@ test('Planner docs and agent instructions describe Orbit seed and no superseded 
   assert.doesNotMatch(rules, /keeps up to 16 ordered steps/i);
   assert.doesNotMatch(rules, /15-minute planner deadline/i);
 });
+
+
+test('absent Orbit seed still delegates Planner and returns PreparedImplementation', async (t) => {
+  const bus = new EventEmitter();
+  let requestSeen = null;
+  bus.on('prompt-template:subagent:request', request => {
+    requestSeen = request;
+    bus.emit('prompt-template:subagent:response', {
+      requestId: request.requestId,
+      ownerRunId: request.ownerRunId,
+      nodeId: request.nodeId,
+      status: 'completed',
+      usage: { turns: 1, input: 12, output: 8 },
+      result: { kind: 'structured', value: {
+        steps: ['Use filesystem evidence as needed'], facts: [], complexity: 'trivial',
+        required_mutation_anchors: [], large_mutation: false, reason: 'Orbit is optional',
+      } },
+    });
+  });
+  const pi = { events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) } };
+  const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+  const env = plannerEnv(t);
+  t.mock.method(console, 'log', () => {});
+
+  const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, {
+    env,
+    orbitSeedBuilder: async () => ({
+      present: false, fresh: false, currentHead: 'abc123', indexedHead: 'old999', indexStatus: 'indexed',
+      requestedTargets: ['src/net.py'], targets: [], serializedBytes: 0, truncated: false,
+      queryFailures: 0, reason: 'stale_index',
+    }),
+  });
+
+  assert.equal(result.status, 'prepared');
+  assert.ok(requestSeen, 'Planner delegation still occurs');
+  assert.doesNotMatch(requestSeen.task, /ORBIT-DERIVED REPOSITORY CONTEXT/);
+});
