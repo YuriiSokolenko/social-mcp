@@ -395,7 +395,8 @@ function runtimeScenario(mode) {
         if (attempts === 1) {
           assert.doesNotMatch(JSON.stringify(request), /structured_output/);
           assert.match(request.task, /plain XML document/i);
-          assert.match(request.task, /<plan complexity=/);
+          assert.match(request.task, /canonical valid XML example in your system finalization contract/i);
+          assert.doesNotMatch(request.task, /<plan complexity=/);
           assert.match(request.task, /large_mutation/);
           assert.match(request.task, /large_mutation="true"/);
           assert.doesNotMatch(request.task, /outer value|value wrapper|240 characters|at most 6 .*evidence|minutes remaining|attempts remaining/i);
