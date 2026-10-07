@@ -396,6 +396,11 @@ function runtimeScenario(mode) {
       assert.equal(tools.has('declare_task_complexity'), false);
       assert.equal(active.includes('prepare_implementation'), false);
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
+
+      // Match the real Main lifecycle before inspecting its first-request surface/budget.
+      // session_start applies the prepared action surface and promotes zero-anchor automatic
+      // large-mutation intent before any provider request is allowed to start.
+      await handlers.get('session_start')({}, ctx);
       let turn = 0;
       async function call(name, input = {}) {
         handlers.get('turn_start')({ turnIndex: turn });
