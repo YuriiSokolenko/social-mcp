@@ -277,9 +277,8 @@ export const STAGES = Object.freeze({
       blockerTool: 'need_more_evidence',
       verificationTool: 'run_check',
       initialEvidenceBudget: 6,
-      // Fallback only: used when the planner's own per-task `evidence_budget` estimate is
-      // absent. The planner's estimate (wired through `setEvidenceBudget`) is authoritative
-      // because complexity alone is not a valid proxy for how much evidence a task needs.
+      // Legacy/direct-classification fallback only. Successful PreparedImplementation handoffs
+      // start action-oriented with explicit mutation anchors; unresolved facts use need_more_evidence.
       initialEvidenceBudgetByComplexity: {
         trivial: 2,
         nontrivial: 6,
