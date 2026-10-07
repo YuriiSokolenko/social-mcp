@@ -1075,6 +1075,9 @@ export default function (pi) {
 
   function codingRecoveryEvidenceAvailable() {
     if (!codingRecoveryReadAvailable()) return false;
+    const hasReadablePreservedPath = codingRecoveryGuard.changed_publishable_paths
+      .some(item => trustedCodingRepairReadPath(item, process.cwd()));
+    if (!hasReadablePreservedPath) return false;
     const inventory = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name })))
       .map(tool => typeof tool === 'string' ? tool : tool?.name);
     return inventory.includes('read');
@@ -2940,6 +2943,7 @@ export default function (pi) {
           const recoveryReceipt = terminalSubmitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
           if (recoveryReceipt?.changed_publishable_paths?.length) {
             codingRecoveryGuard = recoveryReceipt;
+            requireToolOnNextProviderRequest = true;
             console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
               stage,
               sessionId,
