@@ -408,6 +408,12 @@ export default function (pi) {
       recordEvidenceState(pending.admission, { fact });
       console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
       console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'progress' })}`);
+      if (typeof pi.sendUserMessage === 'function') {
+        await pi.sendUserMessage(
+          '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
+          { deliverAs: 'steer' },
+        );
+      }
     }
     lastEvidenceSignature = pending.signature;
     lastEvidenceMadeProgress = madeProgress;
