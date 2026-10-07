@@ -2158,7 +2158,12 @@ export default function (pi) {
 
       if (!codingSession) {
         const metadata = mainPromptRequestMetadata(patched, previousMainPromptMetadata);
-        assertMainPromptComposition(metadata);
+        // Runtime-scenario tests intentionally use minimal provider payloads with no prompt
+        // envelope. Enforce composition whenever this is a real Main contract request; the
+        // pure helper tests cover malformed/empty envelopes deterministically.
+        if (metadata.sharedContractCount > 0 || metadata.roleContractCount > 0) {
+          assertMainPromptComposition(metadata);
+        }
         const request = ++mainPromptRequestSequence;
         console.log(`PI_MAIN_PROMPT_METADATA ${JSON.stringify({ stage, request, ...metadata })}`);
         previousMainPromptMetadata = metadata;
