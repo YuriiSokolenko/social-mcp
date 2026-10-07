@@ -1773,8 +1773,8 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'action-hidden-abort') {
-          // #469 exact lifecycle: one blocker opens one evidence action, then both read and
-          // repeated need_more_evidence disappear until productive progress occurs.
+          // #469/#540 lifecycle: one blocker opens one bounded evidence action. After it is
+          // consumed, repeated need_more_evidence disappears, while fresh Main direct read remains.
           fs.writeFileSync(cwd + '/evidence.txt', 'exact import anchor\\n');
           await call('need_more_evidence', {
             missing: 'Read evidence.txt to obtain the exact import anchor needed for the edit.',
@@ -1785,12 +1785,13 @@ function runtimeScenario(mode) {
 
           const consumedSteer = steers.findLast(text => /RUNTIME EVIDENCE PERMIT CONSUMED/.test(text));
           assert.ok(consumedSteer, 'runtime emits an explicit consumed-permit steer');
-          assert.ok(consumedSteer.includes('read/search evidence and repeated need_more_evidence are unavailable'));
-          assert.ok(!active.includes('read'), 'read is removed after the single evidence action');
+          assert.ok(consumedSteer.includes('Repeated need_more_evidence is unavailable'));
+          assert.ok(consumedSteer.includes('Direct repository tools remain governed by the authoritative current surface'));
+          assert.ok(active.includes('read'), 'fresh Main direct read remains available after the bounded evidence action');
           assert.ok(!active.includes('need_more_evidence'), 'blocker is removed until productive progress');
 
           const staleAttempts = [
-            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectCorrection: true },
+            { toolName: 'grep', input: { pattern: 'evidence' }, kind: 'unavailable', expectCorrection: true },
             {
               toolName: 'need_more_evidence',
               input: {
@@ -1799,8 +1800,8 @@ function runtimeScenario(mode) {
               },
               kind: 'stale',
             },
-            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectCorrection: true, assertForcedCorrection: true },
-            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectAbort: true },
+            { toolName: 'grep', input: { pattern: 'evidence' }, kind: 'unavailable', expectCorrection: true, assertForcedCorrection: true },
+            { toolName: 'grep', input: { pattern: 'evidence' }, kind: 'unavailable', expectAbort: true },
           ];
           for (let index = 0; index < staleAttempts.length; index += 1) {
             const attempt = staleAttempts[index];
@@ -2600,7 +2601,7 @@ test('#470 missing evidence executor restores the permit through the real runtim
 test('#469 evidence unlock is single-use; stale lifecycle races reset strikes before genuine unavailable calls can abort', () => {
   const logs = runtimeScenario('action-hidden-abort');
   assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
-  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"read"/);
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"grep"/);
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"need_more_evidence"/);
   assert.ok((logs.match(/PI_UNAVAILABLE_CAPABILITY_CORRECTION /g) ?? []).length >= 1, 'an unavailable tool gets a bounded correction before abort');
   assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: unavailable capability repeated after 1 bounded correction turn/);
