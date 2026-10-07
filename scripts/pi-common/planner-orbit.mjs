@@ -276,6 +276,7 @@ export async function buildPlannerOrbitSeed(cwd, issue, {
       return {
         ...base,
         present: false,
+        queriedTargets: sections.map(section => section.target),
         queryFailures,
         durationMs: Math.max(0, now() - startedAt),
         reason: 'seed_time_budget_exhausted',
