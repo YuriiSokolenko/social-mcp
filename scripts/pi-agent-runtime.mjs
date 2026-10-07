@@ -3005,7 +3005,7 @@ export default function (pi) {
             : 'Coding session ended without a terminal result';
           const terminalDiagnostic = sessionError ?? receiptError;
           const recoveryGuidance = recoveryReceipt
-            ? ` Trusted recovery receipt: ${JSON.stringify(recoveryReceipt)} Resume from these existing worktree mutations; do not rewrite completed prepared outputs. If one concrete fact must be inspected, use the bounded evidence path exposed by the parent rather than restarting a coding session from memory.`
+            ? ` Trusted recovery receipt: ${JSON.stringify(recoveryReceipt)} Resume from these existing worktree mutations; do not discard or blindly regenerate preserved child changes. If one concrete fact must be inspected, use the bounded recovery read exposed by the parent rather than restarting a coding session from memory.`
             : '';
           const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}.${recoveryGuidance} ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
           // A real session/delegation error is still terminal for this tool call.
