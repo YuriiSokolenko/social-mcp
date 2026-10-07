@@ -430,13 +430,13 @@ function reportFailureDiagnostic(runStatus) {
           : "failed";
     const preserved = failure.checkpoint?.worktree_preserved === true ? "true" : failure.checkpoint?.worktree_preserved === false ? "false" : "unknown";
     const detail = stored ? `${diagnosticsFile.split(/[\\/]/).at(-1)}#${id}` : "unavailable";
-    const usage = measuredResponses ? usageSummary(totals) : "tokens unavailable";
+    const usage = measuredResponses ? usageSummary({ ...totals, cacheReadKnownResponses, cacheReadUnknownResponses }) : "tokens unavailable";
     const failureSummary = `[PI][failure] lifecycle=${lifecycle} status=${finalStatus} category=${category} last_tool=${oneLine(lastRelevantTool, 100)} last_check=${lastRelevantCheck} worktree_preserved=${preserved} usage="${usage}" diagnostics=${detail}`;
     console.log(C.red + failureSummary + C.reset);
   } catch {
     const id = nextDiagnosticId("runtime-failure");
     const stored = appendDiagnostic(diagnosticsFile, { id, at: new Date().toISOString(), phase, call, type: "runtime_failure_metadata_invalid" });
-    const usage = measuredResponses ? usageSummary(totals) : "tokens unavailable";
+    const usage = measuredResponses ? usageSummary({ ...totals, cacheReadKnownResponses, cacheReadUnknownResponses }) : "tokens unavailable";
     console.log(C.red + `[PI][failure] lifecycle=${phase}/${call} status=failed category=RUNTIME_FAILURE_METADATA_INVALID last_tool=${oneLine(lastRelevantTool, 100)} last_check=${lastRelevantCheck} worktree_preserved=unknown usage="${usage}" diagnostics=${stored ? `${diagnosticsFile.split(/[\\/]/).at(-1)}#${id}` : "unavailable"}` + C.reset);
   }
 }
