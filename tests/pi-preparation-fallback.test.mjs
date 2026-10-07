@@ -489,7 +489,7 @@ function runtimeScenario(mode) {
           }
         } else {
           if (mode === 'layout-aware') {
-            assert.deepEqual(prepared.details.plan, ['Add the module and focused tests using the verified diagnostics convention']);
+            assert.deepEqual(prepared.details.plan, ['Create src/demo_pkg/diagnostics/smoke_widget.py and add focused tests using the verified diagnostics convention']);
             assert.deepEqual(prepared.details.requiredMutationAnchors, []);
             assert.equal(prepared.details.largeMutation, true);
             assert.deepEqual(prepared.details.layoutHint, {
