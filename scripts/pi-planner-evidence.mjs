@@ -7,36 +7,14 @@ import { plannerOrbitContext } from './pi-common/planner-orbit.mjs';
 // observability only; semantic no-progress guards, not numeric budgets, stop accidental loops.
 import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
-  PLANNER_RESOLVED_TARGETS_ENV,
   PLANNER_EVIDENCE_TOOLS,
-  PLANNER_RESULT_TOOL,
+  PLANNER_FINALIZATION_ONLY_ENV,
   createPlannerEvidenceGate,
   plannerEvidenceFact,
-  validateResolvedTargetPaths,
 } from './pi-common/implementation-planner.mjs';
 
 const PLANNER_GRAPH_MAX_CHARS = 16000;
-const RESULT_EQUIVALENT_NO_PROGRESS_LIMIT = 3;
 const EVIDENCE_NO_PROGRESS_STREAK_LIMIT = 4;
-
-function plannerResolvedTargets(env = process.env) {
-  const raw = env[PLANNER_RESOLVED_TARGETS_ENV];
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      console.warn(`PI_PLANNER_RESOLVED_TARGETS_INVALID ${JSON.stringify({ reason: 'non_object' })}`);
-      return {};
-    }
-    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === 'string' && value.trim()));
-  } catch (error) {
-    console.warn(`PI_PLANNER_RESOLVED_TARGETS_INVALID ${JSON.stringify({
-      reason: 'invalid_json',
-      error: String(error?.message ?? error).slice(0, 200),
-    })}`);
-    return {};
-  }
-}
 
 function graphFocusTerms(question) {
   const raw = String(question ?? '').toLowerCase();
@@ -196,194 +174,61 @@ function plannerActionSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(stableSignatureValue(input ?? {}))}`;
 }
 
-function plannerResultFailureSignature(kind, diagnostic, rawArguments) {
-  const args = typeof rawArguments === 'string'
-    ? sanitizeDiagnosticText(rawArguments, 240)
-    : JSON.stringify(stableSignatureValue(rawArguments ?? {}));
-  return `${kind}:${sanitizeDiagnosticText(diagnostic, 240)}:${args}`;
+function recordEvidenceFailure({ failureKind, diagnostic, env = process.env }) {
+  const file = env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  if (!file) return;
+  try {
+    let previous = {};
+    try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* state may not exist yet */ }
+    const next = {
+      ...previous,
+      failureKind,
+      failureDiagnostic: sanitizeDiagnosticText(diagnostic, 400),
+    };
+    fs.writeFileSync(file, `${JSON.stringify(next)}\n`, { mode: 0o600 });
+  } catch (error) {
+    console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);
+  }
 }
 
 export default function (pi) {
   registerPlannerEvidenceTools(pi);
-  const resolvedTargets = plannerResolvedTargets();
 
-  let finalizing = false;
-  let resultAttempts = 0;
-  let structuredCorrections = 0;
-  let resultCallPending = false;
-  let resultSucceeded = false;
-  const blockedResultCallIds = new Set();
-  let streamedResultArguments = new Map();
-  const observedResultCalls = [];
   const gate = createPlannerEvidenceGate();
   const pendingEvidence = new Map();
   const knownFacts = new Set();
+  let finalizing = process.env[PLANNER_FINALIZATION_ONLY_ENV] === '1';
   let lastEvidenceSignature = null;
   let lastEvidenceMadeProgress = true;
   let consecutiveNoProgressEvidence = 0;
-  let missingResultRecoveryUsed = false;
-  let lastResultFailureSignature = null;
-  let equivalentResultFailureCount = 0;
 
-  function observePlannerResultCall({ id = null, rawArguments, message = null } = {}) {
-    resultAttempts += 1;
-    const call = {
-      id,
-      rawArguments,
-      message,
-      admissionDecided: false,
-      allowed: false,
-      preValidationRejected: false,
-      toolCallSeen: false,
-      toolResultSeen: false,
-    };
-    observedResultCalls.push(call);
+  const closeForFinalization = (source) => {
+    if (finalizing) return;
     finalizing = true;
-    console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, structuredCorrections, source: message ? 'pre_validation_message' : 'runtime' })}`);
-    return call;
-  }
-
-  function admitPlannerResultCall(call) {
-    if (call.admissionDecided) return call.allowed;
-    call.admissionDecided = true;
-    call.allowed = !resultSucceeded && !resultCallPending;
-    if (call.allowed) {
-      resultCallPending = true;
-      recordPlannerResultState({ resultAttempts, structuredCorrections, repairStatus: 'finalizing' });
-    }
-    return call.allowed;
-  }
-
-  function recordPlannerResultRejection({
-    repairKind,
-    diagnostic,
-    rawArguments,
-    source = 'runtime',
-    ctx = null,
-  }) {
-    structuredCorrections += 1;
-    const failureSignature = plannerResultFailureSignature(repairKind, diagnostic, rawArguments);
-    if (failureSignature === lastResultFailureSignature) equivalentResultFailureCount += 1;
-    else {
-      lastResultFailureSignature = failureSignature;
-      equivalentResultFailureCount = 1;
-    }
-
-    recordPlannerResultState({
-      resultAttempts,
-      structuredCorrections,
-      repairStatus: 'correction_required',
-      repairDiagnostic: diagnostic,
-      repairKind,
-    });
-    console.log(`PI_PLANNER_RESULT_REJECTION ${JSON.stringify({
-      resultAttempts,
-      structuredCorrections,
-      kind: repairKind,
-      source,
-      equivalentNoProgress: equivalentResultFailureCount,
-      diagnostic,
-    })}`);
-
-    if (equivalentResultFailureCount >= RESULT_EQUIVALENT_NO_PROGRESS_LIMIT) {
-      recordPlannerResultState({
-        resultAttempts,
-        structuredCorrections,
-        repairStatus: 'failed',
-        repairDiagnostic: diagnostic,
-        repairKind,
-        failureKind: 'semantic_no_progress',
-      });
-      console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({
-        kind: 'structured_output',
-        resultAttempts,
-        structuredCorrections,
-        equivalentNoProgress: equivalentResultFailureCount,
-      })}`);
-      ctx?.abort?.();
-      return false;
-    }
-
-    console.log(`PI_PLANNER_RESULT_CORRECTION ${JSON.stringify({
-      resultAttempts,
-      structuredCorrections,
-      kind: repairKind,
-    })}`);
-    return true;
-  }
-
-  function preValidationRepairDiagnostic(rawArguments) {
-    let args = rawArguments;
-    if (typeof rawArguments === 'string') {
-      try { args = JSON.parse(rawArguments); }
-      catch {
-        return 'structured_output arguments were rejected before runtime tool execution. Supply valid JSON with value as an object containing steps, facts, complexity, required_mutation_anchors, large_mutation, and reason.';
-      }
-    }
-    if (!args || typeof args !== 'object' || Array.isArray(args) || !Object.hasOwn(args, 'value')) {
-      return 'structured_output was rejected before runtime tool execution: value is required and must be an object containing steps, facts, complexity, required_mutation_anchors, large_mutation, and reason.';
-    }
-    if (!args.value || typeof args.value !== 'object' || Array.isArray(args.value)) {
-      return 'structured_output was rejected before runtime tool execution: value must be an object containing steps, facts, complexity, required_mutation_anchors, large_mutation, and reason.';
-    }
-    return 'structured_output arguments were rejected by schema validation before runtime tool execution. Correct only the reported result shape and retry structured_output.';
-  }
-
-  function reconcilePreValidationRejections(ctx = null) {
-    let stopped = false;
-    for (const call of observedResultCalls) {
-      if (!call.message || call.admissionDecided || call.preValidationRejected || call.toolCallSeen || call.toolResultSeen) continue;
-      call.preValidationRejected = true;
-      const diagnostic = preValidationRepairDiagnostic(call.rawArguments);
-      const canCorrect = recordPlannerResultRejection({
-        repairKind: 'pre_validation_rejection',
-        diagnostic,
-        rawArguments: call.rawArguments,
-        source: 'pre_validation_message',
-        ctx,
-      });
-      if (!canCorrect) stopped = true;
-    }
-    return stopped;
-  }
+    if (typeof pi.setActiveTools === 'function') pi.setActiveTools([]);
+    console.log(`PI_PLANNER_FINALIZATION_TRANSITION ${JSON.stringify({ from: 'planning', to: 'finalizing', source })}`);
+  };
 
   recordEvidenceState({ used: 0 });
   console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'start' })}`);
+  if (finalizing) {
+    console.log(`PI_PLANNER_FINALIZATION_TRANSITION ${JSON.stringify({ from: 'planning', to: 'finalizing', source: 'finalization_only_retry' })}`);
+  }
 
-  pi.on('before_provider_request', (event, ctx) => {
+  pi.on('before_provider_request', (event) => {
     const payload = event?.payload;
     if (!finalizing || !payload) return payload;
-    if (reconcilePreValidationRejections(ctx)) return payload;
-    if (!Array.isArray(payload.tools)) return payload;
-    const tools = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === PLANNER_RESULT_TOOL);
-    if (!tools.length) return payload;
-    return { ...payload, tools, tool_choice: 'required' };
+    // The repair child may be loaded before Pi has bound the session. Deactivate tools only
+    // once a provider request is actually being built, then omit tool fields entirely so
+    // OpenAI-compatible backends never receive an empty tools array.
+    if (typeof pi.setActiveTools === 'function') pi.setActiveTools([]);
+    const { tools: _tools, tool_choice: _toolChoice, ...withoutTools } = payload;
+    return withoutTools;
   });
 
   pi.on('tool_call', async (event, ctx) => {
-    if (event.toolName === PLANNER_RESULT_TOOL) {
-      let observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolCallSeen && event.toolCallId && call.id === event.toolCallId);
-      if (!observed) observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolCallSeen && !call.id);
-      if (observed) observed.toolCallSeen = true;
-      else {
-        observed = observePlannerResultCall({ id: event.toolCallId ?? null });
-        observed.toolCallSeen = true;
-      }
-      if (event.input && typeof event.input === 'object' && !Array.isArray(event.input)) {
-        observed.rawArguments = structuredClone(event.input);
-      }
-      finalizing = true;
-      if (typeof pi.setActiveTools === 'function') pi.setActiveTools([PLANNER_RESULT_TOOL]);
-      if (!admitPlannerResultCall(observed)) {
-        if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
-        console.log(`PI_PLANNER_RESULT_DUPLICATE_BLOCKED ${JSON.stringify({ resultAttempts, reason: 'parallel_or_post_success_result' })}`);
-        return { block: true, reason: 'Planner accepts one structured_output call at a time; wait for its validation result before correcting.' };
-      }
-      return undefined;
-    }
-
     if (finalizing) {
-      return { block: true, reason: 'Planner result finalization has started; repository evidence is closed.' };
+      return { block: true, reason: 'Planner finalization has started; repository evidence is closed.' };
     }
 
     let signature = null;
@@ -391,10 +236,7 @@ export default function (pi) {
       signature = plannerActionSignature(event.toolName, event.input);
       if (signature === lastEvidenceSignature && lastEvidenceMadeProgress === false) {
         const diagnostic = `Repeated equivalent ${event.toolName} action produced no new planning information.`;
-        recordPlannerResultState({
-          resultAttempts, structuredCorrections, repairStatus: 'failed',
-          repairDiagnostic: diagnostic, failureKind: 'semantic_no_progress',
-        });
+        recordEvidenceFailure({ failureKind: 'semantic_no_progress', diagnostic });
         console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'evidence', tool: event.toolName, signature })}`);
         ctx?.abort?.();
         return { block: true, reason: `${diagnostic} Planner stopped by semantic no-progress protection.` };
@@ -405,7 +247,12 @@ export default function (pi) {
     if (admission.evidence && admission.allowed) {
       recordEvidenceState(admission, { toolName: event.toolName });
       if (event.toolCallId) {
-        pendingEvidence.set(event.toolCallId, { toolName: event.toolName, input: structuredClone(event.input ?? {}), admission, signature });
+        pendingEvidence.set(event.toolCallId, {
+          toolName: event.toolName,
+          input: structuredClone(event.input ?? {}),
+          admission,
+          signature,
+        });
       }
       console.log(`PI_PLANNER_EVIDENCE ${JSON.stringify({ tool: event.toolName, action: admission.used })}`);
     }
@@ -414,155 +261,23 @@ export default function (pi) {
     return { block: true, reason: admission.reason };
   });
 
-  pi.on('message_start', (event) => {
-    if (event?.message?.role === 'assistant') streamedResultArguments = new Map();
-  });
-
-  pi.on('message_update', (event) => {
-    const update = event?.assistantMessageEvent;
-    if (update?.type !== 'toolcall_delta') return;
-    const contentIndex = update.contentIndex;
-    const block = update.partial?.content?.[contentIndex];
-    if (block?.type !== 'toolCall' || block.name !== PLANNER_RESULT_TOOL) return;
-    const key = block.id || `index:${contentIndex}`;
-    streamedResultArguments.set(key, (streamedResultArguments.get(key) ?? '') + String(update.delta ?? ''));
-  });
-
-  pi.on('message_end', async (event, ctx) => {
+  pi.on('message_end', (event) => {
     const message = event?.message;
     if (message?.role !== 'assistant' || !Array.isArray(message.content)) return;
     if (message.stopReason === 'error' || message.stopReason === 'aborted') return;
-
-    let sawAnyToolCall = false;
-    let sawResultCall = false;
-    for (let index = 0; index < message.content.length; index += 1) {
-      const block = message.content[index];
-      if (block?.type !== 'toolCall') continue;
-      sawAnyToolCall = true;
-      if (block.name !== PLANNER_RESULT_TOOL) continue;
-      sawResultCall = true;
-      const id = typeof block.id === 'string' && block.id ? block.id : null;
-      if (id && observedResultCalls.some(call => !call.preValidationRejected && call.id === id)) continue;
-      const key = id || `index:${index}`;
-      const rawArguments = streamedResultArguments.has(key)
-        ? streamedResultArguments.get(key)
-        : Object.hasOwn(block, 'arguments') ? block.arguments : undefined;
-      observePlannerResultCall({ id, rawArguments, message });
-    }
-    streamedResultArguments = new Map();
-
-    if (sawAnyToolCall || sawResultCall || resultSucceeded || resultCallPending) return;
-    const diagnostic = 'Assistant turn ended without calling structured_output.';
-    if (!missingResultRecoveryUsed && !finalizing) {
-      missingResultRecoveryUsed = true;
-      finalizing = true;
-      if (typeof pi.setActiveTools === 'function') pi.setActiveTools([PLANNER_RESULT_TOOL]);
-      recordPlannerResultState({
-        resultAttempts, structuredCorrections, repairStatus: 'correction_required',
-        repairDiagnostic: diagnostic, repairKind: 'missing_structured_output',
-      });
-      console.log(`PI_PLANNER_RESULT_RECOVERY ${JSON.stringify({ kind: 'missing_structured_output', forced: true })}`);
-      if (typeof pi.sendUserMessage === 'function') {
-        await pi.sendUserMessage(
-          'Your previous turn ended without structured_output. Repository evidence is now closed. Call structured_output now with the completed plan; do not answer with prose.',
-          { deliverAs: 'steer' },
-        );
-      }
-      return;
-    }
-
-    if (missingResultRecoveryUsed && finalizing) {
-      recordPlannerResultState({
-        resultAttempts, structuredCorrections, repairStatus: 'failed',
-        repairDiagnostic: diagnostic, repairKind: 'missing_structured_output', failureKind: 'semantic_no_progress',
-      });
-      console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'missing_structured_output', repeated: true })}`);
-      ctx?.abort?.();
-    }
-  });
-
-  pi.on('tool_result', async (event, ctx) => {
-    if (event?.toolName !== PLANNER_RESULT_TOOL) return undefined;
-    if (event.toolCallId && blockedResultCallIds.delete(event.toolCallId)) return undefined;
-
-    let observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolResultSeen && event.toolCallId && call.id === event.toolCallId);
-    if (!observed && event.toolCallId) observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolResultSeen && !call.id);
-    if (!observed) observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolResultSeen && call.toolCallSeen);
-    if (!observed) observed = observePlannerResultCall({ id: event.toolCallId ?? null });
-    observed.toolResultSeen = true;
-    if (!admitPlannerResultCall(observed) || resultSucceeded) return undefined;
-    resultCallPending = false;
-
-    if (event.isError) {
-      const rawArguments = observed.rawArguments;
-      const diagnostic = plannerRepairDiagnostic(rawArguments, event);
-      const rawArgumentsMalformed = typeof rawArguments === 'string' && (() => {
-        try { JSON.parse(rawArguments); return false; } catch { return true; }
-      })();
-      const repairKind = rawArgumentsMalformed || /(?:unexpected end|unterminated|incomplete|invalid json|json parse|parse error)/i.test(diagnostic)
-        ? 'malformed_arguments'
-        : 'schema_rejection';
-      const canCorrect = recordPlannerResultRejection({
-        repairKind,
-        diagnostic,
-        rawArguments,
-        source: 'runtime',
-        ctx,
-      });
-      if (!canCorrect) {
-        return { content: [{ type: 'text', text: `The same structured_output rejection repeated without material correction. Planner stopped by semantic no-progress protection. ${diagnostic}` }] };
-      }
-      return { content: [{ type: 'text', text: `structured_output was rejected by runtime validation. ${diagnostic} Repository evidence remains closed. Correct only the reported shape/serialization problem and call structured_output again.` }] };
-    }
-
-    const acceptedResult =
-      event?.input?.value && typeof event.input.value === 'object' && !Array.isArray(event.input.value)
-        ? structuredClone(event.input.value)
-        : observed.rawArguments?.value && typeof observed.rawArguments.value === 'object' && !Array.isArray(observed.rawArguments.value)
-          ? structuredClone(observed.rawArguments.value)
-          : null;
-    try {
-      validateResolvedTargetPaths(acceptedResult, resolvedTargets);
-    } catch (error) {
-      const diagnostic = String(error?.message ?? error);
-      const canCorrect = recordPlannerResultRejection({
-        repairKind: 'resolved_target_mismatch',
-        diagnostic,
-        rawArguments: observed.rawArguments ?? event.input,
-        source: 'runtime',
-        ctx,
-      });
-      if (!canCorrect) {
-        return { content: [{ type: 'text', text: `The same resolved-target mismatch repeated without material correction. Planner stopped by semantic no-progress protection. ${diagnostic}` }] };
-      }
-      return {
-        content: [{
-          type: 'text',
-          text: `structured_output was rejected by runtime validation. ${diagnostic} Repository evidence remains closed. Keep the authoritative resolved target unchanged, correct only the conflicting returned path, and call structured_output again.`,
-        }],
-      };
-    }
-
-    resultSucceeded = true;
-    const acceptedResultPersisted = recordPlannerResultState({
-      resultAttempts,
-      structuredCorrections,
-      repairStatus: 'accepted',
-      acceptedResult,
-    });
-    console.log(`PI_PLANNER_RESULT_SUCCESS ${JSON.stringify({ resultAttempts, structuredCorrections })}`);
-    console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted', message: '🐈 You pet the cat. Planner complete.' })}`);
-    // Abort only when the accepted result is durably recoverable from the sidecar. If persistence
-    // failed, leave the successful structured_output lifecycle intact so pi-subagents can deliver
-    // the accepted result directly without another provider request.
-    if (acceptedResultPersisted) ctx?.abort?.();
-    return undefined;
+    if (message.content.some(block => block?.type === 'toolCall')) return;
+    const text = message.content
+      .map(block => typeof block === 'string' ? block : typeof block?.text === 'string' ? block.text : '')
+      .join('')
+      .trim();
+    if (text) closeForFinalization('assistant_content');
   });
 
   pi.on('tool_execution_end', async (event, ctx) => {
     const pending = event.toolCallId ? pendingEvidence.get(event.toolCallId) : null;
     if (event.toolCallId) pendingEvidence.delete(event.toolCallId);
     if (!pending) return;
+
     const fact = event.isError ? null : plannerEvidenceFact(pending.toolName, pending.input, event.result);
     const madeProgress = Boolean(fact && !knownFacts.has(fact));
     if (madeProgress) {
@@ -581,12 +296,11 @@ export default function (pi) {
       consecutiveNoProgressEvidence += 1;
       if (consecutiveNoProgressEvidence >= EVIDENCE_NO_PROGRESS_STREAK_LIMIT) {
         const diagnostic = `${consecutiveNoProgressEvidence} consecutive repository actions produced no new compact planning fact.`;
-        recordPlannerResultState({
-          resultAttempts, structuredCorrections, repairStatus: 'failed',
-          repairDiagnostic: diagnostic, failureKind: 'semantic_no_progress',
-        });
+        recordEvidenceFailure({ failureKind: 'semantic_no_progress', diagnostic });
         console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({
-          kind: 'evidence_streak', actions: pending.admission.used, consecutiveNoProgressEvidence,
+          kind: 'evidence_streak',
+          actions: pending.admission.used,
+          consecutiveNoProgressEvidence,
         })}`);
         ctx?.abort?.();
       }
@@ -595,27 +309,6 @@ export default function (pi) {
     lastEvidenceMadeProgress = madeProgress;
   });
 }
-function safeDiagnostic(event, maxLength = 400) {
-  const pieces = [];
-  for (const value of [event?.details, event?.content]) {
-    if (typeof value === 'string') pieces.push(value);
-    else if (Array.isArray(value)) pieces.push(value.map(item => typeof item?.text === 'string' ? item.text : '').filter(Boolean).join(' '));
-    else if (value && typeof value === 'object') pieces.push(JSON.stringify(value));
-  }
-  return sanitizeDiagnosticText(pieces.join(' '), maxLength)
-    || 'The tool arguments failed schema validation; preserve the existing plan and facts.';
-}
-
-function plannerRepairDiagnostic(rawArguments, event) {
-  // Reserve space for both channels. Put Pi's actionable validation error first, and bound the
-  // argument preview independently so a large but valid JSON object cannot erase the error.
-  const validation = safeDiagnostic(event, 220);
-  const argumentText = typeof rawArguments === 'string'
-    ? rawArguments
-    : rawArguments === undefined ? '' : JSON.stringify(rawArguments);
-  const argumentPreview = argumentText ? sanitizeDiagnosticText(argumentText, 150) : '';
-  return `${validation}${argumentPreview ? ` | arguments preview: ${argumentPreview}` : ''}`.slice(0, 400);
-}
 
 function sanitizeDiagnosticText(value, maxLength) {
   return String(value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
@@ -623,34 +316,4 @@ function sanitizeDiagnosticText(value, maxLength) {
     .replace(/\b(?:gh[pousr]_|sk-)[A-Za-z0-9_-]{12,}\b/g, '[redacted credential]')
     .replace(/((?:api[_-]?key|token|password|secret)\s*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,\s]+)/gi, '$1[redacted]')
     .slice(0, maxLength);
-}
-
-function recordPlannerResultState({
-  resultAttempts,
-  structuredCorrections = 0,
-  repairStatus,
-  repairDiagnostic = null,
-  repairKind = null,
-  failureKind = null,
-  acceptedResult = null,
-}) {
-  const file = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-  if (!file) return false;
-  try {
-    let previous = {};
-    try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* state is initialized above */ }
-    const next = { ...previous, resultAttempts, structuredCorrections };
-    if (repairStatus) next.repairStatus = repairStatus;
-    if (repairDiagnostic) next.repairDiagnostic = sanitizeDiagnosticText(repairDiagnostic, 400);
-    if (repairKind) next.repairKind = repairKind;
-    if (failureKind) next.failureKind = failureKind;
-    if (acceptedResult && typeof acceptedResult === 'object' && !Array.isArray(acceptedResult)) {
-      next.acceptedResult = structuredClone(acceptedResult);
-    }
-    fs.writeFileSync(file, `${JSON.stringify(next)}\n`, { mode: 0o600 });
-    return true;
-  } catch (error) {
-    console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);
-    return false;
-  }
 }
