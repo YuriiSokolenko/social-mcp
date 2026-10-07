@@ -3959,11 +3959,25 @@ export default function (pi) {
           ctx.cwd,
         )
       );
+    const requiredAnchorMissing =
+      canonicalToolName === 'read' &&
+      event.isError === true &&
+      controller.isRequiredMutationAnchorRead('read', acceptedToolInput) &&
+      typeof acceptedToolInput?.path === 'string' &&
+      !fs.existsSync(path.resolve(ctx.cwd, acceptedToolInput.path));
+    if (requiredAnchorMissing) {
+      console.warn(`PI_REQUIRED_MUTATION_ANCHOR_ABSENT ${JSON.stringify({
+        stage,
+        path: acceptedToolInput.path,
+        action: 'release_anchor_as_new_file',
+      })}`);
+    }
     controller.onToolExecutionEnd(canonicalToolName, event.isError, {
       madeProgress: effectiveProgress,
       input: acceptedToolInput,
       strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
       verificationEligible,
+      requiredAnchorMissing,
     });
 
     if (codingRecoveryGuard) {
