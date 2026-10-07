@@ -5,13 +5,10 @@ import { promisify } from 'node:util';
 import { repoSearch } from './pi-common/repo-search.mjs';
 
 // Loaded only inside the implementation-planner pi-subagents child via .pi/settings.json.
-// Enforces the trusted planner evidence cap and read-only surface at tool-call time, so the
-// planner cannot explore past its budget or call anything but the allowlisted evidence tools.
-// The cap arrives from the bootstrap (stage config) through the child environment.
+// Enforces the trusted read-only surface at tool-call time. Evidence action counts are
+// observability only; semantic no-progress guards, not numeric budgets, stop accidental loops.
 import {
-  PLANNER_EVIDENCE_BUDGET_ENV,
   PLANNER_EVIDENCE_STATE_FILE_ENV,
-  PLANNER_OUTPUT_ONLY_ENV,
   PLANNER_RESULT_TOOL,
   MAX_PLANNER_FACTS,
   createPlannerEvidenceGate,
@@ -20,20 +17,8 @@ import {
 
 const PLANNER_GRAPH_MAX_CHARS = 16000;
 const PLANNER_GRAPH_COMMAND_TIMEOUT_MS = 5000;
+const RESULT_EQUIVALENT_NO_PROGRESS_LIMIT = 3;
 const execFileAsync = promisify(execFile);
-
-function plannerOutputOnly(env = process.env) {
-  return env[PLANNER_OUTPUT_ONLY_ENV] === 'true';
-}
-
-function evidenceBudget(env = process.env) {
-  const value = Number(env[PLANNER_EVIDENCE_BUDGET_ENV]);
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${PLANNER_EVIDENCE_BUDGET_ENV} must be a non-negative integer`);
-  }
-  return value;
-}
-
 async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
   const result = await execFileFn(command, args, {
     cwd,
