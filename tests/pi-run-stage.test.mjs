@@ -1243,7 +1243,8 @@ test('fresh Implementer: bootstrap pi completes first, then the main session sta
   assert.match(prompt, /Issue text/);
   assert.match(prompt, /Runtime-prepared implementation state/);
   assert.match(prompt, /1\. Locate the target\n2\. Apply the bounded change/);
-  assert.match(prompt, /Required current-file mutation anchors: none/);
+  assert.match(prompt, /<untrusted_planner_handoff_json>/);
+  assert.match(prompt, /Runtime startup class: nontrivial/);
   assert.doesNotMatch(prompt, /Evidence budget|evidence_budget/);
   assert.doesNotMatch(prompt, /prepare_implementation|runtime_prepared_implementation_state/);
   assert.ok(main.args.includes('--session-dir'), 'main Implementer keeps its forkable session');
