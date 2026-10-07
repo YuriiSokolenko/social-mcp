@@ -18,12 +18,12 @@ import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
-from itertools import islice
-from typing import Any
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
+from itertools import islice
 from pathlib import Path
+from typing import Any
 
 import pytest
 
