@@ -163,8 +163,99 @@ export function classifyProviderRequest(body, stage) {
   return null;
 }
 
+function usableToolArguments(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+function responsePayloads(buffer) {
+  const text = buffer.toString('utf8');
+  const payloads = [];
+  let sawDone = false;
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const data = block
+      .split(/\r?\n/)
+      .filter(line => /^data:/.test(line))
+      .map(line => line.replace(/^data:\s?/, ''))
+      .join('\n')
+      .trim();
+    if (!data) continue;
+    if (data === '[DONE]') {
+      sawDone = true;
+      continue;
+    }
+    try { payloads.push(JSON.parse(data)); } catch { /* partial/non-JSON SSE event */ }
+  }
+  if (!payloads.length && text.trim()) {
+    try { payloads.push(JSON.parse(text)); } catch { /* streamed/plain text response */ }
+  }
+  return { payloads, sawDone };
+}
+
+function hasUsableModelResponse(buffer) {
+  if (!buffer?.length) return false;
+  const { payloads, sawDone } = responsePayloads(buffer);
+  const toolCalls = new Map();
+  const toolState = key => {
+    const state = toolCalls.get(key) ?? { name: '', arguments: '' };
+    toolCalls.set(key, state);
+    return state;
+  };
+  const updateTool = (key, name, args, { replaceArguments = false } = {}) => {
+    const state = toolState(key);
+    if (typeof name === 'string' && name) state.name ||= name;
+    if (typeof args === 'string') state.arguments = replaceArguments ? args : state.arguments + args;
+    return Boolean(state.name && usableToolArguments(state.arguments));
+  };
+
+  for (const payload of payloads) {
+    for (const choice of Array.isArray(payload?.choices) ? payload.choices : []) {
+      const choiceIndex = choice?.index ?? 0;
+      for (const call of Array.isArray(choice?.delta?.tool_calls) ? choice.delta.tool_calls : []) {
+        if (updateTool(
+          `chat:${choiceIndex}:${call?.index ?? 0}`,
+          call?.function?.name,
+          call?.function?.arguments,
+        )) return true;
+      }
+      for (const call of Array.isArray(choice?.message?.tool_calls) ? choice.message.tool_calls : []) {
+        if (updateTool(
+          `chat:${choiceIndex}:${call?.index ?? 0}`,
+          call?.function?.name,
+          call?.function?.arguments,
+          { replaceArguments: true },
+        )) return true;
+      }
+      if (choice?.finish_reason != null) return true;
+    }
+
+    const item = payload?.item;
+    const responseKey = `response:${payload?.output_index ?? item?.id ?? payload?.item_id ?? 0}`;
+    if (item?.type === 'function_call' && updateTool(
+      responseKey,
+      item?.name,
+      item?.arguments,
+      { replaceArguments: typeof item?.arguments === 'string' && item.arguments.length > 0 },
+    )) return true;
+    if (payload?.type === 'response.function_call_arguments.delta' &&
+        updateTool(responseKey, payload?.name, payload?.delta)) return true;
+    if (payload?.type === 'response.function_call_arguments.done' &&
+        updateTool(responseKey, payload?.name, payload?.arguments, { replaceArguments: true })) return true;
+    if (payload?.type === 'response.output_item.done' && item?.type === 'function_call' &&
+        updateTool(responseKey, item?.name, item?.arguments, { replaceArguments: true })) return true;
+    if (payload?.type === 'response.completed' || payload?.response?.status === 'completed') return true;
+    if (payload?.type === 'message_stop') return true;
+  }
+  return sawDone;
+}
+
 /** A local OpenAI-compatible forwarding proxy that records one JSONL exchange per call. */
-export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES, traceSession = randomUUID(), onExchange = null }) {
+export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES, traceSession = randomUUID(), onExchange = null, upstreamTimeoutMs = 20 * 60 * 1000 }) {
   let nextSequence = 0;
   const logicalSequences = new Map();
   let writtenBytes = 0;
@@ -181,21 +272,28 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
     let requestBody = Buffer.alloc(0);
     let status = null;
     let responseBody = Buffer.alloc(0);
+    const responseChunks = [];
     let error = null;
     let transportError = false;
+    let streamShortCircuit = false;
+    let usableResponseObserved = false;
+    let clientSideFailure = false;
     let firstResponseByteAt = null;
     let logicalCall = null;
     let logicalResponse = null;
     const controller = new AbortController();
     const disconnectError = Object.assign(new Error('Client disconnected'), { name: 'AbortError' });
-    const abortOnRequestClose = () => { if (!incoming.complete) controller.abort(disconnectError); };
-    const abortOnClientClose = () => { if (!outgoing.writableEnded) controller.abort(disconnectError); };
-    const abortOnError = error => { if (!controller.signal.aborted) controller.abort(error); };
+    const abortOnRequestClose = () => { if (!incoming.complete && !controller.signal.aborted) controller.abort(disconnectError); };
+    const abortOnClientClose = () => { if (!outgoing.writableEnded && !controller.signal.aborted) controller.abort(disconnectError); };
+    const abortOnClientError = cause => {
+      clientSideFailure = true;
+      if (!controller.signal.aborted) controller.abort(cause);
+    };
     incoming.on('aborted', abortOnRequestClose);
     incoming.on('close', abortOnRequestClose);
-    incoming.on('error', abortOnError);
+    incoming.on('error', abortOnClientError);
     outgoing.on('close', abortOnClientClose);
-    outgoing.on('error', abortOnError);
+    outgoing.on('error', abortOnClientError);
     try {
       requestBody = await collect(incoming, controller.signal);
       const parsedRequest = parseBody(requestBody);
@@ -221,42 +319,66 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
         method: incoming.method,
         headers,
         body: ['GET', 'HEAD'].includes(incoming.method) ? undefined : requestBody,
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20 * 60 * 1000)]),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(upstreamTimeoutMs)]),
       });
       status = response.status;
       if (!response.ok) error = { name: 'HttpError', message: `Model endpoint returned HTTP ${response.status}` };
       outgoing.writeHead(response.status, responseHeaders(response.headers));
-      const chunks = [];
       if (response.body) {
         for await (const chunk of response.body) {
           if (firstResponseByteAt == null) firstResponseByteAt = Date.now();
           const bytes = Buffer.from(chunk);
-          chunks.push(bytes);
-          if (!outgoing.write(bytes)) await once(outgoing, 'drain');
+          responseChunks.push(bytes);
+          if (outgoing.destroyed) {
+            if (!controller.signal.aborted) controller.abort(disconnectError);
+            throw disconnectError;
+          }
+          if (!outgoing.write(bytes)) {
+            await Promise.race([
+              once(outgoing, 'drain'),
+              once(outgoing, 'close').then(() => {
+                if (!controller.signal.aborted) controller.abort(disconnectError);
+                throw disconnectError;
+              }),
+            ]);
+          }
         }
       }
-      responseBody = Buffer.concat(chunks);
+      responseBody = Buffer.concat(responseChunks);
+      usableResponseObserved = hasUsableModelResponse(responseBody);
       outgoing.end();
     } catch (cause) {
-      transportError = true;
-      const clientDisconnected = controller.signal.aborted && controller.signal.reason === disconnectError;
-      status = clientDisconnected ? 499 : cause?.name === 'TimeoutError' ? 504 : 502;
-      error = {
-        name: clientDisconnected ? 'AbortError' : cause?.name || 'Error',
-        message: redact(clientDisconnected ? 'Client disconnected' : String(cause?.message || cause)),
-      };
-      if (outgoing.headersSent) {
-        outgoing.destroy();
-      } else if (!outgoing.destroyed) {
-        outgoing.writeHead(status, { 'content-type': 'application/json' });
-        outgoing.end(JSON.stringify({ error: { message: 'Model request failed' } }));
+      responseBody = Buffer.concat(responseChunks);
+      usableResponseObserved = hasUsableModelResponse(responseBody);
+      const cleanClientDisconnect = controller.signal.aborted && controller.signal.reason === disconnectError;
+      const shortCircuit = cleanClientDisconnect &&
+        Number.isInteger(status) && status >= 200 && status < 300 &&
+        usableResponseObserved;
+      if (shortCircuit) {
+        streamShortCircuit = true;
+        transportError = false;
+        error = null;
+      } else {
+        transportError = true;
+        const clientDisconnected = cleanClientDisconnect || clientSideFailure;
+        status = clientDisconnected ? 499 : cause?.name === 'TimeoutError' ? 504 : 502;
+        error = {
+          name: clientDisconnected ? (cause?.name || 'AbortError') : cause?.name || 'Error',
+          message: redact(cleanClientDisconnect ? 'Client disconnected' : String(cause?.message || cause)),
+        };
+        if (outgoing.headersSent) {
+          outgoing.destroy();
+        } else if (!outgoing.destroyed) {
+          outgoing.writeHead(status, { 'content-type': 'application/json' });
+          outgoing.end(JSON.stringify({ error: { message: 'Model request failed' } }));
+        }
       }
     } finally {
       incoming.off('aborted', abortOnRequestClose);
       incoming.off('close', abortOnRequestClose);
-      incoming.off('error', abortOnError);
+      incoming.off('error', abortOnClientError);
       outgoing.off('close', abortOnClientClose);
-      outgoing.off('error', abortOnError);
+      outgoing.off('error', abortOnClientError);
     }
 
     const telemetry = transportError
@@ -273,6 +395,10 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       request: { method: incoming.method, path: safePath(incoming.url), body: parseBody(requestBody) },
       response: transportError ? null : parseBody(responseBody),
       status,
+      transportError,
+      streamDisposition: streamShortCircuit ? 'client_short_circuit' : transportError ? 'transport_error' : 'completed',
+      streamShortCircuit,
+      usableResponseObserved,
       elapsedMs: Date.now() - started,
       ttftMs,
       logicalCall,
@@ -299,6 +425,9 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
           cachedTokens: record.telemetry.cachedTokens,
           cacheTelemetry: record.telemetry.cacheTelemetry,
           transportError,
+          streamDisposition: record.streamDisposition,
+          streamShortCircuit: record.streamShortCircuit,
+          usableResponseObserved: record.usableResponseObserved,
         });
       } catch {
         // Provider accounting is best effort and must never affect model traffic.

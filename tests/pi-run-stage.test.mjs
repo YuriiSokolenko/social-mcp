@@ -310,6 +310,14 @@ test('#470 provider accounting counts only successful completion endpoints', () 
     status: 200,
     transportError: false,
   }), true);
+  assert.equal(isCountedProviderResponse({
+    requestMethod: 'POST',
+    requestPath: '/v1/chat/completions',
+    status: 200,
+    transportError: false,
+    streamShortCircuit: true,
+    usableResponseObserved: true,
+  }), true, 'usable short-circuited tool exchanges remain real provider responses');
 
   for (const exchange of [
     { requestMethod: 'GET', requestPath: '/v1/models', status: 200, transportError: false },
