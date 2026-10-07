@@ -59,7 +59,7 @@
       "source_path": "src/social_mcp/diagnostics/smoke_duration.py"
     },
     "chunking-contract": {
-      "source": "issues #341/#396: preserve order, support one-shot iterators, final partial chunks, and reject non-positive or non-integer sizes; bool is not accepted as a semantic chunk size",
+      "source": "issues #341/#396: preserve order and return a list of lists; support one-shot iterators and final partial chunks; reject non-positive or non-integer sizes; bool is not accepted as a semantic chunk size",
       "status": "requirement",
       "target": "social_mcp.diagnostics.smoke_chunks:chunked",
       "activation": "when-target-present",
@@ -67,7 +67,7 @@
       "source_path": "src/social_mcp/diagnostics/smoke_chunks.py"
     },
     "redaction-contract": {
-      "source": "issues #342/#397: exact case-insensitive sensitive-key matching, recursive dict/list traversal, configurable replacement, and input immutability",
+      "source": "issues #342/#397: exact case-insensitive sensitive-key matching, recursive dict/list traversal, configurable replacement with the task-specified default, and input immutability",
       "status": "requirement",
       "target": "social_mcp.diagnostics.smoke_redact:redact_mapping",
       "activation": "when-target-present",
