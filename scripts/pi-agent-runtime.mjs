@@ -1047,6 +1047,7 @@ export default function (pi) {
   function codingRecoveryReadAvailable() {
     return Boolean(
       codingRecoveryGuard?.changed_publishable_paths?.length &&
+      codingRecoveryGuard.inspection_complete !== true &&
       controller.productiveProgressState() === 'action_required'
     );
   }
@@ -1319,7 +1320,7 @@ export default function (pi) {
     const codingRecoveryBlocked = name => Boolean(
       codingRecoveryGuard &&
       (
-        CONTENT_MUTATION_TOOLS.has(name) ||
+        (CONTENT_MUTATION_TOOLS.has(name) && codingRecoveryGuard.inspection_complete !== true) ||
         name === 'bash' ||
         name === config.productiveProgress?.codingSessionTool ||
         name === config.productiveProgress?.blockerTool
@@ -2942,7 +2943,10 @@ export default function (pi) {
           const terminalSubmitted = outcome.submitted;
           const recoveryReceipt = terminalSubmitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
           if (recoveryReceipt?.changed_publishable_paths?.length) {
-            codingRecoveryGuard = recoveryReceipt;
+            codingRecoveryGuard = {
+              ...recoveryReceipt,
+              inspection_complete: false,
+            };
             requireToolOnNextProviderRequest = true;
             console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
               stage,
@@ -3903,17 +3907,28 @@ export default function (pi) {
       const terminalSucceeded =
         ['submit_result', 'submit_repair'].includes(canonicalToolName) &&
         event.isError !== true;
-      const releaseReason = informedByEvidence
-        ? 'bounded_recovery_evidence'
-        : informedByValidation
-          ? `validation_${validationStatus}`
-          : terminalSucceeded
-            ? 'terminal_success'
-            : null;
-      if (releaseReason) {
+      if (informedByEvidence) {
+        codingRecoveryGuard = {
+          ...codingRecoveryGuard,
+          inspection_complete: true,
+        };
+        console.info(`PI_CODING_RECOVERY_GUARD_ADVANCED ${JSON.stringify({
+          stage,
+          reason: 'bounded_recovery_evidence',
+          changedPublishablePaths: codingRecoveryGuard.changed_publishable_paths,
+          inspectionComplete: true,
+        })}`);
+      } else if (informedByValidation) {
+        console.info(`PI_CODING_RECOVERY_GUARD_ADVANCED ${JSON.stringify({
+          stage,
+          reason: `validation_${validationStatus}`,
+          changedPublishablePaths: codingRecoveryGuard.changed_publishable_paths,
+          inspectionComplete: codingRecoveryGuard.inspection_complete === true,
+        })}`);
+      } else if (terminalSucceeded) {
         console.info(`PI_CODING_RECOVERY_GUARD_RELEASED ${JSON.stringify({
           stage,
-          reason: releaseReason,
+          reason: 'terminal_success',
           changedPublishablePaths: codingRecoveryGuard.changed_publishable_paths,
         })}`);
         codingRecoveryGuard = null;
