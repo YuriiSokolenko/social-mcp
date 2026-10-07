@@ -378,48 +378,39 @@ export function validateImplementationPreparation(value) {
   return { steps, facts, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
 }
 
-export function plannerTask(env = process.env, {
-  repair = false,
-  layoutHint = null,
-  outputOnly = false,
-  retryFacts = [],
-  evidenceUsed = null,
-  repairError = null,
-} = {}) {
+export function plannerTask(env = process.env, { layoutHint = null } = {}) {
   const issue = implementerIssueContext(env);
   const layoutGuidance = layoutHint
     ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; test_target=${layoutHint.testTarget ?? 'unknown'}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat these resolved targets/directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
     : '';
-  const preservedFacts = retryFacts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS);
-  const retryContext = outputOnly
-    ? `\n\nPRESERVED EVIDENCE FROM ATTEMPT 1 (trusted bounded handoff; ${evidenceUsed == null ? 'unknown' : evidenceUsed}/${MAX_PLANNER_REPOSITORY_EVIDENCE} evidence actions consumed):\n${preservedFacts.length ? preservedFacts.map(fact => `- ${fact}`).join('\n') : '- No textual evidence snippet was recoverable.'}\nCarry every still-relevant preserved fact into the output facts array; do not ask main to rediscover it merely because this is a fresh retry child.`
-    : '';
-  const repairDetail = repair && repairError
-    ? ` Previous schema error: ${redactPlannerEvidence(repairError).slice(0, 500)}`
-    : '';
-  const evidencePolicy = outputOnly
-    ? `EVIDENCE PHASE CLOSED. This retry is output-only: repository evidence is unavailable and only structured_output may be called. Use the issue plus the preserved runtime evidence below.`
-    : `Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue names an exact path/directory/symbol/test, your first evidence action must target that named location (or the authoritative nearest sibling supplied by the runtime). If the named target is missing, stale, contradictory, or leaves a concrete planning uncertainty unresolved, broader discovery is allowed. If exact text/path location is unknown, prefer repo_search over broad find or repository-wide grep. If the uncertainty is relational (callers, references, implementations, dependencies, blast radius, or related tests), prefer planner_code_graph with one concrete target and planning question. Use find/grep when they are the narrowest query. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.`;
+  const evidencePolicy = `Repository exploration has no action budget. Continue only while another read-only repository action is likely to materially change or improve the implementation plan. If the issue names an exact path/directory/symbol/test, target that location first. Prefer repo_search when an exact location is unknown, planner_code_graph for relationship/blast-radius questions, and read/grep/find/ls only when they are the narrowest useful action. Stop immediately once exact targets, conventions, invariants, blast radius, and verification scope are sufficiently clear. Repeated equivalent actions that produce no new planning information are treated as a semantic loop.`;
+
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
+
+CAT COMPLETION INCENTIVE:
+You have been given a cat. The cat wants to be petted.
+You may pet it only after the implementation plan has been completed and accepted.
+Investigate only while additional evidence can materially improve the plan.
+Finish as soon as the plan is sufficiently grounded. Repository tool calls do not earn points or increase the reward.
 
 STRUCTURED_OUTPUT SERIALIZATION CONTRACT — read before repository evidence. This is a shape example only; replace the sample content with the real plan and pass this object directly as the arguments to structured_output:
 { "value": { "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."], "facts": ["Both implementation targets are new files."], "complexity": "nontrivial", "evidence_budget": 0, "large_mutation": false, "reason": "Both mutation targets are new files, so no current-file anchor is needed." } }
 Never add a second value wrapper such as { "value": { "value": { ... } } }. Never omit the outer value. Never stringify the payload as { "value": "{...}" }.
 
-MANDATORY COMPLETION: a successful attempt ends only by calling structured_output. Never finish a planner attempt with prose. After the final evidence result, call structured_output immediately in the same provider lifecycle instead of spending a reasoning-only turn.
+MANDATORY COMPLETION: a successful planner lifecycle ends only by calling structured_output. Never finish with prose. Once finalization starts, repository evidence closes. If runtime validation rejects the structured result, correct only the reported shape/serialization problem and call structured_output again; there is no fixed repair-attempt budget.
 ${evidencePolicy}
 
-Synthesize what you learn into the handoff. Return facts as 0-${MAX_PLANNER_FACTS} concise repository-derived facts (each <=${MAX_PLANNER_FACT_LENGTH} characters): observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought. If you established a useful fact, preserve it in facts and make plan steps act on it instead of telling main to rediscover it.
+Synthesize what you learn into a small set of concise repository-derived facts: observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought. Runtime normalization keeps this handoff compact; do not optimize exploration around serialization ceilings.
 
-Keep the plan concise: 1-8 ordered steps, each <=240 characters. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
+Keep the plan concise and ordered. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
 
-Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository evidence main still needs after consuming your handoff. Resolved discovery/convention facts cost main 0, but they do not replace a current mutation anchor: reserve at least one action for each existing file main must modify and has not itself seen, so it can read the current text/AST before editing. New-file-only work may use 0. Complexity is independent of evidence needs.
+Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository evidence main still needs after consuming your handoff. Resolved discovery/convention facts cost main 0, but they do not replace a current mutation anchor: reserve at least one action for each existing file main must modify and has not itself seen. New-file-only work may use 0. Complexity is independent of evidence needs.
 
-Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget (for example a substantial new module plus tests), not merely because complexity is nontrivial. Do not implement the task.
+Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget, not merely because complexity is nontrivial. Do not implement the task.
 
-The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}${retryContext}${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Evidence remains closed; correct only the schema/envelope and return immediately.${repairDetail}` : ''}
+The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}
 
-Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. The tool argument has exactly one top-level "value"; never wrap it again as { "value": { "value": ... } }. reason must be one concise sentence <=300 characters.
+Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. The tool argument has exactly one top-level "value"; never wrap it again.
 
 Issue title:
 ${issue.title}
@@ -427,12 +418,6 @@ ${issue.title}
 Issue body:
 ${issue.body}`;
 }
-
-// pi-subagents reports a terminal schema/envelope rejection as `Structured output validation failed: <details>`
-// (readStructuredOutput). The structured_output tool's own per-call "Validation failed for tool" errors stay
-// inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
-const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
-
 // Sums numeric usage fields (recursively) across planner attempts; null when nothing was reported.
 export function addUsage(total, next) {
   if (!next || typeof next !== 'object') return total ?? null;
