@@ -510,8 +510,8 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       reason: planned.reason,
       layoutHint,
       plannerUsage: planned.usage,
-      plannerEvidenceUsed: planned.evidenceUsed,
-      plannerEvidenceCap: planned.evidenceCap,
+      plannerEvidenceActions: planned.evidenceActions,
+      plannerStructuredCorrections: planned.structuredCorrections,
       plannerProviderTurns: Number.isSafeInteger(planned.usage?.turns) ? planned.usage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
@@ -520,18 +520,17 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
     return {
       ...common,
       status: 'fallback',
-      failureClass: error?.delegationStatus === 'timed_out' ? 'planner_deadline_timeout' : 'preparation_infrastructure_failure',
+      failureClass: error?.plannerFailureClass ?? 'preparation_infrastructure_failure',
       reason: String(error?.message ?? error),
       layoutHint,
       plannerUsage: error?.delegationUsage ?? null,
-      plannerEvidenceUsed: Number.isSafeInteger(error?.plannerEvidenceUsed) ? error.plannerEvidenceUsed : null,
-      plannerEvidenceCap: Number.isSafeInteger(error?.plannerEvidenceCap) ? error.plannerEvidenceCap : plannerEvidenceBudget(config),
+      plannerEvidenceActions: Number.isSafeInteger(error?.plannerEvidenceActions) ? error.plannerEvidenceActions : null,
+      plannerStructuredCorrections: Number.isSafeInteger(error?.plannerStructuredCorrections) ? error.plannerStructuredCorrections : 0,
       plannerProviderTurns: Number.isSafeInteger(error?.delegationUsage?.turns) ? error.delegationUsage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
   }
 }
-
 // The bootstrap process itself failed (crash, no artifact): still infrastructure failure, so the
 // fresh Implementer starts with the same already-resolved fallback instead of being blocked.
 export function bootstrapFailureFallback(cwd, reason, env = process.env, elapsedMs = 0) {
