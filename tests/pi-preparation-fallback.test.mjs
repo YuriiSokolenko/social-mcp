@@ -484,8 +484,8 @@ function runtimeScenario(mode) {
           }
         } else {
           if (mode === 'layout-aware') {
-            assert.deepEqual(prepared.details.plan, ['Read the nearest smoke convention once, then add the module and focused tests']);
-            assert.equal(prepared.details.evidenceBudget, 1);
+            assert.deepEqual(prepared.details.plan, ['Add the module and focused tests using the verified diagnostics convention']);
+            assert.deepEqual(prepared.details.requiredMutationAnchors, []);
             assert.equal(prepared.details.largeMutation, true);
             assert.deepEqual(prepared.details.layoutHint, {
               dottedTarget: 'demo_pkg.diagnostics.smoke_widget.parse_widget',
@@ -498,24 +498,23 @@ function runtimeScenario(mode) {
               testTargetRequired: false,
               testConvention: 'tests/diagnostics/test_smoke_chunks.py',
             });
-            assert.match(prepared.text, /Repository layout hint: source root src/);
-            assert.match(prepared.text, /Prefer one targeted convention read if needed/);
-            assert.match(prepared.text, /do not broad-search or re-prove the fresh-worktree provenance/);
+            assert.match(prepared.text, /tests\/diagnostics\/test_smoke_chunks\.py is the verified focused-test convention/);
+            assert.doesNotMatch(prepared.text, /Repository layout hint|test_smoke_widget\.py/);
             assert.match(prepared.text, /Fresh worktree base: latest fetched/);
             assert.match(prepared.text, /Large mutation: auto-arm one-shot/);
-            assert.ok(active.includes('read'));
-            await call('read', { path: 'src/demo_pkg/diagnostics/smoke_chunks.py' });
-            assert.equal(caps.at(-1), 16384, 'new module plus tests is elevated after its evidence read');
+            assert.ok(!active.includes('read'), 'new-file-only prepared work does not expose unrelated discovery');
+            assert.equal(caps.at(-1), 16384, 'new module plus tests is elevated on its first action response');
             assert.ok(active.includes('write'));
-            assert.ok(!active.includes('read'));
             await call('write', { path: 'example.py', content: 'print("large")\\n' });
             assert.equal(caps.at(-1), 2048, 'automatic grant collapses after one mutation response');
           } else if (mode === 'small-auto') {
             assert.deepEqual(prepared.details.plan, ['Change the one config label']);
-            assert.equal(prepared.details.evidenceBudget, 0);
+            assert.deepEqual(prepared.details.requiredMutationAnchors, ['config.py']);
             assert.equal(prepared.details.largeMutation, false);
             assert.equal(prepared.details.complexity, 'trivial');
             assert.ok(!caps.includes(16384), 'small edit does not receive the elevated budget');
+            assert.ok(active.includes('read'), 'the exact required mutation anchor read is exposed');
+            await call('read', { path: 'config.py' });
             await call('safe_edit', {
               path: 'config.py',
               operation: 'replace',
@@ -527,17 +526,17 @@ function runtimeScenario(mode) {
           } else if (mode === 'non-additive-target') {
             assert.equal(prepared.details.layoutHint, null);
             assert.doesNotMatch(prepared.text, /Repository layout hint:/);
-            assert.equal(prepared.details.evidenceBudget, 2);
+            assert.deepEqual(prepared.details.requiredMutationAnchors, ['src/demo_pkg/diagnostics/__init__.py']);
             assert.equal(prepared.details.largeMutation, false);
             assert.equal(prepared.details.complexity, 'nontrivial');
             assert.ok(active.includes('read'));
           } else {
             assert.deepEqual(prepared.details.plan, mode === 'overlong'
-              ? ['x'.repeat(240), 'short step'] : ['Implement example.py']);
-            assert.equal(prepared.details.evidenceBudget, 2);
+              ? ['x'.repeat(300), 'short step'] : ['Implement example.py']);
+            assert.deepEqual(prepared.details.requiredMutationAnchors, []);
             assert.equal(prepared.details.largeMutation, false);
             assert.equal(prepared.details.complexity, 'nontrivial');
-            assert.ok(active.includes('read'));
+            assert.ok(!active.includes('read'), 'new-file-only handoff starts action-oriented');
           }
         }
       }
@@ -653,7 +652,8 @@ test('bootstrap completes and the prepared state is applied before the main sess
   const completed = logs.indexOf('"phase":"planner_completed"');
   const applied = logs.indexOf('"phase":"prepared_state_applied"');
   assert.ok(completed >= 0 && applied > completed, 'planner bootstrap completed BEFORE prepared state applied to the main session');
-  assert.match(logs, /PI_PLAN .*"evidenceBudget":2/);
+  assert.match(logs, /PI_PLAN .*"requiredMutationAnchors":\\[\\]/);
+  assert.doesNotMatch(logs, /PI_PLAN .*"evidenceBudget"/);
   assert.match(logs, /\[PI\]\[planner\] prepared status=prepared/);
   assert.match(logs, /PI_COMPLEXITY .*"complexity":"nontrivial"/);
   assert.match(logs, /"beforeFirstProviderRequest":true/);
