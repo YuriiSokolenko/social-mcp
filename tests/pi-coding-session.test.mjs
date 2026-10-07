@@ -1094,6 +1094,9 @@ function runtimeScenario(mode) {
 
         if (!['no-submit', 'no-submit-parent-submit', 'no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)) await childCall('submit_result', { title: 't', summary: 's', changes: ['c'], files: ['generated.py', 'test_generated.py'], security_notes: 'n', limitations: 'n' });
         if (['no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)) {
+          if (mode === 'no-submit-recovery-dead-end') {
+            active = active.filter(name => !['run_check', 'retry_last_failed_check'].includes(name));
+          }
           respond(request, {
             status: 'failed',
             error: 'PI_ACTION_REQUIRED_ABORT: simulated child abort after deterministic CHECK_ENV',
@@ -1787,7 +1790,7 @@ function runtimeScenario(mode) {
           assert.ok(!active.includes('need_more_evidence'), 'blocker is removed until productive progress');
 
           const staleAttempts = [
-            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectCorrection: true },
             {
               toolName: 'need_more_evidence',
               input: {
@@ -1796,8 +1799,8 @@ function runtimeScenario(mode) {
               },
               kind: 'stale',
             },
-            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
-            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable' },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectCorrection: true },
+            { toolName: 'read', input: { path: 'evidence.txt' }, kind: 'unavailable', expectAbort: true },
           ];
           for (let index = 0; index < staleAttempts.length; index += 1) {
             const attempt = staleAttempts[index];
@@ -1816,16 +1819,16 @@ function runtimeScenario(mode) {
             }
             assert.match(hidden.reason, /CURRENTLY EXPOSED TOOLS/);
             await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-            if (index === 2) {
+            if (attempt.expectCorrection) {
               const correctionRequest = handlers.get('before_provider_request')({
                 payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
               }, ctx);
-              assert.equal(correctionRequest.tool_choice, 'required', 'bounded wrong-tool correction is provider-forced');
+              assert.equal(correctionRequest.tool_choice, 'required', 'each bounded wrong-tool correction is provider-forced');
             }
             assert.equal(
               aborts,
-              index === staleAttempts.length - 1 ? 1 : 0,
-              'stale lifecycle races reset the strike streak; only two later genuine unavailable turns abort',
+              attempt.expectAbort ? 1 : 0,
+              'stale lifecycle races reset the strike streak; only an unavailable attempt beyond the correction limit aborts',
             );
           }
 
@@ -2006,7 +2009,7 @@ function runtimeScenario(mode) {
         // must honor the run-wide terminal marker instead of restarting the parent.
         assert.equal(handlers.get('agent_before_settle')(), undefined, 'no submit nudge after the fork submitted');
       }
-      if (['no-submit-recovery', 'no-submit-recovery-dead-end', 'no-submit-recovery-partial'].includes(mode)) {
+      if (['no-submit-recovery', 'no-submit-recovery-partial'].includes(mode)) {
         const partialRecovery = mode === 'no-submit-recovery-partial';
         assert.notEqual(result.terminate, true);
         assert.deepEqual(result.details.recovery_receipt, {
@@ -2080,6 +2083,20 @@ function runtimeScenario(mode) {
         assert.ok(!active.includes('need_more_evidence'), 'inspection does not reopen broad evidence');
         if (partialRecovery) {
           assert.ok(active.includes('retry_last_failed_check'), 'exact failed-check retry remains available after inspection');
+          assert.ok(active.includes('write'), 'inspection reopens ordinary mutation tools under accepted-scope enforcement');
+          handlers.get('turn_start')({ turnIndex: turn });
+          const outsideWrite = await handlers.get('tool_call')({
+            toolName: 'write',
+            toolCallId: 'outside-scope-recovery-write-' + turn,
+            input: { path: 'outside_recovery.py', content: 'SHOULD_NOT_EXIST = true\\n' },
+          }, ctx);
+          assert.equal(outsideWrite.block, true, 'recovery cannot mutate a path outside the accepted scope');
+          assert.match(outsideWrite.reason, /mutation_scope_required/);
+          assert.equal(fs.existsSync(cwd + '/outside_recovery.py'), false);
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 0, 'scope rejection does not destroy the guarded recovery state');
+          console.log('CODING_RECOVERY_OUTSIDE_SCOPE_BLOCKED_OK');
+
           const localRepair = await call('safe_edit', {
             path: 'generated.py',
             operation: 'insert_after',
@@ -2101,6 +2118,35 @@ function runtimeScenario(mode) {
         }
         console.log('CODING_RECOVERY_RECEIPT_OK ' + JSON.stringify(result.details.recovery_receipt));
         console.log(partialRecovery ? 'CODING_RECOVERY_PARTIAL_OK' : 'CODING_RECOVERY_BOUNDED_INSPECTION_OK');
+      }
+      if (mode === 'no-submit-recovery-dead-end') {
+        assert.notEqual(result.terminate, true);
+        assert.deepEqual(result.details.recovery_receipt, {
+          coding_session_status: 'aborted',
+          changed_publishable_paths: ['generated.py', 'test_generated.py'],
+          prepared_outputs_present: { source: true, test: true },
+          last_validation: { kind: 'pytest', status: 'infra_error', infrastructure_code: 'CHECK_ENV' },
+          remaining_terminal_obligation: 'validation',
+        });
+        assert.ok(active.includes('read'), 'guard initially exposes the bounded read while preserved paths still exist');
+        assert.ok(!active.includes('run_check'), 'the dead-end fixture removes parent validation capability');
+        fs.rmSync(cwd + '/generated.py');
+        fs.rmSync(cwd + '/test_generated.py');
+
+        handlers.get('turn_start')({ turnIndex: turn });
+        const staleRead = await handlers.get('tool_call')({
+          toolName: 'read',
+          toolCallId: 'dead-end-recovery-read-' + turn,
+          input: { path: 'generated.py' },
+        }, ctx);
+        assert.equal(staleRead.block, true);
+        assert.match(staleRead.reason, /no readable preserved changed path/);
+        assert.equal(aborts, 1, 'unreadable preserved paths plus no validation route fail closed immediately');
+        const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
+        assert.equal(failure.failure_code, 'PI_CODING_RECOVERY_BLOCKED');
+        assert.equal(failure.checkpoint.worktree_preserved, true);
+        assert.deepEqual(failure.recovery_receipt.changed_publishable_paths, ['generated.py', 'test_generated.py']);
+        console.log('CODING_RECOVERY_FAIL_CLOSED_OK ' + JSON.stringify(failure));
       }
       if (mode === 'no-submit-parent-submit') {
         assert.notEqual(result.terminate, true);
@@ -2232,16 +2278,18 @@ test('#526 partial child progress with failed validation survives abort and stay
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/);
   assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"bash"/);
   assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence"/);
+  assert.match(logs, /CODING_RECOVERY_OUTSIDE_SCOPE_BLOCKED_OK/);
   assert.match(logs, /CODING_RECOVERY_RETRY_ACCEPTED_OK/);
   assert.match(logs, /CODING_RECOVERY_PARTIAL_OK/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
-test('#526 guarded recovery rejects unrelated reads without reopening discovery or another fork', () => {
+test('#526 guarded recovery fails closed when preserved paths disappear and validation is unavailable', () => {
   const logs = runtimeScenario('no-submit-recovery-dead-end');
-  assert.match(logs, /CODING_RECOVERY_WRONG_PATH_BLOCKED_OK/);
-  assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
-  assert.doesNotMatch(logs, /PI_CODING_RECOVERY_BLOCKED/);
+  assert.match(logs, /PI_CODING_RECOVERY_BLOCKED/);
+  assert.match(logs, /CODING_RECOVERY_FAIL_CLOSED_OK/);
+  assert.match(logs, /"failure_code":"PI_CODING_RECOVERY_BLOCKED"/);
+  assert.match(logs, /"worktree_preserved":true/);
 });
 
 test('#499/#506 repair reads precede bounded reasoning and broad edits cannot bypass localization', () => {
