@@ -4071,7 +4071,7 @@ export default function (pi) {
         activeTools: activeToolNames,
       })}`);
       await pi.sendUserMessage(
-        `RUNTIME EVIDENCE PERMIT CONSUMED: the one evidence action (${consumedEvidence.tool}) is complete. read/search evidence and repeated need_more_evidence are unavailable until successful productive progress. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
+        `RUNTIME EVIDENCE PERMIT CONSUMED: the one bounded evidence action (${consumedEvidence.tool}) is complete. Repeated need_more_evidence is unavailable until successful productive progress. Direct repository tools remain governed by the authoritative current surface. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
         { deliverAs: 'steer' },
       );
     }
