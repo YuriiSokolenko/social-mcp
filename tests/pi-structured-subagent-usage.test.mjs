@@ -11,12 +11,14 @@ const RESPONSE = "prompt-template:subagent:response";
 
 function harness(replies) {
   const handlers = [];
+  const requests = [];
   const queue = [...replies];
   const pi = {
     events: {
       on: (name, fn) => { if (name === RESPONSE) handlers.push(fn); return () => handlers.splice(handlers.indexOf(fn), 1); },
       emit: (name, request) => {
         if (name !== REQUEST) return;
+        requests.push(request);
         const reply = queue.shift();
         if (reply === "never") return;
         setImmediate(() => handlers.slice().forEach((fn) => fn({ requestId: request.requestId, ownerRunId: "root", nodeId: request.nodeId, ...reply })));
@@ -28,7 +30,7 @@ function harness(replies) {
   const file = join(dir, "metrics.jsonl");
   process.env.PI_METRICS_FILE = file;
   const records = () => readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  return { pi, ctx, records };
+  return { pi, ctx, records, requests };
 }
 const options = (extra = {}) => ({ agent: "planner", nodeId: "n", task: "t", timeoutMs: 40, metricCall: "planner", ...extra });
 const usage = (input, output) => ({ input, output, totalTokens: input + output });
@@ -56,4 +58,24 @@ test("planner fallback and repair attempts are each attributed once, with the ti
   assert.equal(ledger.totals.total, 33);
   assert.equal(ledger.complete, false);
   assert.match(ledger.unknown[0].reason, /timed_out/);
+});
+
+
+test("delegation can omit a lifecycle timeout and generic tool-count budget", async () => {
+  const h = harness([{
+    status: "completed",
+    result: { kind: "structured", value: { ok: true } },
+    usage: usage(5, 1),
+  }]);
+  await runStructuredSubagent(h.pi, h.ctx, {
+    agent: "planner",
+    nodeId: "n",
+    task: "t",
+    schema: {},
+    timeoutMs: null,
+    toolBudget: null,
+  });
+  assert.equal(h.requests.length, 1);
+  assert.equal("timeoutMs" in h.requests[0], false);
+  assert.equal("toolBudget" in h.requests[0], false);
 });
