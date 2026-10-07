@@ -18,7 +18,7 @@ export function recordDescendantMetric(record, env = process.env) {
 // `context: 'fork'` branches the parent's persisted session transcript into the child
 // (pi-subagents createBranchedSession); `childEnv` is visible only while the child runs.
 export async function runStructuredSubagent(pi, ctx, {
-  agent, nodeId, task, schema = null, timeoutMs, maxTokens = null, toolBudget = { hard: 1 },
+  agent, nodeId, task, schema = null, timeoutMs = null, maxTokens = null, toolBudget = { hard: 1 },
   context = 'fresh', childEnv = {}, thinking = null, metricCall = null,
 }, signal) {
   const requestId = randomUUID();
@@ -57,10 +57,12 @@ export async function runStructuredSubagent(pi, ctx, {
         finish(resolve, payload);
       });
 
-      timer = setTimeout(
-        () => finish(reject, Object.assign(new Error(`${agent} did not return within ${timeoutMs} ms`), { delegationStatus: 'timed_out' })),
-        timeoutMs + 5000,
-      );
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timer = setTimeout(
+          () => finish(reject, Object.assign(new Error(`${agent} did not return within ${timeoutMs} ms`), { delegationStatus: 'timed_out' })),
+          timeoutMs + 5000,
+        );
+      }
       signal?.addEventListener?.('abort', onAbort, { once: true });
 
       pi.events.emit(SUBAGENT_DELEGATION_REQUEST_EVENT, {
@@ -71,7 +73,7 @@ export async function runStructuredSubagent(pi, ctx, {
         task,
         context,
         cwd: ctx.cwd,
-        timeoutMs,
+        ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
         ...(toolBudget ? { toolBudget } : {}),
         // Request-level thinking wins over the agent's (incl. worktree agentOverrides/defaults).
         ...(thinking ? { thinking } : {}),

@@ -44,7 +44,9 @@ test('the Implementer stage no longer defines a preparation tool or pre-complexi
   assert.deepEqual(config.preComplexityTransitionTools ?? [], []);
   assert.deepEqual(config.singleUseTools ?? [], []);
   assert.equal(config.productiveProgress.activationTool, undefined);
-  assert.equal(config.implementationPlannerTimeoutMs, 900000, 'bootstrap planner hard maximum is 15 minutes');
+  assert.equal(config.implementationPlannerTimeoutMs, undefined);
+  assert.equal(config.implementationPlannerEvidenceBudget, undefined);
+  assert.equal(config.implementationPlannerStructuredRetry, undefined);
 });
 
 test('fallback grants the bounded evidence window and closes it on exhaustion or mutation', () => {
@@ -182,7 +184,7 @@ test('fallback preserves one-shot mutation budget and post-window evidence escap
   }
 });
 
-// Exercise the real runtime, including delegation retry and event-driven tool surfaces.
+// Exercise the real runtime, including planner delegation and event-driven tool surfaces.
 // Only typebox's schema builders are stubbed; no planner/state-machine logic is replaced.
 function runtimeScenario(mode) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-preparation-'));
@@ -276,7 +278,7 @@ function runtimeScenario(mode) {
           assert.ok(request.task.includes('test_directory=tests/diagnostics'));
           assert.ok(request.task.includes('nearest_test_convention=tests/diagnostics/test_smoke_chunks.py'));
           assert.ok(request.task.includes('inspect only the nearest relevant sibling source/test'));
-          assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/);
+          assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/i);
         } else if (mode === 'non-additive-target') {
           assert.match(request.task, /Adjust existing parser/);
           assert.doesNotMatch(request.task, /Runtime repository layout hint/);
@@ -289,8 +291,8 @@ function runtimeScenario(mode) {
           assert.match(request.task, /Implement example.py/);
         }
         assert.equal(request.ownerRunId, 'bootstrap-session', 'planner is hosted by the bootstrap session, never the main one');
-        if (attempts === 1) assert.ok(request.timeoutMs <= 900000 && request.timeoutMs > 890000, '15 minute hard planner deadline');
-        else assert.ok(request.timeoutMs <= 900000 && request.timeoutMs > 0, 'retry only gets the remaining deadline');
+        assert.equal('timeoutMs' in request, false, 'planner lifecycle has no wrapper deadline');
+        assert.equal('toolBudget' in request, false, 'planner evidence is not controlled by a generic tool-count budget');
         assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048');
         if (mode === 'abort') { signal.abort(); return; }
         const good = mode === 'layout-aware'
@@ -318,18 +320,9 @@ function runtimeScenario(mode) {
               };
         const schemaError = 'Structured output validation failed: value: must have required properties value; steps: schema is false; root: must not have additional properties';
         let reply;
-        if (mode === 'envelope-retry') {
-          if (attempts === 1) assert.doesNotMatch(request.task, /REPAIR/);
-          else {
-            const repairAt = request.task.indexOf('REPAIR: the previous structured_output envelope was rejected');
-            const contractAt = request.task.indexOf('Output contract: call structured_output with exactly { "value": { "steps"');
-            assert.ok(repairAt >= 0, 'retry prompt carries repair guidance');
-            assert.ok(contractAt > repairAt, 'repair guidance immediately precedes the exact output contract');
-          }
-          reply = attempts === 2 ? { status: 'completed', result: { kind: 'structured', value: good } } : { status: 'failed', error: schemaError };
-        } else if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
+        if (mode === 'envelope-exhausted') reply = { status: 'failed', error: schemaError };
         else if (mode === 'timeout') reply = { status: 'failed', error: 'Subagent timed out after 120000ms.' };
-        else if (mode === 'deadline-timeout') reply = { status: 'timed_out', error: 'planner exceeded its deadline' };
+        else if (mode === 'transport-timeout') reply = { status: 'timed_out', error: 'delegated planner transport timed out' };
         else if (mode === 'bad-output-schema') reply = { status: 'failed', error: 'invalid outputSchema: unsupported keyword' };
         else if (mode === 'overlong') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, steps: ['  ' + 'x'.repeat(300) + '  ', ' short step '], reason: ' padded ' } } };
         else if (mode === 'extra-fields') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, evidence_budget_note: 'extra' } } };
@@ -340,7 +333,7 @@ function runtimeScenario(mode) {
           reply = { status: 'completed', result: { kind: 'structured', value: withoutLargeMutation } };
         }
         else if (mode === 'invalid-large-mutation') reply = { status: 'completed', result: { kind: 'structured', value: { ...good, large_mutation: 'true' } } };
-        else if (mode === 'success' || mode === 'layout-aware' || mode === 'non-additive-target' || mode === 'small-auto' || mode === 'retry-success' && attempts === 2) reply = { status: 'completed', result: { kind: 'structured', value: good } };
+        else if (mode === 'success' || mode === 'layout-aware' || mode === 'non-additive-target' || mode === 'small-auto') reply = { status: 'completed', result: { kind: 'structured', value: good } };
         else reply = { status: 'failed', error: 'Missing structured_output call; this step has outputSchema and must finish by calling structured_output.' };
         if (attempts === 1) {
           const { steps, additionalProperties, required } = request.result.schema;
@@ -351,8 +344,8 @@ function runtimeScenario(mode) {
           assert.equal(request.result.schema.properties.large_mutation.type, 'boolean');
           assert.match(request.task, /"value"/);
           assert.match(request.task, /large_mutation/);
-          assert.match(request.task, /substantial new module plus tests/);
-          assert.match(request.task, /240 characters/);
+          assert.match(request.task, /large_mutation=true only/);
+          assert.doesNotMatch(request.task, /240 characters|at most 6 .*evidence|minutes remaining|attempts remaining/i);
         }
         bus.emit('prompt-template:subagent:response', {
           requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, ...reply,
@@ -377,7 +370,7 @@ function runtimeScenario(mode) {
         artifact = planner.readPreparedImplementation(artifactFile);
         assert.ok(artifact, 'bootstrap wrote the PreparedImplementation artifact');
         // Hard context boundary: only the normalized artifact crosses, never planner transcript/retries.
-        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceUsed', 'plannerEvidenceCap', 'plannerProviderTurns', 'failureClass'];
+        const allowed = ['version', 'status', 'workspaceRoot', 'freshBaseCommit', 'baseRef', 'plan', 'repositoryFacts', 'complexity', 'evidenceBudget', 'largeMutation', 'reason', 'layoutHint', 'plannerUsage', 'plannerDurationMs', 'plannerEvidenceActions', 'plannerStructuredCorrections', 'plannerProviderTurns', 'failureClass'];
         assert.deepEqual(Object.keys(artifact).filter(key => !allowed.includes(key)), []);
       } else {
         assert.equal(fs.existsSync(artifactFile), false, 'restored work never runs fresh planner bootstrap');
@@ -419,11 +412,15 @@ function runtimeScenario(mode) {
         const prepared = { details: artifact, text: block };
         assert.doesNotMatch(block, /prepare_implementation|REPAIR|structured_output/);
         assert.match(block, /Runtime-prepared implementation state/);
-        const oneAttempt = ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'invalid-large-mutation', 'timeout', 'deadline-timeout', 'bad-output-schema', 'overlong', 'extra-fields', 'invalid-complexity', 'missing-reason'].includes(mode);
-        assert.equal(attempts, oneAttempt ? 1 : 2);
-        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'deadline-timeout', 'bad-output-schema', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)) {
+        assert.equal(attempts, 1, 'bootstrap uses one planner child lifecycle; result convergence happens inside that child');
+        if (['failure', 'prose', 'envelope-exhausted', 'timeout', 'transport-timeout', 'bad-output-schema', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)) {
           assert.equal(artifact.status, 'fallback');
-          assert.equal(artifact.failureClass, mode === 'deadline-timeout' ? 'planner_deadline_timeout' : 'preparation_infrastructure_failure');
+          const expectedFailureClass = mode === 'transport-timeout'
+            ? 'planner_transport_timeout'
+            : ['failure', 'prose', 'envelope-exhausted', 'invalid-complexity', 'invalid-large-mutation', 'missing-reason'].includes(mode)
+              ? 'structured_result_unrecoverable'
+              : 'preparation_infrastructure_failure';
+          assert.equal(artifact.failureClass, expectedFailureClass);
           assert.equal('plan' in artifact, false);
           assert.equal('complexity' in artifact, false);
           assert.match(block, /PREPARATION_FALLBACK/);
@@ -463,7 +460,7 @@ function runtimeScenario(mode) {
             assert.ok(active.includes('run_check'));
             await call('run_check', { kind: 'python_compile', scope: ['example.py'] });
             await call('submit_result');
-            // Past the startup deadline, a concrete missing fact still opens read/search.
+            // Later in the main session, a concrete missing fact still opens read/search.
             turn = 10;
             await call('need_more_evidence', { missing: 'Exact edit anchor', reason: 'Resolve target before editing' });
             assert.ok(active.includes('read'));
@@ -559,16 +556,15 @@ test('invalid issue context still enters preparation fallback', () => {
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-test('planner misses structured output twice, then runtime restores the complete execution path', () => {
+test('missing structured output falls back once with structured-result classification', () => {
   const logs = runtimeScenario('failure');
-  assert.match(logs, /PI_SUBAGENT_FAILURE .*"attempt":1,"retriesExhausted":false/);
-  assert.match(logs, /PI_SUBAGENT_RETRY .*"reason":"missing_structured_output","attempt":1/);
-  assert.match(logs, /PI_SUBAGENT_FAILURE .*"attempt":2,"retriesExhausted":true/);
+  assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"structured_result_unrecoverable"/);
   assert.match(logs, /PI_PREPARATION_FALLBACK .*"recovery":"continue_without_planner_output"/);
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-for (const mode of ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'retry-success', 'abort', 'restored', 'overlong', 'extra-fields', 'envelope-retry']) {
+for (const mode of ['success', 'layout-aware', 'non-additive-target', 'small-auto', 'missing-large-mutation', 'abort', 'restored', 'overlong', 'extra-fields']) {
   test('runtime preserves preparation behavior: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
@@ -602,11 +598,10 @@ test('fallback keeps the execution prose-only guard bounded', () => {
   assert.match(runtimeScenario('prose'), /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only/);
 });
 
-test('envelope/schema failure is retried once with repair guidance, then falls back', () => {
+test('unrecoverable structured-result channel failure falls back without parent retry', () => {
   const logs = runtimeScenario('envelope-exhausted');
-  assert.match(logs, /PI_SUBAGENT_RETRY .*"reason":"structured_output_schema_failure","attempt":1/);
-  assert.match(logs, /PI_SUBAGENT_FAILURE .*"attempt":2,"retriesExhausted":true/);
-  assert.match(logs, /PI_PREPARATION_FALLBACK/);
+  assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"structured_result_unrecoverable"/);
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
@@ -623,22 +618,19 @@ for (const [mode, pattern] of [
   });
 }
 
-// Real #314/#319/#320 smoke runs surfaced `implementation-planner failed: Subagent timed out after 120000ms.`
-// after the subagent's in-loop schema retries; retrying would only repeat the 120 s cost.
 for (const [mode, pattern] of [['timeout', /timed out after 120000ms/], ['bad-output-schema', /invalid outputSchema/]]) {
-  test('unrelated planner failure is not retried: ' + mode, () => {
+  test('provider or output-schema infrastructure failure is not parent-retried: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
-    assert.match(logs, /PI_SUBAGENT_FAILURE .*"reason":"planner_infrastructure_failure","attempt":1/);
+    assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"preparation_infrastructure_failure"/);
     assert.match(logs, pattern);
-    assert.match(logs, /PI_PREPARATION_FALLBACK/);
   });
 }
 
-test('planner hard deadline falls back with a distinct, logged failure class', () => {
-  const logs = runtimeScenario('deadline-timeout');
-  assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY/);
-  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_deadline_timeout"/);
+test('lower-level delegated transport timeout stays distinct from a removed planner lifecycle deadline', () => {
+  const logs = runtimeScenario('transport-timeout');
+  assert.doesNotMatch(logs, /PI_SUBAGENT_RETRY|planner_deadline_timeout/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_transport_timeout"/);
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 

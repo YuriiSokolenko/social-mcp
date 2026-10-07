@@ -5,13 +5,11 @@ import { promisify } from 'node:util';
 import { repoSearch } from './pi-common/repo-search.mjs';
 
 // Loaded only inside the implementation-planner pi-subagents child via .pi/settings.json.
-// Enforces the trusted planner evidence cap and read-only surface at tool-call time, so the
-// planner cannot explore past its budget or call anything but the allowlisted evidence tools.
-// The cap arrives from the bootstrap (stage config) through the child environment.
+// Enforces the trusted read-only surface at tool-call time. Evidence action counts are
+// observability only; semantic no-progress guards, not numeric budgets, stop accidental loops.
 import {
-  PLANNER_EVIDENCE_BUDGET_ENV,
   PLANNER_EVIDENCE_STATE_FILE_ENV,
-  PLANNER_OUTPUT_ONLY_ENV,
+  PLANNER_EVIDENCE_TOOLS,
   PLANNER_RESULT_TOOL,
   MAX_PLANNER_FACTS,
   createPlannerEvidenceGate,
@@ -20,19 +18,9 @@ import {
 
 const PLANNER_GRAPH_MAX_CHARS = 16000;
 const PLANNER_GRAPH_COMMAND_TIMEOUT_MS = 5000;
+const RESULT_EQUIVALENT_NO_PROGRESS_LIMIT = 3;
+const EVIDENCE_NO_PROGRESS_STREAK_LIMIT = 4;
 const execFileAsync = promisify(execFile);
-
-function plannerOutputOnly(env = process.env) {
-  return env[PLANNER_OUTPUT_ONLY_ENV] === 'true';
-}
-
-function evidenceBudget(env = process.env) {
-  const value = Number(env[PLANNER_EVIDENCE_BUDGET_ENV]);
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${PLANNER_EVIDENCE_BUDGET_ENV} must be a non-negative integer`);
-  }
-  return value;
-}
 
 async function localCommand(command, args, cwd, execFileFn = execFileAsync) {
   const result = await execFileFn(command, args, {
@@ -196,107 +184,90 @@ export function registerPlannerEvidenceTools(pi, {
   });
 }
 
-function recordEvidenceState(gate, admission, { fact = null, env = process.env } = {}) {
+function recordEvidenceState(admission, { fact = null, env = process.env } = {}) {
   const file = env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   if (!file) return;
   try {
     let previous = null;
-    try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first attempt / inaccessible prior state */ }
+    try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first write */ }
     const previousUsed = Number.isSafeInteger(previous?.used) && previous.used >= 0 ? previous.used : 0;
-    const previousCap = Number.isSafeInteger(previous?.cap) && previous.cap >= 0 ? previous.cap : 0;
     const previousFacts = Array.isArray(previous?.facts)
       ? previous.facts.filter(item => typeof item === 'string' && item.trim()).slice(0, MAX_PLANNER_FACTS)
       : [];
     const facts = [...previousFacts];
     if (fact && !facts.includes(fact) && facts.length < MAX_PLANNER_FACTS) facts.push(fact);
-    // The same sidecar spans structured-output retries. A retry receives cap=0 and must never
-    // erase evidence or bounded facts already captured by the first attempt.
     const state = {
-      used: Math.max(previousUsed, admission.used), cap: Math.max(previousCap, gate.cap), facts,
-      ...(previous?.repairStatus ? { repairStatus: previous.repairStatus } : {}),
-      ...(previous?.resultAttempts ? { resultAttempts: previous.resultAttempts } : {}),
-      ...(previous?.repairDiagnostic ? { repairDiagnostic: previous.repairDiagnostic } : {}),
-      ...(previous?.repairKind ? { repairKind: previous.repairKind } : {}),
-      ...(previous?.repairFailureKind ? { repairFailureKind: previous.repairFailureKind } : {}),
+      ...previous,
+      used: Math.max(previousUsed, Number.isSafeInteger(admission?.used) ? admission.used : 0),
+      facts,
     };
+    delete state.cap;
     fs.writeFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   } catch (error) {
     console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);
   }
 }
 
+function stableSignatureValue(value) {
+  if (Array.isArray(value)) return value.map(stableSignatureValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableSignatureValue(value[key])]));
+}
+
+function plannerActionSignature(toolName, input) {
+  return `${toolName}:${JSON.stringify(stableSignatureValue(input ?? {}))}`;
+}
+
+function plannerResultFailureSignature(kind, diagnostic, rawArguments) {
+  const args = typeof rawArguments === 'string'
+    ? sanitizeDiagnosticText(rawArguments, 240)
+    : JSON.stringify(stableSignatureValue(rawArguments ?? {}));
+  return `${kind}:${sanitizeDiagnosticText(diagnostic, 240)}:${args}`;
+}
+
 export default function (pi) {
   registerPlannerEvidenceTools(pi);
 
-  const outputOnly = plannerOutputOnly();
-  let repairActive = false;
-  let repairAttempted = false;
+  let finalizing = false;
   let resultAttempts = 0;
-  let resultSubmitted = false;
+  let structuredCorrections = 0;
   let resultCallPending = false;
   let resultSucceeded = false;
-  let initialResultReserved = false;
-  let outputOnlyResultReserved = false;
   const blockedResultCallIds = new Set();
-  // Capture raw argument deltas before Pi's streaming JSON parser reduces them to objects.
-  // Completed message records then reserve per-call admission slots before schema validation.
   let streamedResultArguments = new Map();
   const observedResultCalls = [];
-  const gate = createPlannerEvidenceGate(evidenceBudget());
+  const gate = createPlannerEvidenceGate();
   const pendingEvidence = new Map();
+  const knownFacts = new Set();
+  let lastEvidenceSignature = null;
+  let lastEvidenceMadeProgress = true;
+  let consecutiveNoProgressEvidence = 0;
+  let missingResultRecoveryUsed = false;
+  let lastResultFailureSignature = null;
+  let equivalentResultFailureCount = 0;
 
   function reservePlannerResultCall({ id = null, rawArguments, message = null } = {}) {
     resultAttempts += 1;
-    let allowed;
-    if (outputOnly) {
-      allowed = !outputOnlyResultReserved;
-      outputOnlyResultReserved = true;
-    } else if (repairActive) {
-      allowed = !repairAttempted;
-      if (allowed) repairAttempted = true;
-    } else {
-      allowed = !initialResultReserved;
-      initialResultReserved = true;
-    }
-    const siblingOfAdmittedCall = !allowed && observedResultCalls.some(call => call.allowed && message && call.message === message);
+    const allowed = !resultSucceeded && !resultCallPending;
+    const siblingOfAdmittedCall = !allowed && resultCallPending && Boolean(message);
     const call = { id, rawArguments, allowed, siblingOfAdmittedCall, message, toolCallSeen: false, toolResultSeen: false };
     observedResultCalls.push(call);
-    resultSubmitted = true;
-    console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, repair: repairActive, source: message ? 'pre_validation_message' : 'runtime' })}`);
-    if (allowed) recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
+    finalizing = true;
+    if (allowed) resultCallPending = true;
+    console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, structuredCorrections, source: message ? 'pre_validation_message' : 'runtime' })}`);
+    if (allowed) recordPlannerResultState({ resultAttempts, structuredCorrections, repairStatus: 'finalizing' });
     return call;
   }
 
-  // Write an explicit zero before any evidence call. If the child cannot see/write the
-  // parent's sidecar path, the parent reports evidenceUsed=null rather than a false zero.
-  recordEvidenceState(gate, { used: 0 });
-
-  if (outputOnly) {
-    // Best-effort UX hardening: when pi exposes active-tool control in the child, hide the
-    // repository evidence tools entirely on retry. The call-time gate below remains authoritative
-    // if the result tool is not visible yet at resources_discover.
-    pi.on('resources_discover', async () => {
-      const active = typeof pi.getActiveTools === 'function' ? pi.getActiveTools() : null;
-      if (Array.isArray(active) && active.includes(PLANNER_RESULT_TOOL) && typeof pi.setActiveTools === 'function') {
-        pi.setActiveTools([PLANNER_RESULT_TOOL]);
-        console.log(`PI_PLANNER_OUTPUT_ONLY_SURFACE ${JSON.stringify({ active: [PLANNER_RESULT_TOOL] })}`);
-      } else {
-        console.warn(`PI_PLANNER_OUTPUT_ONLY_SURFACE ${JSON.stringify({ active: null, fallback: 'tool_call_gate' })}`);
-      }
-    });
-  }
+  recordEvidenceState({ used: 0 });
+  console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'start' })}`);
 
   pi.on('before_provider_request', (event) => {
     const payload = event?.payload;
-    if (!payload || !Array.isArray(payload.tools)) return payload;
-    if (!repairActive && !outputOnly) return payload;
+    if (!finalizing || !payload || !Array.isArray(payload.tools)) return payload;
     const tools = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === PLANNER_RESULT_TOOL);
     if (!tools.length) return payload;
-    return {
-      ...payload,
-      tools,
-      tool_choice: 'required',
-    };
+    return { ...payload, tools, tool_choice: 'required' };
   });
 
   pi.on('tool_call', async (event, ctx) => {
@@ -308,44 +279,45 @@ export default function (pi) {
         observed = reservePlannerResultCall({ id: event.toolCallId ?? null });
         observed.toolCallSeen = true;
       }
-      resultSubmitted = true;
-      resultCallPending = true;
+      finalizing = true;
+      if (typeof pi.setActiveTools === 'function') pi.setActiveTools([PLANNER_RESULT_TOOL]);
       if (!observed.allowed) {
-        if (outputOnly && !resultSucceeded) {
-          const diagnostic = 'Output-only Planner recovery attempted structured_output more than once.';
-          recordPlannerResultState({ resultAttempts, repairStatus: 'failed', repairDiagnostic: diagnostic, repairKind: 'output_only_attempt_limit' });
-        }
-        const eventName = resultSucceeded || observed.siblingOfAdmittedCall ? 'PI_PLANNER_RESULT_DUPLICATE_BLOCKED' : 'PI_PLANNER_RESULT_REPAIR_FAILURE';
-        console.log(`${eventName} ${JSON.stringify({ resultAttempts, repairAttempts: repairAttempted ? 1 : 0, reason: 'result_attempt_limit' })}`);
         if (event.toolCallId) blockedResultCallIds.add(event.toolCallId);
-        // Rejecting a sibling call must not abort the same provider response's first admitted
-        // result call. A rejected repair result itself aborts in tool_result; an extra repair call
-        // is only blocked, preserving the existing single-repair lifecycle.
-        if (!resultSucceeded && !observed.siblingOfAdmittedCall && !repairActive) ctx?.abort?.();
-        const reason = outputOnly
-          ? 'Output-only Planner recovery allows exactly one structured_output call.'
-          : repairActive
-            ? 'Planner result repair is limited to one structured_output attempt; stop now.'
-            : 'Planner allows one initial structured_output call before repair.';
-        return { block: true, reason };
+        console.log(`PI_PLANNER_RESULT_DUPLICATE_BLOCKED ${JSON.stringify({ resultAttempts, reason: 'parallel_or_post_success_result' })}`);
+        return { block: true, reason: 'Planner accepts one structured_output call at a time; wait for its validation result before correcting.' };
       }
       return undefined;
     }
-    if (resultSubmitted) {
+
+    if (finalizing) {
       return { block: true, reason: 'Planner result finalization has started; repository evidence is closed.' };
     }
-    if (outputOnly && event.toolName !== PLANNER_RESULT_TOOL) {
-      console.log(`PI_PLANNER_EVIDENCE_BLOCKED ${JSON.stringify({ tool: event.toolName, used: 0, cap: 0, outputOnly: true })}`);
-      return { block: true, reason: 'Planner retry is output-only; repository evidence is closed. Call structured_output now.' };
+
+    let signature = null;
+    if (PLANNER_EVIDENCE_TOOLS.includes(event.toolName)) {
+      signature = plannerActionSignature(event.toolName, event.input);
+      if (signature === lastEvidenceSignature && lastEvidenceMadeProgress === false) {
+        const diagnostic = `Repeated equivalent ${event.toolName} action produced no new planning information.`;
+        recordPlannerResultState({
+          resultAttempts, structuredCorrections, repairStatus: 'failed',
+          repairDiagnostic: diagnostic, failureKind: 'semantic_no_progress',
+        });
+        console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'evidence', tool: event.toolName, signature })}`);
+        ctx?.abort?.();
+        return { block: true, reason: `${diagnostic} Planner stopped by semantic no-progress protection.` };
+      }
     }
+
     const admission = gate.admit(event.toolName);
     if (admission.evidence && admission.allowed) {
-      recordEvidenceState(gate, admission);
-      if (event.toolCallId) pendingEvidence.set(event.toolCallId, { toolName: event.toolName, input: structuredClone(event.input ?? {}), admission });
-      console.log(`PI_PLANNER_EVIDENCE ${JSON.stringify({ tool: event.toolName, used: admission.used, remaining: admission.remaining })}`);
+      recordEvidenceState(admission);
+      if (event.toolCallId) {
+        pendingEvidence.set(event.toolCallId, { toolName: event.toolName, input: structuredClone(event.input ?? {}), admission, signature });
+      }
+      console.log(`PI_PLANNER_EVIDENCE ${JSON.stringify({ tool: event.toolName, action: admission.used })}`);
     }
     if (admission.allowed) return undefined;
-    console.log(`PI_PLANNER_EVIDENCE_BLOCKED ${JSON.stringify({ tool: event.toolName, used: admission.used, cap: gate.cap })}`);
+    console.log(`PI_PLANNER_EVIDENCE_BLOCKED ${JSON.stringify({ tool: event.toolName, actions: admission.used })}`);
     return { block: true, reason: admission.reason };
   });
 
@@ -353,61 +325,84 @@ export default function (pi) {
     if (event?.message?.role === 'assistant') streamedResultArguments = new Map();
   });
 
-  // Keep the provider's original JSON deltas. `toolCall.arguments` on the completed assistant
-  // message is best-effort parsed JSON, which loses the source text for incomplete arguments.
   pi.on('message_update', (event) => {
     const update = event?.assistantMessageEvent;
     if (update?.type !== 'toolcall_delta') return;
-    const block = update.partial?.content?.[update.contentIndex];
+    const contentIndex = update.contentIndex;
+    const block = update.partial?.content?.[contentIndex];
     if (block?.type !== 'toolCall' || block.name !== PLANNER_RESULT_TOOL) return;
-    const key = block.id || `index:${update.contentIndex}`;
+    const key = block.id || `index:${contentIndex}`;
     streamedResultArguments.set(key, (streamedResultArguments.get(key) ?? '') + String(update.delta ?? ''));
   });
 
-  // The completed assistant message arrives before Pi validates or executes tool arguments.
-  // Reserve admission per call so a second sibling cannot make the first call look like a retry.
-  pi.on('message_end', async (event) => {
+  pi.on('message_end', async (event, ctx) => {
     const message = event?.message;
     if (message?.role !== 'assistant' || !Array.isArray(message.content)) return;
     if (message.stopReason === 'error' || message.stopReason === 'aborted') return;
-    for (const block of message.content) {
-      if (block?.type !== 'toolCall' || block.name !== PLANNER_RESULT_TOOL) continue;
+
+    let sawAnyToolCall = false;
+    let sawResultCall = false;
+    for (let index = 0; index < message.content.length; index += 1) {
+      const block = message.content[index];
+      if (block?.type !== 'toolCall') continue;
+      sawAnyToolCall = true;
+      if (block.name !== PLANNER_RESULT_TOOL) continue;
+      sawResultCall = true;
       const id = typeof block.id === 'string' && block.id ? block.id : null;
-      if (observedResultCalls.some(call => call.id && call.id === id)) continue;
-      const key = id || `index:${message.content.indexOf(block)}`;
+      if (id && observedResultCalls.some(call => call.id === id)) continue;
+      const key = id || `index:${index}`;
       const rawArguments = streamedResultArguments.has(key)
         ? streamedResultArguments.get(key)
         : Object.hasOwn(block, 'arguments') ? block.arguments : undefined;
       reservePlannerResultCall({ id, rawArguments, message });
-      resultSubmitted = true;
-      resultCallPending = true;
     }
     streamedResultArguments = new Map();
+
+    if (sawAnyToolCall || sawResultCall || resultSucceeded || resultCallPending) return;
+    const diagnostic = 'Assistant turn ended without calling structured_output.';
+    if (!missingResultRecoveryUsed && !finalizing) {
+      missingResultRecoveryUsed = true;
+      finalizing = true;
+      if (typeof pi.setActiveTools === 'function') pi.setActiveTools([PLANNER_RESULT_TOOL]);
+      recordPlannerResultState({
+        resultAttempts, structuredCorrections, repairStatus: 'correction_required',
+        repairDiagnostic: diagnostic, repairKind: 'missing_structured_output',
+      });
+      console.log(`PI_PLANNER_RESULT_RECOVERY ${JSON.stringify({ kind: 'missing_structured_output', forced: true })}`);
+      if (typeof pi.sendUserMessage === 'function') {
+        await pi.sendUserMessage(
+          'Your previous turn ended without structured_output. Repository evidence is now closed. Call structured_output now with the completed plan; do not answer with prose.',
+          { deliverAs: 'steer' },
+        );
+      }
+      return;
+    }
+
+    if (missingResultRecoveryUsed && finalizing) {
+      recordPlannerResultState({
+        resultAttempts, structuredCorrections, repairStatus: 'failed',
+        repairDiagnostic: diagnostic, repairKind: 'missing_structured_output', failureKind: 'semantic_no_progress',
+      });
+      console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'missing_structured_output', repeated: true })}`);
+      ctx?.abort?.();
+    }
   });
 
   pi.on('tool_result', async (event, ctx) => {
     if (event?.toolName !== PLANNER_RESULT_TOOL) return undefined;
-    if (event.toolCallId && blockedResultCallIds.delete(event.toolCallId)) {
-      resultCallPending = false;
-      return undefined;
-    }
+    if (event.toolCallId && blockedResultCallIds.delete(event.toolCallId)) return undefined;
+
     let observed = observedResultCalls.find(call => !call.toolResultSeen && event.toolCallId && call.id === event.toolCallId);
     if (!observed && event.toolCallId) observed = observedResultCalls.find(call => !call.toolResultSeen && !call.id);
     if (!observed) observed = observedResultCalls.find(call => !call.toolResultSeen && call.toolCallSeen);
-    if (observed) {
-      observed.toolResultSeen = true;
-      if (!observed.allowed) return undefined;
-    }
-    if (resultSucceeded) return undefined;
-    resultSubmitted = true;
-    if (observed || resultCallPending) resultCallPending = false;
-    else {
-      observed = reservePlannerResultCall({ id: event.toolCallId ?? null });
-      console.log(`PI_PLANNER_RESULT_ATTEMPT ${JSON.stringify({ resultAttempts, repair: repairActive, source: 'tool_result_without_tool_call' })}`);
-      recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'started' : null });
-    }
+    if (!observed) observed = reservePlannerResultCall({ id: event.toolCallId ?? null });
+    observed.toolResultSeen = true;
+    if (!observed.allowed || resultSucceeded) return undefined;
+    resultCallPending = false;
+
     if (event.isError) {
-      const rawArguments = observed?.rawArguments;
+      structuredCorrections += 1;
+      const rawArguments = observed.rawArguments;
       const diagnostic = plannerRepairDiagnostic(rawArguments, event);
       const rawArgumentsMalformed = typeof rawArguments === 'string' && (() => {
         try { JSON.parse(rawArguments); return false; } catch { return true; }
@@ -415,38 +410,73 @@ export default function (pi) {
       const repairKind = rawArgumentsMalformed || /(?:unexpected end|unterminated|incomplete|invalid json|json parse|parse error)/i.test(diagnostic)
         ? 'malformed_arguments'
         : 'schema_rejection';
-      if (!repairActive && !outputOnly) {
-        repairActive = true;
-        if (typeof pi.setActiveTools === 'function') pi.setActiveTools([PLANNER_RESULT_TOOL]);
-        recordPlannerResultState({ resultAttempts, repairStatus: 'started', repairDiagnostic: diagnostic, repairKind });
-        console.log(`PI_PLANNER_RESULT_REJECTION ${JSON.stringify({ resultAttempts, repairAttempts: 0, kind: repairKind, diagnostic })}`);
-        console.log(`PI_PLANNER_RESULT_REPAIR_STARTED ${JSON.stringify({ resultAttempts, repairAttempts: 1, kind: repairKind })}`);
-        return { content: [{ type: 'text', text: `The structured_output call was rejected by runtime validation. ${diagnostic} Make exactly one corrected structured_output call now. Do not call repository tools.` }] };
+      const failureSignature = plannerResultFailureSignature(repairKind, diagnostic, rawArguments);
+      if (failureSignature === lastResultFailureSignature) equivalentResultFailureCount += 1;
+      else {
+        lastResultFailureSignature = failureSignature;
+        equivalentResultFailureCount = 1;
       }
-      recordPlannerResultState({ resultAttempts, repairStatus: 'failed', repairDiagnostic: diagnostic, repairKind });
-      console.log(`PI_PLANNER_RESULT_REPAIR_FAILURE ${JSON.stringify({ resultAttempts, repairAttempts: 1, kind: repairKind, diagnostic })}`);
-      // Abort this child after the one repair rejection. The parent can use its bounded
-      // output-only retry/fallback; the child never gets a third result-tool turn.
-      ctx?.abort?.();
-      return { content: [{ type: 'text', text: `The single structured_output repair was rejected. ${diagnostic} Stop; do not retry.` }] };
+
+      recordPlannerResultState({
+        resultAttempts, structuredCorrections, repairStatus: 'correction_required', repairDiagnostic: diagnostic, repairKind,
+      });
+      console.log(`PI_PLANNER_RESULT_REJECTION ${JSON.stringify({ resultAttempts, structuredCorrections, kind: repairKind, equivalentNoProgress: equivalentResultFailureCount, diagnostic })}`);
+
+      if (equivalentResultFailureCount >= RESULT_EQUIVALENT_NO_PROGRESS_LIMIT) {
+        recordPlannerResultState({
+          resultAttempts, structuredCorrections, repairStatus: 'failed', repairDiagnostic: diagnostic, repairKind, failureKind: 'semantic_no_progress',
+        });
+        console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'structured_output', resultAttempts, structuredCorrections, equivalentNoProgress: equivalentResultFailureCount })}`);
+        ctx?.abort?.();
+        return { content: [{ type: 'text', text: `The same structured_output rejection repeated without material correction. Planner stopped by semantic no-progress protection. ${diagnostic}` }] };
+      }
+
+      console.log(`PI_PLANNER_RESULT_CORRECTION ${JSON.stringify({ resultAttempts, structuredCorrections, kind: repairKind })}`);
+      return { content: [{ type: 'text', text: `structured_output was rejected by runtime validation. ${diagnostic} Repository evidence remains closed. Correct only the reported shape/serialization problem and call structured_output again.` }] };
     }
+
     resultSucceeded = true;
-    console.log(`PI_PLANNER_RESULT_SUCCESS ${JSON.stringify({ resultAttempts, repairAttempts: repairAttempted ? 1 : 0 })}`);
-    recordPlannerResultState({ resultAttempts, repairStatus: repairActive ? 'succeeded' : 'first_call_succeeded' });
+    recordPlannerResultState({ resultAttempts, structuredCorrections, repairStatus: 'accepted' });
+    console.log(`PI_PLANNER_RESULT_SUCCESS ${JSON.stringify({ resultAttempts, structuredCorrections })}`);
     return undefined;
   });
 
-  pi.on('tool_execution_end', async (event) => {
+  pi.on('tool_execution_end', async (event, ctx) => {
     const pending = event.toolCallId ? pendingEvidence.get(event.toolCallId) : null;
     if (event.toolCallId) pendingEvidence.delete(event.toolCallId);
-    if (!pending || event.isError) return;
-    const fact = plannerEvidenceFact(pending.toolName, pending.input, event.result);
-    if (!fact) return;
-    recordEvidenceState(gate, pending.admission, { fact });
-    console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
+    if (!pending) return;
+    const fact = event.isError ? null : plannerEvidenceFact(pending.toolName, pending.input, event.result);
+    const madeProgress = Boolean(fact && !knownFacts.has(fact));
+    if (madeProgress) {
+      consecutiveNoProgressEvidence = 0;
+      knownFacts.add(fact);
+      recordEvidenceState(pending.admission, { fact });
+      console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
+      console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'progress' })}`);
+      if (typeof pi.sendUserMessage === 'function') {
+        await pi.sendUserMessage(
+          '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
+          { deliverAs: 'steer' },
+        );
+      }
+    } else {
+      consecutiveNoProgressEvidence += 1;
+      if (consecutiveNoProgressEvidence >= EVIDENCE_NO_PROGRESS_STREAK_LIMIT) {
+        const diagnostic = `${consecutiveNoProgressEvidence} consecutive repository actions produced no new compact planning fact.`;
+        recordPlannerResultState({
+          resultAttempts, structuredCorrections, repairStatus: 'failed',
+          repairDiagnostic: diagnostic, failureKind: 'semantic_no_progress',
+        });
+        console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({
+          kind: 'evidence_streak', actions: pending.admission.used, consecutiveNoProgressEvidence,
+        })}`);
+        ctx?.abort?.();
+      }
+    }
+    lastEvidenceSignature = pending.signature;
+    lastEvidenceMadeProgress = madeProgress;
   });
 }
-
 function safeDiagnostic(event, maxLength = 400) {
   const pieces = [];
   for (const value of [event?.details, event?.content]) {
@@ -477,22 +507,24 @@ function sanitizeDiagnosticText(value, maxLength) {
     .slice(0, maxLength);
 }
 
-function recordPlannerResultState({ resultAttempts, repairStatus, repairDiagnostic = null, repairKind = null }) {
+function recordPlannerResultState({
+  resultAttempts,
+  structuredCorrections = 0,
+  repairStatus,
+  repairDiagnostic = null,
+  repairKind = null,
+  failureKind = null,
+}) {
   const file = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
   if (!file) return;
   try {
     let previous = {};
     try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* state is initialized above */ }
-    const next = { ...previous, resultAttempts };
+    const next = { ...previous, resultAttempts, structuredCorrections };
     if (repairStatus) next.repairStatus = repairStatus;
-    if (repairDiagnostic) {
-      const combined = previous.repairDiagnostic && !previous.repairDiagnostic.includes(repairDiagnostic)
-        ? `${previous.repairDiagnostic} | ${repairDiagnostic}`
-        : repairDiagnostic;
-      next.repairDiagnostic = combined.slice(0, 400);
-    }
-    if (repairKind && !next.repairKind) next.repairKind = repairKind;
-    if (repairKind && repairStatus === 'failed') next.repairFailureKind = repairKind;
+    if (repairDiagnostic) next.repairDiagnostic = sanitizeDiagnosticText(repairDiagnostic, 400);
+    if (repairKind) next.repairKind = repairKind;
+    if (failureKind) next.failureKind = failureKind;
     fs.writeFileSync(file, `${JSON.stringify(next)}\n`, { mode: 0o600 });
   } catch (error) {
     console.warn(`PI_PLANNER_EVIDENCE_STATE_FAILED ${JSON.stringify({ error: String(error?.message ?? error) })}`);

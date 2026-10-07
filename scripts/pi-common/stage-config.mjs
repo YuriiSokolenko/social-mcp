@@ -266,14 +266,9 @@ export const STAGES = Object.freeze({
     // `begin_coding_session` (16k ceiling on the fork only). The parent-side one-shot grant
     // `request_large_mutation_budget` is LEGACY: kept only as a stage-1 compatibility fallback.
     implementationPlannerAgent: 'implementation-planner',
+    // Response transport ceiling only. Planner exploration/result convergence has no numeric
+    // evidence budget, lifecycle deadline, or fixed structured-output retry count.
     implementationPlannerMaxTokens: 2048,
-    implementationPlannerStructuredRetry: 1,
-    // Hard maximum, not an expected duration: a healthy planner queued behind other model load must
-    // not be cancelled early. Only a true 15-minute timeout enters PREPARATION_FALLBACK.
-    implementationPlannerTimeoutMs: 900000,
-    // Planner's own read-only evidence cap (hard max 6). Independent of the planner's output
-    // `evidence_budget`, which sizes the main Implementer's window.
-    implementationPlannerEvidenceBudget: 6,
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     boundedDirectBash: true,

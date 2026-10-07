@@ -12,22 +12,17 @@ import { PREPARATION_FALLBACK_EVIDENCE_BUDGET } from './progress-controller.mjs'
 // not a valid proxy for how many evidence actions the Implementer should be granted.
 export const MAX_PLANNER_EVIDENCE_BUDGET = 6;
 
+// Compact handoff ceilings are deterministic normalization only, not planner-behavior budgets.
 const MAX_PLANNER_STEP_LENGTH = 240;
+// This is a downstream handoff-size boundary, not a planner behavior budget. It keeps the
+// PreparedImplementation block compact for the main Implementer while allowing #528-style
+// plans with more than eight substantive steps to pass unchanged.
+export const MAX_PLANNER_HANDOFF_STEPS = 16;
 export const MAX_PLANNER_FACTS = 6;
 export const MAX_PLANNER_FACT_LENGTH = 200;
 
-// Planner evidence budget: how many read-only repository actions the planner itself may spend
-// while preparing the plan. Deliberately separate from the output `evidence_budget` above (the
-// planner's estimate for the main Implementer); neither value is ever derived from the other.
-export const MAX_PLANNER_REPOSITORY_EVIDENCE = 6;
-export const DEFAULT_PLANNER_EVIDENCE_BUDGET = MAX_PLANNER_REPOSITORY_EVIDENCE;
-export const PLANNER_EVIDENCE_BUDGET_ENV = 'PI_PLANNER_EVIDENCE_BUDGET';
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
-export const PLANNER_OUTPUT_ONLY_ENV = 'PI_PLANNER_OUTPUT_ONLY';
 
-// Trusted read-only surface exposed inside the isolated implementation-planner child.
-// repo_search and planner_code_graph are registered by pi-planner-evidence.mjs in that same child;
-// the agent frontmatter, runtime registration and call-time gate are contract-tested together.
 export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
   'read',
   'grep',
@@ -36,35 +31,22 @@ export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
   'repo_search',
   'planner_code_graph',
 ]);
-// The structured-output call is the planner's result channel, never repository evidence.
 export const PLANNER_RESULT_TOOL = 'structured_output';
 
-export function plannerEvidenceBudget(config = {}) {
-  const configured = Number(config.implementationPlannerEvidenceBudget ?? DEFAULT_PLANNER_EVIDENCE_BUDGET);
-  if (!Number.isSafeInteger(configured) || configured < 0) {
-    throw new Error(`implementationPlannerEvidenceBudget must be a non-negative integer, got ${String(config.implementationPlannerEvidenceBudget)}`);
-  }
-  return Math.min(configured, MAX_PLANNER_REPOSITORY_EVIDENCE);
-}
-
-// Trusted, runtime-side admission for the planner's evidence actions. Every admitted evidence
-// call consumes one unit whether or not it later fails or returns nothing, there is no way to
-// extend the budget, and once exhausted no further repository exploration is admitted.
-export function createPlannerEvidenceGate(budget) {
-  const cap = Math.min(Math.max(Number.isSafeInteger(budget) ? budget : 0, 0), MAX_PLANNER_REPOSITORY_EVIDENCE);
+// Admission is allowlist-only. `used` is observability, never a cap or remaining budget.
+export function createPlannerEvidenceGate() {
   let used = 0;
   return {
-    cap,
     admit(toolName) {
-      if (toolName === PLANNER_RESULT_TOOL) return { allowed: true, evidence: false, used, remaining: cap - used };
+      if (toolName === PLANNER_RESULT_TOOL) return { allowed: true, evidence: false, used };
       if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) {
-        return { allowed: false, evidence: false, used, remaining: cap - used, reason: `${toolName} is not available to the implementation planner (read-only evidence tools only)` };
-      }
-      if (used >= cap) {
-        return { allowed: false, evidence: true, used, remaining: 0, reason: `Planner evidence budget of ${cap} is exhausted; return the structured plan now without further repository exploration` };
+        return {
+          allowed: false, evidence: false, used,
+          reason: toolName + ' is not available to the implementation planner (read-only evidence tools only)',
+        };
       }
       used += 1;
-      return { allowed: true, evidence: true, used, remaining: cap - used };
+      return { allowed: true, evidence: true, used };
     },
   };
 }
@@ -94,9 +76,9 @@ function redactPlannerEvidence(value) {
     .trim();
 }
 
-// A failed first planner attempt cannot transfer its model memory into a fresh output-only child.
-// Preserve only a tiny deterministic excerpt per successful evidence call: enough to retain the
-// target/symbol clue, never a raw tool transcript or unbounded repository contents.
+// Preserve only a compact deterministic excerpt per successful evidence call for the normalized
+// handoff and observability: enough to retain a target/symbol clue, never a raw tool transcript,
+// unbounded repository contents, or planner reasoning.
 export function plannerEvidenceFact(toolName, input, result) {
   if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) return null;
   const observed = redactPlannerEvidence(plannerResultText(result));
@@ -108,7 +90,7 @@ export function plannerEvidenceFact(toolName, input, result) {
   return boundedPlannerFact(prefix + observed.slice(0, room));
 }
 
-export function readPlannerEvidenceState(file, cap = MAX_PLANNER_REPOSITORY_EVIDENCE) {
+export function readPlannerEvidenceState(file) {
   if (!file) return null;
   try {
     const state = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -118,31 +100,17 @@ export function readPlannerEvidenceState(file, cap = MAX_PLANNER_REPOSITORY_EVID
       ? state.facts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS)
       : [];
     return {
-      used: Math.min(used, cap), cap: Math.min(Number(state?.cap) || cap, cap), facts,
+      used, facts,
       ...(Number.isSafeInteger(state?.resultAttempts) ? { resultAttempts: state.resultAttempts } : {}),
+      ...(Number.isSafeInteger(state?.structuredCorrections) ? { structuredCorrections: state.structuredCorrections } : {}),
       ...(typeof state?.repairStatus === 'string' ? { repairStatus: state.repairStatus } : {}),
       ...(typeof state?.repairDiagnostic === 'string' ? { repairDiagnostic: state.repairDiagnostic.slice(0, 400) } : {}),
       ...(typeof state?.repairKind === 'string' ? { repairKind: state.repairKind } : {}),
+      ...(typeof state?.failureKind === 'string' ? { failureKind: state.failureKind } : {}),
     };
   } catch {
     return null;
   }
-}
-
-function resetPlannerRepairStatus(file) {
-  if (!file) return;
-  try {
-    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
-    delete state.repairStatus;
-    delete state.repairFailureKind;
-    fs.writeFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600 });
-  } catch {
-    // If the sidecar is unavailable, retain the existing fail-closed behavior.
-  }
-}
-
-function readPlannerEvidenceUsed(file, cap) {
-  return readPlannerEvidenceState(file, cap)?.used ?? null;
 }
 
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
@@ -154,18 +122,16 @@ export const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
     steps: {
       type: 'array',
       minItems: 1,
-      maxItems: 8,
       items: { type: 'string', minLength: 1 },
     },
     facts: {
       type: 'array',
-      maxItems: MAX_PLANNER_FACTS,
       items: { type: 'string', minLength: 1 },
     },
     complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
     evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
     large_mutation: { type: 'boolean' },
-    reason: { type: 'string', minLength: 1, maxLength: 300 },
+    reason: { type: 'string', minLength: 1 },
   },
   required: ['steps', 'complexity', 'evidence_budget', 'reason'],
   additionalProperties: true,
@@ -343,7 +309,8 @@ export function discoverAdditivePythonLayout(cwd, issue) {
   return null;
 }
 
-// Safe repairs only: keep the canonical fields, trim strings, and bound step/fact lengths.
+// Safe repairs only: keep the canonical fields, trim strings, and bound the compact handoff
+// deterministically. These are serialization/handoff ceilings, never planner behavior budgets.
 // facts is a compact repository-derived handoff, never raw evidence or planner transcript.
 // large_mutation is an optional planner hint: omission safely defaults to false, while an
 // explicitly present non-boolean value is preserved so strict validation rejects it.
@@ -354,10 +321,14 @@ export function normalizeImplementationPreparation(value) {
   for (const key of ['steps', 'facts', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
     if (!(key in value)) continue;
     if (key === 'steps' && Array.isArray(value.steps)) {
-      normalized.steps = value.steps.map(step => typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step);
+      normalized.steps = value.steps.slice(0, MAX_PLANNER_HANDOFF_STEPS).map(step =>
+        typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step
+      );
     } else if (key === 'facts' && Array.isArray(value.facts)) {
       normalized.facts = value.facts.slice(0, MAX_PLANNER_FACTS)
         .map(fact => typeof fact === 'string' ? fact.trim().slice(0, MAX_PLANNER_FACT_LENGTH).trim() : fact);
+    } else if (key === 'reason' && typeof value.reason === 'string') {
+      normalized.reason = value.reason.trim().slice(0, 300).trim();
     } else {
       normalized[key] = trim(value[key]);
     }
@@ -377,7 +348,7 @@ export function validateImplementationPreparation(value) {
   if (!requiredKeys.every(key => keys.includes(key)) || keys.some(key => !allowedKeys.has(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
-  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 8) {
+  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > MAX_PLANNER_HANDOFF_STEPS) {
     throw new Error('Implementation planner returned an invalid step list');
   }
   const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
@@ -407,48 +378,39 @@ export function validateImplementationPreparation(value) {
   return { steps, facts, complexity: value.complexity, evidenceBudget, largeMutation: value.large_mutation, reason };
 }
 
-export function plannerTask(env = process.env, {
-  repair = false,
-  layoutHint = null,
-  outputOnly = false,
-  retryFacts = [],
-  evidenceUsed = null,
-  repairError = null,
-} = {}) {
+export function plannerTask(env = process.env, { layoutHint = null } = {}) {
   const issue = implementerIssueContext(env);
   const layoutGuidance = layoutHint
     ? `\n\nRuntime repository layout hint (current worktree, model-free): source_root=${layoutHint.sourceRoot}; source_target=${layoutHint.sourceTarget}; source_directory=${layoutHint.sourceDirectory}; nearest_source_convention=${layoutHint.sourceConvention ?? 'none'}; test_directory=${layoutHint.testDirectory}; test_target=${layoutHint.testTarget ?? 'unknown'}; nearest_test_convention=${layoutHint.testConvention ?? 'none'}. Treat these resolved targets/directories as authoritative. If conventions matter, inspect only the nearest relevant sibling source/test; do not re-discover the same paths broadly.`
     : '';
-  const preservedFacts = retryFacts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS);
-  const retryContext = outputOnly
-    ? `\n\nPRESERVED EVIDENCE FROM ATTEMPT 1 (trusted bounded handoff; ${evidenceUsed == null ? 'unknown' : evidenceUsed}/${MAX_PLANNER_REPOSITORY_EVIDENCE} evidence actions consumed):\n${preservedFacts.length ? preservedFacts.map(fact => `- ${fact}`).join('\n') : '- No textual evidence snippet was recoverable.'}\nCarry every still-relevant preserved fact into the output facts array; do not ask main to rediscover it merely because this is a fresh retry child.`
-    : '';
-  const repairDetail = repair && repairError
-    ? ` Previous schema error: ${redactPlannerEvidence(repairError).slice(0, 500)}`
-    : '';
-  const evidencePolicy = outputOnly
-    ? `EVIDENCE PHASE CLOSED. This retry is output-only: repository evidence is unavailable and only structured_output may be called. Use the issue plus the preserved runtime evidence below.`
-    : `Use at most ${MAX_PLANNER_REPOSITORY_EVIDENCE} read-only repository evidence actions across the lifecycle. If the issue names an exact path/directory/symbol/test, your first evidence action must target that named location (or the authoritative nearest sibling supplied by the runtime). If the named target is missing, stale, contradictory, or leaves a concrete planning uncertainty unresolved, broader discovery is allowed. If exact text/path location is unknown, prefer repo_search over broad find or repository-wide grep. If the uncertainty is relational (callers, references, implementations, dependencies, blast radius, or related tests), prefer planner_code_graph with one concrete target and planning question. Use find/grep when they are the narrowest query. Prefer one representative sibling source plus one representative sibling test when conventions matter. Stop as soon as exact targets, conventions, invariants, blast radius, and verification scope are clear. Do not spend evidence proving facts explicit in the issue, and do not spend evidence re-proving fresh-worktree provenance already established by the runtime.`;
+  const evidencePolicy = `Repository exploration has no action budget. Continue only while another read-only repository action is likely to materially change or improve the implementation plan. If the issue names an exact path/directory/symbol/test, target that location first. Prefer repo_search when an exact location is unknown, planner_code_graph for relationship/blast-radius questions, and read/grep/find/ls only when they are the narrowest useful action. Do not spend evidence re-proving fresh-worktree provenance already established by the runtime. Stop immediately once exact targets, conventions, invariants, blast radius, and verification scope are sufficiently clear. Repeated equivalent actions that produce no new planning information are treated as a semantic loop.`;
+
   return `Prepare the smallest repository-informed handoff that reduces uncertainty for the next Implementer request.
+
+CAT COMPLETION INCENTIVE:
+You have been given a cat. The cat wants to be petted.
+You may pet it only after the implementation plan has been completed and accepted.
+Investigate only while additional evidence can materially improve the plan.
+Finish as soon as the plan is sufficiently grounded. Repository tool calls do not earn points or increase the reward.
 
 STRUCTURED_OUTPUT SERIALIZATION CONTRACT — read before repository evidence. This is a shape example only; replace the sample content with the real plan and pass this object directly as the arguments to structured_output:
 { "value": { "steps": ["Create src/new_target.py.", "Create tests/test_new_target.py."], "facts": ["Both implementation targets are new files."], "complexity": "nontrivial", "evidence_budget": 0, "large_mutation": false, "reason": "Both mutation targets are new files, so no current-file anchor is needed." } }
 Never add a second value wrapper such as { "value": { "value": { ... } } }. Never omit the outer value. Never stringify the payload as { "value": "{...}" }.
 
-MANDATORY COMPLETION: a successful attempt ends only by calling structured_output. Never finish a planner attempt with prose. After the final evidence result, call structured_output immediately in the same provider lifecycle instead of spending a reasoning-only turn.
+MANDATORY COMPLETION: a successful planner lifecycle ends only by calling structured_output. Never finish with prose. Once finalization starts, repository evidence closes. If runtime validation rejects the structured result, correct only the reported shape/serialization problem and call structured_output again; there is no fixed repair-attempt budget.
 ${evidencePolicy}
 
-Synthesize what you learn into the handoff. Return facts as 0-${MAX_PLANNER_FACTS} concise repository-derived facts (each <=${MAX_PLANNER_FACT_LENGTH} characters): observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought. If you established a useful fact, preserve it in facts and make plan steps act on it instead of telling main to rediscover it.
+Synthesize what you learn into a small set of concise repository-derived facts: observed conventions, resolved paths/symbols, invariants, or verification locations that reduce main uncertainty. No raw file dumps, evidence payloads, tool history, transcript, or chain-of-thought. Runtime normalization keeps this handoff compact; do not optimize exploration around serialization ceilings.
 
-Keep the plan concise: 1-8 ordered steps, each <=240 characters. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
+Keep the plan concise and ordered. Include exact implementation/test targets, useful sibling conventions, key symbols, invariants, blast radius, and smallest verification scope when known. Do not name evidence tools or routing tools in steps.
 
-Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository evidence main still needs after consuming your handoff. Resolved discovery/convention facts cost main 0, but they do not replace a current mutation anchor: reserve at least one action for each existing file main must modify and has not itself seen, so it can read the current text/AST before editing. New-file-only work may use 0. Complexity is independent of evidence needs.
+Set evidence_budget (0-${MAX_PLANNER_EVIDENCE_BUDGET}) to ONLY the repository evidence main still needs after consuming your handoff. Resolved discovery/convention facts cost main 0, but they do not replace a current mutation anchor: reserve at least one action for each existing file main must modify and has not itself seen. New-file-only work may use 0. Complexity is independent of evidence needs.
 
-Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget (for example a substantial new module plus tests), not merely because complexity is nontrivial. Do not implement the task.
+Set large_mutation=true only when the next implementation work clearly needs the large coding/write budget, not merely because complexity is nontrivial. Do not implement the task.
 
-The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}${retryContext}${repair ? `\n\nREPAIR: the previous structured_output envelope was rejected. Evidence remains closed; correct only the schema/envelope and return immediately.${repairDetail}` : ''}
+The 2048-token ceiling exists to avoid structured-output truncation, not for verbose prose.${layoutGuidance}
 
-Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. The tool argument has exactly one top-level "value"; never wrap it again as { "value": { "value": ... } }. reason must be one concise sentence <=300 characters.
+Output contract: call structured_output with exactly { "value": { "steps": [...], "facts": [...], "complexity": "trivial|nontrivial", "evidence_budget": 0-${MAX_PLANNER_EVIDENCE_BUDGET}, "large_mutation": true|false, "reason": "..." } }. The tool argument has exactly one top-level "value"; never wrap it again.
 
 Issue title:
 ${issue.title}
@@ -456,12 +418,6 @@ ${issue.title}
 Issue body:
 ${issue.body}`;
 }
-
-// pi-subagents reports a terminal schema/envelope rejection as `Structured output validation failed: <details>`
-// (readStructuredOutput). The structured_output tool's own per-call "Validation failed for tool" errors stay
-// inside the subagent loop; if that loop cannot recover, the runtime sees a timeout, which is not retried.
-const STRUCTURED_SCHEMA_FAILURE = /(^|: )Structured output validation failed:/;
-
 // Sums numeric usage fields (recursively) across planner attempts; null when nothing was reported.
 export function addUsage(total, next) {
   if (!next || typeof next !== 'object') return total ?? null;
@@ -481,119 +437,49 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     nodeId: 'implementation-plan',
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
-    timeoutMs: 0,
+    // No planner-specific lifecycle wall-clock budget and no generic tool-count budget.
+    // Omitting timeoutMs delegates genuine hang protection to pi-subagents/provider/process
+    // infrastructure rather than turning elapsed planning time into a behavioral failure.
+    timeoutMs: null,
+    toolBudget: null,
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
   };
-  const evidenceCap = plannerEvidenceBudget(config);
-  // Keep the sidecar inside a lifecycle-owned directory. If the parent times out/aborts before
-  // the delegated child has actually stopped, removing the directory prevents a late child write
-  // from recreating an orphaned state file directly under the shared tmpdir.
+
   const evidenceStateDir = fs.mkdtempSync(path.join(tmpdir(), 'pi-planner-evidence-'));
   const evidenceStateFile = path.join(evidenceStateDir, `${randomUUID()}.json`);
-  // Every attempt is a fresh child with a fresh gate, so the cap must be spent across the whole
-  // planning lifecycle, not per attempt. The parent cannot see how much a failed child used, so
-  // fail closed: only the first attempt may gather evidence; a retry gets 0 (structured_output
-  // stays available) and can never push the lifecycle past the hard cap.
-  const applyEvidenceCap = attempt => {
-    const cap = attempt === 0 ? evidenceCap : 0;
-    // Backstop only: retain one spare unit for framework-counted blocked calls. The authoritative
-    // evidence/result counters are child-side because generic toolBudget accounting is not reliable
-    // for structured_output.
-    request.toolBudget = { hard: cap + 3 };
-    // Output-only retry deliberately gets exactly one result call. If that structured_output call
-    // is still schema-invalid, fail closed instead of opening another provider/tool turn.
-    if (attempt > 0) request.toolBudget = { hard: 1 };
-    request.childEnv = {
-      [PLANNER_EVIDENCE_BUDGET_ENV]: String(cap),
-      [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
-      [PLANNER_OUTPUT_ONLY_ENV]: attempt > 0 ? 'true' : 'false',
-    };
-  };
-  const retries = Number(config.implementationPlannerStructuredRetry ?? 1);
-  // One hard deadline for the whole planning lifecycle: retries only get the remaining time.
-  const deadlineMs = Number(config.implementationPlannerTimeoutMs ?? 45000);
-  const startedAt = Date.now();
-  let response;
-  // Planner usage is one lifecycle-level record: attempts are summed and recorded exactly once.
+  request.childEnv = { [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile };
+
   let usage = null;
   let status = 'error';
   const childSession = randomUUID();
   try {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        applyEvidenceCap(attempt);
-        if (attempt > 0) resetPlannerRepairStatus(evidenceStateFile);
-        request.timeoutMs = deadlineMs - (Date.now() - startedAt);
-        if (request.timeoutMs <= 0) {
-          throw Object.assign(new Error(`${config.implementationPlannerAgent} planning deadline of ${deadlineMs} ms exhausted`), { delegationStatus: 'timed_out' });
-        }
-        response = await runStructuredSubagent(pi, ctx, request, signal);
-        usage = addUsage(usage, response.usage);
-        if (attempt > 0 && (Number(response.usage?.turns ?? 0) > 1 || Number(response.usage?.toolCalls ?? 0) > 1)) {
-          console.warn(`PI_PLANNER_OUTPUT_ONLY_ANOMALY ${JSON.stringify({
-            providerTurns: response.usage?.turns ?? null,
-            toolCalls: response.usage?.toolCalls ?? null,
-            handling: 'retry_completed_but_output_only_surface_was_not_single_turn',
-          })}`);
-        }
-        break;
-      } catch (error) {
-        usage = addUsage(usage, error?.delegationUsage);
-        const message = String(error?.message ?? error);
-        const resultState = readPlannerEvidenceState(evidenceStateFile, evidenceCap);
-        const missing = message.includes('Missing structured_output call');
-        const schemaFailure = !missing && STRUCTURED_SCHEMA_FAILURE.test(message);
-        const outputOnlyInvalidTool = attempt > 0 && /(?:tool .* not found|unknown tool|tool budget)/i.test(message);
-        const childRepairFailed = resultState?.repairStatus === 'failed';
-        const retryable = !outputOnlyInvalidTool && (missing || schemaFailure || childRepairFailed);
-        const reason = outputOnlyInvalidTool
-          ? 'output_only_invalid_tool'
-          : childRepairFailed ? 'structured_output_repair_failed'
-            : missing ? 'missing_structured_output'
-              : schemaFailure ? 'structured_output_schema_failure'
-                : 'planner_infrastructure_failure';
-        if (retryable && attempt < retries) {
-          const evidenceState = resultState ?? readPlannerEvidenceState(evidenceStateFile, evidenceCap);
-          request.task = plannerTask(process.env, {
-            repair: schemaFailure || childRepairFailed,
-            layoutHint,
-            outputOnly: true,
-            retryFacts: evidenceState?.facts ?? [],
-            evidenceUsed: evidenceState?.used ?? null,
-            repairError: schemaFailure || childRepairFailed
-              ? [message, evidenceState?.repairKind ? `(${evidenceState.repairKind})` : null, evidenceState?.repairDiagnostic].filter(Boolean).join(' ')
-              : null,
-          });
-        }
-        console.warn(`PI_SUBAGENT_FAILURE ${JSON.stringify({
-          agent: config.implementationPlannerAgent,
-          reason,
-          attempt: attempt + 1,
-          retriesExhausted: retryable && attempt >= retries,
-          error: message,
-        })}`);
-        if (!retryable || attempt >= retries) throw error;
-        console.log(`PI_SUBAGENT_RETRY ${JSON.stringify({
-          agent: config.implementationPlannerAgent,
-          reason,
-          attempt: attempt + 1,
-        })}`);
-      }
-    }
+    const response = await runStructuredSubagent(pi, ctx, request, signal);
+    usage = addUsage(usage, response.usage);
     const validated = validateImplementationPreparation(normalizeImplementationPreparation(response.result.value));
+    const evidenceState = readPlannerEvidenceState(evidenceStateFile);
     status = 'completed';
+    console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted', message: '🐈 You pet the cat. Planner complete.' })}`);
     return {
-      ...validated,
-      usage,
-      layoutHint,
-      evidenceUsed: readPlannerEvidenceUsed(evidenceStateFile, evidenceCap),
-      evidenceCap,
+      ...validated, usage, layoutHint,
+      evidenceActions: evidenceState?.used ?? null,
+      structuredCorrections: evidenceState?.structuredCorrections ?? 0,
     };
   } catch (error) {
+    usage = addUsage(usage, error?.delegationUsage);
+    const evidenceState = readPlannerEvidenceState(evidenceStateFile);
+    const message = String(error?.message ?? error);
+    const plannerFailureClass = evidenceState?.failureKind === 'semantic_no_progress'
+      ? 'planner_semantic_no_progress'
+      : /Missing structured_output call|Structured output validation failed:|Implementation planner returned|did not return a structured result/i.test(message)
+        ? 'structured_result_unrecoverable'
+        : error?.delegationStatus === 'timed_out'
+          ? 'planner_transport_timeout'
+          : 'preparation_infrastructure_failure';
     if (error && typeof error === 'object') {
       error.delegationUsage = usage;
-      error.plannerEvidenceUsed = readPlannerEvidenceUsed(evidenceStateFile, evidenceCap);
-      error.plannerEvidenceCap = evidenceCap;
+      error.plannerEvidenceActions = evidenceState?.used ?? null;
+      error.plannerStructuredCorrections = evidenceState?.structuredCorrections ?? 0;
+      error.plannerFailureClass = plannerFailureClass;
       status = error.delegationStatus ?? 'error';
     }
     throw error;
@@ -604,11 +490,6 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     fs.rmSync(evidenceStateDir, { recursive: true, force: true });
   }
 }
-
-// Hard maximum for the bootstrap planner (not an expected duration). A healthy-but-slow planner
-// behind a shared model endpoint must not be cancelled early; a genuine timeout falls back.
-export const IMPLEMENTATION_PLANNER_DEADLINE_MS = 15 * 60 * 1000;
-
 // Resolves fresh-work preparation before any main Implementer session exists. Returns the explicit
 // PreparedImplementation artifact: either a validated planner result or a resolved fallback.
 // Cancellation is never a recovery request and propagates.
@@ -631,8 +512,8 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
       reason: planned.reason,
       layoutHint,
       plannerUsage: planned.usage,
-      plannerEvidenceUsed: planned.evidenceUsed,
-      plannerEvidenceCap: planned.evidenceCap,
+      plannerEvidenceActions: planned.evidenceActions,
+      plannerStructuredCorrections: planned.structuredCorrections,
       plannerProviderTurns: Number.isSafeInteger(planned.usage?.turns) ? planned.usage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
@@ -641,18 +522,17 @@ export async function prepareImplementation(pi, ctx, config, signal, { env = pro
     return {
       ...common,
       status: 'fallback',
-      failureClass: error?.delegationStatus === 'timed_out' ? 'planner_deadline_timeout' : 'preparation_infrastructure_failure',
+      failureClass: error?.plannerFailureClass ?? 'preparation_infrastructure_failure',
       reason: String(error?.message ?? error),
       layoutHint,
       plannerUsage: error?.delegationUsage ?? null,
-      plannerEvidenceUsed: Number.isSafeInteger(error?.plannerEvidenceUsed) ? error.plannerEvidenceUsed : null,
-      plannerEvidenceCap: Number.isSafeInteger(error?.plannerEvidenceCap) ? error.plannerEvidenceCap : plannerEvidenceBudget(config),
+      plannerEvidenceActions: Number.isSafeInteger(error?.plannerEvidenceActions) ? error.plannerEvidenceActions : null,
+      plannerStructuredCorrections: Number.isSafeInteger(error?.plannerStructuredCorrections) ? error.plannerStructuredCorrections : 0,
       plannerProviderTurns: Number.isSafeInteger(error?.delegationUsage?.turns) ? error.delegationUsage.turns : null,
       plannerDurationMs: Date.now() - startedAt,
     };
   }
 }
-
 // The bootstrap process itself failed (crash, no artifact): still infrastructure failure, so the
 // fresh Implementer starts with the same already-resolved fallback instead of being blocked.
 export function bootstrapFailureFallback(cwd, reason, env = process.env, elapsedMs = 0) {
@@ -702,9 +582,7 @@ export function readPreparedImplementation(file) {
 
 function layoutGuidance(layoutHint, { authoritative }) {
   if (!layoutHint) return '';
-  const source = `Repository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; ` +
-    `source directory ${layoutHint.sourceDirectory}${layoutHint.sourceConvention ? `; nearest source convention ${layoutHint.sourceConvention}` : ''}; ` +
-    `tests ${layoutHint.testDirectory}${layoutHint.testTarget ? `; new test target ${layoutHint.testTarget}` : ''}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
+  const source = `Repository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; source directory ${layoutHint.sourceDirectory}${layoutHint.sourceConvention ? `; nearest source convention ${layoutHint.sourceConvention}` : ''}; tests ${layoutHint.testDirectory}${layoutHint.testTarget ? `; new test target ${layoutHint.testTarget}` : ''}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
   return `\n${source} ${authoritative}`;
 }
 

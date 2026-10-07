@@ -24,13 +24,13 @@ export default function (pi) {
     try {
       const prepared = await prepareImplementation(pi, ctx, config, undefined);
       writePreparedImplementation(file, prepared);
-      console.log(`[PI][planner] completed status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence=${prepared.plannerEvidenceUsed ?? 'unknown'}/${prepared.plannerEvidenceCap ?? config.implementationPlannerEvidenceBudget} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${prepared.plannerUsage?.input ?? 'unknown'} out=${prepared.plannerUsage?.output ?? 'unknown'}`);
+      console.log(`[PI][planner] completed status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} corrections=${prepared.plannerStructuredCorrections ?? 0} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${prepared.plannerUsage?.input ?? 'unknown'} out=${prepared.plannerUsage?.output ?? 'unknown'}`);
       console.log(`PI_BOOTSTRAP ${JSON.stringify({
         phase: 'planner_completed',
         status: prepared.status,
         plannerDurationMs: prepared.plannerDurationMs,
-        evidenceUsed: prepared.plannerEvidenceUsed ?? null,
-        evidenceCap: prepared.plannerEvidenceCap ?? config.implementationPlannerEvidenceBudget,
+        evidenceActions: prepared.plannerEvidenceActions ?? null,
+        structuredCorrections: prepared.plannerStructuredCorrections ?? 0,
         providerTurns: prepared.plannerProviderTurns ?? null,
         inputTokens: prepared.plannerUsage?.input ?? null,
         outputTokens: prepared.plannerUsage?.output ?? null,
