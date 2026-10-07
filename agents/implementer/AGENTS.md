@@ -32,14 +32,16 @@ Choose the path named by the trusted runtime context.
 If saved checkpoint or issue-branch changes were replayed into the worktree:
 
 1. Call `submit_result` with no arguments immediately.
-2. Do not inspect, summarize, validate, or plan the restored files before that first call.
+2. Do **not** inspect repository files, summarize restored changes, validate, or plan the restored work before that first call.
 3. If `submit_result` reports a concrete integration/metadata problem, fix only that problem and retry.
 
 Do not pass `already_satisfied` for restored work. Runtime handles a zero-diff replay automatically. Authoritative product validation runs outside the agent and may start one focused validation-repair attempt with exact diagnostics.
 
 ### Fresh work
 
-Runtime has already run a separate `implementation-planner` session and normalized its accepted output into the trusted `Runtime-prepared implementation state`. Treat the issue as the requested outcome and that PreparedImplementation as the starting plan. Do not recreate the Planner conversation, repeat task-level classification, or re-prove repository facts merely because inspection is available.
+Runtime has already prepared the top-level implementation plan before this session started through the separate `implementation-planner`, including its `trivial | nontrivial` classification, and normalized the accepted output into the trusted `Runtime-prepared implementation state`. Before that Planner's first provider request, runtime may seed it with task-relevant Orbit structural context when the index matches the exact current worktree HEAD; Main receives only the normalized PreparedImplementation, not the private Planner context. Treat the issue as the requested outcome and that PreparedImplementation as the starting plan. Do not recreate the Planner conversation, repeat task-level classification, or re-prove repository facts merely because inspection is available.
+
+Fresh worktrees are created from the latest fetched `origin/dev`. Until the first successful mutation, direct current-worktree reads are authoritative for that fresh base; do not spend repository calls re-proving its provenance.
 
 A successful PreparedImplementation starts Main in `action_required`. In this fresh Main mode the runtime keeps these repository tools directly callable while they are useful:
 
@@ -54,17 +56,18 @@ If the Planner failed to produce an accepted handoff, trusted context says `PREP
 
 If `Required current-file mutation anchors` names existing paths, read each exact path before mutating that path. If the plan is new-file-only, do not manufacture reads. Once the next safe mutation is known, mutate instead of continuing exploratory work.
 
-## Productive execution
+## Repository access routing
 
 - The current runtime tool surface is authoritative. A hidden or blocked tool is unavailable even if this document names it.
 - Direct repository access is for executing the prepared plan, not replacing it with a second planning phase.
 - Prefer `read` for known paths, `indexed_repo_search` for fast literal/path discovery against the indexed dev snapshot, and `repo_search` when the current worktree must be authoritative.
 - `bash` is directly usable in successful fresh Main when exposed. Keep commands task-bounded and non-destructive. The runtime still owns timeout, sandbox, worktree mutation detection, tainting, and recovery requirements.
 - `grep`, `find`, and `ls` remain delegated/runtime-blocked in Main. Do not use shell equivalents merely to bypass that policy.
-- Use LSP for an already-named source symbol when semantic lookup is cheaper than text search. Start the configured server once for a cold name-only lookup, then use the narrow LSP operation. Fall back to Orbit/search after an actual LSP failure instead of retrying it.
+- Use LSP for an already-named source symbol when semantic lookup is cheaper than text search. For a cold name-only lookup, call `lsp_start_server` once with the configured server id and the exact absolute workspace root supplied in the prepared state, then call `lsp_find_symbol`. Fall back to Orbit/search after an actual LSP failure instead of retrying it.
 - Use Orbit for structural/dependency questions that literal search or LSP do not answer well. Exact source text still comes from `read` before mutation.
 - Use `need_more_evidence` only when runtime exposes it for a bounded transition such as delegated semantic evidence. It is not a prerequisite for `read`, `repo_search`, `indexed_repo_search`, or `bash` in successful fresh Main.
-- Enable/delegate to `scout` only when deterministic direct inspection cannot answer one concrete question cheaply. Ask for the first sufficient answer and compact evidence, not a broad repository dump.
+- If delegation is needed and the generic subagent tool is hidden, call `subagents_enable` once, then follow the tool surface and next-action guidance returned by runtime. Enable/delegate to `scout` only when deterministic direct inspection cannot answer one concrete question cheaply. Ask for the first sufficient answer and compact evidence, not a broad repository dump.
+- Task classification alone never requires delegation; `nontrivial` does not imply a scout or broader exploration.
 - Prefer `structural_edit` for one exact AST rewrite, `safe_edit` for bounded line/range or non-code changes, and `edit`/`write` when simpler.
 - Prefer `rollback_last_mutation` when the latest mutation is demonstrably the wrong approach. Use `undo_mutation`/`recover_worktree` only for the exact recovery state they describe.
 - After a successful mutation, use focused `run_check` when exposed. A check infrastructure error is not a product failure and is not a reason to invent a shell workaround.
