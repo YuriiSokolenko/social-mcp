@@ -318,7 +318,7 @@ test('parent planner lifecycle records >6 actions, corrections, and CAT_PETTED o
   const host = plannerHost({
     cwd: dir,
     async driveChild(request) {
-      assert.equal(request.timeoutMs, 0);
+      assert.equal(request.timeoutMs, undefined);
       assert.equal(request.toolBudget, undefined);
       assert.deepEqual(Object.keys(request.childEnv), [PLANNER_EVIDENCE_STATE_FILE_ENV]);
       assert.doesNotMatch(request.task, /at most 6 .*evidence/i);
