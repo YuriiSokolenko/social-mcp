@@ -459,10 +459,25 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
   let status = 'error';
   const childSession = randomUUID();
 
+  let acceptedPlannerValidationError = null;
   const acceptedPlannerResult = () => {
     const state = readPlannerEvidenceState(evidenceStateFile);
     if (state?.repairStatus !== 'accepted' || !state.acceptedResult) return null;
-    return { state, validated: validateImplementationPreparation(normalizeImplementationPreparation(state.acceptedResult)) };
+    try {
+      return {
+        state,
+        validated: validateImplementationPreparation(
+          normalizeImplementationPreparation(state.acceptedResult),
+        ),
+      };
+    } catch (error) {
+      // Sidecar acceptance is transport evidence, not a reason to bypass the parent contract.
+      // Never let recovery validation throw from inside the catch path and mask the original
+      // delegation failure. Remember the structured validation error so fallback classification
+      // remains deterministic.
+      acceptedPlannerValidationError = error;
+      return null;
+    }
   };
 
   try {
@@ -491,7 +506,8 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     }
 
     const evidenceState = readPlannerEvidenceState(evidenceStateFile);
-    const message = String(error?.message ?? error);
+    const failure = acceptedPlannerValidationError ?? error;
+    const message = String(failure?.message ?? failure);
     const plannerFailureClass = evidenceState?.failureKind === 'semantic_no_progress'
       ? 'planner_semantic_no_progress'
       : /Missing structured_output call|Structured output validation failed:|Implementation planner returned|did not return a structured result/i.test(message)
@@ -499,14 +515,14 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
         : error?.delegationStatus === 'timed_out'
           ? 'planner_transport_timeout'
           : 'preparation_infrastructure_failure';
-    if (error && typeof error === 'object') {
-      error.delegationUsage = usage;
-      error.plannerEvidenceActions = evidenceState?.used ?? null;
-      error.plannerStructuredCorrections = evidenceState?.structuredCorrections ?? 0;
-      error.plannerFailureClass = plannerFailureClass;
-      status = error.delegationStatus ?? 'error';
+    if (failure && typeof failure === 'object') {
+      failure.delegationUsage = usage;
+      failure.plannerEvidenceActions = evidenceState?.used ?? null;
+      failure.plannerStructuredCorrections = evidenceState?.structuredCorrections ?? 0;
+      failure.plannerFailureClass = plannerFailureClass;
+      status = error?.delegationStatus ?? 'error';
     }
-    throw error;
+    throw failure;
   } finally {
     recordDescendantMetric({
       call: 'planner', scope: 'session', childSession, parentSession: ctx.sessionManager.getSessionId(), status, usage,
