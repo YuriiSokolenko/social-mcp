@@ -1076,9 +1076,6 @@ export default function (pi) {
 
   function codingRecoveryEvidenceAvailable() {
     if (!codingRecoveryReadAvailable()) return false;
-    const hasReadablePreservedPath = codingRecoveryGuard.changed_publishable_paths
-      .some(item => trustedCodingRepairReadPath(item, process.cwd()));
-    if (!hasReadablePreservedPath) return false;
     const inventory = (pi.getAllTools?.() ?? pi.getActiveTools().map(name => ({ name })))
       .map(tool => typeof tool === 'string' ? tool : tool?.name);
     return inventory.includes('read');
