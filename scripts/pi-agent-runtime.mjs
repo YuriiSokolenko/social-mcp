@@ -4035,6 +4035,7 @@ export default function (pi) {
 
     if (
       codingRecoveryGuard &&
+      codingRecoveryGuard.inspection_complete !== true &&
       !codingRecoveryEvidenceAvailable() &&
       !codingRecoveryValidationAvailable()
     ) {
