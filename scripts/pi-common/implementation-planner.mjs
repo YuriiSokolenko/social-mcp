@@ -50,6 +50,7 @@ export function createPlannerEvidenceGate() {
     },
   };
 }
+
 function boundedPlannerFact(value) {
   if (typeof value !== 'string') return null;
   const fact = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -336,6 +337,7 @@ export function normalizeImplementationPreparation(value) {
   if (!('large_mutation' in normalized)) normalized.large_mutation = false;
   return normalized;
 }
+
 export function validateImplementationPreparation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Implementation planner returned a non-object structured result');
@@ -580,9 +582,7 @@ export function readPreparedImplementation(file) {
 
 function layoutGuidance(layoutHint, { authoritative }) {
   if (!layoutHint) return '';
-  const source = `Repository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; ` +
-    `source directory ${layoutHint.sourceDirectory}${layoutHint.sourceConvention ? `; nearest source convention ${layoutHint.sourceConvention}` : ''}; ` +
-    `tests ${layoutHint.testDirectory}${layoutHint.testTarget ? `; new test target ${layoutHint.testTarget}` : ''}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
+  const source = `Repository layout hint: source root ${layoutHint.sourceRoot}; new module target ${layoutHint.sourceTarget}; source directory ${layoutHint.sourceDirectory}${layoutHint.sourceConvention ? `; nearest source convention ${layoutHint.sourceConvention}` : ''}; tests ${layoutHint.testDirectory}${layoutHint.testTarget ? `; new test target ${layoutHint.testTarget}` : ''}${layoutHint.testConvention ? `; nearest test convention ${layoutHint.testConvention}` : ''}.`;
   return `\n${source} ${authoritative}`;
 }
 
