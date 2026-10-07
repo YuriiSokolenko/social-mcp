@@ -85,7 +85,7 @@ export function plannerEvidenceFact(toolName, input, result) {
   return boundedPlannerFact(prefix + observed.slice(0, room));
 }
 
-export function readPlannerEvidenceState(file, cap = MAX_PLANNER_REPOSITORY_EVIDENCE) {
+export function readPlannerEvidenceState(file) {
   if (!file) return null;
   try {
     const state = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -95,33 +95,26 @@ export function readPlannerEvidenceState(file, cap = MAX_PLANNER_REPOSITORY_EVID
       ? state.facts.map(boundedPlannerFact).filter(Boolean).slice(0, MAX_PLANNER_FACTS)
       : [];
     return {
-      used: Math.min(used, cap), cap: Math.min(Number(state?.cap) || cap, cap), facts,
+      used, facts,
       ...(Number.isSafeInteger(state?.resultAttempts) ? { resultAttempts: state.resultAttempts } : {}),
+      ...(Number.isSafeInteger(state?.structuredCorrections) ? { structuredCorrections: state.structuredCorrections } : {}),
       ...(typeof state?.repairStatus === 'string' ? { repairStatus: state.repairStatus } : {}),
       ...(typeof state?.repairDiagnostic === 'string' ? { repairDiagnostic: state.repairDiagnostic.slice(0, 400) } : {}),
       ...(typeof state?.repairKind === 'string' ? { repairKind: state.repairKind } : {}),
+      ...(typeof state?.failureKind === 'string' ? { failureKind: state.failureKind } : {}),
     };
   } catch {
     return null;
   }
 }
 
-function resetPlannerRepairStatus(file) {
-  if (!file) return;
-  try {
-    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
-    delete state.repairStatus;
-    delete state.repairFailureKind;
-    fs.writeFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600 });
-  } catch {
-    // If the sidecar is unavailable, retain the existing fail-closed behavior.
-  }
+function readPlannerEvidenceActions(file) {
+  return readPlannerEvidenceState(file)?.used ?? null;
 }
 
-function readPlannerEvidenceUsed(file, cap) {
-  return readPlannerEvidenceState(file, cap)?.used ?? null;
+function readPlannerStructuredCorrections(file) {
+  return readPlannerEvidenceState(file)?.structuredCorrections ?? 0;
 }
-
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
 // reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
 // The strict canonical contract is enforced locally by validateImplementationPreparation().
@@ -131,18 +124,16 @@ export const IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA = Object.freeze({
     steps: {
       type: 'array',
       minItems: 1,
-      maxItems: 8,
       items: { type: 'string', minLength: 1 },
     },
     facts: {
       type: 'array',
-      maxItems: MAX_PLANNER_FACTS,
       items: { type: 'string', minLength: 1 },
     },
     complexity: { type: 'string', enum: ['trivial', 'nontrivial'] },
     evidence_budget: { type: 'integer', minimum: 0, maximum: MAX_PLANNER_EVIDENCE_BUDGET },
     large_mutation: { type: 'boolean' },
-    reason: { type: 'string', minLength: 1, maxLength: 300 },
+    reason: { type: 'string', minLength: 1 },
   },
   required: ['steps', 'complexity', 'evidence_budget', 'reason'],
   additionalProperties: true,
