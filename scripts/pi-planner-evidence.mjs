@@ -232,41 +232,107 @@ export default function (pi) {
     return call.allowed;
   }
 
-  function reconcilePreValidationRejections() {
-    for (const call of observedResultCalls) {
-      if (!call.message || call.admissionDecided || call.preValidationRejected || call.toolCallSeen || call.toolResultSeen) continue;
-      call.preValidationRejected = true;
-      structuredCorrections += 1;
-      const diagnostic = 'structured_output was rejected before runtime tool execution.';
+  function recordPlannerResultRejection({
+    repairKind,
+    diagnostic,
+    rawArguments,
+    source = 'runtime',
+    ctx = null,
+  }) {
+    structuredCorrections += 1;
+    const failureSignature = plannerResultFailureSignature(repairKind, diagnostic, rawArguments);
+    if (failureSignature === lastResultFailureSignature) equivalentResultFailureCount += 1;
+    else {
+      lastResultFailureSignature = failureSignature;
+      equivalentResultFailureCount = 1;
+    }
+
+    recordPlannerResultState({
+      resultAttempts,
+      structuredCorrections,
+      repairStatus: 'correction_required',
+      repairDiagnostic: diagnostic,
+      repairKind,
+    });
+    console.log(`PI_PLANNER_RESULT_REJECTION ${JSON.stringify({
+      resultAttempts,
+      structuredCorrections,
+      kind: repairKind,
+      source,
+      equivalentNoProgress: equivalentResultFailureCount,
+      diagnostic,
+    })}`);
+
+    if (equivalentResultFailureCount >= RESULT_EQUIVALENT_NO_PROGRESS_LIMIT) {
       recordPlannerResultState({
         resultAttempts,
         structuredCorrections,
-        repairStatus: 'correction_required',
+        repairStatus: 'failed',
         repairDiagnostic: diagnostic,
-        repairKind: 'pre_validation_rejection',
+        repairKind,
+        failureKind: 'semantic_no_progress',
       });
-      console.log(`PI_PLANNER_RESULT_REJECTION ${JSON.stringify({
+      console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({
+        kind: 'structured_output',
         resultAttempts,
         structuredCorrections,
-        kind: 'pre_validation_rejection',
-        source: 'pre_validation_message',
-        diagnostic,
+        equivalentNoProgress: equivalentResultFailureCount,
       })}`);
-      console.log(`PI_PLANNER_RESULT_CORRECTION ${JSON.stringify({
-        resultAttempts,
-        structuredCorrections,
-        kind: 'pre_validation_rejection',
-      })}`);
+      ctx?.abort?.();
+      return false;
     }
+
+    console.log(`PI_PLANNER_RESULT_CORRECTION ${JSON.stringify({
+      resultAttempts,
+      structuredCorrections,
+      kind: repairKind,
+    })}`);
+    return true;
+  }
+
+  function preValidationRepairDiagnostic(rawArguments) {
+    let args = rawArguments;
+    if (typeof rawArguments === 'string') {
+      try { args = JSON.parse(rawArguments); }
+      catch {
+        return 'structured_output arguments were rejected before runtime tool execution. Supply valid JSON with value as an object containing steps, facts, complexity, required_mutation_anchors, large_mutation, and reason.';
+      }
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args) || !Object.hasOwn(args, 'value')) {
+      return 'structured_output was rejected before runtime tool execution: value is required and must be an object containing steps, facts, complexity, required_mutation_anchors, large_mutation, and reason.';
+    }
+    if (!args.value || typeof args.value !== 'object' || Array.isArray(args.value)) {
+      return 'structured_output was rejected before runtime tool execution: value must be an object containing steps, facts, complexity, required_mutation_anchors, large_mutation, and reason.';
+    }
+    return 'structured_output arguments were rejected by schema validation before runtime tool execution. Correct only the reported result shape and retry structured_output.';
+  }
+
+  function reconcilePreValidationRejections(ctx = null) {
+    let stopped = false;
+    for (const call of observedResultCalls) {
+      if (!call.message || call.admissionDecided || call.preValidationRejected || call.toolCallSeen || call.toolResultSeen) continue;
+      call.preValidationRejected = true;
+      const diagnostic = preValidationRepairDiagnostic(call.rawArguments);
+      const canCorrect = recordPlannerResultRejection({
+        repairKind: 'pre_validation_rejection',
+        diagnostic,
+        rawArguments: call.rawArguments,
+        source: 'pre_validation_message',
+        ctx,
+      });
+      if (!canCorrect) stopped = true;
+    }
+    return stopped;
   }
 
   recordEvidenceState({ used: 0 });
   console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'start' })}`);
 
-  pi.on('before_provider_request', (event) => {
+  pi.on('before_provider_request', (event, ctx) => {
     const payload = event?.payload;
-    if (!finalizing || !payload || !Array.isArray(payload.tools)) return payload;
-    reconcilePreValidationRejections();
+    if (!finalizing || !payload) return payload;
+    if (reconcilePreValidationRejections(ctx)) return payload;
+    if (!Array.isArray(payload.tools)) return payload;
     const tools = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === PLANNER_RESULT_TOOL);
     if (!tools.length) return payload;
     return { ...payload, tools, tool_choice: 'required' };
@@ -274,8 +340,8 @@ export default function (pi) {
 
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName === PLANNER_RESULT_TOOL) {
-      let observed = observedResultCalls.find(call => !call.toolCallSeen && event.toolCallId && call.id === event.toolCallId);
-      if (!observed) observed = observedResultCalls.find(call => !call.toolCallSeen && !call.id);
+      let observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolCallSeen && event.toolCallId && call.id === event.toolCallId);
+      if (!observed) observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolCallSeen && !call.id);
       if (observed) observed.toolCallSeen = true;
       else {
         observed = observePlannerResultCall({ id: event.toolCallId ?? null });
@@ -354,7 +420,7 @@ export default function (pi) {
       if (block.name !== PLANNER_RESULT_TOOL) continue;
       sawResultCall = true;
       const id = typeof block.id === 'string' && block.id ? block.id : null;
-      if (id && observedResultCalls.some(call => call.id === id)) continue;
+      if (id && observedResultCalls.some(call => !call.preValidationRejected && call.id === id)) continue;
       const key = id || `index:${index}`;
       const rawArguments = streamedResultArguments.has(key)
         ? streamedResultArguments.get(key)
@@ -397,16 +463,15 @@ export default function (pi) {
     if (event?.toolName !== PLANNER_RESULT_TOOL) return undefined;
     if (event.toolCallId && blockedResultCallIds.delete(event.toolCallId)) return undefined;
 
-    let observed = observedResultCalls.find(call => !call.toolResultSeen && event.toolCallId && call.id === event.toolCallId);
-    if (!observed && event.toolCallId) observed = observedResultCalls.find(call => !call.toolResultSeen && !call.id);
-    if (!observed) observed = observedResultCalls.find(call => !call.toolResultSeen && call.toolCallSeen);
+    let observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolResultSeen && event.toolCallId && call.id === event.toolCallId);
+    if (!observed && event.toolCallId) observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolResultSeen && !call.id);
+    if (!observed) observed = observedResultCalls.find(call => !call.preValidationRejected && !call.toolResultSeen && call.toolCallSeen);
     if (!observed) observed = observePlannerResultCall({ id: event.toolCallId ?? null });
     observed.toolResultSeen = true;
     if (!admitPlannerResultCall(observed) || resultSucceeded) return undefined;
     resultCallPending = false;
 
     if (event.isError) {
-      structuredCorrections += 1;
       const rawArguments = observed.rawArguments;
       const diagnostic = plannerRepairDiagnostic(rawArguments, event);
       const rawArgumentsMalformed = typeof rawArguments === 'string' && (() => {
@@ -415,28 +480,16 @@ export default function (pi) {
       const repairKind = rawArgumentsMalformed || /(?:unexpected end|unterminated|incomplete|invalid json|json parse|parse error)/i.test(diagnostic)
         ? 'malformed_arguments'
         : 'schema_rejection';
-      const failureSignature = plannerResultFailureSignature(repairKind, diagnostic, rawArguments);
-      if (failureSignature === lastResultFailureSignature) equivalentResultFailureCount += 1;
-      else {
-        lastResultFailureSignature = failureSignature;
-        equivalentResultFailureCount = 1;
-      }
-
-      recordPlannerResultState({
-        resultAttempts, structuredCorrections, repairStatus: 'correction_required', repairDiagnostic: diagnostic, repairKind,
+      const canCorrect = recordPlannerResultRejection({
+        repairKind,
+        diagnostic,
+        rawArguments,
+        source: 'runtime',
+        ctx,
       });
-      console.log(`PI_PLANNER_RESULT_REJECTION ${JSON.stringify({ resultAttempts, structuredCorrections, kind: repairKind, equivalentNoProgress: equivalentResultFailureCount, diagnostic })}`);
-
-      if (equivalentResultFailureCount >= RESULT_EQUIVALENT_NO_PROGRESS_LIMIT) {
-        recordPlannerResultState({
-          resultAttempts, structuredCorrections, repairStatus: 'failed', repairDiagnostic: diagnostic, repairKind, failureKind: 'semantic_no_progress',
-        });
-        console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'structured_output', resultAttempts, structuredCorrections, equivalentNoProgress: equivalentResultFailureCount })}`);
-        ctx?.abort?.();
+      if (!canCorrect) {
         return { content: [{ type: 'text', text: `The same structured_output rejection repeated without material correction. Planner stopped by semantic no-progress protection. ${diagnostic}` }] };
       }
-
-      console.log(`PI_PLANNER_RESULT_CORRECTION ${JSON.stringify({ resultAttempts, structuredCorrections, kind: repairKind })}`);
       return { content: [{ type: 'text', text: `structured_output was rejected by runtime validation. ${diagnostic} Repository evidence remains closed. Correct only the reported shape/serialization problem and call structured_output again.` }] };
     }
 
