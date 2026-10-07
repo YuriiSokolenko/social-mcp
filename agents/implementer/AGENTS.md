@@ -63,8 +63,9 @@ If `Required current-file mutation anchors` names existing paths, read each exac
 - Prefer `read` for known paths, `indexed_repo_search` for fast literal/path discovery against the indexed dev snapshot, and `repo_search` when the current worktree must be authoritative.
 - `bash` is directly usable in successful fresh Main when exposed. Keep commands task-bounded and non-destructive. The runtime still owns timeout, sandbox, worktree mutation detection, tainting, and recovery requirements.
 - `grep`, `find`, and `ls` remain delegated/runtime-blocked in Main. Do not use shell equivalents merely to bypass that policy.
-- Use LSP for an already-named source symbol when semantic lookup is cheaper than text search. For a cold name-only lookup, do not call `lsp_server_status` first; call `lsp_start_server` once with the configured server id and the exact absolute workspace root supplied in the prepared state, then call `lsp_find_symbol`. Fall back to Orbit/search after an actual LSP failure instead of retrying it.
-- Use Orbit for structural/dependency questions that literal search or LSP do not answer well. Exact source text still comes from `read` before mutation.
+- Use LSP for an already-named source symbol when semantic lookup is cheaper than text search. For a cold name-only lookup, do not call `lsp_server_status` first; call `lsp_start_server` once with the configured server id and the exact absolute workspace root supplied in the prepared state, then call `lsp_find_symbol`. That cold-start call is control-plane setup, not evidence. Fall back to Orbit/search after an actual LSP failure instead of retrying it.
+- Use Orbit for structural/dependency questions that literal search or LSP do not answer well. Do not use it before LSP merely to rediscover an already-named source symbol. Exact source text still comes from `read` before mutation.
+- Treat history as provenance evidence, never current source truth, current-symbol discovery, or an edit anchor.
 - When one concrete repository fact still blocks the next safe action and requires bounded delegated semantic evidence, use `need_more_evidence` only if runtime exposes it. State that one concrete missing fact; this transition is not a prerequisite for `read`, `repo_search`, `indexed_repo_search`, or `bash` in successful fresh Main.
 - If delegation is needed and the generic subagent tool is hidden, call `subagents_enable` once, then follow the tool surface and next-action guidance returned by runtime. Enable/delegate to `scout` only when deterministic direct inspection cannot answer one concrete question cheaply. Ask for the first sufficient answer and compact evidence, not a broad repository dump.
 - Task classification alone never requires delegation; `nontrivial` does not imply a scout or broader exploration.
@@ -72,7 +73,7 @@ If `Required current-file mutation anchors` names existing paths, read each exac
 ### Available delegated agents
 
 Use `scout` for narrow repository reconnaissance only when direct deterministic tools are insufficient. `reviewer` and `oracle` are read-only advisors for a concrete review or consistency question; they do not own Main's mutations.
-- Prefer `structural_edit` for one exact AST rewrite, `safe_edit` for bounded line/range or non-code changes, and `edit`/`write` when simpler.
+- Prefer `structural_edit` when the intended change should match exactly one AST node; prefer `safe_edit` for a bounded line/range or non-code change, and `edit`/`write` when simpler. A successful mutation's post-edit preview is enough to continue; do not spend another evidence action merely to re-read the same change.
 - Prefer `rollback_last_mutation` when the latest mutation is demonstrably the wrong approach. Use `undo_mutation`/`recover_worktree` only for the exact recovery state they describe.
 - After a successful mutation, use focused `run_check` when exposed. A check infrastructure error is not a product failure and is not a reason to invent a shell workaround.
 - If authoritative current code proves the exact requested end state already exists, fresh work may call `submit_result({already_satisfied:true, changes:[]})`.
@@ -98,7 +99,7 @@ Planner owns startup planning for fresh work. A scout gathers evidence only; do 
 
 Do not run full pytest, full-repository Ruff, or CI/control-plane suites before submission as a ritual.
 
-`submit_result` records that the agent considers the implementation complete. It does not discard current changes. After the backend exits, the shared stage harness runs authoritative checks:
+`submit_result` records that the agent considers the implementation complete. It does not discard current changes. After the backend exits, the shared stage harness runs the authoritative checks:
 
 - `git diff --check`;
 - the full product pytest suite;
