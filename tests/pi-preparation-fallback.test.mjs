@@ -311,9 +311,11 @@ function runtimeScenario(mode) {
             assert.match(request.task, /Implement example.py/);
           }
           } else {
-          assert.match(request.task, /FINALIZATION-ONLY XML REPAIR/);
-          assert.match(request.task, /Repository investigation is closed/);
-        }
+            assert.match(request.task, /FINALIZATION-ONLY XML REPAIR — ONLY ATTEMPT/);
+            assert.match(request.task, /previous final XML was rejected and was not accepted/i);
+            assert.match(request.task, /Repository investigation is finished and permanently closed/);
+            assert.match(request.task, /only and final repair attempt/i);
+          }
         assert.equal(request.ownerRunId, 'bootstrap-session', 'planner is hosted by the bootstrap session, never the main one');
         assert.equal('timeoutMs' in request, false, 'planner lifecycle has no wrapper deadline');
         assert.equal('toolBudget' in request, false, 'planner evidence is not controlled by a generic tool-count budget');
