@@ -272,12 +272,12 @@ function runtimeScenario(mode) {
         assert.equal(request.agent, 'implementation-planner');
         if (mode === 'layout-aware') {
           assert.match(request.task, /Add smoke widget parser/);
-          assert.match(request.task, /source_root=src/);
-          assert.ok(request.task.includes('source_target=src/demo_pkg/diagnostics/smoke_widget.py'));
-          assert.ok(request.task.includes('nearest_source_convention=src/demo_pkg/diagnostics/smoke_chunks.py'));
-          assert.ok(request.task.includes('test_directory=tests/diagnostics'));
-          assert.ok(request.task.includes('nearest_test_convention=tests/diagnostics/test_smoke_chunks.py'));
-          assert.ok(request.task.includes('inspect only the nearest relevant sibling source/test'));
+          assert.match(request.task, /resolvedTargets=\{"source":"src\/demo_pkg\/diagnostics\/smoke_widget\.py"\}/);
+          assert.match(request.task, /conventionHints=.*"sourceConvention":"src\/demo_pkg\/diagnostics\/smoke_chunks\.py"/s);
+          assert.match(request.task, /conventionHints=.*"testDirectory":"tests\/diagnostics"/s);
+          assert.match(request.task, /conventionHints=.*"testConvention":"tests\/diagnostics\/test_smoke_chunks\.py"/s);
+          assert.match(request.task, /resolvedTargets > conventionHints > discovered repository context/);
+          assert.match(request.task, /Do not spend repository evidence actions solely to re-decide or verify/);
           assert.match(request.task, /do not spend evidence re-proving fresh-worktree provenance/i);
         } else if (mode === 'non-additive-target') {
           assert.match(request.task, /Adjust existing parser/);
@@ -297,7 +297,7 @@ function runtimeScenario(mode) {
         if (mode === 'abort') { signal.abort(); return; }
         const good = mode === 'layout-aware'
           ? {
-              steps: ['Add the module and focused tests using the verified diagnostics convention'],
+              steps: ['Create src/demo_pkg/diagnostics/smoke_widget.py and add focused tests using the verified diagnostics convention'],
               facts: ['tests/diagnostics/test_smoke_chunks.py is the verified focused-test convention.'],
               complexity: 'nontrivial',
               required_mutation_anchors: [],
