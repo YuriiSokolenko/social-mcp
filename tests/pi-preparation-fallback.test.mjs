@@ -125,7 +125,7 @@ test('automatic large mutation intent is discarded by a direct mutation before a
 test('zero-evidence automatic large mutation is pending from the first main request', () => {
   const state = preparedController({ evidenceBudget: 0, largeMutation: true });
   assert.equal(state.productiveProgressState(), 'action_required');
-  assert.equal(state.checkToolCall('read', { path: 'src/example.py' }).block, true, 'zero evidence starts action-required');
+  assert.equal(state.checkToolCall('read', { path: 'src/example.py' }), undefined, 'fresh prepared Main keeps direct read available in action_required');
   assert.equal(state.maybeGrantAutomaticLargeMutationBudget(), true);
   assert.equal(state.largeMutationBudgetPending(), true);
 });
@@ -152,7 +152,7 @@ test('a positive planner evidence_budget starts evidence_allowed with exactly th
   assert.equal(state.productiveProgressState(), 'evidence_allowed');
   assert.equal(state.checkToolCall('read', { path: 'b' }), undefined);
   assert.equal(state.productiveProgressState(), 'action_required');
-  assert.equal(state.checkToolCall('read', { path: 'c' }).block, true);
+  assert.equal(state.checkToolCall('read', { path: 'c' }), undefined, 'legacy evidence window closes into fresh Main direct access');
 });
 
 test('fallback preserves one-shot mutation budget and post-window evidence escape hatch', () => {
@@ -507,7 +507,8 @@ function runtimeScenario(mode) {
             assert.doesNotMatch(prepared.text, /Repository layout hint|test_smoke_widget\.py/);
             assert.match(prepared.text, /Fresh worktree base: latest fetched/);
             assert.match(prepared.text, /Large mutation: auto-arm one-shot/);
-            assert.ok(!active.includes('read'), 'new-file-only prepared work does not expose unrelated discovery');
+            assert.ok(active.includes('read'), '#540 keeps fresh Main direct repository inspection available');
+            assert.ok(active.includes('repo_search'));
             assert.ok(active.includes('write'));
             await call('write', { path: 'example.py', content: 'print("large")\\n' });
           } else if (mode === 'small-auto') {
@@ -539,7 +540,8 @@ function runtimeScenario(mode) {
             assert.deepEqual(prepared.details.requiredMutationAnchors, []);
             assert.equal(prepared.details.largeMutation, false);
             assert.equal(prepared.details.complexity, 'nontrivial');
-            assert.ok(!active.includes('read'), 'new-file-only handoff starts action-oriented');
+            assert.ok(active.includes('read'), '#540 fresh prepared Main keeps direct read available while remaining action-oriented');
+            assert.ok(active.includes('repo_search'));
           }
         }
       }
