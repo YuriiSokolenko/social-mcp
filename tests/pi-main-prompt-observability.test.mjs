@@ -53,6 +53,11 @@ test('#540 Main prompt metadata proves one system message and stable static comp
   assert.equal(second.systemPromptHash, first.systemPromptHash);
   assert.equal(second.initialUserContextHash, first.initialUserContextHash);
   assert.equal(second.toolSchemaHash, first.toolSchemaHash);
+  assert.deepEqual(second.previousHashes, {
+    systemPromptHash: first.systemPromptHash,
+    initialUserContextHash: first.initialUserContextHash,
+    toolSchemaHash: first.toolSchemaHash,
+  });
   assert.deepEqual(second.changedFromPrevious, {
     system: false,
     initialUserContext: false,
