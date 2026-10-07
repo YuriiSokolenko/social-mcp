@@ -86,11 +86,15 @@ function existingRepositoryTarget(cwd, value, { trustedHint = false } = {}) {
     return target;
   }
 
-  const root = path.resolve(cwd);
+  const root = canonicalPath(cwd);
+  if (!root) return null;
   const absolute = path.resolve(cwd, pathTarget);
-  if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) return null;
   try {
-    const stat = fs.statSync(absolute);
+    // Resolve the candidate itself, not just its lexical path. A symlink located inside the
+    // repository must not make an external file/directory eligible for Orbit seeding.
+    const realTarget = fs.realpathSync(absolute);
+    if (realTarget !== root && !realTarget.startsWith(`${root}${path.sep}`)) return null;
+    const stat = fs.statSync(realTarget);
     if (!stat.isFile() && !stat.isDirectory()) return null;
   } catch {
     return null;
