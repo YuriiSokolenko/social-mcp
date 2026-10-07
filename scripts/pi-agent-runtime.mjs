@@ -1111,6 +1111,13 @@ export default function (pi) {
     );
   }
 
+  function codingRecoveryDeadEndReason() {
+    if (codingRecoveryReadablePaths().length === 0) {
+      return 'Coding-session recovery has no readable preserved changed path and no authoritative validation route. Preserving the worktree and refusing a forced recovery loop.';
+    }
+    return 'Coding-session recovery guard has no safe remaining pre-inspection path: bounded read evidence and authoritative validation are unavailable. Preserving recovered worktree mutations and refusing blind rewrite/re-fork recovery.';
+  }
+
   function abortBlockedCodingRecovery(ctx, reason) {
     const details = {
       recovery_receipt: codingRecoveryGuard,
@@ -3152,6 +3159,16 @@ export default function (pi) {
     }
     const productiveState = controller.productiveProgressState();
     const activeToolNames = pi.getActiveTools();
+    if (
+      codingRecoveryGuard &&
+      codingRecoveryGuard.inspection_complete !== true &&
+      !codingRecoveryEvidenceAvailable() &&
+      !codingRecoveryValidationAvailable()
+    ) {
+      const reason = codingRecoveryDeadEndReason();
+      abortBlockedCodingRecovery(ctx, reason);
+      return { block: true, reason: `BLOCKED: ${reason}` };
+    }
     const largeMutationActiveAtCall = controller.largeMutationBudgetActive();
     if (
       largeMutationActiveAtCall &&
@@ -4039,10 +4056,7 @@ export default function (pi) {
       !codingRecoveryEvidenceAvailable() &&
       !codingRecoveryValidationAvailable()
     ) {
-      abortBlockedCodingRecovery(
-        ctx,
-        'Coding-session recovery guard has no safe remaining release path: bounded read evidence is exhausted or unavailable and authoritative validation is unavailable. Preserving recovered worktree mutations and refusing blind rewrite/re-fork recovery.',
-      );
+      abortBlockedCodingRecovery(ctx, codingRecoveryDeadEndReason());
     }
   });
 
