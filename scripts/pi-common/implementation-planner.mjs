@@ -452,8 +452,9 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
   const issue = implementerIssueContext(env);
   let orbitSeed;
   try {
-    orbitSeed = await orbitSeedBuilder(ctx.cwd, issue, { layoutHint });
+    orbitSeed = await orbitSeedBuilder(ctx.cwd, issue, { layoutHint, signal });
   } catch (error) {
+    if (signal?.aborted) throw error;
     orbitSeed = {
       present: false, fresh: false, currentHead: null, indexedHead: null, indexStatus: null,
       requestedTargets: [], targets: [], serializedBytes: 0, truncated: false, queryFailures: 0,
@@ -467,10 +468,13 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     indexedHead: orbitSeed?.indexedHead ?? null,
     indexStatus: orbitSeed?.indexStatus ?? null,
     requestedTargets: Array.isArray(orbitSeed?.requestedTargets) ? orbitSeed.requestedTargets : [],
+    queriedTargets: Array.isArray(orbitSeed?.queriedTargets) ? orbitSeed.queriedTargets : [],
     targets: Array.isArray(orbitSeed?.targets) ? orbitSeed.targets : [],
     serializedBytes: Number.isSafeInteger(orbitSeed?.serializedBytes) ? orbitSeed.serializedBytes : 0,
     truncated: Boolean(orbitSeed?.truncated),
     queryFailures: Number.isSafeInteger(orbitSeed?.queryFailures) ? orbitSeed.queryFailures : 0,
+    timeBudgetMs: Number.isSafeInteger(orbitSeed?.timeBudgetMs) ? orbitSeed.timeBudgetMs : null,
+    durationMs: Number.isSafeInteger(orbitSeed?.durationMs) ? orbitSeed.durationMs : null,
     reason: orbitSeed?.reason ?? null,
   })}`);
 
