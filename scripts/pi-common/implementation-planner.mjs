@@ -71,9 +71,9 @@ function redactPlannerEvidence(value) {
     .trim();
 }
 
-// A failed first planner attempt cannot transfer its model memory into a fresh output-only child.
-// Preserve only a tiny deterministic excerpt per successful evidence call: enough to retain the
-// target/symbol clue, never a raw tool transcript or unbounded repository contents.
+// Preserve only a compact deterministic excerpt per successful evidence call for the normalized
+// handoff and observability: enough to retain a target/symbol clue, never a raw tool transcript,
+// unbounded repository contents, or planner reasoning.
 export function plannerEvidenceFact(toolName, input, result) {
   if (!PLANNER_EVIDENCE_TOOLS.includes(toolName)) return null;
   const observed = redactPlannerEvidence(plannerResultText(result));
@@ -108,13 +108,6 @@ export function readPlannerEvidenceState(file) {
   }
 }
 
-function readPlannerEvidenceActions(file) {
-  return readPlannerEvidenceState(file)?.used ?? null;
-}
-
-function readPlannerStructuredCorrections(file) {
-  return readPlannerEvidenceState(file)?.structuredCorrections ?? 0;
-}
 // Transport boundary only: tolerates repairable deviations (overlong steps, extra fields) so they
 // reach normalizeImplementationPreparation() instead of failing before the runtime sees a value.
 // The strict canonical contract is enforced locally by validateImplementationPreparation().
