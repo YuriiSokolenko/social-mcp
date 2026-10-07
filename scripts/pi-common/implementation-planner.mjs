@@ -14,6 +14,10 @@ export const MAX_PLANNER_EVIDENCE_BUDGET = 6;
 
 // Compact handoff ceilings are deterministic normalization only, not planner-behavior budgets.
 const MAX_PLANNER_STEP_LENGTH = 240;
+// This is a downstream handoff-size boundary, not a planner behavior budget. It keeps the
+// PreparedImplementation block compact for the main Implementer while allowing #528-style
+// plans with more than eight substantive steps to pass unchanged.
+export const MAX_PLANNER_HANDOFF_STEPS = 16;
 export const MAX_PLANNER_FACTS = 6;
 export const MAX_PLANNER_FACT_LENGTH = 200;
 
@@ -304,7 +308,8 @@ export function discoverAdditivePythonLayout(cwd, issue) {
   return null;
 }
 
-// Safe repairs only: keep the canonical fields, trim strings, and bound step/fact lengths.
+// Safe repairs only: keep the canonical fields, trim strings, and bound the compact handoff
+// deterministically. These are serialization/handoff ceilings, never planner behavior budgets.
 // facts is a compact repository-derived handoff, never raw evidence or planner transcript.
 // large_mutation is an optional planner hint: omission safely defaults to false, while an
 // explicitly present non-boolean value is preserved so strict validation rejects it.
@@ -315,7 +320,7 @@ export function normalizeImplementationPreparation(value) {
   for (const key of ['steps', 'facts', 'complexity', 'evidence_budget', 'large_mutation', 'reason']) {
     if (!(key in value)) continue;
     if (key === 'steps' && Array.isArray(value.steps)) {
-      normalized.steps = value.steps.map(step =>
+      normalized.steps = value.steps.slice(0, MAX_PLANNER_HANDOFF_STEPS).map(step =>
         typeof step === 'string' ? step.trim().slice(0, MAX_PLANNER_STEP_LENGTH).trim() : step
       );
     } else if (key === 'facts' && Array.isArray(value.facts)) {
@@ -341,7 +346,7 @@ export function validateImplementationPreparation(value) {
   if (!requiredKeys.every(key => keys.includes(key)) || keys.some(key => !allowedKeys.has(key))) {
     throw new Error('Implementation planner returned unexpected structured fields');
   }
-  if (!Array.isArray(value.steps) || value.steps.length < 1) {
+  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > MAX_PLANNER_HANDOFF_STEPS) {
     throw new Error('Implementation planner returned an invalid step list');
   }
   const steps = value.steps.map(step => typeof step === 'string' ? step.trim() : '');
@@ -430,8 +435,9 @@ export async function runStructuredImplementationPlanner(pi, ctx, config, signal
     nodeId: 'implementation-plan',
     task: plannerTask(process.env, { layoutHint }),
     schema: IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA,
-    // No planner lifecycle wall-clock budget and no generic tool-count budget. Lower-level
-    // provider/process hang guards remain responsible for genuinely stuck infrastructure.
+    // No planner-specific lifecycle wall-clock budget and no generic tool-count budget.
+    // Omitting timeoutMs delegates genuine hang protection to pi-subagents/provider/process
+    // infrastructure rather than turning elapsed planning time into a behavioral failure.
     timeoutMs: null,
     toolBudget: null,
     maxTokens: Number(config.implementationPlannerMaxTokens ?? 2048),
