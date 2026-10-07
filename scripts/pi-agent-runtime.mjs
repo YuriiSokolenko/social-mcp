@@ -1387,11 +1387,7 @@ export default function (pi) {
           // UX on top of the controller's own hard gate: while the elevated budget is active,
           // don't even show tools this turn is not allowed to call. Exact terminal recovery
           // verification is a separate one-shot gate and temporarily supersedes this surface.
-          ? elevatedMutationTurnToolNames(unrestrictedActiveTools, {
-              blockerTool: controller.evidenceUnlockAvailable()
-                ? config.productiveProgress.blockerTool
-                : null,
-            })
+          ? elevatedMutationTurnToolNames(unrestrictedActiveTools)
           : actionRequiredToolNames(unrestrictedActiveTools, {
             actionTools: config.productiveProgress.actionTools,
             controlTools: config.productiveProgress.controlTools,
@@ -3969,22 +3965,6 @@ export default function (pi) {
       strictBlockerEvidence: consumedEvidence?.tool === canonicalToolName,
       verificationEligible,
     });
-
-    if (
-      stage === 'implementer' &&
-      canonicalToolName === config.productiveProgress?.blockerTool &&
-      !event.isError
-    ) {
-      const yielded = controller.yieldLargeMutationBudgetForEvidence();
-      if (yielded.yielded) {
-        appliedActionCap = 0;
-        console.log(`PI_LARGE_MUTATION_BUDGET ${JSON.stringify({
-          stage,
-          phase: 'yielded_for_evidence',
-          rearmed: yielded.rearmed,
-        })}`);
-      }
-    }
 
     if (codingRecoveryGuard) {
       const validationStatus = event.result?.details?.status ?? null;
