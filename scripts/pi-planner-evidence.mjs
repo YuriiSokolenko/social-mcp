@@ -262,6 +262,7 @@ export default function (pi) {
   let control = null;
   let lastAssistant = null;
   let lastProviderInputTokens = null;
+  let providerBudgetValid = true;
   const budgetHistory = [];
 
   function setPhase(next, metadata = {}) {
@@ -317,6 +318,7 @@ export default function (pi) {
       : [];
     const effective = Number(payload.max_output_tokens ?? payload.max_tokens ?? event.model?.maxTokens ?? budget);
     const validBudget = !Number.isFinite(effective) || effective === budget;
+    providerBudgetValid = validBudget;
     budgetHistory.push({ phase, expected: budget, effective: Number.isFinite(effective) ? effective : null });
     updatePlannerProtocolState({ budgetHistory, submissionBudget: budget });
     console.log(`PI_PLANNER_PROVIDER_REQUEST ${JSON.stringify({ phase, requestedBudget: budget, effectiveBudget: Number.isFinite(effective) ? effective : null, tools: tools.map(tool => tool.function?.name ?? tool.name), validBudget })}`);
@@ -457,7 +459,7 @@ export default function (pi) {
       return undefined;
     }
     if (phase !== 'submission_pending') return undefined;
-    const accepted = control?.kind === 'submit' && control.executed &&
+    const accepted = providerBudgetValid && control?.kind === 'submit' && control.executed &&
       lastAssistant?.reason === 'tooluse' && lastAssistant.complete &&
       lastAssistant.calls.length === 1 && lastAssistant.calls[0].name === 'submit_plan' &&
       lastAssistant.calls[0].id === control.toolCallId &&
@@ -472,7 +474,7 @@ export default function (pi) {
       control = null;
       return undefined;
     }
-    const cause = control?.failureKind ?? (lastAssistant?.reason === 'length' ? 'truncated' : 'incomplete_or_missing_submit_plan');
+    const cause = !providerBudgetValid ? 'provider_budget_mismatch' : control?.failureKind ?? (lastAssistant?.reason === 'length' ? 'truncated' : 'incomplete_or_missing_submit_plan');
     control = null;
     if (!escalated) {
       escalated = true;
