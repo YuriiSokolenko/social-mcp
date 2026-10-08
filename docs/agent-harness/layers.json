@@ -87,6 +87,7 @@
     "scripts/pi-dispatcher-result-tool.mjs",
     "scripts/pi-implementer-bootstrap.mjs",
     "scripts/pi-implementer-result-tool.mjs",
+    "scripts/pi-implementer-skill-index.mjs",
     "scripts/pi-log-filter.mjs",
     "scripts/pi-planner-evidence.mjs",
     "scripts/pi-repair-result-tool.mjs",

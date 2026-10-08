@@ -448,12 +448,13 @@ test('legacy base URL forcing stays hp-laguna-only while trace override targets 
   assert.equal(config.providers.openai.baseUrl, 'http://openai/v1');
 });
 
-test('Pi backend invocation keeps the legacy extension and CLI argument order', () => {
+test('Pi backend invocation keeps the Main-only skill extension and CLI argument order', () => {
   const invocation = buildPiInvocation(specFor('implementer'), '/control');
 
   assert.deepEqual(invocation.pi.args, [
     '--extension', '/control/scripts/pi-bash-timeout.mjs',
     '--extension', '/control/scripts/pi-agent-runtime.mjs',
+    '--extension', '/control/scripts/pi-implementer-skill-index.mjs',
     '--extension', '/control/scripts/pi-implementer-result-tool.mjs',
     '--provider', 'provider-x',
     '--model', 'model-x',
